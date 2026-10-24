@@ -4,7 +4,7 @@
 
 **Blocked by:** 04.
 
-**Status:** ready-for-agent
+**Status:** session stack PROVEN live end-to-end 2026-10-24 (AUTH_OK, burst, enum, login, 20 s dwell, clean logout; commit a9938208) — formal closure on the 5-minute + reconnect evidence now running. Realm address connect + opcode-ledger row updates land with the reducer ticket.
 
 - [ ] Opcode ledger rows implemented status updated as messages land
 - [ ] 5-minute session + logout/reconnect against lab AC

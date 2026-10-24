@@ -9,7 +9,7 @@
 | Input path | `MSG_MOVE_*` (all `PROCESS_THREADSAFE`, `Opcodes.cpp:312-333+`) → `WorldSession::HandleMovementOpcodes` (`MovementHandler.cpp:344`) → `ReadMovementInfo` (WorldSession) → `HandleMoverRelocation` (`:412`) | exists |
 | Server validation | **No anticheat module in this tree; no speed/teleport-distance checks found in the movement path** — server largely trusts client movement opcodes (transport handling is the main branch in `HandleMoverRelocation`) | key finding: custom locomotion is unblocked structurally |
 | Granted movement | 16 forced-mechanism sites: `SMSG_FORCE_*` speed/root/unroot, `MSG_MOVE_KNOCK_BACK` (`:838`), feather-fall/water-walk/hover compound (`SMSG_MULTIPLE_MOVES`), teleport acks (`:276`, `:47`) | exists |
-| Speed change today | verb `player_set_speed` **declared, not implemented**; Spellwright op effect 18 (MOD_INCREASE_SPEED aura) is expressible **hot** today | dash = hot via Spellwright; roll displacement = knockback opcode or trusted plain movement |
+| Speed change today | verb `player_set_speed` **declared, not implemented**; Spellwright op effect 18 (MOD_INCREASE_SPEED aura) is expressible **hot** today | speed tuning is hot-expressible; a dash (displacement, obstacle interaction, interrupts, reconciliation) remains an unresolved contract — promising, not proven |
 | Missing hook | none for baseline locomotion; souls-authoritative stamina/state = combat contract (ticket 13), not a movement hook | — |
 | Restart needs today | implementing `player_set_speed` = native module edit (rebuild+restart, one-time); movement-validation changes = core (avoid; none needed) | low |
 
@@ -19,7 +19,7 @@
 |---|---|---|
 | Placement (session) | verbs `gameobject_spawn/despawn/set_state`, `creature_spawn/...` (bridge files `wm_bridge_gameobject_actions.cpp`, `wm_bridge_creature_actions.cpp`); hot via action bus | exists, varying readiness [TV per-verb] |
 | Placement (persistent) | `world_spawn_create/update/delete` — persistent world editing verbs; capability map (WM-T01) records source **pending build/deploy** | near — one deploy away |
-| Server collision | **dynamic GOs are NOT in server collision/LOS** — `MapCollisionData.cpp` has no gameobject path; vmaps cover static map geometry only. Placed mesh = client-side model collision only | quantified: "a placed mesh is not a functioning wall" |
+| Server collision | **CORRECTED (Astra F05): dynamic GO collision EXISTS in this tree** — `Map.h:391-394` inserts/removes GO models in the dynamic tree; `DynamicVMapCollisionData : DynamicMapTree`; LOS and height queries include it (subject to model data, display/state/phase, config flags incl. `CheckGameObjectLOS`). My earlier negative claim was a grep miss. The genuinely open server-side gap is **navigation** (mmaps precomputed offline) | conditional capability; unsupported/foreign geometry unproven |
 | Navigation | mmaps precomputed offline (Repack `mmaps/`); no runtime mesh update — creatures/playerbots do **not** path around placed pieces | quantified |
 | Missing hooks | (1) server collision for dynamic GOs (vmap extension — core, restart-class) or explicit product decision "decorative-only for v1"; (2) runtime/local mmap update — none exists; (3) structural-support system — new owner (later work package) | named |
 | Restart needs today | spawn verbs: hot. GO collision / mmap regen: offline tooling + data deploy (maintenance-class, not per-change) | medium |

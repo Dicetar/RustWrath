@@ -4,7 +4,7 @@
 
 **Blocked by:** 01.
 
-**Status:** done 2026-10-24 (loader + manifests + provenance demos + format findings; see docs/baseline/route-assets.md). Parser extensions themselves are the B-004 implementation phase
+**Status:** loader/sample pass done 2026-10-24; OPEN children: M2 external-skin implementation + version census, Northshire WMO/doodad pinning, neighbor-tile pinning, empirical client load-order verification
 
 - [x] Loader honors owner's .disabled toggles; never renames/deletes user patches
 - [x] Route asset dependency list closed (v1) (nothing silently missing)

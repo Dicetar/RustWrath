@@ -22,7 +22,7 @@
 
 1. **Terrain layout**: `World\Maps\<Map>\<Map>_<col>_<row>.adt` (not 1.12's `Maps\...`); route tiles confirmed at 30..33 × 48 (Northshire→Elwynn). ADT header: **version 18**, chunk IDs appear byte-reversed on disk in this install (`REVM` + size 4 + `18` + `RDHM`…); readers that compare chunk magic as u32 are unaffected — verify per file family when parsing.
 2. **Elwynn liquid = MH2O only**: `Azeroth_31_48.adt` has 1 × `MH2O`, 256 × `MCNK`, **zero `MCLQ`**. The route needs the modern liquid reader; legacy MCLQ is not required for this route (per-tile check for others).
-3. **M2 corpus mixes model versions**: stock `Creature\Boar\Boar.m2` = `MD20` **version 264** with **external `.skin` companions** (`Boar00/01.skin`). 264 is already outside benilla's `256..=263` gate — the retarget's M2 work is: raise the gate to the corpus max, add WotLK header/animation blocks, keep external-skin support. Full corpus version census = first parser task (B-004 implementation).
+3. **M2 corpus mixes model versions**: stock `Creature\Boar\Boar.m2` = `MD20` **version 264** with **external `.skin` companions** (`Boar00/01.skin`). 264 is already outside benilla's `256..=263` gate — the retarget's M2 work is: implement external-`.skin` loading (upstream documents embedded vanilla profiles only — new work, not preserved behavior), add WotLK header/animation blocks per layout, and raise the version gate only per supported layout — never to the corpus max wholesale. Full corpus version census = first parser task (B-004 implementation).
 4. **benilla-mpq decompresses this install's WotLK archives correctly** (ADT/M2 bytes verified by structure) — the MPQ reader needs no retarget work for read/list/extract.
 
 ## Route dependency list (v1 — closed for the base profile)

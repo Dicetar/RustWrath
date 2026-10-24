@@ -1,7 +1,7 @@
 # Owner decisions — adopted defaults (vetoable)
 
 Recorded 2026-10-24 after owner granted execution authority ("you can build, code and do anything you need").
-These defaults were recommended by GLM, unopposed by Astra, and adopted in the owner's absence of objection.
+These defaults were recommended by GLM and adopted under a standing execution authorization; **absence of objection is not owner consent** — especially row 1 (maintenance-restart boundary), which stays a proposal until the owner confirms it.
 The owner may override any row; later documents must not treat them as owner-confirmed until then.
 
 | # | Question | Adopted default | Basis |

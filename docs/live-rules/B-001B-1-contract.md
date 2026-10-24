@@ -16,7 +16,7 @@ Static mirror of all applicable rules passes for both graphs (see session log; s
 
 ## 3. Authoring transport (the only publication path)
 
-Entry chain: addon whisper `WM_FORGE3\t...` → `V3Players::OnPlayerCanUseChat` (S:392) → `Command(p,message)` (S:341) → dispatcher (S:344-353): `LIST | REVISION | BEGIN/FINISH (upload, purpose QUOTE|SAVE) | BUY | DELETE`. Chunked upload: ≤64 KB doc, 150-char DATA frames (S:114-115), 300 s upload expiry, 120 s quote expiry (S:346-350). Purchase flow is **two-step by design**: FINISH(QUOTE) → `SendQuote` nonce → `BUY|nonce` (S:316 rejects stale/mismatched nonces).
+Entry chain: addon whisper `WM_FORGE3\t...` → `V3Players::OnPlayerCanUseChat` (S:392) → `Command(p,message)` (S:341) → dispatcher (S:344-353): `LIST | REVISION | BEGIN/FINISH (upload, purpose QUOTE|SAVE) | BUY | DELETE`. Chunked upload: ≤64 KB doc, 150-char DATA frames (S:114-115), 30 s upload expiry (`Now()+30000`), 120 s quote expiry (S:346-350). Purchase flow is **two-step by design**: FINISH(QUOTE) → `SendQuote` nonce → `BUY|nonce` (S:316 rejects stale/mismatched nonces).
 
 ## 4. Publication semantics (S:314-329) — definitive answers
 
