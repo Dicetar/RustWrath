@@ -5,11 +5,17 @@
 //! count, never an entity-id swap.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 
 use anyhow::{bail, Context, Result};
 
 use crate::opcode;
 use crate::updates::{movement_block, values_block, Reader, MovementSnapshot};
+
+/// Hard cap on the inflated size of one compressed update packet: server-side, one buffered
+/// send never exceeds 65536 bytes per write, so 1 MiB leaves orders of magnitude of headroom
+/// while staying far below any decompression-bomb risk.
+pub const MAX_INFLATED_UPDATE_BYTES: usize = 1024 * 1024;
 
 /// What one packet did to the world state, in arrival order.
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +32,9 @@ pub struct ObjectEntry {
     pub guid: u64,
     pub type_id: u8,
     pub fields: Vec<u32>,
+    /// Which field indices any update mask delivered in this generation (one bit per u32
+    /// field index); cleared on create. The basis for unknown-vs-zero semantics below.
+    delivered: Vec<u64>,
     pub movement: Option<MovementSnapshot>,
     /// Increments when this GUID is destroyed and created again — identity check for the
     /// despawn/recreate dance visibility does.
@@ -33,9 +42,25 @@ pub struct ObjectEntry {
 }
 
 impl ObjectEntry {
-    /// A u32 field by index, if the mask ever delivered it.
+    /// A u32 field by index.
+    ///
+    /// Semantics (established, matching the stock client): the real client zero-initializes
+    /// its field array at object creation and then applies delivered mask values, so an
+    /// undelivered field reads as zero there too. `field()` returns that client-visible view;
+    /// `None` only before any create/values block ever touched this GUID.
+    ///
+    /// For honest unknown-versus-zero distinction (export surfaces must not present a
+    /// never-delivered zero as an observed zero), check [`ObjectEntry::field_delivered`].
     pub fn field(&self, index: u16) -> Option<u32> {
         self.fields.get(index as usize).copied()
+    }
+
+    /// Whether any update mask delivered this field index in the current generation. A field
+    /// that is `Some(0)` with `field_delivered == false` is a client-view zero, not an
+    /// observed zero.
+    pub fn field_delivered(&self, index: u16) -> bool {
+        let (word, bit) = (index as usize / 64, index as usize % 64);
+        self.delivered.get(word).is_some_and(|w| w & (1 << bit) != 0)
     }
     /// Two adjacent fields as the 64-bit GUID the object writes for itself
     /// (`fields[OBJECT_FIELD_GUID] | fields[+1] << 32`).
@@ -75,28 +100,55 @@ impl WorldState {
 
     /// Reduce one world packet into the state, returning what changed.
     pub fn reduce(&mut self, opcode: u16, payload: &[u8]) -> Result<Vec<ChangeEvent>> {
+        Ok(self.reduce_changed(opcode, payload)?.0)
+    }
+
+    /// Reduce one world packet, returning the change events and whether
+    /// observation-relevant state changed (a movement block that only advanced its wire
+    /// timestamp, or an identical values rewrite, is not a state change).
+    pub fn reduce_changed(
+        &mut self,
+        opcode: u16,
+        payload: &[u8],
+    ) -> Result<(Vec<ChangeEvent>, bool)> {
         match opcode {
             opcode::SMSG_UPDATE_OBJECT => self.reduce_update_object(payload),
             opcode::SMSG_COMPRESSED_UPDATE_OBJECT => {
                 // `WorldSocket.cpp:97-119`: u32 uncompressed size, then zlib of the plain
                 // update-object payload — no inner opcode, no re-dispatch.
+                //
+                // Inflation is bounded twice: the declared size must sit under a hard cap
+                // before decompression starts, and the stream is read at most one byte past
+                // the declared size, so actual output exceeding the declaration (or a bomb
+                // under a plausible header) can never allocate freely.
                 let mut r = Reader::new(payload);
                 let size = r.u32().context("compressed size")? as usize;
-                let raw = flate2::read::ZlibDecoder::new(&payload[r.at..])
-                    .bytes_read()
+                if size > MAX_INFLATED_UPDATE_BYTES {
+                    bail!(
+                        "declared inflated size {size} exceeds the hard cap {MAX_INFLATED_UPDATE_BYTES}"
+                    );
+                }
+                let mut raw = Vec::with_capacity(size.min(65536));
+                flate2::read::ZlibDecoder::new(&payload[r.at..])
+                    .take(size as u64 + 1)
+                    .read_to_end(&mut raw)
                     .context("inflating compressed update")?;
                 if raw.len() != size {
-                    bail!("compressed update size mismatch: header {size}, inflated {}", raw.len());
+                    bail!(
+                        "compressed update size mismatch: declared {size}, inflated {}",
+                        raw.len()
+                    );
                 }
                 self.reduce_update_object(&raw)
             }
-            _ => Ok(Vec::new()),
+            _ => Ok((Vec::new(), false)),
         }
     }
 
-    fn reduce_update_object(&mut self, payload: &[u8]) -> Result<Vec<ChangeEvent>> {
+    fn reduce_update_object(&mut self, payload: &[u8]) -> Result<(Vec<ChangeEvent>, bool)> {
         let mut r = Reader::new(payload);
         let mut events = Vec::new();
+        let mut changed = false;
         let blocks = r.u32().context("block count")?;
         for _ in 0..blocks {
             let block_type = r.u8().context("block type")?;
@@ -104,15 +156,28 @@ impl WorldState {
                 0 => {
                     // VALUES: packed guid, values.
                     let guid = r.packed_guid()?;
-                    self.apply_values(guid, &mut r)?;
+                    changed |= self.apply_values(guid, &mut r)?;
                     events.push(ChangeEvent::Updated { guid });
                 }
                 1 => {
                     // MOVEMENT: packed guid, one movement block.
                     let guid = r.packed_guid()?;
                     let snapshot = movement_block(&mut r)?;
+                    let relevant = match self.objects.get(&guid).and_then(|e| e.movement.as_ref()) {
+                        Some(prev) => !prev.observation_equivalent(&snapshot),
+                        None => true,
+                    };
+                    changed |= relevant;
                     self.entry(guid, 0).movement = Some(snapshot);
                     events.push(ChangeEvent::Moved { guid });
+                }
+                0xAA => {
+                    // SMSG_DESTROY_OBJECT (`Object.cpp:278-286`): full u64 GUID (not packed)
+                    // plus an on-death flag the reducer does not need.
+                    let guid = r.u64().context("destroy guid")?;
+                    let _on_death = r.u8().context("destroy on-death flag")?;
+                    self.remove(guid, &mut events);
+                    changed = true;
                 }
                 2 | 3 => {
                     // CREATE_OBJECT(2) / CREATE_OBJECT2(3): packed guid, type id, movement,
@@ -127,6 +192,11 @@ impl WorldState {
                     };
                     let entry = self.entry(guid, type_id);
                     entry.generation = generation;
+                    // A recreate starts from a clean field slate: the stock client
+                    // zero-initializes at creation, and stale values from a previous
+                    // generation must not leak into the new one.
+                    entry.fields.clear();
+                    entry.delivered.clear();
                     entry.movement = Some(snapshot);
                     self.apply_values(guid, &mut r)?;
                     events.push(ChangeEvent::Created { guid });
@@ -138,6 +208,7 @@ impl WorldState {
                         let guid = r.packed_guid()?;
                         self.remove(guid, &mut events);
                     }
+                    changed = true;
                 }
                 other => bail!("unknown update block type {other}"),
             }
@@ -145,7 +216,7 @@ impl WorldState {
         if !r.done() {
             bail!("{} trailing bytes after the last update block", r.p.len() - r.at);
         }
-        Ok(events)
+        Ok((events, changed))
     }
 
     fn entry(&mut self, guid: u64, type_id: u8) -> &mut ObjectEntry {
@@ -153,22 +224,34 @@ impl WorldState {
             guid,
             type_id,
             fields: Vec::new(),
+            delivered: Vec::new(),
             movement: None,
             generation: 0,
         })
     }
 
-    fn apply_values(&mut self, guid: u64, r: &mut Reader) -> Result<()> {
+    /// Apply one values block; returns whether any delivered value actually differed from
+    /// the stored field. Identical rewrites are not source state changes.
+    fn apply_values(&mut self, guid: u64, r: &mut Reader) -> Result<bool> {
         let updates = values_block(r)?;
         let entry = self.entry(guid, 0);
+        let mut changed = false;
         for (index, value) in updates {
-            let index = index as usize;
-            if entry.fields.len() <= index {
-                entry.fields.resize(index + 1, 0);
+            let i = index as usize;
+            if entry.fields.get(i) != Some(&value) {
+                changed = true;
             }
-            entry.fields[index] = value;
+            if entry.fields.len() <= i {
+                entry.fields.resize(i + 1, 0);
+            }
+            let (word, bit) = (i / 64, i % 64);
+            if entry.delivered.len() <= word {
+                entry.delivered.resize(word + 1, 0);
+            }
+            entry.delivered[word] |= 1 << bit;
+            entry.fields[i] = value;
         }
-        Ok(())
+        Ok(changed)
     }
 
     fn remove(&mut self, guid: u64, events: &mut Vec<ChangeEvent>) {
@@ -299,9 +382,9 @@ mod tests {
         assert_eq!(entry.type_id, crate::updates::type_id::PLAYER);
         assert_eq!(entry.field(fields::UNIT_FIELD_HEALTH), Some(58));
         assert_eq!(entry.self_guid(fields::OBJECT_FIELD_GUID), Some(guid));
-        let snap = entry.movement.as_ref().unwrap();
-        assert_eq!(snap.x, -8913.0);
-        assert_eq!(snap.o, 0.5);
+        let pos = entry.movement.as_ref().unwrap().position.as_ref().unwrap();
+        assert_eq!(pos.x, -8913.0);
+        assert_eq!(pos.o, 0.5);
     }
 
     #[test]
@@ -330,7 +413,7 @@ mod tests {
         state.reduce(opcode::SMSG_UPDATE_OBJECT, &stationary_create(guid, 3, 2.0, &[])).unwrap();
         let entry = state.get(guid).unwrap();
         assert_eq!(entry.generation, 1, "recreate inherits the tombstone generation");
-        assert_eq!(entry.movement.as_ref().unwrap().x, 2.0);
+        assert_eq!(entry.movement.as_ref().unwrap().position.as_ref().unwrap().x, 2.0);
     }
 
     #[test]

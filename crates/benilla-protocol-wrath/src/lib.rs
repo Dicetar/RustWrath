@@ -27,6 +27,7 @@ pub mod logon;
 pub mod fields;
 pub mod opcode;
 pub mod reducer;
+pub mod session;
 pub mod updates;
 pub mod world;
 

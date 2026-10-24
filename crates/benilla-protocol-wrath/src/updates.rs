@@ -94,19 +94,40 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The movement snapshot a reducer keeps: identity-bearing fields only.
+/// World coordinates with orientation, exactly as one position-bearing block delivered them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PositionSnapshot {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub o: f32,
+}
+
+/// The movement snapshot a reducer keeps: identity-bearing fields only. `position` is `None`
+/// when the block carried no position-bearing update flag — a missing position is never
+/// represented as an invented zero (Astra review finding 3).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MovementSnapshot {
     pub update_flags: u16,
     pub move_flags: u32,
     pub extra_flags: u16,
     pub time: u32,
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-    pub o: f32,
+    pub position: Option<PositionSnapshot>,
     /// The nine living-block speeds in wire order; `None` for non-living objects.
     pub speeds: Option<[f32; 9]>,
+}
+
+impl MovementSnapshot {
+    /// Whether two snapshots differ in anything the observation schema can see. The wire's
+    /// per-packet timestamp (`time`) is a clock, not state, and is deliberately excluded: a
+    /// periodic heartbeat with identical position, flags and speeds is not a source state
+    /// change and must not advance `state_revision`.
+    pub fn observation_equivalent(&self, other: &Self) -> bool {
+        self.move_flags == other.move_flags
+            && self.extra_flags == other.extra_flags
+            && self.position == other.position
+            && self.speeds == other.speeds
+    }
 }
 
 /// Parse one full movement update (`Object::BuildMovementUpdate`, `Object.cpp:332-482`),
@@ -118,10 +139,7 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         move_flags: 0,
         extra_flags: 0,
         time: 0,
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-        o: 0.0,
+        position: None,
         speeds: None,
     };
     if flags & update_flags::LIVING != 0 {
@@ -129,10 +147,8 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         snap.move_flags = r.u32()?;
         snap.extra_flags = r.u16()?;
         snap.time = r.u32()?;
-        snap.x = r.f32()?;
-        snap.y = r.f32()?;
-        snap.z = r.f32()?;
-        snap.o = r.f32()?;
+        let (x, y, z, o) = (r.f32()?, r.f32()?, r.f32()?, r.f32()?);
+        snap.position = Some(PositionSnapshot { x, y, z, o });
         if snap.move_flags & move_flags::ON_TRANSPORT != 0 {
             r.packed_guid()?; // transport/vehicle base
             for _ in 0..4 {
@@ -195,17 +211,14 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         }
     } else if flags & update_flags::POSITION != 0 {
         let _transport = r.packed_guid()?;
-        snap.x = r.f32()?;
-        snap.y = r.f32()?;
-        snap.z = r.f32()?;
+        let (x, y, z) = (r.f32()?, r.f32()?, r.f32()?);
         let _repeat = (r.f32()?, r.f32()?, r.f32()?); // transport offsets or position again
-        snap.o = r.f32()?;
+        let o = r.f32()?;
         let _corpse_orientation = r.f32()?;
+        snap.position = Some(PositionSnapshot { x, y, z, o });
     } else if flags & update_flags::STATIONARY_POSITION != 0 {
-        snap.x = r.f32()?;
-        snap.y = r.f32()?;
-        snap.z = r.f32()?;
-        snap.o = r.f32()?;
+        let (x, y, z, o) = (r.f32()?, r.f32()?, r.f32()?, r.f32()?);
+        snap.position = Some(PositionSnapshot { x, y, z, o });
     }
     if flags & update_flags::UNKNOWN != 0 {
         r.u32()?;
