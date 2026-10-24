@@ -1,0 +1,24 @@
+//! Transcript opcodes, values taken verbatim from the local `Opcodes.h` (build 12340 table).
+
+#![allow(dead_code)]
+
+pub const CMSG_CHAR_ENUM: u32 = 0x037;
+pub const SMSG_CHAR_ENUM: u16 = 0x03B;
+pub const CMSG_PLAYER_LOGIN: u32 = 0x03D;
+pub const SMSG_LOGIN_SETTIMESPEED: u16 = 0x042;
+pub const CMSG_PLAYER_LOGOUT: u32 = 0x04A;
+pub const SMSG_UPDATE_OBJECT: u16 = 0x0A9;
+pub const MSG_MOVE_HEARTBEAT: u32 = 0x0EE;
+pub const SMSG_BINDPOINTUPDATE: u16 = 0x155;
+pub const CMSG_QUERY_TIME: u32 = 0x1CE;
+pub const CMSG_PING: u32 = 0x1DC;
+pub const SMSG_PONG: u16 = 0x1DD;
+pub const SMSG_AUTH_CHALLENGE: u16 = 0x1EC;
+pub const CMSG_AUTH_SESSION: u32 = 0x1ED;
+pub const SMSG_AUTH_RESPONSE: u16 = 0x1EE;
+pub const SMSG_LOGIN_VERIFY_WORLD: u16 = 0x236;
+pub const SMSG_ADDON_INFO: u16 = 0x2EF;
+/// An AzerothCore-lineage unofficial opcode this server sends during the login burst
+/// (`Opcodes.h:1340`): the uncompressed form of SMSG_COMPRESSED_MOVES carrying compound
+/// movement-force states. Not in any stock codec; decoded or tolerated locally.
+pub const SMSG_MULTIPLE_MOVES: u16 = 0x51E;

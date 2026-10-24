@@ -1,0 +1,15 @@
+[package]
+name = "benilla-protocol-wrath"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "3.3.5a (12340) world-session layer for the fork: client-side AuthCrypt mirror, packet framing, auth digest, and the session state machine"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = "1"
+benilla-srp = { path = "../benilla-srp" }
+hmac = "0.12"
+sha1.workspace = true
