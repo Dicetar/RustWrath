@@ -4,9 +4,9 @@
 
 **Blocked by:** 01 (identity pairing).
 
-**Status:** ready-for-agent
+**Status:** done 2026-10-24 — docs/baseline/seam-maps.md
 
-- [ ] Movement seam table with quantified "what does AC reject" for custom locomotion
-- [ ] Building seam table quantifying which placements get real server collision/navigation today
-- [ ] Generated-spaces seam table confirming vmap/mmap blocker and existing-map layout path
-- [ ] Each table lists at least one concrete missing hook and its restart need
+- [x] Movement seam table with quantified "what does AC reject" for custom locomotion
+- [x] Building seam table quantifying which placements get real server collision/navigation today
+- [x] Generated-spaces seam table confirming vmap/mmap blocker and existing-map layout path
+- [x] Each table lists at least one concrete missing hook and its restart need
