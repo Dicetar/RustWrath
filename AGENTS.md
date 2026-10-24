@@ -20,3 +20,17 @@ tables vendored at a pinned commit, which the tests check against, `scripts/` th
 instruments, `third_party/` vendored code.
 
 @docs/METHOD.md
+
+## Agent skills
+
+### Issue tracker
+
+Project B tickets live as local markdown under `.scratch/project-b/issues/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary in use. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.
