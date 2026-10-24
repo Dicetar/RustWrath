@@ -1,0 +1,120 @@
+{
+  "version": 3,
+  "name": "Sentinels Alacrity",
+  "root": "cast",
+  "icon": "Interface\\Icons\\Spell_Holy_SealOfValor",
+  "nodes": [
+    {
+      "id": "cast",
+      "name": "Vigilance",
+      "kind": "cast",
+      "p": {
+        "mode": "0",
+        "target": "0",
+        "cast": "2",
+        "cooldown": "8",
+        "range": "30",
+        "visual": "9",
+        "next": "selfward"
+      },
+      "children": []
+    },
+    {
+      "id": "selfward",
+      "name": "Apply to self",
+      "kind": "delivery",
+      "p": {
+        "shape": "1",
+        "recipients": "1",
+        "los": "1",
+        "speed": "100",
+        "package": "ward"
+      },
+      "children": []
+    },
+    {
+      "id": "ward",
+      "name": "Ward",
+      "kind": "package",
+      "p": {
+        "duration": "30",
+        "stacks": "2",
+        "refresh": "1",
+        "dispel": "1",
+        "visual": "9"
+      },
+      "children": [
+        "shield",
+        "pulse"
+      ]
+    },
+    {
+      "id": "shield",
+      "name": "Absorb",
+      "kind": "operation",
+      "p": {
+        "effect": "12",
+        "magnitude": "150",
+        "timing": "0",
+        "target": "0",
+        "visual": "9"
+      },
+      "children": []
+    },
+    {
+      "id": "pulse",
+      "name": "Hasten every six seconds",
+      "kind": "reaction",
+      "p": {
+        "event": "1",
+        "interval": "6",
+        "delay": "0",
+        "binding": "0",
+        "linked": "0",
+        "next": "swiftself"
+      },
+      "children": []
+    },
+    {
+      "id": "swiftself",
+      "name": "Swift self",
+      "kind": "delivery",
+      "p": {
+        "shape": "1",
+        "recipients": "1",
+        "los": "1",
+        "speed": "100",
+        "package": "swiftness"
+      },
+      "children": []
+    },
+    {
+      "id": "swiftness",
+      "name": "Swiftness",
+      "kind": "package",
+      "p": {
+        "duration": "6",
+        "stacks": "1",
+        "refresh": "1",
+        "dispel": "1",
+        "visual": "4"
+      },
+      "children": [
+        "swift"
+      ]
+    },
+    {
+      "id": "swift",
+      "name": "Movement speed",
+      "kind": "operation",
+      "p": {
+        "effect": "18",
+        "magnitude": "30",
+        "timing": "0",
+        "target": "0",
+        "visual": "4"
+      },
+      "children": []
+    }
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "version": 3,
+  "name": "Sentinels Vigil",
+  "root": "cast",
+  "icon": "Interface\\Icons\\Spell_Holy_SealOfValor",
+  "nodes": [
+    {
+      "id": "cast",
+      "name": "Vigilance",
+      "kind": "cast",
+      "p": {
+        "mode": "0",
+        "target": "0",
+        "cast": "2",
+        "cooldown": "8",
+        "range": "30",
+        "visual": "9",
+        "next": "selfward"
+      },
+      "children": []
+    },
+    {
+      "id": "selfward",
+      "name": "Apply to self",
+      "kind": "delivery",
+      "p": {
+        "shape": "1",
+        "recipients": "1",
+        "los": "1",
+        "speed": "100",
+        "package": "ward"
+      },
+      "children": []
+    },
+    {
+      "id": "ward",
+      "name": "Ward",
+      "kind": "package",
+      "p": {
+        "duration": "30",
+        "stacks": "2",
+        "refresh": "1",
+        "dispel": "1",
+        "visual": "9"
+      },
+      "children": [
+        "shield",
+        "pulse"
+      ]
+    },
+    {
+      "id": "shield",
+      "name": "Absorb",
+      "kind": "operation",
+      "p": {
+        "effect": "12",
+        "magnitude": "150",
+        "timing": "0",
+        "target": "0",
+        "visual": "9"
+      },
+      "children": []
+    },
+    {
+      "id": "pulse",
+      "name": "Mend every six seconds",
+      "kind": "reaction",
+      "p": {
+        "event": "1",
+        "interval": "6",
+        "delay": "0",
+        "binding": "0",
+        "linked": "0",
+        "next": "mendself"
+      },
+      "children": []
+    },
+    {
+      "id": "mendself",
+      "name": "Mend self",
+      "kind": "delivery",
+      "p": {
+        "shape": "1",
+        "recipients": "1",
+        "los": "1",
+        "speed": "100",
+        "package": "mending"
+      },
+      "children": []
+    },
+    {
+      "id": "mending",
+      "name": "Mending",
+      "kind": "package",
+      "p": {
+        "duration": "0",
+        "stacks": "1",
+        "dispel": "1",
+        "visual": "7"
+      },
+      "children": [
+        "mend"
+      ]
+    },
+    {
+      "id": "mend",
+      "name": "Heal",
+      "kind": "operation",
+      "p": {
+        "effect": "7",
+        "magnitude": "25",
+        "timing": "0",
+        "target": "0",
+        "visual": "7"
+      },
+      "children": []
+    }
+  ]
+}

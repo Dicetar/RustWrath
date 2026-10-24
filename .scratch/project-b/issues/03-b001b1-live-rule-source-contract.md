@@ -4,10 +4,10 @@
 
 **Blocked by:** 01 (source/tree identity).
 
-**Status:** ready-for-agent
+**Status:** done 2026-10-24 — docs/live-rules/B-001B-1-contract.md + graph-A/B.json (statically checked; runtime confirmation is ticket 10 step 0)
 
-- [ ] A and B graph JSON pass Parse+Validate under purpose=QUOTE rules
-- [ ] Noncombat-safe during authoring (AtMaker honored, not bypassed)
-- [ ] WM route chosen or recorded missing with evidence
-- [ ] Runtime definition-reload path: exists / absent, with source evidence
-- [ ] Four-point evidence plan (1-2 vs 3-4 kept distinct per GLM response 02 C1)
+- [x] A and B graph JSON pass Parse+Validate under purpose=QUOTE rules
+- [x] Noncombat-safe during authoring (AtMaker honored, not bypassed)
+- [x] WM route chosen or recorded missing with evidence
+- [x] Runtime definition-reload path: exists / absent, with source evidence
+- [x] Four-point evidence plan (1-2 vs 3-4 kept distinct per GLM response 02 C1)
