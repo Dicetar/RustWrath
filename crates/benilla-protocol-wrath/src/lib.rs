@@ -22,6 +22,8 @@
 mod crypt;
 mod digest;
 mod header;
+pub mod auth;
+pub mod logon;
 pub mod opcode;
 
 pub use crypt::AuthCrypt;
