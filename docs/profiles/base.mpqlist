@@ -1,0 +1,18 @@
+# Stock 3.3.5a (build 12340) enUS archives only. Ascending precedence; later lines win.
+# No custom archives. Owner-disabled files (patch-5/patch-j/patch-u etc.) are intentionally absent.
+stock common.mpq
+stock common-2.mpq
+stock expansion.mpq
+stock lichking.mpq
+stock patch.mpq
+stock patch-2.mpq
+stock patch-3.mpq
+stock enus/locale-enus.mpq
+stock enus/speech-enus.mpq
+stock enus/expansion-locale-enus.mpq
+stock enus/expansion-speech-enus.mpq
+stock enus/lichking-locale-enus.mpq
+stock enus/lichking-speech-enus.mpq
+stock enus/patch-enus.mpq
+stock enus/patch-enus-2.mpq
+stock enus/patch-enus-3.mpq

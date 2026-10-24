@@ -629,6 +629,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "benilla-profile"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "benilla-mpq",
+]
+
+[[package]]
 name = "benilla-protocol"
 version = "0.2.0"
 dependencies = [

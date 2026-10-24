@@ -4,10 +4,10 @@
 
 **Blocked by:** 01.
 
-**Status:** ready-for-agent
+**Status:** done 2026-10-24 (loader + manifests + provenance demos + format findings; see docs/baseline/route-assets.md). Parser extensions themselves are the B-004 implementation phase
 
-- [ ] Loader honors owner's .disabled toggles; never renames/deletes user patches
-- [ ] Route asset dependency list closed (nothing silently missing)
-- [ ] Sample-verified M2/skin layout findings recorded (embedded vs external)
-- [ ] Elwynn liquid format established from samples
-- [ ] Provenance-tagged resolution demoed by classifying one deliberately introduced custom-patch asset
+- [x] Loader honors owner's .disabled toggles; never renames/deletes user patches
+- [x] Route asset dependency list closed (v1) (nothing silently missing)
+- [x] Sample-verified M2/skin layout findings recorded (v264, external skins) (embedded vs external)
+- [x] Elwynn liquid format established: MH2O only, no MCLQ
+- [x] Provenance-tagged resolution demoed (WMBridge = WmOnly) by classifying one deliberately introduced custom-patch asset

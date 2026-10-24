@@ -1,0 +1,17 @@
+[package]
+name = "benilla-profile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Manifest-defined MPQ patch chains for the 3.3.5a profiles (base, wm-hd): explicit order, per-file provenance, failure classification"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = "1"
+benilla-mpq = { path = "../benilla-mpq" }
+
+[[bin]]
+name = "profile-probe"
+path = "src/main.rs"

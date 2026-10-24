@@ -1,0 +1,39 @@
+# The owner's live profile: stock base + every active custom archive.
+# patch-5, patch-j, patch-u are owner-disabled and excluded; nonstandard enus/backup-enus.mpq
+# and enus/base-enus.mpq are excluded pending empirical load-order verification (B-001 item).
+stock common.mpq
+stock common-2.mpq
+stock expansion.mpq
+stock lichking.mpq
+stock patch.mpq
+stock patch-2.mpq
+stock patch-3.mpq
+wm patch-6.mpq
+wm patch-7.mpq
+wm patch-8.mpq
+wm patch-S.mpq
+wm patch-a.mpq
+wm patch-b.mpq
+wm patch-c.mpq
+wm patch-e.mpq
+wm patch-f.mpq
+wm patch-k.mpq
+wm patch-w.mpq
+wm patch-y.mpq
+wm patch-z.mpq
+stock enus/locale-enus.mpq
+stock enus/speech-enus.mpq
+stock enus/expansion-locale-enus.mpq
+stock enus/expansion-speech-enus.mpq
+stock enus/lichking-locale-enus.mpq
+stock enus/lichking-speech-enus.mpq
+stock enus/patch-enus.mpq
+stock enus/patch-enus-2.mpq
+stock enus/patch-enus-3.mpq
+wm enus/patch-enus-a.mpq
+wm enus/patch-enus-c.mpq
+wm enus/patch-enus-f.mpq
+wm enus/patch-enus-k.mpq
+wm enus/patch-enus-m.mpq
+wm enus/patch-enus-q.mpq
+wm enus/patch-enus-w.mpq
