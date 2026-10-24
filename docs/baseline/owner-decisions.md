@@ -11,3 +11,9 @@ The owner may override any row; later documents must not treat them as owner-con
 | 3 | First route | Northshire → Elwynn tile boundary (Hogger stretch optional). | GLM R4 default |
 | 4 | Souls combat sequencing | Optional parallel work, never a gate prerequisite. | Astra correction, accepted |
 | 5 | Stock-client coexistence | Not a product goal. Fallback deployment retained; baseline-protocol invariant maintained as regression check. | Response 01 R8 / plan rev 3 |
+
+## Long-term goals added by owner
+
+| # | Goal | Added | Staged interpretation (proposal, vetoable) |
+|---|---|---|---|
+| 6 | **Client-side hot-patching** — live client changes without client restart/rebuild, mirroring the server-side live-change rule | 2026-10-24, owner message | **C1:** hot-reload of client data — assets via a file-watch/re-import path on the manifest loader (ticket 05 must leave a seam), tuning/config files, and Lua/XML (the addon host already has a reload lifecycle; stock `/reload` semantics). **C2:** WM-pushed client-side definitions — the native client channel (ticket 11) carries versioned client-content publications (UI tweaks, shell visuals, tuning) to connected clients. **C3, optional/last:** hot-swappable native presentation modules (dylib with stable ABI, swap at state boundaries) — explicitly not promised by the base plan's extension model; only if C1+C2 prove insufficient. |
