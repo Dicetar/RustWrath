@@ -657,6 +657,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "benilla-srp",
+ "flate2",
  "hmac",
  "sha1",
  "thiserror 2.0.18",

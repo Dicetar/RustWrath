@@ -13,6 +13,11 @@ pub const CMSG_LOGOUT_REQUEST: u32 = 0x04B;
 /// World-session auth success code (SharedDefines.h:3586); not 0 (Astra F01).
 pub const AUTH_OK: u8 = 0x0C;
 pub const SMSG_UPDATE_OBJECT: u16 = 0x0A9;
+/// `SMSG_COMPRESSED_UPDATE_OBJECT` (`WorldSocket.cpp:97-119`): the payload is
+/// `[u32 uncompressed_size][zlib(update-object payload)]` — no inner opcode; the decompressed
+/// bytes are the plain update body. (The fixture first misled us into reading an inner opcode;
+/// the "0x0016" was a 22-block world snapshot's count field.)
+pub const SMSG_COMPRESSED_UPDATE_OBJECT: u16 = 0x1F6;
 pub const MSG_MOVE_HEARTBEAT: u32 = 0x0EE;
 pub const SMSG_BINDPOINTUPDATE: u16 = 0x155;
 pub const CMSG_QUERY_TIME: u32 = 0x1CE;

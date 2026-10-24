@@ -74,6 +74,7 @@ fn main() -> Result<()> {
     let account = args.next().context("account")?;
     let password = args.next().context("password")?;
     let dwell: u64 = args.next().map(|s| s.parse()).transpose()?.unwrap_or(30);
+    let record_path = args.next();
 
     let logon = logon("127.0.0.1:3724", &account, &password).context("logon")?;
     let realm = logon
@@ -83,6 +84,9 @@ fn main() -> Result<()> {
     println!("[auth] ok; realm `{}` id {}", realm.name, realm.realm_id);
 
     let (mut world, seed) = WorldConnection::connect("127.0.0.1:8095")?;
+    if record_path.is_some() {
+        world.enable_recording();
+    }
     println!("[world] challenge seed {seed:02x?}");
     world.auth_session(&logon.account, &logon.session_key, &seed, realm.realm_id as u32)?;
     world.stream_mut().set_read_timeout(Some(Duration::from_millis(500)))?;
@@ -244,6 +248,17 @@ fn main() -> Result<()> {
         match world.recv() {
             Ok(p) if p.opcode == 0x04D => {
                 println!("[world] LOGOUT_COMPLETE — clean session end to end");
+                if let Some(path) = record_path.as_deref() {
+                    let rec = world.take_recording();
+                    let mut out = (rec.len() as u32).to_le_bytes().to_vec();
+                    for (op, payload) in &rec {
+                        out.extend_from_slice(&op.to_le_bytes());
+                        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                        out.extend_from_slice(payload);
+                    }
+                    std::fs::write(path, &out)?;
+                    println!("[world] recorded {} packets to {}", rec.len(), path);
+                }
                 return Ok(());
             }
             Ok(_) => {}

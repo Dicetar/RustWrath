@@ -4,8 +4,8 @@
 
 **Blocked by:** 06.
 
-**Status:** ready-for-agent
+**Status:** DONE 2026-10-25 — wire parser + pure reducer + 381 generated field constants; 15 unit tests + live-fixture replay green (fixtures/login-burst.bin: 1350 live packets incl. compressed updates and spline creates; deterministic x3). Live-taught corrections: 0x1F6 = [u32 size][zlib(update payload)] with NO inner opcode; spline create data per MovementPacketBuilder.
 
-- [ ] Update-field map from local header round-trips against captures
-- [ ] GUID stability across despawn/recreate test
-- [ ] Deterministic replay check (H2 precondition) green
+- [x] Update-field map from local header round-trips against captures
+- [x] GUID stability across despawn/recreate test
+- [x] Deterministic replay check (H2 precondition) green

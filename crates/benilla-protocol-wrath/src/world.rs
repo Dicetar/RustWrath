@@ -14,6 +14,8 @@ use crate::ClientHeader;
 pub struct WorldConnection {
     stream: TcpStream,
     crypt: Option<AuthCrypt>,
+    /// Optional wire recording of every post-crypto packet (fixtures for the reducer replay).
+    recording: Option<Vec<(u16, Vec<u8>)>>,
 }
 
 /// One decoded world packet.
@@ -64,7 +66,7 @@ impl WorldConnection {
         // Layout (`WorldSocket.cpp:222-230`): u32(1), seed[4], 32 random bytes.
         let mut seed = [0u8; 4];
         seed.copy_from_slice(&payload[4..8]);
-        Ok((Self { stream, crypt: None }, seed))
+        Ok((Self { stream, crypt: None, recording: None }, seed))
     }
 
     /// Send `CMSG_AUTH_SESSION` (plaintext header) with the digest proof, then arm the header
@@ -112,6 +114,16 @@ impl WorldConnection {
         self.stream.write_all(&header)?;
         self.stream.write_all(payload)?;
         Ok(())
+    }
+
+    /// Record every received packet (post-crypto) for fixture capture.
+    pub fn enable_recording(&mut self) {
+        self.recording = Some(Vec::new());
+    }
+
+    /// Take the recorded packet stream (opcode, payload), clearing the recorder.
+    pub fn take_recording(&mut self) -> Vec<(u16, Vec<u8>)> {
+        self.recording.take().unwrap_or_default()
     }
 
     /// Direct stream access for read-timeout configuration (driver-only).
@@ -169,6 +181,9 @@ impl WorldConnection {
         } else {
             Vec::new()
         };
+        if let Some(rec) = self.recording.as_mut() {
+            rec.push((header.opcode, payload.clone()));
+        }
         Ok(Packet { opcode: header.opcode, payload })
     }
 }

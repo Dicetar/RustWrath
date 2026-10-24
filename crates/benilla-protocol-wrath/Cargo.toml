@@ -14,3 +14,4 @@ benilla-srp = { path = "../benilla-srp" }
 hmac = "0.12"
 sha1.workspace = true
 thiserror = "2"
+flate2 = "1.1"

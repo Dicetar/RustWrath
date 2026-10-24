@@ -24,7 +24,10 @@ mod digest;
 mod header;
 pub mod auth;
 pub mod logon;
+pub mod fields;
 pub mod opcode;
+pub mod reducer;
+pub mod updates;
 pub mod world;
 
 pub use crypt::AuthCrypt;
