@@ -56,4 +56,4 @@ Grep of client_extensions + native modules found no further custom opcode reserv
 - [ ] DB revision identity against a running lab MySQL (world + characters schema versions, wm_spellforge_* present)
 - [ ] Archive enumeration: static content listing of base vs wm-hd MPQs; empirical verification of what the known-original pair actually loads (mechanism currently unknown)
 - [ ] Full file-level drift appendix for mod-multiclass (beyond the sampled diff)
-- [ ] Baseline toolchain proof: `cargo check` on fork base (running, background)
+- [x] Baseline toolchain proof: `cargo check` on fork base — PASSED exit 0, 2026-10-24
