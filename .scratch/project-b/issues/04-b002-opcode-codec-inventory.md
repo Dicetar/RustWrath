@@ -4,9 +4,9 @@
 
 **Blocked by:** 01.
 
-**Status:** ready-for-agent
+**Status:** pass 1 done 2026-10-24 (see docs/baseline/opcode-ledger-v0.md); pass-2 items listed there, run during B-003
 
-- [ ] Minimum-transcript message list from source-observed session path
-- [ ] Per-message coverage/adoption table filled
-- [ ] UpdateObject/MovementInfo representation in wrath module verified (docs listing was truncated)
-- [ ] Adopted-codec risk register (compression, update fields, local extensions)
+- [x] Minimum-transcript message list from source-observed session path
+- [x] Per-message coverage/adoption table filled (24 structs + MovementInfo compile-probed)
+- [x] UpdateObject/MovementInfo representation verified (per-message structs; both resolve) (docs listing was truncated)
+- [x] Adopted-codec risk register (compression, update fields, local extensions)
