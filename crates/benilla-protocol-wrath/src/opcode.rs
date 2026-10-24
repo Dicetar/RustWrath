@@ -6,7 +6,12 @@ pub const CMSG_CHAR_ENUM: u32 = 0x037;
 pub const SMSG_CHAR_ENUM: u16 = 0x03B;
 pub const CMSG_PLAYER_LOGIN: u32 = 0x03D;
 pub const SMSG_LOGIN_SETTIMESPEED: u16 = 0x042;
+/// The empty handler: the stock client never sends it (Astra F04; MiscHandler.cpp:485).
 pub const CMSG_PLAYER_LOGOUT: u32 = 0x04A;
+/// The real logout request -> HandleLogoutRequestOpcode (MiscHandler.cpp:425).
+pub const CMSG_LOGOUT_REQUEST: u32 = 0x04B;
+/// World-session auth success code (SharedDefines.h:3586); not 0 (Astra F01).
+pub const AUTH_OK: u8 = 0x0C;
 pub const SMSG_UPDATE_OBJECT: u16 = 0x0A9;
 pub const MSG_MOVE_HEARTBEAT: u32 = 0x0EE;
 pub const SMSG_BINDPOINTUPDATE: u16 = 0x155;

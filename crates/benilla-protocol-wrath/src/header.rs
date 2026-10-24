@@ -11,13 +11,18 @@ pub struct ClientHeader {
 }
 
 impl ClientHeader {
-    pub fn new(opcode: u32, payload_len: usize) -> Self {
-        Self { opcode, payload_len }
+    /// Fails above the server's acceptance window: the size field counts payload + 4 and the
+    /// server rejects anything outside 4..10240 (`WorldSocket.h:60`), so payloads cap at 10235.
+    pub fn new(opcode: u32, payload_len: usize) -> Option<Self> {
+        if payload_len + 4 >= 10240 {
+            return None;
+        }
+        Some(Self { opcode, payload_len })
     }
 
     /// The wire size field: payload length plus the four size bytes of the u32 opcode slot.
     pub fn size_field(&self) -> u16 {
-        (self.payload_len as u16).checked_add(4).expect("client payload within 10235")
+        (self.payload_len + 4) as u16
     }
 
     /// Encode to the six encrypted-order bytes: size big-endian, opcode little-endian.
@@ -80,11 +85,11 @@ mod tests {
 
     #[test]
     fn client_header_round_trips_and_validates_sizes() {
-        let header = ClientHeader::new(0x1DC, 4); // CMSG_PING with a u32 payload
+        let header = ClientHeader::new(0x1DC, 4).unwrap(); // CMSG_PING with a u32 payload
         assert_eq!(header.size_field(), 8);
         assert_eq!(ClientHeader::decode(&header.encode()), Some(header));
-        assert!(ClientHeader::decode(&ClientHeader::new(1, 0).encode()).is_some(), "size 4 is legal");
-        assert!(ClientHeader::decode(&ClientHeader::new(1, 10240).encode()).is_none(), "size 10244 is out of range");
+        assert!(ClientHeader::decode(&ClientHeader::new(1, 0).unwrap().encode()).is_some(), "size 4 is legal");
+        assert!(ClientHeader::new(1, 10240).is_none(), "payload 10240 exceeds the client window");
     }
 
     #[test]

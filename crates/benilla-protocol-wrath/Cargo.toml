@@ -13,3 +13,4 @@ anyhow = "1"
 benilla-srp = { path = "../benilla-srp" }
 hmac = "0.12"
 sha1.workspace = true
+thiserror = "2"

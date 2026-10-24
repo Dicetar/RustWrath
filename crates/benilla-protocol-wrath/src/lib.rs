@@ -25,6 +25,7 @@ mod header;
 pub mod auth;
 pub mod logon;
 pub mod opcode;
+pub mod world;
 
 pub use crypt::AuthCrypt;
 pub use digest::auth_session_digest;
