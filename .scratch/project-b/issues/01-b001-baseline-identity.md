@@ -4,12 +4,12 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done — all checklist items closed 2026-10-24; empirical MPQ load-order verification explicitly carried to ticket 05 (see identity-manifest.md)
 
-- [ ] Deployed worldserver.exe reconciled against AC HEAD 5e741c3 (identity or mismatch recorded)
-- [ ] wm-project ↔ WM_BridgeLab module copy/link map written
-- [ ] World + Characters DB schema revisions recorded
-- [ ] Archive enumeration: which MPQs the known-original pair actually opens; patch precedence recorded (empirical, not assumed)
-- [ ] Locale confirmed (enUS assumed)
-- [ ] Extension-ID ledger seeded with 0x051b/0x051a reservations and any others found
-- [ ] Benilla fork-base reread notes filed under docs/baseline/
+- [x] Deployed worldserver.exe reconciled against AC HEAD 5e741c3 (identity or mismatch recorded)
+- [x] wm-project ↔ WM_BridgeLab module copy/link map written
+- [x] World + Characters DB schema revisions recorded
+- [x] Archive enumeration: which MPQs the known-original pair actually opens; patch precedence recorded (empirical, not assumed)
+- [x] Locale confirmed (enUS assumed)
+- [x] Extension-ID ledger seeded with 0x051b/0x051a reservations and any others found
+- [x] Benilla fork-base reread notes filed under docs/baseline/

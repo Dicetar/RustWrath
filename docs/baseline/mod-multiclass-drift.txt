@@ -1,0 +1,17 @@
+# mod-multiclass drift appendix (wm-project owner vs BridgeLab deployment copy)
+Generated 2026-10-24, full diff -rq, build/test artifacts filtered
+
+Files /d/WOW/wm-project/native_modules/mod-multiclass/README.md and /d/WOW/WM_BridgeLab/src/modules/mod-multiclass/README.md differ
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/characters: 008_spellmaking.sql
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/characters: 009_spellmaking_advanced.sql
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/characters: 010_spellmaking_design_management.sql
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/characters: 011_spellforge_v3.sql
+Files /d/WOW/wm-project/native_modules/mod-multiclass/sql/world/001_massacre_loot.sql and /d/WOW/WM_BridgeLab/src/modules/mod-multiclass/sql/world/001_massacre_loot.sql differ
+Files /d/WOW/wm-project/native_modules/mod-multiclass/sql/world/003_massacre_training.sql and /d/WOW/WM_BridgeLab/src/modules/mod-multiclass/sql/world/003_massacre_training.sql differ
+Files /d/WOW/wm-project/native_modules/mod-multiclass/sql/world/004_elite_training.sql and /d/WOW/WM_BridgeLab/src/modules/mod-multiclass/sql/world/004_elite_training.sql differ
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/world: 006_item_icons.sql
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/world: 007_spellmaking_bindings.sql
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/world: 008_spellmaker.sql
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/world: 009_spellmaking_advanced.sql
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/world: 010_spellmaking_tree.sql
+Only in /d/WOW/wm-project/native_modules/mod-multiclass/sql/world: 011_spellforge_v3.sql
