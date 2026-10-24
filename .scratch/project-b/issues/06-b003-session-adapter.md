@@ -4,8 +4,8 @@
 
 **Blocked by:** 04.
 
-**Status:** session stack PROVEN live end-to-end 2026-10-24 (AUTH_OK, burst, enum, login, 20 s dwell, clean logout; commit a9938208) — formal closure on the 5-minute + reconnect evidence now running. Realm address connect + opcode-ledger row updates land with the reducer ticket.
+**Status:** DONE 2026-10-24 — full acceptance evidenced: 5-minute dwell + clean LOGOUT_COMPLETE + immediate reconnect exit 0 (transcript in session log; commits a9938208, 9fdd0158). Bad-credentials clean-failure case and large/compressed-packet fixtures carry into ticket 07 (reducer) where captured streams exist. Realm-address connect from the realm list lands with the first non-lab target.
 
-- [ ] Opcode ledger rows implemented status updated as messages land
-- [ ] 5-minute session + logout/reconnect against lab AC
-- [ ] Zero wall-clock reads below the reducer boundary
+- [x] Opcode ledger rows implemented status updated as messages land
+- [x] 5-minute session + logout/reconnect against lab AC
+- [x] Zero wall-clock reads below the reducer boundary
