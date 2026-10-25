@@ -1,0 +1,76 @@
+# Project B architecture traceability baseline
+
+Last updated: 2026-10-26, Europe/Moscow. Review anchor: `df8c7527`. Engine pin: Bevy 0.18.1. Baseline authorized by the owner: approved completion plan, existing contracts/issues and current source, in place of missing GDD/studio scaffolding.
+
+This is a first traceability baseline, not an exhaustive stock-client feature inventory. It covers 17 queue requirements, 17 mandatory release families and three experimental platform families from `D:/WOW/PROJECT_B_COMPLETION_PLAN.md`. These 37 anchors overlap intentionally: a vertical proof can exercise several release families. They must not be summed into a product-completion percentage.
+
+At review start there were zero formal GDDs, zero ADRs and no TR registry in the expected directories. Formal existing-ADR coverage is GAP for all 37 anchors. Existing prose contracts and actual code still provide architectural evidence; “no ADR” does not mean “no implementation.” ADR-0001 was authored afterward as Proposed and is not counted as accepted or independently reviewed coverage. No registry was created or altered.
+
+## Matrix
+
+Legend: Partial = component source exists, not accepted behavior; Broken = a concrete source contradiction was found; Unknown = this review did not establish the implementation/acceptance; Gap = required artifact absent. All runtime acceptance below remains unestablished in this review.
+
+| Anchor | Approved requirement | Existing issue / story link | Source evidence | Implementation assessment | Existing ADR coverage |
+|---|---|---|---|---|---|
+| C01 | Real world session reaches native receiver | [16](../../.scratch/project-b/issues/16-real-session-to-receiver.md) | wm-native publisher; wm_native receiver/store | Partial; live receiver acceptance pending | GAP |
+| C02 | WM consumes native state with fallback | [17](../../.scratch/project-b/issues/17-wm-consumes-native-state.md) | service runtime, context loader and fallback | Partial; production context proof pending | GAP |
+| C03 | Exhaustive full replacement inventory | [18](../../.scratch/project-b/issues/18-stock-replacement-inventory.md) | Approved family list; this preliminary matrix | Gap; exhaustive behavior enumeration not complete | GAP |
+| C04 | Manifest-selected route terrain | [19](../../.scratch/project-b/issues/19-profile-route-in-application.md) | profile source and chain; route pins | Partial; rendered acceptance pending | GAP |
+| C05 | Render and animate WotLK actor | [20](../../.scratch/project-b/issues/20-wotlk-actor-rendered.md) | M2 v264, external SKIN and display chain | Partial; visual/corpus proof pending | GAP |
+| C06 | Route water and collision | [21](../../.scratch/project-b/issues/21-route-water-and-collision.md) | MH2O and world asset paths | Partial; structures/navigation route proof pending | GAP |
+| C07 | Render live replicated entities | [22](../../.scratch/project-b/issues/22-live-entities-rendered.md) | WorldDigest → ECS/GuidIndex/ObjectStore | Partial; visible connected lifecycle pending | GAP |
+| C08 | Move/jump and reconcile | [23](../../.scratch/project-b/issues/23-local-movement-and-correction.md) | Player controller → wrath_stream_movement | Broken flag translation, R01 | GAP |
+| C09 | Travel, communicate and reconnect | [24](../../.scratch/project-b/issues/24-route-travel-and-reconnect.md) | Parked character selection; movement path | Partial; route, communication and recovery proof pending | GAP |
+| C10 | Baseline attack and real spell | [25](../../.scratch/project-b/issues/25-ordinary-combat-slice.md) | Command tap and gameplay codec | Partial; R01/R03/R07 and connected outcome proof | GAP |
+| C11 | Quest, loot, reward persistence | [26](../../.scratch/project-b/issues/26-quest-loot-reward.md) | Quest codec, item/container and inventory projection | Broken item query alignment, R02; persistence pending | GAP |
+| C12 | Death/recovery and refusals | [27](../../.scratch/project-b/issues/27-death-and-recovery.md) | Existing donor owners; Wrath scope lifecycle | Unknown complete Wrath path | GAP |
+| C13 | WM typed action with override | [28](../../.scratch/project-b/issues/28-wm-typed-player-action.md) | Existing WM action owners and native observation source | Unknown complete client action/result path | GAP |
+| C14 | Immutable typed Spellwright publication | [29](../../.scratch/project-b/issues/29-typed-live-graph-publication.md) | Publication contracts/plan; full implementation not audited here | Unknown at current runtime/source integration identity | GAP |
+| C15 | Live A/B selection and rollback | [30](../../.scratch/project-b/issues/30-live-selection-and-rollback.md) | Declared live-rule contracts; no current proof inspected | Unknown; active-instance pinning/rollback evidence required | GAP |
+| C16 | Client asset/Lua reload and rollback | [31](../../.scratch/project-b/issues/31-client-live-content-reload.md) | Candidate-first profile reload; existing UI owners | Partial; coherent consumer adoption/rollback not established | GAP |
+| C17 | WM publishes client content revision | [32](../../.scratch/project-b/issues/32-wm-client-content-publication.md) | Assigned publication/receiver seams | Unknown complete versioned apply/result | GAP |
+| Release account | Startup/account/character workflows | Issue 18; behavior children pending | Auto boot plus parked enumeration/pick | Partial; create/delete/customization/error matrix open | GAP |
+| Release world | Identity, visibility, phases and appearance | Issue 18; issues 22/24 cover a subset | Pure reducer, field knowledge, generations | Partial; broad instance/phase/content coverage open | GAP |
+| Release assets | Required rendering/audio/format corpus | Issue 18; issues 19–21 cover a subset | Profile, M2/SKIN, ADT/MH2O and renderer source | Partial; complete corpus and behavior acceptance open | GAP |
+| Release movement | Walk/fall/swim/fly/transport/forced motion | Issue 18; issues 23/24 cover a subset | Shared controller and Wrath wire adapter | Partial with concrete R01 defect | GAP |
+| Release combat | All required class/resource/combat state | Issue 18; issue 25 covers a subset | Spell/attack codecs and existing spell owners | Partial; auras/cooldowns/class semantics remain | GAP |
+| Release pets | Companion control/ownership/persistence | Issue 18; behavior children pending | No complete Wrath pet path established by this review | Unknown | GAP |
+| Release economy | Inventory/equipment/bank/services/trade/mail/auction | Issue 18; issue 26 covers a subset | Item/container ECS and shortened bank projection | Partial with R02/R06; broad service paths open | GAP |
+| Release progression | Talents/glyphs/dual spec/skills/reputation | Issue 18; behavior children pending | Catalog support and donor UI owners | Partial; catalog parsing is not progression behavior | GAP |
+| Release professions | Learn/gather/craft/material/refusal workflows | Issue 18; behavior children pending | Skill/focus/mechanic catalogs, donor trade-skill owners | Partial; authoritative Wrath behavior not established | GAP |
+| Release interaction | Quest variants, objects, loot rules and services | Issue 18; issue 26 covers a subset | Gossip/quest/loot codec, narrowed object templates | Partial; variant/service/object semantics open | GAP |
+| Release social | Chat/friends/guild/party/raid/loot distribution | Issue 18; issue 24 covers a subset | Channel catalogs and existing donor handlers | Unknown full Wrath behavior coverage | GAP |
+| Release instances | Dungeon/raid/LFG/BG/arena lifecycle | Issue 18; behavior children pending | Generic scope/transfer foundation only in this audit | Unknown complete workflows | GAP |
+| Release expansion | Runes/vehicles/phasing/achievements/calendar | Issue 18; behavior children pending | No full feature-chain audit here | Unknown | GAP |
+| Release UI | Stock 3.3.5 UI/API/events/security/addons | Issue 18; early UI-host slice | Addon interface 11200, donor identity/API shapes | Incompatible donor contract found, R05 | GAP |
+| Release controls | Bindings/macros/options/action bars/local state | Issue 18; behavior children pending | Existing persistence and action-button owners | Partial; Wrath reconnect/reload behavior pending | GAP |
+| Release extensions | Exact required WM/addon builds | Issue 18; C13–C17 cover parts | Declared WM addon target list | Unknown exact build/workflow coverage | GAP |
+| Release operations | Bounded queues/install/update/recovery/performance | Issue 18; operational children pending | Lifecycle ownership, profile rollback seam, queue source | Partial; R03/R04, packaging/performance evidence missing | GAP |
+| Platform combat | Negotiated server-authoritative experimental combat | Completion plan section 9 E | Offline model and existing server extension concepts | Model/source only; runtime choice/proof open | GAP |
+| Platform building | Functional persistent building with collision/navigation | Completion plan section 9 B | Existing spawn owners/dynamic GO collision references | Conditional capability; navigation/lifecycle proof open | GAP |
+| Platform generation | Generated spaces through authoritative owners | Completion plan section 9 G | Isolated procgen-v2 data generator | Data only; durable codec/consumer/geometry decisions open | GAP |
+
+## Decision and test linkage
+
+Proposed ADR-0001 addresses the boundary underlying C07–C13 and the release world/movement/combat/economy/progression/UI/controls/operations families. It does not implement those requirements or cover all C14–C17 transaction decisions. Independent review and explicit acceptance remain required. A Proposed ADR is not a satisfied implementation dependency.
+
+Current local issues are the project's story/acceptance sources, not `production/epics` stories. Inline test modules exist in protocol gameplay, Wrath application, reducer and procgen files; donor UI gates exist under `benilla-app/src/ui_script`. This review did not establish a complete requirement-to-test mapping and did not run tests. File existence is never labeled a passing test. The earlier OC reports predate later source revisions and include exclusions/failures.
+
+The next inventory pass must link independently assessable behaviors to exact source/decision/issue/test-case/evidence identities and classify normal, invalid, transfer, reconnect and persistence scenarios. No test files/cases may be created or run without an applicable explicit grant. Preserve existing issue IDs and any later registered TR IDs; do not duplicate issue 18 as a separate unrelated tracker.
+
+## Required next decisions and dependencies
+
+1. Lossless Wrath owner/UI boundary (ADR-0001, Proposed).
+2. Critical-command admission, movement coalescing, reply backlog and scope-barrier policy.
+3. Mode-aware stock UI/addon API/event contract and migration of narrowed item/combat owners.
+4. Content revision staging/adoption/rollback across archive, catalog, GPU and UI consumers.
+5. Durable generated request/artifact import and existing-owner publication contract.
+6. Still-open owner decisions: restart boundary, experimental combat runtime, building navigation and runtime geometry.
+
+There is no accepted ADR graph to topologically sort yet. This list is a recommended implementation dependency order derived from the approved plan and source findings, not a claim that nonexistent ADR dependencies have been accepted. No cross-ADR conflict could be proven with zero existing ADRs; the important conflicts here are implementation versus approved requirements and stale contract descriptions.
+
+## Known uncovered surfaces
+
+This matrix has not enumerated every opcode, API/global/event/argument, format variant, installed addon build, class/spec, instance mechanic or operational workload. Exact addon builds and live character/database state remain unresolved. These are open inventory inputs, not exclusions from release. No full-chain-complete or project-completion percentage is supplied.
+
+See [the source review](architecture-review-2026-10-26.md) for prioritized findings and evidence limits, and [the Proposed ADR](adr-0001-wrath-compatibility-boundary.md) for the recommended boundary.
