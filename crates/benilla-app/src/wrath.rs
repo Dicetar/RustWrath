@@ -915,8 +915,10 @@ fn vanilla_target_mask(mask: u32) -> u16 {
 }
 
 /// Map a typed 3.3.5 reply onto the established 1.12 event seam. Fields with no 1.12 equivalent
-/// are left empty; nothing is invented from local state.
-fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
+/// are left empty; nothing is invented from local state. `self_guid` gates the edges the 1.12
+/// seam only ever has for the player (channel timers), because 12340 broadcasts them for every
+/// nearby caster.
+fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionEvent> {
     match event {
         WrathGameplayEvent::AttackStart { attacker, victim } => {
             vec![SessionEvent::AttackStart { attacker, victim }]
@@ -1070,6 +1072,43 @@ fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
         }],
         WrathGameplayEvent::SpellDelayed { caster, delay_ms } => {
             vec![SessionEvent::SpellDelayed { caster, delay_ms }]
+        }
+        WrathGameplayEvent::SpellCooldowns { caster, cooldowns } => {
+            vec![SessionEvent::SpellCooldowns { caster, cooldowns }]
+        }
+        WrathGameplayEvent::ItemCooldown { item_guid, spell_id } => {
+            vec![SessionEvent::ItemCooldown { item_guid, spell_id }]
+        }
+        WrathGameplayEvent::CooldownEvent { spell_id, caster } => {
+            vec![SessionEvent::CooldownEvent { spell_id, caster }]
+        }
+        WrathGameplayEvent::ClearCooldown { spell_id, caster } => {
+            vec![SessionEvent::ClearCooldown { spell_id, caster }]
+        }
+        WrathGameplayEvent::ChannelStart {
+            caster,
+            spell_id,
+            duration_ms,
+        } => {
+            // 12340 broadcasts the channel; the 1.12 start edge is the player's own cast bar.
+            if caster == self_guid {
+                vec![SessionEvent::ChannelStart {
+                    spell_id,
+                    duration_ms,
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+        WrathGameplayEvent::ChannelUpdate {
+            caster,
+            remaining_ms,
+        } => {
+            if caster == self_guid {
+                vec![SessionEvent::ChannelUpdate { remaining_ms }]
+            } else {
+                Vec::new()
+            }
         }
         WrathGameplayEvent::LogoutResponse { reason, instant } => {
             vec![SessionEvent::LogoutResponse { reason, instant }]
@@ -2876,7 +2915,7 @@ pub fn run_session_with_cancel(
                             });
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
-                                    for event in translate_gameplay(event) {
+                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
                                     }
@@ -2894,7 +2933,7 @@ pub fn run_session_with_cancel(
                         Ok(event) => {
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
-                                    for event in translate_gameplay(event) {
+                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
                                     }

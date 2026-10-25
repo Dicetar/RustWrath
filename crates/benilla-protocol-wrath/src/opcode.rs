@@ -82,6 +82,19 @@ pub const SMSG_CAST_FAILED: u16 = 0x130;
 pub const SMSG_SPELL_START: u16 = 0x131;
 pub const SMSG_SPELL_GO: u16 = 0x132;
 pub const SMSG_SPELL_FAILURE: u16 = 0x133;
+/// Server-pushed cooldowns: raw caster, a 12340-only flags byte, then `(spell, ms)` pairs
+/// (`Unit::BuildCooldownPacket`, `Unit.cpp:17017-17036`).
+pub const SMSG_SPELL_COOLDOWN: u16 = 0x134;
+/// `(u32 spell, u64 caster)` (`Player.cpp:11052-11055`).
+pub const SMSG_COOLDOWN_EVENT: u16 = 0x135;
+/// `(u32 spell, u64 caster)` (`Player.cpp:14778-14781`).
+pub const SMSG_CLEAR_COOLDOWN: u16 = 0x1DE;
+/// `(u64 item, u32 spell)` (`Player.cpp:11787-11790`).
+pub const SMSG_ITEM_COOLDOWN: u16 = 0x0B0;
+/// Packed caster, u32 spell, u32 duration (`Spell.cpp:5158-5177`).
+pub const MSG_CHANNEL_START: u16 = 0x139;
+/// Packed caster, u32 time left (`Spell.cpp:5143-5156`).
+pub const MSG_CHANNEL_UPDATE: u16 = 0x13A;
 /// The 1.12 seam's observed-interruption edge (`Spell.cpp:5126-5141` sends it with 0x133).
 pub const SMSG_SPELL_FAILED_OTHER: u16 = 0x2A6;
 /// Cast pushback: packed caster + u32 milliseconds (`Spell.cpp:7824-7828`).

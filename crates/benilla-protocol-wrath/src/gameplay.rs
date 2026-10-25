@@ -478,6 +478,24 @@ pub enum ServerEvent {
         ammo_display_id: Option<u32>,
         item_caster: Option<u64>,
     },
+    /// `SMSG_SPELL_COOLDOWN`: `(spell_id, cooldown_ms)` pairs after the caster and 12340's flag
+    /// byte. 0 ms means the spell's own DBC recovery.
+    SpellCooldowns {
+        caster: u64,
+        cooldowns: Vec<(u32, u32)>,
+    },
+    ItemCooldown { item_guid: u64, spell_id: u32 },
+    CooldownEvent { spell_id: u32, caster: u64 },
+    ClearCooldown { spell_id: u32, caster: u64 },
+    /// `MSG_CHANNEL_START`: 12340 broadcasts the caster's guid, which the self-only 1.12 event
+    /// does not carry.
+    ChannelStart {
+        caster: u64,
+        spell_id: u32,
+        duration_ms: u32,
+    },
+    /// `MSG_CHANNEL_UPDATE`: as above; 0 ms is over.
+    ChannelUpdate { caster: u64, remaining_ms: u32 },
     /// `SMSG_SPELL_DELAYED`: pushback on a cast in flight.
     SpellDelayed { caster: u64, delay_ms: u32 },
     SpellFailure { caster: u64, spell_id: u32 },
@@ -642,6 +660,16 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         // seam has one observed-interruption edge, so only the 1.12-named one is translated.
         SMSG_SPELL_FAILED_OTHER => read_spell_failure(body),
         SMSG_SPELL_DELAYED => read_spell_delayed(body),
+        SMSG_SPELL_COOLDOWN => read_spell_cooldowns(body),
+        SMSG_COOLDOWN_EVENT => read_cooldown_event(body).map(|(spell_id, caster)| {
+            ServerEvent::CooldownEvent { spell_id, caster }
+        }),
+        SMSG_CLEAR_COOLDOWN => read_cooldown_event(body).map(|(spell_id, caster)| {
+            ServerEvent::ClearCooldown { spell_id, caster }
+        }),
+        SMSG_ITEM_COOLDOWN => read_item_cooldown(body),
+        MSG_CHANNEL_START => read_channel_start(body),
+        MSG_CHANNEL_UPDATE => read_channel_update(body),
         SMSG_LOGOUT_RESPONSE => read_logout_response(body),
         SMSG_LOGOUT_COMPLETE => Ok(ServerEvent::LoggedOut),
         SMSG_LOGOUT_CANCEL_ACK => Ok(ServerEvent::LogoutCancelled),
@@ -1333,6 +1361,62 @@ fn read_spell_delayed(b: &[u8]) -> Result<ServerEvent> {
     let caster = r.packed_guid()?;
     let delay_ms = r.u32()?;
     Ok(ServerEvent::SpellDelayed { caster, delay_ms })
+}
+
+/// `SMSG_SPELL_COOLDOWN` (`Unit.cpp:17017-17036`): raw caster, a `SPELL_COOLDOWN_FLAG_*` byte
+/// with no 1.12 counterpart, then `(spell, ms)` pairs to the end.
+fn read_spell_cooldowns(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let caster = r.u64()?;
+    let _flags = r.u8()?;
+    let mut cooldowns = Vec::new();
+    while r.remaining() >= 8 {
+        let spell_id = r.u32()?;
+        let cooldown_ms = r.u32()?;
+        cooldowns.push((spell_id, cooldown_ms));
+    }
+    Ok(ServerEvent::SpellCooldowns { caster, cooldowns })
+}
+
+/// `SMSG_ITEM_COOLDOWN` (`Player.cpp:11787-11790`): raw item guid and spell id.
+fn read_item_cooldown(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let item_guid = r.u64()?;
+    let spell_id = r.u32()?;
+    Ok(ServerEvent::ItemCooldown { item_guid, spell_id })
+}
+
+/// `SMSG_COOLDOWN_EVENT` / `SMSG_CLEAR_COOLDOWN` (`Player.cpp:11052-11055`,
+/// `Player.cpp:14778-14781`): the spell id first, then the raw caster guid.
+fn read_cooldown_event(b: &[u8]) -> Result<(u32, u64)> {
+    let mut r = Reader::new(b);
+    let spell_id = r.u32()?;
+    let caster = r.u64()?;
+    Ok((spell_id, caster))
+}
+
+/// `MSG_CHANNEL_START` (`Spell.cpp:5158-5177`): packed caster, spell id, duration.
+fn read_channel_start(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let caster = r.packed_guid()?;
+    let spell_id = r.u32()?;
+    let duration_ms = r.u32()?;
+    Ok(ServerEvent::ChannelStart {
+        caster,
+        spell_id,
+        duration_ms,
+    })
+}
+
+/// `MSG_CHANNEL_UPDATE` (`Spell.cpp:5143-5156`): packed caster, time left.
+fn read_channel_update(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let caster = r.packed_guid()?;
+    let remaining_ms = r.u32()?;
+    Ok(ServerEvent::ChannelUpdate {
+        caster,
+        remaining_ms,
+    })
 }
 
 fn read_spell_go(b: &[u8]) -> Result<ServerEvent> {
