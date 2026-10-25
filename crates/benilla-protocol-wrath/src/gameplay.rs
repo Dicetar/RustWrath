@@ -1240,11 +1240,13 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     let _scaling_distribution = r.u32()?;
     let _scaling_value = r.u32()?;
 
-    let mut damages = Vec::with_capacity(5);
+    // 12340's `MAX_ITEM_PROTO_DAMAGES` is 2 since 3.1.0 (`ItemTemplate.h:613`); the 1.12
+    // template carries five, so reading five here would desync every following field.
+    let mut damages = Vec::with_capacity(2);
     let mut dmg_min = 0.0;
     let mut dmg_max = 0.0;
     let mut dmg_type = 0;
-    for i in 0..5 {
+    for i in 0..2 {
         let min = r.f32()?;
         let max = r.f32()?;
         let school = r.u32()?;
