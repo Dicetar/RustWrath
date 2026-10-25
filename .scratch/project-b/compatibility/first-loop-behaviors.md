@@ -93,7 +93,7 @@ Paths below are relative to `D:/Projects/project-b-client` unless an absolute se
 | I11 | Access complete required inventory/bank attributes | Partial with deliberate loss, S6/R06 | N all 28 bank slots/seven bank bags and required enchant/suffix data addressable; R unsupported state remains a blocker | T owner/generation fidelity; P no hidden/truncated persistent state |
 | I12 | Request completion/reward panel | Partial, S2/S5/S8 | N held head enables actual server completion; R missing head/ineligible choice does not fabricate panel success | T pending panel/cast scope invalidated; P quest state from server |
 | I13 | Choose reward 0 and receive item 6076 | Partial with R02/R03 dependencies | N one authoritative pants object, slot and completed quest; R repeated/invalid reward request gives no duplicate reward | T admitted/result correlation; P retained reward/consumed head/completed quest |
-| I14 | Abandon/fail/restore quest state | Partial/unknown; QuestLogRemove has no complete Wrath tap path established | N abandon/timer failure and log removal; R invalid quest/stale slot refused | T quest owner not replaced by UI cache; P final log/credit remains authoritative |
+| I14 | Abandon/fail/restore quest state | Partial/unknown; complete abandon/timer-failure/log-removal source chain was not established in this inventory | N abandon/timer failure and log removal; R invalid quest/stale slot refused | T quest owner not replaced by UI cache; P final log/credit remains authoritative |
 
 ## Death and recovery — issue 27
 
