@@ -37,12 +37,16 @@ impl ProcRng {
         min + self.next_f32() * (max - min)
     }
 
-    /// Uniform integer in `[min, max]` (inclusive).
+    /// Integer in `[min, max]` (inclusive), or `min` when the bounds are reversed.
+    /// Modulo reduction preserves the stream contract; non-power-of-two spans have modulo bias.
     pub fn int(&mut self, min: i64, max: i64) -> i64 {
         if max <= min {
             return min;
         }
-        min + (self.next_u64() % ((max - min + 1) as u64)) as i64
+        // The inclusive i64 domain has 2^64 values; neither its span nor every offset fits i64.
+        let span = (i128::from(max) - i128::from(min) + 1) as u128;
+        let offset = u128::from(self.next_u64()) % span;
+        (i128::from(min) + offset as i128) as i64
     }
 
     /// A uniform element of `slice` (slice must be non-empty).
