@@ -1,11 +1,13 @@
 //! Encounter population: enemy packs and NPCs placed over a dungeon's rooms or a terrain
 //! field's biomes. Constraints that make a layout *playable* rather than merely random:
 //! the entrance is enemy-free, the boss room holds exactly one boss (with adds), treasure
-//! rooms are guarded, and levels progress with distance from the entrance.
+//! rooms are guarded, and levels progress with distance from the entrance up to level 80.
+//! A single-room dungeon stays a safe entrance with no boss.
 
 use crate::dungeon::{Dungeon, RoomArchetype};
 use crate::rng::ProcRng;
 use crate::terrain::{Biome, TerrainField};
+use crate::ValidationError;
 
 /// The fork domain for the spawn stream.
 pub const DOMAIN: u64 = 0x5350_4157_4e53_0004; // "SPAWNS"
@@ -73,6 +75,27 @@ impl Default for SpawnSpec {
     }
 }
 
+impl SpawnSpec {
+    /// Bound levels, pack sizes and total potential output before populating either domain.
+    pub fn validate(&self, rooms: usize, terrain_samples: u64) -> Result<(), ValidationError> {
+        if !(1..=80).contains(&self.base_level) {
+            return Err(ValidationError::new("spawns.base_level", "expected 1..=80"));
+        }
+        if self.packs_per_room > 16 || self.terrain_density_per_100 > 100 {
+            return Err(ValidationError::new("spawns.density", "at most 16 packs per room and 100 attempts per 100 samples"));
+        }
+        let dungeon_limit = (rooms as u64).checked_mul(u64::from(self.packs_per_room) * 4 + 3);
+        let terrain_limit = terrain_samples.checked_mul(u64::from(self.terrain_density_per_100))
+            .map(|n| n / 100);
+        if dungeon_limit.zip(terrain_limit).and_then(|(a, b)| a.checked_add(b))
+            .is_none_or(|n| n > 100_000)
+        {
+            return Err(ValidationError::new("spawns.count", "maximum 100000 potential actors"));
+        }
+        Ok(())
+    }
+}
+
 /// Weighted enemy pack archetypes: flavor families a consumer maps to creature templates.
 const PACKS: [(&str, u32); 6] = [
     ("patrol", 30),
@@ -85,20 +108,47 @@ const PACKS: [(&str, u32); 6] = [
 
 /// Populate the dungeon (rooms + graph distance) and the terrain field (biome scatter).
 /// Both outputs share one encounter-id space so consumers can treat them uniformly.
-pub fn populate(rng: &mut ProcRng, spec: &SpawnSpec, dungeon: &Dungeon, terrain: &TerrainField) -> Vec<Spawn> {
+pub fn populate(rng: &mut ProcRng, spec: &SpawnSpec, dungeon: &Dungeon, terrain: &TerrainField) -> Result<Vec<Spawn>, ValidationError> {
+    let samples = u64::from(terrain.width) * u64::from(terrain.height);
+    spec.validate(dungeon.rooms.len(), samples)?;
+    if samples == 0 || samples > 1_048_576
+        || terrain.biomes.len() as u64 != samples
+        || terrain.heights.len() as u64 != samples
+        || terrain.moisture.len() as u64 != samples
+    {
+        return Err(ValidationError::new("spawns.terrain", "expected a nonempty generated terrain field"));
+    }
+    if dungeon.rooms.is_empty() || dungeon.rooms.len() > 1024
+        || dungeon.entrance >= dungeon.rooms.len() || dungeon.boss_room >= dungeon.rooms.len()
+        || dungeon.width == 0 || dungeon.height == 0
+        || dungeon.width > 2048 || dungeon.height > 2048
+        || u64::from(dungeon.width) * u64::from(dungeon.height) > 1_048_576
+        || u64::from(dungeon.width) * u64::from(dungeon.height) != dungeon.tiles.len() as u64
+        || dungeon.rooms.iter().enumerate().any(|(i, room)| {
+            room.id != i || room.w == 0 || room.h == 0
+                || u64::from(room.x) + u64::from(room.w) > u64::from(dungeon.width)
+                || u64::from(room.y) + u64::from(room.h) > u64::from(dungeon.height)
+                || room.connections.iter().any(|&next| next >= dungeon.rooms.len())
+        })
+    {
+        return Err(ValidationError::new("spawns.dungeon", "expected bounded rooms and a valid generated room graph"));
+    }
     let mut spawns = Vec::new();
     let mut next_encounter = 0u32;
 
     // --- dungeon rooms, by archetype and depth ---
     // Graph distances from the entrance (same BFS as generation).
     let distances = bfs(dungeon.rooms.len(), dungeon.entrance, &dungeon.rooms);
+    if distances.contains(&u32::MAX) {
+        return Err(ValidationError::new("spawns.dungeon", "room graph must be reachable from the entrance"));
+    }
     for room in &dungeon.rooms {
         let tiles = dungeon.room_tiles(room);
         if tiles.is_empty() {
             continue;
         }
-        let depth = distances[room.id].min(u32::MAX - 4);
-        let level = spec.base_level + depth;
+        let depth = distances[room.id];
+        let level = (spec.base_level + depth).min(80);
         match room.archetype {
             RoomArchetype::Entrance => {
                 // Safe by contract: one vendor, one quest giver, never an enemy.
@@ -112,12 +162,12 @@ pub fn populate(rng: &mut ProcRng, spec: &SpawnSpec, dungeon: &Dungeon, terrain:
             RoomArchetype::Boss => {
                 // Exactly one boss at the room's center, two adds at random tiles.
                 let (bx, by) = room.center();
-                spawns.push(Spawn { domain: SpawnDomain::Dungeon, position: (bx, by), kind: SpawnKind::Enemy { archetype: "boss", boss: true }, level: level + 3, encounter: next_encounter });
+                spawns.push(Spawn { domain: SpawnDomain::Dungeon, position: (bx, by), kind: SpawnKind::Enemy { archetype: "boss", boss: true }, level: (level + 3).min(80), encounter: next_encounter });
                 next_encounter += 1;
                 let encounter = next_encounter;
                 for _ in 0..2 {
                     let (x, y) = *rng.choose(&tiles);
-                    spawns.push(Spawn { domain: SpawnDomain::Dungeon, position: (x, y), kind: SpawnKind::Enemy { archetype: "guard", boss: false }, level: level + 1, encounter });
+                    spawns.push(Spawn { domain: SpawnDomain::Dungeon, position: (x, y), kind: SpawnKind::Enemy { archetype: "guard", boss: false }, level: (level + 1).min(80), encounter });
                 }
                 next_encounter += 1;
             }
@@ -125,11 +175,15 @@ pub fn populate(rng: &mut ProcRng, spec: &SpawnSpec, dungeon: &Dungeon, terrain:
                 // Guarded: one pack, one level hotter than the norm.
                 let (x, y) = *rng.choose(&tiles);
                 let pack = *rng.weighted(&PACKS);
-                spawns.push(Spawn { domain: SpawnDomain::Dungeon, position: (x, y), kind: SpawnKind::Enemy { archetype: pack, boss: false }, level: level + 1, encounter: next_encounter });
+                spawns.push(Spawn { domain: SpawnDomain::Dungeon, position: (x, y), kind: SpawnKind::Enemy { archetype: pack, boss: false }, level: (level + 1).min(80), encounter: next_encounter });
                 next_encounter += 1;
             }
             RoomArchetype::Normal => {
-                let pack_count = rng.int(1, spec.packs_per_room as i64) as u32;
+                let pack_count = if spec.packs_per_room == 0 {
+                    0
+                } else {
+                    rng.int(1, spec.packs_per_room as i64) as u32
+                };
                 for _ in 0..pack_count {
                     let pack = *rng.weighted(&PACKS);
                     let encounter = next_encounter;
@@ -147,7 +201,7 @@ pub fn populate(rng: &mut ProcRng, spec: &SpawnSpec, dungeon: &Dungeon, terrain:
     // --- terrain scatter: biome-appropriate families, level by distance from the field's
     //     center (the assumed player start), skipping ocean tiles ---
     let center = (terrain.width as i64 / 2, terrain.height as i64 / 2);
-    let attempts = (terrain.width * terrain.height / 100 * spec.terrain_density_per_100).max(1);
+    let attempts = samples * u64::from(spec.terrain_density_per_100) / 100;
     for _ in 0..attempts {
         let x = rng.int(0, terrain.width as i64 - 1) as u32;
         let y = rng.int(0, terrain.height as i64 - 1) as u32;
@@ -169,18 +223,19 @@ pub fn populate(rng: &mut ProcRng, spec: &SpawnSpec, dungeon: &Dungeon, terrain:
         next_encounter += 1;
     }
 
-    spawns
+    Ok(spawns)
 }
 
 fn bfs(count: usize, from: usize, rooms: &[crate::dungeon::Room]) -> Vec<u32> {
     let mut dist = vec![u32::MAX; count];
     dist[from] = 0;
-    let mut frontier = vec![from];
-    while let Some(current) = frontier.pop() {
+    // FIFO discovery gives shortest distances even when loop corridors are present.
+    let mut frontier = std::collections::VecDeque::from([from]);
+    while let Some(current) = frontier.pop_front() {
         for &next in &rooms[current].connections {
             if dist[next] == u32::MAX {
                 dist[next] = dist[current] + 1;
-                frontier.push(next);
+                frontier.push_back(next);
             }
         }
     }
@@ -195,9 +250,9 @@ mod tests {
 
     fn world(seed: u64) -> (Dungeon, TerrainField, Vec<Spawn>) {
         let rng = ProcRng::new(seed);
-        let dungeon = gen_dungeon(&mut rng.fork(crate::dungeon::DOMAIN), &DungeonSpec::default());
-        let terrain = gen_terrain(&mut rng.fork(crate::terrain::DOMAIN), &TerrainSpec::default());
-        let spawns = populate(&mut rng.fork(DOMAIN), &SpawnSpec::default(), &dungeon, &terrain);
+        let dungeon = gen_dungeon(&mut rng.fork(crate::dungeon::DOMAIN), &DungeonSpec::default()).expect("valid dungeon");
+        let terrain = gen_terrain(&mut rng.fork(crate::terrain::DOMAIN), &TerrainSpec::default()).expect("valid terrain");
+        let spawns = populate(&mut rng.fork(DOMAIN), &SpawnSpec::default(), &dungeon, &terrain).expect("valid population");
         (dungeon, terrain, spawns)
     }
 

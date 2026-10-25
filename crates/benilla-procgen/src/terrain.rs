@@ -3,6 +3,7 @@
 //! rendering, tiling into ADT chunks, and server collision/navigation are consumer seams.
 
 use crate::rng::ProcRng;
+use crate::ValidationError;
 
 /// The fork domain for the terrain stream.
 pub const DOMAIN: u64 = 0x5445_5252_4149_0003; // "TERRAIN"
@@ -55,6 +56,27 @@ impl Default for TerrainSpec {
     }
 }
 
+impl TerrainSpec {
+    /// Reject invalid samples, non-finite noise parameters and excessive generation work.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.width == 0 || self.height == 0 || self.width > 2048 || self.height > 2048
+            || u64::from(self.width) * u64::from(self.height) > 1_048_576
+        {
+            return Err(ValidationError::new("terrain.dimensions", "nonzero sides up to 2048, at most 1048576 samples"));
+        }
+        if !self.frequency.is_finite() || !(0.0..=1024.0).contains(&self.frequency) {
+            return Err(ValidationError::new("terrain.frequency", "expected finite 0..=1024"));
+        }
+        if !(1..=16).contains(&self.octaves) {
+            return Err(ValidationError::new("terrain.octaves", "expected 1..=16 octaves"));
+        }
+        if !self.sea_level.is_finite() || !(0.0..=1.0).contains(&self.sea_level) {
+            return Err(ValidationError::new("terrain.sea_level", "expected finite 0..=1"));
+        }
+        Ok(())
+    }
+}
+
 /// The generated field. Heights and moisture are normalized to `[0, 1]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerrainField {
@@ -78,7 +100,8 @@ impl TerrainField {
 /// Generate the field from `(rng, spec)`. The rng contributes only a seed offset per layer;
 /// all spatial structure is a pure function of lattice coordinates and that offset, so the
 /// field is stable and tile-friendly.
-pub fn generate(rng: &mut ProcRng, spec: &TerrainSpec) -> TerrainField {
+pub fn generate(rng: &mut ProcRng, spec: &TerrainSpec) -> Result<TerrainField, ValidationError> {
+    spec.validate()?;
     let height_seed = rng.next_u64();
     let moisture_seed = rng.next_u64();
     let n = (spec.width * spec.height) as usize;
@@ -126,7 +149,7 @@ pub fn generate(rng: &mut ProcRng, spec: &TerrainSpec) -> TerrainField {
         .map(|(&h, &m)| classify(h, m, spec.sea_level))
         .collect();
 
-    TerrainField { width: spec.width, height: spec.height, heights, moisture, biomes }
+    Ok(TerrainField { width: spec.width, height: spec.height, heights, moisture, biomes })
 }
 
 fn classify(h: f32, m: f32, sea_level: f32) -> Biome {
@@ -190,8 +213,8 @@ fn smooth(t: f32) -> f32 {
 /// Hash one lattice point into `[0, 1)` — SplitMix-style mixing of the coordinates.
 fn lattice(x: i32, y: i32, seed: u64) -> f32 {
     let mut z = seed
-        ^ (x as u64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        ^ (y as u64 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        ^ (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     let mixed = z ^ (z >> 31);
@@ -206,12 +229,15 @@ mod tests {
     fn same_spec_same_field() {
         let mut a = ProcRng::new(5);
         let mut b = ProcRng::new(5);
-        assert_eq!(generate(&mut a, &TerrainSpec::default()), generate(&mut b, &TerrainSpec::default()));
+        assert_eq!(
+            generate(&mut a, &TerrainSpec::default()).expect("valid terrain"),
+            generate(&mut b, &TerrainSpec::default()).expect("valid terrain"),
+        );
     }
 
     #[test]
     fn normalized_and_biomed() {
-        let field = generate(&mut ProcRng::new(9), &TerrainSpec::default());
+        let field = generate(&mut ProcRng::new(9), &TerrainSpec::default()).expect("valid terrain");
         assert!(field.heights.iter().all(|h| (0.0..=1.0001).contains(h)));
         assert!(field.moisture.iter().all(|m| (0.0..=1.0001).contains(m)));
         assert_eq!(field.biomes.len(), field.heights.len());
@@ -219,7 +245,7 @@ mod tests {
 
     #[test]
     fn a_large_field_has_biome_variety() {
-        let field = generate(&mut ProcRng::new(13), &TerrainSpec { width: 256, height: 256, ..Default::default() });
+        let field = generate(&mut ProcRng::new(13), &TerrainSpec { width: 256, height: 256, ..Default::default() }).expect("valid terrain");
         let mut kinds = std::collections::HashSet::new();
         for biome in &field.biomes {
             kinds.insert(*biome);

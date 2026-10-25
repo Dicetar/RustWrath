@@ -7,6 +7,7 @@
 //! from `(seed, stream position)` alone.
 
 use crate::rng::ProcRng;
+use crate::ValidationError;
 
 /// The fork domain for the item stream (see [`ProcRng::fork`]).
 pub const DOMAIN: u64 = 0x4954_454d_0000_0001; // "ITEM"
@@ -225,6 +226,18 @@ impl Default for ItemRequest {
     }
 }
 
+impl ItemRequest {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.count > 10_000 {
+            return Err(ValidationError::new("items.count", "maximum 10000 items per batch"));
+        }
+        if !(1..=80).contains(&self.level) {
+            return Err(ValidationError::new("items.level", "expected 1..=80"));
+        }
+        Ok(())
+    }
+}
+
 /// One finished item: identity, name, composition, and final stats.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneratedItem {
@@ -234,7 +247,7 @@ pub struct GeneratedItem {
     pub kind: ItemKind,
     pub rarity: Rarity,
     pub level: u32,
-    /// (stat, value) — primary stat first, then affixes. Sorted by stat id for hashing.
+    /// (stat, value) — primary stat first, then accumulated part bonuses and affixes.
     pub stats: Vec<(StatId, f32)>,
     /// The parts that composed it, in slot order (provenance).
     pub parts: Vec<&'static Part>,
@@ -246,11 +259,12 @@ const KINDS: [ItemKind; 8] = [
 ];
 
 /// Roll `request.count` items from one stream.
-pub fn generate_items(rng: &mut ProcRng, request: &ItemRequest) -> Vec<GeneratedItem> {
+pub fn generate_items(rng: &mut ProcRng, request: &ItemRequest) -> Result<Vec<GeneratedItem>, ValidationError> {
+    request.validate()?;
     let catalog = default_catalog();
-    (0..request.count)
+    Ok((0..request.count)
         .map(|i| generate_one(rng, catalog, request.level, i as u64))
-        .collect()
+        .collect())
 }
 
 fn generate_one(rng: &mut ProcRng, catalog: &'static [(PartSlot, &'static [Part])], level: u32, index: u64) -> GeneratedItem {
@@ -357,7 +371,10 @@ mod tests {
         let mut a = ProcRng::new(99);
         let mut b = ProcRng::new(99);
         let req = ItemRequest { count: 8, level: 20 };
-        assert_eq!(generate_items(&mut a, &req), generate_items(&mut b, &req));
+        assert_eq!(
+            generate_items(&mut a, &req).expect("valid item request"),
+            generate_items(&mut b, &req).expect("valid item request"),
+        );
     }
 
     #[test]
@@ -385,7 +402,7 @@ mod tests {
     fn legendary_rolls_exist() {
         // With 500 rolls at the 4% legendary weight, absence would be a bug in the weights.
         let mut rng = ProcRng::new(321);
-        let items = generate_items(&mut rng, &ItemRequest { count: 500, level: 30 });
+        let items = generate_items(&mut rng, &ItemRequest { count: 500, level: 30 }).expect("valid item request");
         assert!(items.iter().any(|i| i.rarity == Rarity::Legendary));
         assert!(items.iter().all(|i| i.rarity.affix_count() <= 4));
     }
