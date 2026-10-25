@@ -75,6 +75,10 @@ pub const SMSG_CAST_FAILED: u16 = 0x130;
 pub const SMSG_SPELL_START: u16 = 0x131;
 pub const SMSG_SPELL_GO: u16 = 0x132;
 pub const SMSG_SPELL_FAILURE: u16 = 0x133;
+/// The 1.12 seam's observed-interruption edge (`Spell.cpp:5126-5141` sends it with 0x133).
+pub const SMSG_SPELL_FAILED_OTHER: u16 = 0x2A6;
+/// Cast pushback: packed caster + u32 milliseconds (`Spell.cpp:7824-7828`).
+pub const SMSG_SPELL_DELAYED: u16 = 0x1E2;
 pub const SMSG_ACTION_BUTTONS: u16 = 0x129;
 pub const SMSG_INITIAL_SPELLS: u16 = 0x12A;
 pub const SMSG_LEARNED_SPELL: u16 = 0x12B;

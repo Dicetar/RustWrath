@@ -882,8 +882,38 @@ fn quest_entries(quests: Vec<gameplay::QuestListEntry>) -> Vec<QuestListEntry> {
         .collect()
 }
 
-/// Map a typed 3.3.5 reply onto the established 1.12 event seam. Fields with no 3.3.5 equivalent
-/// are genuinely empty; nothing is invented from local state.
+/// 12340 cast flags onto the 1.12 seam's u16 (`Spell.h:55-84` vs vmangos `Spell.h:53-64`). No
+/// bit is truncated blindly: the pending flag (0x1) shares vanilla's hidden-combat-log bit, the
+/// projectile flag (0x20) shares vanilla's ammo bit, and a launch carries vanilla's GO marker
+/// (0x100). Every other 3.3.5 bit has no 1.12 meaning at this seam and is not copied; the wrath
+/// event keeps the full u32.
+fn vanilla_cast_flags(wrath: u32, launch: bool) -> u16 {
+    let mut flags = 0u16;
+    if wrath & 0x0000_0001 != 0 {
+        flags |= 0x0001;
+    }
+    if wrath & 0x0000_0020 != 0 {
+        flags |= 0x0020;
+    }
+    if launch {
+        flags |= 0x0100;
+    }
+    flags
+}
+
+/// The 1.12 target mask from 12340's: the low 16 bits share their meanings, except the mini-pet
+/// bit (0x10000), which has no 1.12 bit and maps onto UNIT so the missile launcher and the
+/// open-lock gate still see a target.
+fn vanilla_target_mask(mask: u32) -> u16 {
+    let mut vanilla = (mask & 0xffff) as u16;
+    if mask & 0x0001_0000 != 0 {
+        vanilla |= 0x0002;
+    }
+    vanilla
+}
+
+/// Map a typed 3.3.5 reply onto the established 1.12 event seam. Fields with no 1.12 equivalent
+/// are left empty; nothing is invented from local state.
 fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
     match event {
         WrathGameplayEvent::AttackStart { attacker, victim } => {
@@ -928,14 +958,19 @@ fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
             spell_id,
             cast_flags,
             cast_time_ms,
+            targets,
+            ammo_display_id,
         } => vec![SessionEvent::SpellStart {
             caster,
             spell_id,
-            cast_flags: cast_flags as u16,
+            cast_flags: vanilla_cast_flags(cast_flags, false),
             cast_time_ms: cast_time_ms.max(0) as u32,
-            target: None,
-            ammo_display_id: None,
+            target: targets.unit,
+            ammo_display_id,
         }],
+        WrathGameplayEvent::SpellDelayed { caster, delay_ms } => {
+            vec![SessionEvent::SpellDelayed { caster, delay_ms }]
+        }
         WrathGameplayEvent::LogoutResponse { reason, instant } => {
             vec![SessionEvent::LogoutResponse { reason, instant }]
         }
@@ -950,13 +985,14 @@ fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
             cast_flags,
             hits,
             misses,
-            target_mask,
+            targets,
+            ammo_display_id,
             item_caster,
         } => vec![SessionEvent::SpellGo {
             caster,
             spell_id,
-            cast_flags: cast_flags as u16,
-            target: hits.first().copied(),
+            cast_flags: vanilla_cast_flags(cast_flags, true),
+            target: targets.unit,
             hits,
             misses: misses
                 .into_iter()
@@ -968,11 +1004,11 @@ fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
                     }
                 })
                 .collect(),
-            go_target: None,
-            target_mask,
-            source: None,
-            dest: None,
-            ammo_display_id: None,
+            go_target: targets.gameobject,
+            target_mask: vanilla_target_mask(targets.mask),
+            source: targets.source,
+            dest: targets.dest,
+            ammo_display_id,
             item_caster,
             unit_caster: caster,
         }],

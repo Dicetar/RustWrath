@@ -430,6 +430,24 @@ pub struct ItemPush {
     pub count: u32,
 }
 
+/// One `SpellCastTargets` as 12340 writes it (`SpellCastTargets::Write`, `Spell.cpp:180-215`).
+/// The object guid is one of UNIT/MINIPET, GAMEOBJECT or a corpse by the mask's priority; the
+/// item guid is the spell's target item (not the cast item in the packet's first slot). A
+/// source/dest point is transport-relative when its transport guid is non-zero and then has no
+/// world position: the point is not fabricated, the transport is kept for diagnosis.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SpellTargets {
+    pub mask: u32,
+    pub unit: Option<u64>,
+    pub gameobject: Option<u64>,
+    pub item: Option<u64>,
+    pub source: Option<[f32; 3]>,
+    pub source_transport: Option<u64>,
+    pub dest: Option<[f32; 3]>,
+    pub dest_transport: Option<u64>,
+    pub string: Option<String>,
+}
+
 /// One typed reply this slice understands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerEvent {
@@ -441,16 +459,27 @@ pub enum ServerEvent {
         reason: cast_failure::Reason,
         arg: Option<u32>,
     },
-    SpellStart { caster: u64, spell_id: u32, cast_flags: u32, cast_time_ms: i32 },
+    SpellStart {
+        caster: u64,
+        spell_id: u32,
+        cast_flags: u32,
+        /// 12340's `m_timer`: the time left when the packet was written, not the full cast time.
+        cast_time_ms: i32,
+        targets: SpellTargets,
+        ammo_display_id: Option<u32>,
+    },
     SpellGo {
         caster: u64,
         spell_id: u32,
         cast_flags: u32,
         hits: Vec<u64>,
         misses: Vec<(u64, u8, u8)>,
-        target_mask: u16,
+        targets: SpellTargets,
+        ammo_display_id: Option<u32>,
         item_caster: Option<u64>,
     },
+    /// `SMSG_SPELL_DELAYED`: pushback on a cast in flight.
+    SpellDelayed { caster: u64, delay_ms: u32 },
     SpellFailure { caster: u64, spell_id: u32 },
     LogoutResponse { reason: u32, instant: bool },
     LoggedOut,
@@ -542,7 +571,10 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_CAST_FAILED => read_cast_failed(body),
         SMSG_SPELL_START => read_spell_start(body),
         SMSG_SPELL_GO => read_spell_go(body),
-        SMSG_SPELL_FAILURE => read_spell_failure(body),
+        // 12340 `Spell::SendInterrupted` broadcasts both 0x133 and 0x2A6 with the same body; the
+        // seam has one observed-interruption edge, so only the 1.12-named one is translated.
+        SMSG_SPELL_FAILED_OTHER => read_spell_failure(body),
+        SMSG_SPELL_DELAYED => read_spell_delayed(body),
         SMSG_LOGOUT_RESPONSE => read_logout_response(body),
         SMSG_LOGOUT_COMPLETE => Ok(ServerEvent::LoggedOut),
         SMSG_LOGOUT_CANCEL_ACK => Ok(ServerEvent::LogoutCancelled),
@@ -603,11 +635,13 @@ fn read_cast_failed(b: &[u8]) -> Result<ServerEvent> {
     let _cast_count = r.u8()?;
     let spell_id = r.u32()?;
     let wrath_reason = r.u8()?;
-    // `Spell::WriteCastResultInfo` writes argument words for these reasons only. A 1.12 reader
-    // uses the first word for the arms it has; the second word (equipped-item mask) is not part
-    // of the 1.12 event and is deliberately left in the packet.
+    // `WriteCastResultInfo` (`Spell.cpp:4521-4632`): one argument word for these reasons.
+    // NEED_MORE_ITEMS and MIN_SKILL write two and only the first is the seam's `arg`; the
+    // equipped-item reasons write a class word then a subclass mask, and only the class is the
+    // seam's. The totem reasons write zero, one or two words by the spell's DBC totals, which
+    // the wire cannot tell, so no word is read for them. Any unread word stays in the packet.
     let arg = match wrath_reason {
-        29..=31 | 54 | 100 | 101 | 102 | 131 | 147 => {
+        29..=31 | 54 | 55 | 100 | 101 | 102 | 129 | 147 | 150 | 172 => {
             (r.remaining() >= 4).then(|| r.u32()).transpose()?
         }
         _ => None,
@@ -619,6 +653,155 @@ fn read_cast_failed(b: &[u8]) -> Result<ServerEvent> {
     })
 }
 
+// --- Spell targets (`SpellCastTargets::Write`, `Spell.cpp:180-215`) ----------------------------
+
+const TARGET_FLAG_UNIT: u32 = 0x0000_0002;
+const TARGET_FLAG_ITEM: u32 = 0x0000_0010;
+const TARGET_FLAG_SOURCE_LOCATION: u32 = 0x0000_0020;
+const TARGET_FLAG_DEST_LOCATION: u32 = 0x0000_0040;
+const TARGET_FLAG_CORPSE_ENEMY: u32 = 0x0000_0200;
+const TARGET_FLAG_GAMEOBJECT: u32 = 0x0000_0800;
+const TARGET_FLAG_TRADE_ITEM: u32 = 0x0000_1000;
+const TARGET_FLAG_STRING: u32 = 0x0000_2000;
+const TARGET_FLAG_CORPSE_ALLY: u32 = 0x0000_8000;
+const TARGET_FLAG_UNIT_MINIPET: u32 = 0x0001_0000;
+
+/// The flags whose writer test writes the one packed object guid (`SpellCastTargets::Write`).
+const TARGET_FLAG_OBJECT_GUID: u32 = TARGET_FLAG_UNIT
+    | TARGET_FLAG_UNIT_MINIPET
+    | TARGET_FLAG_GAMEOBJECT
+    | TARGET_FLAG_CORPSE_ENEMY
+    | TARGET_FLAG_CORPSE_ALLY;
+
+fn read_spell_targets(r: &mut Reader<'_>) -> Result<SpellTargets> {
+    let mask = r.u32()?;
+    let mut unit = None;
+    let mut gameobject = None;
+    if mask & TARGET_FLAG_OBJECT_GUID != 0 {
+        let guid = r.packed_guid()?;
+        if mask & (TARGET_FLAG_UNIT | TARGET_FLAG_UNIT_MINIPET) != 0 {
+            unit = Some(guid);
+        } else if mask & TARGET_FLAG_GAMEOBJECT != 0 {
+            gameobject = Some(guid);
+        }
+    }
+    let item = if mask & (TARGET_FLAG_ITEM | TARGET_FLAG_TRADE_ITEM) != 0 {
+        Some(r.packed_guid()?)
+    } else {
+        None
+    };
+    let (source, source_transport) =
+        read_spell_target_point(r, mask & TARGET_FLAG_SOURCE_LOCATION != 0)?;
+    let (dest, dest_transport) = read_spell_target_point(r, mask & TARGET_FLAG_DEST_LOCATION != 0)?;
+    let string = if mask & TARGET_FLAG_STRING != 0 {
+        Some(r.cstring()?)
+    } else {
+        None
+    };
+    Ok(SpellTargets {
+        mask,
+        unit,
+        gameobject,
+        item,
+        source,
+        source_transport,
+        dest,
+        dest_transport,
+        string,
+    })
+}
+
+/// A source/dest block: the packed transport guid then three floats, read as a world point only
+/// when the transport is empty (`SpellCastTargets::Write`).
+fn read_spell_target_point(
+    r: &mut Reader<'_>,
+    present: bool,
+) -> Result<(Option<[f32; 3]>, Option<u64>)> {
+    if !present {
+        return Ok((None, None));
+    }
+    let transport = r.packed_guid()?;
+    let x = r.f32()?;
+    let y = r.f32()?;
+    let z = r.f32()?;
+    if transport == 0 {
+        Ok((Some([x, y, z]), None))
+    } else {
+        Ok((None, Some(transport)))
+    }
+}
+
+// --- Cast-flag payloads (`SpellCastFlags`, Spell.h:55-84) --------------------------------------
+
+const CAST_FLAG_PROJECTILE: u32 = 0x0000_0020;
+const CAST_FLAG_POWER_LEFT_SELF: u32 = 0x0000_0800;
+const CAST_FLAG_ADJUST_MISSILE: u32 = 0x0002_0000;
+const CAST_FLAG_VISUAL_CHAIN: u32 = 0x0008_0000;
+const CAST_FLAG_RUNE_LIST: u32 = 0x0020_0000;
+const CAST_FLAG_UNKNOWN_23: u32 = 0x0040_0000;
+
+/// `WriteAmmoToPacket` (`Spell.cpp:4880-4960`): display id then inventory type, the latter dropped.
+fn read_ammo(r: &mut Reader<'_>) -> Result<u32> {
+    let display_id = r.u32()?;
+    let _inventory_type = r.u32()?;
+    Ok(display_id)
+}
+
+/// START's payloads in `SendSpellStart`'s order (`Spell.cpp:4731-4741`): power, ammo, the
+/// UNKNOWN_23 pair. The power is consumed, not carried: the 1.12 start event has no power.
+fn read_spell_start_payloads(r: &mut Reader<'_>, cast_flags: u32) -> Result<Option<u32>> {
+    if cast_flags & CAST_FLAG_POWER_LEFT_SELF != 0 {
+        let _power = r.u32()?;
+    }
+    let ammo = if cast_flags & CAST_FLAG_PROJECTILE != 0 {
+        Some(read_ammo(r)?)
+    } else {
+        None
+    };
+    if cast_flags & CAST_FLAG_UNKNOWN_23 != 0 {
+        let _a = r.u32()?;
+        let _b = r.u32()?;
+    }
+    Ok(ammo)
+}
+
+/// GO's payloads in `SendSpellGo`'s order (`Spell.cpp:4832-4875`): power, the rune list, the
+/// missile adjustment, ammo, the visual-chain pair and the destination marker. The rune writer
+/// emits one byte per rune usable before the cast and cooling after, which the two masks count.
+fn read_spell_go_payloads(
+    r: &mut Reader<'_>,
+    cast_flags: u32,
+    target_mask: u32,
+) -> Result<Option<u32>> {
+    if cast_flags & CAST_FLAG_POWER_LEFT_SELF != 0 {
+        let _power = r.u32()?;
+    }
+    if cast_flags & CAST_FLAG_RUNE_LIST != 0 {
+        let initial = r.u8()?;
+        let after = r.u8()?;
+        for _ in 0..(initial & !after).count_ones() {
+            let _rune_cooldown = r.u8()?;
+        }
+    }
+    if cast_flags & CAST_FLAG_ADJUST_MISSILE != 0 {
+        let _elevation = r.f32()?;
+        let _delay = r.u32()?;
+    }
+    let ammo = if cast_flags & CAST_FLAG_PROJECTILE != 0 {
+        Some(read_ammo(r)?)
+    } else {
+        None
+    };
+    if cast_flags & CAST_FLAG_VISUAL_CHAIN != 0 {
+        let _a = r.u32()?;
+        let _b = r.u32()?;
+    }
+    if target_mask & TARGET_FLAG_DEST_LOCATION != 0 {
+        let _dest_marker = r.u8()?;
+    }
+    Ok(ammo)
+}
+
 fn read_spell_start(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let _item = r.packed_guid()?;
@@ -627,7 +810,16 @@ fn read_spell_start(b: &[u8]) -> Result<ServerEvent> {
     let spell_id = r.u32()?;
     let cast_flags = r.u32()?;
     let cast_time_ms = r.i32()?;
-    Ok(ServerEvent::SpellStart { caster, spell_id, cast_flags, cast_time_ms })
+    let targets = read_spell_targets(&mut r)?;
+    let ammo_display_id = read_spell_start_payloads(&mut r, cast_flags)?;
+    Ok(ServerEvent::SpellStart {
+        caster,
+        spell_id,
+        cast_flags,
+        cast_time_ms,
+        targets,
+        ammo_display_id,
+    })
 }
 
 fn read_name(b: &[u8]) -> Result<ServerEvent> {
@@ -888,9 +1080,17 @@ fn read_spell_failure(b: &[u8]) -> Result<ServerEvent> {
     let _cast_count = r.u8()?;
     let spell_id = r.u32()?;
     let _reason = r.u8()?;
-    // 3.3.5 broadcasts this to every observer, self included; 1.12's matching event is
-    // `SMSG_SPELL_FAILED_OTHER`, which is caster-keyed and never a player `SMSG_CAST_RESULT`.
+    // 12340's `SendInterrupted` broadcasts this to every observer, self included (`Spell.cpp:
+    // 5126-5141`); 1.12's matching event is `SMSG_SPELL_FAILED_OTHER`, caster-keyed and never a
+    // player `SMSG_CAST_RESULT`.
     Ok(ServerEvent::SpellFailure { caster, spell_id })
+}
+
+fn read_spell_delayed(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let caster = r.packed_guid()?;
+    let delay_ms = r.u32()?;
+    Ok(ServerEvent::SpellDelayed { caster, delay_ms })
 }
 
 fn read_spell_go(b: &[u8]) -> Result<ServerEvent> {
@@ -914,15 +1114,17 @@ fn read_spell_go(b: &[u8]) -> Result<ServerEvent> {
         let reflect = if info == 11 { r.u8()? } else { 0 };
         misses.push((target, info, reflect));
     }
-    let target_mask = if r.remaining() >= 4 { r.u32()? as u16 } else { 0 };
+    let targets = read_spell_targets(&mut r)?;
+    let ammo_display_id = read_spell_go_payloads(&mut r, cast_flags, targets.mask)?;
     Ok(ServerEvent::SpellGo {
         caster,
         spell_id,
         cast_flags,
         hits,
         misses,
-        target_mask,
-        item_caster: (item_or_caster != 0 && item_or_caster != caster).then_some(item_or_caster),
+        targets,
+        ammo_display_id,
+        item_caster: (item_or_caster != caster).then_some(item_or_caster),
     })
 }
 
