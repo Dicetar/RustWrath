@@ -37,3 +37,18 @@ Execution checks described above are acceptance requirements, not authorization.
 Handoff: exact source identity and changed paths; externally visible behavior; evidence actually collected; unresolved acceptance; next dependent slice. Close only after acceptance is supported. See [the completion plan](D:/WOW/PROJECT_B_COMPLETION_PLAN.md) for the mandatory full stock-client replacement release gate.
 
 
+
+## Work package 01 update (2026-10-25)
+
+Phase A implemented: R1 knowledge-transition change detection, atomic two-word target knowledge,
+R2 real transfer lifecycle (`SMSG_TRANSFER_PENDING`/`SMSG_NEW_WORLD`/worldport-ack with a
+loading-phase discard window and `world_generation` scope), session `Phase` state machine,
+near-teleport standalone movement. Phase B published:
+[producer-proposal-r3-r4.md](../../docs/convergence/producer-proposal-r3-r4.md) (relayed to
+`D:/WOW/PROJECT_B_GLM_PHASE_B_PROPOSAL.md`). Phase C feed adapter:
+`benilla-app/src/wrath.rs` with the R5 scheduling contract (see issue 22).
+
+Still open on this ticket: receiver handshake/store acceptance with a real receiver run (requires
+starting WM-side processes — not authorized in this session), stale-rejection and
+disconnect-invalidation cases on the wire, and the R4 ack-channel proposal's implementation by
+OpenCode (see the Phase B proposal §4).

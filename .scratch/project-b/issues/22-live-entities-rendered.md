@@ -34,3 +34,28 @@ Execution checks described above are acceptance requirements, not authorization.
 Handoff: exact source identity and changed paths; externally visible behavior; evidence actually collected; unresolved acceptance; next dependent slice. Close only after acceptance is supported. See [the completion plan](D:/WOW/PROJECT_B_COMPLETION_PLAN.md) for the mandatory full stock-client replacement release gate.
 
 
+
+## Scheduling contract (Astra R5, implemented in `benilla-app/src/wrath.rs`)
+
+The Wrath session feed follows the established io-thread pattern and the existing
+`WorldStage` order (`benilla-world/src/schedule.rs`: Net → Input → Stream → Present):
+
+1. The session loop (logon → world → reduce → producer → `pump_once`) runs on its own IO thread
+   (`wrath::run_session`). The renderless driver's blocking `recv` loop stays on that thread and
+   never enters a Bevy `Update` system.
+2. It publishes latest-only self snapshots through `WrathLatest` (single slot) and bounded
+   lifecycle/phase events through `WrathEvents` (capacity 16, oldest dropped). A full slot never
+   blocks the packet loop.
+3. The Net-stage drain system (issue 22's remaining work) drains at most
+   `WRATH_DRAIN_LIMIT` (64) events per frame, applies world-scope invalidation **before** Input,
+   and updates the typed state Input/Stream/Present read. Same-frame teardown/loading follows the
+   existing `PendingTransfer` semantics.
+4. Local fixed-step prediction (issue 23), variable-rate rendering, and authoritative server
+   updates remain distinct; no fixed rate is imposed by this contract. Budgets to measure before
+   performance claims: network backlog, frame drain count, coalescing rate, retry age, input
+   latency.
+
+Remaining for this issue: the entity/display translation from typed snapshots into the existing
+`GuidIndex`/`Objects`/`FieldChanged` path (the 1.12 field layout differs from 3.3.5 — the
+translation is per-field, not a struct copy), and registration of `WrathNetPlugin` alongside or
+in place of `NetPlugin` by the app config owner.

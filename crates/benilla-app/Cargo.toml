@@ -52,6 +52,8 @@ crossbeam-channel = "0.5"
 benilla-assets = { path = "../benilla-assets", default-features = false }
 benilla-formats = { path = "../benilla-formats", default-features = false }
 benilla-protocol = { path = "../benilla-protocol" }
+benilla-protocol-wrath = { path = "../benilla-protocol-wrath" }
+benilla-wm-native = { path = "../benilla-wm-native" }
 benilla-world = { path = "../benilla-world", default-features = false }
 # The CVar diff persisted in `benilla-config/config.toml`.
 serde = { version = "1", features = ["derive"] }
