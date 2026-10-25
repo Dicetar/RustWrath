@@ -138,8 +138,10 @@ Hashes change when files change; use the commit IDs for provenance.
 - Cooldowns, aura deltas, action-button server updates, bag contents beyond the item slice, loot
   rolls, transfer/death/release and WMO/doodad route behavior remain open. Item object creation
   is addressed by `2026-10-25-oc-item-replication.md`.
-- Automatic reconnect after logout remains a separate task; the worker ends cleanly, the app
-  sees `LoggedOut` then `Disconnected { end: LoggedOut }`.
+- The worker still ends cleanly on logout and the app sees `LoggedOut` then
+  `Disconnected { end: LoggedOut }`; the follow-up
+  `2026-10-25-oc-session-lifecycle.md` adds retirement/admission guards and keeps connection-loss
+  recovery separate.
 - `WrathWorldView` has no explicit epoch tag on translated `SessionEvent`s; stale replies are
   bounded by the session lifecycle but not rejected per event.
 - No commit, stash, reset or merge of pre-existing bridge/assets/WM work was performed by this

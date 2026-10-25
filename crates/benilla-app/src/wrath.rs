@@ -21,6 +21,12 @@
 //! Entity translation into the existing `GuidIndex`/`ObjectFields` path is issue 22's remaining
 //! work and is deliberately **not** stubbed here: the feed exposes typed snapshots, the
 //! translation consumes them at the named stage.
+//!
+//! Lifecycle: a clean logout ends the worker, clears its world/reply scope, and lets the existing
+//! `LoggedOutMessage`/glue edge return to character selection. A replacement is admitted only
+//! after the old worker has joined and its terminal feed has been drained. Fresh-session
+//! admission after that clean stop has a small bounded retry budget; a lost connection does not
+//! enter that path, because connection-loss recovery is a separate policy.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -29,13 +35,14 @@ use benilla_world::schedule::WorldStage;
 use benilla_world::world_map::CurrentMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
 use benilla_protocol::{
     messages::ObjectType, EntityKind, MoveSpeeds, ObjectFields, SessionEvent,
 };
+use crate::client_state::ClientState;
 use benilla_protocol_wrath::cast_failure;
 use benilla_protocol_wrath::gameplay::{self, ServerEvent as WrathGameplayEvent};
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
@@ -67,6 +74,13 @@ pub const WRATH_DRAIN_LIMIT: usize = 64;
 /// The longest silent world-server window treated as healthy. A live server answers the 10 s ping
 /// even when gameplay is quiet; socket read timeouts and empty frame ticks are not responses.
 pub const SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Bounded fresh-session admission after a clean logout. Connection-loss recovery does not use
+/// this budget; it is a separate lifecycle policy.
+pub const WRATH_RESTART_ATTEMPTS: u32 = 2;
+/// Delay between bounded fresh-session admission attempts. The frame loop polls this; it never
+/// sleeps on the render thread.
+pub const WRATH_RESTART_DELAY: Duration = Duration::from_millis(750);
 
 /// Latest-only self snapshot slot: the IO thread overwrites, the Net stage reads and clears.
 pub type WrathLatest = Arc<Mutex<Option<WorldDigest>>>;
@@ -295,12 +309,32 @@ pub struct WorldDigest {
 pub struct WrathControl {
     pub config: Option<WrathSessionConfig>,
     worker: Option<std::thread::JoinHandle<()>>,
+    /// A worker already signalled to stop. No replacement is admitted until this joins.
+    retiring: Option<std::thread::JoinHandle<()>>,
     feed: Option<WrathFeed>,
     cancel: Arc<AtomicBool>,
     commands: Option<WrathOutbox>,
     /// Set when the worker has stopped, cleanly or not. The view is invalidated in the Net drain
     /// before Input, never in the PreUpdate join.
     ended: bool,
+    /// A clean logout may be followed by a fresh session when the existing glue enters the world
+    /// again. Loss does not set this, so recovery remains a separate policy.
+    restart_allowed: bool,
+    /// Fresh-session starts still allowed after a clean logout.
+    restart_attempts: u32,
+    /// Earliest next admission attempt, polled from the frame loop.
+    retry_at: Option<Instant>,
+    /// The old worker's terminal feed was drained and its scope cleared; a replacement may now
+    /// be admitted.
+    terminal_ready: bool,
+    /// A world entry was observed for the current worker. A later loss is recovery, not
+    /// admission, and must not consume the admission retry budget.
+    entered_world: bool,
+    /// The existing glue returned to character selection after the clean logout. A replacement
+    /// is admitted only after that visible stop, not merely because a terminal frame arrived.
+    left_world: bool,
+    /// AppExit or an explicit stop; no further starts.
+    shutdown: bool,
     /// Terminal failure from the last worker run. A clean end leaves this `None`.
     pub last_error: Option<String>,
     /// Replies for the established `SessionEvent` handlers, tagged by source scope and drained
@@ -316,16 +350,38 @@ impl WrathControl {
 
     fn start(&mut self) {
         let Some(config) = self.config.clone() else { return };
-        if self.running() || self.ended {
+        if self.shutdown || self.worker.is_some() || self.retiring.is_some() {
             return;
+        }
+        if self.ended {
+            if !self.restart_allowed || self.restart_attempts == 0 {
+                return;
+            }
+        }
+        if self.retry_at.is_some_and(|at| Instant::now() < at) {
+            return;
+        }
+
+        let restarting = self.ended;
+        if restarting {
+            self.restart_attempts -= 1;
         }
         let feed = WrathFeed::new();
         self.feed = Some(feed.clone());
         self.last_error = None;
         self.ended = false;
+        self.terminal_ready = false;
+        self.retry_at = None;
+        self.entered_world = false;
+        self.left_world = false;
         self.cancel = Arc::new(AtomicBool::new(false));
         let cancel = Arc::clone(&self.cancel);
-        let commands = self.commands.take();
+        let commands = self.commands.clone();
+        if let Some(commands) = commands.as_ref() {
+            if let Ok(mut queue) = commands.lock() {
+                queue.clear();
+            }
+        }
         let (events_out, events_in) = crossbeam_channel::unbounded();
         self.session_events = Some(events_in);
         let events_out = Some(events_out);
@@ -362,25 +418,46 @@ impl WrathControl {
         self.worker = Some(handle);
     }
 
+    /// Join a worker whose bounded stop has completed. A timed-out retirement stays in
+    /// `self.retiring`, blocking any replacement until it actually exits.
+    fn poll_retiring(&mut self) -> bool {
+        let Some(worker) = self.retiring.as_ref() else {
+            return true;
+        };
+        if !worker.is_finished() {
+            return false;
+        }
+        if let Some(worker) = self.retiring.take() {
+            let _ = worker.join();
+        }
+        true
+    }
+
     /// Bounded app-owned stop: signal the loop and join for a short grace period. A worker still
-    /// inside a blocking socket read is detached after the deadline rather than freezing shutdown.
+    /// inside a blocking socket read remains in `retiring`; no replacement can overlap it.
     pub fn stop(&mut self) {
+        self.shutdown = true;
+        self.restart_allowed = false;
+        self.retry_at = None;
         self.cancel.store(true, Ordering::SeqCst);
         if let Some(worker) = self.worker.take() {
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while !worker.is_finished() && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            if worker.is_finished() {
-                let _ = worker.join();
-            }
+            self.retiring = Some(worker);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !self.poll_retiring() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
         }
         self.ended = true;
+        self.terminal_ready = false;
         if let Some(feed) = self.feed.take() {
             if let Ok(mut slot) = feed.latest.lock() {
                 *slot = None;
             }
+            if let Ok(mut queue) = feed.events.lock() {
+                queue.clear();
+            }
         }
+        self.session_events = None;
     }
 
     fn take_digest(&mut self) -> Option<WorldDigest> {
@@ -411,6 +488,13 @@ impl WrathControl {
             }
         }
         out
+    }
+
+    fn session_events_empty(&self) -> bool {
+        match self.session_events.as_ref() {
+            Some(receiver) => receiver.is_empty(),
+            None => true,
+        }
     }
 }
 
@@ -478,10 +562,18 @@ impl Plugin for WrathNetPlugin {
         app.insert_resource(WrathControl {
             config: self.config.clone(),
             worker: None,
+            retiring: None,
             feed: None,
             cancel: Arc::new(AtomicBool::new(false)),
             commands: Some(Arc::clone(&commands)),
             ended: false,
+            restart_allowed: false,
+            restart_attempts: 0,
+            retry_at: None,
+            terminal_ready: true,
+            entered_world: false,
+            left_world: false,
+            shutdown: false,
             last_error: None,
             session_events: None,
         })
@@ -512,11 +604,20 @@ impl Plugin for WrathNetPlugin {
     }
 }
 
-/// Worker ownership: starts the session once; records the terminal edge without consuming the
-/// feed. The Net-stage drain still receives the worker's final `SessionEnded` this frame.
-fn wrath_session_ownership(mut control: ResMut<WrathControl>) {
-    if control.worker.is_none() && !control.ended && control.config.is_some() {
-        control.start();
+/// Worker ownership: admits a session only after the prior worker's terminal scope is drained;
+/// records the terminal edge without consuming the feed. The Net-stage drain still receives the
+/// worker's final `SessionEnded` this frame.
+fn wrath_session_ownership(
+    mut control: ResMut<WrathControl>,
+    state: Res<State<ClientState>>,
+    mut entered: MessageReader<EnteredWorldMessage>,
+) {
+    control.poll_retiring();
+    if entered.read().next().is_some() {
+        control.entered_world = true;
+    }
+    if *state.get() == ClientState::CharSelect {
+        control.left_world = true;
     }
     if control.worker.as_ref().is_some_and(|w| w.is_finished()) {
         if let Some(handle) = control.worker.take() {
@@ -524,7 +625,30 @@ fn wrath_session_ownership(mut control: ResMut<WrathControl>) {
                 control.last_error = Some("wrath session worker panicked".to_owned());
             }
         }
-        control.ended = true;
+        if !control.ended {
+            control.ended = true;
+            // The terminal feed and its reply queue are drained in Net; only then may a
+            // replacement be admitted. If Net already drained `SessionEnded`, leave its ready
+            // flag alone.
+            control.terminal_ready = false;
+        }
+    }
+    let retry_due = control.retry_at.is_some_and(|at| Instant::now() >= at);
+    let may_retry = control.restart_allowed && control.restart_attempts > 0 && retry_due;
+    if control.shutdown || (*state.get() != ClientState::InWorld && !may_retry) {
+        return;
+    }
+    let may_admit = !control.ended
+        || (control.restart_allowed
+            && control.restart_attempts > 0
+            && (control.left_world || retry_due));
+    if control.worker.is_none()
+        && control.retiring.is_none()
+        && control.terminal_ready
+        && control.session_events_empty()
+        && may_admit
+    {
+        control.start();
     }
 }
 
@@ -1247,6 +1371,11 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
             }
             WrathFeedEvent::SessionEnded(result) => {
                 control.ended = true;
+                control.terminal_ready = true;
+                // The entry message may still be in the Bevy message queue; the view already
+                // records that the player actually entered this world.
+                control.entered_world |= view.entered_world;
+                let clean = result.is_ok();
                 match result {
                     Ok(()) => info!("wrath session ended cleanly"),
                     Err(e) => {
@@ -1254,10 +1383,36 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
                         control.last_error = Some(e);
                     }
                 }
+                if clean {
+                    // Clean logout returns to character selection through the existing glue
+                    // edge. A fresh session may be admitted only after that stop is visible.
+                    control.restart_allowed = true;
+                    control.restart_attempts = WRATH_RESTART_ATTEMPTS;
+                    control.retry_at = None;
+                } else if control.restart_allowed
+                    && !control.entered_world
+                    && control.restart_attempts > 0
+                {
+                    // A fresh-session admission failed before any world entry: retry it on the
+                    // frame loop with a bounded budget. Once a world was entered, a loss is
+                    // connection-loss recovery, which is a separate policy.
+                    control.retry_at = Some(Instant::now() + WRATH_RESTART_DELAY);
+                } else {
+                    control.restart_allowed = false;
+                    control.retry_at = None;
+                }
+                control.entered_world = false;
                 view.entities.clear();
                 view.self_observation = None;
                 view.player_guid = 0;
                 view.entered_world = false;
+                view.gossip_menu = None;
+                view.session_epoch = 0;
+                view.world_generation = 0;
+                view.state_revision = 0;
+                view.map_id = 0;
+                view.next_cast_count = 0;
+                view.phase = None;
                 view.last_changes.world_transferred = true;
             }
         }
@@ -1270,6 +1425,13 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
         view.self_observation = None;
         view.player_guid = 0;
         view.entered_world = false;
+        view.gossip_menu = None;
+        view.session_epoch = 0;
+        view.world_generation = 0;
+        view.state_revision = 0;
+        view.map_id = 0;
+        view.next_cast_count = 0;
+        view.phase = None;
         view.last_changes.world_transferred = true;
         if let Some(feed) = control.feed.take() {
             if let Ok(mut slot) = feed.latest.lock() {
@@ -1280,15 +1442,25 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
     }
 
     let Some(digest) = control.take_digest() else { return };
-    if digest.world_generation < view.world_generation {
-        return; // stale world scope
-    }
-    if digest.world_generation != view.world_generation {
+    let new_session = digest.session_epoch != view.session_epoch;
+    if new_session {
+        // A replacement session restarts its epoch, world generation and revision counters.
+        // Adopt them as a new scope rather than comparing them with the retired session's
+        // monotonic values.
         view.entities.clear();
         view.last_changes.world_transferred = true;
-    }
-    if digest.state_revision < view.state_revision {
-        return; // stale revision within the current scope
+        view.state_revision = 0;
+    } else {
+        if digest.world_generation < view.world_generation {
+            return; // stale world scope
+        }
+        if digest.world_generation != view.world_generation {
+            view.entities.clear();
+            view.last_changes.world_transferred = true;
+        }
+        if digest.state_revision < view.state_revision {
+            return; // stale revision within the current scope
+        }
     }
     view.session_epoch = digest.session_epoch;
     view.world_generation = digest.world_generation;
@@ -1950,6 +2122,37 @@ fn entity_kind(type_id: u8) -> EntityKind {
     }
 }
 
+/// Owns the observation publisher for one worker. Every exit path, including an early socket
+/// error, signals retirement and waits only for the bounded publisher stop window; a replacement
+/// worker can then start without overlapping publication.
+struct PublisherOwner {
+    publisher: Option<benilla_wm_native::ObservationPublisher>,
+    retiring: Vec<benilla_wm_native::PublisherRetirement>,
+}
+
+impl PublisherOwner {
+    fn as_ref(&self) -> Option<&benilla_wm_native::ObservationPublisher> {
+        self.publisher.as_ref()
+    }
+
+    fn as_mut(&mut self) -> Option<&mut benilla_wm_native::ObservationPublisher> {
+        self.publisher.as_mut()
+    }
+
+    fn retire_all(&mut self) {
+        benilla_wm_native::retire_publisher(&mut self.publisher, &mut self.retiring);
+        for retirement in self.retiring.drain(..) {
+            let _ = retirement.wait_timeout(Duration::from_millis(200));
+        }
+    }
+}
+
+impl Drop for PublisherOwner {
+    fn drop(&mut self) {
+        self.retire_all();
+    }
+}
+
 /// The app-owned session loop. `cancel` is checked between bounded socket reads and before every
 /// packet step; a cancelled session exits as a clean `SessionEnded` without manufacturing packets.
 pub fn run_session_with_cancel(
@@ -1959,9 +2162,7 @@ pub fn run_session_with_cancel(
     commands: Option<WrathOutbox>,
     events_out: Option<Sender<WrathSessionEvent>>,
 ) -> anyhow::Result<()> {
-    use benilla_wm_native::{
-        pump_once, replace_publisher, retire_publisher, PublisherConfig, PublisherRetirement,
-    };
+    use benilla_wm_native::{pump_once, replace_publisher, PublisherConfig};
 
     let logon = benilla_protocol_wrath::logon::logon(&config.auth_addr, &config.account, &config.password)?;
     let realm = logon
@@ -1979,13 +2180,15 @@ pub fn run_session_with_cancel(
         }
         None => None,
     };
-    let mut publisher: Option<benilla_wm_native::ObservationPublisher> = match &publisher_config {
-        Some(config) => Some(benilla_wm_native::ObservationPublisher::spawn(
-            config.clone(),
-        )?),
-        None => None,
+    let mut publisher = PublisherOwner {
+        publisher: match &publisher_config {
+            Some(config) => Some(benilla_wm_native::ObservationPublisher::spawn(
+                config.clone(),
+            )?),
+            None => None,
+        },
+        retiring: Vec::new(),
     };
-    let mut retiring: Vec<PublisherRetirement> = Vec::new();
     let mut session = SessionState::new();
     session.start_session(1); // placeholder; re-started with the real GUID after the enum
     feed.push_event(WrathFeedEvent::Phase(session.phase()));
@@ -2154,10 +2357,7 @@ pub fn run_session_with_cancel(
     feed.publish_digest(build_digest(&session)); // initial state (character selection)
     while deadline.is_none_or(|deadline| std::time::Instant::now() < deadline) {
         if cancel.load(Ordering::SeqCst) {
-            retire_publisher(&mut publisher, &mut retiring);
-            for retirement in retiring.drain(..) {
-                let _ = retirement.wait_timeout(Duration::from_millis(200));
-            }
+            publisher.retire_all();
             return Ok(());
         }
         if let Some(commands) = commands.as_ref() {
@@ -2236,10 +2436,7 @@ pub fn run_session_with_cancel(
         if logged_out {
             session.finish_session();
             feed.push_event(WrathFeedEvent::Phase(session.phase()));
-            retire_publisher(&mut publisher, &mut retiring);
-            for retirement in retiring.drain(..) {
-                let _ = retirement.wait_timeout(Duration::from_millis(200));
-            }
+            publisher.retire_all();
             return Ok(());
         }
         if last_server_response.elapsed() >= SERVER_RESPONSE_TIMEOUT {
@@ -2256,10 +2453,7 @@ pub fn run_session_with_cancel(
                     let _ = publisher.publish_health(health);
                 }
             }
-            retire_publisher(&mut publisher, &mut retiring);
-            for retirement in retiring.drain(..) {
-                let _ = retirement.wait_timeout(Duration::from_millis(200));
-            }
+            publisher.retire_all();
             anyhow::bail!(
                 "world server made no response for {} s",
                 SERVER_RESPONSE_TIMEOUT.as_secs()
@@ -2270,8 +2464,8 @@ pub fn run_session_with_cancel(
             // the replacement after that worker stops, without blocking the packet loop.
             replace_publisher(
                 publisher_config.as_ref(),
-                &mut publisher,
-                &mut retiring,
+                &mut publisher.publisher,
+                &mut publisher.retiring,
             )?;
             feed.push_event(WrathFeedEvent::from_session(event));
         }
@@ -2312,7 +2506,11 @@ pub fn run_session_with_cancel(
                 benilla_wm_native::Error::Disconnected,
             ))) => {
                 // The publisher signalled shutdown: replace it under the shared lifecycle policy.
-                replace_publisher(publisher_config.as_ref(), &mut publisher, &mut retiring)?;
+                replace_publisher(
+                    publisher_config.as_ref(),
+                    &mut publisher.publisher,
+                    &mut publisher.retiring,
+                )?;
             }
             Some(Err(benilla_wm_native::PumpError::Publisher(e))) => {
                 feed.push_event(WrathFeedEvent::ExportSkipped(format!("publisher: {e}")));
@@ -2333,7 +2531,7 @@ pub fn run_session_with_cancel(
             Ok(p) if p.opcode == 0x04D => {
                 session.finish_session();
                 feed.push_event(WrathFeedEvent::Phase(session.phase()));
-                retire_publisher(&mut publisher, &mut retiring);
+                publisher.retire_all();
                 return Ok(());
             }
             Ok(_) => {}

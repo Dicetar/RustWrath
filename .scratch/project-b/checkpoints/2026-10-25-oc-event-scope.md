@@ -44,7 +44,8 @@ adopts it.
 
 - Automatic reconnect/restart is not implemented here. The worker still ends cleanly on logout,
   and `WrathControl` stays ended. Reconnect must add a deliberate start edge and clear the
-  event-scope state before accepting a new epoch.
+  event-scope state before accepting a new epoch; the follow-up
+  `2026-10-25-oc-session-lifecycle.md` records that lifecycle work.
 - No rendered/live acceptance was performed. The current source is UNKNOWN at compile/test time;
   the earlier build/test reports predate this slice and the final item/adapter state.
 - No item, quest, loot, movement or UI behavior is claimed to have been executed.
