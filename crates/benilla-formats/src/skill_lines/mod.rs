@@ -13,13 +13,16 @@
 //! - `SkillLineCategory.dbc`, 11 fields read off the raw file: the skills-pane headers in
 //!   `displayOrder`. `Not Displayed` (12) is an ordinary header; the reference hides
 //!   `GENERIC (DND)` by `SkillRaceClassInfo.flags & 0x2`, not by category.
+//!
+//! WotLK uses sixteen-locale name blocks and a 56-column SkillLine row. Its 14-column
+//! SkillLineAbility removes Abandonable, shifting the CharacterPoints pair by one slot.
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{field_count, loc_str, parse, u32_at};
 use crate::Chain;
 
 const SKILL_LINE: &str = "DBFilesClient\\SkillLine.dbc";
@@ -30,6 +33,9 @@ const SKILL_LINE_FIELDS: usize = 22;
 const COL_SL_NAME: usize = 3;
 const COL_SL_DESC: usize = 12;
 const COL_SL_SPELL_ICON: usize = 21;
+const WRATH_SKILL_LINE_FIELDS: usize = 56;
+const WRATH_COL_SL_DESC: usize = 20;
+const WRATH_COL_SL_SPELL_ICON: usize = 37;
 
 const SKILL_LINE_ABILITY_FIELDS: usize = 15;
 const COL_SLA_SKILL_ID: usize = 1;
@@ -43,6 +49,8 @@ const COL_SLA_FORWARD_SPELL: usize = 8;
 const COL_SLA_TRIVIAL_HIGH: usize = 10;
 const COL_SLA_TRIVIAL_LOW: usize = 11;
 const COL_SLA_REQ_TRAIN_POINTS: usize = 14;
+const WRATH_SKILL_LINE_ABILITY_FIELDS: usize = 14;
+const WRATH_COL_SLA_REQ_TRAIN_POINTS: usize = 13;
 
 /// Cap on a rank-chain walk; the 5875 data is acyclic, 9 hops at most, so only a bad DBC hits it.
 const MAX_RANK_CHAIN: usize = 16;
@@ -51,6 +59,8 @@ const SKILL_LINE_CATEGORY: &str = "DBFilesClient\\SkillLineCategory.dbc";
 const SKILL_LINE_CATEGORY_FIELDS: usize = 11;
 const COL_SLC_NAME: usize = 1;
 const COL_SLC_ORDER: usize = 10;
+const WRATH_SKILL_LINE_CATEGORY_FIELDS: usize = 19;
+const WRATH_COL_SLC_ORDER: usize = 18;
 
 const SKILL_RACE_CLASS_INFO_FIELDS: usize = 8;
 const COL_SRCI_SKILL_ID: usize = 1;
@@ -89,10 +99,11 @@ pub struct SkillLineInfo {
     pub name: String,
     /// `categoryId`, column 1: the skills-pane group ([`SkillLineCatalog::category`]).
     pub category_id: u32,
-    /// The tab icon's extensionless path (`Interface\Icons\…`), from `spellIcon`, column 21.
+    /// The tab icon's extensionless path (`Interface\Icons\…`), from `spellIcon`
+    /// (vanilla column 21, WotLK 37).
     pub icon: Option<String>,
-    /// `description_lang`, the block at column 12 read at the locale: `GetSkillLineInfo`'s 13th
-    /// return.
+    /// `description_lang` (vanilla column 12, WotLK 20), read at the locale:
+    /// `GetSkillLineInfo`'s 13th return.
     pub description: String,
 }
 
@@ -216,7 +227,8 @@ fn fixture_rows(abilities: &HashMap<u32, SlaInfo>) -> HashMap<u32, Vec<SlaRow>> 
 pub struct LineAbility {
     /// `supercededBySpell`, column 8 (`+0x20`): the next rank `KnowsHigherRank` (`0x60c8d0`) walks.
     pub superseded_by: u32,
-    /// `reqtrainpoints`, column 14 (`+0x38`): the training-point cost `GetCraftInfo` answers
+    /// The second `CharacterPoints` word (vanilla column 14, WotLK 13): the legacy
+    /// training-point cost `GetCraftInfo` answers
     /// (`0x4f704b`).
     pub train_points: u32,
 }
@@ -543,12 +555,12 @@ impl SkillLineCatalog {
     }
 }
 
-fn skill_line_schema() -> Schema {
+fn skill_line_schema(columns: usize, description_column: usize) -> Schema {
     let mut s = Schema::new("SkillLine");
-    for i in 0..SKILL_LINE_FIELDS {
+    for i in 0..columns {
         if i == COL_SL_NAME {
             s.add_field(SchemaField::new("NameEnUs", FieldType::String));
-        } else if i == COL_SL_DESC {
+        } else if i == description_column {
             s.add_field(SchemaField::new("DescEnUs", FieldType::String));
         } else {
             s.add_field(SchemaField::new(format!("F{i}"), FieldType::UInt32));
@@ -557,17 +569,17 @@ fn skill_line_schema() -> Schema {
     s
 }
 
-fn skill_line_ability_schema() -> Schema {
+fn skill_line_ability_schema(columns: usize) -> Schema {
     let mut s = Schema::new("SkillLineAbility");
-    for i in 0..SKILL_LINE_ABILITY_FIELDS {
+    for i in 0..columns {
         s.add_field(SchemaField::new(format!("F{i}"), FieldType::UInt32));
     }
     s
 }
 
-fn skill_line_category_schema() -> Schema {
+fn skill_line_category_schema(columns: usize) -> Schema {
     let mut s = Schema::new("SkillLineCategory");
-    for i in 0..SKILL_LINE_CATEGORY_FIELDS {
+    for i in 0..columns {
         let ty = if i == COL_SLC_NAME {
             FieldType::String
         } else {
@@ -585,9 +597,17 @@ fn load_categories(chain: &mut Chain) -> HashMap<u32, (String, u32)> {
     let Ok(bytes) = chain.read_file(SKILL_LINE_CATEGORY) else {
         return map;
     };
+    // ID + localized name + flags + sort index: eight locale slots in vanilla, sixteen in WotLK.
+    let (columns, order_column) = match field_count(&bytes) {
+        Some(SKILL_LINE_CATEGORY_FIELDS) => (SKILL_LINE_CATEGORY_FIELDS, COL_SLC_ORDER),
+        Some(WRATH_SKILL_LINE_CATEGORY_FIELDS) => {
+            (WRATH_SKILL_LINE_CATEGORY_FIELDS, WRATH_COL_SLC_ORDER)
+        }
+        _ => return map,
+    };
     let Ok(set) = parse(
         &bytes,
-        skill_line_category_schema(),
+        skill_line_category_schema(columns),
         "SkillLineCategory.dbc",
     ) else {
         return map;
@@ -595,7 +615,7 @@ fn load_categories(chain: &mut Chain) -> HashMap<u32, (String, u32)> {
     for r in set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         if let Some(name) = loc_str(&set, r, COL_SLC_NAME, locale) {
-            map.insert(id, (name, u32_at(r, COL_SLC_ORDER).unwrap_or(0)));
+            map.insert(id, (name, u32_at(r, order_column).unwrap_or(0)));
         }
     }
     map
@@ -649,17 +669,32 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
     let sl_bytes = chain
         .read_file(SKILL_LINE)
         .context("reading SkillLine.dbc")?;
-    let sl_set = parse(&sl_bytes, skill_line_schema(), "SkillLine.dbc")?;
+    // AzerothCore DBCStructure.h::SkillLineEntry: names at 3, descriptions at 20, icon at 37.
+    let (columns, description_column, icon_column) = match field_count(&sl_bytes) {
+        Some(SKILL_LINE_FIELDS) => (SKILL_LINE_FIELDS, COL_SL_DESC, COL_SL_SPELL_ICON),
+        Some(WRATH_SKILL_LINE_FIELDS) => {
+            (WRATH_SKILL_LINE_FIELDS, WRATH_COL_SL_DESC, WRATH_COL_SL_SPELL_ICON)
+        }
+        Some(columns) => bail!(
+            "unsupported SkillLine.dbc layout: {columns} fields (expected 22 or 56)"
+        ),
+        None => bail!("parsing SkillLine.dbc header: truncated field count"),
+    };
+    let sl_set = parse(
+        &sl_bytes,
+        skill_line_schema(columns, description_column),
+        "SkillLine.dbc",
+    )?;
     let locale = chain.locale();
     let mut lines: HashMap<u32, SkillLineInfo> = HashMap::new();
     for r in sl_set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         let name = loc_str(&sl_set, r, COL_SL_NAME, locale).unwrap_or_default();
-        let icon = u32_at(r, COL_SL_SPELL_ICON)
+        let icon = u32_at(r, icon_column)
             .filter(|&i| i != 0)
             .and_then(|i| icons.get(&i).cloned());
         let category_id = u32_at(r, 1).unwrap_or(0);
-        let description = loc_str(&sl_set, r, COL_SL_DESC, locale).unwrap_or_default();
+        let description = loc_str(&sl_set, r, description_column, locale).unwrap_or_default();
         lines.insert(
             id,
             SkillLineInfo {
@@ -674,9 +709,22 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
     let sla_bytes = chain
         .read_file(SKILL_LINE_ABILITY)
         .context("reading SkillLineAbility.dbc")?;
+    // The 3.3.5 row retains the two CharacterPoints words at 12/13 after removing Abandonable.
+    let (columns, train_points_column) = match field_count(&sla_bytes) {
+        Some(SKILL_LINE_ABILITY_FIELDS) => {
+            (SKILL_LINE_ABILITY_FIELDS, COL_SLA_REQ_TRAIN_POINTS)
+        }
+        Some(WRATH_SKILL_LINE_ABILITY_FIELDS) => {
+            (WRATH_SKILL_LINE_ABILITY_FIELDS, WRATH_COL_SLA_REQ_TRAIN_POINTS)
+        }
+        Some(columns) => bail!(
+            "unsupported SkillLineAbility.dbc layout: {columns} fields (expected 15 or 14)"
+        ),
+        None => bail!("parsing SkillLineAbility.dbc header: truncated field count"),
+    };
     let sla_set = parse(
         &sla_bytes,
-        skill_line_ability_schema(),
+        skill_line_ability_schema(columns),
         "SkillLineAbility.dbc",
     )?;
     let mut abilities: HashMap<u32, SlaInfo> = HashMap::new();
@@ -707,7 +755,7 @@ pub fn load_skill_line_catalog(chain: &mut Chain) -> Result<SkillLineCatalog> {
                 .entry((skill_id, spell_id))
                 .or_insert(LineAbility {
                     superseded_by: forward_spell_id,
-                    train_points: u32_at(r, COL_SLA_REQ_TRAIN_POINTS).unwrap_or(0),
+                    train_points: u32_at(r, train_points_column).unwrap_or(0),
                 });
             // The first row in file order holds the rank link.
             let slot = abilities.entry(spell_id).or_insert(info);

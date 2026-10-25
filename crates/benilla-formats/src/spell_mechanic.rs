@@ -4,14 +4,15 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{field_count, loc_str, parse, u32_at};
 use crate::Chain;
 
 const SPELL_MECHANIC: &str = "DBFilesClient\\SpellMechanic.dbc";
 const SPELL_MECHANIC_FIELDS: usize = 10;
+const WRATH_SPELL_MECHANIC_FIELDS: usize = 18;
 const COL_NAME: usize = 1;
 
 /// Mechanic id → name, lower-case in the data ("stunned") and left so, as the reference does.
@@ -34,9 +35,9 @@ impl SpellMechanicCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(columns: usize) -> Schema {
     let mut s = Schema::new("SpellMechanic");
-    for i in 0..SPELL_MECHANIC_FIELDS {
+    for i in 0..columns {
         let ty = if i == COL_NAME {
             FieldType::String
         } else {
@@ -52,7 +53,16 @@ pub fn load_spell_mechanic_catalog(chain: &mut Chain) -> Result<SpellMechanicCat
     let bytes = chain
         .read_file(SPELL_MECHANIC)
         .with_context(|| format!("reading {SPELL_MECHANIC}"))?;
-    let rs = parse(&bytes, schema(), "SpellMechanic.dbc")?;
+    // WoWDBDefs SpellMechanic.dbd, build 3.3.5.12340: ID, sixteen state-name locales, flags.
+    let columns = match field_count(&bytes) {
+        Some(SPELL_MECHANIC_FIELDS) => SPELL_MECHANIC_FIELDS,
+        Some(WRATH_SPELL_MECHANIC_FIELDS) => WRATH_SPELL_MECHANIC_FIELDS,
+        Some(columns) => bail!(
+            "unsupported SpellMechanic.dbc layout: {columns} fields (expected 10 or 18)"
+        ),
+        None => bail!("parsing SpellMechanic.dbc header: truncated field count"),
+    };
+    let rs = parse(&bytes, schema(columns), "SpellMechanic.dbc")?;
     let locale = chain.locale();
     let mut names = HashMap::new();
     for r in rs.records() {

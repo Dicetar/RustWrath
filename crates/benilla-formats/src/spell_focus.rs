@@ -4,14 +4,15 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{field_count, loc_str, parse, u32_at};
 use crate::Chain;
 
 const SPELL_FOCUS_OBJECT: &str = "DBFilesClient\\SpellFocusObject.dbc";
 const SPELL_FOCUS_FIELDS: usize = 10;
+const WRATH_SPELL_FOCUS_FIELDS: usize = 18;
 const COL_NAME: usize = 1;
 
 /// `SpellFocusObject` id → its name in the locale's column.
@@ -34,9 +35,9 @@ impl SpellFocusCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(columns: usize) -> Schema {
     let mut s = Schema::new("SpellFocusObject");
-    for i in 0..SPELL_FOCUS_FIELDS {
+    for i in 0..columns {
         let ty = if i == COL_NAME {
             FieldType::String
         } else {
@@ -52,7 +53,16 @@ pub fn load_spell_focus_catalog(chain: &mut Chain) -> Result<SpellFocusCatalog> 
     let bytes = chain
         .read_file(SPELL_FOCUS_OBJECT)
         .with_context(|| format!("reading {SPELL_FOCUS_OBJECT}"))?;
-    let rs = parse(&bytes, schema(), "SpellFocusObject.dbc")?;
+    // DBCStructure.h::SpellFocusObjectEntry: ID followed by sixteen name locales and flags.
+    let columns = match field_count(&bytes) {
+        Some(SPELL_FOCUS_FIELDS) => SPELL_FOCUS_FIELDS,
+        Some(WRATH_SPELL_FOCUS_FIELDS) => WRATH_SPELL_FOCUS_FIELDS,
+        Some(columns) => bail!(
+            "unsupported SpellFocusObject.dbc layout: {columns} fields (expected 10 or 18)"
+        ),
+        None => bail!("parsing SpellFocusObject.dbc header: truncated field count"),
+    };
+    let rs = parse(&bytes, schema(columns), "SpellFocusObject.dbc")?;
     let locale = chain.locale();
     let mut names = HashMap::new();
     for r in rs.records() {
