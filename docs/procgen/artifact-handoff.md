@@ -32,7 +32,7 @@ Proposed schema identifier: `project-b.procgen.candidate.v1`. Generator identity
 | manifest | `{algorithm: "fnv1a64-procgen-v2", value_hex: <16 lowercase hex digits>}`; recompute using the existing v2 field order, not JSON formatting |
 | placement | Optional declared mappings/transforms for each used domain, separate from the generator fingerprint; absent/invalid mapping means NOT PUBLISHABLE, not guessed coordinates |
 
-`output` has the exact keys `items`, `part_definitions`, `dungeon`, `terrain` and `spawns`. Each serialized item uses `part_ids` for its five ordered references into `output.part_definitions`. The current in-memory output's duplicate generator_version, seed and manifest_hash are represented by the envelope's generator_version, request.seed_hex and manifest respectively; reconstruction must use those values consistently, not accept a second conflicting identity. A future codec must spell out the remaining nested field names in its schema alongside these constraints before that schema is accepted.
+`output` has the exact keys `items`, `part_definitions`, `dungeon`, `terrain` and `spawns`. Each serialized item uses `part_ids` for its five ordered references into `output.part_definitions`. The current in-memory output's duplicate generator_version, seed and manifest_hash are represented by the envelope's generator_version, request.seed_hex and manifest respectively; reconstruction must use those values consistently, not accept a second conflicting identity.
 
 No live token, credentials, player private data, raw SQL/GM/shell instructions or arbitrary execution hook belongs in this file. It is a candidate, not an authorization token. Transport/file SHA-256 may be retained by the existing candidate/evidence owner over the exact saved bytes; it is an out-of-band integrity receipt, not a circular field embedded in the bytes being hashed. Trust and permission still come from existing owners.
 
@@ -48,6 +48,21 @@ The durable request/output representation uses exact integer and float semantics
 | Dungeon | Width/height; row-major tile tags; rooms in output order with ID, x/y/w/h, archetype and connection IDs in existing order; entrance and boss_room indices |
 | Terrain | Width/height; row-major height/moisture bit arrays and explicit biome tags, each exactly width*height entries |
 | Spawn | Explicit domain tag (Dungeon/Overworld), integer source coordinates, Enemy with archetype/boss or Npc with role, level and encounter ID |
+
+Exact nested spellings for the proposed codec are:
+
+| Path / record | Keys and structure |
+|---|---|
+| source_identity | repository, commit, tree, source_archive_sha256, dirty. The digest identifies exact retained source archive bytes; the importer resolves the declared build identity through its trusted source inventory |
+| catalog_identity | version, catalog_archive_sha256. The digest identifies exact retained catalog archive bytes, including unused pools; used part records alone do not establish that identity |
+| Item | id_hex, name, kind, rarity, level, stats, part_ids |
+| Stat/bonus entry | stat, value_f32_bits; ordered arrays, not JSON objects keyed by stat |
+| Part definition | id, slot, name, weight, min_rarity, bonuses |
+| Dungeon | width, height, tiles, rooms, entrance, boss_room |
+| Room | id, x, y, w, h, archetype, connections |
+| Terrain | width, height, heights_f32_bits, moisture_f32_bits, biomes |
+| Spawn | domain, x, y, kind, level, encounter |
+| Spawn kind | `{type: "enemy", archetype, boss}` or `{type: "npc", role}`; the alternatives have disjoint allowed keys |
 
 The item array stores part IDs referring to the owned catalog slice; a decoder reconstructs the exact ordered part definitions before recomputing the existing fingerprint. Used part definitions alone do not identify every unused RNG pool: source_identity/catalog_identity must pin the full generator/catalog for regeneration. An importer may retain owned data for review without executing the generator. Rehydrating into the current `Vec<&'static Part>` output type is permitted only against a supported pinned built-in catalog with an exact definition match; no `Box::leak` shortcut.
 
