@@ -242,6 +242,48 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
     Ok(snap)
 }
 
+
+/// Parse a standalone movement payload — the `Unit::BuildMovementPacket` shape used by
+/// `MSG_MOVE_TELEPORT` (S→C near teleport, `Unit.cpp:16198`): packed GUID, then movement data
+/// with **no** u16 update-flags prefix and none of the update-block-only tail fields
+/// (`LOWGUID`/`HAS_TARGET`/`VEHICLE`/`ROTATION`).
+pub fn standalone_movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
+    let mut snap = MovementSnapshot {
+        update_flags: update_flags::LIVING,
+        move_flags: r.u32()?,
+        extra_flags: r.u16()?,
+        time: r.u32()?,
+        position: None,
+        speeds: None,
+    };
+    let (x, y, z, o) = (r.f32()?, r.f32()?, r.f32()?, r.f32()?);
+    snap.position = Some(PositionSnapshot { x, y, z, o });
+    if snap.move_flags & move_flags::ON_TRANSPORT != 0 {
+        r.packed_guid()?;
+        for _ in 0..4 {
+            r.f32()?;
+        }
+        r.u32()?;
+        r.u8()?;
+        if snap.extra_flags & 0x1 != 0 {
+            r.u32()?;
+        }
+    }
+    if snap.move_flags & move_flags::SWIMMING_OR_FLYING != 0 {
+        r.f32()?;
+    }
+    r.u32()?;
+    if snap.move_flags & move_flags::FALLING != 0 {
+        for _ in 0..4 {
+            r.f32()?;
+        }
+    }
+    if snap.move_flags & move_flags::SPLINE_ELEVATION != 0 {
+        r.f32()?;
+    }
+    Ok(snap)
+}
+
 /// One values block: u8 mask-word count, u32 mask words, ascending set-bit values.
 pub fn values_block(r: &mut Reader) -> Result<Vec<(u16, u32)>> {
     let blocks = r.u8()? as usize;
@@ -260,3 +302,4 @@ pub fn values_block(r: &mut Reader) -> Result<Vec<(u16, u32)>> {
     }
     Ok(out)
 }
+

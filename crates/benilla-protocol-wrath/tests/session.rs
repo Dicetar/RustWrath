@@ -135,6 +135,7 @@ fn export_refuses_to_invent_a_position() {
 fn login_verify_world_establishes_map_and_position() {
     let mut s = SessionState::new();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, -8913.0), 1_000).unwrap();
     // No self entry yet: target is Unknown (explicitly exported), position from verify.
     let snap = s.export(1_100, 10).unwrap().expect("exportable after verify");
@@ -163,6 +164,7 @@ fn login_verify_world_establishes_map_and_position() {
 fn target_states_are_distinguished_and_explicit() {
     let mut s = SessionState::new();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
 
     // Self entry without a delivered target field: explicit Unknown, still exported.
@@ -206,6 +208,7 @@ fn target_states_are_distinguished_and_explicit() {
 fn unrelated_packets_advance_neither_revision_nor_freshness() {
     let mut s = SessionState::new();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
     let snap = s.export(1_050, 10).unwrap().unwrap();
     let (revision, source_time) = (snap.state_revision, snap.observed_at_unix_ms);
@@ -227,6 +230,7 @@ fn unrelated_packets_advance_neither_revision_nor_freshness() {
 fn heartbeat_movement_and_identical_rewrites_do_not_advance_the_revision() {
     let mut s = SessionState::new();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
     s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::stationary_player(PLAYER, 5.0, 0), 1_100).unwrap();
     let snap = s.export(1_150, 10).unwrap().unwrap();
@@ -259,6 +263,7 @@ fn heartbeat_movement_and_identical_rewrites_do_not_advance_the_revision() {
 fn visibility_loss_through_both_paths_shrinks_the_export() {
     let mut s = SessionState::new();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
     s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::stationary_player(PLAYER, 1.0, 0), 1_050).unwrap();
     s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::stationary_other(OTHER, 5.0), 1_100).unwrap();
@@ -282,6 +287,7 @@ fn visibility_loss_through_both_paths_shrinks_the_export() {
 fn epochs_reset_every_scope() {
     let mut s = SessionState::new();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
     let first = s.export(1_050, 10).unwrap().unwrap();
     assert_eq!((first.session_epoch, first.sequence, first.state_revision), (1, 1, 1));
@@ -289,6 +295,7 @@ fn epochs_reset_every_scope() {
     // Reconnect: a new epoch resets sequence, revision, and state.
     s.finish_session();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(1, 5.0), 2_000).unwrap();
     let second = s.export(2_050, 5).unwrap().unwrap();
     assert_eq!(second.session_epoch, 2);
@@ -302,6 +309,7 @@ fn epochs_reset_every_scope() {
 fn visibility_overflow_exports_incomplete_with_the_total() {
     let mut s = SessionState::new();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
     for i in 0..260u64 {
         s.reduce(
@@ -319,29 +327,161 @@ fn visibility_overflow_exports_incomplete_with_the_total() {
 }
 
 #[test]
-fn map_transition_clears_state_and_signals_retirement() {
+fn far_transfer_follows_the_real_server_sequence() {
     let mut s = SessionState::new();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
     s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::stationary_other(OTHER, 5.0), 1_050).unwrap();
     assert!(s.export(1_100, 10).unwrap().is_some());
+    s.mark_published();
+    assert_eq!(s.world_generation(), 1);
 
-    // Teleport to another map: state cleared, lifecycle event raised.
-    s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(1, 9.0), 1_500).unwrap();
+    // 1. TRANSFER_PENDING: announced; the player is still in the old world, traffic reduces.
+    let mut pending = 7u32.to_le_bytes().to_vec(); // destination map id
+    pending.extend_from_slice(&0u32.to_le_bytes()); // transport entry
+    pending.extend_from_slice(&0u32.to_le_bytes()); // current map
+    s.reduce(opcode::SMSG_TRANSFER_PENDING, &pending, 1_200).unwrap();
+    assert_eq!(s.phase(), benilla_protocol_wrath::session::Phase::TransferPending);
+    s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::values_update(PLAYER, &[(fields::UNIT_FIELD_HEALTH, 95)]), 1_250).unwrap();
+
+    // 2. NEW_WORLD: old scope discarded, world generation bumped, destination authoritative.
+    let mut new_world = 7u32.to_le_bytes().to_vec();
+    new_world.extend(10.0f32.to_le_bytes());
+    new_world.extend(20.0f32.to_le_bytes());
+    new_world.extend(30.0f32.to_le_bytes());
+    new_world.extend(1.5f32.to_le_bytes());
+    s.reduce(opcode::SMSG_NEW_WORLD, &new_world, 1_300).unwrap();
+    assert_eq!(s.phase(), benilla_protocol_wrath::session::Phase::Loading);
+    assert_eq!(s.world_generation(), 2);
+
+    // 3. Old-world in-flight tail between NEW_WORLD and the worldport ack is discarded.
+    s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::values_update(PLAYER, &[(fields::UNIT_FIELD_HEALTH, 10)]), 1_350).unwrap();
+    s.reduce(opcode::SMSG_DESTROY_OBJECT, &enc::destroy(OTHER), 1_360).unwrap();
+    let tail = s.export(1_400, 50).unwrap_err().to_string();
+    assert!(tail.contains("position") || tail.contains("world"), "loading-phase export refused: {tail}");
+
+    // 4. Driver sends MSG_MOVE_WORLDPORT_ACK after its own teardown; new world reduces.
+    s.worldport_acknowledged();
+    assert_eq!(s.phase(), benilla_protocol_wrath::session::Phase::InWorld);
+    let snap = s.export(1_500, 60).unwrap().unwrap();
+    assert_eq!(snap.map_id, 7);
+    assert_eq!(snap.position.x, 10.0);
+    assert_eq!(snap.position.o, 1.5);
+    assert_eq!(snap.world_generation, 2);
+    assert!(snap.visibility.guids.is_empty(), "old-world entities cannot leak");
+
+    // Lifecycle: one WorldTransfer for the new scope; the driver retires the publisher.
     assert_eq!(
         s.take_lifecycle(),
-        vec![benilla_protocol_wrath::session::LifeEvent::MapTransition { from: 0, to: 1 }]
+        vec![benilla_protocol_wrath::session::LifeEvent::WorldTransfer { world_generation: 2, map_id: 7 }]
     );
+}
+
+#[test]
+fn same_map_instance_transfer_still_changes_world_scope() {
+    let mut s = SessionState::new();
+    s.start_session(PLAYER);
+    s.note_player_login();
+    s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
+    s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::stationary_other(OTHER, 5.0), 1_050).unwrap();
+    assert!(s.export(1_100, 10).unwrap().is_some());
+    s.mark_published();
+
+    // NEW_WORLD with the SAME map id (e.g. an instance transfer): scope must still change.
+    let mut new_world = 0u32.to_le_bytes().to_vec();
+    new_world.extend(2.0f32.to_le_bytes());
+    new_world.extend(0.0f32.to_le_bytes());
+    new_world.extend(0.0f32.to_le_bytes());
+    new_world.extend(0.0f32.to_le_bytes());
+    s.reduce(opcode::SMSG_NEW_WORLD, &new_world, 1_500).unwrap();
+    assert_eq!(s.world_generation(), 2);
+    s.worldport_acknowledged();
     let snap = s.export(1_550, 20).unwrap().unwrap();
-    assert_eq!(snap.map_id, 1);
-    assert_eq!(snap.position.x, 9.0);
-    assert!(snap.visibility.guids.is_empty());
+    assert_eq!(snap.world_generation, 2);
+    assert!(snap.visibility.guids.is_empty(), "old-instance entities cannot leak");
+}
+
+#[test]
+fn near_teleport_updates_position_without_changing_world_scope() {
+    let mut s = SessionState::new();
+    s.start_session(PLAYER);
+    s.note_player_login();
+    s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
+    s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::stationary_player(PLAYER, 1.0, 0), 1_050).unwrap();
+    assert!(s.export(1_100, 10).unwrap().is_some());
+    s.mark_published();
+
+    // MSG_MOVE_TELEPORT: packed GUID + standalone movement payload (no update-flags prefix).
+    let mut p = enc::pack_guid(PLAYER);
+    p.extend(0u32.to_le_bytes()); // move flags
+    p.extend(0u16.to_le_bytes()); // extra flags
+    p.extend(12345u32.to_le_bytes()); // time
+    p.extend(42.0f32.to_le_bytes());
+    p.extend(1.0f32.to_le_bytes());
+    p.extend(2.0f32.to_le_bytes());
+    p.extend(0.75f32.to_le_bytes());
+    p.extend(0u32.to_le_bytes()); // fall time (always written by BuildMovementPacket)
+    s.reduce(opcode::MSG_MOVE_TELEPORT, &p, 1_200).unwrap();
+    let snap = s.export(1_250, 20).unwrap().unwrap();
+    assert_eq!(snap.position.x, 42.0);
+    assert_eq!(snap.position.o, 0.75);
+    assert_eq!(s.world_generation(), 1, "near teleport does not change world scope");
+}
+
+#[test]
+fn unknown_to_known_zero_target_is_a_revision_change() {
+    let mut s = SessionState::new();
+    s.start_session(PLAYER);
+    s.note_player_login();
+    s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000).unwrap();
+
+    // Higher-index field extends the vector past the target words without delivering them:
+    // the padded zero must NOT count as knowledge.
+    s.reduce(
+        opcode::SMSG_UPDATE_OBJECT,
+        &enc::values_update(PLAYER, &[(fields::UNIT_FIELD_HEALTH, 58)]),
+        1_050,
+    )
+    .unwrap();
+    let snap = s.export(1_100, 10).unwrap().unwrap();
+    assert_eq!(snap.target, SelfTarget::Unknown, "padded zero is not knowledge");
+    s.mark_published();
+
+    // First explicit delivery of BOTH target words, values zero: knowledge changes even
+    // though the numeric value equals the padding — one revision bump, known no-target.
+    s.reduce(
+        opcode::SMSG_UPDATE_OBJECT,
+        &enc::values_update(
+            PLAYER,
+            &[(fields::UNIT_FIELD_TARGET, 0), (fields::UNIT_FIELD_TARGET + 1, 0)],
+        ),
+        1_200,
+    )
+    .unwrap();
+    let snap = s.export(1_250, 20).unwrap().unwrap();
+    assert_eq!(snap.target, SelfTarget::None);
+    assert_eq!(snap.state_revision, snap.state_revision.max(2));
+    s.mark_published();
+
+    // Repeated identical known zero: no revision advance.
+    s.reduce(
+        opcode::SMSG_UPDATE_OBJECT,
+        &enc::values_update(
+            PLAYER,
+            &[(fields::UNIT_FIELD_TARGET, 0), (fields::UNIT_FIELD_TARGET + 1, 0)],
+        ),
+        1_300,
+    )
+    .unwrap();
+    assert!(!s.export_due(), "known-zero repeat is not a state change");
 }
 
 #[test]
 fn publisher_busy_retains_and_reexports_without_losing_the_snapshot() {
     let mut s = SessionState::new();
     s.start_session(PLAYER);
+    s.note_player_login();
     s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 3.25), 1_000).unwrap();
     s.reduce(
         opcode::SMSG_UPDATE_OBJECT,
@@ -386,6 +526,7 @@ fn clock_values_come_from_the_caller_not_a_clock() {
     let build = |unix_ms: i64, uptime: u64| {
         let mut s = SessionState::new();
         s.start_session(PLAYER);
+        s.note_player_login();
         s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 3.25), unix_ms).unwrap();
         s.reduce(
             opcode::SMSG_UPDATE_OBJECT,

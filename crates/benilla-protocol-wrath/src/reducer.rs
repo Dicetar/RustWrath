@@ -230,21 +230,33 @@ impl WorldState {
         })
     }
 
-    /// Apply one values block; returns whether any delivered value actually differed from
-    /// the stored field. Identical rewrites are not source state changes.
+    /// Apply one values block; returns whether observation-relevant state changed. Two kinds
+    /// of change count (Astra R1):
+    ///
+    /// 1. a delivered value differing from the stored field, and
+    /// 2. a knowledge transition — a field index delivered for the first time in this
+    ///    generation, even when its value equals the zero-filled padding that stood in for
+    ///    it before. Without (2), a padded-but-undelivered zero becoming an explicitly
+    ///    delivered zero (e.g. a higher-index field extending the vector while the target
+    ///    low word stays undelivered) would silently keep `Unknown` semantics visible after
+    ///    the source state became known.
     fn apply_values(&mut self, guid: u64, r: &mut Reader) -> Result<bool> {
         let updates = values_block(r)?;
         let entry = self.entry(guid, 0);
         let mut changed = false;
         for (index, value) in updates {
             let i = index as usize;
-            if entry.fields.get(i) != Some(&value) {
+            let (word, bit) = (i / 64, i % 64);
+            let known = entry
+                .delivered
+                .get(word)
+                .is_some_and(|w| w & (1 << bit) != 0);
+            if entry.fields.get(i) != Some(&value) || !known {
                 changed = true;
             }
             if entry.fields.len() <= i {
                 entry.fields.resize(i + 1, 0);
             }
-            let (word, bit) = (i / 64, i % 64);
             if entry.delivered.len() <= word {
                 entry.delivered.resize(word + 1, 0);
             }
@@ -252,6 +264,17 @@ impl WorldState {
             entry.fields[i] = value;
         }
         Ok(changed)
+    }
+
+    /// Apply a standalone movement snapshot (e.g. `MSG_MOVE_TELEPORT`'s payload, which is
+    /// not an update-block) to one GUID. Returns whether observation-relevant state changed.
+    pub fn apply_movement(&mut self, guid: u64, snapshot: MovementSnapshot) -> bool {
+        let relevant = match self.objects.get(&guid).and_then(|e| e.movement.as_ref()) {
+            Some(prev) => !prev.observation_equivalent(&snapshot),
+            None => true,
+        };
+        self.entry(guid, 0).movement = Some(snapshot);
+        relevant
     }
 
     fn remove(&mut self, guid: u64, events: &mut Vec<ChangeEvent>) {

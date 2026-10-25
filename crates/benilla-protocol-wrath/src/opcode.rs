@@ -16,6 +16,16 @@ pub const SMSG_UPDATE_OBJECT: u16 = 0x0A9;
 /// Object destruction outside the update-block path (`Object.cpp:278-286`):
 /// full u64 GUID + u8 on-death flag.
 pub const SMSG_DESTROY_OBJECT: u16 = 0x0AA;
+/// Far-teleport sequence, step 1 (`Player.cpp:1593`): u32 mapid, optionally u32 transport
+/// entry + u32 current map when on a transport. The player is still in the old world.
+pub const SMSG_TRANSFER_PENDING: u16 = 0x03F;
+/// Far-teleport sequence, step 2 (`Player.cpp:1613`): u32 mapid + f32 x/y/z/o destination.
+/// Receiving this begins the new world scope; the old world's replicated state is discarded.
+pub const SMSG_NEW_WORLD: u16 = 0x03E;
+/// Near teleport, server to client (`Unit.cpp:16198`): packed GUID + standalone movement
+/// payload (no update-flags prefix). Same world scope.
+pub const MSG_MOVE_TELEPORT: u16 = 0x0C5;
+
 /// `SMSG_COMPRESSED_UPDATE_OBJECT` (`WorldSocket.cpp:97-119`): the payload is
 /// `[u32 uncompressed_size][zlib(update-object payload)]` — no inner opcode; the decompressed
 /// bytes are the plain update body. (The fixture first misled us into reading an inner opcode;

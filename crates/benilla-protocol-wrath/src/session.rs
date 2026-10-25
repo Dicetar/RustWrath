@@ -34,7 +34,7 @@ use anyhow::{Context, Result};
 use crate::fields;
 use crate::opcode;
 use crate::reducer::{ChangeEvent, WorldState};
-use crate::updates::PositionSnapshot;
+use crate::updates::{Reader, PositionSnapshot};
 
 /// The bridge's per-observation visibility bound (v2 `observation.rs`).
 pub const MAX_VISIBLE_GUIDS: usize = 256;
@@ -76,6 +76,9 @@ pub struct SelfVisibility {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelfObservation {
     pub session_epoch: u64,
+    /// World scope identity: increments per far transfer (Astra R2). Producer-side until the
+    /// wire contract grows it (Phase B proposal) — never collapsed into map_id.
+    pub world_generation: u64,
     pub player_guid: u64,
     /// Export sequence: strictly increasing within the epoch, including unchanged re-exports.
     pub sequence: u64,
@@ -97,18 +100,49 @@ pub struct SelfObservation {
     pub visibility: SelfVisibility,
 }
 
+/// The session lifecycle, expressed in real protocol events (Astra R2). This lives in the
+/// session producer — the existing lifecycle owner — not in a parallel manager.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// After `start_session`, before the driver sends `CMSG_PLAYER_LOGIN`.
+    CharacterSelection,
+    /// `CMSG_PLAYER_LOGIN` sent (`note_player_login`), awaiting the login burst.
+    EnteringWorld,
+    /// `LOGIN_VERIFY_WORLD` received: the login world is established.
+    InWorld,
+    /// `SMSG_TRANSFER_PENDING` received (`Player.cpp:1593`): a far teleport was announced.
+    /// The player is still in the old world; old-world packets keep reducing.
+    TransferPending,
+    /// `SMSG_NEW_WORLD` received (`Player.cpp:1613`): the old world's replicated state has
+    /// been discarded and the new world scope has begun. Update/destroy traffic received in
+    /// this phase is the old world's in-flight tail and is discarded, because this client
+    /// sends `MSG_MOVE_WORLDPORT_ACK` only after its own teardown — everything the server
+    /// sends before processing that acknowledgment belongs to the old scope (TCP ordering
+    /// makes the boundary exact).
+    Loading,
+    // The driver sent `MSG_MOVE_WORLDPORT_ACK` (`worldport_acknowledged`): new-world
+    // traffic reduces normally. `LOGIN_VERIFY_WORLD` is not part of the transfer path
+    // (it is login-only — `CharacterHandler.cpp:806`), so this transition is driven by the
+    // acknowledgment the client itself sends: the `InWorld` variant above is re-entered.
+}
+
 /// Lifecycle signals the driver must act on (publisher retirement per the bridge contract).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LifeEvent {
-    /// A LOGIN_VERIFY_WORLD map change: replicated state was cleared; the driver must retire
-    /// the WM publisher (retire + `spawn_after` ordering); receiver invalidation follows the
-    /// publisher's own disconnect handling on the bridge side.
-    MapTransition { from: u32, to: u32 },
+    /// A new world scope began (`SMSG_NEW_WORLD`, or a defensive LOGIN_VERIFY_WORLD map
+    /// mismatch). Replicated state was cleared; the driver must retire the WM publisher via
+    /// `retire` + `spawn_after` ordering before publishing new-scope observations.
+    WorldTransfer { world_generation: u64, map_id: u32 },
 }
 
 /// One session's replicated world, revision bookkeeping, and export state.
 pub struct SessionState {
     epoch: u64,
+    phase: Phase,
+    /// World scope identity (Astra R2): increments at session start and at every
+    /// `SMSG_NEW_WORLD`, including same-map instance transfers. Map ID alone cannot scope a
+    /// world — two dungeons can share a map id, and the far-teleport path reuses it.
+    world_generation: u64,
     player_guid: Option<u64>,
     world: WorldState,
     map_id: Option<u32>,
@@ -142,6 +176,8 @@ impl SessionState {
     pub fn new() -> Self {
         Self {
             epoch: 0,
+            phase: Phase::CharacterSelection,
+            world_generation: 0,
             player_guid: None,
             world: WorldState::new(),
             map_id: None,
@@ -164,10 +200,12 @@ impl SessionState {
 
     /// Begin or re-begin a session for `player_guid` (full GUID, from the character enum).
     /// Bumps the epoch — the bridge's reset signal — and clears all revision, sequence, and
-    /// replicated state. Reducer generations persist, so a recreated GUID keeps its history.
+    /// replicated state. A new world scope opens with the epoch (world generation 1).
     pub fn start_session(&mut self, player_guid: u64) {
         assert!(player_guid != 0, "player guid must be non-zero");
         self.epoch += 1;
+        self.phase = Phase::CharacterSelection;
+        self.world_generation += 1;
         self.player_guid = Some(player_guid);
         self.world = WorldState::new();
         self.map_id = None;
@@ -180,9 +218,36 @@ impl SessionState {
         self.unsent = None;
     }
 
+    /// The current lifecycle phase.
+    pub fn phase(&self) -> Phase {
+        self.phase
+    }
+
+    /// The current world scope generation. Same-map instance transfers increment it: map id
+    /// alone is not world identity.
+    pub fn world_generation(&self) -> u64 {
+        self.world_generation
+    }
+
+    /// The driver sent `CMSG_PLAYER_LOGIN`: the login burst (creates) may now arrive.
+    pub fn note_player_login(&mut self) {
+        if self.phase == Phase::CharacterSelection {
+            self.phase = Phase::EnteringWorld;
+        }
+    }
+
+    /// The driver sent `MSG_MOVE_WORLDPORT_ACK` after its own loading teardown: the transfer
+    /// boundary is exact from here (TCP ordering) — new-world traffic reduces normally.
+    pub fn worldport_acknowledged(&mut self) {
+        if self.phase == Phase::Loading {
+            self.phase = Phase::InWorld;
+        }
+    }
+
     /// Logout/disconnect: drop replicated state. The driver must retire the WM publisher;
     /// the next `start_session` opens the new epoch.
     pub fn finish_session(&mut self) {
+        self.phase = Phase::CharacterSelection;
         self.player_guid = None;
         self.world = WorldState::new();
         self.map_id = None;
@@ -202,11 +267,90 @@ impl SessionState {
     ) -> Result<Vec<ChangeEvent>> {
         let mut events = Vec::new();
         let mut changed = false;
+        // The loading window is the old world's in-flight tail: this client has received
+        // NEW_WORLD (old scope discarded) and has not yet sent its worldport acknowledgment,
+        // so every update/destroy in between belongs to the old scope and must not populate
+        // the new world (Astra R2 late-packet rule).
+        if self.phase == Phase::Loading
+            && matches!(
+                op,
+                opcode::SMSG_UPDATE_OBJECT
+                    | opcode::SMSG_COMPRESSED_UPDATE_OBJECT
+                    | opcode::SMSG_DESTROY_OBJECT
+            )
+        {
+            self.input_seq += 1;
+            return Ok(Vec::new());
+        }
         match op {
             opcode::SMSG_UPDATE_OBJECT | opcode::SMSG_COMPRESSED_UPDATE_OBJECT => {
                 let (evs, ch) = self.world.reduce_changed(op, payload)?;
                 events = evs;
                 changed = ch;
+            }
+            opcode::SMSG_TRANSFER_PENDING => {
+                // `Player.cpp:1593`: u32 mapid, optionally u32 transport entry + u32 map.
+                // Diagnostics only: the authoritative destination arrives with NEW_WORLD.
+                // The player is still in the old world, so traffic keeps reducing.
+                let map = u32::from_le_bytes(
+                    payload
+                        .get(0..4)
+                        .context("transfer-pending payload cut short")?
+                        .try_into()
+                        .unwrap(),
+                );
+                if self.phase == Phase::InWorld || self.phase == Phase::EnteringWorld {
+                    self.phase = Phase::TransferPending;
+                }
+                let _ = map;
+            }
+            opcode::SMSG_NEW_WORLD => {
+                // `Player.cpp:1613`: u32 mapid + f32 x/y/z/o destination. This begins the
+                // new world scope: the old world's replicated state is discarded here, the
+                // destination position becomes the authoritative position source, and the
+                // driver retires the WM publisher (lifecycle event below). Same-map
+                // instance transfers increment the world generation exactly like
+                // cross-map ones — map id alone is not world identity.
+                let b: [u8; 20] = payload
+                    .get(0..20)
+                    .context("new-world payload cut short")?
+                    .try_into()
+                    .unwrap();
+                let map_id = u32::from_le_bytes(b[0..4].try_into().unwrap());
+                let position = PositionSnapshot {
+                    x: f32::from_le_bytes(b[4..8].try_into().unwrap()),
+                    y: f32::from_le_bytes(b[8..12].try_into().unwrap()),
+                    z: f32::from_le_bytes(b[12..16].try_into().unwrap()),
+                    o: f32::from_le_bytes(b[16..20].try_into().unwrap()),
+                };
+                self.world = WorldState::new();
+                self.world_generation += 1;
+                self.map_id = Some(map_id);
+                self.verify_position = Some((position, observed_at_unix_ms));
+                self.position_observed_at = Some(observed_at_unix_ms);
+                if self.phase == Phase::TransferPending || self.phase == Phase::InWorld {
+                    self.phase = Phase::Loading;
+                }
+                self.pending_lifecycle.push(LifeEvent::WorldTransfer {
+                    world_generation: self.world_generation,
+                    map_id,
+                });
+                changed = true;
+            }
+            opcode::MSG_MOVE_TELEPORT => {
+                // Near teleport (`Unit.cpp:16198`): packed GUID + standalone movement payload
+                // (no update-flags prefix). Same world scope — a position update, not a
+                // transfer.
+                let mut r = Reader::new(payload);
+                let guid = r.packed_guid().context("teleport guid")?;
+                let snapshot = crate::updates::standalone_movement_block(&mut r)
+                    .context("teleport movement block")?;
+                let relevant = match self.world.get(guid).and_then(|e| e.movement.as_ref()) {
+                    Some(prev) => !prev.observation_equivalent(&snapshot),
+                    None => true,
+                };
+                changed |= self.world.apply_movement(guid, snapshot);
+                events.push(ChangeEvent::Moved { guid });
             }
             opcode::SMSG_DESTROY_OBJECT => {
                 // `Object.cpp:278-286`: full u64 GUID, u8 on-death flag.
@@ -240,16 +384,23 @@ impl SessionState {
                     z: f32::from_le_bytes(b[12..16].try_into().unwrap()),
                     o: f32::from_le_bytes(b[16..20].try_into().unwrap()),
                 };
+                // LOGIN_VERIFY_WORLD is the login world establishment, not the transfer
+                // mechanism (Astra R2: transfers use TRANSFER_PENDING/NEW_WORLD and this
+                // message is login-only). A map mismatch here is therefore a protocol
+                // anomaly; treat it defensively as a world scope change.
                 if let Some(from) = self.map_id {
                     if from != map_id {
-                        // Map transition: the old map's objects leave replicated visibility.
-                        // The epoch is kept (bridge contract, publisher-retirement section);
-                        // the driver retires the publisher on this event.
                         self.world = WorldState::new();
-                        self.pending_lifecycle
-                            .push(LifeEvent::MapTransition { from, to: map_id });
+                        self.world_generation += 1;
+                        self.pending_lifecycle.push(LifeEvent::WorldTransfer {
+                            world_generation: self.world_generation,
+                            map_id,
+                        });
                         changed = true;
                     }
+                }
+                if self.phase == Phase::EnteringWorld {
+                    self.phase = Phase::InWorld;
                 }
                 self.map_id = Some(map_id);
                 self.verify_position = Some((position, observed_at_unix_ms));
@@ -329,6 +480,14 @@ impl SessionState {
     fn build_snapshot(&self) -> std::result::Result<SelfObservation, SkipReason> {
         let player_guid = self.player_guid.ok_or(SkipReason::NoPlayer)?;
         let map_id = self.map_id.ok_or(SkipReason::NoPosition)?;
+        // Observations export the current world scope. A snapshot can only be produced in
+        // InWorld (established world) or TransferPending (old world still live, still the
+        // player's real location); a Loading-phase snapshot would mix scopes and is never
+        // built — the driver retires the publisher instead.
+        match self.phase {
+            Phase::InWorld | Phase::TransferPending => {}
+            _ => return Err(SkipReason::NoPosition),
+        }
 
         // Position: the replicated self entry's movement block when present, else the
         // authoritative LOGIN_VERIFY_WORLD position. Neither observed => refuse.
@@ -349,16 +508,27 @@ impl SessionState {
         let position = position.ok_or(SkipReason::NoPosition)?;
         let position_observed_at_unix_ms = position_time;
 
-        // Target: delivered zero = observed no-target; delivered nonzero = observed target;
-        // undelivered or no self entry = unknown. All three are exportable in v2.
+        // Target (Astra R1, atomic multiword knowledge): the target is a LONG field — two
+        // u32 words on the wire, and the server may transmit them independently. Knowledge
+        // requires BOTH words delivered in this generation; a delivered low word with an
+        // undelivered high word is partial knowledge and exports as `Unknown` rather than
+        // inventing no-target from an unavailable combined value. Once both are known, a
+        // combined zero is an observed no-target and a nonzero combined GUID is an observed
+        // target. All three states are exportable in v2.
         let target = match self_entry {
-            Some(entry) if entry.field_delivered(fields::UNIT_FIELD_TARGET) => {
-                match entry.self_guid(fields::UNIT_FIELD_TARGET) {
-                    Some(0) | None => SelfTarget::None,
-                    Some(guid) => SelfTarget::Target(guid),
+            Some(entry) => {
+                let low_known = entry.field_delivered(fields::UNIT_FIELD_TARGET);
+                let high_known = entry.field_delivered(fields::UNIT_FIELD_TARGET + 1);
+                if low_known && high_known {
+                    match entry.self_guid(fields::UNIT_FIELD_TARGET) {
+                        Some(0) | None => SelfTarget::None,
+                        Some(guid) => SelfTarget::Target(guid),
+                    }
+                } else {
+                    SelfTarget::Unknown
                 }
             }
-            _ => SelfTarget::Unknown,
+            None => SelfTarget::Unknown,
         };
 
         // Replicated visibility: every currently-present GUID except the player, sorted
@@ -375,6 +545,7 @@ impl SessionState {
 
         Ok(SelfObservation {
             session_epoch: self.epoch,
+            world_generation: self.world_generation,
             player_guid,
             sequence: 0, // assigned by export()
             state_revision: self.state_revision,
