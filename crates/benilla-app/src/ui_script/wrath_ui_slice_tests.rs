@@ -1,14 +1,7 @@
-//! Work package 01 Phase 3 — the early stock UI-host slice (review R6):
-//!
-//! 1. Load the stock WotLK `PlayerFrame` unit-frame surface from the owner's real install
-//!    through the Lua/FrameXML host.
-//! 2. Deliver one real session/gameplay event with correct arguments and timing:
-//!    `UNIT_HEALTH` with the `"player"` unit token, fired from wrath session state.
-//! 3. Route one permitted user action through the shared player-action interface: the
-//!    stock `TargetUnit`/`UnitExists` query path driven by the session's target state.
-//! 4. Persist and reload one relevant setting through SavedVariables.
-//!
-//! The test skips when the owner's game data is not present, following the established
+//! Stock UI-host smoke test (R11): load the real 3.3.5a PlayerFrame dependency chain, manually
+//! fire `UNIT_HEALTH`, query `UnitExists`, and read back a CVar in one VM. It does not prove a
+//! session-driven event, a production player action, cross-host persistence or an installed
+//! addon; those remain issue 22/24 and Phase D acceptance work. The test skips without game data.
 //! `wow_data_or_skip!` pattern. Everything asserted here is real stock-file behavior; no
 //! missing API is stubbed successful.
 
@@ -46,7 +39,7 @@ fn player_frame_script() -> UiScript {
 }
 
 #[test]
-fn stock_player_frame_delivers_the_wrath_session_slice() {
+fn stock_player_frame_host_smoke_test() {
     benilla_formats::wow_data_or_skip!();
     let mut s = player_frame_script();
 
@@ -57,10 +50,8 @@ fn stock_player_frame_delivers_the_wrath_session_slice() {
         "the stock PlayerFrame and its health bar loaded"
     );
 
-    // 2. One real session event with correct arguments and timing: the wrath session fires
-    //    `UNIT_HEALTH` with the "player" token when the player's health field changes. The
-    //    stock handler must run and the bar must reflect the delivered value through the
-    //    real UnitHealth path (the session delivers field 6 = health on the player unit).
+    // 2. Manual event-delivery smoke: fire `UNIT_HEALTH` with the stock player token and read
+    //    the host's UnitHealth path. This does not prove the session produced the event.
     s.run(r#"
         seen_event = nil
         seen_unit = nil
@@ -75,9 +66,8 @@ fn stock_player_frame_delivers_the_wrath_session_slice() {
         health_at_hook = UnitHealth("player")
     "#).unwrap();
 
-    // The wrath session delivered the player create with health 58 (the reducer's fixture
-    // semantics: the health field lands in the replicated state; the host's UnitHealth reads
-    // the engine's unit state, which the session feeds through the net path).
+    // The host has seeded unit state for the stock frame; this is a host readback, not a
+    // session-fed health assertion.
     s.fire_event("UNIT_HEALTH", vec![ScriptValue::Str("player".to_owned())]);
     assert_eq!(
         s.eval::<String>("return seen_event").unwrap(),
@@ -87,25 +77,20 @@ fn stock_player_frame_delivers_the_wrath_session_slice() {
     assert_eq!(
         s.eval::<String>("return seen_unit").unwrap(),
         "player",
-        "the event argument is the unit token the session delivered"
+        "the event argument is the fired unit token"
     );
-    // The stock health bar's own OnValueChanged ran through the delivered value: the bar's
-    // stored maximum/cur values come from the engine unit state the session drives.
+    // The stock health query reads the host's seeded unit state, not a session update.
     let health: f64 = s.eval("return UnitHealth('player')").unwrap();
-    assert!(health > 0.0, "the session-fed health is observable: {health}");
+    assert!(health > 0.0, "host UnitHealth is observable: {health}");
 
-    // 3. One permitted user action through the shared player-action interface: the target
-    //    query path the session's target state drives (SelfTarget::None => UnitExists
-    //    false; a delivered target => true). This is the same query surface the stock
-    //    action-bar secure templates use.
+    // 3. A stock query smoke: UnitExists('target') reads the host state. This is not a
+    //    permitted production player action.
     assert!(
         !s.eval::<bool>("return UnitExists('target')").unwrap(),
         "an observed no-target must read as no target"
     );
 
-    // 4. One relevant setting persisted and reloaded: the stock target-of-target display is
-    //    driven by the 'TARGET' enum; persist a real UI setting through the host's
-    //    SetCVar/read path and reload it from a fresh script (the CVAR persistence lane).
+    // 4. Same-VM CVar readback only. Cross-host persistence/reload is not asserted.
     s.run("SetCVar('floatingCombatTextCombatDamage', '0')").unwrap();
     let persisted: String = s.eval("return GetCVar('floatingCombatTextCombatDamage')").unwrap();
     assert_eq!(persisted, "0", "the cvar write is observable");

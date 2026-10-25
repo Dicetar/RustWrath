@@ -315,6 +315,15 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // With `$WOW_CAPTURE` set the app runs a deterministic, server-less capture (net off, so no
     // NPCs stream in) and exits.
     let capturing = run_mode::scenario_active();
+    // `$WOW_WRATH` selects the Wrath graphical session explicitly. It is mutually exclusive with
+    // the stock 1.12 NetPlugin's connection, so one network/session owner exists.
+    let wrath_config = match crate::wrath::WrathSessionConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("wrath: FATAL - {error:#}");
+            return AppExit::error();
+        }
+    };
     // Every instrumented run, captures and live probes, opens in the background so it never takes
     // over a person's screen; `WOW_BG` overrides.
     let background = benilla_world::bgwin::background_run();
@@ -446,8 +455,9 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // The game as one group on top of the engine; `game_plugins.rs` has its members, its
     // load-bearing ordering edges and the test that builds it headless.
     .add_plugins(game_plugins::GamePlugins {
-        connect: !capturing,
+        connect: !capturing && wrath_config.is_none(),
         start: run_mode::start_state(),
+        wrath: wrath_config,
     });
 
     // benilla-assets' loaders go into the live `AssetServer`, so they register after `AssetPlugin`.

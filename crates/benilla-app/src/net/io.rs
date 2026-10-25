@@ -261,7 +261,9 @@ pub(super) enum WriterSwap {
 /// Everything [`spawn_net`] hands the app.
 pub(super) struct NetHandles {
     pub(super) events: Receiver<SessionEvent>,
+    pub(super) events_out: Sender<SessionEvent>,
     pub(super) commands: Sender<ClientCommand>,
+    pub(super) command_tap: Option<Receiver<ClientCommand>>,
     pub(super) pick: ParkSender<CharRequest>,
     pub(super) realm: ParkSender<RealmRequest>,
     pub(super) login: Sender<LoginRequest>,
@@ -276,12 +278,13 @@ pub(super) fn spawn_net(connect: bool) -> NetHandles {
         benilla_protocol::observe_sends(wire_trace::trace_out);
     }
     let (events_tx, events_rx) = crossbeam_channel::unbounded();
+    let events_out = events_tx.clone();
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (park_tx, park_rx) = crossbeam_channel::unbounded::<ParkRequest>();
     let (login_tx, login_rx) = crossbeam_channel::unbounded::<LoginRequest>();
     let login_abandon = Arc::new(AtomicU64::new(0));
     let ping_clock = Arc::new(Mutex::new(PingClock::default()));
-    if connect {
+    let command_tap = if connect {
         // The writer thread outlives connections; the read thread hands it each world entry's
         // WorldWriter and takes it back after a logout.
         let (writer_tx, writer_rx) = crossbeam_channel::unbounded::<WriterSwap>();
@@ -340,12 +343,16 @@ pub(super) fn spawn_net(connect: bool) -> NetHandles {
                 }
             })
             .expect("spawn wow-net thread");
-    }
-    // Not connecting (capture mode): the channel ends drop here, sends become ignored `Err`s and
-    // the event stream stays empty.
+        None
+    } else {
+        // Not connecting (capture mode): the command receiver is the Wrath application tap.
+        Some(cmd_rx)
+    };
     NetHandles {
         events: events_rx,
+        events_out,
         commands: cmd_tx,
+        command_tap,
         pick: ParkSender::park(park_tx.clone()),
         realm: ParkSender::park(park_tx),
         login: login_tx,

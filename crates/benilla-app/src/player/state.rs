@@ -601,6 +601,16 @@ impl Player {
         super::move_trace::settle(resident, waited, self.pos);
     }
 
+    /// Adopt an authoritative server pose without inventing local motion. The next controller tick
+    /// reseats the camera and chases this facing from the server's value.
+    pub(crate) fn apply_server_pose(&mut self, pos: Vec3, yaw: f32) {
+        self.active = true;
+        self.pos = pos;
+        self.face_yaw = yaw;
+        self.model_yaw = yaw;
+        self.reseat = true;
+    }
+
     /// The movement flags as last streamed; the water foam tests `& 0xf` (translating) and `& 0x30`
     /// (turning) on them, as the reference's ripple driver `0x5fa760` does.
     pub(crate) fn move_flags(&self) -> u32 {

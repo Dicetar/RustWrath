@@ -1,18 +1,18 @@
 //! The Wrath (3.3.5a) session feed into the graphical app: the bridge between the
 //! `benilla-protocol-wrath` session/producer and this app's established stage pipeline.
 //!
-//! Scheduling contract (Astra R5, attached to issue 22 — this module implements the feed half):
+//! Scheduling contract (Astra R5, attached to issue 22 â€” this module implements the feed half):
 //!
-//! - The session loop (logon → world → reduce → producer → pump) runs on its own IO thread,
-//!   exactly like the 1.12 `net::io` thread — never in a Bevy `Update` system. The renderless
+//! - The session loop (logon â†’ world â†’ reduce â†’ producer â†’ pump) runs on its own IO thread,
+//!   exactly like the 1.12 `net::io` thread â€” never in a Bevy `Update` system. The renderless
 //!   driver's blocking `recv` loop stays on that thread.
 //! - The thread publishes **latest-only** self snapshots through a single-slot handoff
 //!   (`WrathLatest`) and **bounded** lifecycle/phase events through a queue
 //!   (`WrathEvents`, capacity [`WRATH_EVENT_CAPACITY`], oldest dropped). A full slot is never a
 //!   blocked packet loop: observations are latest-only by contract, and a dropped lifecycle
 //!   event is recoverable because the newest full state always follows.
-//! - The app drains both in the existing `WorldStage::Net` stage — before `Input` reads
-//!   position — with a per-frame drain bound, so bursts cannot starve input and no-packet frames
+//! - The app drains both in the existing `WorldStage::Net` stage â€” before `Input` reads
+//!   position â€” with a per-frame drain bound, so bursts cannot starve input and no-packet frames
 //!   do no work. World-generation changes invalidate the mapped entity set and the pending
 //!   publication state **in the same Net tick** they are drained, before input/control.
 //! - Server authority stays authoritative: this feed carries replicated state and lifecycle
@@ -26,8 +26,30 @@ use std::collections::{BTreeMap, VecDeque};
 
 use bevy::prelude::*;
 use benilla_world::schedule::WorldStage;
+use benilla_world::world_map::CurrentMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use crossbeam_channel::Sender;
+
+use benilla_protocol::{
+    messages::ObjectType, EntityKind, MoveSpeeds, ObjectFields, SessionEvent,
+};
+use benilla_protocol_wrath::cast_failure;
+use benilla_protocol_wrath::gameplay::{self, ServerEvent as WrathGameplayEvent};
+use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
+use crate::entities::Equipment;
+use crate::net::{
+    ClientCommand, Guid, GuidIndex, NetCommandTap, NetEntity, NetEventSink, ObjectStore, SelfGuid,
+    SelfPlayer, UnitSpeeds, WorldEnterCascadeMessage, EnteredWorldMessage, FieldChanged,
+};
+use benilla_protocol::messages::{
+    ActionButton, AttackSwingError, GossipOption as ProtocolGossipOption, ItemInfo, ItemPushResult,
+    LootItem as ProtocolLootItem, NpcTextBlock as ProtocolNpcTextBlock, QuestComplete,
+    QuestDetails, QuestGiverList, QuestListEntry, QuestObjective, QuestOfferReward,
+    QuestRequestItems, QuestRewardItem, QuestTemplate,
+};
 
 use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, SessionState};
 
@@ -39,11 +61,27 @@ pub const WRATH_EVENT_CAPACITY: usize = 16;
 /// for the next frame instead of starving input (R5 budget; measured, not tuned, per frame).
 pub const WRATH_DRAIN_LIMIT: usize = 64;
 
+/// The longest silent world-server window treated as healthy. A live server answers the 10 s ping
+/// even when gameplay is quiet; socket read timeouts and empty frame ticks are not responses.
+pub const SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Latest-only self snapshot slot: the IO thread overwrites, the Net stage reads and clears.
 pub type WrathLatest = Arc<Mutex<Option<WorldDigest>>>;
 
-/// Bounded lifecycle/phase event queue, shared IO-thread → Net stage.
+/// Bounded lifecycle/phase event queue, shared IO-thread â†’ Net stage.
 pub type WrathEvents = Arc<Mutex<VecDeque<WrathFeedEvent>>>;
+
+/// One outbound client packet handed from the Bevy frame to the session IO thread.
+pub struct WrathOutbound {
+    pub opcode: u32,
+    pub payload: Vec<u8>,
+}
+
+/// The app-side sender for the selected session thread.
+pub type WrathOutbox = Arc<Mutex<VecDeque<WrathOutbound>>>;
+
+#[derive(Resource)]
+pub struct WrathInput(pub WrathOutbox);
 
 /// What the IO thread publishes.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,10 +91,12 @@ pub enum WrathFeedEvent {
     /// A world scope changed: the mapped entity set and pending publications for the old
     /// scope are invalid from this event on (issue 22 clears its entity map here).
     WorldTransfer { world_generation: u64, map_id: u32 },
-    /// A producer export was refused with a reason — diagnostics for the debug panel.
+    /// A producer export was refused with a reason â€” diagnostics for the debug panel.
     ExportSkipped(String),
     /// The IO-thread session ended (Ok = clean logout; Err = failure reason).
     SessionEnded(Result<(), String>),
+    /// The current gossip menu's identity, needed by the 3.3.5 select-option message.
+    GossipMenu { npc: u64, menu_id: u32 },
 }
 
 impl WrathFeedEvent {
@@ -74,8 +114,6 @@ impl WrathFeedEvent {
 pub struct WrathFeed {
     pub latest: WrathLatest,
     pub events: WrathEvents,
-    /// Monotonic client uptime origin, stamped by the IO thread at session start.
-    pub started: std::time::Instant,
 }
 
 impl WrathFeed {
@@ -83,7 +121,6 @@ impl WrathFeed {
         Self {
             latest: Arc::new(Mutex::new(None)),
             events: Arc::new(Mutex::new(VecDeque::with_capacity(WRATH_EVENT_CAPACITY))),
-            started: std::time::Instant::now(),
         }
     }
 
@@ -104,7 +141,7 @@ impl WrathFeed {
 }
 
 /// A lab session configuration for the IO thread. Credentials come from the owner's
-/// environment/launcher, never from committed files (system review §8).
+/// environment/launcher, never from committed files (system review Â§8).
 #[derive(Clone)]
 pub struct WrathSessionConfig {
     pub account: String,
@@ -113,7 +150,49 @@ pub struct WrathSessionConfig {
     pub world_addr: String,
     /// WM bridge token; absent = the bridge stays disabled for this session.
     pub wm_token: Option<String>,
-    pub dwell: Duration,
+    /// `None` keeps the graphical session alive until the app cancels it.
+    pub dwell: Option<Duration>,
+}
+
+/// Whether this launch explicitly selects the Wrath session path. The stock 1.12 path stays the
+/// default; selection is one environment switch, never an implicit detection.
+pub fn selected_from_env() -> bool {
+    std::env::var("WOW_WRATH")
+        .ok()
+        .is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+impl WrathSessionConfig {
+    /// Build the selected graphical path from the same protected environment the rest of the
+    /// client uses. Credentials never come from committed source or command-line arguments.
+    pub fn from_env() -> anyhow::Result<Option<Self>> {
+        use anyhow::Context;
+        if !selected_from_env() {
+            return Ok(None);
+        }
+        let account = std::env::var("WOW_USER").context("WOW_WRATH needs WOW_USER")?;
+        let password = std::env::var("WOW_PASS").context("WOW_WRATH needs WOW_PASS")?;
+        let auth_addr =
+            std::env::var("WOW_WRATH_AUTH").unwrap_or_else(|_| "127.0.0.1:3724".to_owned());
+        let world_addr =
+            std::env::var("WOW_WRATH_WORLD").unwrap_or_else(|_| "127.0.0.1:8095".to_owned());
+        let dwell = std::env::var("WOW_WRATH_DWELL")
+            .ok()
+            .map(|raw| raw.parse::<u64>().map(Duration::from_secs))
+            .transpose()
+            .context("WOW_WRATH_DWELL must be whole seconds")?;
+        let wm_token = std::env::var("WM_NATIVE_OBSERVATION_TOKEN")
+            .ok()
+            .filter(|token| !token.is_empty());
+        Ok(Some(Self {
+            account,
+            password,
+            auth_addr,
+            world_addr,
+            wm_token,
+            dwell,
+        }))
+    }
 }
 
 /// One replicated entity, as the display path will consume it. Full GUID, world scope and
@@ -123,13 +202,35 @@ pub struct WrathSessionConfig {
 pub struct WrathEntity {
     pub guid: u64,
     pub type_id: u8,
-    /// `UNIT_FIELD_DISPLAYID` — the model the renderer needs (asset mapping is issue 22).
+    /// `OBJECT_FIELD_ENTRY`, the template entry every name/visual/tooltip lookup uses.
+    pub entry: Option<u32>,
+    /// `UNIT_FIELD_DISPLAYID` â€” the model the renderer needs.
     pub display_id: Option<u32>,
-    pub scale: Option<u32>,
+    pub scale: Option<f32>,
     pub health: Option<u32>,
+    pub max_health: Option<u32>,
     pub level: Option<u32>,
+    /// `UNIT_FIELD_BYTES_0`: race, class, sex, power type.
+    pub bytes_0: Option<u32>,
+    pub faction: Option<u32>,
+    pub unit_flags: Option<u32>,
+    pub mount_display_id: Option<u32>,
+    pub bytes_1: Option<u32>,
+    pub npc_flags: Option<u32>,
+    pub dynamic_flags: Option<u32>,
+    /// `UNIT_FIELD_TARGET`; absent when the reducer has not observed both GUID words.
+    pub target: Option<u64>,
+    /// Wrath `PLAYER_BYTES`: skin, face, hair style, hair colour.
+    pub player_bytes: Option<u32>,
+    /// Wrath `PLAYER_BYTES_2`: facial hair, bank slots, rest state, arena faction.
+    pub player_bytes_2: Option<u32>,
     pub position: Option<benilla_protocol_wrath::updates::PositionSnapshot>,
+    /// The last reduced movement flags for this object.
+    pub move_flags: Option<u32>,
     pub generation: u32,
+    /// The player's raw Wrath field window, needed where 1.12 and 3.3.5 pack different field
+    /// indices (quest log, inventory, coinage). Only a player carries it.
+    pub player_fields: Option<Vec<u32>>,
 }
 
 /// A full-world digest: the replicated world at one `state_revision`.
@@ -152,8 +253,16 @@ pub struct WrathControl {
     pub config: Option<WrathSessionConfig>,
     worker: Option<std::thread::JoinHandle<()>>,
     feed: Option<WrathFeed>,
-    /// Terminal failure from the last worker run (disconnect, auth failure, logout).
+    cancel: Arc<AtomicBool>,
+    commands: Option<WrathOutbox>,
+    /// Set when the worker has stopped, cleanly or not. The view is invalidated in the Net drain
+    /// before Input, never in the PreUpdate join.
+    ended: bool,
+    /// Terminal failure from the last worker run. A clean end leaves this `None`.
     pub last_error: Option<String>,
+    /// The stock inbound stream, used for replies whose consumers already exist as
+    /// `SessionEvent` handlers. `None` in a test app without the net plugin.
+    events_out: Option<Sender<SessionEvent>>,
 }
 
 impl WrathControl {
@@ -164,27 +273,66 @@ impl WrathControl {
 
     fn start(&mut self) {
         let Some(config) = self.config.clone() else { return };
-        if self.running() {
+        if self.running() || self.ended {
             return;
         }
         let feed = WrathFeed::new();
         self.feed = Some(feed.clone());
         self.last_error = None;
+        self.ended = false;
+        self.cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::clone(&self.cancel);
+        let commands = self.commands.take();
+        let events_out = self.events_out.clone();
         let handle = std::thread::Builder::new()
             .name("wrath-session".to_owned())
             .spawn(move || {
-                let result = run_session(&feed, &config);
+                let result =
+                    run_session_with_cancel(&feed, &config, &cancel, commands, events_out.clone());
                 if let Ok(mut q) = feed.events.lock() {
                     if q.len() >= WRATH_EVENT_CAPACITY {
                         q.pop_front();
                     }
                     q.push_back(WrathFeedEvent::SessionEnded(
-                        result.map_err(|e| format!("{e:#}")),
+                        result.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")),
                     ));
+                }
+                if let Some(sink) = events_out {
+                    let end = if result.is_ok() {
+                        benilla_protocol::SessionEnd::LoggedOut
+                    } else {
+                        benilla_protocol::SessionEnd::Lost
+                    };
+                    let reason = result
+                        .err()
+                        .map(|e| format!("{e:#}"))
+                        .unwrap_or_else(|| "wrath session ended".to_owned());
+                    let _ = sink.send(SessionEvent::Disconnected { reason, end });
                 }
             })
             .expect("spawn wrath session thread");
         self.worker = Some(handle);
+    }
+
+    /// Bounded app-owned stop: signal the loop and join for a short grace period. A worker still
+    /// inside a blocking socket read is detached after the deadline rather than freezing shutdown.
+    pub fn stop(&mut self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        if let Some(worker) = self.worker.take() {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !worker.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if worker.is_finished() {
+                let _ = worker.join();
+            }
+        }
+        self.ended = true;
+        if let Some(feed) = self.feed.take() {
+            if let Ok(mut slot) = feed.latest.lock() {
+                *slot = None;
+            }
+        }
     }
 
     fn take_digest(&mut self) -> Option<WorldDigest> {
@@ -221,6 +369,12 @@ pub struct WrathWorldView {
     pub self_observation: Option<benilla_protocol_wrath::session::SelfObservation>,
     pub entities: BTreeMap<u64, WrathEntity>,
     pub last_changes: WrathChanges,
+    /// The world-enter cascade has been raised for the current local player.
+    pub entered_world: bool,
+    /// The NPC and menu id from the last gossip reply; 3.3.5 requires the menu id on a select.
+    pub gossip_menu: Option<(u64, u32)>,
+    /// Monotonic cast count for `CMSG_CAST_SPELL`.
+    pub next_cast_count: u8,
 }
 
 impl Default for WrathWorldView {
@@ -235,6 +389,9 @@ impl Default for WrathWorldView {
             self_observation: None,
             entities: BTreeMap::new(),
             last_changes: WrathChanges::default(),
+            entered_world: false,
+            gossip_menu: None,
+            next_cast_count: 1,
             empty: (),
         }
     }
@@ -255,44 +412,665 @@ pub struct WrathNetPlugin {
 
 impl Plugin for WrathNetPlugin {
     fn build(&self, app: &mut App) {
+        let commands: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
+        let events_out = app
+            .world()
+            .get_resource::<NetEventSink>()
+            .map(|sink| sink.0.clone());
         app.insert_resource(WrathControl {
             config: self.config.clone(),
             worker: None,
             feed: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            commands: Some(Arc::clone(&commands)),
+            ended: false,
             last_error: None,
+            events_out,
         })
         .init_resource::<WrathWorldView>();
         if self.config.is_some() {
-            // Session ownership: the worker starts on the first ownership tick; terminal
-            // failure surfaces through `WrathControl::last_error` with the exposed state
-            // invalidated in the same drain. Deliberate stop is a control decision (issue 22).
-            app.add_systems(PreUpdate, wrath_session_ownership);
-            app.add_systems(Update, wrath_net_drain.in_set(WorldStage::Net));
+            app.insert_resource(WrathInput(commands));
+            // Session ownership: the worker starts on the first ownership tick. Joining here only
+            // records the terminal edge; the feed stays readable so the Net drain can consume the
+            // final `SessionEnded` and invalidate before Input.
+            app.add_systems(
+                PreUpdate,
+                (wrath_session_ownership, wrath_shutdown_on_exit),
+            );
+            app.add_systems(
+                Update,
+                (wrath_net_drain, wrath_apply_world, wrath_tap_commands)
+                    .chain()
+                    .in_set(WorldStage::Net),
+            );
+            // After `WorldStage::Input`, which owns the controller that writes `Player`.
+            app.add_systems(Update, wrath_stream_movement.in_set(WorldStage::Stream));
         }
     }
 }
 
-/// Worker ownership: starts the session once; surfaces terminal failure and invalidates.
+/// Worker ownership: starts the session once; records the terminal edge without consuming the
+/// feed. The Net-stage drain still receives the worker's final `SessionEnded` this frame.
 fn wrath_session_ownership(mut control: ResMut<WrathControl>) {
-    if control.worker.is_none() && control.last_error.is_none() && control.config.is_some() {
+    if control.worker.is_none() && !control.ended && control.config.is_some() {
         control.start();
     }
-    if let Some(worker) = control.worker.as_ref() {
-        if worker.is_finished() {
-            if let Some(handle) = control.worker.take() {
-                let _ = handle.join();
+    if control.worker.as_ref().is_some_and(|w| w.is_finished()) {
+        if let Some(handle) = control.worker.take() {
+            if handle.join().is_err() && control.last_error.is_none() {
+                control.last_error = Some("wrath session worker panicked".to_owned());
             }
-            control.last_error = Some("wrath session worker exited".to_owned());
-            if let Some(feed) = control.feed.take() {
-                if let Ok(mut slot) = feed.latest.lock() {
-                    *slot = None;
+        }
+        control.ended = true;
+    }
+}
+
+/// Application exit owns a bounded stop of the session thread; dropping a running `JoinHandle`
+/// alone is not cancellation.
+fn wrath_shutdown_on_exit(mut control: ResMut<WrathControl>, mut exits: MessageReader<AppExit>) {
+    if exits.read().next().is_some() {
+        control.stop();
+    }
+}
+
+/// The Net-stage drain: bounded, ordered, lifecycle-invalidating (R5).
+fn reward_items(items: Vec<gameplay::RewardItem>) -> Vec<QuestRewardItem> {
+    items
+        .into_iter()
+        .map(|item| QuestRewardItem {
+            item_id: item.item_id,
+            count: item.count,
+            display_id: item.display_id,
+        })
+        .collect()
+}
+
+fn quest_entries(quests: Vec<gameplay::QuestListEntry>) -> Vec<QuestListEntry> {
+    quests
+        .into_iter()
+        .map(|q| QuestListEntry {
+            quest_id: q.quest_id,
+            icon: q.icon,
+            level: q.level,
+            title: q.title,
+        })
+        .collect()
+}
+
+/// Map a typed 3.3.5 reply onto the established 1.12 event seam. Fields with no 3.3.5 equivalent
+/// are genuinely empty; nothing is invented from local state.
+fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
+    match event {
+        WrathGameplayEvent::AttackStart { attacker, victim } => {
+            vec![SessionEvent::AttackStart { attacker, victim }]
+        }
+        WrathGameplayEvent::AttackStop { attacker, victim } => {
+            vec![SessionEvent::AttackStop { attacker, victim }]
+        }
+        WrathGameplayEvent::AttackSwingError(reason) => {
+            let reason = match reason {
+                gameplay::AttackSwingError::NotInRange => AttackSwingError::NotInRange,
+                gameplay::AttackSwingError::BadFacing => AttackSwingError::BadFacing,
+                gameplay::AttackSwingError::DeadOrUnattackable => {
+                    AttackSwingError::DeadOrUnattackable
+                }
+            };
+            vec![SessionEvent::AttackSwingError(reason)]
+        }
+        WrathGameplayEvent::CastFailed {
+            spell_id,
+            reason,
+            arg,
+        } => {
+            let (reason, arg) = match reason {
+                cast_failure::Reason::Vanilla(reason) => (Some(reason), arg),
+                cast_failure::Reason::Unsupported(wrath) => {
+                    warn!(
+                        "wrath: unsupported cast-failure reason {wrath}; using SPELL_FAILED_ERROR"
+                    );
+                    (Some(0x1c), None)
+                }
+            };
+            vec![SessionEvent::CastResult {
+                spell_id,
+                success: false,
+                reason,
+                arg,
+            }]
+        }
+        WrathGameplayEvent::SpellStart {
+            caster,
+            spell_id,
+            cast_flags,
+            cast_time_ms,
+        } => vec![SessionEvent::SpellStart {
+            caster,
+            spell_id,
+            cast_flags: cast_flags as u16,
+            cast_time_ms: cast_time_ms.max(0) as u32,
+            target: None,
+            ammo_display_id: None,
+        }],
+        WrathGameplayEvent::LogoutResponse { reason, instant } => {
+            vec![SessionEvent::LogoutResponse { reason, instant }]
+        }
+        WrathGameplayEvent::LoggedOut => vec![SessionEvent::LoggedOut],
+        WrathGameplayEvent::LogoutCancelled => vec![SessionEvent::LogoutCancelled],
+        WrathGameplayEvent::SpellFailure { caster, spell_id } => {
+            vec![SessionEvent::SpellFailedOther { caster, spell_id }]
+        }
+        WrathGameplayEvent::SpellGo {
+            caster,
+            spell_id,
+            cast_flags,
+            hits,
+            misses,
+            target_mask,
+            item_caster,
+        } => vec![SessionEvent::SpellGo {
+            caster,
+            spell_id,
+            cast_flags: cast_flags as u16,
+            target: hits.first().copied(),
+            hits,
+            misses: misses
+                .into_iter()
+                .map(|(target, info, reflect_result)| {
+                    benilla_protocol::messages::SpellGoMiss {
+                        target,
+                        info,
+                        reflect_result,
+                    }
+                })
+                .collect(),
+            go_target: None,
+            target_mask,
+            source: None,
+            dest: None,
+            ammo_display_id: None,
+            item_caster,
+            unit_caster: caster,
+        }],
+        WrathGameplayEvent::InitialSpells { spells } => vec![SessionEvent::SpellBook {
+            spell_ids: spells,
+            cooldowns: Vec::new(),
+        }],
+        WrathGameplayEvent::GameObjectInfo { entry, type_id, display_id, name, data } => {
+            vec![SessionEvent::GameObjectInfo { entry, type_id, display_id, name, data }]
+        }
+        WrathGameplayEvent::PlayerName { guid, name, race, gender, class } => {
+            vec![SessionEvent::PlayerName { guid, name, race, gender, class }]
+        }
+        WrathGameplayEvent::CreatureName {
+            entry,
+            name,
+            subname,
+            creature_type,
+            pet_family,
+            rank,
+            type_flags,
+            display_id,
+        } => vec![SessionEvent::CreatureName {
+            entry,
+            name,
+            subname,
+            creature_type: Some(creature_type),
+            pet_family,
+            rank,
+            type_flags,
+            pet_spell_list: 0,
+            display_id,
+            civilian: false,
+            racial_leader: false,
+        }],
+        WrathGameplayEvent::ItemInfo { entry, info } => vec![SessionEvent::ItemTemplate {
+            entry,
+            info: info.map(|i| {
+                Box::new(ItemInfo {
+                    class: i.class,
+                    subclass: i.subclass,
+                    name: i.name,
+                    display_info_id: i.display_info_id,
+                    quality: i.quality,
+                    flags: i.flags,
+                    buy_price: i.buy_price,
+                    sell_price: i.sell_price,
+                    inventory_type: i.inventory_type,
+                    allowable_class: i.allowable_class,
+                    allowable_race: i.allowable_race,
+                    item_level: i.item_level,
+                    required_level: i.required_level,
+                    required_skill: i.required_skill,
+                    required_skill_rank: i.required_skill_rank,
+                    required_spell: i.required_spell,
+                    required_honor_rank: i.required_honor_rank,
+                    required_city_rank: i.required_city_rank,
+                    required_rep_faction: i.required_rep_faction,
+                    required_rep_rank: i.required_rep_rank,
+                    max_count: i.max_count,
+                    stackable: i.stackable,
+                    container_slots: i.container_slots,
+                    stats: Vec::new(),
+                    damages: Vec::new(),
+                    dmg_min: 0.0,
+                    dmg_max: 0.0,
+                    dmg_type: 0,
+                    armor: 0,
+                    resistances: [0; 6],
+                    delay_ms: 0,
+                    ammo_type: 0,
+                    ranged_mod_range: 0.0,
+                    spells: Vec::new(),
+                    spell_charges_0: 0,
+                    use_spell: None,
+                    bonding: 0,
+                    description: String::new(),
+                    page_text: 0,
+                    language_id: 0,
+                    page_material: 0,
+                    start_quest: 0,
+                    lock_id: 0,
+                    material: 0,
+                    sheath: 0,
+                    random_property: 0,
+                    block: 0,
+                    item_set: 0,
+                    max_durability: 0,
+                    area: 0,
+                    map: 0,
+                    bag_family: 0,
+                })
+            }),
+        }],
+        WrathGameplayEvent::ActionButtons { buttons } => vec![SessionEvent::ActionButtons {
+            buttons: buttons
+                .into_iter()
+                .map(|b| ActionButton {
+                    slot: b.slot,
+                    action: b.action,
+                    kind: b.kind,
+                })
+                .collect(),
+        }],
+        WrathGameplayEvent::SpellLearned { spell_id } => {
+            vec![SessionEvent::SpellLearned { spell_id }]
+        }
+        WrathGameplayEvent::Gossip {
+            npc,
+            menu_id: _,
+            text_id,
+            options,
+            quests,
+        } => vec![SessionEvent::GossipMenu {
+            npc,
+            text_id,
+            options: options
+                .into_iter()
+                .map(|o| ProtocolGossipOption {
+                    index: o.index,
+                    icon: o.icon,
+                    coded: o.coded,
+                    message: o.message,
+                })
+                .collect(),
+            quests: quests
+                .into_iter()
+                .map(|q| (q.quest_id, q.icon, q.level, q.title))
+                .collect(),
+        }],
+        WrathGameplayEvent::GossipComplete => vec![SessionEvent::GossipComplete],
+        WrathGameplayEvent::QuestGiverStatus { npc, status } => {
+            vec![SessionEvent::QuestGiverStatus { npc, status }]
+        }
+        WrathGameplayEvent::QuestGreeting {
+            npc,
+            greeting,
+            emote_delay,
+            emote,
+            quests,
+        } => vec![SessionEvent::QuestGreeting(QuestGiverList {
+            npc,
+            greeting,
+            emote_delay,
+            emote,
+            quests: quest_entries(quests),
+        })],
+        WrathGameplayEvent::QuestDetails(d) => vec![SessionEvent::QuestDetail(QuestDetails {
+            npc: d.npc,
+            quest_id: d.quest_id,
+            title: d.title,
+            details: d.details,
+            objectives: d.objectives,
+            auto_finish: d.auto_finish,
+            choices: reward_items(d.choices),
+            rewards: reward_items(d.rewards),
+            money: d.money,
+            reward_spell: d.reward_spell,
+        })],
+        WrathGameplayEvent::QuestProgress(p) => {
+            vec![SessionEvent::QuestProgress(QuestRequestItems {
+                npc: p.npc,
+                quest_id: p.quest_id,
+                title: p.title,
+                request_text: p.request_text,
+                emote: p.emote,
+                close_on_cancel: p.close_on_cancel,
+                required_money: p.required_money,
+                required_items: reward_items(p.required_items),
+                is_complete: p.is_complete,
+            })]
+        }
+        WrathGameplayEvent::QuestOffer(o) => {
+            vec![SessionEvent::QuestOffer(QuestOfferReward {
+                npc: o.npc,
+                quest_id: o.quest_id,
+                title: o.title,
+                offer_text: o.offer_text,
+                auto_finish: o.auto_finish,
+                choices: reward_items(o.choices),
+                rewards: reward_items(o.rewards),
+                money: o.money,
+                quest_flags: o.quest_flags,
+                reward_spell: o.reward_spell,
+            })]
+        }
+        WrathGameplayEvent::QuestComplete(c) => vec![SessionEvent::QuestComplete(QuestComplete {
+            quest_id: c.quest_id,
+            xp: c.xp,
+            money: c.money,
+            items: Vec::new(),
+        })],
+        WrathGameplayEvent::QuestTemplate(t) => vec![SessionEvent::QuestTemplate(Box::new(
+            QuestTemplate {
+                quest_id: t.quest_id,
+                method: t.method,
+                level: t.level,
+                zone_or_sort: t.zone_or_sort,
+                quest_type: t.quest_type,
+                rep_objective_faction: t.rep_objective_faction,
+                rep_objective_value: t.rep_objective_value,
+                opposite_rep_faction: t.opposite_rep_faction,
+                opposite_rep_value: t.opposite_rep_value,
+                next_quest_in_chain: t.next_quest_in_chain,
+                money: t.money,
+                money_max_level: t.money_max_level,
+                reward_spell: t.reward_spell,
+                src_item_id: t.src_item_id,
+                flags: t.flags,
+                rewards: t.rewards,
+                choices: [
+                    t.choices[0],
+                    t.choices[1],
+                    t.choices[2],
+                    t.choices[3],
+                    (0, 0),
+                    (0, 0),
+                ],
+                point_map_id: t.point_map_id,
+                point_x: t.point_x,
+                point_y: t.point_y,
+                point_opt: t.point_opt,
+                title: t.title,
+                objectives_text: t.objectives_text,
+                details: t.details,
+                end_text: t.end_text,
+                objectives: t.objectives.map(|o| QuestObjective {
+                    creature_or_go: o.creature_or_go,
+                    required_count: o.required_count,
+                    item_id: o.item_id,
+                    item_count: o.item_count,
+                    text: o.text,
+                }),
+            },
+        ))],
+        WrathGameplayEvent::QuestObjectivesComplete { quest_id } => {
+            vec![SessionEvent::QuestObjectivesComplete { quest_id }]
+        }
+        WrathGameplayEvent::QuestObjectiveKill {
+            quest_id,
+            entry,
+            count,
+            required,
+        } => vec![SessionEvent::QuestObjectiveKill {
+            quest_id,
+            entry,
+            count,
+            required,
+        }],
+        WrathGameplayEvent::QuestObjectiveItem { item_id, count } => {
+            vec![SessionEvent::QuestObjectiveItem { item_id, count }]
+        }
+        WrathGameplayEvent::QuestLogFull => vec![SessionEvent::QuestLogFull],
+        WrathGameplayEvent::QuestGiverInvalid { reason } => {
+            vec![SessionEvent::QuestGiverInvalid { reason }]
+        }
+        WrathGameplayEvent::QuestGiverFailed { quest_id, reason } => {
+            vec![SessionEvent::QuestGiverFailed { quest_id, reason }]
+        }
+        WrathGameplayEvent::QuestFailed { quest_id, timed } => {
+            vec![SessionEvent::QuestFailed { quest_id, timed }]
+        }
+        WrathGameplayEvent::NpcText { text_id, blocks } => vec![SessionEvent::NpcGreeting {
+            text_id,
+            blocks: blocks
+                .into_iter()
+                .map(|b| ProtocolNpcTextBlock {
+                    probability: b.probability,
+                    male: b.male,
+                    female: b.female,
+                })
+                .collect(),
+        }],
+        WrathGameplayEvent::LootResponse {
+            guid,
+            loot_type,
+            gold,
+            items,
+        } => vec![SessionEvent::LootResponse {
+            guid,
+            loot_type,
+            gold,
+            items: items
+                .into_iter()
+                .map(|i| ProtocolLootItem {
+                    slot: i.slot,
+                    item_id: i.item_id,
+                    count: i.count,
+                    display_info_id: i.display_info_id,
+                    random_property_id: i.random_property_id,
+                    slot_type: i.slot_type,
+                })
+                .collect(),
+        }],
+        WrathGameplayEvent::LootError { guid, error } => {
+            vec![SessionEvent::LootError { guid, error }]
+        }
+        WrathGameplayEvent::LootReleaseResponse { guid, result } => {
+            vec![SessionEvent::LootReleaseResponse { guid, result }]
+        }
+        WrathGameplayEvent::LootRemoved { slot } => vec![SessionEvent::LootRemoved { slot }],
+        WrathGameplayEvent::LootMoney { amount } => {
+            vec![SessionEvent::LootMoneyNotify { amount }]
+        }
+        WrathGameplayEvent::LootClearMoney => vec![SessionEvent::LootClearMoney],
+        WrathGameplayEvent::ItemPush(p) => vec![SessionEvent::ItemPushResult(ItemPushResult {
+            player_guid: p.player,
+            from_npc: p.from_npc,
+            created: p.created,
+            show_in_chat: p.show_in_chat,
+            bag_slot: p.bag_slot,
+            item_slot: p.item_slot,
+            item_entry: p.item_entry,
+            suffix_factor: p.suffix_factor,
+            random_property_id: p.random_property_id as u32,
+            count: p.count,
+        })],
+    }
+}
+
+/// The action/UI commands the stock 1.12 net thread would have consumed, translated to the
+/// 3.3.5 wire. The stock UI remains the only producer and its existing handlers remain the
+/// only consumers of replies.
+fn wrath_tap_commands(
+    tap: Option<ResMut<NetCommandTap>>,
+    mut view: ResMut<WrathWorldView>,
+    input: ResMut<WrathInput>,
+) {
+    let Some(mut tap) = tap else { return };
+    let Some(receiver) = tap.0.as_mut() else { return };
+    while let Ok(command) = receiver.try_recv() {
+        let count = view.next_cast_count;
+        let packet = match command {
+            ClientCommand::SetSelection { guid } => {
+                if guid != 0 && !view.entities.contains_key(&guid) {
+                    debug!("wrath: dropping selection of unstreamed {guid:#x}");
+                    continue;
+                }
+                Some((benilla_protocol_wrath::opcode::CMSG_SET_SELECTION, gameplay::set_selection(guid)))
+            }
+            ClientCommand::AttackSwing { guid } => {
+                if !view.entities.contains_key(&guid) {
+                    continue;
+                }
+                Some((benilla_protocol_wrath::opcode::CMSG_ATTACKSWING, gameplay::attack_swing(guid)))
+            }
+            ClientCommand::AttackStop => Some((
+                benilla_protocol_wrath::opcode::CMSG_ATTACKSTOP,
+                gameplay::attack_stop(),
+            )),
+            ClientCommand::CastSpell { spell_id, target } => {
+                view.next_cast_count = count.wrapping_add(1).max(1);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
+                    gameplay::cast_spell(count, spell_id, target),
+                ))
+            }
+            ClientCommand::GossipHello { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GOSSIP_HELLO,
+                gameplay::gossip_hello(guid),
+            )),
+            ClientCommand::GossipSelectOption {
+                guid,
+                option,
+                code,
+            } => {
+                let menu_id = view
+                    .gossip_menu
+                    .filter(|(npc, _)| *npc == guid)
+                    .map_or(0, |(_, id)| id);
+                let code = code.as_deref().and_then(|b| std::str::from_utf8(b).ok());
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_GOSSIP_SELECT_OPTION,
+                    gameplay::gossip_select(guid, menu_id, option, code),
+                ))
+            }
+            ClientCommand::NpcTextQuery { text_id, guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_NPC_TEXT_QUERY,
+                gameplay::npc_text_query(text_id, guid),
+            )),
+            ClientCommand::QuestgiverStatusQuery { npc } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_STATUS_QUERY,
+                gameplay::questgiver_status_query(npc),
+            )),
+            ClientCommand::QuestgiverHello { npc } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_HELLO,
+                gameplay::questgiver_hello(npc),
+            )),
+            ClientCommand::QuestgiverQuery { npc, quest } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_QUERY_QUEST,
+                gameplay::questgiver_query(npc, quest),
+            )),
+            ClientCommand::QuestgiverAccept { npc, quest } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_ACCEPT_QUEST,
+                gameplay::questgiver_accept(npc, quest),
+            )),
+            ClientCommand::QuestgiverComplete { npc, quest } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_COMPLETE_QUEST,
+                gameplay::questgiver_complete(npc, quest),
+            )),
+            ClientCommand::QuestgiverRequestReward { npc, quest } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_REQUEST_REWARD,
+                gameplay::questgiver_request_reward(npc, quest),
+            )),
+            ClientCommand::QuestgiverChooseReward {
+                npc,
+                quest,
+                choice,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_CHOOSE_REWARD,
+                gameplay::questgiver_choose_reward(npc, quest, choice),
+            )),
+            ClientCommand::NameQuery { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_NAME_QUERY,
+                guid.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::GameObjectQuery { entry, guid } => {
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_GAMEOBJECT_QUERY,
+                    gameplay::gameobject_query(entry, guid),
+                ))
+            }
+            ClientCommand::CreatureQuery { entry, guid } => {
+                let mut payload = entry.to_le_bytes().to_vec();
+                payload.extend_from_slice(&guid.to_le_bytes());
+                Some((benilla_protocol_wrath::opcode::CMSG_CREATURE_QUERY, payload))
+            }
+            ClientCommand::ItemQuery { entry, .. } => Some((
+                benilla_protocol_wrath::opcode::CMSG_ITEM_QUERY_SINGLE,
+                gameplay::item_query(entry),
+            )),
+            ClientCommand::QuestQuery { quest } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUEST_QUERY,
+                gameplay::quest_query(quest),
+            )),
+            ClientCommand::GameObjUse { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GAMEOBJ_USE,
+                guid.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::Loot { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_LOOT,
+                gameplay::loot(guid),
+            )),
+            ClientCommand::AutostoreLootItem { slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_LOOT_ITEM,
+                gameplay::autostore_loot_item(slot),
+            )),
+            ClientCommand::LootMoney => Some((
+                benilla_protocol_wrath::opcode::CMSG_LOOT_MONEY,
+                gameplay::loot_money(),
+            )),
+            ClientCommand::LootRelease { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_LOOT_RELEASE,
+                gameplay::loot_release(guid),
+            )),
+            ClientCommand::Logout => Some((
+                benilla_protocol_wrath::opcode::CMSG_LOGOUT_REQUEST,
+                gameplay::logout_request(),
+            )),
+            ClientCommand::LogoutCancel => Some((
+                benilla_protocol_wrath::opcode::CMSG_LOGOUT_CANCEL,
+                gameplay::logout_cancel(),
+            )),
+            ClientCommand::SetActiveMover { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SET_ACTIVE_MOVER,
+                guid.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::SetActionButton { button, packed } => Some((
+                0x128, // CMSG_SET_ACTION_BUTTON
+                gameplay::set_action_button(button, packed),
+            )),
+            _ => None,
+        };
+        if let Some((opcode, payload)) = packet {
+            if let Ok(mut queue) = input.0.lock() {
+                if queue.len() < 256 {
+                    queue.push_back(WrathOutbound { opcode, payload });
                 }
             }
         }
     }
 }
 
-/// The Net-stage drain: bounded, ordered, lifecycle-invalidating (R5).
 fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorldView>) {
     let mut drained = 0usize;
     for event in control.take_events() {
@@ -308,22 +1086,48 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
                 view.world_generation = world_generation;
                 view.map_id = map_id;
                 view.self_observation = None;
+                view.player_guid = 0;
+                view.entered_world = false;
                 view.last_changes.world_transferred = true;
+            }
+            WrathFeedEvent::GossipMenu { npc, menu_id } => {
+                view.gossip_menu = Some((npc, menu_id));
             }
             WrathFeedEvent::ExportSkipped(reason) => {
                 debug!("wrath export skipped: {reason}");
             }
-            WrathFeedEvent::SessionEnded(result) => match result {
-                Ok(()) => info!("wrath session ended cleanly"),
-                Err(e) => {
-                    warn!("wrath session failed: {e}");
-                    control.last_error = Some(e);
-                    view.entities.clear();
-                    view.self_observation = None;
-                    view.last_changes.world_transferred = true;
+            WrathFeedEvent::SessionEnded(result) => {
+                control.ended = true;
+                match result {
+                    Ok(()) => info!("wrath session ended cleanly"),
+                    Err(e) => {
+                        warn!("wrath session failed: {e}");
+                        control.last_error = Some(e);
+                    }
                 }
-            },
+                view.entities.clear();
+                view.self_observation = None;
+                view.player_guid = 0;
+                view.entered_world = false;
+                view.last_changes.world_transferred = true;
+            }
         }
+    }
+
+    // A worker can exit after its final event was already drained (or panicked without one). The
+    // exposed view is invalid on that terminal edge even when no digest follows.
+    if control.ended {
+        view.entities.clear();
+        view.self_observation = None;
+        view.player_guid = 0;
+        view.entered_world = false;
+        view.last_changes.world_transferred = true;
+        if let Some(feed) = control.feed.take() {
+            if let Ok(mut slot) = feed.latest.lock() {
+                *slot = None;
+            }
+        }
+        return;
     }
 
     let Some(digest) = control.take_digest() else { return };
@@ -372,29 +1176,545 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
     view.last_changes = changes;
 }
 
-/// Run one renderless Wrath session on the calling thread (the IO thread), publishing into the
-/// feed. This is the renderless driver's loop, retargeted at the feed instead of stdout. It
-/// returns when the dwell elapses or the session fails; the app restarts it as needed.
-pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Result<()> {
-    use benilla_wm_native::{pump_once, ProducerSession, PublisherConfig};
+/// An ECS entity translated from a Wrath digest. Presentation clears exactly this scope without
+/// touching stock-path or UI entities.
+#[derive(Component)]
+struct WrathStreamed;
+
+#[derive(Component, Clone, Copy)]
+struct WrathGeneration(u32);
+
+/// Translate the drained digest into the established `GuidIndex`/`NetEntity`/`ObjectStore` path.
+/// Exclusive, so creates/removals are live before `WorldStage::Input`.
+fn wrath_apply_world(world: &mut World) {
+    let (changes, entities, entered, phase, player_guid, map_id) = {
+        let mut view = world.resource_mut::<WrathWorldView>();
+        (
+            std::mem::take(&mut view.last_changes),
+            view.entities.clone(),
+            view.entered_world,
+            view.phase,
+            view.player_guid,
+            view.map_id,
+        )
+    };
+    let mut index = std::mem::take(&mut *world.resource_mut::<GuidIndex>());
+    if changes.world_transferred {
+        // Scope loss is cleanup-first: it does not depend on a following digest, a player guid,
+        // or a live phase. No old-scope ECS entity or action may survive into the next Input.
+        let stale: Vec<Entity> = world
+            .query_filtered::<Entity, With<WrathStreamed>>()
+            .iter(world)
+            .collect();
+        for entity in stale {
+            if let Some(guid) = world.get::<Guid>(entity).map(|g| g.0) {
+                if index.0.get(&guid) == Some(&entity) {
+                    index.0.remove(&guid);
+                }
+            }
+            world.despawn(entity);
+        }
+        world.resource_mut::<SelfGuid>().0 = None;
+        if let Some(mut player) = world.get_resource_mut::<crate::player::Player>() {
+            *player = crate::player::Player::default();
+        }
+        if let Some(mut control) = world.get_resource_mut::<crate::player::OwnControlLost>() {
+            *control = crate::player::OwnControlLost::default();
+        }
+        if let Some(mut stand) = world.get_resource_mut::<crate::player::StandPending>() {
+            *stand = crate::player::StandPending::default();
+        }
+        if let Some(input) = world.get_resource::<WrathInput>() {
+            if let Ok(mut queue) = input.0.lock() {
+                queue.clear();
+            }
+        }
+    }
+    *world.resource_mut::<GuidIndex>() = index;
+
+    if player_guid == 0
+        || !matches!(
+            phase,
+            Some(Phase::InWorld | Phase::TransferPending | Phase::Loading)
+        )
+    {
+        return;
+    }
+    let mut index = std::mem::take(&mut *world.resource_mut::<GuidIndex>());
+
+    for guid in &changes.removed {
+        if let Some(entity) = index.0.remove(guid) {
+            world.despawn(entity);
+        }
+    }
+
+    for guid in changes.created.iter().chain(changes.updated.iter()) {
+        let Some(remote) = entities.get(guid) else {
+            continue;
+        };
+        let kind = entity_kind(remote.type_id);
+        let object_type = match kind {
+            EntityKind::Player => ObjectType::Player,
+            EntityKind::GameObject => ObjectType::GameObject,
+            EntityKind::DynamicObject => ObjectType::DynamicObject,
+            EntityKind::Corpse => ObjectType::Corpse,
+            _ => ObjectType::Unit,
+        };
+        let mut pairs = vec![(2u16, object_type_mask(object_type))];
+        if let Some(entry) = remote.entry {
+            pairs.push((3, entry));
+        }
+        if let Some(scale) = remote.scale {
+            pairs.push((4, scale.to_bits()));
+        }
+        if let Some(health) = remote.health {
+            pairs.push((22, health));
+            pairs.push((28, remote.max_health.unwrap_or(health)));
+        }
+        if let Some(level) = remote.level {
+            pairs.push((34, level));
+        }
+        if let Some(faction) = remote.faction {
+            pairs.push((35, faction));
+        }
+        if let Some(flags) = remote.unit_flags {
+            pairs.push((46, flags));
+        }
+        if let Some(mount) = remote.mount_display_id {
+            pairs.push((133, mount));
+        }
+        if let Some(bytes) = remote.bytes_1 {
+            pairs.push((138, bytes));
+        }
+        if let Some(flags) = remote.npc_flags {
+            pairs.push((147, flags));
+        }
+        if let Some(flags) = remote.dynamic_flags {
+            pairs.push((143, flags));
+        }
+        if let Some(display) = remote.display_id {
+            pairs.push((131, display));
+            pairs.push((132, display));
+        }
+        if let Some(bytes) = remote.bytes_0 {
+            pairs.push((36, bytes));
+        }
+        if let Some(target) = remote.target {
+            pairs.push((16, target as u32));
+            pairs.push((17, (target >> 32) as u32));
+        }
+        if kind == EntityKind::Player {
+            if let Some(bytes) = remote.player_bytes {
+                pairs.push((193, bytes));
+            }
+            if let Some(bytes) = remote.player_bytes_2 {
+                pairs.push((194, bytes));
+            }
+            if let Some(raw) = remote.player_fields.as_deref() {
+                // 3.3.5 uses 148 as UNIT_END; 1.12 uses a different player layout. Map the
+                // durable fields the stock quest/loot/player frames read.
+                for slot in 0..20usize {
+                    let src = 158 + slot * 5;
+                    let id = raw.get(src).copied().unwrap_or(0);
+                    if id == 0 {
+                        continue;
+                    }
+                    let state = raw.get(src + 1).copied().unwrap_or(0);
+                    let counts = u64::from(raw.get(src + 2).copied().unwrap_or(0))
+                        | (u64::from(raw.get(src + 3).copied().unwrap_or(0)) << 32);
+                    let timer = raw.get(src + 4).copied().unwrap_or(0);
+                    let mut packed = (state & 0xff) << 24;
+                    for i in 0..4 {
+                        let count = ((counts >> (i * 16)) & 0xffff).min(63) as u32;
+                        packed |= count << (i * 6);
+                    }
+                    let dst = 198 + slot * 3;
+                    pairs.push((dst as u16, id));
+                    pairs.push(((dst + 1) as u16, packed));
+                    pairs.push(((dst + 2) as u16, timer));
+                }
+                for (src, dst) in [(25u16, 23u16), (26, 24), (27, 25), (33, 29), (34, 30), (35, 31)] {
+                    if let Some(value) = raw.get(src as usize) {
+                        pairs.push((dst, *value));
+                    }
+                }
+                for i in 0..46u16 {
+                    if let Some(value) = raw.get((324 + i) as usize) {
+                        pairs.push((486 + i, *value));
+                    }
+                }
+                for i in 0..32u16 {
+                    if let Some(value) = raw.get((370 + i) as usize) {
+                        pairs.push((532 + i, *value));
+                    }
+                }
+                if let Some(value) = raw.get(634) {
+                    pairs.push((716, *value));
+                }
+                if let Some(value) = raw.get(635) {
+                    pairs.push((717, *value));
+                }
+                if let Some(value) = raw.get(1170) {
+                    pairs.push((1176, *value));
+                }
+            }
+        }
+        let fields = ObjectFields::from_pairs(&pairs).into_created(object_type);
+        let transform = remote.position.map(|p| Transform {
+            translation: wow_to_bevy([p.x, p.y, p.z]),
+            rotation: Quat::from_rotation_y(p.o),
+            ..default()
+        });
+        let mut existing = index.0.get(guid).copied();
+        if let Some(entity) = existing {
+            if world
+                .get::<WrathGeneration>(entity)
+                .is_some_and(|generation| generation.0 != remote.generation)
+            {
+                index.0.remove(guid);
+                world.despawn(entity);
+                existing = None;
+            }
+        }
+        match existing {
+            Some(entity) => {
+                let old = world.get::<ObjectStore>(entity).map(|store| store.0.clone());
+                let old_health = old.as_ref().and_then(benilla_protocol::ObjectFields::unit_health);
+                let old_max = old
+                    .as_ref()
+                    .and_then(benilla_protocol::ObjectFields::unit_max_health);
+                world.entity_mut(entity).insert((
+                    NetEntity {
+                        kind,
+                        display_id: remote.display_id,
+                        scale: remote.scale.unwrap_or(1.0),
+                    },
+                    ObjectStore(fields),
+                ));
+                if old_health != remote.health {
+                    let _ = world.write_message(FieldChanged {
+                        at: crate::lanes::stamp(),
+                        entity,
+                        guid: *guid,
+                        kind: object_type,
+                        index: 22,
+                        old: old_health.unwrap_or(0),
+                        new: remote.health.unwrap_or(0),
+                    });
+                }
+                if old_max != remote.max_health {
+                    let _ = world.write_message(FieldChanged {
+                        at: crate::lanes::stamp(),
+                        entity,
+                        guid: *guid,
+                        kind: object_type,
+                        index: 28,
+                        old: old_max.unwrap_or(0),
+                        new: remote.max_health.unwrap_or(0),
+                    });
+                }
+                if kind == EntityKind::Player {
+                    world.entity_mut(entity).insert(Equipment {
+                        settled: true,
+                        ..default()
+                    });
+                }
+                if *guid == player_guid && world.get::<SelfPlayer>(entity).is_none() {
+                    world.entity_mut(entity).insert(SelfPlayer);
+                }
+                if *guid != player_guid {
+                    if let Some(transform) = transform {
+                        world.entity_mut(entity).insert(transform);
+                    }
+                } else if let (Some(pose), Some(server_flags)) =
+                    (remote.position, remote.move_flags)
+                {
+                    // Server correction is applied at rest only: while we are moving, the local
+                    // controller owns the pose and the next reduced stop/heartbeat reconciles it.
+                    const MOVING: u32 = W_FLAG_FORWARD
+                        | W_FLAG_BACKWARD
+                        | W_FLAG_STRAFE_LEFT
+                        | W_FLAG_STRAFE_RIGHT
+                        | W_FLAG_TURN_LEFT
+                        | W_FLAG_TURN_RIGHT
+                        | W_FLAG_FALLING;
+                    let local_flags = world
+                        .get_resource::<crate::player::Player>()
+                        .map_or(0, crate::player::Player::move_flags);
+                    if server_flags & MOVING == 0 && local_flags & MOVING == 0 {
+                        let bevy = wow_to_bevy([pose.x, pose.y, pose.z]);
+                        let current = world
+                            .get_resource::<crate::player::Player>()
+                            .map_or(Vec3::ZERO, |p| p.pos);
+                        if current.distance_squared(bevy) > 0.01 {
+                            if let Some(mut player) = world
+                                .get_resource_mut::<crate::player::Player>()
+                            {
+                                player.apply_server_pose(bevy, pose.o);
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                let mut entity = world.spawn((
+                    WrathStreamed,
+                    WrathGeneration(remote.generation),
+                    Guid(*guid),
+                    NetEntity {
+                        kind,
+                        display_id: remote.display_id,
+                        scale: remote.scale.unwrap_or(1.0),
+                    },
+                    ObjectStore(fields),
+                    UnitSpeeds(default_speeds()),
+                    transform.unwrap_or_default(),
+                ));
+                if *guid == player_guid {
+                    entity.insert((
+                        SelfPlayer,
+                        Equipment {
+                            settled: true,
+                            ..default()
+                        },
+                    ));
+                }
+                index.0.insert(*guid, entity.id());
+            }
+        }
+    }
+
+    world.resource_mut::<SelfGuid>().0 = Some(player_guid);
+    *world.resource_mut::<GuidIndex>() = index;
+
+    world.insert_resource(CurrentMap(map_id));
+    if !entered {
+        if let Some(local) = entities.get(&player_guid).and_then(|e| e.position) {
+            let now = world
+                .get_resource::<Time>()
+                .map_or(0.0, bevy::time::Time::elapsed_secs);
+            if let Some(mut player) = world.get_resource_mut::<crate::player::Player>() {
+                player.active = true;
+                player.reseat = true;
+                player.settling = true;
+                player.settle_since = now;
+                player.settle_deadline = now + crate::player::SETTLE_TIMEOUT;
+                player.world_stale = true;
+                player.pos = wow_to_bevy([local.x, local.y, local.z]);
+            }
+        }
+    }
+    if !entered && entities.contains_key(&player_guid) {
+        world.write_message(WorldEnterCascadeMessage);
+        world.write_message(EnteredWorldMessage {
+            tutorial_flags: None,
+        });
+        world.resource_mut::<WrathWorldView>().entered_world = true;
+        info!(
+            "wrath: entered world {map_id}, player {player_guid:#x}, {} entities",
+            entities.len()
+        );
+    }
+}
+
+fn default_speeds() -> MoveSpeeds {
+    MoveSpeeds {
+        walk: 2.5,
+        run: 7.0,
+        run_back: 4.5,
+        swim: 4.722_222,
+        swim_back: 2.5,
+        turn_rate: std::f32::consts::PI,
+    }
+}
+
+#[derive(Default)]
+struct WrathMoveLocal {
+    started: Option<std::time::Instant>,
+    flags: Option<u32>,
+    pos: Option<[f32; 3]>,
+    facing: Option<f32>,
+    last_send: Option<std::time::Instant>,
+}
+
+const W_FLAG_FORWARD: u32 = 0x1;
+const W_FLAG_BACKWARD: u32 = 0x2;
+const W_FLAG_STRAFE_LEFT: u32 = 0x4;
+const W_FLAG_STRAFE_RIGHT: u32 = 0x8;
+const W_FLAG_TURN_LEFT: u32 = 0x10;
+const W_FLAG_TURN_RIGHT: u32 = 0x20;
+const W_FLAG_FALLING: u32 = 0x2000;
+const W_FLAG_SWIMMING: u32 = 0x200_0000;
+
+/// Stream the shared `Player` controller's pose onto the Wrath session. The existing action/input
+/// path remains the source of motion; this adapter only chooses the Wrath opcode for the edge and
+/// writes the 3.3.5 `MovementInfo` fields the server reads.
+fn wrath_stream_movement(
+    player: Option<Res<crate::player::Player>>,
+    self_guid: Option<Res<SelfGuid>>,
+    input: Option<Res<WrathInput>>,
+    mut local: Local<WrathMoveLocal>,
+) {
+    let Some(player) = player else {
+        local.flags = None;
+        return;
+    };
+    let Some(input) = input else { return };
+    let Some(guid) = self_guid.as_ref().and_then(|g| g.0) else {
+        local.flags = None;
+        return;
+    };
+    if !player.active || player.detached || player.control_lost || player.settling {
+        return;
+    }
+    let mut flags = player.move_flags();
+    // 1.12 places swimming at 0x200000 and transport at 0x2000000; 3.3.5 swaps those meanings.
+    if flags & 0x20_0000 != 0 {
+        flags = (flags & !0x20_0000) | W_FLAG_SWIMMING;
+    }
+    if flags & 0x0200_0000 != 0 {
+        // Transport-local movement needs the transport block; the first route is on foot.
+        return;
+    }
+    let pos = bevy_to_wow(player.pos);
+    let facing = player.facing().rem_euclid(std::f32::consts::TAU);
+    let now = std::time::Instant::now();
+    let started = *local.started.get_or_insert(now);
+    let prev_flags = local.flags.replace(flags);
+    let changed = prev_flags != Some(flags);
+    let pose_changed = local.pos.replace(pos) != Some(pos) || local.facing.replace(facing) != Some(facing);
+    let periodic = local
+        .last_send
+        .is_none_or(|at| now.duration_since(at) >= Duration::from_millis(500));
+    if !changed && !pose_changed && !periodic {
+        return;
+    }
+    let fall_edge = |was: Option<u32>, now: u32| {
+        let was = was.unwrap_or(0) & W_FLAG_FALLING != 0;
+        let is = now & W_FLAG_FALLING != 0;
+        (was, is)
+    };
+    let (was_falling, is_falling) = fall_edge(prev_flags, flags);
+    let opcode = if !was_falling && is_falling {
+        Some(benilla_protocol_wrath::opcode::MSG_MOVE_JUMP)
+    } else if was_falling && !is_falling {
+        Some(benilla_protocol_wrath::opcode::MSG_MOVE_FALL_LAND)
+    } else {
+        let delta = prev_flags.unwrap_or(0) ^ flags;
+        Some(if delta & (W_FLAG_STRAFE_LEFT | W_FLAG_STRAFE_RIGHT) != 0 {
+            if flags & W_FLAG_STRAFE_LEFT != 0 {
+                benilla_protocol_wrath::opcode::MSG_MOVE_START_STRAFE_LEFT
+            } else if flags & W_FLAG_STRAFE_RIGHT != 0 {
+                benilla_protocol_wrath::opcode::MSG_MOVE_START_STRAFE_RIGHT
+            } else {
+                benilla_protocol_wrath::opcode::MSG_MOVE_STOP_STRAFE
+            }
+        } else if delta & (W_FLAG_TURN_LEFT | W_FLAG_TURN_RIGHT) != 0 {
+            if flags & W_FLAG_TURN_LEFT != 0 {
+                benilla_protocol_wrath::opcode::MSG_MOVE_START_TURN_LEFT
+            } else if flags & W_FLAG_TURN_RIGHT != 0 {
+                benilla_protocol_wrath::opcode::MSG_MOVE_START_TURN_RIGHT
+            } else {
+                benilla_protocol_wrath::opcode::MSG_MOVE_STOP_TURN
+            }
+        } else if delta & (W_FLAG_FORWARD | W_FLAG_BACKWARD) != 0 {
+            if flags & W_FLAG_FORWARD != 0 {
+                benilla_protocol_wrath::opcode::MSG_MOVE_START_FORWARD
+            } else if flags & W_FLAG_BACKWARD != 0 {
+                benilla_protocol_wrath::opcode::MSG_MOVE_START_BACKWARD
+            } else {
+                benilla_protocol_wrath::opcode::MSG_MOVE_STOP
+            }
+        } else {
+            benilla_protocol_wrath::opcode::MSG_MOVE_HEARTBEAT
+        })
+    };
+    let Some(opcode) = opcode else { return };
+    let mut payload = enc_pack_guid(guid);
+    payload.extend_from_slice(&flags.to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes()); // movement flags 2
+    let time = now.duration_since(started).as_millis() as u32;
+    payload.extend_from_slice(&time.to_le_bytes());
+    payload.extend_from_slice(&pos[0].to_le_bytes());
+    payload.extend_from_slice(&pos[1].to_le_bytes());
+    payload.extend_from_slice(&pos[2].to_le_bytes());
+    payload.extend_from_slice(&facing.to_le_bytes());
+    if flags & W_FLAG_SWIMMING != 0 {
+        payload.extend_from_slice(&0f32.to_le_bytes()); // pitch
+    }
+    payload.extend_from_slice(&0u32.to_le_bytes()); // fall time
+    if flags & W_FLAG_FALLING != 0 {
+        payload.extend_from_slice(&[0u8; 16]); // zspeed, sin, cos, xyspeed
+    }
+    if let Ok(mut queue) = input.0.lock() {
+        if queue.len() >= 64 {
+            queue.pop_front();
+        }
+        queue.push_back(WrathOutbound { opcode, payload });
+    }
+    local.last_send = Some(now);
+}
+
+fn object_type_mask(kind: ObjectType) -> u32 {
+    match kind {
+        ObjectType::Object => 0x1,
+        ObjectType::Item => 0x2,
+        ObjectType::Container => 0x4,
+        ObjectType::Unit => 0x8 | 0x1,
+        ObjectType::Player => 0x10 | 0x8 | 0x1,
+        ObjectType::GameObject => 0x20 | 0x1,
+        ObjectType::DynamicObject => 0x40 | 0x1,
+        ObjectType::Corpse => 0x80 | 0x1,
+    }
+}
+
+fn entity_kind(type_id: u8) -> EntityKind {
+    match type_id {
+        4 => EntityKind::Player,
+        3 => EntityKind::Unit,
+        5 => EntityKind::GameObject,
+        6 => EntityKind::DynamicObject,
+        7 => EntityKind::Corpse,
+        _ => EntityKind::Other,
+    }
+}
+
+/// The app-owned session loop. `cancel` is checked between bounded socket reads and before every
+/// packet step; a cancelled session exits as a clean `SessionEnded` without manufacturing packets.
+pub fn run_session_with_cancel(
+    feed: &WrathFeed,
+    config: &WrathSessionConfig,
+    cancel: &AtomicBool,
+    commands: Option<WrathOutbox>,
+    events_out: Option<Sender<SessionEvent>>,
+) -> anyhow::Result<()> {
+    use benilla_wm_native::{
+        pump_once, replace_publisher, retire_publisher, PublisherConfig, PublisherRetirement,
+    };
 
     let logon = benilla_protocol_wrath::logon::logon(&config.auth_addr, &config.account, &config.password)?;
     let realm = logon
         .realms
         .first()
-        .ok_or_else(|| anyhow::anyhow!("realm list is empty"))?
-        .clone();
+        .ok_or_else(|| anyhow::anyhow!("realm list is empty"))?;
 
-    let mut publisher: Option<benilla_wm_native::ObservationPublisher> = match &config.wm_token {
+    let publisher_config = match &config.wm_token {
         Some(token) => {
             let loopback = benilla_wm_native::LoopbackConfig::new(
                 std::net::SocketAddr::from(([127, 0, 0, 1], benilla_wm_native::DEFAULT_PORT)),
                 benilla_wm_native::AuthToken::new(token.clone())?,
             )?;
-            Some(benilla_wm_native::ObservationPublisher::spawn(PublisherConfig::new(loopback))?)
+            Some(PublisherConfig::new(loopback))
         }
         None => None,
     };
+    let mut publisher: Option<benilla_wm_native::ObservationPublisher> = match &publisher_config {
+        Some(config) => Some(benilla_wm_native::ObservationPublisher::spawn(
+            config.clone(),
+        )?),
+        None => None,
+    };
+    let mut retiring: Vec<PublisherRetirement> = Vec::new();
     let mut session = SessionState::new();
     session.start_session(1); // placeholder; re-started with the real GUID after the enum
     feed.push_event(WrathFeedEvent::Phase(session.phase()));
@@ -407,7 +1727,6 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
     session.note_player_login();
 
     struct Adapter<'a> {
-        feed: &'a WrathFeed,
         session: &'a mut SessionState,
     }
     impl benilla_wm_native::ProducerSession for Adapter<'_> {
@@ -520,12 +1839,15 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
     }
 
     // Character selection: reuse the renderless driver's create-first flow is intentionally
-    // out of scope here — the graphical path logs into an existing character (issue 23's
+    // out of scope here â€” the graphical path logs into an existing character (issue 23's
     // driver owns creation). Enumerate and pick the first disposable character.
     world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut guid = None;
     while guid.is_none() {
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         if std::time::Instant::now() > deadline {
             anyhow::bail!("timeout waiting for SMSG_CHAR_ENUM");
         }
@@ -550,12 +1872,32 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
     feed.push_event(WrathFeedEvent::Phase(session.phase()));
     world.send(benilla_protocol_wrath::opcode::CMSG_PLAYER_LOGIN, &guid.to_le_bytes())?;
 
-    let deadline = std::time::Instant::now() + config.dwell;
+    let deadline = config
+        .dwell
+        .map(|dwell| std::time::Instant::now() + dwell);
     let mut last_ping = std::time::Instant::now();
+    let mut last_server_response = std::time::Instant::now();
     let mut ping_seq = 1u32;
     let mut last_digest_revision = session.state_revision();
+    let mut logged_out = false;
     feed.publish_digest(build_digest(&session)); // initial state (character selection)
-    while std::time::Instant::now() < deadline {
+    while deadline.is_none_or(|deadline| std::time::Instant::now() < deadline) {
+        if cancel.load(Ordering::SeqCst) {
+            retire_publisher(&mut publisher, &mut retiring);
+            for retirement in retiring.drain(..) {
+                let _ = retirement.wait_timeout(Duration::from_millis(200));
+            }
+            return Ok(());
+        }
+        if let Some(commands) = commands.as_ref() {
+            let pending: Vec<_> = commands
+                .lock()
+                .map(|mut queue| queue.drain(..).collect())
+                .unwrap_or_default();
+            for command in pending {
+                world.send(command.opcode, &command.payload)?;
+            }
+        }
         if last_ping.elapsed() >= Duration::from_secs(10) {
             let mut ping = ping_seq.to_le_bytes().to_vec();
             ping.extend_from_slice(&0u32.to_le_bytes());
@@ -565,7 +1907,40 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
         }
         match world.recv() {
             Ok(p) => {
+                last_server_response = std::time::Instant::now();
                 session.reduce(p.opcode, &p.payload, now_ms())?;
+                if let Some(parsed) = gameplay::parse(p.opcode, &p.payload) {
+                    match parsed {
+                        Ok(event @ WrathGameplayEvent::Gossip { npc, menu_id, .. }) => {
+                            feed.push_event(WrathFeedEvent::GossipMenu { npc, menu_id });
+                            if let Some(events_out) = events_out.as_ref() {
+                                if session.player_guid().is_some() {
+                                    for event in translate_gameplay(event) {
+                                        let _ = events_out.send(event);
+                                    }
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::LoggedOut) => {
+                            logged_out = true;
+                            if let Some(events_out) = events_out.as_ref() {
+                                let _ = events_out.send(SessionEvent::LoggedOut);
+                            }
+                        }
+                        Ok(event) => {
+                            if let Some(events_out) = events_out.as_ref() {
+                                if session.player_guid().is_some() {
+                                    for event in translate_gameplay(event) {
+                                        let _ = events_out.send(event);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("wrath: ignored malformed 0x{:X} gameplay reply: {e}", p.opcode);
+                        }
+                    }
+                }
                 if p.opcode == 0x390 {
                     // time sync: answer to keep the session healthy
                     if p.payload.len() >= 4 {
@@ -578,12 +1953,51 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
             Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
             Err(e) => return Err(e),
         }
+        if logged_out {
+            session.finish_session();
+            feed.push_event(WrathFeedEvent::Phase(session.phase()));
+            retire_publisher(&mut publisher, &mut retiring);
+            for retirement in retiring.drain(..) {
+                let _ = retirement.wait_timeout(Duration::from_millis(200));
+            }
+            return Ok(());
+        }
+        if last_server_response.elapsed() >= SERVER_RESPONSE_TIMEOUT {
+            // A quiet server still answers our ping. Silence is only a disconnection once the
+            // bounded monotonic response window closes; one socket read timeout is not evidence.
+            if let Some(publisher) = publisher.as_ref() {
+                if let Ok(health) = benilla_wm_native::SourceHealth::new(
+                    session.epoch(),
+                    session.world_generation(),
+                    session.player_guid().unwrap_or(0),
+                    benilla_wm_native::SourceSessionState::Disconnected,
+                    session.last_server_packet_at_unix_ms(),
+                ) {
+                    let _ = publisher.publish_health(health);
+                }
+            }
+            retire_publisher(&mut publisher, &mut retiring);
+            for retirement in retiring.drain(..) {
+                let _ = retirement.wait_timeout(Duration::from_millis(200));
+            }
+            anyhow::bail!(
+                "world server made no response for {} s",
+                SERVER_RESPONSE_TIMEOUT.as_secs()
+            );
+        }
         for event in session.take_lifecycle() {
+            // The same lifecycle policy as the renderless driver: retire the old scope and order
+            // the replacement after that worker stops, without blocking the packet loop.
+            replace_publisher(
+                publisher_config.as_ref(),
+                &mut publisher,
+                &mut retiring,
+            )?;
             feed.push_event(WrathFeedEvent::from_session(event));
         }
         // Near teleport: acknowledge the server's order counter after landing (packed GUID +
-        // u32 flags + u32 time — both read and unused server-side).
-        for counter in session.take_pending_teleport_acks() {
+        // u32 flags + u32 time â€” both read and unused server-side).
+        for _counter in session.take_pending_teleport_acks() {
             let mut ack = enc_pack_guid(guid);
             ack.extend_from_slice(&0u32.to_le_bytes());
             ack.extend_from_slice(&0u32.to_le_bytes());
@@ -595,7 +2009,7 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
             world.send(0x0DCu32, &[])?; // MSG_MOVE_WORLDPORT_ACK (empty payload)
             session.worldport_acknowledged();
         }
-        // Publish a full-world digest whenever source state advanced — independent of the WM
+        // Publish a full-world digest whenever source state advanced â€” independent of the WM
         // bridge, so the graphical client receives state with WM disabled/busy/reconnecting.
         if session.state_revision() != last_digest_revision {
             last_digest_revision = session.state_revision();
@@ -603,7 +2017,9 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
         }
         let phase_before = session.phase();
         let outcome = publisher.as_mut().map(|publisher| {
-            let mut adapter = Adapter { feed, session: &mut session };
+            let mut adapter = Adapter {
+                session: &mut session,
+            };
             pump_once(publisher, &mut adapter, now_ms(), started.elapsed().as_millis() as u64)
         });
         match outcome {
@@ -615,13 +2031,8 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
             Some(Err(benilla_wm_native::PumpError::Publisher(
                 benilla_wm_native::Error::Disconnected,
             ))) => {
-                // The publisher signalled shutdown: retire it; the next session spawns a
-                // fresh one. A live respawn belongs to issue 22's owner with its own
-                // retirement ordering.
-                if let Some(p) = publisher.take() {
-                    let retirement = p.retire();
-                    let _ = retirement.wait_timeout(Duration::from_secs(1));
-                }
+                // The publisher signalled shutdown: replace it under the shared lifecycle policy.
+                replace_publisher(publisher_config.as_ref(), &mut publisher, &mut retiring)?;
             }
             Some(Err(benilla_wm_native::PumpError::Publisher(e))) => {
                 feed.push_event(WrathFeedEvent::ExportSkipped(format!("publisher: {e}")));
@@ -642,9 +2053,7 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
             Ok(p) if p.opcode == 0x04D => {
                 session.finish_session();
                 feed.push_event(WrathFeedEvent::Phase(session.phase()));
-                if let Some(publisher) = publisher.take() {
-                    publisher.retire();
-                }
+                retire_publisher(&mut publisher, &mut retiring);
                 return Ok(());
             }
             Ok(_) => {}
@@ -676,12 +2085,27 @@ fn build_digest(session: &SessionState) -> WorldDigest {
             WrathEntity {
                 guid: *guid,
                 type_id: entry.type_id,
+                entry: entry.field(fields::OBJECT_FIELD_ENTRY),
                 display_id: entry.field(fields::UNIT_FIELD_DISPLAYID),
-                scale: entry.field(fields::OBJECT_FIELD_SCALE_X),
+                scale: entry.field(fields::OBJECT_FIELD_SCALE_X).map(f32::from_bits),
                 health: entry.field(fields::UNIT_FIELD_HEALTH),
+                max_health: entry.field(fields::UNIT_FIELD_MAXHEALTH),
                 level: entry.field(fields::UNIT_FIELD_LEVEL),
+                bytes_0: entry.field(fields::UNIT_FIELD_BYTES_0),
+                faction: entry.field(fields::UNIT_FIELD_FACTIONTEMPLATE),
+                unit_flags: entry.field(fields::UNIT_FIELD_FLAGS),
+                mount_display_id: entry.field(fields::UNIT_FIELD_MOUNTDISPLAYID),
+                bytes_1: entry.field(fields::UNIT_FIELD_BYTES_1),
+                npc_flags: entry.field(fields::UNIT_NPC_FLAGS),
+                dynamic_flags: entry.field(fields::UNIT_DYNAMIC_FLAGS),
+                target: entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0),
+                player_bytes: entry.field(fields::PLAYER_BYTES),
+                player_bytes_2: entry.field(fields::PLAYER_BYTES_2),
                 position: entry.movement.as_ref().and_then(|m| m.position),
+                move_flags: entry.movement.as_ref().map(|m| m.move_flags),
                 generation: entry.generation,
+                player_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
+                    .then(|| (0..1171).map(|i| entry.field(i).unwrap_or(0)).collect()),
             },
         );
     }
@@ -692,7 +2116,7 @@ fn build_digest(session: &SessionState) -> WorldDigest {
         map_id: session.map_id().unwrap_or(0),
         phase: session.phase(),
         player_guid: session.player_guid().unwrap_or(0),
-        self_observation: session.last_self_observation().cloned(),
+        self_observation: session.current_self_snapshot(),
         entities,
     }
 }
@@ -705,4 +2129,156 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn terminal_scope_loss_clears_ecs_and_input_without_a_digest() {
+        let mut world = World::new();
+        world.init_resource::<GuidIndex>();
+        world.init_resource::<SelfGuid>();
+        world.init_resource::<WrathWorldView>();
+        world.init_resource::<crate::player::Player>();
+        world.init_resource::<crate::player::OwnControlLost>();
+        world.init_resource::<crate::player::StandPending>();
+        let outbox: WrathOutbox = Arc::new(Mutex::new(VecDeque::from([WrathOutbound {
+            opcode: 1,
+            payload: vec![1],
+        }])));
+        world.insert_resource(WrathInput(Arc::clone(&outbox)));
+
+        let entity = world
+            .spawn((WrathStreamed, Guid(0xAA), SelfPlayer))
+            .id();
+        world.resource_mut::<GuidIndex>().0.insert(0xAA, entity);
+        world.resource_mut::<SelfGuid>().0 = Some(0xAA);
+        world.resource_mut::<crate::player::Player>().active = true;
+        {
+            let mut view = world.resource_mut::<WrathWorldView>();
+            view.player_guid = 0;
+            view.last_changes.world_transferred = true;
+        }
+
+        wrath_apply_world(&mut world);
+
+        assert!(
+            world.get_entity(entity).is_err(),
+            "the old scope entity is despawned"
+        );
+        assert!(world.resource::<GuidIndex>().0.is_empty());
+        assert_eq!(world.resource::<SelfGuid>().0, None);
+        assert!(!world.resource::<crate::player::Player>().active);
+        assert!(outbox.lock().unwrap().is_empty(), "pending actions cleared");
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#[cfg(test)]
+mod command_tap_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    fn view(npc: u64) -> WrathWorldView {
+        let mut entities = BTreeMap::new();
+        entities.insert(
+            npc,
+            WrathEntity {
+                guid: npc,
+                type_id: 3,
+                entry: Some(6),
+                display_id: Some(1),
+                scale: Some(1.0),
+                health: Some(10),
+                max_health: Some(10),
+                level: Some(1),
+                bytes_0: Some(0),
+                faction: None,
+                unit_flags: None,
+                mount_display_id: None,
+                bytes_1: None,
+                npc_flags: None,
+                dynamic_flags: None,
+                target: None,
+                player_bytes: None,
+                player_bytes_2: None,
+                position: None,
+                move_flags: None,
+                generation: 1,
+                player_fields: None,
+            },
+        );
+        WrathWorldView {
+            entities,
+            player_guid: 1,
+            ..WrathWorldView::default()
+        }
+    }
+
+    #[test]
+    fn stock_commands_become_the_335_messages() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let outbox: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
+        let mut world = World::new();
+        world.insert_resource(NetCommandTap(Some(rx)));
+        world.insert_resource(WrathInput(Arc::clone(&outbox)));
+        world.insert_resource(view(0x22));
+        world.resource_mut::<WrathWorldView>().gossip_menu = Some((0x22, 55));
+
+        tx.send(ClientCommand::SetSelection { guid: 0x22 }).unwrap();
+        tx.send(ClientCommand::AttackSwing { guid: 0x22 }).unwrap();
+        tx.send(ClientCommand::CastSpell {
+            spell_id: 133,
+            target: Some(0x22),
+        })
+        .unwrap();
+        tx.send(ClientCommand::GossipSelectOption {
+            guid: 0x22,
+            option: 3,
+            code: None,
+        })
+        .unwrap();
+        tx.send(ClientCommand::QuestgiverAccept {
+            npc: 0x22,
+            quest: 7,
+        })
+        .unwrap();
+        tx.send(ClientCommand::Loot { guid: 0x22 }).unwrap();
+        tx.send(ClientCommand::Move {
+            kind: crate::net::MoveKind::Heartbeat,
+            flags: 0,
+            pos: [0.0; 3],
+            orientation: 0.0,
+            pitch: 0.0,
+            fall_time: 0,
+            jump: None,
+            transport: None,
+        })
+        .unwrap();
+
+        let _ = world.run_system_once(wrath_tap_commands);
+        let sent: Vec<_> = outbox.lock().unwrap().drain(..).collect();
+        assert_eq!(sent.len(), 6, "Move is not duplicated by the tap");
+        assert_eq!(sent[0].opcode, benilla_protocol_wrath::opcode::CMSG_SET_SELECTION);
+        assert_eq!(sent[1].opcode, benilla_protocol_wrath::opcode::CMSG_ATTACKSWING);
+        assert_eq!(sent[2].opcode, benilla_protocol_wrath::opcode::CMSG_CAST_SPELL);
+        assert_eq!(sent[2].payload[0], 1);
+        assert_eq!(u32::from_le_bytes(sent[2].payload[1..5].try_into().unwrap()), 133);
+        assert_eq!(sent[3].opcode, benilla_protocol_wrath::opcode::CMSG_GOSSIP_SELECT_OPTION);
+        assert_eq!(u32::from_le_bytes(sent[3].payload[8..12].try_into().unwrap()), 55);
+        assert_eq!(sent[4].opcode, benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_ACCEPT_QUEST);
+        assert_eq!(sent[4].payload.len(), 16);
+        assert_eq!(sent[5].opcode, benilla_protocol_wrath::opcode::CMSG_LOOT);
+    }
+}

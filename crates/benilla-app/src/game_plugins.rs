@@ -92,11 +92,13 @@ use crate::world_backdrop::WorldBackdropPlugin;
 
 /// The game, as one plugin group. The two fields are the two plugins `run()` parameterises.
 pub(crate) struct GamePlugins {
-    /// [`NetPlugin::connect`]: `false` in capture mode, where no IO thread runs, so captures are
-    /// deterministic whether or not a server is up.
+    /// [`NetPlugin::connect`]: `false` in capture mode and whenever the Wrath path owns the
+    /// session, so exactly one network loop runs.
     pub(crate) connect: bool,
     /// [`crate::client_state::ClientStatePlugin::start`]: the screen this session opens on.
     pub(crate) start: crate::client_state::ClientState,
+    /// Explicitly selected Wrath graphical session; `None` leaves the stock 1.12 path alone.
+    pub(crate) wrath: Option<crate::wrath::WrathSessionConfig>,
 }
 
 impl PluginGroup for GamePlugins {
@@ -128,6 +130,11 @@ impl PluginGroup for GamePlugins {
             .add(CursorPlugin)
             .add(NetPlugin {
                 connect: self.connect,
+            })
+            // The selected Wrath session owns the replicated world; inert when no config was
+            // supplied. It is one worker and one Net-stage feed, never a second stock NetPlugin.
+            .add(crate::wrath::WrathNetPlugin {
+                config: self.wrath,
             })
             .add(crate::death::DeathPlugin)
             .add(crate::client_state::ClientStatePlugin { start: self.start })
@@ -333,6 +340,7 @@ pub(crate) mod schedule_tests {
         app.add_plugins(GamePlugins {
             connect: false,
             start: crate::client_state::ClientState::Login,
+            wrath: None,
         });
         more(&mut app);
         app.finish();

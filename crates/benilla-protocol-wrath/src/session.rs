@@ -543,8 +543,16 @@ impl SessionState {
         self.state_revision
     }
 
-    /// The most recent successful export (diagnostics; the feed re-builds digests from world
-    /// state independently).
+    /// The current presentation snapshot, built from authoritative session state rather than the
+    /// export/ack/retry slot. `sequence` and `client_uptime_ms` are zero because this is a read
+    /// model, not an export; every source-observed field is the same one an export would carry.
+    /// `None` before a player and world position exist or outside an eligible phase.
+    pub fn current_self_snapshot(&self) -> Option<SelfObservation> {
+        self.build_snapshot().ok()
+    }
+
+    /// The most recent successful export (diagnostics only; presentation reads
+    /// [`Self::current_self_snapshot`]).
     pub fn last_self_observation(&self) -> Option<&SelfObservation> {
         self.unsent.as_ref()
     }

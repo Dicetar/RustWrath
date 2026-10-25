@@ -83,6 +83,8 @@ impl Plugin for NetPlugin {
         objects::register(app);
         crate::names::net::register(app);
         app.insert_resource(NetEvents(handles.events))
+            .insert_resource(NetEventSink(handles.events_out))
+            .insert_resource(NetCommandTap(handles.command_tap))
             .insert_resource(NetCommands(handles.commands))
             .insert_resource(CharPick(handles.pick))
             .insert_resource(RealmChoice(handles.realm))
@@ -445,6 +447,17 @@ pub(crate) struct ActiveMover;
 /// The inbound event channel, drained each frame by [`apply_net_updates`].
 #[derive(Resource)]
 pub(crate) struct NetEvents(Receiver<SessionEvent>);
+
+/// An app-side sender into the same inbound stream the stock net drain reads. The Wrath adapter
+/// translates its own server packets into the established [`SessionEvent`] owners rather than
+/// maintaining a second UI/gameplay pipeline.
+#[derive(Resource, Clone)]
+pub(crate) struct NetEventSink(pub(crate) Sender<SessionEvent>);
+
+/// The stock action/UI commands when no 1.12 IO thread consumes them. In Wrath mode this is the
+/// single command tap translated to 3.3.5 client messages.
+#[derive(Resource)]
+pub(crate) struct NetCommandTap(pub(crate) Option<Receiver<ClientCommand>>);
 
 impl NetEvents {
     /// The inbound channel as `rx` brings it, for a test that feeds the drain.

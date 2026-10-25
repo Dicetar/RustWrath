@@ -84,6 +84,11 @@ pub(crate) fn fatal_when_driverless(why: &str) -> bool {
 /// a glue capture on the screen it photographs. Needed before the plugins build, so it forwards
 /// into the dev half rather than reading a resource.
 pub(crate) fn start_state() -> crate::client_state::ClientState {
+    // The selected Wrath path enters the world directly: its session loop owns login and character
+    // selection, so the stock glue screen is not a second owner.
+    if crate::wrath::selected_from_env() {
+        return crate::client_state::ClientState::InWorld;
+    }
     #[cfg(feature = "dev")]
     {
         crate::capture::start_state()
