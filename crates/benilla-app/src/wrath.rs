@@ -60,12 +60,14 @@ use crate::net::{
     EnteredWorldMessage, FieldChanged,
 };
 use benilla_protocol::messages::{
-    ActionButton, AttackSwingError, GossipOption as ProtocolGossipOption,
-    ItemDamage as ProtocolItemDamage, ItemInfo, ItemPushResult,
-    ItemSpellEntry as ProtocolItemSpell, ItemUseSpell as ProtocolItemUseSpell,
-    LootItem as ProtocolLootItem, NpcTextBlock as ProtocolNpcTextBlock, QuestComplete,
-    QuestDetails, QuestGiverList, QuestListEntry, QuestObjective, QuestOfferReward,
-    QuestRequestItems, QuestRewardItem, QuestTemplate,
+    ActionButton, AttackSwingError, AttackerState as ProtocolAttackerState,
+    GossipOption as ProtocolGossipOption, ItemDamage as ProtocolItemDamage, ItemInfo,
+    ItemPushResult, ItemSpellEntry as ProtocolItemSpell,
+    ItemUseSpell as ProtocolItemUseSpell, LootItem as ProtocolLootItem,
+    NpcTextBlock as ProtocolNpcTextBlock, PeriodicAuraLog as ProtocolPeriodicAuraLog,
+    PeriodicTick as ProtocolPeriodicTick, QuestComplete, QuestDetails, QuestGiverList,
+    QuestListEntry, QuestObjective, QuestOfferReward, QuestRequestItems, QuestRewardItem,
+    QuestTemplate, SpellDamageLog as ProtocolSpellDamageLog,
 };
 
 use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, SessionState};
@@ -931,6 +933,104 @@ fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
                 }
             };
             vec![SessionEvent::AttackSwingError(reason)]
+        }
+        WrathGameplayEvent::AttackerState {
+            attacker,
+            victim,
+            hit_info,
+            damage,
+            victim_state,
+            absorb,
+            resist,
+            blocked,
+            melee_spell_id,
+            school,
+        } => vec![SessionEvent::AttackerState(ProtocolAttackerState {
+            attacker,
+            victim,
+            hit_info,
+            damage,
+            victim_state,
+            absorb,
+            resist,
+            blocked,
+            melee_spell_id,
+            school,
+        })],
+        WrathGameplayEvent::CancelCombat => vec![SessionEvent::CancelCombat],
+        WrathGameplayEvent::AiReaction { unit, reaction } => {
+            vec![SessionEvent::AiReaction { unit, reaction }]
+        }
+        WrathGameplayEvent::CancelAutoRepeat => vec![SessionEvent::CancelAutoRepeat],
+        WrathGameplayEvent::PlaySpellVisual { unit, kit_id } => {
+            vec![SessionEvent::PlaySpellVisual { unit, kit_id }]
+        }
+        WrathGameplayEvent::SpellDamage {
+            target,
+            attacker,
+            spell_id,
+            damage,
+            school,
+            absorb,
+            resist,
+            blocked,
+            hit_info,
+        } => vec![SessionEvent::SpellDamageLog(ProtocolSpellDamageLog {
+            target,
+            attacker,
+            spell_id,
+            damage,
+            school,
+            absorb,
+            resist,
+            // 12340's byte is `physicalLog`; periodic damage rides `SMSG_PERIODICAURALOG`.
+            periodic: false,
+            blocked,
+            hit_info,
+        })],
+        WrathGameplayEvent::PeriodicAura {
+            target,
+            caster,
+            spell_id,
+            ticks,
+        } => {
+            let ticks = ticks
+                .into_iter()
+                .map(|tick| match tick {
+                    gameplay::PeriodicAuraTick::Damage {
+                        amount,
+                        school,
+                        absorb,
+                        resist,
+                    } => ProtocolPeriodicTick::Damage {
+                        amount,
+                        school,
+                        absorb,
+                        resist,
+                    },
+                    gameplay::PeriodicAuraTick::Heal { amount } => {
+                        ProtocolPeriodicTick::Heal { amount }
+                    }
+                    gameplay::PeriodicAuraTick::Energize { power, amount } => {
+                        ProtocolPeriodicTick::Energize { power, amount }
+                    }
+                    gameplay::PeriodicAuraTick::ManaLeech {
+                        power,
+                        amount,
+                        multiplier,
+                    } => ProtocolPeriodicTick::ManaLeech {
+                        power,
+                        amount,
+                        multiplier,
+                    },
+                })
+                .collect();
+            vec![SessionEvent::PeriodicAuraLog(ProtocolPeriodicAuraLog {
+                target,
+                caster,
+                spell_id,
+                ticks,
+            })]
         }
         WrathGameplayEvent::CastFailed {
             spell_id,

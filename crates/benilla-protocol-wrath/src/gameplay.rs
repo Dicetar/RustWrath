@@ -481,6 +481,43 @@ pub enum ServerEvent {
     /// `SMSG_SPELL_DELAYED`: pushback on a cast in flight.
     SpellDelayed { caster: u64, delay_ms: u32 },
     SpellFailure { caster: u64, spell_id: u32 },
+    /// `SMSG_ATTACKERSTATEUPDATE` mapped onto the 1.12 swing shape.
+    AttackerState {
+        attacker: u64,
+        victim: u64,
+        hit_info: u32,
+        damage: u32,
+        victim_state: u32,
+        absorb: u32,
+        resist: i32,
+        blocked: u32,
+        melee_spell_id: u32,
+        school: u32,
+    },
+    CancelCombat,
+    AiReaction { unit: u64, reaction: u32 },
+    CancelAutoRepeat,
+    PlaySpellVisual { unit: u64, kit_id: u32 },
+    /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word.
+    SpellDamage {
+        target: u64,
+        attacker: u64,
+        spell_id: u32,
+        damage: u32,
+        school: u8,
+        absorb: u32,
+        resist: i32,
+        blocked: u32,
+        hit_info: u32,
+    },
+    /// `SMSG_PERIODICAURALOG`'s counted tick list (12340 writes one; the shape is a list as in
+    /// 1.12).
+    PeriodicAura {
+        target: u64,
+        caster: u64,
+        spell_id: u32,
+        ticks: Vec<PeriodicAuraTick>,
+    },
     LogoutResponse { reason: u32, instant: bool },
     LoggedOut,
     LogoutCancelled,
@@ -557,6 +594,29 @@ pub enum AttackSwingError {
     DeadOrUnattackable,
 }
 
+/// One periodic aura tick, shaped by its aura type (`Unit::SendPeriodicAuraLog`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PeriodicAuraTick {
+    Damage {
+        amount: u32,
+        school: u32,
+        absorb: u32,
+        resist: i32,
+    },
+    Heal {
+        amount: u32,
+    },
+    Energize {
+        power: u32,
+        amount: u32,
+    },
+    ManaLeech {
+        power: u32,
+        amount: u32,
+        multiplier: f32,
+    },
+}
+
 /// Parse one server opcode; `None` means this slice does not translate that opcode.
 pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
     use crate::opcode::*;
@@ -568,6 +628,13 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_ATTACKSWING_DEADTARGET | SMSG_ATTACKSWING_CANT_ATTACK => {
             Ok(ServerEvent::AttackSwingError(AttackSwingError::DeadOrUnattackable))
         }
+        SMSG_AI_REACTION => read_ai_reaction(body),
+        SMSG_ATTACKERSTATEUPDATE => read_attacker_state(body),
+        SMSG_CANCEL_COMBAT => Ok(ServerEvent::CancelCombat),
+        SMSG_CANCEL_AUTO_REPEAT => read_cancel_auto_repeat(body),
+        SMSG_PLAY_SPELL_VISUAL => read_play_spell_visual(body),
+        SMSG_PERIODICAURALOG => read_periodic_aura(body),
+        SMSG_SPELLNONMELEEDAMAGELOG => read_spell_damage(body),
         SMSG_CAST_FAILED => read_cast_failed(body),
         SMSG_SPELL_START => read_spell_start(body),
         SMSG_SPELL_GO => read_spell_go(body),
@@ -628,6 +695,181 @@ fn read_attack_stop(b: &[u8]) -> Result<ServerEvent> {
     let attacker = r.packed_guid()?;
     let victim = if r.remaining() == 0 { 0 } else { r.packed_guid()? };
     Ok(ServerEvent::AttackStop { attacker, victim })
+}
+
+// `HitInfo` bits whose conditional tails `SendAttackStateUpdate` writes (Unit.h:97-122).
+const HITINFO_FULL_ABSORB: u32 = 0x0000_0020;
+const HITINFO_PARTIAL_ABSORB: u32 = 0x0000_0040;
+const HITINFO_FULL_RESIST: u32 = 0x0000_0080;
+const HITINFO_PARTIAL_RESIST: u32 = 0x0000_0100;
+const HITINFO_BLOCK: u32 = 0x0000_2000;
+const HITINFO_RAGE_GAIN: u32 = 0x0080_0000;
+
+/// `SMSG_ATTACKERSTATEUPDATE` (`Unit.cpp:6870-6960`): 12340 writes `Overkill` after the total,
+/// keeps absorb/resist in blocks gated by `HitInfo` rather than inside every sub-block, and sends
+/// `TargetState` as a byte. The `HITINFO_UNK1` debug tail is left unread; nothing re-parses the
+/// payload, and guessing its width would be fabrication.
+fn read_attacker_state(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let hit_info = r.u32()?;
+    let attacker = r.packed_guid()?;
+    let victim = r.packed_guid()?;
+    let damage = r.u32()?;
+    let _overkill = r.u32()?;
+    let subs = r.u8()?;
+    let mut absorb = 0u32;
+    let mut resist = 0i32;
+    let mut school = 0u32;
+    for i in 0..subs {
+        let block_school = r.u32()?;
+        if i == 0 {
+            school = block_school;
+        }
+        let _damage_f = r.f32()?;
+        let _damage = r.u32()?;
+    }
+    if hit_info & (HITINFO_FULL_ABSORB | HITINFO_PARTIAL_ABSORB) != 0 {
+        for _ in 0..subs {
+            absorb += r.u32()?;
+        }
+    }
+    if hit_info & (HITINFO_FULL_RESIST | HITINFO_PARTIAL_RESIST) != 0 {
+        for _ in 0..subs {
+            resist += r.u32()? as i32;
+        }
+    }
+    let victim_state = u32::from(r.u8()?);
+    let _attacker_state = r.u32()?;
+    let melee_spell_id = r.u32()?;
+    let blocked = if hit_info & HITINFO_BLOCK != 0 {
+        r.u32()?
+    } else {
+        0
+    };
+    if hit_info & HITINFO_RAGE_GAIN != 0 {
+        let _rage = r.u32()?;
+    }
+    Ok(ServerEvent::AttackerState {
+        attacker,
+        victim,
+        hit_info,
+        damage,
+        victim_state,
+        absorb,
+        resist,
+        blocked,
+        melee_spell_id,
+        school,
+    })
+}
+
+/// `SMSG_AI_REACTION` (`Unit.cpp:12995-12998`): raw `u64` guid and `u32` reaction.
+fn read_ai_reaction(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let unit = r.u64()?;
+    let reaction = r.u32()?;
+    Ok(ServerEvent::AiReaction { unit, reaction })
+}
+
+/// `SMSG_CANCEL_AUTO_REPEAT` (`PlayerMisc.cpp:153-158`): a packed target guid the 1.12 event does
+/// not carry.
+fn read_cancel_auto_repeat(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let _target = r.packed_guid()?;
+    Ok(ServerEvent::CancelAutoRepeat)
+}
+
+/// `SMSG_PLAY_SPELL_VISUAL` (`Unit.cpp:15149-15162`): raw `u64` guid and `SpellVisualKit` id.
+fn read_play_spell_visual(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let unit = r.u64()?;
+    let kit_id = r.u32()?;
+    Ok(ServerEvent::PlaySpellVisual { unit, kit_id })
+}
+
+/// `SMSG_SPELLNONMELEEDAMAGELOG` (`Unit.cpp:6679-6724`): the 12340 body carries an `Overkill`
+/// word the 1.12 seam does not, and its `physicalLog` byte is not the seam's periodic flag.
+fn read_spell_damage(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let target = r.packed_guid()?;
+    let attacker = r.packed_guid()?;
+    let spell_id = r.u32()?;
+    let damage = r.u32()?;
+    let _overkill = r.u32()?;
+    let school = r.u8()?;
+    let absorb = r.u32()?;
+    let resist = r.u32()? as i32;
+    let _physical_log = r.u8()?;
+    let _unused = r.u8()?;
+    let blocked = r.u32()?;
+    let hit_info = r.u32()?;
+    let _debug = r.u8()?;
+    Ok(ServerEvent::SpellDamage {
+        target,
+        attacker,
+        spell_id,
+        damage,
+        school,
+        absorb,
+        resist,
+        blocked,
+        hit_info,
+    })
+}
+
+/// `SMSG_PERIODICAURALOG` (`Unit.cpp:6780-6842`): packed target and caster, spell, count, then one
+/// type-shaped block per tick. An unknown aura type is an error: its width is unknowable, exactly
+/// as the 1.12 reader treats it.
+fn read_periodic_aura(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let target = r.packed_guid()?;
+    let caster = r.packed_guid()?;
+    let spell_id = r.u32()?;
+    let count = r.u32()?;
+    let mut ticks = Vec::with_capacity(count.min(64) as usize);
+    for _ in 0..count {
+        let aura_type = r.u32()?;
+        let tick = match aura_type {
+            3 | 89 => {
+                let amount = r.u32()?;
+                let _overkill = r.u32()?;
+                let school = r.u32()?;
+                let absorb = r.u32()?;
+                let resist = r.u32()? as i32;
+                let _critical = r.u8()?;
+                PeriodicAuraTick::Damage {
+                    amount,
+                    school,
+                    absorb,
+                    resist,
+                }
+            }
+            8 | 20 => {
+                let amount = r.u32()?;
+                let _overheal = r.u32()?;
+                let _absorb = r.u32()?;
+                let _critical = r.u8()?;
+                PeriodicAuraTick::Heal { amount }
+            }
+            21 | 24 => PeriodicAuraTick::Energize {
+                power: r.u32()?,
+                amount: r.u32()?,
+            },
+            64 => PeriodicAuraTick::ManaLeech {
+                power: r.u32()?,
+                amount: r.u32()?,
+                multiplier: r.f32()?,
+            },
+            other => anyhow::bail!("SMSG_PERIODICAURALOG: unknown aura type {other}"),
+        };
+        ticks.push(tick);
+    }
+    Ok(ServerEvent::PeriodicAura {
+        target,
+        caster,
+        spell_id,
+        ticks,
+    })
 }
 
 fn read_cast_failed(b: &[u8]) -> Result<ServerEvent> {
