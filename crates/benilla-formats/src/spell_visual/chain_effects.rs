@@ -5,11 +5,13 @@
 //! `benilla-extract <Data> chaincensus` prints the table with every kit that draws a beam.
 
 use std::collections::HashMap;
+use std::io::Cursor;
 
-use anyhow::{Context, Result};
-use benilla_dbc::{FieldType, Schema, SchemaField};
+use anyhow::{bail, Context, Result};
+use benilla_bytes::ByteExt;
+use benilla_dbc::{DbcParser, FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, parse, str_at, u32_at};
+use crate::dbc::{f32_at, field_count, parse, str_at, u32_at};
 use crate::Chain;
 
 const SPELL_CHAIN_EFFECTS: &str = "DBFilesClient\\SpellChainEffects.dbc";
@@ -81,6 +83,14 @@ pub(super) fn load(chain: &mut Chain) -> Result<HashMap<u32, ChainEffect>> {
     let bytes = chain
         .read_file(SPELL_CHAIN_EFFECTS)
         .with_context(|| format!("reading {SPELL_CHAIN_EFFECTS}"))?;
+    match field_count(&bytes) {
+        Some(48) => return load_wrath(&bytes),
+        Some(SPELL_CHAIN_EFFECTS_FIELDS) => {}
+        Some(columns) => bail!(
+            "unsupported SpellChainEffects.dbc layout: {columns} fields (expected 8 or 48)"
+        ),
+        None => bail!("parsing SpellChainEffects.dbc header: truncated field count"),
+    }
     let set = parse(&bytes, chain_effects_schema(), "SpellChainEffects.dbc")?;
     let mut rows = HashMap::with_capacity(set.records().len());
     for r in set.records() {
@@ -95,6 +105,58 @@ pub(super) fn load(chain: &mut Chain) -> Result<HashMap<u32, ChainEffect>> {
                 bolt_life_ms: u32_at(r, 5).unwrap_or(0),
                 bolt_stagger_ms: u32_at(r, 6).unwrap_or(0),
                 texture: str_at(&set, r, 7).unwrap_or_default(),
+            },
+        );
+    }
+    Ok(rows)
+}
+
+/// The 3.2-3.3.5 record has 48 fields but only 177 bytes: color/blend fields are bytes.
+/// Its first eight fields retain the vanilla beam data. Read that verified prefix with
+/// checked offsets; do not pretend a four-byte-per-field schema covers this packed row.
+fn load_wrath(bytes: &[u8]) -> Result<HashMap<u32, ChainEffect>> {
+    let parser = DbcParser::parse(&mut Cursor::new(bytes))
+        .context("parsing SpellChainEffects.dbc header and body")?;
+    let header = parser.header();
+    if header.record_size != 177 {
+        bail!(
+            "unsupported SpellChainEffects.dbc record size: {} (expected 177 for 48 fields)",
+            header.record_size
+        );
+    }
+    let records_end = (header.record_count as usize)
+        .checked_mul(177)
+        .and_then(|size| size.checked_add(20))
+        .context("SpellChainEffects.dbc record size overflow")?;
+    let strings_end = records_end
+        .checked_add(header.string_block_size as usize)
+        .context("SpellChainEffects.dbc string block size overflow")?;
+    let records = bytes
+        .get(20..records_end)
+        .context("SpellChainEffects.dbc truncated records")?;
+    let strings = bytes
+        .get(records_end..strings_end)
+        .context("SpellChainEffects.dbc truncated string block")?;
+    let mut rows = HashMap::with_capacity(header.record_count as usize);
+    for row in records.chunks_exact(177) {
+        let id = row.u32_at(0).context("SpellChainEffects.dbc missing id")?;
+        let offset = row
+            .u32_at(28)
+            .context("SpellChainEffects.dbc missing texture offset")? as usize;
+        let text = strings
+            .get(offset..)
+            .with_context(|| format!("SpellChainEffects.dbc {id}: invalid texture offset {offset}"))?;
+        let end = text.iter().position(|byte| *byte == 0).unwrap_or(text.len());
+        rows.insert(
+            id,
+            ChainEffect {
+                avg_seg_len: row.f32_at(4).context("SpellChainEffects.dbc segment length")?,
+                half_width: row.f32_at(8).context("SpellChainEffects.dbc width")?,
+                noise_scale: row.f32_at(12).context("SpellChainEffects.dbc noise scale")?,
+                scroll_period_s: row.f32_at(16).context("SpellChainEffects.dbc texture period")?,
+                bolt_life_ms: row.u32_at(20).context("SpellChainEffects.dbc segment duration")?,
+                bolt_stagger_ms: row.u32_at(24).context("SpellChainEffects.dbc segment delay")?,
+                texture: String::from_utf8_lossy(&text[..end]).into_owned(),
             },
         );
     }

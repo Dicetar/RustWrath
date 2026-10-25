@@ -6,10 +6,10 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, i32_at, parse, str_at, u32_at};
+use crate::dbc::{f32_at, field_count, i32_at, parse, str_at, u32_at};
 use crate::Chain;
 
 pub mod chain_effects;
@@ -22,6 +22,8 @@ const SPELL_VISUAL_EFFECT_NAME: &str = "DBFilesClient\\SpellVisualEffectName.dbc
 
 const SPELL_VISUAL_FIELDS: usize = 16;
 const SPELL_VISUAL_KIT_FIELDS: usize = 35;
+const WRATH_SPELL_VISUAL_FIELDS: usize = 32;
+const WRATH_SPELL_VISUAL_KIT_FIELDS: usize = 38;
 
 /// Each emitter slot's M2 `AttachmentID`, kit fields 3-11 in order, as the client's slot loop
 /// (`0x60edf0`) pushes them: head, chest, base, left hand, right hand, breath, special 1-3.
@@ -432,6 +434,18 @@ fn effect_name_schema() -> Schema {
     s
 }
 
+fn wrath_effect_name_schema() -> Schema {
+    // WoWDBDefs, build 3.3.5.12340: id, name, filename, area size, scale, min/max scale.
+    let mut schema = n_u32_schema("SpellVisualEffectName", 7);
+    for field in &mut schema.fields[1..3] {
+        field.ty = FieldType::String;
+    }
+    for field in &mut schema.fields[3..7] {
+        field.ty = FieldType::Float32;
+    }
+    schema
+}
+
 /// `SpellVisualKit`: fields 0-14 are ids, 15-18 the signed `CharProcType` keys and 19-34 the
 /// float params, which the dispatcher (`0x60d7c0`) loads with `fld`.
 fn kit_schema() -> Schema {
@@ -447,6 +461,18 @@ fn kit_schema() -> Schema {
     s
 }
 
+fn wrath_kit_schema() -> Schema {
+    // The 3.1-3.3.5 kit adds weapon effects and shifts procedures/params to 17/21.
+    let mut schema = n_u32_schema("SpellVisualKit", WRATH_SPELL_VISUAL_KIT_FIELDS);
+    for field in &mut schema.fields[17..21] {
+        field.ty = FieldType::Int32;
+    }
+    for field in &mut schema.fields[21..37] {
+        field.ty = FieldType::Float32;
+    }
+    schema
+}
+
 /// Kit field 15, `CharProcType[0]` (`+0x3c`).
 const CHAR_PROC_TYPE_FIELD: usize = 15;
 /// Kit field 19, `CharParamZero[0]` (`+0x4c`); `CharParamOne..Three[0]` follow at every
@@ -457,13 +483,22 @@ const CHAR_PROC_PARAM_FIELD: usize = CHAR_PROC_TYPE_FIELD + KIT_CHAR_PROCS;
 /// dispatcher's table (`0x60dc20`) routes to its beam case (`0x60da79`). A type-0 slot that is
 /// padding decodes `CharParamZero` to 0, which the client's null-row test (`0x6ecc2e`) no-ops.
 fn char_proc_slot(r: &benilla_dbc::Record, i: usize) -> Option<CharProc> {
-    let ty = i32_at(r, CHAR_PROC_TYPE_FIELD + i)?;
+    char_proc_slot_at(r, i, CHAR_PROC_TYPE_FIELD, CHAR_PROC_PARAM_FIELD)
+}
+
+fn char_proc_slot_at(
+    r: &benilla_dbc::Record,
+    i: usize,
+    type_field: usize,
+    param_field: usize,
+) -> Option<CharProc> {
+    let ty = i32_at(r, type_field + i)?;
     if ty < 0 {
         return None;
     }
     let mut params = [0.0; 4];
     for (p, param) in params.iter_mut().enumerate() {
-        *param = f32_at(r, CHAR_PROC_PARAM_FIELD + p * KIT_CHAR_PROCS + i).unwrap_or(0.0);
+        *param = f32_at(r, param_field + p * KIT_CHAR_PROCS + i).unwrap_or(0.0);
     }
     Some(CharProc { ty, params })
 }
@@ -504,37 +539,86 @@ fn kit_from_record(r: &benilla_dbc::Record) -> VisualKit {
     }
 }
 
+fn wrath_kit_from_record(r: &benilla_dbc::Record) -> VisualKit {
+    // WotLK's 9/10 are left/right weapon effects, not the three special-effect slots.
+    // Those added attachment behaviors need renderer support; do not bind them as specials.
+    let effect_slots = [3, 4, 5, 6, 7, 8, 11, 12, 13]
+        .map(|column| u32_at(r, column).and_then(some_unless_none));
+    VisualKit {
+        anim_id: u32_at(r, 2).and_then(kit_anim_id),
+        sound: u32_at(r, 15).and_then(some_unless_none),
+        effect_slots,
+        world_effect: u32_at(r, 14).and_then(some_unless_none),
+        shake: u32_at(r, 16).and_then(some_unless_none),
+        char_proc_slots: std::array::from_fn(|i| char_proc_slot_at(r, i, 17, 21)),
+    }
+}
+
 /// Read the four spell visual tables off the patch chain.
 pub fn load_spell_visual_catalog(chain: &mut Chain) -> Result<SpellVisualCatalog> {
     let sv_bytes = chain
         .read_file(SPELL_VISUAL)
         .context("reading SpellVisual.dbc")?;
-    let sv_set = parse(
-        &sv_bytes,
-        n_u32_schema("SpellVisual", SPELL_VISUAL_FIELDS),
-        "SpellVisual.dbc",
-    )?;
+    let wrath_visual = match field_count(&sv_bytes) {
+        Some(SPELL_VISUAL_FIELDS) => false,
+        Some(WRATH_SPELL_VISUAL_FIELDS) => true,
+        Some(columns) => bail!(
+            "unsupported SpellVisual.dbc layout: {columns} fields (expected 16 or 32)"
+        ),
+        None => bail!("parsing SpellVisual.dbc header: truncated field count"),
+    };
+    let schema = if wrath_visual {
+        let mut schema = n_u32_schema("SpellVisual", WRATH_SPELL_VISUAL_FIELDS);
+        for field in &mut schema.fields[26..32] {
+            field.ty = FieldType::Float32;
+        }
+        schema
+    } else {
+        n_u32_schema("SpellVisual", SPELL_VISUAL_FIELDS)
+    };
+    let sv_set = parse(&sv_bytes, schema, "SpellVisual.dbc")?;
     let mut visuals = HashMap::with_capacity(sv_set.records().len());
     for r in sv_set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         let g = |i: usize| u32_at(r, i).unwrap_or(0);
         visuals.insert(
             id,
-            VisualStages {
-                precast: g(1),
-                cast: g(2),
-                impact: g(3),
-                state: g(4),
-                channel: g(5),
-                missile_model: g(7),
-                missile_attach: g(9),
-                missile_sound: u32_at(r, 10).and_then(some_unless_none),
-                strike_sound: u32_at(r, 14).and_then(some_unless_none),
-                missile_gate: g(6),
-                area_gate: g(11),
-                area_effect: g(12),
-                area_kit: g(13),
-                flags: g(15),
+            if wrath_visual {
+                // StateDoneKit at 5 shifts channel/missile columns; the legacy area triple
+                // was removed. Added WotLK area kits are not that triple's model id.
+                VisualStages {
+                    precast: g(1),
+                    cast: g(2),
+                    impact: g(3),
+                    state: g(4),
+                    channel: g(6),
+                    missile_model: g(8),
+                    missile_attach: g(10),
+                    missile_sound: u32_at(r, 11).and_then(some_unless_none),
+                    strike_sound: u32_at(r, 12).and_then(some_unless_none),
+                    missile_gate: g(7),
+                    area_gate: 0,
+                    area_effect: 0,
+                    area_kit: 0,
+                    flags: g(13),
+                }
+            } else {
+                VisualStages {
+                    precast: g(1),
+                    cast: g(2),
+                    impact: g(3),
+                    state: g(4),
+                    channel: g(5),
+                    missile_model: g(7),
+                    missile_attach: g(9),
+                    missile_sound: u32_at(r, 10).and_then(some_unless_none),
+                    strike_sound: u32_at(r, 14).and_then(some_unless_none),
+                    missile_gate: g(6),
+                    area_gate: g(11),
+                    area_effect: g(12),
+                    area_kit: g(13),
+                    flags: g(15),
+                }
             },
         );
     }
@@ -542,21 +626,43 @@ pub fn load_spell_visual_catalog(chain: &mut Chain) -> Result<SpellVisualCatalog
     let svk_bytes = chain
         .read_file(SPELL_VISUAL_KIT)
         .context("reading SpellVisualKit.dbc")?;
-    let svk_set = parse(&svk_bytes, kit_schema(), "SpellVisualKit.dbc")?;
+    let wrath_kit = match field_count(&svk_bytes) {
+        Some(SPELL_VISUAL_KIT_FIELDS) => false,
+        Some(WRATH_SPELL_VISUAL_KIT_FIELDS) => true,
+        Some(columns) => bail!(
+            "unsupported SpellVisualKit.dbc layout: {columns} fields (expected 35 or 38)"
+        ),
+        None => bail!("parsing SpellVisualKit.dbc header: truncated field count"),
+    };
+    let schema = if wrath_kit {
+        wrath_kit_schema()
+    } else {
+        kit_schema()
+    };
+    let svk_set = parse(&svk_bytes, schema, "SpellVisualKit.dbc")?;
     let mut kits = HashMap::with_capacity(svk_set.records().len());
     for r in svk_set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
-        kits.insert(id, kit_from_record(r));
+        let kit = if wrath_kit {
+            wrath_kit_from_record(r)
+        } else {
+            kit_from_record(r)
+        };
+        kits.insert(id, kit);
     }
 
     let sven_bytes = chain
         .read_file(SPELL_VISUAL_EFFECT_NAME)
         .context("reading SpellVisualEffectName.dbc")?;
-    let sven_set = parse(
-        &sven_bytes,
-        effect_name_schema(),
-        "SpellVisualEffectName.dbc",
-    )?;
+    let schema = match field_count(&sven_bytes) {
+        Some(5) => effect_name_schema(),
+        Some(7) => wrath_effect_name_schema(),
+        Some(columns) => bail!(
+            "unsupported SpellVisualEffectName.dbc layout: {columns} fields (expected 5 or 7)"
+        ),
+        None => bail!("parsing SpellVisualEffectName.dbc header: truncated field count"),
+    };
+    let sven_set = parse(&sven_bytes, schema, "SpellVisualEffectName.dbc")?;
     let mut effect_paths = HashMap::with_capacity(sven_set.records().len());
     let mut hardcoded = HashMap::new();
     for r in sven_set.records() {
