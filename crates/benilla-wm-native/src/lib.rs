@@ -47,10 +47,10 @@ pub use observation::{
 pub use producer::{observation_from_producer, ProducerPosition, ProducerSnapshot};
 pub use publisher::{
     DEFAULT_BUSY_RETRY_DELAY, DEFAULT_HEALTH_POLL_INTERVAL, DEFAULT_HEALTH_SEND_INTERVAL,
-    DEFAULT_RECONNECT_INITIAL_DELAY, DEFAULT_RECONNECT_MAX_DELAY, DEFAULT_RETRY_MAX_AGE, LinkState,
-    ObservationPublisher,
-    PublishOutcome, PublishReceipt, PublisherConfig, PublisherHealth, PublisherRetirement,
-    RetainReason, RetainedObservation, SnapshotStamp, WorkerState,
+    DEFAULT_RECONNECT_INITIAL_DELAY, DEFAULT_RECONNECT_MAX_DELAY, DEFAULT_RETRY_MAX_AGE,
+    DEFAULT_PRODUCER_HEALTH_TTL, LinkState, ObservationPublisher, PublishOutcome, PublishReceipt,
+    PublisherConfig, PublisherHealth, PublisherRetirement, RetainReason, RetainedObservation,
+    SnapshotStamp, WorkerState, replace_publisher, retire_publisher,
 };
 pub use pump::{
     pump_once, ProducerExportError, ProducerSession, PumpError, PumpResult,

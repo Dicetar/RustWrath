@@ -32,7 +32,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::chain::Chain;
-use crate::dbc::{loc_str, parse, str_at, u32_at};
+use crate::dbc::{loc_str, parse_with_trailing_fields, str_at, u32_at};
 
 const CHR_CLASSES: &str = "DBFilesClient\\ChrClasses.dbc";
 
@@ -194,7 +194,7 @@ pub fn load_chr_classes(chain: &mut Chain) -> Result<ChrClasses> {
     let bytes = chain
         .read_file(CHR_CLASSES)
         .with_context(|| format!("reading {CHR_CLASSES}"))?;
-    let rs = parse(&bytes, schema(), "ChrClasses.dbc")?;
+    let rs = parse_with_trailing_fields(&bytes, schema(), "ChrClasses.dbc")?;
     let locale = chain.locale();
     let mut by_id = HashMap::new();
     for r in rs.records() {

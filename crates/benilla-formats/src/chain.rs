@@ -103,6 +103,15 @@ impl Chain {
         Ok(chain)
     }
 
+    /// A chain from an explicitly ordered archive set, used by the 3.3.5 manifest profile. The
+    /// caller's order is authoritative; no discovery or mount-order rewrite happens here.
+    pub fn from_archives(archives: Vec<Archive>, locale: Locale) -> Result<Self> {
+        if archives.is_empty() {
+            bail!("a profile chain needs at least one archive");
+        }
+        Ok(Self { archives, locale })
+    }
+
     /// The client locale, from the chain's `Wow.ini` (`0x402350`): its index picks the column of
     /// every localized DBC string.
     pub fn locale(&self) -> Locale {

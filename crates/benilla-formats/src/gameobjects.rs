@@ -1,4 +1,4 @@
-//! `GameObjectDisplayInfo.dbc`: a game object's `GAMEOBJECT_DISPLAYID` → a direct model path,
+//! `GameObjectDisplayInfo.dbc`: a game object's `GAMEOBJECT_DISPLAYID` â†’ a direct model path,
 //! with no model-data indirection or skins; mostly `.mdx`/`.mdl`, a few `.wmo`.
 
 use std::collections::HashMap;
@@ -7,11 +7,11 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{parse, str_at, u32_at};
+use crate::dbc::{parse_with_trailing_fields, str_at, u32_at};
 
 const GAMEOBJECT_DISPLAY_INFO: &str = "DBFilesClient\\GameObjectDisplayInfo.dbc";
 
-/// `displayId → model path` from GameObjectDisplayInfo.dbc.
+/// `displayId â†’ model path` from GameObjectDisplayInfo.dbc.
 pub struct GameObjectCatalog {
     models: HashMap<u32, String>,
 }
@@ -50,7 +50,7 @@ pub fn load_gameobject_catalog(chain: &mut Chain) -> Result<GameObjectCatalog> {
     let bytes = chain
         .read_file(GAMEOBJECT_DISPLAY_INFO)
         .with_context(|| format!("reading {GAMEOBJECT_DISPLAY_INFO}"))?;
-    let rs = parse(&bytes, schema(), "GameObjectDisplayInfo")?;
+    let rs = parse_with_trailing_fields(&bytes, schema(), "GameObjectDisplayInfo")?;
     let mut models = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         if let (Some(id), Some(path)) = (u32_at(r, 0), str_at(&rs, r, 1)) {
@@ -92,7 +92,7 @@ pub fn load_gameobject_sounds(chain: &mut Chain) -> Result<GameObjectSounds> {
     let bytes = chain
         .read_file(GAMEOBJECT_DISPLAY_INFO)
         .with_context(|| format!("reading {GAMEOBJECT_DISPLAY_INFO}"))?;
-    let rs = parse(&bytes, schema(), "GameObjectDisplayInfo")?;
+    let rs = parse_with_trailing_fields(&bytes, schema(), "GameObjectDisplayInfo")?;
     let mut sounds = HashMap::new();
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };

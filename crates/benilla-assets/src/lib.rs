@@ -41,7 +41,7 @@ pub use adt::{chunk_to_mesh, chunks_to_mesh, AdtLoader, AdtTile, ChunkShading};
 pub use wdt::{WdtIndex, WdtIndexLoader};
 mod profile_source;
 pub use profile_source::{
-    register_profile_source, ProfileAssetReader, ProfileLooseAssetReader,
+    open_profile_chain, register_profile_source, ProfileAssetReader, ProfileLooseAssetReader,
 };
 mod blp;
 pub use blp::{BlpImageLoader, BlpLoaderSettings, BlpVariant};

@@ -15,6 +15,9 @@ pub const DEFAULT_BUSY_RETRY_DELAY: Duration = Duration::from_millis(1);
 pub const DEFAULT_RETRY_MAX_AGE: Duration = Duration::from_secs(60);
 pub const DEFAULT_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub const DEFAULT_HEALTH_SEND_INTERVAL: Duration = Duration::from_secs(5);
+/// How long a producer's last `publish_health` call stays live. It is a lease on the producer
+/// loop, not on the world session: a quiet server keeps renewing it from the same event loop.
+pub const DEFAULT_PRODUCER_HEALTH_TTL: Duration = Duration::from_secs(15);
 
 /// Configuration for the bounded, background-I/O publisher.
 #[derive(Clone, Debug)]
@@ -24,6 +27,7 @@ pub struct PublisherConfig {
     reconnect_max_delay: Duration,
     retry_max_age: Duration,
     health_poll_interval: Duration,
+    producer_health_ttl: Duration,
 }
 
 impl PublisherConfig {
@@ -34,6 +38,7 @@ impl PublisherConfig {
             reconnect_max_delay: DEFAULT_RECONNECT_MAX_DELAY,
             retry_max_age: DEFAULT_RETRY_MAX_AGE,
             health_poll_interval: DEFAULT_HEALTH_POLL_INTERVAL,
+            producer_health_ttl: DEFAULT_PRODUCER_HEALTH_TTL,
         }
     }
 
@@ -56,6 +61,7 @@ impl PublisherConfig {
             reconnect_max_delay,
             retry_max_age: DEFAULT_RETRY_MAX_AGE,
             health_poll_interval: DEFAULT_HEALTH_POLL_INTERVAL,
+            producer_health_ttl: DEFAULT_PRODUCER_HEALTH_TTL,
         })
     }
 
@@ -76,6 +82,19 @@ impl PublisherConfig {
             ));
         }
         self.health_poll_interval = health_poll_interval;
+        Ok(self)
+    }
+
+    /// Bounds how long the publisher may keep sending source health last supplied by the producer.
+    /// The producer event loop must call `publish_health` again inside this lease; a stopped
+    /// producer then loses in-world eligibility even while the publisher worker survives.
+    pub fn with_producer_health_ttl(mut self, producer_health_ttl: Duration) -> Result<Self> {
+        if producer_health_ttl.is_zero() {
+            return Err(Error::Config(
+                "publisher producer health TTL must be non-zero",
+            ));
+        }
+        self.producer_health_ttl = producer_health_ttl;
         Ok(self)
     }
 
@@ -248,6 +267,7 @@ struct SharedState {
     pending: Option<Observation>,
     last_published: Option<Observation>,
     latest_source_health: Option<SourceHealth>,
+    latest_source_health_at: Option<Instant>,
     health: PublisherHealth,
     closed: bool,
     stopped: bool,
@@ -297,6 +317,7 @@ impl ObservationPublisher {
                 pending: None,
                 last_published: None,
                 latest_source_health: None,
+                latest_source_health_at: None,
                 health: PublisherHealth::default(),
                 closed: false,
                 stopped: false,
@@ -386,6 +407,7 @@ impl ObservationPublisher {
             return Err(Error::Disconnected);
         }
         state.latest_source_health = Some(health);
+        state.latest_source_health_at = Some(Instant::now());
         drop(state);
         self.shared.wake.notify_one();
         Ok(true)
@@ -452,6 +474,37 @@ impl Drop for ObservationPublisher {
 pub struct PublisherRetirement {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
+}
+
+/// Replaces the current publisher, ordering the replacement after the old worker has stopped.
+/// This is the one lifecycle policy shared by the renderless driver and the graphical session.
+pub fn replace_publisher(
+    config: Option<&PublisherConfig>,
+    current: &mut Option<ObservationPublisher>,
+    retiring: &mut Vec<PublisherRetirement>,
+) -> Result<()> {
+    if let Some(config) = config {
+        if let Some(publisher) = current.take() {
+            retiring.push(publisher.retire());
+        }
+        *current = Some(match retiring.last() {
+            Some(retirement) => ObservationPublisher::spawn_after(config.clone(), retirement)?,
+            None => ObservationPublisher::spawn(config.clone())?,
+        });
+    }
+    retiring.retain(|retirement| !retirement.is_finished());
+    Ok(())
+}
+
+/// Retires the current publisher without starting a replacement.
+pub fn retire_publisher(
+    current: &mut Option<ObservationPublisher>,
+    retiring: &mut Vec<PublisherRetirement>,
+) {
+    if let Some(publisher) = current.take() {
+        retiring.push(publisher.retire());
+    }
+    retiring.retain(|retirement| !retirement.is_finished());
 }
 
 impl PublisherRetirement {
@@ -583,12 +636,19 @@ fn restore_pending(shared: &Arc<Shared>, observation: Option<Observation>) {
     shared.wake.notify_one();
 }
 
-fn latest_source_health(shared: &Arc<Shared>) -> Option<SourceHealth> {
-    shared
-        .state
-        .lock()
-        .ok()
-        .and_then(|state| state.latest_source_health.clone())
+fn latest_source_health(shared: &Arc<Shared>, ttl: Duration) -> Option<SourceHealth> {
+    let (health, at) = {
+        let state = shared.state.lock().ok()?;
+        (state.latest_source_health.clone()?, state.latest_source_health_at?)
+    };
+    if at.elapsed() > ttl {
+        update_health(shared, |health| {
+            health.link = LinkState::Disconnected;
+            health.last_error = Some("producer health lease expired".to_owned());
+        });
+        return None;
+    }
+    Some(health)
 }
 
 fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
@@ -688,7 +748,7 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
             }
         }
 
-        let source_health = latest_source_health(shared);
+        let source_health = latest_source_health(shared, config.producer_health_ttl);
         if let Some(source_health) = source_health {
             let now = Instant::now();
             let due = !health_sent_on_connection

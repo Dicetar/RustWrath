@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, str_at, u32_at};
+use crate::dbc::{loc_str, parse, parse_with_trailing_fields, str_at, u32_at};
 use crate::Chain;
 
 const LANGUAGES: &str = "DBFilesClient\\Languages.dbc";
@@ -119,7 +119,7 @@ pub fn load_default_languages(chain: &mut Chain) -> Result<DefaultLanguages> {
     let race_bytes = chain
         .read_file(CHR_RACES)
         .with_context(|| format!("reading {CHR_RACES}"))?;
-    let races = parse(&race_bytes, chr_races_schema(), "ChrRaces.dbc")?;
+    let races = parse_with_trailing_fields(&race_bytes, chr_races_schema(), "ChrRaces.dbc")?;
     let mut out = HashMap::new();
     for r in races.records() {
         let (Some(race), Some(lang)) = (u32_at(r, 0), u32_at(r, CHR_RACES_BASE_LANGUAGE)) else {

@@ -8,7 +8,7 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, parse, str_at, u32_at};
+use crate::dbc::{f32_at, field_count, parse, parse_with_trailing_fields, str_at, u32_at};
 
 const CREATURE_MODEL_DATA: &str = "DBFilesClient\\CreatureModelData.dbc";
 const CREATURE_DISPLAY_INFO: &str = "DBFilesClient\\CreatureDisplayInfo.dbc";
@@ -406,6 +406,33 @@ pub(crate) fn creature_display_info_schema() -> Schema {
     s
 }
 
+/// Wrath `CreatureDisplayInfo.dbc`: 16 fields. The 1.12 prefix keeps its meaning through
+/// `TextureVariation2`; Wrath inserts `PortraitTextureName` at 9 and appends three columns.
+pub(crate) fn creature_display_info_schema_wotlk() -> Schema {
+    let mut s = Schema::new("CreatureDisplayInfo");
+    for (name, ty) in [
+        ("ID", FieldType::UInt32),
+        ("ModelID", FieldType::UInt32),
+        ("SoundID", FieldType::UInt32),
+        ("ExtendedDisplayInfoID", FieldType::UInt32),
+        ("CreatureModelScale", FieldType::Float32),
+        ("CreatureModelAlpha", FieldType::UInt32),
+        ("TextureVariation0", FieldType::String),
+        ("TextureVariation1", FieldType::String),
+        ("TextureVariation2", FieldType::String),
+        ("PortraitTextureName", FieldType::String),
+        ("BloodLevel", FieldType::UInt32),
+        ("BloodID", FieldType::UInt32),
+        ("NPCSoundID", FieldType::UInt32),
+        ("ParticleColorID", FieldType::UInt32),
+        ("CreatureGeosetData", FieldType::UInt32),
+        ("ObjectEffectPackageID", FieldType::UInt32),
+    ] {
+        s.add_field(SchemaField::new(name, ty));
+    }
+    s
+}
+
 /// CreatureDisplayInfoExtra.dbc: 19 fields, 76-byte records in 5875 (vmangos `DBCStructure.h`).
 pub(crate) fn creature_display_info_extra_schema() -> Schema {
     let mut s = Schema::new("CreatureDisplayInfoExtra");
@@ -435,7 +462,11 @@ pub fn load_creature_catalog(chain: &mut Chain) -> Result<CreatureCatalog> {
         let bytes = chain
             .read_file(CREATURE_MODEL_DATA)
             .with_context(|| format!("reading {CREATURE_MODEL_DATA}"))?;
-        let rs = parse(&bytes, creature_model_data_schema(), "CreatureModelData")?;
+        let rs = parse_with_trailing_fields(
+            &bytes,
+            creature_model_data_schema(),
+            "CreatureModelData",
+        )?;
         let mut m = HashMap::with_capacity(rs.records().len());
         for r in rs.records() {
             if let Some(id) = u32_at(r, 0) {
@@ -469,11 +500,12 @@ pub fn load_creature_catalog(chain: &mut Chain) -> Result<CreatureCatalog> {
         let bytes = chain
             .read_file(CREATURE_DISPLAY_INFO)
             .with_context(|| format!("reading {CREATURE_DISPLAY_INFO}"))?;
-        let rs = parse(
-            &bytes,
-            creature_display_info_schema(),
-            "CreatureDisplayInfo",
-        )?;
+        let schema = if field_count(&bytes) == Some(16) {
+            creature_display_info_schema_wotlk()
+        } else {
+            creature_display_info_schema()
+        };
+        let rs = parse(&bytes, schema, "CreatureDisplayInfo")?;
         let mut d = HashMap::with_capacity(rs.records().len());
         first_display = rs.records().first().and_then(|r| u32_at(r, 0));
         for r in rs.records() {
@@ -516,7 +548,7 @@ fn load_creature_sound_rows(chain: &mut Chain) -> Result<HashSet<u32>> {
     let bytes = chain
         .read_file(CREATURE_SOUND_DATA)
         .with_context(|| format!("reading {CREATURE_SOUND_DATA}"))?;
-    let rs = parse(
+    let rs = parse_with_trailing_fields(
         &bytes,
         crate::creature_sound::csd_schema(),
         "CreatureSoundData",
@@ -529,7 +561,7 @@ fn load_creature_display_info_extra(chain: &mut Chain) -> Result<HashMap<u32, Np
     let bytes = chain
         .read_file(CREATURE_DISPLAY_INFO_EXTRA)
         .with_context(|| format!("reading {CREATURE_DISPLAY_INFO_EXTRA}"))?;
-    let rs = parse(
+    let rs = parse_with_trailing_fields(
         &bytes,
         creature_display_info_extra_schema(),
         "CreatureDisplayInfoExtra",

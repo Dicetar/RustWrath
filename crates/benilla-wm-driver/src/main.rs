@@ -12,9 +12,9 @@ use benilla_protocol_wrath::opcode;
 use benilla_protocol_wrath::session::{SelfTarget, SessionState};
 use benilla_protocol_wrath::world::{is_idle, WorldConnection};
 use benilla_wm_native::{
-    pump_once, Error as WmError, ProducerSession, ProducerSnapshot, PublisherConfig,
-    SourceHealth, SourceSessionState,
-    PublisherRetirement, PumpError, PumpResult,
+    pump_once, replace_publisher, retire_publisher, Error as WmError, ProducerSession,
+    ProducerSnapshot, PublisherConfig, PublisherRetirement, PumpError, PumpResult, SourceHealth,
+    SourceSessionState,
 };
 
 /// The driver's adapter: implements the bridge's `ProducerSession` over the pure
@@ -227,9 +227,23 @@ impl<'a> Cur<'a> {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let account = args.next().context("account")?;
-    let password = args.next().context("password")?;
-    let dwell: u64 = args.next().map(|s| s.parse()).transpose()?.unwrap_or(30);
+    // Positional arguments stay for manual runs. The maintained probe uses the same protected
+    // environment contract as the graphical client, so credentials never ride argv.
+    let account = args
+        .next()
+        .or_else(|| std::env::var("WOW_USER").ok())
+        .context("account (or WOW_USER)")?;
+    let password = args
+        .next()
+        .or_else(|| std::env::var("WOW_PASS").ok())
+        .context("password (or WOW_PASS)")?;
+    let dwell: u64 = match args.next() {
+        Some(raw) => raw.parse()?,
+        None => std::env::var("WM_DWELL_SECS")
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(30),
+    };
     let record_path = args.next();
 
     let logon = logon("127.0.0.1:3724", &account, &password).context("logon")?;
@@ -381,22 +395,13 @@ fn main() -> Result<()> {
     };
     let mut wm_retiring: Vec<PublisherRetirement> = Vec::new();
 
-    /// Retires the current publisher and orders its replacement after the old worker fully
-    /// stops (`spawn_after`) — replacement ordering without blocking the packet path.
-    fn wm_replace(wm_config: Option<&PublisherConfig>, current: &mut Option<benilla_wm_native::ObservationPublisher>, retiring: &mut Vec<PublisherRetirement>) -> Result<()> {
-        if let Some(config) = wm_config {
-            if let Some(publisher) = current.take() {
-                retiring.push(publisher.retire());
-            }
-            let replacement = match retiring.last() {
-                Some(retirement) => benilla_wm_native::ObservationPublisher::spawn_after(config.clone(), retirement)?,
-                None => benilla_wm_native::ObservationPublisher::spawn(config.clone())?,
-            };
-            *current = Some(replacement);
-            // Finished retirements are droppable (Drop detaches an already-stopped worker).
-            retiring.retain(|r| !r.is_finished());
-        }
-        Ok(())
+    /// The one lifecycle policy shared with the graphical loop.
+    fn wm_replace(
+        wm_config: Option<&PublisherConfig>,
+        current: &mut Option<benilla_wm_native::ObservationPublisher>,
+        retiring: &mut Vec<PublisherRetirement>,
+    ) -> Result<()> {
+        replace_publisher(wm_config, current, retiring).map_err(Into::into)
     }
 
     world.send(opcode::CMSG_PLAYER_LOGIN, &guid.to_le_bytes())?;
@@ -521,13 +526,10 @@ fn main() -> Result<()> {
             Ok(p) if p.opcode == 0x04D => {
                 println!("[world] LOGOUT_COMPLETE — clean session end to end");
                 session.finish_session();
-                if let Some(publisher) = wm_publisher.take() {
-                    let retirement = publisher.retire();
-                    // Off the packet path: wait briefly so the receiver sees a clean close.
-                    let _ = retirement.wait_timeout(std::time::Duration::from_secs(2));
-                }
+                retire_publisher(&mut wm_publisher, &mut wm_retiring);
+                // Off the packet path: wait briefly so the receiver sees a clean close.
                 for r in wm_retiring.drain(..) {
-                    let _ = r.wait_timeout(std::time::Duration::from_millis(200));
+                    let _ = r.wait_timeout(std::time::Duration::from_secs(2));
                 }
                 if let Some(path) = record_path.as_deref() {
                     let rec = world.take_recording();

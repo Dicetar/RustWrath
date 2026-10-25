@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, parse, str_at, u32_at};
+use crate::dbc::{f32_at, parse_with_trailing_fields, str_at, u32_at};
 use crate::Chain;
 
 mod atmosphere;
@@ -234,7 +234,7 @@ impl LightCatalog {
             let bytes = chain
                 .read_file(LIGHT)
                 .with_context(|| format!("reading {LIGHT}"))?;
-            let rs = parse(&bytes, light_schema(), "Light")?;
+            let rs = parse_with_trailing_fields(&bytes, light_schema(), "Light")?;
             let mut v = Vec::with_capacity(rs.records().len());
             for r in rs.records() {
                 if let (Some(id), Some(map), Some(x), Some(y), Some(z), Some(start), Some(end)) = (
@@ -288,7 +288,7 @@ impl LightCatalog {
             let bytes = chain
                 .read_file(LIGHT_PARAMS)
                 .with_context(|| format!("reading {LIGHT_PARAMS}"))?;
-            let rs = parse(&bytes, light_params_schema(), "LightParams")?;
+            let rs = parse_with_trailing_fields(&bytes, light_params_schema(), "LightParams")?;
             let mut glow = HashMap::with_capacity(rs.records().len());
             let mut highlight = HashMap::with_capacity(rs.records().len());
             let mut water_alpha = HashMap::with_capacity(rs.records().len());
@@ -326,7 +326,7 @@ impl LightCatalog {
             let mut schema = Schema::new("LightSkybox");
             schema.add_field(SchemaField::new("ID", FieldType::UInt32));
             schema.add_field(SchemaField::new("Name", FieldType::String));
-            let rs = parse(&bytes, schema, "LightSkybox")?;
+            let rs = parse_with_trailing_fields(&bytes, schema, "LightSkybox")?;
             let mut m = HashMap::with_capacity(rs.records().len());
             for r in rs.records() {
                 if let (Some(id), Some(path)) = (u32_at(r, 0), str_at(&rs, r, 1)) {

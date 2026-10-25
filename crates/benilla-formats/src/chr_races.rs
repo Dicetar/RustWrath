@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, str_at, u32_at};
+use crate::dbc::{loc_str, parse_with_trailing_fields, str_at, u32_at};
 use crate::{Chain, Locale};
 
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
@@ -113,7 +113,7 @@ pub fn load_chr_races(chain: &mut Chain) -> Result<ChrRaces> {
 
 /// The table a `ChrRaces.dbc` holds, its names read at `locale`.
 fn table_from_bytes(bytes: &[u8], locale: Locale) -> Result<ChrRaces> {
-    let rs = parse(bytes, schema(), "ChrRaces.dbc")?;
+    let rs = parse_with_trailing_fields(bytes, schema(), "ChrRaces.dbc")?;
     let mut rows = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
@@ -137,11 +137,11 @@ mod tests {
     fn synthetic() -> Vec<u8> {
         let names = [
             "Night Elf",
-            "나이트 엘프",
+            "ë‚˜ì´íŠ¸ ì—˜í”„",
             "Elfe de la nuit",
             "Nachtelf",
-            "暗夜精灵",
-            "夜精靈",
+            "æš—å¤œç²¾çµ",
+            "å¤œç²¾éˆ",
             "Elfo de la noche",
             "xx",
         ];
@@ -192,11 +192,11 @@ mod tests {
         let bytes = synthetic();
         let want = [
             "Night Elf",
-            "나이트 엘프",
+            "ë‚˜ì´íŠ¸ ì—˜í”„",
             "Elfe de la nuit",
             "Nachtelf",
-            "暗夜精灵",
-            "夜精靈",
+            "æš—å¤œç²¾çµ",
+            "å¤œç²¾éˆ",
             "Elfo de la noche",
             "xx",
         ];

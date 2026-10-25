@@ -11,7 +11,9 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, RecordSet, Schema, SchemaField};
 
-use crate::dbc::{parse, str_at, u32_at};
+use crate::dbc::{parse_with_trailing_fields, str_at, u32_at};
+#[cfg(test)]
+use crate::dbc::parse;
 use crate::models::model_name;
 
 const ITEM_DISPLAY_INFO: &str = "DBFilesClient\\ItemDisplayInfo.dbc";
@@ -187,7 +189,7 @@ pub fn load_item_display_catalog(chain: &mut Chain) -> Result<ItemDisplayCatalog
     let bytes = chain
         .read_file(ITEM_DISPLAY_INFO)
         .with_context(|| format!("reading {ITEM_DISPLAY_INFO}"))?;
-    let rs = parse(&bytes, item_display_info_schema(), "ItemDisplayInfo")?;
+    let rs = parse_with_trailing_fields(&bytes, item_display_info_schema(), "ItemDisplayInfo")?;
     Ok(catalog_from_records(rs))
 }
 

@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::chain::Chain;
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{loc_str, parse_with_trailing_fields, u32_at};
 
 const AREA_TABLE: &str = "DBFilesClient\\AreaTable.dbc";
 
@@ -125,7 +125,7 @@ pub fn load_area_table_catalog(chain: &mut Chain) -> Result<AreaTableCatalog> {
     let bytes = chain
         .read_file(AREA_TABLE)
         .context("reading AreaTable.dbc")?;
-    let rs = parse(&bytes, schema(), "AreaTable")?;
+    let rs = parse_with_trailing_fields(&bytes, schema(), "AreaTable")?;
     let locale = chain.locale();
     let mut by_id = HashMap::with_capacity(rs.records().len());
     let mut order = Vec::with_capacity(rs.records().len());

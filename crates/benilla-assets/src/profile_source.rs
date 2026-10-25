@@ -156,6 +156,26 @@ impl AssetReader for ProfileLooseAssetReader {
     }
 }
 
+/// Open the manifest's archives as a `benilla_formats::Chain` for DBC/catalog readers and the
+/// synchronous asset cache. This is the same archive set the Bevy source sees, in manifest order.
+pub fn open_profile_chain(
+    data_dir: &Path,
+    manifest_path: &Path,
+    profile: &str,
+) -> Result<benilla_formats::Chain> {
+    let profile = Profile::open(data_dir, manifest_path, profile).with_context(|| {
+        format!(
+            "opening profile `{profile}` from {}",
+            manifest_path.display()
+        )
+    })?;
+    let archives = profile
+        .archives()
+        .map(|(_, archive)| archive.clone())
+        .collect();
+    benilla_formats::Chain::from_archives(archives, benilla_formats::Locale::default())
+}
+
 /// Register the profile-backed `mpq://` and `mpq-loose://` sources.
 ///
 /// Call instead of [`crate::register_mpq_source`] for the WotLK graphical route; registering both

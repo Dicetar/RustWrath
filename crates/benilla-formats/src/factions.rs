@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{loc_str, parse, parse_with_trailing_fields, u32_at};
 use crate::Chain;
 
 const FACTION_TEMPLATE: &str = "DBFilesClient\\FactionTemplate.dbc";
@@ -164,7 +164,7 @@ impl FactionInfo {
 }
 
 /// Total standing (base + wire) to rank 0..=7, hated to exalted, the reference's ladder
-/// (`0x4d63a0`); the unit reaction takes it capped at 6, Revered (`0x606439`). Widths from −42000:
+/// (`0x4d63a0`); the unit reaction takes it capped at 6, Revered (`0x606439`). Widths from âˆ’42000:
 /// 36000, 3000, 3000, 3000, 6000, 12000, 21000, 1000 (vmangos `PointsInRank`).
 pub fn reputation_rank(total_standing: i32) -> u8 {
     match total_standing {
@@ -529,7 +529,7 @@ pub fn load_faction_catalog(chain: &mut Chain) -> Result<FactionCatalog> {
     let bytes = chain
         .read_file(CHR_RACES)
         .with_context(|| format!("reading {CHR_RACES}"))?;
-    let rs = parse(&bytes, chr_races_schema(), "ChrRaces")?;
+    let rs = parse_with_trailing_fields(&bytes, chr_races_schema(), "ChrRaces")?;
     let race_templates = rs
         .records()
         .iter()
@@ -574,7 +574,7 @@ mod tests {
         };
         assert_eq!(a.reaction_toward(&b), Reaction::Hostile);
 
-        // A.enemies[i] == B.faction → hostile, found in the last of the four slots.
+        // A.enemies[i] == B.faction â†’ hostile, found in the last of the four slots.
         let a = FactionTemplate {
             enemies: [7, 8, 9, 50],
             ..tpl(1)
@@ -677,7 +677,7 @@ mod tests {
         assert_eq!(stormwind.base_for(1, 1), 4000, "human base with Stormwind");
         assert_eq!(reputation_rank(stormwind.base_for(1, 1)), 4, "friendly");
         assert!(cat.reputation_faction(28).is_none(), "critter: no rep");
-        // Orc (race 2) base with Stormwind is hated (−42000): rank 0, hostile.
+        // Orc (race 2) base with Stormwind is hated (âˆ’42000): rank 0, hostile.
         assert_eq!(stormwind.base_for(2, 1), -42000);
         assert_eq!(reputation_rank(stormwind.base_for(2, 1)), 0);
 

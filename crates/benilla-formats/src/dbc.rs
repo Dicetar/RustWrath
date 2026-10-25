@@ -21,6 +21,34 @@ pub(crate) fn parse(bytes: &[u8], schema: Schema, what: &str) -> Result<RecordSe
         .map_err(|e| anyhow!("parsing {what} records: {e}"))
 }
 
+/// Parse a DBC whose 3.3.5 rows extend a 1.12 schema with trailing columns. The leading columns
+/// keep their 1.12 meaning; the extra columns are read as opaque slots. This is deliberately
+/// opt-in per loader, so an ordinary schema mismatch still fails loudly.
+pub(crate) fn parse_with_trailing_fields(
+    bytes: &[u8],
+    mut schema: Schema,
+    what: &str,
+) -> Result<RecordSet> {
+    let fields = bytes
+        .get(8..12)
+        .and_then(|raw| raw.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| anyhow!("parsing {what} header: truncated field count"))?
+        as usize;
+    while schema.fields.len() < fields {
+        let index = schema.fields.len();
+        schema.add_field(SchemaField::new(format!("Unknown{index}"), FieldType::UInt32));
+    }
+    parse(bytes, schema, what)
+}
+
+/// The 4-byte field count a DBC header declares, for a loader that has a known 3.3.5 layout.
+pub(crate) fn field_count(bytes: &[u8]) -> Option<usize> {
+    Some(
+        u32::from_le_bytes(bytes.get(8..12)?.try_into().ok()?) as usize,
+    )
+}
+
 /// An unsigned field, from either int variant: the schema tag only picks the decoding.
 pub(crate) fn u32_at(r: &Record, i: usize) -> Option<u32> {
     match r.get_value(i)? {

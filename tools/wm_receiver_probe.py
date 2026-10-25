@@ -13,7 +13,8 @@ Demonstrates (each printed with its evidence):
      (latest_for returns None) rather than serving a dead session;
   5. freshness expiry: an aged observation is not served.
 
-Run: python tools/wm_receiver_probe.py
+Run with protected environment only:
+  WM_NATIVE_SRC, WM_NATIVE_OBSERVATION_TOKEN, WM_PROBE_GUID, WOW_USER, WOW_PASS
 Requires the lab worldserver/authserver running and the driver binary built.
 """
 
@@ -22,12 +23,19 @@ import subprocess
 import sys
 import time
 
-DRIVER = "target/debug/benilla-wm-driver.exe"
-ACCOUNT = "PROJECTB_PROBE"
-PASSWORD = "pb-lab-2026"
-GUID = 5409  # Projectbee
-TOKEN = "project-b-lab-token-2026"
-sys.path.insert(0, "D:/Projects/project-b-opencode/integrations/wm-native/src")
+def required_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise SystemExit(f"wm_receiver_probe: set {name} (protected environment, not source)")
+    return value
+
+
+DRIVER = os.environ.get("WM_DRIVER", "target/debug/benilla-wm-driver.exe")
+GUID = int(required_env("WM_PROBE_GUID"))
+TOKEN = required_env("WM_NATIVE_OBSERVATION_TOKEN")
+# The maintained probe must import the deployed/vendored package, not an agent checkout. The
+# operator names it; no workstation path is compiled into this file.
+sys.path.insert(0, required_env("WM_NATIVE_SRC"))
 
 from wm_native import (  # noqa: E402
     NativeClientObservationLoader,
@@ -45,12 +53,16 @@ def main() -> None:
 
     loader = NativeClientObservationLoader(store)
 
-    env = dict(os.environ, WM_NATIVE_OBSERVATION_TOKEN=TOKEN)
+    env = dict(
+        os.environ,
+        WM_NATIVE_OBSERVATION_TOKEN=TOKEN,
+        WM_DWELL_SECS="15",
+    )
     mid_session = None
     proc = subprocess.Popen(
-        [DRIVER, ACCOUNT, PASSWORD, "15"],
+        [DRIVER],
         env=env,
-        cwd="D:/Projects/project-b-client",
+        cwd=os.environ.get("WM_CLIENT_ROOT", os.getcwd()),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -112,7 +124,8 @@ def main() -> None:
     # served as live.
     time.sleep(6)  # past the 5 s freshness window
     after = loader.load_latest(player_guid=GUID)
-    print(f"[wm] after logout+age: latest={'None (invalidated/expired)' if after is None else 'STILL SERVED'}")
+    assert after is None, "the store served a dead session after logout and expiry"
+    print("[wm] after logout+age: latest=None (invalidated/expired)")
 
     print("[probe] M0 acceptance sequence complete")
 

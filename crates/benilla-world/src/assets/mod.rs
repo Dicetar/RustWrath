@@ -65,7 +65,16 @@ fn open_world_assets(mut commands: Commands, device: Res<RenderDevice>) {
         .unwrap_or(1);
     commands.insert_resource(RenderConfig { unload_budget });
 
-    match open_chain(&data) {
+    // The manifest profile is the same archive set the `mpq://` Bevy source sees. Catalogs and
+    // synchronous asset reads must not silently fall back to 1.12 discovery in a 3.3.5 session.
+    let chain = match std::env::var_os("WM_ASSET_MANIFEST").map(std::path::PathBuf::from) {
+        Some(manifest) => {
+            let profile = std::env::var("WM_ASSET_PROFILE").unwrap_or_else(|_| "base".to_owned());
+            benilla_assets::open_profile_chain(&data, &manifest, &profile)
+        }
+        None => open_chain(&data),
+    };
+    match chain {
         Ok(chain) => commands.insert_resource(WorldAssets::open(chain, light_buf)),
         Err(e) => error!("failed to open client data: {e:#}"),
     }

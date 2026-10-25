@@ -1,0 +1,11 @@
+[package]
+name = "benilla-procgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic procedural generation for Project B: Borderlands-style part-composed items, seeded dungeon graphs and tile maps, terrain fields, and enemy/NPC encounter population — data-only, versioned, seed-provenant"
+
+[lints]
+workspace = true
+
+[dependencies]
