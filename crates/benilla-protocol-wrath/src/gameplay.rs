@@ -164,6 +164,19 @@ pub fn loot_release(guid: u64) -> Vec<u8> {
     guid.to_le_bytes().to_vec()
 }
 
+/// `CMSG_REPOP_REQUEST` (`MiscHandler.cpp:58-86`): the 12340 handler reads one byte.
+pub fn repop_request() -> Vec<u8> {
+    vec![0]
+}
+
+/// `CMSG_RESURRECT_RESPONSE` (`MiscHandler.cpp:677-698`): raw caster GUID and the accept byte.
+pub fn resurrect_response(caster: u64, accept: bool) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9);
+    p.extend_from_slice(&caster.to_le_bytes());
+    p.push(u8::from(accept));
+    p
+}
+
 /// `CMSG_SET_ACTION_BUTTON` is shared between the fork's 1.12 and 3.3.5 sessions at the app
 /// seam; 3.3.5 writes the slot byte and the packed word.
 pub fn set_action_button(button: u8, packed: u32) -> Vec<u8> {
@@ -536,6 +549,22 @@ pub enum ServerEvent {
         spell_id: u32,
         ticks: Vec<PeriodicAuraTick>,
     },
+    /// `MSG_CORPSE_QUERY`'s answer: the corpse's adjusted display map/position and real map.
+    CorpseQuery {
+        found: bool,
+        display_map: i32,
+        position: [f32; 3],
+        corpse_map: u32,
+    },
+    CorpseReclaimDelay { delay_ms: u32 },
+    ResurrectRequest {
+        caster: u64,
+        name: String,
+        sickness: bool,
+        /// False when 12340's instant-res override word was present.
+        has_timer: bool,
+    },
+    SpiritHealerConfirm { npc: u64 },
     LogoutResponse { reason: u32, instant: bool },
     LoggedOut,
     LogoutCancelled,
@@ -653,6 +682,10 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_PLAY_SPELL_VISUAL => read_play_spell_visual(body),
         SMSG_PERIODICAURALOG => read_periodic_aura(body),
         SMSG_SPELLNONMELEEDAMAGELOG => read_spell_damage(body),
+        MSG_CORPSE_QUERY => read_corpse_query(body),
+        SMSG_CORPSE_RECLAIM_DELAY => read_corpse_reclaim_delay(body),
+        SMSG_RESURRECT_REQUEST => read_resurrect_request(body),
+        SMSG_SPIRIT_HEALER_CONFIRM => read_spirit_healer_confirm(body),
         SMSG_CAST_FAILED => read_cast_failed(body),
         SMSG_SPELL_START => read_spell_start(body),
         SMSG_SPELL_GO => read_spell_go(body),
@@ -1386,6 +1419,63 @@ fn read_item_cooldown(b: &[u8]) -> Result<ServerEvent> {
     let item_guid = r.u64()?;
     let spell_id = r.u32()?;
     Ok(ServerEvent::ItemCooldown { item_guid, spell_id })
+}
+
+/// `MSG_CORPSE_QUERY`'s answer (`QueryHandler.cpp:226-266`): a found byte, then map, position
+/// and the corpse's real map; a lone 0 when there is no corpse.
+fn read_corpse_query(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let found = r.u8()? != 0;
+    if !found {
+        return Ok(ServerEvent::CorpseQuery {
+            found: false,
+            display_map: 0,
+            position: [0.0; 3],
+            corpse_map: 0,
+        });
+    }
+    let display_map = r.i32()?;
+    let x = r.f32()?;
+    let y = r.f32()?;
+    let z = r.f32()?;
+    let corpse_map = r.u32()?;
+    Ok(ServerEvent::CorpseQuery {
+        found: true,
+        display_map,
+        position: [x, y, z],
+        corpse_map,
+    })
+}
+
+/// `SMSG_CORPSE_RECLAIM_DELAY` (`Player.cpp:13007-13012`): the ms until reclaim.
+fn read_corpse_reclaim_delay(b: &[u8]) -> Result<ServerEvent> {
+    Ok(ServerEvent::CorpseReclaimDelay {
+        delay_ms: u32_body(b)?,
+    })
+}
+
+/// `SMSG_RESURRECT_REQUEST` (`Spell.cpp:5191-5200`): raw caster, a name length, the name and its
+/// NUL, the sickness byte and an optional instant-res delay override (only for
+/// `SPELL_ATTR3_NO_RES_TIMER`). The 1.12 seam's `has_timer` is the absence of that override.
+fn read_resurrect_request(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let caster = r.u64()?;
+    let _name_len = r.u32()?;
+    let name = r.cstring()?;
+    let sickness = r.u8()? != 0;
+    let has_timer = r.remaining() < 4;
+    Ok(ServerEvent::ResurrectRequest {
+        caster,
+        name,
+        sickness,
+        has_timer,
+    })
+}
+
+/// `SMSG_SPIRIT_HEALER_CONFIRM` (`spell_generic.cpp:2735`): the spirit healer's raw guid.
+fn read_spirit_healer_confirm(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::SpiritHealerConfirm { npc: r.u64()? })
 }
 
 /// `SMSG_COOLDOWN_EVENT` / `SMSG_CLEAR_COOLDOWN` (`Player.cpp:11052-11055`,

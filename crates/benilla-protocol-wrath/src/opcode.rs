@@ -87,6 +87,26 @@ pub const SMSG_SPELL_FAILURE: u16 = 0x133;
 pub const SMSG_SPELL_COOLDOWN: u16 = 0x134;
 /// `(u32 spell, u64 caster)` (`Player.cpp:11052-11055`).
 pub const SMSG_COOLDOWN_EVENT: u16 = 0x135;
+/// Release spirit (`MiscHandler.cpp:58-86`); the handler reads one byte.
+pub const CMSG_REPOP_REQUEST: u32 = 0x15A;
+/// A resurrect offer (`Spell.cpp:5191-5200`): raw caster, name length, name + NUL, sickness,
+/// and a u32 delay override only for `SPELL_ATTR3_NO_RES_TIMER`.
+pub const SMSG_RESURRECT_REQUEST: u16 = 0x15B;
+/// `(u64 caster, u8 accept)` (`MiscHandler.cpp:677-698`).
+pub const CMSG_RESURRECT_RESPONSE: u32 = 0x15C;
+/// The corpse's raw guid (`MiscHandler.cpp:642-645`).
+pub const CMSG_RECLAIM_CORPSE: u32 = 0x1D2;
+/// The corpse query, both ways (`QueryHandler.cpp:226-266`): the request is empty, the answer
+/// is found byte, map, position and corpse map.
+pub const MSG_CORPSE_QUERY: u16 = 0x216;
+/// The spirit healer's confirm guid (`NPCHandler.cpp:233-253`, `spell_generic.cpp:2735`).
+pub const SMSG_SPIRIT_HEALER_CONFIRM: u16 = 0x222;
+/// The healer's raw guid (`NPCHandler.cpp:233-252`).
+pub const CMSG_SPIRIT_HEALER_ACTIVATE: u32 = 0x21C;
+/// Empty body (`SpellHandler.cpp:705-719`).
+pub const CMSG_SELF_RES: u32 = 0x2B3;
+/// `u32` milliseconds (`Player.cpp:13007-13012`).
+pub const SMSG_CORPSE_RECLAIM_DELAY: u16 = 0x269;
 /// `(u32 spell, u64 caster)` (`Player.cpp:14778-14781`).
 pub const SMSG_CLEAR_COOLDOWN: u16 = 0x1DE;
 /// `(u64 item, u32 spell)` (`Player.cpp:11787-11790`).

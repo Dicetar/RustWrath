@@ -2,6 +2,8 @@
 
 `benilla-procgen` is a dependency-free data generator in the `crates/*` Cargo workspace. It has no production consumer, renderer, server publisher, persistence adapter or WM integration. Source support here does not satisfy generated-space or full stock-client replacement acceptance.
 
+Follow-up source deliverables (2026-10-26): [bounded invariant audit](invariant-audit.md) and [durable artifact handoff proposal](artifact-handoff.md). The latter specifies a reviewable JSON candidate and existing WM owner integration; it is not an accepted schema or an implemented codec. RNG range overflow was repaired in `67f43ab5` without changing valid bounded generator streams. No execution evidence was added.
+
 ## Request and failure contract
 
 `benilla_procgen::generate(&ProcgenSpec)` returns `Result<ProcgenOutput, ValidationError>`. The request contains the seed, item count, dungeon parameters, terrain parameters and population parameters. The top-level call validates all parameters and worst-case population before generating artifacts. Errors identify the field and reason. The subsystem entry points for items, dungeons, terrain and population also return `Result`; direct callers must propagate or explicitly handle errors.

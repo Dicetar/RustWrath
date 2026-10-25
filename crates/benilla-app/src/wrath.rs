@@ -1113,6 +1113,34 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
                 Vec::new()
             }
         }
+        WrathGameplayEvent::CorpseQuery {
+            found,
+            display_map,
+            position,
+            corpse_map,
+        } => vec![SessionEvent::CorpseQuery {
+            found,
+            display_map,
+            position,
+            corpse_map,
+        }],
+        WrathGameplayEvent::CorpseReclaimDelay { delay_ms } => {
+            vec![SessionEvent::CorpseReclaimDelay { delay_ms }]
+        }
+        WrathGameplayEvent::ResurrectRequest {
+            caster,
+            name,
+            sickness,
+            has_timer,
+        } => vec![SessionEvent::ResurrectRequest {
+            caster,
+            name,
+            sickness,
+            has_timer,
+        }],
+        WrathGameplayEvent::SpiritHealerConfirm { npc } => {
+            vec![SessionEvent::SpiritHealerConfirm { npc }]
+        }
         WrathGameplayEvent::LogoutResponse { reason, instant } => {
             vec![SessionEvent::LogoutResponse { reason, instant }]
         }
@@ -1649,6 +1677,30 @@ fn wrath_tap_commands(
             ClientCommand::SetActionButton { button, packed } => Some((
                 0x128, // CMSG_SET_ACTION_BUTTON
                 gameplay::set_action_button(button, packed),
+            )),
+            ClientCommand::RepopRequest => Some((
+                benilla_protocol_wrath::opcode::CMSG_REPOP_REQUEST,
+                gameplay::repop_request(),
+            )),
+            ClientCommand::CorpseQuery => Some((
+                u32::from(benilla_protocol_wrath::opcode::MSG_CORPSE_QUERY),
+                Vec::new(),
+            )),
+            ClientCommand::ReclaimCorpse { corpse } => Some((
+                benilla_protocol_wrath::opcode::CMSG_RECLAIM_CORPSE,
+                corpse.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::SelfRes => Some((
+                benilla_protocol_wrath::opcode::CMSG_SELF_RES,
+                Vec::new(),
+            )),
+            ClientCommand::SpiritHealerActivate { npc } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SPIRIT_HEALER_ACTIVATE,
+                npc.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::ResurrectResponse { caster, accept } => Some((
+                benilla_protocol_wrath::opcode::CMSG_RESURRECT_RESPONSE,
+                gameplay::resurrect_response(caster, accept),
             )),
             _ => None,
         };
@@ -2208,6 +2260,11 @@ fn wrath_apply_world(world: &mut World) {
                     if let Some(value) = raw.get(src as usize) {
                         pairs.push((dst, *value));
                     }
+                }
+                // `PLAYER_FLAGS` (3.3.5 150 -> 1.12 190): the ghost bit 0x10 is what the death
+                // owner reads off the self descriptor.
+                if let Some(value) = raw.get(150) {
+                    pairs.push((benilla_protocol::field::FIELD_PLAYER_FLAGS, *value));
                 }
                 push_player_inventory_fields(raw, &mut pairs);
                 if let Some(value) = raw.get(634) {
