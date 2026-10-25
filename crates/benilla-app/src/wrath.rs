@@ -333,6 +333,12 @@ pub(crate) enum WrathParkedCommand {
     Enter(u64),
 }
 
+/// The parked character-select input a fresh session serves, and the ask that started it.
+pub(crate) struct ParkedInput {
+    commands: Receiver<WrathParkedCommand>,
+    roster_asked: bool,
+}
+
 /// The select screen's asks and Enters, drained by [`wrath_pick_admission`]. Bound in
 /// [`WrathNetPlugin::build`] over the stock `CharPick`, whose reader is the stock IO thread
 /// the Wrath session replaces.
@@ -376,12 +382,21 @@ pub struct WrathControl {
     /// Replies for the established `SessionEvent` handlers, tagged by source scope and drained
     /// in the Net stage rather than through the stock 1.12 inbound channel.
     session_events: Option<Receiver<WrathSessionEvent>>,
+    /// The app's own end of that tagged channel. A panicked worker never sends its terminal
+    /// event, so the ownership tick synthesizes the forced `Disconnected` through this clone.
+    session_events_tx: Option<Sender<WrathSessionEvent>>,
     /// The running parked session's screen-ask channel. The select screen's next ask lands
     /// here; a dead one (the parked session ended) makes the ask a fresh-admission attempt.
     /// `None` for the boot flow and for any session started without the screen, which is also
     /// how the end-of-session retry policy tells a connection that served a screen from a boot
     /// dial: a parked link that dies does not retry.
     park_commands: Option<Sender<WrathParkedCommand>>,
+    /// Publishers whose bounded stop missed the worker's wait window. They are retained until
+    /// they report stopped, and replacement admission waits for the list to empty: a dropped
+    /// handle is not proof of retirement.
+    publisher_retiring: Vec<benilla_wm_native::PublisherRetirement>,
+    /// The current worker's handoff of unfinished publisher retirements.
+    publisher_retire_rx: Option<Receiver<benilla_wm_native::PublisherRetirement>>,
 }
 
 impl WrathControl {
@@ -411,6 +426,13 @@ impl WrathControl {
         if self.shutdown || self.worker.is_some() || self.retiring.is_some() {
             return;
         }
+        // A forced terminal that the Net stage has not delivered yet may target the session
+        // being ended, not the one about to start; admitting now would let it land on the
+        // replacement. The pick admission can reach `start` without the ownership's gate, so
+        // the guard lives here as well.
+        if !self.session_events_empty() {
+            return;
+        }
         if self.ended {
             if !self.restart_allowed || self.restart_attempts == 0 {
                 return;
@@ -427,15 +449,18 @@ impl WrathControl {
         // The parked capture happens with the kind's channel: one fresh channel per parked
         // session, none for the boot flow. Any older parked channel is unreachable by then
         // (that worker is gone, or its retirement blocks this start).
-        let (parked_in, parked_asked) = match kind {
+        let parked = match kind {
             WrathSessionStart::Auto => {
                 self.park_commands = None;
-                (None, false)
+                None
             }
             WrathSessionStart::Parked { roster_asked } => {
                 let (park_tx, park_rx) = crossbeam_channel::unbounded::<WrathParkedCommand>();
                 self.park_commands = Some(park_tx);
-                (Some(park_rx), roster_asked)
+                Some(ParkedInput {
+                    commands: park_rx,
+                    roster_asked,
+                })
             }
         };
         let feed = WrathFeed::new();
@@ -456,6 +481,9 @@ impl WrathControl {
         }
         let (events_out, events_in) = crossbeam_channel::unbounded();
         self.session_events = Some(events_in);
+        self.session_events_tx = Some(events_out.clone());
+        let (publisher_retire, publisher_retire_rx) = crossbeam_channel::unbounded();
+        self.publisher_retire_rx = Some(publisher_retire_rx);
         let events_out = Some(events_out);
         let handle = std::thread::Builder::new()
             .name("wrath-session".to_owned())
@@ -466,8 +494,8 @@ impl WrathControl {
                     &cancel,
                     commands,
                     events_out.clone(),
-                    parked_in,
-                    parked_asked,
+                    parked,
+                    Some(publisher_retire),
                 );
                 if let Ok(mut q) = feed.events.lock() {
                     if q.len() >= WRATH_EVENT_CAPACITY {
@@ -537,6 +565,7 @@ impl WrathControl {
             }
         }
         self.session_events = None;
+        self.session_events_tx = None;
     }
 
     fn take_digest(&mut self) -> Option<WorldDigest> {
@@ -655,7 +684,10 @@ impl Plugin for WrathNetPlugin {
             shutdown: false,
             last_error: None,
             session_events: None,
+            session_events_tx: None,
             park_commands: None,
+            publisher_retiring: Vec::new(),
+            publisher_retire_rx: None,
         })
         .init_resource::<WrathWorldView>();
         if self.config.is_some() {
@@ -712,18 +744,46 @@ fn wrath_session_ownership(
     if *state.get() == ClientState::CharSelect {
         control.left_world = true;
     }
+    // Publishers that missed the worker's bounded stop are retained until they report stopped;
+    // replacement admission waits for the list to empty, because a dropped handle is not proof
+    // of retirement.
+    let handed_off: Vec<_> = match control.publisher_retire_rx.as_ref() {
+        Some(receiver) => receiver.try_iter().collect(),
+        None => Vec::new(),
+    };
+    control.publisher_retiring.extend(handed_off);
+    control
+        .publisher_retiring
+        .retain(|retirement| !retirement.is_finished());
     if control.worker.as_ref().is_some_and(|w| w.is_finished()) {
-        if let Some(handle) = control.worker.take() {
-            if handle.join().is_err() && control.last_error.is_none() {
-                control.last_error = Some("wrath session worker panicked".to_owned());
+        let panicked = match control.worker.take() {
+            Some(handle) => handle.join().is_err(),
+            None => false,
+        };
+        if panicked {
+            // A panicked worker never published its terminal event. Synthesize the visible loss
+            // through the same tagged channel the worker uses, and clear the restart budget so
+            // the refusal is a policy decision rather than a stuck flag.
+            let reason = "wrath session worker panicked".to_owned();
+            if control.last_error.is_none() {
+                control.last_error = Some(reason.clone());
+            }
+            control.restart_allowed = false;
+            control.retry_at = None;
+            if let Some(sink) = control.session_events_tx.as_ref() {
+                let _ = sink.send(WrathSessionEvent::forced(SessionEvent::Disconnected {
+                    reason,
+                    end: benilla_protocol::SessionEnd::Lost,
+                }));
             }
         }
         if !control.ended {
             control.ended = true;
             // The terminal feed and its reply queue are drained in Net; only then may a
             // replacement be admitted. If Net already drained `SessionEnded`, leave its ready
-            // flag alone.
-            control.terminal_ready = false;
+            // flag alone. A panicked worker has no `SessionEnded` to drain: its terminal edge
+            // is the join and the synthesized loss above.
+            control.terminal_ready = panicked;
         }
     }
     let retry_due = control.retry_at.is_some_and(|at| Instant::now() >= at);
@@ -739,6 +799,7 @@ fn wrath_session_ownership(
         && control.retiring.is_none()
         && control.terminal_ready
         && control.session_events_empty()
+        && control.publisher_retiring.is_empty()
         && may_admit
     {
         // A retry is only ever the boot flow's: a parked link that dies has no retry (the
@@ -2263,11 +2324,13 @@ fn entity_kind(type_id: u8) -> EntityKind {
 }
 
 /// Owns the observation publisher for one worker. Every exit path, including an early socket
-/// error, signals retirement and waits only for the bounded publisher stop window; a replacement
-/// worker can then start without overlapping publication.
+/// error, signals retirement and waits only for the bounded publisher stop window; a retirement
+/// that misses that window is handed to the app, which tracks it until the publisher reports
+/// stopped and blocks any replacement until then.
 struct PublisherOwner {
     publisher: Option<benilla_wm_native::ObservationPublisher>,
     retiring: Vec<benilla_wm_native::PublisherRetirement>,
+    retire_out: Option<Sender<benilla_wm_native::PublisherRetirement>>,
 }
 
 impl PublisherOwner {
@@ -2282,7 +2345,18 @@ impl PublisherOwner {
     fn retire_all(&mut self) {
         benilla_wm_native::retire_publisher(&mut self.publisher, &mut self.retiring);
         for retirement in self.retiring.drain(..) {
-            let _ = retirement.wait_timeout(Duration::from_millis(200));
+            if retirement.wait_timeout(Duration::from_millis(200)) {
+                continue;
+            }
+            // The bounded stop missed. The handle must stay tracked: sending it to the app lets
+            // admission wait for the publisher to actually report stopped; with no app to track
+            // it, wait here rather than let a replacement overlap publication.
+            match self.retire_out.as_ref() {
+                Some(out) => {
+                    let _ = out.send(retirement);
+                }
+                None => retirement.join(),
+            }
         }
     }
 }
@@ -2343,18 +2417,24 @@ fn roster_from(records: &[gameplay::CharEnumRecord]) -> Vec<Character> {
 /// packet step; a cancelled session exits as a clean `SessionEnded` without manufacturing packets.
 /// `parked` is the parked character select after a clean logout: the fresh session serves the
 /// screen's asks from the channel the pick admission fed, publishes the fresh roster as the
-/// established roster seam expects, and enters on the ask the screen made. `roster_asked`
-/// marks the enumeration that started the session; the boot flow publishes no roster.
+/// established roster seam expects, and enters on the ask the screen made. The boot flow
+/// publishes no roster. `publisher_retire` receives any publisher retirement the bounded stop
+/// could not finish, so the app can keep it tracked and refuse a replacement.
 pub fn run_session_with_cancel(
     feed: &WrathFeed,
     config: &WrathSessionConfig,
     cancel: &AtomicBool,
     commands: Option<WrathOutbox>,
     events_out: Option<Sender<WrathSessionEvent>>,
-    parked: Option<Receiver<WrathParkedCommand>>,
-    roster_asked: bool,
+    parked: Option<ParkedInput>,
+    publisher_retire: Option<Sender<benilla_wm_native::PublisherRetirement>>,
 ) -> anyhow::Result<()> {
     use benilla_wm_native::{pump_once, replace_publisher, PublisherConfig};
+
+    let (parked, roster_asked) = match parked {
+        Some(input) => (Some(input.commands), input.roster_asked),
+        None => (None, false),
+    };
 
     let logon = benilla_protocol_wrath::logon::logon(&config.auth_addr, &config.account, &config.password)?;
     let realm = logon
@@ -2380,6 +2460,7 @@ pub fn run_session_with_cancel(
             None => None,
         },
         retiring: Vec::new(),
+        retire_out: publisher_retire,
     };
     let mut session = SessionState::new();
     session.start_session(1); // placeholder; re-started with the real GUID after the enum
@@ -3115,7 +3196,10 @@ mod command_tap_tests {
                 shutdown: false,
                 last_error: None,
                 session_events: None,
+                session_events_tx: None,
                 park_commands: Some(tx),
+                publisher_retiring: Vec::new(),
+                publisher_retire_rx: None,
             },
             rx,
         )
