@@ -4,14 +4,15 @@
 //! is the `dispelType` `UnitDebuff` returns (`0x519a89`), which FrameXML's `DebuffTypeColor` keys
 //! the debuff border on in every locale's FrameXML. The `Name` block (columns 1-8) at the client's
 //! locale slot is the word the aura tooltip prints (`0x52f880`): `Magie` on a German install.
+//! WotLK has sixteen name slots and an added immunity column, so Mask/InternalName are 18/20.
 
 use std::collections::HashMap;
 
 use crate::Chain;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, str_at, u32_at};
+use crate::dbc::{field_count, loc_str, parse, str_at, u32_at};
 
 /// The named dispel classes by `Spell.dbc` `Dispel` id; a row the gate withholds is absent.
 #[derive(Default)]
@@ -47,13 +48,26 @@ pub fn load_spell_dispel_types(chain: &mut Chain) -> Result<SpellDispelTypes> {
     let bytes = chain
         .read_file("DBFilesClient\\SpellDispelType.dbc")
         .context("reading SpellDispelType.dbc")?;
+    // WoWDBDefs SpellDispelType.dbd, 3.0.1.8303-3.3.5.12340: sixteen name locales,
+    // flags, Mask, ImmunityPossible, InternalName. Vanilla has eight locales and no ImmunityPossible.
+    let (locales, named_column, internal_name_column) = match field_count(&bytes) {
+        Some(12) => (8, 10, 11),
+        Some(21) => (16, 18, 20),
+        Some(columns) => bail!(
+            "unsupported SpellDispelType.dbc layout: {columns} fields (expected 12 or 21)"
+        ),
+        None => bail!("parsing SpellDispelType.dbc header: truncated field count"),
+    };
     let mut schema = Schema::new("SpellDispelType");
     schema.add_field(SchemaField::new("ID", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..locales {
         schema.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     schema.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
     schema.add_field(SchemaField::new("Named", FieldType::UInt32));
+    if locales == 16 {
+        schema.add_field(SchemaField::new("ImmunityPossible", FieldType::UInt32));
+    }
     schema.add_field(SchemaField::new("InternalName", FieldType::String));
     let set = parse(&bytes, schema, "SpellDispelType.dbc")?;
     let locale = chain.locale();
@@ -61,10 +75,10 @@ pub fn load_spell_dispel_types(chain: &mut Chain) -> Result<SpellDispelTypes> {
     for r in set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         // The gate first: a 0 here withholds the name however good the string is (Stealth, id 5).
-        if u32_at(r, 10).unwrap_or(0) == 0 {
+        if u32_at(r, named_column).unwrap_or(0) == 0 {
             continue;
         }
-        if let Some(name) = str_at(&set, r, 11).filter(|n| !n.is_empty()) {
+        if let Some(name) = str_at(&set, r, internal_name_column).filter(|n| !n.is_empty()) {
             names.insert(id, name);
         }
         if let Some(label) = loc_str(&set, r, 1, locale) {

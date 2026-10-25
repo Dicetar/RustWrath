@@ -12,6 +12,9 @@
 //! description 138-146, aura description 147-155, then `ManaCostPercentage` at 156. The
 //! per-effect fields are `[3]` arrays in consecutive columns from `Effect` at 61.
 //! `SpellIcon.dbc` is `ID`, `TextureFilename` (no extension).
+//!
+//! The 234-column WotLK layout is selected explicitly in `layout`; it maps consumed fields
+//! by meaning, including sixteen-locale text blocks and the moved effect arrays.
 
 mod cast_times;
 mod dispel_types;
@@ -29,6 +32,7 @@ pub use display::{FormRefusal, LearnAnnouncement, OpenLock, SpellDisplay};
 pub use duration::{load_spell_durations, SpellDuration, SpellDurationCatalog};
 pub use forms::{load_shapeshift_forms, ShapeshiftForm};
 mod immunity;
+mod layout;
 pub use immunity::{cc_exemption, grants_immunity, CcExemption};
 pub use radius::{load_spell_radii, SpellRadius, SpellRadiusCatalog};
 pub use ranges::{
@@ -48,7 +52,9 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, i32_at, loc_str, parse, u32_at};
+use crate::dbc::{parse, u32_at};
+#[cfg(test)]
+use crate::dbc::f32_at;
 
 const SPELL: &str = "DBFilesClient\\Spell.dbc";
 
@@ -294,6 +300,8 @@ pub const SPELL_EFFECT_PROSPECTING: u32 = 127;
 /// wrapper, and [`Self::learned_spell`] follows it to the ability it teaches.
 pub struct SpellCatalog {
     spells: HashMap<u32, SpellDisplay>,
+    school_masks: HashMap<u32, u32>,
+    family_flags_high: HashMap<u32, u32>,
     learned_spell: HashMap<u32, u32>,
     /// Learn effects in slot order, for spells that have any.
     learn_effects: HashMap<u32, Vec<LearnEffect>>,
@@ -353,6 +361,8 @@ impl SpellCatalog {
         Self {
             weapon_skills: weapon_skill_table(&spells),
             spells,
+            school_masks: HashMap::new(),
+            family_flags_high: HashMap::new(),
             learned_spell,
             learn_effects,
             declared_language: HashMap::new(),
@@ -377,6 +387,25 @@ impl SpellCatalog {
 
     pub fn get(&self, id: u32) -> Option<&SpellDisplay> {
         self.spells.get(&id)
+    }
+
+    /// The complete school mask. `SpellDisplay::school` remains the primary index for legacy
+    /// consumers; WotLK hybrid-school decisions must use the mask.
+    pub fn school_mask(&self, id: u32) -> Option<u32> {
+        self.school_masks
+            .get(&id)
+            .copied()
+            .or_else(|| self.get(id).and_then(|spell| 1u32.checked_shl(spell.school)))
+    }
+
+    /// All three WotLK family-flag words, low first; vanilla has only the first two.
+    pub fn spell_family_flags_96(&self, id: u32) -> Option<[u32; 3]> {
+        let spell = self.get(id)?;
+        Some([
+            spell.spell_family_flags as u32,
+            (spell.spell_family_flags >> 32) as u32,
+            self.family_flags_high.get(&id).copied().unwrap_or(0),
+        ])
     }
 
     /// The dispel class's key, the `debuffType` `UnitDebuff` returns (`0x519a89`) and the debuff
@@ -426,7 +455,7 @@ impl SpellCatalog {
 }
 
 /// 173 fields, `u32` but for `Speed`, the four float effect arrays and the four string blocks' first columns;
-/// the signed columns stay `u32`, as [`i32_at`] reads the same bits.
+/// the signed columns stay `u32`, as [`crate::dbc::i32_at`] reads the same bits.
 fn spell_schema() -> Schema {
     let mut s = Schema::new("Spell");
     for i in 0..SPELL_FIELDS {
@@ -505,14 +534,31 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
     };
 
     let spell_bytes = chain.read_file(SPELL).context("reading Spell.dbc")?;
-    let spells_set = parse(&spell_bytes, spell_schema(), "Spell.dbc")?;
+    let (spells_set, layout) = layout::parse_spells(&spell_bytes)?;
+    let u32_at = |record: &benilla_dbc::Record, column: usize| layout.uint(record, column);
+    let i32_at = |record: &benilla_dbc::Record, column: usize| layout.int(record, column);
+    let f32_at = |record: &benilla_dbc::Record, column: usize| layout.float(record, column);
+    let loc_str = |set: &benilla_dbc::RecordSet, record: &benilla_dbc::Record, column, locale| {
+        layout.text(set, record, column, locale)
+    };
     let locale = chain.locale();
     let mut spells: HashMap<u32, SpellDisplay> = HashMap::new();
+    let mut school_masks = HashMap::new();
+    let mut family_flags_high = HashMap::new();
     let mut learned_spell: HashMap<u32, u32> = HashMap::new();
     let mut learn_effects: HashMap<u32, Vec<LearnEffect>> = HashMap::new();
     let mut declared_language: HashMap<u32, u32> = HashMap::new();
     for r in spells_set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
+        if matches!(layout, layout::SpellLayout::Wrath) {
+            if let Some(mask) = layout.school_mask(r) {
+                school_masks.insert(id, mask);
+            }
+        }
+        let high = layout.family_flags_high(r);
+        if high != 0 {
+            family_flags_high.insert(id, high);
+        }
         // The learn-spell hop: the first LEARN_SPELL effect's trigger is the taught ability.
         for i in 0..3 {
             if u32_at(r, COL_EFFECT_1 + i) == Some(SPELL_EFFECT_LEARN_SPELL) {
@@ -718,6 +764,8 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
     Ok(SpellCatalog {
         weapon_skills: weapon_skill_table(&spells),
         spells,
+        school_masks,
+        family_flags_high,
         learned_spell,
         learn_effects,
         declared_language,
