@@ -419,6 +419,7 @@ pub enum ServerEvent {
         rank: u32,
         type_flags: u32,
         display_id: u32,
+        racial_leader: bool,
     },
     ActionButtons { buttons: Vec<ActionButton> },
     SpellLearned { spell_id: u32 },
@@ -638,6 +639,7 @@ fn read_creature(b: &[u8]) -> Result<ServerEvent> {
             rank: 0,
             type_flags: 0,
             display_id: 0,
+            racial_leader: false,
         });
     }
     let name = r.cstring()?;
@@ -653,6 +655,12 @@ fn read_creature(b: &[u8]) -> Result<ServerEvent> {
     let _kill_credit_0 = r.u32()?;
     let _kill_credit_1 = r.u32()?;
     let display_id = r.u32()?;
+    let _display_id_2 = r.u32()?;
+    let _display_id_3 = r.u32()?;
+    let _display_id_4 = r.u32()?;
+    let _mod_health = r.f32()?;
+    let _mod_mana = r.f32()?;
+    let racial_leader = r.u8()? != 0;
     Ok(ServerEvent::CreatureName {
         entry,
         name: Some(name),
@@ -662,6 +670,7 @@ fn read_creature(b: &[u8]) -> Result<ServerEvent> {
         rank,
         type_flags,
         display_id,
+        racial_leader,
     })
 }
 

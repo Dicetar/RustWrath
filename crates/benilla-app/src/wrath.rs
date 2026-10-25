@@ -610,6 +610,7 @@ fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
             rank,
             type_flags,
             display_id,
+            racial_leader,
         } => vec![SessionEvent::CreatureName {
             entry,
             name,
@@ -620,8 +621,10 @@ fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
             type_flags,
             pet_spell_list: 0,
             display_id,
+            // 3.3.5 does not put the 1.12 civilian byte on this wire; leave it false rather than
+            // inferring it from a differently-defined type flag.
             civilian: false,
-            racial_leader: false,
+            racial_leader,
         }],
         WrathGameplayEvent::ItemInfo { entry, info } => vec![SessionEvent::ItemTemplate {
             entry,
