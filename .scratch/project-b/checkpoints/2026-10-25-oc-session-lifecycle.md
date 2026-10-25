@@ -2,7 +2,8 @@
 
 Date: 2026-10-25
 Owner: OpenCode (gameplay/integration)
-Checkout: `wotlk`, base HEAD `b21d0d92`; this checkpoint's commit adds the lifecycle slice.
+Checkout: `wotlk`, source slice based on `b21d0d92`; this checkpoint's commit landed after the
+GLM procgen commits `f0513f54` and `3563bc35`, which are not part of this slice.
 Scope: source-only Wrath worker/session retirement and fresh-session admission after a clean
 logout. No build, test, renderer, WM, socket, database or live-server execution.
 
