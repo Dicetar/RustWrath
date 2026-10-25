@@ -7,16 +7,19 @@
 use std::collections::HashMap;
 
 use crate::Chain;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str_raw, parse, str_at, u32_at};
+use crate::dbc::{field_count, loc_str_raw, parse, str_at, u32_at};
 
 const LOCK_TYPE: &str = "DBFilesClient\\LockType.dbc";
 /// The file's column count, which `benilla-dbc` checks against the header.
 const LOCK_TYPE_FIELDS: usize = 29;
 /// `CursorName`, the `[row+0x70]` that `0x5f3070` reads.
 const CURSOR_NAME_FIELD: usize = 28;
+// WoWDBDefs LockType.dbd, 3.3.5.12340: three sixteen-locale blocks, then CursorName.
+const WRATH_LOCK_TYPE_FIELDS: usize = 53;
+const WRATH_CURSOR_NAME_FIELD: usize = 52;
 /// The `Name` block's first column, the toast's `[row + locale*4 + 4]`.
 const NAME_FIELD: usize = 1;
 
@@ -64,11 +67,11 @@ impl LockTypeCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(columns: usize, cursor_column: usize) -> Schema {
     let mut s = Schema::new("LockType");
-    for i in 0..LOCK_TYPE_FIELDS {
+    for i in 0..columns {
         // The unread columns are 4-byte filler, declared so the record size matches the header.
-        let ty = if i == CURSOR_NAME_FIELD || i == NAME_FIELD {
+        let ty = if i == cursor_column || i == NAME_FIELD {
             FieldType::String
         } else {
             FieldType::UInt32
@@ -87,12 +90,20 @@ pub fn load_lock_type_catalog(chain: &mut Chain) -> Result<LockTypeCatalog> {
 }
 
 fn catalog_from_bytes(bytes: &[u8], locale: crate::Locale) -> Result<LockTypeCatalog> {
-    let rs = parse(bytes, schema(), "LockType.dbc")?;
+    let (columns, cursor_column) = match field_count(bytes) {
+        Some(LOCK_TYPE_FIELDS) => (LOCK_TYPE_FIELDS, CURSOR_NAME_FIELD),
+        Some(WRATH_LOCK_TYPE_FIELDS) => (WRATH_LOCK_TYPE_FIELDS, WRATH_CURSOR_NAME_FIELD),
+        Some(columns) => bail!(
+            "unsupported LockType.dbc layout: {columns} fields (expected 29 or 53)"
+        ),
+        None => bail!("parsing LockType.dbc header: truncated field count"),
+    };
+    let rs = parse(bytes, schema(columns, cursor_column), "LockType.dbc")?;
     let mut cursors = HashMap::new();
     let mut names = HashMap::new();
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
-        if let Some(name) = str_at(&rs, r, CURSOR_NAME_FIELD) {
+        if let Some(name) = str_at(&rs, r, cursor_column) {
             cursors.insert(id, name);
         }
         if let Some(name) = loc_str_raw(&rs, r, NAME_FIELD, locale) {

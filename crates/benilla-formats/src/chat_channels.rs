@@ -1,14 +1,17 @@
 //! `ChatChannels.dbc`, the six built-in chat channels. The zone-channel join is the client's
 //! (vmangos's `Player::UpdateLocalChannels`, `Objects/Player.cpp:5121`, is empty): at world entry
 //! and every zone change `0x49a210` sends `CMSG_JOIN_CHANNEL` for each auto-join row.
+//! WotLK expands each localized block to sixteen slots, moving Shortcut from column 12 to 20.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::chain::Chain;
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{field_count, loc_str, parse, u32_at};
 
 const CHAT_CHANNELS: &str = "DBFilesClient\\ChatChannels.dbc";
+const CHAT_CHANNEL_FIELDS: usize = 21;
+const WRATH_CHAT_CHANNEL_FIELDS: usize = 37;
 
 /// `ChatChannels.dbc` flag bits, named as vmangos's `ChannelDBCFlags` (`Chat/Channel.h:107-116`).
 pub mod flags {
@@ -133,14 +136,22 @@ impl ChatChannelsCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(locale_slots: usize) -> Schema {
     let mut s = Schema::new("ChatChannels");
     s.add_field(SchemaField::new("ChannelID", FieldType::UInt32));
     s.add_field(SchemaField::new("Flags", FieldType::UInt32));
     s.add_field(SchemaField::new("FactionGroup", FieldType::UInt32));
-    s.add_field(SchemaField::new_array("Name", FieldType::String, 8));
+    s.add_field(SchemaField::new_array(
+        "Name",
+        FieldType::String,
+        locale_slots,
+    ));
     s.add_field(SchemaField::new("NameMask", FieldType::UInt32));
-    s.add_field(SchemaField::new_array("Shortcut", FieldType::String, 8));
+    s.add_field(SchemaField::new_array(
+        "Shortcut",
+        FieldType::String,
+        locale_slots,
+    ));
     s.add_field(SchemaField::new("ShortcutMask", FieldType::UInt32));
     s.set_key_field("ChannelID");
     s
@@ -150,7 +161,17 @@ pub fn load_chat_channels_catalog(chain: &mut Chain) -> Result<ChatChannelsCatal
     let bytes = chain
         .read_file(CHAT_CHANNELS)
         .context("reading ChatChannels.dbc")?;
-    let rs = parse(&bytes, schema(), "ChatChannels")?;
+    // ChatChannelsEntry / WoWDBDefs: ID, flags, faction, two localized blocks with flags.
+    let locale_slots = match field_count(&bytes) {
+        Some(CHAT_CHANNEL_FIELDS) => 8,
+        Some(WRATH_CHAT_CHANNEL_FIELDS) => 16,
+        Some(columns) => bail!(
+            "unsupported ChatChannels.dbc layout: {columns} fields (expected 21 or 37)"
+        ),
+        None => bail!("parsing ChatChannels.dbc header: truncated field count"),
+    };
+    let shortcut_column = 4 + locale_slots;
+    let rs = parse(&bytes, schema(locale_slots), "ChatChannels.dbc")?;
     let locale = chain.locale();
     let mut rows = Vec::with_capacity(rs.records().len());
     for r in rs.records() {
@@ -163,7 +184,7 @@ pub fn load_chat_channels_catalog(chain: &mut Chain) -> Result<ChatChannelsCatal
             id,
             flags,
             pattern,
-            shortcut: loc_str(&rs, r, 12, locale).unwrap_or_default(),
+            shortcut: loc_str(&rs, r, shortcut_column, locale).unwrap_or_default(),
         });
     }
     Ok(ChatChannelsCatalog { rows })
