@@ -91,6 +91,10 @@ pub const SMSG_COOLDOWN_EVENT: u16 = 0x135;
 pub const SMSG_CLEAR_COOLDOWN: u16 = 0x1DE;
 /// `(u64 item, u32 spell)` (`Player.cpp:11787-11790`).
 pub const SMSG_ITEM_COOLDOWN: u16 = 0x0B0;
+/// Packed target + every visible aura block (`Player.cpp:12053-12063`).
+pub const SMSG_AURA_UPDATE_ALL: u16 = 0x495;
+/// Packed target + one aura block (`SpellAuras.cpp:187-235`).
+pub const SMSG_AURA_UPDATE: u16 = 0x496;
 /// Packed caster, u32 spell, u32 duration (`Spell.cpp:5158-5177`).
 pub const MSG_CHANNEL_START: u16 = 0x139;
 /// Packed caster, u32 time left (`Spell.cpp:5143-5156`).

@@ -300,6 +300,8 @@ impl SessionState {
                 opcode::SMSG_UPDATE_OBJECT
                     | opcode::SMSG_COMPRESSED_UPDATE_OBJECT
                     | opcode::SMSG_DESTROY_OBJECT
+                    | opcode::SMSG_AURA_UPDATE
+                    | opcode::SMSG_AURA_UPDATE_ALL
             )
         {
             self.input_seq += 1;
@@ -307,6 +309,14 @@ impl SessionState {
         }
         match op {
             opcode::SMSG_UPDATE_OBJECT | opcode::SMSG_COMPRESSED_UPDATE_OBJECT => {
+                let (evs, ch) = self.world.reduce_changed(op, payload)?;
+                events = evs;
+                changed = ch;
+            }
+            opcode::SMSG_AURA_UPDATE | opcode::SMSG_AURA_UPDATE_ALL => {
+                // 12340 sends auras as packets rather than descriptor fields
+                // (`SpellAuras.cpp:187-235`); they ride the same replicated-state revision as
+                // the update stream so the app's digest republishes them.
                 let (evs, ch) = self.world.reduce_changed(op, payload)?;
                 events = evs;
                 changed = ch;

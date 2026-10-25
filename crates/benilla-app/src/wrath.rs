@@ -297,6 +297,9 @@ pub struct WrathEntity {
     /// extends it with its slot array; both are translated explicitly rather than copied by
     /// index because the 1.12 item/container layouts differ.
     pub item_fields: Option<Vec<u32>>,
+    /// The unit's visible aura slots from `SMSG_AURA_UPDATE[_ALL]`. The 1.12 bar is descriptor
+    /// data, so the translation synthesizes `UNIT_FIELD_AURA`/`AURAFLAGS` from these.
+    pub auras: Vec<benilla_protocol_wrath::reducer::AuraSlot>,
 }
 
 /// A full-world digest: the replicated world at one `state_revision`.
@@ -1938,6 +1941,46 @@ fn push_item_fields(raw: &[u32], container: bool, pairs: &mut Vec<(u16, u32)>) {
     }
 }
 
+/// The 1.12 unit-aura descriptor window (`UNIT_FIELD_AURA`, fields 47-94, plus the six
+/// `AURAFLAGS` nibble words at 95-100) from 12340's visible slots. Slots 48 and up have no 1.12
+/// field and drop; the flags' low three bits are the effect indices the nibble carries.
+fn push_aura_fields(
+    auras: &[benilla_protocol_wrath::reducer::AuraSlot],
+    pairs: &mut Vec<(u16, u32)>,
+) {
+    const SLOT_COUNT: usize = 48;
+    let first = benilla_protocol::field::FIELD_UNIT_AURA;
+    let mut ids = [0u32; SLOT_COUNT];
+    let mut flags = [0u32; 6];
+    for aura in auras {
+        let slot = usize::from(aura.slot);
+        if slot >= SLOT_COUNT {
+            continue;
+        }
+        ids[slot] = aura.spell_id;
+        flags[slot >> 3] |= u32::from(aura.flags & 0x7) << ((slot & 7) * 4);
+    }
+    for (index, id) in ids.iter().enumerate() {
+        pairs.push((first + index as u16, *id));
+    }
+    for (index, word) in flags.iter().enumerate() {
+        pairs.push((first + SLOT_COUNT as u16 + index as u16, *word));
+    }
+}
+
+/// The aura watcher's current window of a translated descriptor, zeros where not carried.
+fn aura_span(fields: &ObjectFields) -> [u32; crate::net::AURA_WATCH_SPAN] {
+    let first = benilla_protocol::field::FIELD_UNIT_AURA;
+    let end = first + crate::net::AURA_WATCH_SPAN as u16;
+    let mut span = [0u32; crate::net::AURA_WATCH_SPAN];
+    for (index, value) in fields.raw_fields() {
+        if (first..end).contains(&index) {
+            span[usize::from(index - first)] = value;
+        }
+    }
+    span
+}
+
 /// Spawn or update one item/container entity in the established `ItemObject`/`ObjectStore`
 /// owner. Items carry no `NetEntity` or transform; their GUID identity stays in `GuidIndex`.
 fn apply_item_world(
@@ -2178,6 +2221,9 @@ fn wrath_apply_world(world: &mut World) {
                 }
             }
         }
+        if matches!(kind, EntityKind::Unit | EntityKind::Player) && !remote.auras.is_empty() {
+            push_aura_fields(&remote.auras, &mut pairs);
+        }
         let fields = ObjectFields::from_pairs(&pairs).into_created(object_type);
         let transform = remote.position.map(|p| Transform {
             translation: wow_to_bevy([p.x, p.y, p.z]),
@@ -2202,6 +2248,8 @@ fn wrath_apply_world(world: &mut World) {
                 let old_max = old
                     .as_ref()
                     .and_then(benilla_protocol::ObjectFields::unit_max_health);
+                let new_span = matches!(kind, EntityKind::Unit | EntityKind::Player)
+                    .then(|| aura_span(&fields));
                 world.entity_mut(entity).insert((
                     NetEntity {
                         kind,
@@ -2210,6 +2258,41 @@ fn wrath_apply_world(world: &mut World) {
                     },
                     ObjectStore(fields),
                 ));
+                if let Some(new_span) = new_span {
+                    // The 12340 aura packets changed this unit's descriptor window; hand the
+                    // 1.12 aura watcher the same edges and one call the stock block path makes.
+                    let old_span = old.as_ref().map_or([0u32; crate::net::AURA_WATCH_SPAN], aura_span);
+                    if old_span != new_span {
+                        let at = crate::lanes::stamp();
+                        for (offset, (old_value, new_value)) in
+                            old_span.iter().zip(new_span.iter()).enumerate()
+                        {
+                            if old_value == new_value {
+                                continue;
+                            }
+                            let _ = world.write_message(FieldChanged {
+                                at,
+                                entity,
+                                guid: *guid,
+                                kind: object_type,
+                                index: benilla_protocol::field::FIELD_UNIT_AURA + offset as u16,
+                                old: *old_value,
+                                new: *new_value,
+                            });
+                        }
+                        let _ = world.write_message(crate::net::AuraFieldsChanged {
+                            at,
+                            entity,
+                            guid: *guid,
+                            old: old_span,
+                            new: new_span,
+                            health: world
+                                .get::<ObjectStore>(entity)
+                                .and_then(|store| store.0.unit_health())
+                                .unwrap_or(0),
+                        });
+                    }
+                }
                 if old_health != remote.health {
                     let _ = world.write_message(FieldChanged {
                         at: crate::lanes::stamp(),
@@ -3114,6 +3197,7 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                         | benilla_protocol_wrath::updates::type_id::CONTAINER
                 )
                 .then(|| (0..138).map(|i| entry.field(i).unwrap_or(0)).collect()),
+                auras: entry.auras.clone(),
             },
         );
     }
@@ -3226,6 +3310,7 @@ mod command_tap_tests {
                 generation: 1,
                 player_fields: None,
                 item_fields: None,
+                auras: Vec::new(),
             },
         );
         WrathWorldView {

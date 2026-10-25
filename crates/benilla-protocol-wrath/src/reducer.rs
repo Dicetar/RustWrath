@@ -26,6 +26,30 @@ pub enum ChangeEvent {
     Removed { guid: u64 },
 }
 
+/// One visible aura slot as 12340's `AuraApplication::BuildUpdatePacket` writes it
+/// (`SpellAuras.cpp:187-218`): slot, spell id (0 for removal), effect/caster/duration flags,
+/// caster level, stack-or-charges, the caster guid unless `AFLAG_CASTER`, and the two durations
+/// when `AFLAG_DURATION`. The 1.12 bar has no casters or durations in its descriptor; the
+/// translation keeps the fields it can carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuraSlot {
+    pub slot: u8,
+    pub spell_id: u32,
+    pub flags: u8,
+    pub level: u8,
+    pub charges: u8,
+    /// 0 when the packet omits the caster (`AFLAG_CASTER`): the aura belongs to the target.
+    pub caster: u64,
+    pub max_duration_ms: u32,
+    pub duration_ms: u32,
+}
+
+/// `AFLAG_CASTER` (`SpellAuraDefines.h:26-34`): the caster guid is omitted and the aura is the
+/// target's own.
+pub const AFLAG_CASTER: u8 = 0x08;
+/// `AFLAG_DURATION`: `(max, remaining)` follow.
+pub const AFLAG_DURATION: u8 = 0x20;
+
 /// One tracked object: raw u32 update fields plus the last movement snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectEntry {
@@ -36,6 +60,9 @@ pub struct ObjectEntry {
     /// field index); cleared on create. The basis for unknown-vs-zero semantics below.
     delivered: Vec<u64>,
     pub movement: Option<MovementSnapshot>,
+    /// The visible aura slots from `SMSG_AURA_UPDATE[_ALL]`, sorted by slot. 12340 sends auras
+    /// as packets rather than descriptor fields.
+    pub auras: Vec<AuraSlot>,
     /// Increments when this GUID is destroyed and created again — identity check for the
     /// despawn/recreate dance visibility does.
     pub generation: u32,
@@ -113,6 +140,9 @@ impl WorldState {
     ) -> Result<(Vec<ChangeEvent>, bool)> {
         match opcode {
             opcode::SMSG_UPDATE_OBJECT => self.reduce_update_object(payload),
+            opcode::SMSG_AURA_UPDATE | opcode::SMSG_AURA_UPDATE_ALL => {
+                self.reduce_aura_update(payload)
+            }
             opcode::SMSG_COMPRESSED_UPDATE_OBJECT => {
                 // `WorldSocket.cpp:97-119`: u32 uncompressed size, then zlib of the plain
                 // update-object payload — no inner opcode, no re-dispatch.
@@ -197,6 +227,7 @@ impl WorldState {
                     // generation must not leak into the new one.
                     entry.fields.clear();
                     entry.delivered.clear();
+                    entry.auras.clear();
                     entry.movement = Some(snapshot);
                     self.apply_values(guid, &mut r)?;
                     events.push(ChangeEvent::Created { guid });
@@ -226,7 +257,77 @@ impl WorldState {
             fields: Vec::new(),
             delivered: Vec::new(),
             movement: None,
+            auras: Vec::new(),
             generation: 0,
+        })
+    }
+
+    /// `SMSG_AURA_UPDATE` / `SMSG_AURA_UPDATE_ALL` (`SpellAuras.cpp:187-235`): a packed target
+    /// guid, then one block per slot (`AURA_UPDATE_ALL` concatenates every visible slot). A
+    /// block whose spell id is 0 removes the slot. Returns whether any slot actually moved.
+    fn reduce_aura_update(&mut self, payload: &[u8]) -> Result<(Vec<ChangeEvent>, bool)> {
+        let mut r = Reader::new(payload);
+        let guid = r.packed_guid()?;
+        let mut changed = false;
+        while !r.done() {
+            changed |= self.apply_aura_block(guid, &mut r)?;
+        }
+        let mut events = Vec::new();
+        if changed {
+            events.push(ChangeEvent::Updated { guid });
+        }
+        Ok((events, changed))
+    }
+
+    fn apply_aura_block(&mut self, guid: u64, r: &mut Reader) -> Result<bool> {
+        let slot = r.u8()?;
+        let spell_id = r.u32()?;
+        let aura = if spell_id == 0 {
+            None
+        } else {
+            let flags = r.u8()?;
+            let level = r.u8()?;
+            let charges = r.u8()?;
+            let caster = if flags & AFLAG_CASTER != 0 {
+                0
+            } else {
+                r.packed_guid()?
+            };
+            let (max_duration_ms, duration_ms) = if flags & AFLAG_DURATION != 0 {
+                (r.u32()?, r.u32()?)
+            } else {
+                (0, 0)
+            };
+            Some(AuraSlot {
+                slot,
+                spell_id,
+                flags,
+                level,
+                charges,
+                caster,
+                max_duration_ms,
+                duration_ms,
+            })
+        };
+        let entry = self.entry(guid, 0);
+        Ok(match aura {
+            Some(aura) => match entry.auras.iter_mut().find(|held| held.slot == slot) {
+                Some(held) if *held == aura => false,
+                Some(held) => {
+                    *held = aura;
+                    true
+                }
+                None => {
+                    entry.auras.push(aura);
+                    entry.auras.sort_by_key(|held| held.slot);
+                    true
+                }
+            },
+            None => {
+                let before = entry.auras.len();
+                entry.auras.retain(|held| held.slot != slot);
+                entry.auras.len() != before
+            }
         })
     }
 
