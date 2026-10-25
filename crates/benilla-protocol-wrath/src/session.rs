@@ -115,10 +115,13 @@ pub enum Phase {
     TransferPending,
     /// `SMSG_NEW_WORLD` received (`Player.cpp:1613`): the old world's replicated state has
     /// been discarded and the new world scope has begun. Update/destroy traffic received in
-    /// this phase is the old world's in-flight tail and is discarded, because this client
-    /// sends `MSG_MOVE_WORLDPORT_ACK` only after its own teardown — everything the server
-    /// sends before processing that acknowledgment belongs to the old scope (TCP ordering
-    /// makes the boundary exact).
+    /// this phase is the old world's in-flight tail and is discarded. The rationale is the
+    /// server's processing order, not TCP alone: the server acts on the worldport
+    /// acknowledgment (`MovementHandler.cpp:47`) before any new-world visibility traffic is
+    /// sent, and stops old-world traffic for this player at removal from the old map in the
+    /// same handler. Updates arriving in this window are therefore sent before the server saw
+    /// the acknowledgment; any straggler after it matches the stock client's own
+    /// apply-after-teardown behavior and self-heals via out-of-range/destroy.
     Loading,
     // The driver sent `MSG_MOVE_WORLDPORT_ACK` (`worldport_acknowledged`): new-world
     // traffic reduces normally. `LOGIN_VERIFY_WORLD` is not part of the transfer path
@@ -164,6 +167,9 @@ pub struct SessionState {
     /// The retained snapshot: produced, awaiting successful handoff, replaced by newer state.
     unsent: Option<SelfObservation>,
     pending_lifecycle: Vec<LifeEvent>,
+    /// Order counters from `MSG_MOVE_TELEPORT_ACK` (server→client) awaiting the client's
+    /// acknowledgment packet (`Player.cpp:1375`: the counter increments per teleport).
+    pending_teleport_acks: Vec<u32>,
 }
 
 impl Default for SessionState {
@@ -190,6 +196,7 @@ impl SessionState {
             handoff_revision: 0,
             unsent: None,
             pending_lifecycle: Vec::new(),
+            pending_teleport_acks: Vec::new(),
         }
     }
 
@@ -216,6 +223,7 @@ impl SessionState {
         self.next_sequence = 1;
         self.handoff_revision = 0;
         self.unsent = None;
+        self.pending_teleport_acks.clear();
     }
 
     /// The current lifecycle phase.
@@ -337,18 +345,33 @@ impl SessionState {
                 });
                 changed = true;
             }
+            opcode::MSG_MOVE_TELEPORT_ACK => {
+                // The controlled player's near-teleport correction (`Player.cpp:1375`):
+                // packed GUID + u32 order counter + standalone movement payload. This is the
+                // authoritative position for the teleport; the driver owes the server an
+                // acknowledgment packet (packed GUID + u32 flags + u32 time, both read and
+                // unused by `MovementHandler.cpp:277-282`).
+                let mut r = Reader::new(payload);
+                let guid = r.packed_guid().context("teleport-ack guid")?;
+                let counter = r.u32().context("teleport-ack counter")?;
+                let snapshot = crate::updates::standalone_movement_block(&mut r)
+                    .context("teleport-ack movement block")?;
+                changed |= self.world.apply_movement(guid, snapshot);
+                events.push(ChangeEvent::Moved { guid });
+                if Some(guid) == self.player_guid {
+                    self.pending_teleport_acks.push(counter);
+                }
+            }
             opcode::MSG_MOVE_TELEPORT => {
-                // Near teleport (`Unit.cpp:16198`): packed GUID + standalone movement payload
-                // (no update-flags prefix). Same world scope — a position update, not a
-                // transfer.
+                // Observer near-teleport broadcast (`Unit.cpp:16198`,
+                // `SendMessageToSet(&data2, false)` — never sent to the mover): packed GUID +
+                // standalone movement payload (no update-flags prefix). Same world scope — a
+                // position update, not a transfer. The controlled player instead receives
+                // MSG_MOVE_TELEPORT_ACK above.
                 let mut r = Reader::new(payload);
                 let guid = r.packed_guid().context("teleport guid")?;
                 let snapshot = crate::updates::standalone_movement_block(&mut r)
                     .context("teleport movement block")?;
-                let relevant = match self.world.get(guid).and_then(|e| e.movement.as_ref()) {
-                    Some(prev) => !prev.observation_equivalent(&snapshot),
-                    None => true,
-                };
                 changed |= self.world.apply_movement(guid, snapshot);
                 events.push(ChangeEvent::Moved { guid });
             }
@@ -428,6 +451,12 @@ impl SessionState {
         std::mem::take(&mut self.pending_lifecycle)
     }
 
+    /// Drain order counters owed a `MSG_MOVE_TELEPORT_ACK` acknowledgment packet (client to
+    /// server: packed player GUID, u32 flags, u32 time — both read and unused by the server).
+    pub fn take_pending_teleport_acks(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pending_teleport_acks)
+    }
+
     /// Whether an export is due: a state change is un-handed-off, or a produced snapshot
     /// awaits handoff (the PublisherBusy retry path).
     pub fn export_due(&self) -> bool {
@@ -477,6 +506,35 @@ impl SessionState {
         self.unsent.as_ref()
     }
 
+    /// Read-only replicated world access for the application feed (graphical Net-stage
+    /// translation). The producer owns mutation; the app only reads.
+    pub fn world(&self) -> &WorldState {
+        &self.world
+    }
+
+    /// The authoritative map id, once a world is established.
+    pub fn map_id(&self) -> Option<u32> {
+        self.map_id
+    }
+
+    /// The session player's full GUID, once the character is selected.
+    pub fn player_guid(&self) -> Option<u64> {
+        self.player_guid
+    }
+
+    /// The current source-change revision.
+    pub fn state_revision(&self) -> u64 {
+        self.state_revision
+    }
+
+    /// The most recent successful export (diagnostics; the feed re-builds digests from world
+    /// state independently).
+    pub fn last_self_observation(&self) -> Option<&SelfObservation> {
+        self.unsent.as_ref()
+    }
+
+    /// The session phase.
+    
     fn build_snapshot(&self) -> std::result::Result<SelfObservation, SkipReason> {
         let player_guid = self.player_guid.ok_or(SkipReason::NoPlayer)?;
         let map_id = self.map_id.ok_or(SkipReason::NoPosition)?;

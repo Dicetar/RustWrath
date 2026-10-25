@@ -25,6 +25,14 @@ pub const SMSG_NEW_WORLD: u16 = 0x03E;
 /// Near teleport, server to client (`Unit.cpp:16198`): packed GUID + standalone movement
 /// payload (no update-flags prefix). Same world scope.
 pub const MSG_MOVE_TELEPORT: u16 = 0x0C5;
+/// Near teleport, server to the CONTROLLED player (`Player.cpp:1375`,
+/// `SendTeleportAckPacket`): packed GUID + u32 order counter + standalone movement payload.
+/// The client replies with the same opcode carrying packed GUID + u32 flags + u32 time
+/// (`MovementHandler.cpp:277-282` — the ack handler reads exactly those three fields).
+pub const MSG_MOVE_TELEPORT_ACK: u16 = 0x0C7;
+/// Worldport acknowledgment, client to server (`MovementHandler.cpp:44`): empty payload,
+/// processed only while a far teleport is outstanding.
+pub const CMSG_WORLD_MOVE_WORLDPORT_ACK: u32 = 0x0DC;
 
 /// `SMSG_COMPRESSED_UPDATE_OBJECT` (`WorldSocket.cpp:97-119`): the payload is
 /// `[u32 uncompressed_size][zlib(update-object payload)]` — no inner opcode; the decompressed

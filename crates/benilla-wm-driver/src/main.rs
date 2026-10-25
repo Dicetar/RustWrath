@@ -373,6 +373,7 @@ fn main() -> Result<()> {
     }
 
     world.send(opcode::CMSG_PLAYER_LOGIN, &guid.to_le_bytes())?;
+    session.note_player_login();
     println!("[world] PLAYER_LOGIN guid {guid}");
 
     let deadline = Instant::now() + Duration::from_secs(dwell);
@@ -413,6 +414,32 @@ fn main() -> Result<()> {
         }
         // Lifecycle: a map transition retires the WM publisher and orders its replacement
         // after the old worker fully stops (retire/spawn_after — no blocking on this path).
+        // Near teleport: acknowledge the server's order counter (packed GUID, u32 flags,
+        // u32 time — both read and unused server-side, sent after landing).
+        for counter in session.take_pending_teleport_acks() {
+            let mut ack = Vec::new();
+            let mut mask = 0u8;
+            let mut guid_bytes = Vec::new();
+            for i in 0..8 {
+                let b = (guid >> (i * 8)) as u8;
+                if b != 0 { mask |= 1 << i; guid_bytes.push(b); }
+            }
+            ack.push(mask);
+            ack.extend_from_slice(&guid_bytes);
+            ack.extend_from_slice(&0u32.to_le_bytes()); // flags (unused by the server)
+            ack.extend_from_slice(&0u32.to_le_bytes()); // time (unused by the server)
+            world.send(opcode::MSG_MOVE_TELEPORT_ACK as u32, &ack)?;
+            println!("[world] teleport ack sent (counter {counter})");
+        }
+        // Far transfer: the NEW_WORLD was processed (old scope discarded, destination
+        // recorded); perform the driver-side teardown/loading boundary and acknowledge. The
+        // server processes this ack before sending any new-world traffic, so from here the
+        // reducing stream is the new world.
+        if session.phase() == benilla_protocol_wrath::session::Phase::Loading {
+            world.send(opcode::CMSG_WORLD_MOVE_WORLDPORT_ACK, &[])?;
+            session.worldport_acknowledged();
+            println!("[world] worldport acknowledged; new world scope live");
+        }
         for event in session.take_lifecycle() {
             println!("[wm] lifecycle {event:?}: retiring publisher, ordering replacement");
             wm_replace(wm_config.as_ref(), &mut wm_publisher, &mut wm_retiring)?;

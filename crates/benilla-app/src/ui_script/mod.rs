@@ -891,6 +891,9 @@ mod frame_step_tests;
 mod action_bar_tests;
 
 #[cfg(test)]
+mod wrath_ui_slice_tests;
+
+#[cfg(test)]
 mod exp_bar_tests;
 
 #[cfg(test)]
