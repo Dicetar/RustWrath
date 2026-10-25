@@ -1362,15 +1362,123 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// One visual slot of a roster record (`Player::BuildEnumData`'s equipment loop,
+/// `Player.cpp:1231`-1297): the slot item's `CreatureDisplayInfo.dbc` id (0 for an empty slot),
+/// the item's `InventoryType`, and the one permanent enchant's aura id the server already
+/// resolved for that item (`0` for none).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CharEnumVisual {
+    pub display_id: u32,
+    pub inventory_type: u8,
+    pub enchant_id: u32,
+}
 
+/// One `SMSG_CHAR_ENUM` roster record, as the 3.3.5a `Player::BuildEnumData`
+/// (`Player.cpp:1106`-1299) writes it: the raw guid and the cstr name, the identity and
+/// appearance bytes, the zone/map/position triple, the guild id, the character and customize
+/// flags, the first-login byte, the pet triple, and 23 visual slots (equipment 0..18 then bag
+/// slots 19..22, the bag ids always written even when the first-login zone hides the zone).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CharEnumRecord {
+    pub guid: u64,
+    pub name: String,
+    pub race: u8,
+    pub class: u8,
+    pub gender: u8,
+    pub skin: u8,
+    pub face: u8,
+    pub hair_style: u8,
+    pub hair_color: u8,
+    pub facial_style: u8,
+    /// The wire level byte; 0 marks a first-login character (the 1.12 `Character`'s
+    /// `new_character` edge).
+    pub level: u8,
+    pub zone: u32,
+    pub map: u32,
+    pub position: [f32; 3],
+    pub guild_id: u32,
+    pub character_flags: u32,
+    pub customize_flags: u32,
+    pub first_login: bool,
+    pub pet_display_id: u32,
+    pub pet_level: u32,
+    pub pet_family: u32,
+    pub visuals: [CharEnumVisual; 23],
+}
 
+fn read_char_enum_visuals(r: &mut Reader<'_>) -> Result<[CharEnumVisual; 23]> {
+    let mut visuals = [CharEnumVisual {
+        display_id: 0,
+        inventory_type: 0,
+        enchant_id: 0,
+    }; 23];
+    for slot in &mut visuals {
+        slot.display_id = r.u32()?;
+        slot.inventory_type = r.u8()?;
+        slot.enchant_id = r.u32()?;
+    }
+    Ok(visuals)
+}
 
-
-
-
-
-
-
+/// `SMSG_CHAR_ENUM` (`Player.cpp:1233`-1238): a byte count followed by that many packed
+/// `BuildEnumData` records. Trailing bytes are not the records' business; the count drives the
+/// walk so a server that appends never poisons the parse.
+pub fn parse_char_enum(payload: &[u8]) -> Result<Vec<CharEnumRecord>> {
+    let mut r = Reader::new(payload);
+    let count = r.u8()?;
+    let mut records = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let guid = r.u64()?;
+        let name = r.cstring()?;
+        let race = r.u8()?;
+        let class = r.u8()?;
+        let gender = r.u8()?;
+        let skin = r.u8()?;
+        let face = r.u8()?;
+        let hair_style = r.u8()?;
+        let hair_color = r.u8()?;
+        let facial_style = r.u8()?;
+        let level = r.u8()?;
+        let zone = r.u32()?;
+        let map = r.u32()?;
+        let x = r.f32()?;
+        let y = r.f32()?;
+        let z = r.f32()?;
+        let guild_id = r.u32()?;
+        let character_flags = r.u32()?;
+        let customize_flags = r.u32()?;
+        let first_login = r.u8()? != 0;
+        let pet_display_id = r.u32()?;
+        let pet_level = r.u32()?;
+        let pet_family = r.u32()?;
+        let visuals = read_char_enum_visuals(&mut r)?;
+        records.push(CharEnumRecord {
+            guid,
+            name,
+            race,
+            class,
+            gender,
+            skin,
+            face,
+            hair_style,
+            hair_color,
+            facial_style,
+            level,
+            zone,
+            map,
+            position: [x, y, z],
+            guild_id,
+            character_flags,
+            customize_flags,
+            first_login,
+            pet_display_id,
+            pet_level,
+            pet_family,
+            visuals,
+        });
+    }
+    Ok(records)
+}
 
 #[cfg(test)]
 mod tests {
@@ -1378,6 +1486,84 @@ mod tests {
 
     fn le<const N: usize>(v: &[u8]) -> [u8; N] {
         v.try_into().unwrap()
+    }
+
+    /// One whole record in the exact `Player::BuildEnumData` order
+    /// (`Player.cpp:1138`-1297), with the name and two visual slots filled.
+    fn enum_record_bytes() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x0000_0100_0000_0042u64.to_le_bytes()); // guid
+        b.extend_from_slice(b"Padfoot\0"); // name cstr
+        b.push(1); // race
+        b.push(4); // class
+        b.push(0); // gender
+        b.push(3); // skin
+        b.push(2); // face
+        b.push(4); // hair style
+        b.push(5); // hair color
+        b.push(1); // facial style
+        b.push(10); // level
+        b.extend_from_slice(&12u32.to_le_bytes()); // zone
+        b.extend_from_slice(&0u32.to_le_bytes()); // map
+        b.extend_from_slice((-8943.5f32).to_le_bytes().as_slice()); // x
+        b.extend_from_slice(&132.25f32.to_le_bytes()); // y
+        b.extend_from_slice(&61.5f32.to_le_bytes()); // z
+        b.extend_from_slice(&0u32.to_le_bytes()); // guild id
+        b.extend_from_slice(&0x0040_0000u32.to_le_bytes()); // character flags
+        b.extend_from_slice(&0u32.to_le_bytes()); // customize flags
+        b.push(0); // first login
+        b.extend_from_slice(&0u32.to_le_bytes()); // pet display
+        b.extend_from_slice(&0u32.to_le_bytes()); // pet level
+        b.extend_from_slice(&0u32.to_le_bytes()); // pet family
+        for index in 0..23u8 {
+            let slot = index as u32;
+            b.extend_from_slice(&slot.to_le_bytes()); // display id
+            b.push((index % 2 == 0) as u8); // inventory type
+            b.extend_from_slice(&slot.to_le_bytes()); // enchant aura id
+        }
+        b
+    }
+
+    #[test]
+    fn char_enum_count_then_build_enum_data_records() {
+        let mut payload = vec![1u8]; // one record
+        payload.extend_from_slice(&enum_record_bytes());
+        let records = parse_char_enum(&payload).expect("parse");
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.guid, 0x0000_0100_0000_0042);
+        assert_eq!(record.name, "Padfoot");
+        assert_eq!(record.race, 1);
+        assert_eq!(record.class, 4);
+        assert_eq!(record.level, 10);
+        assert_eq!(record.zone, 12);
+        assert_eq!(record.map, 0);
+        assert_eq!(record.position[0], -8943.5);
+        assert_eq!(record.character_flags, 0x0040_0000);
+        assert!(!record.first_login);
+        assert_eq!(record.visuals.len(), 23);
+        assert_eq!(record.visuals[0].display_id, 0);
+        assert_eq!(record.visuals[0].inventory_type, 1);
+        assert_eq!(record.visuals[1].display_id, 1);
+        assert_eq!(record.visuals[1].inventory_type, 0);
+        assert_eq!(record.visuals[22].enchant_id, 22);
+    }
+
+    #[test]
+    fn char_enum_parses_two_records_and_takes_the_count_along() {
+        let mut payload = vec![2u8];
+        payload.extend_from_slice(&enum_record_bytes());
+        payload.extend_from_slice(&enum_record_bytes());
+        let records = parse_char_enum(&payload).expect("parse");
+        assert_eq!(records.len(), 2);
+    }
+
+    #[test]
+    fn char_enum_refuses_a_record_cut_short() {
+        let mut payload = vec![1u8];
+        let whole = enum_record_bytes();
+        payload.extend_from_slice(&whole[..whole.len() - 3]);
+        assert!(parse_char_enum(&payload).is_err());
     }
 
     #[test]

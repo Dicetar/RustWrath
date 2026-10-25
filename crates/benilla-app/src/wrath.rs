@@ -27,8 +27,13 @@
 //! after the old worker has joined and its terminal feed has been drained. Fresh-session
 //! admission after that clean stop has a small bounded retry budget; a lost connection does not
 //! enter that path, because connection-loss recovery is a separate policy.
+//!
+//! Character selection: the same screen drives the replacement through the stock `CharPick`
+//! channel, rebound in [`WrathNetPlugin::build`] to a wrath-owned queue. A fresh session is
+//! parked at the select screen, publishes the 3.3.5 enumeration onto the established
+//! `SessionEvent::CharacterList` seam, and enters on the screen's own pick.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use bevy::prelude::*;
 use benilla_world::schedule::WorldStage;
@@ -40,7 +45,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 
 use benilla_protocol::{
-    messages::ObjectType, EntityKind, MoveSpeeds, ObjectFields, SessionEvent,
+    messages::ObjectType, wire::Vector3d, Character, CharEnumItem, EntityKind, MoveSpeeds,
+    ObjectFields, RosterCause, SessionEvent,
 };
 use crate::client_state::ClientState;
 use benilla_protocol_wrath::cast_failure;
@@ -49,8 +55,9 @@ use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use crate::entities::Equipment;
 use crate::items::{Countdowns, ItemObject};
 use crate::net::{
-    ClientCommand, Guid, GuidIndex, NetCommandTap, NetEntity, ObjectStore, SelfGuid, SelfPlayer,
-    UnitSpeeds, WorldEnterCascadeMessage, EnteredWorldMessage, FieldChanged,
+    CharPick, CharRequest, ClientCommand, Guid, GuidIndex, NetCommandTap, NetEntity, ObjectStore,
+    ParkRequest, ParkSender, SelfGuid, SelfPlayer, UnitSpeeds, WorldEnterCascadeMessage,
+    EnteredWorldMessage, FieldChanged,
 };
 use benilla_protocol::messages::{
     ActionButton, AttackSwingError, GossipOption as ProtocolGossipOption,
@@ -303,6 +310,35 @@ pub struct WorldDigest {
     pub entities: BTreeMap<u64, WrathEntity>,
 }
 
+/// How the next session starts: the boot path's own account flow, or the parked character
+/// select the existing screen drives (the clean-logout re-entry).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WrathSessionStart {
+    /// The boot flow: log the account in and enter its first record; no screen ask.
+    Auto,
+    /// The parked flow: the select screen stays after a clean logout and the same screen's
+    /// asks (`GetCharacterListUpdate`, its Enter World ask) travel the stock `CharPick`
+    /// channel; this session is parked there and serves them. `roster_asked` records whether
+    /// the enumeration ask started the session, so the first fresh roster publishes as the
+    /// screen's reply rather than an unasked list.
+    Parked { roster_asked: bool },
+}
+
+/// One ask a parked session serves from the select screen, in the order the app made it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum WrathParkedCommand {
+    /// `GetCharacterListUpdate`: `CMSG_CHAR_ENUM` again on the parked link.
+    Enumerate,
+    /// Enter World the screen asked for: `CMSG_PLAYER_LOGIN` on the parked link.
+    Enter(u64),
+}
+
+/// The select screen's asks and Enters, drained by [`wrath_pick_admission`]. Bound in
+/// [`WrathNetPlugin::build`] over the stock `CharPick`, whose reader is the stock IO thread
+/// the Wrath session replaces.
+#[derive(Resource)]
+pub struct WrathPickQueue(pub(crate) Receiver<ParkRequest>);
+
 /// Application selection/configuration and worker ownership. Inserted by
 /// [`WrathNetPlugin`]; a `None` config keeps the plugin inert (baseline login untouched).
 #[derive(Resource)]
@@ -340,6 +376,12 @@ pub struct WrathControl {
     /// Replies for the established `SessionEvent` handlers, tagged by source scope and drained
     /// in the Net stage rather than through the stock 1.12 inbound channel.
     session_events: Option<Receiver<WrathSessionEvent>>,
+    /// The running parked session's screen-ask channel. The select screen's next ask lands
+    /// here; a dead one (the parked session ended) makes the ask a fresh-admission attempt.
+    /// `None` for the boot flow and for any session started without the screen, which is also
+    /// how the end-of-session retry policy tells a connection that served a screen from a boot
+    /// dial: a parked link that dies does not retry.
+    park_commands: Option<Sender<WrathParkedCommand>>,
 }
 
 impl WrathControl {
@@ -348,7 +390,23 @@ impl WrathControl {
         self.worker.as_ref().is_some_and(|w| !w.is_finished())
     }
 
-    fn start(&mut self) {
+    /// One select-screen ask, in the order it was made: served at once by the running parked
+    /// session, or it starts that session and carries the ask in. `roster_asked` records
+    /// whether the ask was an enumeration, so the first fresh roster publishes as the screen's
+    /// reply.
+    fn park_serve(&mut self, roster_asked: bool, command: WrathParkedCommand) {
+        if let Some(park) = self.park_commands.as_ref() {
+            if park.send(command).is_ok() {
+                return;
+            }
+        }
+        self.start(WrathSessionStart::Parked { roster_asked });
+        if let Some(park) = self.park_commands.as_ref() {
+            let _ = park.send(command);
+        }
+    }
+
+    fn start(&mut self, kind: WrathSessionStart) {
         let Some(config) = self.config.clone() else { return };
         if self.shutdown || self.worker.is_some() || self.retiring.is_some() {
             return;
@@ -366,6 +424,20 @@ impl WrathControl {
         if restarting {
             self.restart_attempts -= 1;
         }
+        // The parked capture happens with the kind's channel: one fresh channel per parked
+        // session, none for the boot flow. Any older parked channel is unreachable by then
+        // (that worker is gone, or its retirement blocks this start).
+        let (parked_in, parked_asked) = match kind {
+            WrathSessionStart::Auto => {
+                self.park_commands = None;
+                (None, false)
+            }
+            WrathSessionStart::Parked { roster_asked } => {
+                let (park_tx, park_rx) = crossbeam_channel::unbounded::<WrathParkedCommand>();
+                self.park_commands = Some(park_tx);
+                (Some(park_rx), roster_asked)
+            }
+        };
         let feed = WrathFeed::new();
         self.feed = Some(feed.clone());
         self.last_error = None;
@@ -388,8 +460,15 @@ impl WrathControl {
         let handle = std::thread::Builder::new()
             .name("wrath-session".to_owned())
             .spawn(move || {
-                let result =
-                    run_session_with_cancel(&feed, &config, &cancel, commands, events_out.clone());
+                let result = run_session_with_cancel(
+                    &feed,
+                    &config,
+                    &cancel,
+                    commands,
+                    events_out.clone(),
+                    parked_in,
+                    parked_asked,
+                );
                 if let Ok(mut q) = feed.events.lock() {
                     if q.len() >= WRATH_EVENT_CAPACITY {
                         q.pop_front();
@@ -576,16 +655,30 @@ impl Plugin for WrathNetPlugin {
             shutdown: false,
             last_error: None,
             session_events: None,
+            park_commands: None,
         })
         .init_resource::<WrathWorldView>();
         if self.config.is_some() {
             app.insert_resource(WrathInput(commands));
+            // The select screen's asks and Enters travel the stock `CharPick` channel, whose
+            // reader is the stock IO thread. That thread never spawns for the Wrath session,
+            // so its receiver is dropped and every send dies silently. Rebind the resource to
+            // a wrath-owned channel: the same ordered send path, drained by the pick
+            // admission here (`roster::send_pick` and the screen's re-asks stay untouched).
+            let (pick_tx, pick_rx) = crossbeam_channel::unbounded();
+            app.insert_resource(CharPick(ParkSender::park(pick_tx)))
+                .insert_resource(WrathPickQueue(pick_rx));
             // Session ownership: the worker starts on the first ownership tick. Joining here only
             // records the terminal edge; the feed stays readable so the Net drain can consume the
             // final `SessionEnded` and invalidate before Input.
             app.add_systems(
                 PreUpdate,
-                (wrath_session_ownership, wrath_shutdown_on_exit),
+                (
+                    wrath_session_ownership,
+                    wrath_shutdown_on_exit,
+                    wrath_pick_admission,
+                )
+                    .chain(),
             );
             app.add_systems(
                 Update,
@@ -648,7 +741,51 @@ fn wrath_session_ownership(
         && control.session_events_empty()
         && may_admit
     {
-        control.start();
+        // A retry is only ever the boot flow's: a parked link that dies has no retry (the
+        // `SessionEnded` arm refuses to arm one), so the fresh session re-dials the account
+        // the way the boot path does.
+        control.start(WrathSessionStart::Auto);
+    }
+}
+
+/// The select screen's asks, drained onto the Wrath session (the stock run's channel reader
+/// lives in the IO thread this plugin replaces). At character selection an enumeration or an
+/// Enter World ask lands on the running parked session, or starts one and lands there; the
+/// admission gates are `start`'s. Elsewhere the asks are stale and dropped with their order
+/// intact. Create, delete and rename are the stock run's park loop and have no Wrath
+/// counterpart yet; a select-screen ask for one is refused with a note, nothing sent.
+fn wrath_pick_admission(
+    mut control: ResMut<WrathControl>,
+    state: Res<State<ClientState>>,
+    pick: Option<Res<WrathPickQueue>>,
+) {
+    let Some(pick) = pick.as_ref() else { return };
+    let at_select = *state.get() == ClientState::CharSelect;
+    for request in pick.0.try_iter() {
+        let ParkRequest::Char(request) = request else {
+            // Realm asks stay the stock run's path: the wrath session keeps the one realm it
+            // dialed, and a realm dialog over the select screen is the stock run's flow.
+            continue;
+        };
+        match request {
+            CharRequest::Enumerate => {
+                if at_select {
+                    control.park_serve(true, WrathParkedCommand::Enumerate);
+                }
+            }
+            CharRequest::Enter(guid) => {
+                if at_select {
+                    control.park_serve(false, WrathParkedCommand::Enter(guid));
+                }
+            }
+            CharRequest::Create(_) | CharRequest::Delete(_) | CharRequest::Rename { .. } => {
+                warn!("wrath: the select screen's create, delete and rename asks are not wired to the wrath session; the graphical flow keeps the records the account holds");
+            }
+            CharRequest::Abandon => {
+                // The parked session's stop is app-owned (the shutdown edge owns the cancel);
+                // a select-screen Back is the stock run's park, not a Wrath flow.
+            }
+        }
     }
 }
 
@@ -1392,10 +1529,13 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
                 } else if control.restart_allowed
                     && !control.entered_world
                     && control.restart_attempts > 0
+                    && control.park_commands.is_none()
                 {
                     // A fresh-session admission failed before any world entry: retry it on the
                     // frame loop with a bounded budget. Once a world was entered, a loss is
-                    // connection-loss recovery, which is a separate policy.
+                    // connection-loss recovery, which is a separate policy. A parked link that
+                    // dies is that same loss: the select screen's connection is gone, the app
+                    // shows the disconnect, and it does not redial under the screen's feet.
                     control.retry_at = Some(Instant::now() + WRATH_RESTART_DELAY);
                 } else {
                     control.restart_allowed = false;
@@ -1566,7 +1706,7 @@ fn push_item_fields(raw: &[u32], container: bool, pairs: &mut Vec<(u16, u32)>) {
 /// owner. Items carry no `NetEntity` or transform; their GUID identity stays in `GuidIndex`.
 fn apply_item_world(
     world: &mut World,
-    index: &mut BTreeMap<u64, Entity>,
+    index: &mut HashMap<u64, Entity>,
     guid: u64,
     remote: &WrathEntity,
 ) {
@@ -2153,14 +2293,66 @@ impl Drop for PublisherOwner {
     }
 }
 
+/// The 3.3.5 record onto the established roster seam's record. The appearance bytes, position
+/// and the 19 equipment slots carry over; the first bag slot and the customize flags have no
+/// stock equivalent and drop (`Player::BuildEnumData` writes 23 visual slots; the stock record
+/// holds the 19 equipment ones). The mapping runs forward only: a level-0 wire byte is the
+/// fresh character's mark (`new_character`, level pinned to 1 as the 1.12 parse holds it).
+fn roster_from(records: &[gameplay::CharEnumRecord]) -> Vec<Character> {
+    records
+        .iter()
+        .map(|record| {
+            let mut equipment = [CharEnumItem::default(); 19];
+            for (slot, visual) in equipment.iter_mut().zip(record.visuals) {
+                *slot = CharEnumItem {
+                    display_id: visual.display_id,
+                    inventory_type: visual.inventory_type,
+                };
+            }
+            Character {
+                guid: record.guid,
+                name: record.name.clone(),
+                race: record.race,
+                class: record.class,
+                gender: record.gender,
+                skin: record.skin,
+                face: record.face,
+                hair_style: record.hair_style,
+                hair_color: record.hair_color,
+                facial_hair: record.facial_style,
+                level: record.level.max(1),
+                new_character: record.level == 0,
+                zone: record.zone,
+                map: record.map,
+                position: Vector3d {
+                    x: record.position[0],
+                    y: record.position[1],
+                    z: record.position[2],
+                },
+                flags: record.character_flags,
+                equipment,
+                pet_display_id: record.pet_display_id,
+                pet_level: record.pet_level,
+                pet_family: record.pet_family,
+            }
+        })
+        .collect()
+}
+
 /// The app-owned session loop. `cancel` is checked between bounded socket reads and before every
 /// packet step; a cancelled session exits as a clean `SessionEnded` without manufacturing packets.
+/// `parked` is the parked character select after a clean logout: the fresh session serves the
+/// screen's asks from the channel the pick admission fed, publishes the fresh roster as the
+/// established roster seam expects, and enters on the ask the screen made. `roster_asked`
+/// marks the enumeration that started the session; the boot flow publishes no roster.
 pub fn run_session_with_cancel(
     feed: &WrathFeed,
     config: &WrathSessionConfig,
     cancel: &AtomicBool,
     commands: Option<WrathOutbox>,
     events_out: Option<Sender<WrathSessionEvent>>,
+    parked: Option<Receiver<WrathParkedCommand>>,
+    roster_asked: bool,
 ) -> anyhow::Result<()> {
     use benilla_wm_native::{pump_once, replace_publisher, PublisherConfig};
 
@@ -2316,9 +2508,9 @@ pub fn run_session_with_cancel(
     // out of scope here â€” the graphical path logs into an existing character (issue 23's
     // driver owns creation). Enumerate and pick the first disposable character.
     world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
+    let mut records: Option<Vec<gameplay::CharEnumRecord>> = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let mut guid = None;
-    while guid.is_none() {
+    while records.is_none() {
         if cancel.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -2327,20 +2519,96 @@ pub fn run_session_with_cancel(
         }
         match world.recv() {
             Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_ENUM => {
-                if p.payload.first().copied().unwrap_or(0) > 0 {
-                    guid = Some(u64::from_le_bytes(
-                        p.payload[1..9].try_into().expect("char enum guid"),
-                    ));
-                } else {
-                    anyhow::bail!("no disposable character on the lab account; create one with the renderless driver first");
-                }
+                records = Some(benilla_protocol_wrath::gameplay::parse_char_enum(&p.payload)?);
             }
             Ok(_) => {}
             Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
             Err(e) => return Err(e),
         }
     }
-    let guid = guid.expect("guid");
+    let mut records = records.expect("fresh roster");
+    if records.is_empty() && parked.is_none() {
+        anyhow::bail!(
+            "no disposable character on the lab account; create one with the renderless driver first"
+        );
+    }
+    let publish_roster = |records: &[gameplay::CharEnumRecord], cause| {
+        if let Some(sink) = events_out.as_ref() {
+            let _ = sink.send(WrathSessionEvent::scoped(
+                &session,
+                SessionEvent::CharacterList {
+                    characters: roster_from(records),
+                    realm: None,
+                    cause,
+                    epoch: session.epoch(),
+                    generation: 0,
+                },
+            ));
+        }
+    };
+    // The parked session publishes the fresh roster as the reply the screen's ask ordered; the
+    // boot flow publishes nothing, its own first record decides the entry. A later re-ask
+    // lands in the serve loop and republishes under its own cause.
+    if parked.is_some() {
+        publish_roster(
+            &records,
+            if roster_asked {
+                RosterCause::Asked
+            } else {
+                RosterCause::Unasked
+            },
+        );
+    }
+
+    let guid = if let Some(parked) = parked.as_ref() {
+        // The parked loop serves the select screen directly: a re-ask enumerates again and the
+        // fresh roster republishes; the Enter World ask enters the record it picked. The reads
+        // keep the parked link's own windows — bounded socket reads and one cancel edge, no
+        // other deadline: the screen may sit as long as it wants, as the stock park does.
+        let mut entered: Option<u64> = None;
+        while entered.is_none() {
+            if cancel.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            for request in parked.try_iter() {
+                match request {
+                    WrathParkedCommand::Enumerate => {
+                        world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
+                    }
+                    WrathParkedCommand::Enter(picked) => {
+                        if records.iter().any(|record| record.guid == picked) {
+                            entered = Some(picked);
+                        } else {
+                            // A stale pick from a roster this session never saw (a screen
+                            // click landing after the link changed): refuse to manufacture an
+                            // entry, keep the parked link serving.
+                            warn!(
+                                "wrath: ignoring an enter ask for {picked:#x}, which is not on the fresh roster"
+                            );
+                        }
+                    }
+                }
+            }
+            if entered.is_some() {
+                break;
+            }
+            match world.recv() {
+                Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_ENUM => {
+                    records = benilla_protocol_wrath::gameplay::parse_char_enum(&p.payload)?;
+                    publish_roster(&records, RosterCause::Asked);
+                }
+                Ok(_) => {}
+                Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        entered.expect("picked guid")
+    } else {
+        records
+            .first()
+            .map(|record| record.guid)
+            .expect("disposable record guid")
+    };
     session.start_session(guid); // re-begin with the real full GUID; phase resets to selection
     session.note_player_login();
     feed.push_event(WrathFeedEvent::Phase(session.phase()));
@@ -2765,5 +3033,116 @@ mod command_tap_tests {
         assert_eq!(sent[4].opcode, benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_ACCEPT_QUEST);
         assert_eq!(sent[4].payload.len(), 16);
         assert_eq!(sent[5].opcode, benilla_protocol_wrath::opcode::CMSG_LOOT);
+    }
+
+    fn enum_record(guid: u64, level: u8) -> gameplay::CharEnumRecord {
+        gameplay::CharEnumRecord {
+            guid,
+            name: "Padfoot".to_owned(),
+            race: 1,
+            class: 4,
+            gender: 0,
+            skin: 3,
+            face: 2,
+            hair_style: 4,
+            hair_color: 5,
+            facial_style: 1,
+            level,
+            zone: 12,
+            map: 0,
+            position: [-8943.5, 132.25, 61.5],
+            guild_id: 0,
+            character_flags: 0x0040_0000,
+            customize_flags: 0,
+            first_login: false,
+            pet_display_id: 0,
+            pet_level: 0,
+            pet_family: 0,
+            visuals: std::array::from_fn(|slot| gameplay::CharEnumVisual {
+                display_id: slot as u32,
+                inventory_type: (slot % 2 == 0) as u8,
+                enchant_id: 0,
+            }),
+        }
+    }
+
+    /// The 3.3.5 record onto the 1.12 roster seam: the appearance bytes, position and the 19
+    /// equipment slots carry over, the extra bag slots drop, and a wire level 0 is the fresh
+    /// character's mark with the level pinned to 1.
+    #[test]
+    fn the_wrath_record_translates_onto_the_stock_roster_record() {
+        let characters = roster_from(&[enum_record(0x42, 10), enum_record(0x43, 0)]);
+        assert_eq!(characters.len(), 2);
+        let character = &characters[0];
+        assert_eq!(character.guid, 0x42);
+        assert_eq!(character.name, "Padfoot");
+        assert_eq!(character.level, 10);
+        assert!(!character.new_character);
+        assert_eq!(character.facial_hair, 1, "the 3.3.5 facial style byte");
+        assert_eq!(
+            character.position,
+            Vector3d {
+                x: -8943.5,
+                y: 132.25,
+                z: 61.5
+            }
+        );
+        assert_eq!(character.equipment.len(), 19);
+        assert_eq!(character.equipment[0].display_id, 0);
+        assert_eq!(character.equipment[18].display_id, 18);
+        assert_eq!(character.flags, 0x0040_0000);
+        assert_eq!(characters[1].level, 1, "a level-0 wire byte is pinned to 1");
+        assert!(characters[1].new_character);
+    }
+
+    fn control_with_park_channel() -> (WrathControl, Receiver<WrathParkedCommand>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        (
+            WrathControl {
+                config: None,
+                worker: None,
+                retiring: None,
+                feed: None,
+                cancel: Arc::new(AtomicBool::new(false)),
+                commands: None,
+                ended: false,
+                restart_allowed: false,
+                restart_attempts: 0,
+                retry_at: None,
+                terminal_ready: true,
+                entered_world: false,
+                left_world: false,
+                shutdown: false,
+                last_error: None,
+                session_events: None,
+                park_commands: Some(tx),
+            },
+            rx,
+        )
+    }
+
+    /// A running parked session owns its asks in order: nothing starts a replacement, and the
+    /// asks arrive on the channel the parked loop reads.
+    #[test]
+    fn a_parked_ask_is_forwarded_to_the_running_session() {
+        let (mut control, rx) = control_with_park_channel();
+        control.park_serve(true, WrathParkedCommand::Enumerate);
+        control.park_serve(false, WrathParkedCommand::Enter(0x42));
+        let asked: Vec<_> = rx.try_iter().collect();
+        assert_eq!(asked.len(), 2);
+        assert!(matches!(asked[0], WrathParkedCommand::Enumerate));
+        assert!(matches!(asked[1], WrathParkedCommand::Enter(0x42)));
+        assert!(control.worker.is_none());
+    }
+
+    /// Without a running parked session the ask is an admission attempt; with no config the
+    /// attempt dies at `start`'s first gate, manufacturing neither a worker nor a channel.
+    #[test]
+    fn a_parked_ask_without_a_config_does_not_start_a_session() {
+        let (mut control, _rx) = control_with_park_channel();
+        control.park_commands = None;
+        control.park_serve(true, WrathParkedCommand::Enumerate);
+        assert!(control.worker.is_none());
+        assert!(control.park_commands.is_none());
     }
 }
