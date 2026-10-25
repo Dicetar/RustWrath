@@ -33,3 +33,9 @@ Delivered in the document commit containing this checkpoint:
 Source audit requirements are complete for the bounded current generator. The new handoff schema/dependency/API is explicitly Proposed and needs review before a codec/consumer is implemented; no unapproved serializer, registry entry, WM publisher or additional authority was added. Settled source work was the RNG arithmetic repair already committed. All acceptance checks remain gated; no tests/new test files/cases or project execution ran.
 
 Completion evidence for this source-only workstream is the two commits and the named current files, not generator invocations or claimed live use. OC code and the old patch script are preserved. The full replacement inventory beyond the first loop, schema adoption/implementation, connected scenario, compilation and runtime evidence remain future work, not claimed complete by these artifacts.
+
+## Concurrent delivery reconciliation
+
+The original documents were included from the shared Git index in OC's `e0be0d95` commit during concurrent source/document commits. `07e1aefe` then adds exact nested field spellings to the handoff. This checkpoint and the inventory record that actual provenance instead of attributing the whole mixed commit to one worker or rewriting history. The following explicit-path document commit reconciles the inventory through OC's `3ef23b0f`, `160d648e`, `430c4ce7` and `e0be0d95` source deliveries. Their runtime acceptance remains UNKNOWN.
+
+Updated C08/C09/I07/D01–D05 from missing/broken to source-partial where repairs now exist; retain initial cooldown, aura duration/upper-slot, resurrection refusal, movement and command-admission gaps. Exact doc ownership remains Astra; all client source and ADR-0001 remain untouched. No execution authority was inferred from this reconciliation.

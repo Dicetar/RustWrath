@@ -1,6 +1,6 @@
 # First connected loop behavior and evidence inventory
 
-Date: 2026-10-26, Europe/Moscow. Owner of inventory: Astra. Implementation owner for every client row: OpenCode, using existing server/client owners. Source anchor: `c42cbe2d`, incorporating OC spell-target and combat-outcome commits `ccb25a5a`/`3755ed88`. Later in-flight OC work is excluded until a cohesive handoff is reviewed.
+Date: 2026-10-26, Europe/Moscow. Owner of inventory: Astra. Implementation owner for every client row: OpenCode, using existing server/client owners. Initial source anchor: `c42cbe2d`; reconciled through `e0be0d95` for OC's cooldown/channel, aura, item-query and death deliveries. Later in-flight OC work is excluded until a cohesive handoff is reviewed. This reconciliation checks affected source seams, not every newly added parser variant.
 
 Purpose: refine entry, movement, combat, inventory/quest, death and re-entry into independently assessable behaviors. These 56 local behavior IDs are inventory references, not new issue numbers or TR-registry entries. They are a subset of approved issue 18 and the release requirement; they are not a complete stock-client denominator. Preserve the original issues and the Proposed status of ADR-0001.
 
@@ -72,8 +72,8 @@ Paths below are relative to `D:/Projects/project-b-client` unless an absolute se
 | C05 | Interrupt the right caster | Partial, S2/S8 caster-keyed SpellFailedOther | N self or nearby caster animation/cast clears; R remote interruption must not fail player's different cast | T old caster GUID/generation excluded; P pending cast cleared |
 | C06 | Render server melee/non-melee outcomes | Partial source from 3755ed88, S2/S8 | N real damage/absorb/resist/block and combat log; R conditional hit flags and malformed sub-blocks handled | T stale damage cannot change new world; P health reconstructed, not replayed logs |
 | C07 | Render periodic effects and resources | Partial source from 3755ed88; selected periodic forms | N damage/heal/energize/mana-leech reflect server values; R unknown aura log shape rejected | T ticks follow scope; P persistent effects require aura reconstruction, not log history |
-| C08 | Reconstruct and update cooldowns/channel timers | Missing at committed inventory anchor; later OC source not accepted here | N initial plus deltas and channel end; R rejected cast does not invent/reset cooldowns | T cancel appropriate timers; P current server cooldowns survive re-entry accurately |
-| C09 | Reconstruct and update aura state | Missing complete Wrath path at inventory anchor | N add/update/remove stacks, duration, caster and dispel identity; R unsupported slots/flags refused | T scoped cleanup; P initial aura state restored from server |
+| C08 | Reconstruct and update cooldowns/channel timers | Partial, 3ef23b0f adds deltas/self-channel events; initial spell cooldown payload still discarded | N initial plus deltas and channel end; R rejected cast does not invent/reset cooldowns | T cancel appropriate timers; P current server cooldowns survive re-entry accurately |
+| C09 | Reconstruct and update aura state | Partial, 160d648e adds reducer/digest/projection; durations not presented and slots 48+ dropped | N add/update/remove stacks, duration, caster and dispel identity; R unsupported slots/flags refused | T scoped cleanup; P initial aura state restored from server |
 | C10 | Observe combat completion and objective credit | Partial, S2/S3/S8 plus quest update | N actual Garrick death and server quest state; R no credit/damage synthesized from attack animation or loot UI | T stop old combat; P server quest state, health/power and item state retained |
 
 ## Quest and inventory — issue 26 and full economy gate
@@ -86,7 +86,7 @@ Paths below are relative to `D:/Projects/project-b-client` unless an absolute se
 | I04 | Show objective progress and held item count | Partial, S3/S4/S6/S8 | N kill/item/log updates reach stock surfaces; R stale update cannot invent completed objective | T inventory/log projection coherent; P real counts after re-entry |
 | I05 | Open Garrick loot response | Partial, S2/S7 | N item 182 slot/type/property payload shown; R no-loot/wrong GUID/server refusal visible | T close invalid corpse window; P corpse availability re-queried, not cached |
 | I06 | Autostore the chosen loot slot | Partial, S2/S5/S6 | N removed slot plus actual item object/player slot update; R full bags/duplicate/stale slot does not create an item | T no stale loot command; P actual item retained once |
-| I07 | Query complete item template | Broken, S7/S11/R02: five damage triplets read instead of two | N item 182/6076 fields, strings and use data align; R count/truncation rejected instead of clamped/misaligned | T template identity stable but scope references rebuilt; P correct tooltip after reconnect |
+| I07 | Query complete item template | Partial; 430c4ce7 repairs R02 with two damage triplets. Stats count still clamps at 64; full malformed/count fidelity not established | N item 182/6076 fields, strings and use data align; R count/truncation rejected instead of clamped/misaligned | T template identity stable but scope references rebuilt; P correct tooltip after reconnect |
 | I08 | Replicate item/container create/update/delete | Partial, S3/S6 | N GUID, stack, durability, enchant and owner fields map; R missing/deleted owner/item cannot resolve as another object | T preserve only appropriate received inventory, teardown scope safely; P reconstruct from server |
 | I09 | Resolve bags and count quest material | Partial, S6 and existing Inventory/BagCache owners | N item 182 in backpack/bag reaches held count; R missing container/slot and split updates handled without duplicate count | T cache invalidated/rebuilt with owner identity; P exact counts after re-entry |
 | I10 | Use/equip/swap/split items | Missing Wrath tap arms at anchor: S9 variants fall through S5 default | N existing UI commands reach correct 12340 builders/results; R locked/full/ineligible/duplicate operations visibly refused | T no old mutations replay; P final authoritative slots/counts retained |
@@ -99,11 +99,11 @@ Paths below are relative to `D:/Projects/project-b-client` unless an absolute se
 
 | ID | Behavior | Source assessment | N and R cases | T and P cases / dependencies |
 |---|---|---|---|---|
-| D01 | Enter authoritative dead state | Partial health/flags projection; complete death flow Unknown | N server death disables invalid actions and presents actual state; R zero/unknown health not conflated with a complete death transition | T corpse/ghost/world state coherent; P dead state restored |
-| D02 | Release spirit | Missing Wrath RepopRequest tap, S9/S5 | N release reaches server and ghost state; R alive/duplicate release refused | T map/ghost transition acknowledged; P correct ghost/corpse state |
-| D03 | Locate corpse | Missing complete CorpseQuery path, S9/S5/S2 | N server location/map identifies own corpse; R absent/wrong corpse does not invent a marker | T cross-map corpse representation; P correct corpse identity |
-| D04 | Reclaim corpse with delay/range rules | Missing ReclaimCorpse tap and full response flow | N eligible reclaim restores server state; R premature/distant/wrong GUID refused | T stale corpse scope excluded; P no duplicate recovery |
-| D05 | Accept/decline resurrection | Missing ResurrectResponse tap and complete request UI flow | N actual request, answer and resource state; R stale/declined/invalid resurrector respected | T no obsolete request acceptance; P server life state restored |
+| D01 | Enter authoritative dead state | Partial; e0be0d95 adds PLAYER_FLAGS ghost projection to existing death owner | N server death disables invalid actions and presents actual state; R zero/unknown health not conflated with a complete death transition | T corpse/ghost/world state coherent; P dead state restored |
+| D02 | Release spirit | Partial, e0be0d95 adds one-byte Wrath RepopRequest, S9/S5 | N release reaches server and ghost state; R alive/duplicate release refused | T map/ghost transition acknowledged; P correct ghost/corpse state |
+| D03 | Locate corpse | Partial, e0be0d95 adds CorpseQuery request/result, S9/S5/S2 | N server location/map identifies own corpse; R absent/wrong corpse does not invent a marker | T cross-map corpse representation; P correct corpse identity |
+| D04 | Reclaim corpse with delay/range rules | Partial, e0be0d95 adds reclaim and delay path | N eligible reclaim restores server state; R premature/distant/wrong GUID refused | T stale corpse scope excluded; P no duplicate recovery |
+| D05 | Accept/decline resurrection | Partial, e0be0d95 adds offer/answer/self-res/healer paths; SMSG_RESURRECT_FAILED remains silent | N actual request, answer and resource state; R stale/declined/invalid resurrector respected | T no obsolete request acceptance; P server life state restored |
 | D06 | Refuse incompatible combat/item actions while dead/ghost | Partial local donor owners; complete Wrath refusal path Unknown | N allowed ghost actions; R attack/cast/loot/equip restrictions follow server and selected UI | T override/transfer clears pending actions; P no deferred invalid commands after revival |
 
 ## Logout, transfer and re-entry — issues 24/26/27 and operational gate
@@ -135,12 +135,18 @@ The earlier OC build/test reports apply only to their recorded revisions and exc
 
 These are refinements under existing issues, not duplicate tickets or new permission grants:
 
-1. Issues 23/25/26: repair R01 movement flags, R02 item alignment and R03 critical-command admission. M03/M04/I07/M10/R07 block reliable acceptance of the selected path.
+1. Issues 23/25/26: repair R01 movement flags and R03 critical-command admission; verify the source repair for R02 item alignment in 430c4ce7 under an applicable check grant. M03/M04/M10/R07 remain concrete source blockers; I07 acceptance is unverified.
 2. Issues 24/26: establish intended-character boot/re-entry selection and bounded terminal/scope ordering (E03/R02–R06). Do not prove persistence on a different enumerated character.
-3. Issue 25: finish cooldown/channel/aura state, rejected/interrupt cases and outcome/UI mapping (C02–C10). Reconcile OC's newer source only after delivery.
+3. Issue 25: build on 3ef23b0f/160d648e; finish initial cooldown reconstruction and aura duration/slot/flag fidelity, then rejected/interrupt cases and outcome/UI mapping (C02–C10). An initial aura/descriptor projection is not full Wrath coverage.
 4. Issue 26: complete actual item/container count and reward ownership; add required item mutation intents and full bank/attribute fidelity as separate cohesive children (I06–I13).
-5. Issue 27: add explicit release/corpse/reclaim/resurrection/refusal owners and then connected recovery (D01–D06).
+5. Issue 27: validate the e0be0d95 release/corpse/reclaim/resurrection path, complete explicit refusal/edge cases and then connected recovery (D01–D06).
 6. Issues 19–24: finish profile/model/WMO/liquid/collision route dependencies in parallel source work; do not replace the connected route with a camera demo.
 7. Issue 18: selected-mode UI/addon host behavior and the unenumerated broad baseline families remain release blockers. The first-loop inventory does not close them.
 
 No new behavior is accepted by this inventory. Source changes use exact ownership claims and cohesive commits. Build/check/graphical/lab/WM evidence remains separately gated. Full stock-client replacement remains mandatory; use no completion percentage derived from these 56 rows.
+
+## Reconciliation and provenance
+
+Source-inspected follow-ups: 3ef23b0f adds cooldown list/event/clear/item deltas and player-gated channel events; 160d648e adds ordered aura state and a shortened descriptor projection; 430c4ce7 reads the correct two item damage records; e0be0d95 adds the death command/result path and ghost flag projection. Initial spellbook translation still supplies empty cooldowns; aura durations and upper slots remain gaps. Movement flags and shared action/movement eviction remain as described in the original source review. No build, test or live proof was added by this reconciliation.
+
+The initial inventory/audit/handoff documents were swept from the shared Git index into OC's e0be0d95 commit while Astra authored them. They are Astra-owned content despite that commit title. Follow-up 07e1aefe refines the handoff schema names; this reconciliation is a later explicit-path document commit. History is preserved and no OC source is reset or amended. Do not infer the author of each staged document from the mixed commit title.
