@@ -694,6 +694,23 @@ name = "benilla-wdt"
 version = "0.2.0"
 
 [[package]]
+name = "benilla-wm-driver"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "benilla-protocol-wrath",
+ "benilla-wm-native",
+]
+
+[[package]]
+name = "benilla-wm-native"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "benilla-wmo"
 version = "0.2.0"
 dependencies = [

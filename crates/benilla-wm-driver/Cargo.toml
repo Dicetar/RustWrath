@@ -1,0 +1,14 @@
+[package]
+name = "benilla-wm-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Renderless 3.3.5a session driver and WM observation bridge application boundary: the only place protocol, producer, and bridge meet"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = "1"
+benilla-protocol-wrath = { path = "../benilla-protocol-wrath" }
+benilla-wm-native = { path = "../benilla-wm-native" }

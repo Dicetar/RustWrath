@@ -101,7 +101,8 @@ pub struct SelfObservation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LifeEvent {
     /// A LOGIN_VERIFY_WORLD map change: replicated state was cleared; the driver must retire
-    /// the WM publisher so the receiver invalidates before the new map's first observation.
+    /// the WM publisher (retire + `spawn_after` ordering); receiver invalidation follows the
+    /// publisher's own disconnect handling on the bridge side.
     MapTransition { from: u32, to: u32 },
 }
 

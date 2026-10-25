@@ -9,8 +9,127 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use benilla_protocol_wrath::logon::logon;
 use benilla_protocol_wrath::opcode;
-use benilla_protocol_wrath::session::SessionState;
+use benilla_protocol_wrath::session::{SelfTarget, SessionState};
 use benilla_protocol_wrath::world::{is_idle, WorldConnection};
+use benilla_wm_native::{
+    pump_once, Error as WmError, ProducerSession, ProducerSnapshot, PublisherConfig,
+    PublisherRetirement, PumpError, PumpResult,
+};
+
+/// The driver's adapter: implements the bridge's `ProducerSession` over the pure
+/// `SessionState`, converting export errors into the pump's error type. No bridge dependency
+/// reaches the producer or the packet decoder.
+struct ProducerAdapter<'a> {
+    session: &'a mut SessionState,
+}
+
+/// Owned snapshot handed to the pump, implementing the bridge's `ProducerSnapshot` trait.
+struct SnapshotOwned(benilla_protocol_wrath::session::SelfObservation);
+
+impl std::fmt::Debug for SnapshotOwned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "seq {} rev {} map {} pos ({:.1}, {:.1}, {:.1}, {:.1}) target {:?} visible {}/{} complete={} age_ms {}",
+            self.0.sequence,
+            self.0.state_revision,
+            self.0.map_id,
+            self.0.position.x,
+            self.0.position.y,
+            self.0.position.z,
+            self.0.position.o,
+            match &self.0.target {
+                SelfTarget::Unknown => "unknown".to_string(),
+                SelfTarget::None => "none".to_string(),
+                SelfTarget::Target(g) => format!("{g}"),
+            },
+            self.0.visibility.guids.len(),
+            self.0.visibility.total_guid_count,
+            self.0.visibility.complete,
+            format!("position_observed_at={}", self.0.position_observed_at_unix_ms),
+        )
+    }
+}
+
+impl ProducerSnapshot for SnapshotOwned {
+    fn session_epoch(&self) -> u64 {
+        self.0.session_epoch
+    }
+    fn player_guid(&self) -> u64 {
+        self.0.player_guid
+    }
+    fn sequence(&self) -> u64 {
+        self.0.sequence
+    }
+    fn state_revision(&self) -> u64 {
+        self.0.state_revision
+    }
+    fn observed_at_unix_ms(&self) -> i64 {
+        self.0.observed_at_unix_ms
+    }
+    fn client_uptime_ms(&self) -> u64 {
+        self.0.client_uptime_ms
+    }
+    fn map_id(&self) -> u32 {
+        self.0.map_id
+    }
+    fn position(&self) -> benilla_wm_native::ProducerPosition {
+        benilla_wm_native::ProducerPosition {
+            x: self.0.position.x,
+            y: self.0.position.y,
+            z: self.0.position.z,
+            orientation: self.0.position.o,
+        }
+    }
+    fn target(&self) -> benilla_wm_native::Result<benilla_wm_native::TargetObservation> {
+        Ok(match &self.0.target {
+            SelfTarget::Unknown => benilla_wm_native::TargetObservation::Unknown,
+            SelfTarget::None => benilla_wm_native::TargetObservation::None,
+            SelfTarget::Target(g) => benilla_wm_native::TargetObservation::target(*g)?,
+        })
+    }
+    fn visibility(&self) -> benilla_wm_native::Result<benilla_wm_native::Visibility> {
+        benilla_wm_native::Visibility::new(
+            self.0.visibility.complete,
+            self.0.visibility.total_guid_count,
+            self.0.visibility.guids.clone(),
+        )
+    }
+    fn zone_id(&self) -> Option<u32> {
+        self.0.zone_id
+    }
+    fn area_id(&self) -> Option<u32> {
+        self.0.area_id
+    }
+}
+
+impl ProducerSession for ProducerAdapter<'_> {
+    type Snapshot = SnapshotOwned;
+
+    fn export_due(&self) -> bool {
+        self.session.export_due()
+    }
+
+    fn export(
+        &mut self,
+        exported_at_unix_ms: i64,
+        client_uptime_ms: u64,
+    ) -> std::result::Result<Option<SnapshotOwned>, benilla_wm_native::ProducerExportError> {
+        match self.session.export(exported_at_unix_ms, client_uptime_ms) {
+            Ok(Some(snapshot)) => {
+                let owned = SnapshotOwned(snapshot);
+                println!("[wm] export {owned:?}");
+                Ok(Some(owned))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(benilla_wm_native::ProducerExportError::new(e.to_string())),
+        }
+    }
+
+    fn mark_published(&mut self) {
+        self.session.mark_published();
+    }
+}
 
 /// Driver-owned clocks (the producer stays time-free): wall-clock for observations and
 /// monotonic session uptime.
@@ -214,6 +333,45 @@ fn main() -> Result<()> {
     session.start_session(guid);
     let mut exports: u64 = 0;
 
+    // --- WM bridge: enabled only when the owner provides the receiver token; disabled means
+    // no publisher, no socket, no traffic — baseline login is untouched.
+    let wm_config = match std::env::var("WM_NATIVE_OBSERVATION_TOKEN") {
+        Ok(token) => {
+            let loopback = benilla_wm_native::LoopbackConfig::new(
+                std::net::SocketAddr::from(([127, 0, 0, 1], benilla_wm_native::DEFAULT_PORT)),
+                benilla_wm_native::AuthToken::new(token)?,
+            )?;
+            Some(PublisherConfig::new(loopback))
+        }
+        Err(_) => {
+            println!("[wm] bridge disabled: WM_NATIVE_OBSERVATION_TOKEN not set");
+            None
+        }
+    };
+    let mut wm_publisher = match &wm_config {
+        Some(config) => Some(benilla_wm_native::ObservationPublisher::spawn(config.clone())?),
+        None => None,
+    };
+    let mut wm_retiring: Vec<PublisherRetirement> = Vec::new();
+
+    /// Retires the current publisher and orders its replacement after the old worker fully
+    /// stops (`spawn_after`) — replacement ordering without blocking the packet path.
+    fn wm_replace(wm_config: Option<&PublisherConfig>, current: &mut Option<benilla_wm_native::ObservationPublisher>, retiring: &mut Vec<PublisherRetirement>) -> Result<()> {
+        if let Some(config) = wm_config {
+            if let Some(publisher) = current.take() {
+                retiring.push(publisher.retire());
+            }
+            let replacement = match retiring.last() {
+                Some(retirement) => benilla_wm_native::ObservationPublisher::spawn_after(config.clone(), retirement)?,
+                None => benilla_wm_native::ObservationPublisher::spawn(config.clone())?,
+            };
+            *current = Some(replacement);
+            // Finished retirements are droppable (Drop detaches an already-stopped worker).
+            retiring.retain(|r| !r.is_finished());
+        }
+        Ok(())
+    }
+
     world.send(opcode::CMSG_PLAYER_LOGIN, &guid.to_le_bytes())?;
     println!("[world] PLAYER_LOGIN guid {guid}");
 
@@ -253,41 +411,43 @@ fn main() -> Result<()> {
             Err(e) if is_idle(&e) => {}
             Err(e) => return Err(e),
         }
-        // Lifecycle: a map transition retires the WM publisher (bridge contract) — logged
-        // here; a live publisher would be closed and respawned before the next export.
+        // Lifecycle: a map transition retires the WM publisher and orders its replacement
+        // after the old worker fully stops (retire/spawn_after — no blocking on this path).
         for event in session.take_lifecycle() {
-            println!("[wm] lifecycle {event:?}: retire the WM publisher");
+            println!("[wm] lifecycle {event:?}: retiring publisher, ordering replacement");
+            wm_replace(wm_config.as_ref(), &mut wm_publisher, &mut wm_retiring)?;
         }
-        // Export on source-observed change; the producer retains until mark_published, so a
-        // busy/failed handoff is retried by the next loop iteration without losing state.
-        if session.export_due() {
-            if let Some(snapshot) = session.export(unix_now_ms(), session_start.elapsed().as_millis() as u64)? {
-                exports += 1;
-                println!(
-                    "[wm] seq {} rev {} map {} pos ({:.1}, {:.1}, {:.1}, {:.1}) target {:?} visible {}/{} complete={} age_ms {}",
-                    snapshot.sequence,
-                    snapshot.state_revision,
-                    snapshot.map_id,
-                    snapshot.position.x,
-                    snapshot.position.y,
-                    snapshot.position.z,
-                    snapshot.position.o,
-                    match &snapshot.target {
-                        benilla_protocol_wrath::session::SelfTarget::Unknown => "unknown".to_string(),
-                        benilla_protocol_wrath::session::SelfTarget::None => "none".to_string(),
-                        benilla_protocol_wrath::session::SelfTarget::Target(g) => format!("{g}"),
-                    },
-                    snapshot.visibility.guids.len(),
-                    snapshot.visibility.total_guid_count,
-                    snapshot.visibility.complete,
-                    unix_now_ms() - snapshot.observed_at_unix_ms,
-                );
-                // INTEGRATION POINT: replace this mark with
-                //   publisher.publish(&map_to_observation(&snapshot, exported_at_unix_ms))?
-                //   -> on Ok: session.mark_published(); on PublisherBusy: nothing (retry);
-                //   on map transition / reconnect: retire the publisher first (see
-                //   docs/convergence/glm-producer.md).
-                session.mark_published();
+        wm_retiring.retain(|r| !r.is_finished());
+
+        // One bounded retry/export/handoff step per tick — runs on idle ticks too, so a
+        // retained snapshot retries without waiting for new source traffic.
+        if let Some(publisher) = wm_publisher.as_ref() {
+            let mut adapter = ProducerAdapter { session: &mut session };
+            match pump_once(publisher, &mut adapter, unix_now_ms(), session_start.elapsed().as_millis() as u64) {
+                Ok(PumpResult::Idle) => {}
+                Ok(PumpResult::HandedOff(receipt)) => {
+                    exports += 1;
+                    println!("[wm] handed off seq {} rev {}", receipt.sequence, receipt.state_revision);
+                }
+                Ok(PumpResult::Retained) => {
+                    // Producer retains the snapshot; the next tick re-exports it.
+                }
+                Err(PumpError::Producer(e)) => {
+                    println!("[wm] export unavailable: {}", e.message());
+                }
+                Err(PumpError::Superseded { sequence, latest_sequence }) => {
+                    println!("[wm] superseded seq {sequence} by {latest_sequence} (ordering violation under a single pump)");
+                }
+                Err(PumpError::Conversion(e)) => {
+                    println!("[wm] conversion error: {e}");
+                }
+                Err(PumpError::Publisher(WmError::Disconnected)) => {
+                    println!("[wm] publisher disconnected: respawning with retire/spawn_after ordering");
+                    wm_replace(wm_config.as_ref(), &mut wm_publisher, &mut wm_retiring)?;
+                }
+                Err(PumpError::Publisher(e)) => {
+                    println!("[wm] publisher error: {e}");
+                }
             }
         }
     }
@@ -306,6 +466,15 @@ fn main() -> Result<()> {
         match world.recv() {
             Ok(p) if p.opcode == 0x04D => {
                 println!("[world] LOGOUT_COMPLETE — clean session end to end");
+                session.finish_session();
+                if let Some(publisher) = wm_publisher.take() {
+                    let retirement = publisher.retire();
+                    // Off the packet path: wait briefly so the receiver sees a clean close.
+                    let _ = retirement.wait_timeout(std::time::Duration::from_secs(2));
+                }
+                for r in wm_retiring.drain(..) {
+                    let _ = r.wait_timeout(std::time::Duration::from_millis(200));
+                }
                 if let Some(path) = record_path.as_deref() {
                     let rec = world.take_recording();
                     let mut out = (rec.len() as u32).to_le_bytes().to_vec();

@@ -1,0 +1,13 @@
+[package]
+name = "benilla-wm-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Loopback-only WM observation transport seam: bounded length-prefixed JSON from the native client to the Python observation receiver"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
