@@ -310,6 +310,61 @@ pub struct ItemInfo {
     pub max_count: u32,
     pub stackable: u32,
     pub container_slots: u32,
+    pub stats: Vec<(u32, i32)>,
+    pub damages: Vec<ItemDamage>,
+    pub dmg_min: f32,
+    pub dmg_max: f32,
+    pub dmg_type: u32,
+    pub armor: u32,
+    pub resistances: [i32; 6],
+    pub delay_ms: u32,
+    pub ammo_type: u32,
+    pub ranged_mod_range: f32,
+    pub spells: Vec<ItemSpell>,
+    pub spell_charges_0: i32,
+    pub use_spell: Option<ItemUseSpell>,
+    pub bonding: u32,
+    pub description: String,
+    pub page_text: u32,
+    pub language_id: u32,
+    pub page_material: u32,
+    pub start_quest: u32,
+    pub lock_id: u32,
+    pub material: u32,
+    pub sheath: u32,
+    pub random_property: u32,
+    pub block: u32,
+    pub item_set: u32,
+    pub max_durability: u32,
+    pub area: u32,
+    pub map: u32,
+    pub bag_family: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ItemDamage {
+    pub min: f32,
+    pub max: f32,
+    pub school: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemSpell {
+    pub index: u8,
+    pub spell_id: u32,
+    pub trigger: u32,
+    pub charges: i32,
+    pub cooldown_ms: i32,
+    pub category: u32,
+    pub category_cooldown_ms: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemUseSpell {
+    pub spell_id: u32,
+    pub cooldown_ms: i32,
+    pub category: u32,
+    pub category_cooldown_ms: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -708,6 +763,105 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     let max_count = r.i32()?.max(0) as u32;
     let stackable = r.i32()?.max(0) as u32;
     let container_slots = r.u32()?;
+    // 3.3.5 writes a variable stats block, then the fixed damage/resistance/spell blocks. The
+    // 1.12 template keeps the same semantics with shorter fixed arrays; read each by its own
+    // count rather than copying the whole 3.3.5 record.
+    let stats_count = r.u32()?.min(64);
+    let mut stats = Vec::with_capacity(stats_count as usize);
+    for _ in 0..stats_count {
+        let stat_type = r.u32()?;
+        let stat_value = r.i32()?;
+        if stat_type != 0 || stat_value != 0 {
+            stats.push((stat_type, stat_value));
+        }
+    }
+    let _scaling_distribution = r.u32()?;
+    let _scaling_value = r.u32()?;
+
+    let mut damages = Vec::with_capacity(5);
+    let mut dmg_min = 0.0;
+    let mut dmg_max = 0.0;
+    let mut dmg_type = 0;
+    for i in 0..5 {
+        let min = r.f32()?;
+        let max = r.f32()?;
+        let school = r.u32()?;
+        if i == 0 {
+            dmg_min = min;
+            dmg_max = max;
+            dmg_type = school;
+        }
+        if max > 0.0 {
+            damages.push(ItemDamage { min, max, school });
+        }
+    }
+
+    let armor = r.u32()?;
+    let resistances = [
+        r.i32()?,
+        r.i32()?,
+        r.i32()?,
+        r.i32()?,
+        r.i32()?,
+        r.i32()?,
+    ];
+    let delay_ms = r.u32()?;
+    let ammo_type = r.u32()?;
+    let ranged_mod_range = r.f32()?;
+
+    let mut spells = Vec::with_capacity(5);
+    let mut spell_charges_0 = 0;
+    let mut use_spell = None;
+    for index in 0..5u8 {
+        let spell_id = r.u32()?;
+        let trigger = r.u32()?;
+        let charges = r.i32()?;
+        let cooldown_ms = r.i32()?;
+        let category = r.u32()?;
+        let category_cooldown_ms = r.i32()?;
+        if index == 0 {
+            spell_charges_0 = charges;
+        }
+        if spell_id != 0 {
+            let spell = ItemSpell {
+                index,
+                spell_id,
+                trigger,
+                charges,
+                cooldown_ms,
+                category,
+                category_cooldown_ms,
+            };
+            if trigger == 0 && use_spell.is_none() {
+                use_spell = Some(ItemUseSpell {
+                    spell_id,
+                    cooldown_ms,
+                    category,
+                    category_cooldown_ms,
+                });
+            }
+            spells.push(spell);
+        }
+    }
+
+    let bonding = r.u32()?;
+    let description = r.cstring()?;
+    let page_text = r.u32()?;
+    let language_id = r.u32()?;
+    let page_material = r.u32()?;
+    let start_quest = r.u32()?;
+    let lock_id = r.u32()?;
+    let material = r.i32()?.max(0) as u32;
+    let sheath = r.u32()?;
+    let random_property = r.u32()?;
+    let _random_suffix = r.u32()?;
+    let block = r.u32()?;
+    let item_set = r.u32()?;
+    let max_durability = r.u32()?;
+    let area = r.u32()?;
+    let map = r.u32()?;
+    let bag_family = r.u32()?;
+
     Ok(ServerEvent::ItemInfo {
         entry,
         info: Some(ItemInfo {
@@ -715,7 +869,10 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
             inventory_type, allowable_class, allowable_race, item_level, required_level,
             required_skill, required_skill_rank, required_spell, required_honor_rank,
             required_city_rank, required_rep_faction, required_rep_rank, max_count, stackable,
-            container_slots,
+            container_slots, stats, damages, dmg_min, dmg_max, dmg_type, armor, resistances,
+            delay_ms, ammo_type, ranged_mod_range, spells, spell_charges_0, use_spell, bonding,
+            description, page_text, language_id, page_material, start_quest, lock_id, material,
+            sheath, random_property, block, item_set, max_durability, area, map, bag_family,
         }),
     })
 }

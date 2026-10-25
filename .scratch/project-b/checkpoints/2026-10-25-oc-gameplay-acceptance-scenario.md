@@ -3,7 +3,8 @@
 Date: 2026-10-25
 Owner: OpenCode
 Status: prepared; graphical/live execution is NOT authorized.
-Source identity: gameplay commits `720c83b6` and `2f61b877` on `wotlk`.
+Source identity: gameplay commits `720c83b6`, `2f61b877` and the item slice checkpoint
+`2026-10-25-oc-item-replication.md` on `wotlk`.
 
 This is the exact scenario the source path should be exercised against. Static SQL is from the
 local AzerothCore 12340 base database. The live server may differ; every live assumption is named
@@ -63,10 +64,13 @@ Static evidence:
    applicable, health field changes, and `SMSG_ATTACKSTOP` on death/stop.
 6. Loot the corpse. Expect `SMSG_LOOT_RESPONSE` with Garrick's Head in a row; take it with
    `CMSG_AUTOSTORE_LOOT_ITEM`; expect `SMSG_LOOT_REMOVED`, `SMSG_ITEM_PUSH_RESULT`, and the
-   item template query/answer.
+   item template query/answer. The item-slice source expectation is then an item `182` entity
+   (`Guid` + `ObjectStore` + `ItemObject`), a player backpack slot referencing its GUID, and
+   quest 6's held count becoming 1.
 7. Return to Willem, complete the quest, request reward, choose reward 0. Expect
    `SMSG_QUESTGIVER_REQUEST_ITEMS`/`OFFER_REWARD`, `SMSG_QUESTGIVER_QUEST_COMPLETE`,
-   the Tapered Pants item push, and the stock quest/chat surfaces.
+   the Tapered Pants item push, and the stock quest/chat surfaces. The reward item `6076`
+   should follow the same item-entity/player-slot path and have its template fields populated.
 8. Logout through the supported path and reconnect. Record whether the world returns to a
    coherent state. Automatic reconnect is a separate task; the current worker ends cleanly on
    `SMSG_LOGOUT_COMPLETE`, so a manual relaunch may be required.

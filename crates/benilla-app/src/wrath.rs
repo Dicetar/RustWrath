@@ -40,12 +40,15 @@ use benilla_protocol_wrath::cast_failure;
 use benilla_protocol_wrath::gameplay::{self, ServerEvent as WrathGameplayEvent};
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use crate::entities::Equipment;
+use crate::items::{Countdowns, ItemObject};
 use crate::net::{
     ClientCommand, Guid, GuidIndex, NetCommandTap, NetEntity, NetEventSink, ObjectStore, SelfGuid,
     SelfPlayer, UnitSpeeds, WorldEnterCascadeMessage, EnteredWorldMessage, FieldChanged,
 };
 use benilla_protocol::messages::{
-    ActionButton, AttackSwingError, GossipOption as ProtocolGossipOption, ItemInfo, ItemPushResult,
+    ActionButton, AttackSwingError, GossipOption as ProtocolGossipOption,
+    ItemDamage as ProtocolItemDamage, ItemInfo, ItemPushResult,
+    ItemSpellEntry as ProtocolItemSpell, ItemUseSpell as ProtocolItemUseSpell,
     LootItem as ProtocolLootItem, NpcTextBlock as ProtocolNpcTextBlock, QuestComplete,
     QuestDetails, QuestGiverList, QuestListEntry, QuestObjective, QuestOfferReward,
     QuestRequestItems, QuestRewardItem, QuestTemplate,
@@ -231,6 +234,10 @@ pub struct WrathEntity {
     /// The player's raw Wrath field window, needed where 1.12 and 3.3.5 pack different field
     /// indices (quest log, inventory, coinage). Only a player carries it.
     pub player_fields: Option<Vec<u32>>,
+    /// An item or container's raw Wrath field window. The item block is 0..64 and a container
+    /// extends it with its slot array; both are translated explicitly rather than copied by
+    /// index because the 1.12 item/container layouts differ.
+    pub item_fields: Option<Vec<u32>>,
 }
 
 /// A full-world digest: the replicated world at one `state_revision`.
@@ -653,35 +660,60 @@ fn translate_gameplay(event: WrathGameplayEvent) -> Vec<SessionEvent> {
                     max_count: i.max_count,
                     stackable: i.stackable,
                     container_slots: i.container_slots,
-                    stats: Vec::new(),
-                    damages: Vec::new(),
-                    dmg_min: 0.0,
-                    dmg_max: 0.0,
-                    dmg_type: 0,
-                    armor: 0,
-                    resistances: [0; 6],
-                    delay_ms: 0,
-                    ammo_type: 0,
-                    ranged_mod_range: 0.0,
-                    spells: Vec::new(),
-                    spell_charges_0: 0,
-                    use_spell: None,
-                    bonding: 0,
-                    description: String::new(),
-                    page_text: 0,
-                    language_id: 0,
-                    page_material: 0,
-                    start_quest: 0,
-                    lock_id: 0,
-                    material: 0,
-                    sheath: 0,
-                    random_property: 0,
-                    block: 0,
-                    item_set: 0,
-                    max_durability: 0,
-                    area: 0,
-                    map: 0,
-                    bag_family: 0,
+                    stats: i.stats,
+                    damages: i
+                        .damages
+                        .into_iter()
+                        .map(|d| ProtocolItemDamage {
+                            min: d.min,
+                            max: d.max,
+                            school: d.school,
+                        })
+                        .collect(),
+                    dmg_min: i.dmg_min,
+                    dmg_max: i.dmg_max,
+                    dmg_type: i.dmg_type,
+                    armor: i.armor,
+                    resistances: i.resistances,
+                    delay_ms: i.delay_ms,
+                    ammo_type: i.ammo_type,
+                    ranged_mod_range: i.ranged_mod_range,
+                    spells: i
+                        .spells
+                        .into_iter()
+                        .map(|s| ProtocolItemSpell {
+                            index: s.index,
+                            spell_id: s.spell_id,
+                            trigger: s.trigger,
+                            charges: s.charges,
+                            cooldown_ms: s.cooldown_ms,
+                            category: s.category,
+                            category_cooldown_ms: s.category_cooldown_ms,
+                        })
+                        .collect(),
+                    spell_charges_0: i.spell_charges_0,
+                    use_spell: i.use_spell.map(|s| ProtocolItemUseSpell {
+                        spell_id: s.spell_id,
+                        cooldown_ms: s.cooldown_ms,
+                        category: s.category,
+                        category_cooldown_ms: s.category_cooldown_ms,
+                    }),
+                    bonding: i.bonding,
+                    description: i.description,
+                    page_text: i.page_text,
+                    language_id: i.language_id,
+                    page_material: i.page_material,
+                    start_quest: i.start_quest,
+                    lock_id: i.lock_id,
+                    material: i.material,
+                    sheath: i.sheath,
+                    random_property: i.random_property,
+                    block: i.block,
+                    item_set: i.item_set,
+                    max_durability: i.max_durability,
+                    area: i.area,
+                    map: i.map,
+                    bag_family: i.bag_family,
                 })
             }),
         }],
@@ -1187,6 +1219,123 @@ struct WrathStreamed;
 #[derive(Component, Clone, Copy)]
 struct WrathGeneration(u32);
 
+/// Copy the player inventory bands the 1.12 item owners walk. The 3.3.5 arrays are wider in the
+/// bank (28 -> 24 slots), bank bags (7 -> 6) and otherwise use a different base; every array here
+/// is copied explicitly, with the extra 3.3.5 tail dropped rather than folded into a neighbour.
+fn push_player_inventory_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
+    // (3.3.5 base, 1.12 base, dwords copied)
+    const BANDS: [(usize, u16, usize); 7] = [
+        (324, 486, 46), // equipment + four equipped bags
+        (370, 532, 32), // backpack, 16 slots
+        (402, 564, 48), // bank, first 24 of 28 slots
+        (458, 612, 12), // bank bags, first six of seven slots
+        (472, 624, 24), // vendor buyback, 12 slots
+        (496, 648, 64), // keyring, 32 slots
+        (624, 712, 2),  // farsight guid
+    ];
+    for (src, dst, count) in BANDS {
+        for i in 0..count {
+            if let Some(value) = raw.get(src + i) {
+                pairs.push((dst + i as u16, *value));
+            }
+        }
+    }
+}
+
+/// Translate one item/container's Wrath fields into the 1.12 item layout. The first fields
+/// coincide; the enchant array is shorter in 1.12, and the durability/random columns moved after
+/// the two extra 3.3.5 enchant slots. Container fields start at a different base.
+fn push_item_fields(raw: &[u32], container: bool, pairs: &mut Vec<(u16, u32)>) {
+    for src in 6..=21u16 {
+        if let Some(value) = raw.get(src as usize) {
+            pairs.push((src, *value));
+        }
+    }
+    for i in 0..21u16 {
+        if let Some(value) = raw.get((22 + i) as usize) {
+            pairs.push((22 + i, *value));
+        }
+    }
+    for (src, dst) in [(58u16, 43u16), (59, 44), (60, 46), (61, 47)] {
+        if let Some(value) = raw.get(src as usize) {
+            pairs.push((dst, *value));
+        }
+    }
+    if container {
+        if let Some(value) = raw.get(64) {
+            pairs.push((48, *value));
+        }
+        for i in 0..36u16 {
+            if let Some(value) = raw.get((66 + 2 * i) as usize) {
+                pairs.push((50 + 2 * i, *value));
+            }
+            if let Some(value) = raw.get((67 + 2 * i) as usize) {
+                pairs.push((51 + 2 * i, *value));
+            }
+        }
+    }
+}
+
+/// Spawn or update one item/container entity in the established `ItemObject`/`ObjectStore`
+/// owner. Items carry no `NetEntity` or transform; their GUID identity stays in `GuidIndex`.
+fn apply_item_world(
+    world: &mut World,
+    index: &mut BTreeMap<u64, Entity>,
+    guid: u64,
+    remote: &WrathEntity,
+) {
+    let container = remote.type_id == benilla_protocol_wrath::updates::type_id::CONTAINER;
+    let object_type = if container {
+        ObjectType::Container
+    } else {
+        ObjectType::Item
+    };
+    let mut pairs = vec![(2u16, object_type_mask(object_type))];
+    if let Some(entry) = remote.entry {
+        pairs.push((3, entry));
+    }
+    if let Some(raw) = remote.item_fields.as_deref() {
+        push_item_fields(raw, container, &mut pairs);
+    }
+    let fields = ObjectFields::from_pairs(&pairs).into_created(object_type);
+
+    let mut existing = index.get(&guid).copied();
+    if let Some(entity) = existing {
+        if world
+            .get::<WrathGeneration>(entity)
+            .is_some_and(|generation| generation.0 != remote.generation)
+        {
+            index.remove(&guid);
+            world.despawn(entity);
+            existing = None;
+        }
+    }
+    match existing {
+        Some(entity) => {
+            let mut e = world.entity_mut(entity);
+            e.remove::<NetEntity>();
+            e.insert((
+                ObjectStore(fields),
+                ItemObject { container },
+                WrathGeneration(remote.generation),
+            ));
+        }
+        None => {
+            let entity = world
+                .spawn((
+                    WrathStreamed,
+                    WrathGeneration(remote.generation),
+                    Guid(guid),
+                    ObjectStore(fields),
+                    ItemObject { container },
+                    Countdowns::default(),
+                ))
+                .id();
+            index.insert(guid, entity);
+        }
+    }
+}
+
 /// Translate the drained digest into the established `GuidIndex`/`NetEntity`/`ObjectStore` path.
 /// Exclusive, so creates/removals are live before `WorldStage::Input`.
 fn wrath_apply_world(world: &mut World) {
@@ -1232,6 +1381,12 @@ fn wrath_apply_world(world: &mut World) {
                 queue.clear();
             }
         }
+        if let Some(mut bags) = world.get_resource_mut::<crate::item_watch::BagCache>() {
+            *bags = crate::item_watch::BagCache::default();
+        }
+        if let Some(mut lane) = world.get_resource_mut::<crate::item_lane::ItemLane>() {
+            lane.clear();
+        }
     }
     *world.resource_mut::<GuidIndex>() = index;
 
@@ -1255,6 +1410,14 @@ fn wrath_apply_world(world: &mut World) {
         let Some(remote) = entities.get(guid) else {
             continue;
         };
+        if matches!(
+            remote.type_id,
+            benilla_protocol_wrath::updates::type_id::ITEM
+                | benilla_protocol_wrath::updates::type_id::CONTAINER
+        ) {
+            apply_item_world(world, &mut index.0, *guid, remote);
+            continue;
+        }
         let kind = entity_kind(remote.type_id);
         let object_type = match kind {
             EntityKind::Player => ObjectType::Player,
@@ -1341,16 +1504,7 @@ fn wrath_apply_world(world: &mut World) {
                         pairs.push((dst, *value));
                     }
                 }
-                for i in 0..46u16 {
-                    if let Some(value) = raw.get((324 + i) as usize) {
-                        pairs.push((486 + i, *value));
-                    }
-                }
-                for i in 0..32u16 {
-                    if let Some(value) = raw.get((370 + i) as usize) {
-                        pairs.push((532 + i, *value));
-                    }
-                }
+                push_player_inventory_fields(raw, &mut pairs);
                 if let Some(value) = raw.get(634) {
                     pairs.push((716, *value));
                 }
@@ -1661,8 +1815,8 @@ fn wrath_stream_movement(
 fn object_type_mask(kind: ObjectType) -> u32 {
     match kind {
         ObjectType::Object => 0x1,
-        ObjectType::Item => 0x2,
-        ObjectType::Container => 0x4,
+        ObjectType::Item => 0x2 | 0x1,
+        ObjectType::Container => 0x4 | 0x2 | 0x1,
         ObjectType::Unit => 0x8 | 0x1,
         ObjectType::Player => 0x10 | 0x8 | 0x1,
         ObjectType::GameObject => 0x20 | 0x1,
@@ -2109,6 +2263,12 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 generation: entry.generation,
                 player_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
                     .then(|| (0..1171).map(|i| entry.field(i).unwrap_or(0)).collect()),
+                item_fields: matches!(
+                    entry.type_id,
+                    benilla_protocol_wrath::updates::type_id::ITEM
+                        | benilla_protocol_wrath::updates::type_id::CONTAINER
+                )
+                .then(|| (0..138).map(|i| entry.field(i).unwrap_or(0)).collect()),
             },
         );
     }
@@ -2220,6 +2380,7 @@ mod command_tap_tests {
                 move_flags: None,
                 generation: 1,
                 player_fields: None,
+                item_fields: None,
             },
         );
         WrathWorldView {

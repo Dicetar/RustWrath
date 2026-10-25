@@ -130,15 +130,24 @@ Hashes change when files change; use the commit IDs for provenance.
 ## Remaining gaps
 
 - Runtime/graphical acceptance is unchanged and unauthorized. All of the above is source only.
-- `ItemInfo` currently carries the early static fields only; stats, damage, spells, bonding,
-  description, durability and the later 3.3.5 columns are defaults. Tooltips are incomplete.
+- At this checkpoint `ItemInfo` carried the early static fields only; stats, damage, spells,
+  bonding, description, durability and the later 3.3.5 columns were defaults. The item slice
+  `2026-10-25-oc-item-replication.md` supersedes this gap.
 - `SpellStart`/`SpellGo` do not decode the full target block beyond the mask/hit list; source and
   destination points, game-object targets and missile visuals remain unproven.
-- Cooldowns, aura deltas, action-button server updates, item object creation, bag contents, loot
-  rolls, transfer/death/release and WMO/doodad route behavior remain open.
+- Cooldowns, aura deltas, action-button server updates, bag contents beyond the item slice, loot
+  rolls, transfer/death/release and WMO/doodad route behavior remain open. Item object creation
+  is addressed by `2026-10-25-oc-item-replication.md`.
 - Automatic reconnect after logout remains a separate task; the worker ends cleanly, the app
   sees `LoggedOut` then `Disconnected { end: LoggedOut }`.
 - `WrathWorldView` has no explicit epoch tag on translated `SessionEvent`s; stale replies are
   bounded by the session lifecycle but not rejected per event.
 - No commit, stash, reset or merge of pre-existing bridge/assets/WM work was performed by this
   checkpoint; those were committed by another worker in `9a1e365e`.
+
+## Follow-up: item/container slice
+
+`2026-10-25-oc-item-replication.md` adds item/container `Guid`/`ObjectStore`/`ItemObject`
+replication, player inventory-band mapping, full 1.12 item-template fields, and item entity
+cleanup on transfer. It is a separate source-only commit on top of this checkpoint; the runtime
+and rendered gates above remain unchanged and UNKNOWN.
