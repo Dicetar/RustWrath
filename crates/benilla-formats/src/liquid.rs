@@ -5,7 +5,7 @@
 //! corners at the FLT_MAX sentinel) is skipped. The cell nibble is the liquid type (`0x6ba970`,
 //! `0x68d9b0`); the header bits only count the blocks.
 
-use benilla_adt::MclqChunk;
+use benilla_adt::{MclqChunk, Mh2oChunk, Mh2oInstance};
 
 use crate::terrain::{snap_to_lattice, UNIT_SIZE};
 
@@ -52,6 +52,19 @@ impl LiquidKind {
             1 => Some(LiquidKind::Ocean),
             2 => Some(LiquidKind::Magma),
             _ => None, // class 3, slime: no ADT queue
+        }
+    }
+
+    /// The kind a WotLK `LiquidType.dbc` id names. The route's sampled Elwynn tiles are all id 5
+    /// ("Basic Procedural Water"); the low ids are the shipped water/ocean/magma/slime families.
+    /// Unknown ids stay unwet rather than guessing a render path.
+    pub fn from_mh2o_liquid_type(liquid_type: u16) -> Option<LiquidKind> {
+        match liquid_type {
+            1 | 5 | 6 | 9 | 10 | 13 | 14 | 17 | 81 | 100 => Some(LiquidKind::Still),
+            2 => Some(LiquidKind::Ocean),
+            3 | 7 | 11 | 15 | 19 | 121 | 141 => Some(LiquidKind::Magma),
+            4 | 8 | 12 | 20 | 21 | 181 => Some(LiquidKind::Slime),
+            _ => None,
         }
     }
 
@@ -238,6 +251,121 @@ pub(crate) fn build_liquid_mesh(mclq: &MclqChunk, position: [f32; 3]) -> Option<
         indices,
         sound_nibble,
         material_id: None, // ADT liquid has no MOMT to index
+        kind,
+    })
+}
+
+/// Build the WotLK MH2O instances in grid order, each paired with the `y*16 + x` chunk index it
+/// belongs to. `positions` is the 256-entry MCNK table in that same grid order.
+pub(crate) fn build_mh2o_meshes(
+    mh2o: &Mh2oChunk,
+    positions: &[[f32; 3]],
+) -> Vec<(usize, LiquidMesh)> {
+    let mut out = Vec::new();
+    for (grid, entry) in mh2o.entries.iter().enumerate() {
+        let Some(position) = positions.get(grid).copied() else {
+            continue;
+        };
+        for instance in &entry.instances {
+            if let Some(mesh) = build_mh2o_instance(instance, position) {
+                out.push((grid, mesh));
+            }
+        }
+    }
+    out
+}
+
+fn build_mh2o_instance(instance: &Mh2oInstance, position: [f32; 3]) -> Option<LiquidMesh> {
+    let kind = LiquidKind::from_mh2o_liquid_type(instance.liquid_type)?;
+    let width = usize::from(instance.width);
+    let height = usize::from(instance.height);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let (cols, rows) = (width + 1, height + 1);
+    let cell_count = width * height;
+    let mut wet = vec![true; cell_count];
+    if let Some(bitmap) = instance.exists {
+        for (i, w) in wet.iter_mut().enumerate() {
+            *w = bitmap >> i & 1 == 1;
+        }
+    }
+    if !wet.iter().any(|&w| w) {
+        return None;
+    }
+    let mut indices = Vec::with_capacity(cell_count * 6);
+    for row in 0..height {
+        for col in 0..width {
+            if !wet[row * width + col] {
+                continue;
+            }
+            let tl = (row * cols + col) as u32;
+            let (tr, bl) = (tl + 1, tl + cols as u32);
+            let br = bl + 1;
+            indices.extend_from_slice(&[tl, bl, br, tl, br, tr]);
+        }
+    }
+    if indices.is_empty() {
+        return None;
+    }
+
+    let [wx, wy, _] = position;
+    let has_heights = instance.heights.len() == cols * rows;
+    let has_depths = instance.depths.len() == cols * rows;
+    let has_uvs = instance.uvs.len() == cols * rows;
+    let authored_uvs = kind == LiquidKind::Magma && has_uvs;
+    let mut positions = Vec::with_capacity(cols * rows);
+    let mut uvs = Vec::with_capacity(cols * rows);
+    let mut depths = Vec::with_capacity(cols * rows);
+    for row in 0..rows {
+        for col in 0..cols {
+            let i = row * cols + col;
+            let h = if has_heights {
+                instance.heights[i]
+            } else if instance.lvf == 2 {
+                0.0
+            } else {
+                instance.min_height
+            };
+            positions.push([
+                snap_to_lattice(wx - (usize::from(instance.y_offset) + row) as f32 * UNIT_SIZE),
+                snap_to_lattice(wy - (usize::from(instance.x_offset) + col) as f32 * UNIT_SIZE),
+                h,
+            ]);
+            if authored_uvs {
+                let [s, t] = instance.uvs[i];
+                let scale = f64::from(MAGMA_TEXCOORD_SCALE);
+                uvs.push([
+                    (f64::from(s) * scale) as f32,
+                    (f64::from(t) * scale) as f32,
+                ]);
+            } else {
+                uvs.push([col as f32 * 0.25, row as f32 * 0.25]);
+            }
+            depths.push(if has_depths {
+                f32::from(instance.depths[i]) / 255.0
+            } else {
+                0.0
+            });
+        }
+    }
+
+    Some(LiquidMesh {
+        grid: [cols as u32, rows as u32],
+        shared: vec![false; cell_count],
+        wet,
+        positions,
+        uvs,
+        depths,
+        indices,
+        sound_nibble: match kind {
+            LiquidKind::Still => 0,
+            LiquidKind::Ocean => 1,
+            LiquidKind::Magma => 2,
+            LiquidKind::Slime => 3,
+            LiquidKind::Rapids => 8,
+        },
+        material_id: None,
         kind,
     })
 }

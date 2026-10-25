@@ -168,6 +168,146 @@ pub struct McnkChunk {
     pub liquids: Vec<MclqChunk>,
 }
 
+/// WotLK MH2O: one liquid rectangle instance. `liquid_type` is a LiquidType.dbc foreign key;
+/// `lvf` is the Wrath liquid-vertex format (0 height+depth, 1 height+UV, 2 depth, 3 height+UV+depth).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mh2oInstance {
+    pub liquid_type: u16,
+    pub lvf: u16,
+    pub min_height: f32,
+    pub max_height: f32,
+    pub x_offset: u8,
+    pub y_offset: u8,
+    pub width: u8,
+    pub height: u8,
+    pub exists: Option<u64>,
+    pub heights: Vec<f32>,
+    pub depths: Vec<u8>,
+    pub uvs: Vec<[u16; 2]>,
+}
+
+/// One MCNK grid entry's liquid layers plus the 8x8 fishable/deep attributes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mh2oEntry {
+    pub instances: Vec<Mh2oInstance>,
+    pub fishable: u64,
+    pub deep: u64,
+}
+
+/// WotLK ADT MH2O replacement for the per-chunk MCLQ blocks: 256 grid entries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mh2oChunk {
+    pub entries: Vec<Mh2oEntry>,
+}
+
+fn read_mh2o(data: &[u8]) -> Result<Mh2oChunk> {
+    if data.len() < 256 * 12 {
+        return Err(Error::Truncated("MH2O header"));
+    }
+    let u32_at = |o: usize| -> Option<usize> { data.u32_at(o).map(|v| v as usize) };
+    let mut entries = Vec::with_capacity(256);
+    for grid in 0..256 {
+        let h = grid * 12;
+        let offset_instances = u32_at(h).ok_or(Error::Truncated("MH2O header"))?;
+        let layers = u32_at(h + 4).ok_or(Error::Truncated("MH2O header"))?;
+        let offset_attributes = u32_at(h + 8).ok_or(Error::Truncated("MH2O header"))?;
+        let mut instances = Vec::with_capacity(layers.min(32));
+        for layer in 0..layers.min(32) {
+            let at = offset_instances + layer * 24;
+            let b = data
+                .bytes_at(at, 24)
+                .ok_or(Error::Truncated("MH2O instance"))?;
+            let liquid_type = b.u16_at(0).ok_or(Error::Truncated("MH2O instance"))?;
+            let lvf = b.u16_at(2).ok_or(Error::Truncated("MH2O instance"))?;
+            let min_height = b.f32_at(4).ok_or(Error::Truncated("MH2O instance"))?;
+            let max_height = b.f32_at(8).ok_or(Error::Truncated("MH2O instance"))?;
+            let x_offset = b.u8_at(12).ok_or(Error::Truncated("MH2O instance"))?;
+            let y_offset = b.u8_at(13).ok_or(Error::Truncated("MH2O instance"))?;
+            let width = b.u8_at(14).ok_or(Error::Truncated("MH2O instance"))?;
+            let height = b.u8_at(15).ok_or(Error::Truncated("MH2O instance"))?;
+            let exists_at = u32_at(at + 16).ok_or(Error::Truncated("MH2O instance"))?;
+            let vertex_at = u32_at(at + 20).ok_or(Error::Truncated("MH2O instance"))?;
+            let exists = if exists_at == 0 {
+                None
+            } else {
+                let bytes = ((u32::from(width) * u32::from(height)).div_ceil(8)) as usize;
+                let raw = data
+                    .bytes_at(exists_at, bytes.max(8))
+                    .ok_or(Error::Truncated("MH2O exists bitmap"))?;
+                Some(u64::from_le_bytes(
+                    raw[..8].try_into().map_err(|_| Error::Truncated("MH2O exists bitmap"))?,
+                ))
+            };
+            let vertex_count = (usize::from(width) + 1) * (usize::from(height) + 1);
+            let stride = match lvf {
+                0 => 5,
+                1 => 8,
+                2 => 1,
+                3 => 9,
+                _ => 0,
+            };
+            let (mut heights, mut depths, mut uvs) =
+                (Vec::new(), Vec::new(), Vec::new());
+            if vertex_at != 0 && stride != 0 && vertex_count <= 81 {
+                let raw = data
+                    .bytes_at(vertex_at, vertex_count * stride)
+                    .ok_or(Error::Truncated("MH2O vertex data"))?;
+                for i in 0..vertex_count {
+                    let v = &raw[i * stride..(i + 1) * stride];
+                    match lvf {
+                        0 => {
+                            heights.push(f32::from_le_bytes(v[0..4].try_into().unwrap()));
+                            depths.push(v[4]);
+                        }
+                        1 => {
+                            heights.push(f32::from_le_bytes(v[0..4].try_into().unwrap()));
+                            uvs.push([u16::from_le_bytes([v[4], v[5]]), u16::from_le_bytes([v[6], v[7]])]);
+                        }
+                        2 => depths.push(v[0]),
+                        3 => {
+                            heights.push(f32::from_le_bytes(v[0..4].try_into().unwrap()));
+                            uvs.push([u16::from_le_bytes([v[4], v[5]]), u16::from_le_bytes([v[6], v[7]])]);
+                            depths.push(v[8]);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            instances.push(Mh2oInstance {
+                liquid_type,
+                lvf,
+                min_height,
+                max_height,
+                x_offset,
+                y_offset,
+                width,
+                height,
+                exists,
+                heights,
+                depths,
+                uvs,
+            });
+        }
+        let (fishable, deep) = if offset_attributes == 0 {
+            (0, 0)
+        } else {
+            let b = data
+                .bytes_at(offset_attributes, 16)
+                .ok_or(Error::Truncated("MH2O attributes"))?;
+            (
+                u64::from_le_bytes(b[0..8].try_into().unwrap()),
+                u64::from_le_bytes(b[8..16].try_into().unwrap()),
+            )
+        };
+        entries.push(Mh2oEntry {
+            instances,
+            fishable,
+            deep,
+        });
+    }
+    Ok(Mh2oChunk { entries })
+}
+
 /// MDDF: a placed M2 doodad (36 bytes).
 #[derive(Debug, Clone)]
 pub struct DoodadPlacement {
@@ -202,6 +342,8 @@ pub struct RootAdt {
     pub doodad_placements: Vec<DoodadPlacement>,
     pub wmo_placements: Vec<WmoPlacement>,
     pub mcnk_chunks: Vec<McnkChunk>,
+    /// WotLK MH2O liquids, present when the ADT uses the modern liquid chunk.
+    pub mh2o: Option<Mh2oChunk>,
 }
 
 /// A parsed ADT; vanilla has only the monolithic root.
@@ -250,6 +392,7 @@ pub fn parse_adt(cursor: &mut Cursor<&[u8]>) -> Result<ParsedAdt> {
     let mut doodad_placements = Vec::new();
     let mut wmo_placements = Vec::new();
     let mut mcnk_chunks = Vec::new();
+    let mut mh2o = None;
 
     for (magic, data) in chunks(b) {
         match &magic {
@@ -261,6 +404,7 @@ pub fn parse_adt(cursor: &mut Cursor<&[u8]>) -> Result<ParsedAdt> {
             b"FDDM" => doodad_placements = read_mddf(data)?, // MDDF
             b"FDOM" => wmo_placements = read_modf(data)?,    // MODF
             b"KNCM" => mcnk_chunks.push(read_mcnk(data)?),   // MCNK
+            b"O2HM" => mh2o = Some(read_mh2o(data)?),        // MH2O
             _ => {}
         }
     }
@@ -282,6 +426,7 @@ pub fn parse_adt(cursor: &mut Cursor<&[u8]>) -> Result<ParsedAdt> {
         doodad_placements,
         wmo_placements,
         mcnk_chunks,
+        mh2o,
     })))
 }
 

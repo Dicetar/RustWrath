@@ -58,6 +58,73 @@ impl Skin {
     }
 }
 
+/// Decode a WotLK/Wrath external `.skin` profile (`SKIN` magic, file-relative M2Arrays).
+///
+/// Section/batch records use the same 48/24-byte Wrath layouts as the external view. Shadow batches
+/// are not needed by the existing renderer-facing skin path and are left unread.
+pub fn parse_external_skin(bytes: &[u8]) -> Result<Skin> {
+    if bytes.len() < 56 || &bytes[0..4] != b"SKIN" {
+        return Err(Error::NotSkin);
+    }
+    let rd_arr = |o: usize| -> Result<(usize, usize)> {
+        Ok((
+            bytes.u32_at(o).ok_or(Error::Truncated)? as usize,
+            bytes.u32_at(o + 4).ok_or(Error::Truncated)? as usize,
+        ))
+    };
+    let (n_vertices, o_vertices) = rd_arr(4)?;
+    let (n_indices, o_indices) = rd_arr(12)?;
+    let (n_sub, o_sub) = rd_arr(28)?;
+    let (n_bat, o_bat) = rd_arr(36)?;
+
+    let read_u16s = |n: usize, o: usize| -> Result<Vec<u16>> {
+        let slice = bytes.bytes_at(o, n * 2).ok_or(Error::Truncated)?;
+        let mut values = Vec::with_capacity(n);
+        for chunk in slice.as_chunks::<2>().0 {
+            values.push(chunk.u16_at(0).ok_or(Error::Truncated)?);
+        }
+        Ok(values)
+    };
+    let indices = read_u16s(n_vertices, o_vertices)?;
+    let triangles = read_u16s(n_indices, o_indices)?;
+
+    let mut submeshes = Vec::with_capacity(capped(n_sub, 48, bytes.len().saturating_sub(o_sub)));
+    for i in 0..n_sub {
+        let section = bytes
+            .bytes_at(o_sub + i * 48, 48)
+            .ok_or(Error::Truncated)?;
+        submeshes.push(SkinSection {
+            id: section.u16_at(0).ok_or(Error::Truncated)?,
+            triangle_start: section.u16_at(8).ok_or(Error::Truncated)?,
+            triangle_count: section.u16_at(10).ok_or(Error::Truncated)?,
+        });
+    }
+    let mut batches = Vec::with_capacity(capped(n_bat, 24, bytes.len().saturating_sub(o_bat)));
+    for i in 0..n_bat {
+        let unit = bytes
+            .bytes_at(o_bat + i * 24, 24)
+            .ok_or(Error::Truncated)?;
+        batches.push(SkinBatch {
+            flags: unit.u16_at(0).ok_or(Error::Truncated)?,
+            shader_id: unit.u16_at(2).ok_or(Error::Truncated)?,
+            skin_section_index: unit.u16_at(4).ok_or(Error::Truncated)?,
+            material_index: unit.u16_at(0x0a).ok_or(Error::Truncated)?,
+            texture_combo_index: unit.u16_at(0x10).ok_or(Error::Truncated)?,
+            texture_coord_combo_index: unit.u16_at(0x12).ok_or(Error::Truncated)?,
+            color_index: unit.u16_at(0x08).ok_or(Error::Truncated)?,
+            weight_combo_index: unit.u16_at(0x14).ok_or(Error::Truncated)?,
+            texture_count: unit.u16_at(0x0e).ok_or(Error::Truncated)?,
+            texture_transform_combo_index: unit.u16_at(0x16).ok_or(Error::Truncated)?,
+        });
+    }
+    Ok(Skin {
+        indices,
+        triangles,
+        submeshes,
+        batches,
+    })
+}
+
 impl M2Model {
     /// Decode embedded skin profile `index` from the file `bytes`: one of the 44-byte `M2View`
     /// headers, each naming its arrays by file offset.

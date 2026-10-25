@@ -554,6 +554,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "benilla-formats",
+ "benilla-profile",
  "bevy",
  "image",
  "serde",

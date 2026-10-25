@@ -273,6 +273,7 @@ pub use ribbons::{parse_m2_ribbon_emitters, RibbonEmitterDef, RibbonVisibility};
 mod value_track;
 pub use value_track::{TrackValue, ValueTrack};
 mod models;
+pub use benilla_m2::{parse_external_skin, Skin};
 pub use models::ERROR_CUBE;
 pub use models::{
     accumulate_wmo_group_camera_collision, accumulate_wmo_group_camera_only_collision,
@@ -286,7 +287,8 @@ pub use models::{
     parse_m2_cch_marker, parse_m2_collision_hull, parse_m2_event_markers,
     parse_m2_global_sequence_bones, parse_m2_lights, parse_m2_pane_cameras,
     parse_m2_playable_animation_lookup, parse_m2_portrait_camera, parse_m2_render_submeshes,
-    parse_m2_skeleton, parse_m2_string_anchors, parse_wmo_fogs, parse_wmo_lights,
+    parse_m2_render_submeshes_with_skin, parse_m2_skeleton, parse_m2_string_anchors,
+    parse_wmo_fogs, parse_wmo_lights,
     parse_wmo_portals, parse_wmo_root, point_in_convex_volume, rotation_2x2, uv_transform,
     wmo_group_doodad_refs, wmo_group_fixed_colors, wmo_group_footprint_tris, wmo_group_header,
     wmo_group_light_refs, wmo_group_liquid_mesh, wmo_group_raw_colors, wmo_group_submeshes,

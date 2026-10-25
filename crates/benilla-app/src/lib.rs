@@ -334,7 +334,19 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // The `mpq://` source must be registered before `AssetPlugin` (in `DefaultPlugins`) builds. The
     // install is found by `benilla_formats::wow_data`, as everywhere, and is required above; one
     // whose archives will not open ends the boot the same way (`no_install`).
-    if let Err(e) = benilla_assets::register_mpq_source(&mut app, &data_dir) {
+    //
+    // Profile selection (route-asset handoff C1): `WM_ASSET_MANIFEST` selects a manifest-defined
+    // profile (`WM_ASSET_PROFILE` names it; default `base`); without the variable the stock
+    // discovery is used. One registration, never both.
+    let source_result = match std::env::var_os("WM_ASSET_MANIFEST").map(std::path::PathBuf::from) {
+        Some(manifest_path) => {
+            let profile_name =
+                std::env::var("WM_ASSET_PROFILE").unwrap_or_else(|_| "base".to_owned());
+            benilla_assets::register_profile_source(&mut app, &data_dir, &manifest_path, &profile_name)
+        }
+        None => benilla_assets::register_mpq_source(&mut app, &data_dir),
+    };
+    if let Err(e) = source_result {
         return no_install::fail(
             &no_install::NoInstall::unreadable(&data_dir, &e),
             run_mode::unattended(),
