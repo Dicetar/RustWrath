@@ -29,6 +29,24 @@ pub enum Error {
     },
     /// A write timed out because the receiver cannot keep up.
     Backpressure,
+    /// The receiver did not acknowledge an observation before the read deadline.
+    AckTimeout,
+    /// The receiver acknowledged a different snapshot than the one written.
+    AckMismatch {
+        sequence: u64,
+        state_revision: u64,
+        world_generation: u64,
+    },
+    /// The receiver acknowledged a different world/session scope than the health frame.
+    HealthAckMismatch {
+        session_epoch: u64,
+        world_generation: u64,
+        player_guid: u64,
+    },
+    /// The receiver rejected an observation with an explicit error frame.
+    ReceiverRejected { code: String, message: String },
+    /// The receiver sent a frame that is invalid at this point.
+    UnexpectedServerFrame(&'static str),
     /// The connection is closed or unusable.
     Disconnected,
     /// The observation belongs to a different player than this sink.
@@ -43,6 +61,10 @@ pub enum Error {
     UptimeNotIncreasing { last: u64, got: u64 },
     /// Source observation time went backwards without a new session.
     ObservationTimeRegression { last: i64, got: i64 },
+    /// The source world generation went backwards without a new session.
+    WorldGenerationRegression { last: u64, got: u64 },
+    /// Position provenance went backwards within one world scope.
+    PositionTimeRegression { last: i64, got: i64 },
     /// The source state revision went backwards without a new session.
     StateRevisionRegression { last: u64, got: u64 },
     /// One state revision was used for two different exported states.
@@ -74,6 +96,29 @@ impl fmt::Display for Error {
                 got,
             } => write!(f, "protocol mismatch for {field}: expected {expected}, got {got}"),
             Self::Backpressure => f.write_str("receiver is not accepting data (write timeout)"),
+            Self::AckTimeout => f.write_str("receiver did not acknowledge the observation"),
+            Self::AckMismatch {
+                sequence,
+                state_revision,
+                world_generation,
+            } => write!(
+                f,
+                "receiver acknowledged a different snapshot (seq {sequence}, rev {state_revision}, world {world_generation})"
+            ),
+            Self::HealthAckMismatch {
+                session_epoch,
+                world_generation,
+                player_guid,
+            } => write!(
+                f,
+                "receiver acknowledged a different health scope (epoch {session_epoch}, world {world_generation}, player {player_guid})"
+            ),
+            Self::ReceiverRejected { code, message } => {
+                write!(f, "receiver rejected the observation ({code}): {message}")
+            }
+            Self::UnexpectedServerFrame(frame) => {
+                write!(f, "unexpected server frame at this point: {frame}")
+            }
             Self::Disconnected => f.write_str("receiver connection is closed"),
             Self::PlayerChanged { last, got } => {
                 write!(f, "observation player changed: last {last}, got {got}")
@@ -92,6 +137,12 @@ impl fmt::Display for Error {
             }
             Self::ObservationTimeRegression { last, got } => {
                 write!(f, "source observation time went backwards: last {last}, got {got}")
+            }
+            Self::WorldGenerationRegression { last, got } => {
+                write!(f, "world generation went backwards: last {last}, got {got}")
+            }
+            Self::PositionTimeRegression { last, got } => {
+                write!(f, "position observation time went backwards: last {last}, got {got}")
             }
             Self::StateRevisionRegression { last, got } => {
                 write!(f, "state revision went backwards: last {last}, got {got}")

@@ -13,6 +13,7 @@ use benilla_protocol_wrath::session::{SelfTarget, SessionState};
 use benilla_protocol_wrath::world::{is_idle, WorldConnection};
 use benilla_wm_native::{
     pump_once, Error as WmError, ProducerSession, ProducerSnapshot, PublisherConfig,
+    SourceHealth, SourceSessionState,
     PublisherRetirement, PumpError, PumpResult,
 };
 
@@ -64,6 +65,12 @@ impl ProducerSnapshot for SnapshotOwned {
     fn state_revision(&self) -> u64 {
         self.0.state_revision
     }
+    fn world_generation(&self) -> u64 {
+        self.0.world_generation
+    }
+    fn position_observed_at_unix_ms(&self) -> i64 {
+        self.0.position_observed_at_unix_ms
+    }
     fn observed_at_unix_ms(&self) -> i64 {
         self.0.observed_at_unix_ms
     }
@@ -105,6 +112,26 @@ impl ProducerSnapshot for SnapshotOwned {
 
 impl ProducerSession for ProducerAdapter<'_> {
     type Snapshot = SnapshotOwned;
+
+    fn source_health(&self) -> Option<SourceHealth> {
+        let state = match self.session.phase() {
+            benilla_protocol_wrath::session::Phase::InWorld => SourceSessionState::InWorld,
+            benilla_protocol_wrath::session::Phase::TransferPending
+            | benilla_protocol_wrath::session::Phase::Loading => SourceSessionState::Transferring,
+            _ if self.session.world_established() => SourceSessionState::InWorld,
+            _ => SourceSessionState::Disconnected,
+        };
+        Some(
+            SourceHealth::new(
+                self.session.epoch(),
+                self.session.world_generation(),
+                self.session.player_guid().unwrap_or(0),
+                state,
+                self.session.last_server_packet_at_unix_ms(),
+            )
+            .ok()?,
+        )
+    }
 
     fn export_due(&self) -> bool {
         self.session.export_due()

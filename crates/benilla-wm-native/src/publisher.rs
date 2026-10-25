@@ -2,13 +2,19 @@ use std::sync::{Arc, Condvar, Mutex, TryLockError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::client::{LoopbackConfig, LoopbackSink};
+use crate::client::{
+    AckReceipt, HealthAckReceipt, LoopbackConfig, LoopbackSink, PeerState,
+};
 use crate::error::{Error, Result};
+use crate::health::SourceHealth;
 use crate::observation::Observation;
 
 pub const DEFAULT_RECONNECT_INITIAL_DELAY: Duration = Duration::from_millis(100);
 pub const DEFAULT_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(2);
 pub const DEFAULT_BUSY_RETRY_DELAY: Duration = Duration::from_millis(1);
+pub const DEFAULT_RETRY_MAX_AGE: Duration = Duration::from_secs(60);
+pub const DEFAULT_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
+pub const DEFAULT_HEALTH_SEND_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Configuration for the bounded, background-I/O publisher.
 #[derive(Clone, Debug)]
@@ -16,6 +22,8 @@ pub struct PublisherConfig {
     loopback: LoopbackConfig,
     reconnect_initial_delay: Duration,
     reconnect_max_delay: Duration,
+    retry_max_age: Duration,
+    health_poll_interval: Duration,
 }
 
 impl PublisherConfig {
@@ -24,6 +32,8 @@ impl PublisherConfig {
             loopback,
             reconnect_initial_delay: DEFAULT_RECONNECT_INITIAL_DELAY,
             reconnect_max_delay: DEFAULT_RECONNECT_MAX_DELAY,
+            retry_max_age: DEFAULT_RETRY_MAX_AGE,
+            health_poll_interval: DEFAULT_HEALTH_POLL_INTERVAL,
         }
     }
 
@@ -44,7 +54,29 @@ impl PublisherConfig {
             loopback,
             reconnect_initial_delay,
             reconnect_max_delay,
+            retry_max_age: DEFAULT_RETRY_MAX_AGE,
+            health_poll_interval: DEFAULT_HEALTH_POLL_INTERVAL,
         })
+    }
+
+    /// Bounds how long a snapshot may be retried after a failed write/ACK or idle disconnect.
+    pub fn with_retry_max_age(mut self, retry_max_age: Duration) -> Result<Self> {
+        if retry_max_age.is_zero() {
+            return Err(Error::Config("publisher retry max age must be non-zero"));
+        }
+        self.retry_max_age = retry_max_age;
+        Ok(self)
+    }
+
+    /// Sets the idle peer-health probe cadence.
+    pub fn with_health_poll_interval(mut self, health_poll_interval: Duration) -> Result<Self> {
+        if health_poll_interval.is_zero() {
+            return Err(Error::Config(
+                "publisher health poll interval must be non-zero",
+            ));
+        }
+        self.health_poll_interval = health_poll_interval;
+        Ok(self)
     }
 
     pub fn loopback(&self) -> &LoopbackConfig {
@@ -59,6 +91,84 @@ pub struct PublishReceipt {
     pub state_revision: u64,
     /// True when this observation replaced an older observation that had not been sent.
     pub coalesced: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotStamp {
+    pub sequence: u64,
+    pub state_revision: u64,
+    pub world_generation: u64,
+    pub observed_at_unix_ms: i64,
+}
+
+impl SnapshotStamp {
+    fn from_observation(observation: &Observation) -> Self {
+        Self {
+            sequence: observation.sequence,
+            state_revision: observation.state_revision,
+            world_generation: observation.world_generation,
+            observed_at_unix_ms: observation.observed_at_unix_ms,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkerState {
+    Running,
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Retrying,
+    Closed,
+}
+
+/// Health counters owned by the publisher worker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublisherHealth {
+    pub worker: WorkerState,
+    pub link: LinkState,
+    pub closed: bool,
+    pub handed_off: u64,
+    pub coalesced: u64,
+    pub writes: u64,
+    pub accepted: u64,
+    pub health_acks: u64,
+    pub rejected: u64,
+    pub retry_expired: u64,
+    pub connections: u64,
+    pub last_handoff: Option<SnapshotStamp>,
+    pub last_written: Option<SnapshotStamp>,
+    pub last_accepted: Option<AckReceipt>,
+    pub last_health_ack: Option<HealthAckReceipt>,
+    pub last_error: Option<String>,
+}
+
+impl Default for PublisherHealth {
+    fn default() -> Self {
+        Self {
+            worker: WorkerState::Running,
+            link: LinkState::Disconnected,
+            closed: false,
+            handed_off: 0,
+            coalesced: 0,
+            writes: 0,
+            accepted: 0,
+            health_acks: 0,
+            rejected: 0,
+            retry_expired: 0,
+            connections: 0,
+            last_handoff: None,
+            last_written: None,
+            last_accepted: None,
+            last_health_ack: None,
+            last_error: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +247,8 @@ pub enum PublishOutcome {
 struct SharedState {
     pending: Option<Observation>,
     last_published: Option<Observation>,
+    latest_source_health: Option<SourceHealth>,
+    health: PublisherHealth,
     closed: bool,
     stopped: bool,
 }
@@ -148,11 +260,10 @@ struct Shared {
 
 /// A latest-only bounded sender handoff.
 ///
-/// `publish` performs no socket connection, handshake, read, or write and uses `try_lock` for the
-/// handoff slot. One worker owns all blocking socket operations. At most one observation is pending
-/// and one is in flight; a newer publication replaces the pending one. The caller owns at most one
-/// additional `RetainedObservation` after a busy outcome. This is intentionally a latest-only
-/// observation stream, not a reliable event queue.
+/// `publish` performs no socket connection, handshake, read, write, or ACK wait and uses `try_lock`
+/// for the handoff slot. One worker owns all blocking socket operations and health probing. At most
+/// one observation is pending and one is in flight; a newer publication replaces the pending one.
+/// This is intentionally a latest-only observation stream, not a reliable event queue.
 pub struct ObservationPublisher {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
@@ -185,6 +296,8 @@ impl ObservationPublisher {
             state: Mutex::new(SharedState {
                 pending: None,
                 last_published: None,
+                latest_source_health: None,
+                health: PublisherHealth::default(),
                 closed: false,
                 stopped: false,
             }),
@@ -246,6 +359,12 @@ impl ObservationPublisher {
             state_revision: observation.state_revision,
             coalesced: state.pending.is_some(),
         };
+        let stamp = SnapshotStamp::from_observation(&observation);
+        state.health.handed_off += 1;
+        if receipt.coalesced {
+            state.health.coalesced += 1;
+        }
+        state.health.last_handoff = Some(stamp);
         state.pending = Some(observation.clone());
         state.last_published = Some(observation);
         drop(state);
@@ -253,9 +372,41 @@ impl ObservationPublisher {
         Ok(PublishOutcome::HandedOff(receipt))
     }
 
+    /// Hands off current client↔world-server health without altering observation freshness.
+    ///
+    /// Returns false only when the short handoff lock was contended; the next pump tick retries.
+    pub fn publish_health(&self, health: SourceHealth) -> Result<bool> {
+        health.validate()?;
+        let mut state = match self.shared.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return Ok(false),
+            Err(TryLockError::Poisoned(_)) => return Err(Error::Disconnected),
+        };
+        if state.closed || state.stopped {
+            return Err(Error::Disconnected);
+        }
+        state.latest_source_health = Some(health);
+        drop(state);
+        self.shared.wake.notify_one();
+        Ok(true)
+    }
+
     /// Retries a caller-retained snapshot without changing its source time or revision.
     pub fn retry(&self, retained: RetainedObservation) -> Result<PublishOutcome> {
         self.publish(retained.into_observation())
+    }
+
+    /// Current publisher ownership: handed off, written, and receiver-accepted are separate.
+    pub fn health(&self) -> PublisherHealth {
+        match self.shared.state.lock() {
+            Ok(state) => state.health.clone(),
+            Err(_) => PublisherHealth {
+                worker: WorkerState::Stopped,
+                link: LinkState::Closed,
+                closed: true,
+                ..PublisherHealth::default()
+            },
+        }
     }
 
     /// Signals shutdown without waiting for the worker or in-flight socket operation.
@@ -283,6 +434,8 @@ impl ObservationPublisher {
         if let Ok(mut state) = self.shared.state.lock() {
             state.closed = true;
             state.pending = None;
+            state.health.closed = true;
+            state.health.link = LinkState::Closed;
         }
         self.shared.wake.notify_all();
     }
@@ -347,8 +500,18 @@ impl Drop for WorkerStopGuard {
         if let Ok(mut state) = self.shared.state.lock() {
             state.stopped = true;
             state.pending = None;
+            state.health.worker = WorkerState::Stopped;
+            if !state.health.closed {
+                state.health.link = LinkState::Disconnected;
+            }
         }
         self.shared.wake.notify_all();
+    }
+}
+
+fn update_health(shared: &Arc<Shared>, update: impl FnOnce(&mut PublisherHealth)) {
+    if let Ok(mut state) = shared.state.lock() {
+        update(&mut state.health);
     }
 }
 
@@ -372,14 +535,87 @@ fn wait_until_stopped(shared: &Arc<Shared>) {
     }
 }
 
+fn schedule_retry(
+    shared: &Arc<Shared>,
+    config: &PublisherConfig,
+    observation: Observation,
+    origin: Instant,
+    allow_old: bool,
+    retry: &mut Option<Observation>,
+    retry_at: &mut Option<Instant>,
+    backoff: &mut Duration,
+) {
+    if !allow_old && origin.elapsed() > config.retry_max_age {
+        update_health(shared, |health| {
+            health.retry_expired += 1;
+            health.last_error = Some("snapshot exceeded the retry age bound".to_owned());
+            health.link = LinkState::Disconnected;
+        });
+        *retry = None;
+        *retry_at = None;
+        return;
+    }
+    *retry = Some(observation);
+    *retry_at = Some(Instant::now() + *backoff);
+    update_health(shared, |health| {
+        health.link = LinkState::Retrying;
+    });
+    *backoff = std::cmp::min(*backoff * 2, config.reconnect_max_delay);
+}
+
+fn observation_key(observation: &Observation) -> (u64, u64, u64) {
+    (
+        observation.session_epoch,
+        observation.world_generation,
+        observation.sequence,
+    )
+}
+
+fn restore_pending(shared: &Arc<Shared>, observation: Option<Observation>) {
+    let Some(observation) = observation else {
+        return;
+    };
+    if let Ok(mut state) = shared.state.lock() {
+        if state.pending.is_none() {
+            state.pending = Some(observation);
+        }
+    }
+    shared.wake.notify_one();
+}
+
+fn latest_source_health(shared: &Arc<Shared>) -> Option<SourceHealth> {
+    shared
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.latest_source_health.clone())
+}
+
 fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
     let mut sink: Option<LoopbackSink> = None;
     let mut retry: Option<Observation> = None;
     let mut retry_at: Option<Instant> = None;
     let mut backoff = config.reconnect_initial_delay;
+    let mut last_sent: Option<Observation> = None;
+    let mut health_sent_on_connection = false;
+    let mut last_health: Option<SourceHealth> = None;
+    let mut last_health_at: Option<Instant> = None;
+    let mut health_retry_at: Option<Instant> = None;
+    let mut health_backoff = config.reconnect_initial_delay;
+    // Retry provenance (retry_max_age expiry) and receiver-acceptance tracking: the key is
+    // the observation's (epoch, sequence, revision) triple; a retry keeps its original
+    // origin so the age bound measures from when the snapshot first entered retry.
+    let mut retry_key: Option<(u64, u64, u64)> = None;
+    let mut retry_origin = Instant::now();
+    let mut last_accepted_key: Option<(u64, u64, u64)> = None;
 
     loop {
-        let (pending, closed) = wait_for_work(shared, retry.is_some(), retry_at);
+        let (mut pending, closed, timed_out) = wait_for_work(
+            shared,
+            retry.is_some(),
+            retry_at,
+            Some(config.health_poll_interval),
+        );
         if closed {
             if let Some(mut active) = sink.take() {
                 active.close();
@@ -387,10 +623,145 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
             return;
         }
 
+        if timed_out {
+            if let Some(active) = sink.as_mut() {
+                match active.poll_peer() {
+                    Ok(PeerState::Alive) => {}
+                    Ok(PeerState::Closed) => {
+                        if let Some(mut active) = sink.take() {
+                            active.close();
+                        }
+                        health_sent_on_connection = false;
+                        update_health(shared, |health| {
+                            health.link = LinkState::Disconnected;
+                            health.last_error = Some("receiver connection closed".to_owned());
+                        });
+                        if let Some(last) = last_sent.clone() {
+                            let key = observation_key(&last);
+                            let origin = if retry_key == Some(key) {
+                                retry_origin
+                            } else {
+                                Instant::now()
+                            };
+                            schedule_retry(
+                                shared,
+                                &config,
+                                last,
+                                origin,
+                                last_accepted_key == Some(key),
+                                &mut retry,
+                                &mut retry_at,
+                                &mut backoff,
+                            );
+                        }
+                    }
+                    Ok(PeerState::UnexpectedData) | Err(_) => {
+                        if let Some(mut active) = sink.take() {
+                            active.close();
+                        }
+                        health_sent_on_connection = false;
+                        update_health(shared, |health| {
+                            health.link = LinkState::Disconnected;
+                            health.last_error =
+                                Some("unexpected receiver traffic while idle".to_owned());
+                        });
+                        if let Some(last) = last_sent.clone() {
+                            let key = observation_key(&last);
+                            let origin = if retry_key == Some(key) {
+                                retry_origin
+                            } else {
+                                Instant::now()
+                            };
+                            schedule_retry(
+                                shared,
+                                &config,
+                                last,
+                                origin,
+                                last_accepted_key == Some(key),
+                                &mut retry,
+                                &mut retry_at,
+                                &mut backoff,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let source_health = latest_source_health(shared);
+        if let Some(source_health) = source_health {
+            let now = Instant::now();
+            let due = !health_sent_on_connection
+                || last_health.as_ref() != Some(&source_health)
+                || last_health_at
+                    .is_none_or(|at| at.elapsed() >= DEFAULT_HEALTH_SEND_INTERVAL);
+            if due && health_retry_at.is_none_or(|at| now >= at) {
+                if sink.is_none() {
+                    match LoopbackSink::connect(config.loopback.clone()) {
+                        Ok(connected) => {
+                            sink = Some(connected);
+                            update_health(shared, |health| {
+                                health.connections += 1;
+                                health.link = LinkState::Connected;
+                            });
+                        }
+                        Err(error) => {
+                            update_health(shared, |health| {
+                                health.link = LinkState::Disconnected;
+                                health.last_error = Some(error.to_string());
+                            });
+                            health_retry_at = Some(now + health_backoff);
+                            health_backoff =
+                                std::cmp::min(health_backoff * 2, config.reconnect_max_delay);
+                            restore_pending(shared, pending.take());
+                            continue;
+                        }
+                    }
+                }
+                if let Some(active) = sink.as_mut() {
+                    match active.send_health(&source_health) {
+                        Ok(ack) => {
+                            health_sent_on_connection = true;
+                            last_health = Some(source_health);
+                            last_health_at = Some(now);
+                            health_retry_at = None;
+                            health_backoff = config.reconnect_initial_delay;
+                            update_health(shared, |health| {
+                                health.health_acks += 1;
+                                health.last_health_ack = Some(ack);
+                                health.link = LinkState::Connected;
+                                health.last_error = None;
+                            });
+                        }
+                        Err(error) => {
+                            if let Some(mut active) = sink.take() {
+                                active.close();
+                            }
+                            health_sent_on_connection = false;
+                            update_health(shared, |health| {
+                                health.link = LinkState::Disconnected;
+                                health.last_error = Some(error.to_string());
+                            });
+                            health_retry_at = Some(now + health_backoff);
+                            health_backoff =
+                                std::cmp::min(health_backoff * 2, config.reconnect_max_delay);
+                            restore_pending(shared, pending.take());
+                            continue;
+                        }
+                    }
+                }
+            }
+            if !health_sent_on_connection {
+                restore_pending(shared, pending.take());
+                continue;
+            }
+        }
+
         let observation = match pending {
             Some(observation) => {
                 // A pending observation was published after any local retry, so it supersedes it.
                 retry = None;
+                retry_at = None;
                 observation
             }
             None => match retry.take() {
@@ -399,13 +770,39 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
             },
         };
 
+        let key = observation_key(&observation);
+        if retry_key != Some(key) {
+            retry_key = Some(key);
+            retry_origin = Instant::now();
+        }
+
         if sink.is_none() {
+            update_health(shared, |health| {
+                health.link = LinkState::Connecting;
+            });
             match LoopbackSink::connect(config.loopback.clone()) {
-                Ok(connected) => sink = Some(connected),
-                Err(_) => {
-                    retry = Some(observation);
-                    retry_at = Some(Instant::now() + backoff);
-                    backoff = std::cmp::min(backoff * 2, config.reconnect_max_delay);
+                Ok(connected) => {
+                    sink = Some(connected);
+                    update_health(shared, |health| {
+                        health.connections += 1;
+                        health.link = LinkState::Connected;
+                    });
+                }
+                Err(error) => {
+                    update_health(shared, |health| {
+                        health.link = LinkState::Disconnected;
+                        health.last_error = Some(error.to_string());
+                    });
+                    schedule_retry(
+                        shared,
+                        &config,
+                        observation,
+                        retry_origin,
+                        false,
+                        &mut retry,
+                        &mut retry_at,
+                        &mut backoff,
+                    );
                     continue;
                 }
             }
@@ -419,19 +816,98 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
             return;
         }
 
-        let send_result = sink.as_mut().map(|active| active.send(&observation));
-        match send_result {
+        let write_result = sink.as_mut().map(|active| active.send(&observation));
+        match write_result {
             Some(Ok(_)) => {
-                retry_at = None;
-                backoff = config.reconnect_initial_delay;
+                last_sent = Some(observation.clone());
+                update_health(shared, |health| {
+                    health.writes += 1;
+                    health.last_written = Some(SnapshotStamp::from_observation(&observation));
+                    health.link = LinkState::Connected;
+                });
             }
-            Some(Err(_)) => {
+            Some(Err(error)) => {
                 if let Some(mut active) = sink.take() {
                     active.close();
                 }
+                health_sent_on_connection = false;
+                update_health(shared, |health| {
+                    health.link = LinkState::Disconnected;
+                    health.last_error = Some(error.to_string());
+                });
+                schedule_retry(
+                    shared,
+                    &config,
+                    observation,
+                    retry_origin,
+                    last_accepted_key == Some(key),
+                    &mut retry,
+                    &mut retry_at,
+                    &mut backoff,
+                );
+                continue;
+            }
+            None => {
                 retry = Some(observation);
-                retry_at = Some(Instant::now() + backoff);
-                backoff = std::cmp::min(backoff * 2, config.reconnect_max_delay);
+                continue;
+            }
+        }
+
+        let ack_result = sink
+            .as_mut()
+            .map(|active| active.wait_ack(&observation));
+        match ack_result {
+            Some(Ok(ack)) => {
+                retry_at = None;
+                backoff = config.reconnect_initial_delay;
+                last_accepted_key = Some(observation_key(&observation));
+                update_health(shared, |health| {
+                    health.accepted += 1;
+                    health.last_accepted = Some(ack);
+                    health.link = LinkState::Connected;
+                    health.last_error = None;
+                });
+            }
+            Some(Err(Error::ReceiverRejected { code, message })) => {
+                if let Some(mut active) = sink.take() {
+                    active.close();
+                }
+                health_sent_on_connection = false;
+                update_health(shared, |health| {
+                    health.rejected += 1;
+                    health.link = LinkState::Disconnected;
+                    health.last_error = Some(format!("receiver rejected ({code}): {message}"));
+                });
+                schedule_retry(
+                    shared,
+                    &config,
+                    observation,
+                    retry_origin,
+                    false,
+                    &mut retry,
+                    &mut retry_at,
+                    &mut backoff,
+                );
+            }
+            Some(Err(error)) => {
+                if let Some(mut active) = sink.take() {
+                    active.close();
+                }
+                health_sent_on_connection = false;
+                update_health(shared, |health| {
+                    health.link = LinkState::Disconnected;
+                    health.last_error = Some(error.to_string());
+                });
+                schedule_retry(
+                    shared,
+                    &config,
+                    observation,
+                    retry_origin,
+                    last_accepted_key == Some(key),
+                    &mut retry,
+                    &mut retry_at,
+                    &mut backoff,
+                );
             }
             None => {
                 retry = Some(observation);
@@ -440,38 +916,60 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
     }
 }
 
-/// Waits for a handoff or a retry deadline. The mutex is never held during socket I/O.
+/// Waits for a handoff, a retry deadline, or a health-poll timeout.
 fn wait_for_work(
     shared: &Arc<Shared>,
     has_retry: bool,
     retry_at: Option<Instant>,
-) -> (Option<Observation>, bool) {
+    max_wait: Option<Duration>,
+) -> (Option<Observation>, bool, bool) {
     let mut state = match shared.state.lock() {
         Ok(state) => state,
-        Err(_) => return (None, true),
+        Err(_) => return (None, true, false),
     };
     loop {
         if state.closed || state.stopped {
-            return (None, true);
+            return (None, true, false);
         }
-        let has_work = has_retry || state.pending.is_some();
+        if state.pending.is_some() {
+            return (state.pending.take(), false, false);
+        }
+
+        let now = Instant::now();
+        let deadline = retry_at;
+        let has_work = has_retry && deadline.is_some();
         if has_work {
-            if let Some(deadline) = retry_at {
-                let now = Instant::now();
-                if now < deadline {
-                    let (next, _) = match shared.wake.wait_timeout(state, deadline - now) {
-                        Ok(result) => result,
-                        Err(_) => return (None, true),
-                    };
-                    state = next;
-                    continue;
-                }
+            let due = deadline.expect("checked above");
+            if now >= due {
+                return (None, false, false);
             }
-            return (state.pending.take(), false);
+            let wait = std::cmp::min(due - now, max_wait.unwrap_or(due - now));
+            let (next, _) = match shared.wake.wait_timeout(state, wait) {
+                Ok(result) => result,
+                Err(_) => return (None, true, false),
+            };
+            state = next;
+            if max_wait.is_some_and(|limit| now.elapsed() >= limit) {
+                return (None, false, true);
+            }
+            continue;
         }
+
+        if let Some(limit) = max_wait {
+            let (next, timeout) = match shared.wake.wait_timeout(state, limit) {
+                Ok(result) => result,
+                Err(_) => return (None, true, false),
+            };
+            state = next;
+            if timeout.timed_out() && state.pending.is_none() && !has_retry {
+                return (None, false, true);
+            }
+            continue;
+        }
+
         state = match shared.wake.wait(state) {
             Ok(state) => state,
-            Err(_) => return (None, true),
+            Err(_) => return (None, true, false),
         };
     }
 }

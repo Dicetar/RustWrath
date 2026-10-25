@@ -156,6 +156,8 @@ pub struct SessionState {
     position_observed_at: Option<i64>,
     /// Input packet counter: diagnostics only; advances on every reduced packet.
     input_seq: u64,
+    /// Arrival time of the last reduced server packet (driver-supplied; health provenance).
+    last_server_packet_at: Option<i64>,
     /// Source-change revision; session-scoped, resets with the epoch.
     state_revision: u64,
     /// Arrival time of the packet that produced the current `state_revision`.
@@ -197,6 +199,7 @@ impl SessionState {
             unsent: None,
             pending_lifecycle: Vec::new(),
             pending_teleport_acks: Vec::new(),
+            last_server_packet_at: None,
         }
     }
 
@@ -231,6 +234,17 @@ impl SessionState {
         self.phase
     }
 
+    /// Whether a world scope is established (the bridge's InWorld vs Disconnected
+    /// distinction); the driver's adapter maps phases to its own health enum.
+    pub fn world_established(&self) -> bool {
+        self.map_id.is_some()
+    }
+
+    /// Arrival time of the last reduced server packet (driver-supplied at reduce time).
+    pub fn last_server_packet_at_unix_ms(&self) -> Option<i64> {
+        self.last_server_packet_at
+    }
+
     /// The current world scope generation. Same-map instance transfers increment it: map id
     /// alone is not world identity.
     pub fn world_generation(&self) -> u64 {
@@ -257,6 +271,7 @@ impl SessionState {
     pub fn finish_session(&mut self) {
         self.phase = Phase::CharacterSelection;
         self.player_guid = None;
+        self.last_server_packet_at = None;
         self.world = WorldState::new();
         self.map_id = None;
         self.verify_position = None;
@@ -432,6 +447,7 @@ impl SessionState {
             _ => {}
         }
         self.input_seq += 1;
+        self.last_server_packet_at = Some(observed_at_unix_ms);
         if changed {
             self.state_revision += 1;
             self.last_state_change_at = Some(observed_at_unix_ms);

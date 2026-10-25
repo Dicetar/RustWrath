@@ -26,24 +26,31 @@ mod auth;
 mod client;
 mod error;
 mod frame;
+mod health;
 mod observation;
 mod producer;
 mod publisher;
 mod pump;
 
 pub use auth::AuthToken;
-pub use client::{DEFAULT_PORT, LoopbackConfig, LoopbackSink, SendReceipt};
+pub use client::{
+    AckReceipt, HealthAckReceipt, PeerState, DEFAULT_PORT, LoopbackConfig, LoopbackSink,
+    SendReceipt,
+};
 pub use error::{Error, Result};
 pub use frame::{MAX_FRAME_BYTES, PROTOCOL_NAME, PROTOCOL_VERSION};
+pub use health::{SourceHealth, SourceSessionState};
 pub use observation::{
     MAX_VISIBLE_GUIDS, OBSERVATION_SCHEMA_VERSION, Observation, Position, TargetObservation,
     Visibility,
 };
 pub use producer::{observation_from_producer, ProducerPosition, ProducerSnapshot};
 pub use publisher::{
-    DEFAULT_BUSY_RETRY_DELAY, DEFAULT_RECONNECT_INITIAL_DELAY, DEFAULT_RECONNECT_MAX_DELAY,
-    ObservationPublisher, PublishOutcome, PublishReceipt, PublisherConfig, PublisherRetirement,
-    RetainReason, RetainedObservation,
+    DEFAULT_BUSY_RETRY_DELAY, DEFAULT_HEALTH_POLL_INTERVAL, DEFAULT_HEALTH_SEND_INTERVAL,
+    DEFAULT_RECONNECT_INITIAL_DELAY, DEFAULT_RECONNECT_MAX_DELAY, DEFAULT_RETRY_MAX_AGE, LinkState,
+    ObservationPublisher,
+    PublishOutcome, PublishReceipt, PublisherConfig, PublisherHealth, PublisherRetirement,
+    RetainReason, RetainedObservation, SnapshotStamp, WorkerState,
 };
 pub use pump::{
     pump_once, ProducerExportError, ProducerSession, PumpError, PumpResult,

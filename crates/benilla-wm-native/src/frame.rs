@@ -4,6 +4,7 @@ use std::net::TcpStream;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::health::SourceHealth;
 use crate::observation::{OBSERVATION_SCHEMA_VERSION, Observation};
 
 /// Wire protocol name.
@@ -32,6 +33,13 @@ pub(crate) struct ObservationFrame<'a> {
     pub observation: &'a Observation,
 }
 
+#[derive(Serialize)]
+pub(crate) struct HealthFrame<'a> {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub health: &'a SourceHealth,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ServerFrame {
@@ -40,6 +48,16 @@ pub(crate) enum ServerFrame {
         protocol_version: u32,
         schema_version: String,
         max_frame_bytes: u32,
+    },
+    Ack {
+        sequence: u64,
+        state_revision: u64,
+        world_generation: u64,
+    },
+    HealthAck {
+        session_epoch: u64,
+        world_generation: u64,
+        player_guid: u64,
     },
     Error {
         code: String,

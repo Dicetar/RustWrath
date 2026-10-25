@@ -5,9 +5,10 @@ use std::time::Duration;
 use crate::auth::AuthToken;
 use crate::error::{Error, Result};
 use crate::frame::{
-    HelloFrame, MAX_FRAME_BYTES, ObservationFrame, PROTOCOL_NAME, PROTOCOL_VERSION, ServerFrame,
-    encode, read_frame, write_frame,
+    HealthFrame, HelloFrame, MAX_FRAME_BYTES, ObservationFrame, PROTOCOL_NAME, PROTOCOL_VERSION,
+    ServerFrame, encode, read_frame, write_frame,
 };
+use crate::health::SourceHealth;
 use crate::observation::{OBSERVATION_SCHEMA_VERSION, Observation};
 
 /// Default loopback port used by the Python receiver.
@@ -73,12 +74,34 @@ impl LoopbackConfig {
     }
 }
 
-/// Result of one successful synchronous send.
+/// Result of one successful synchronous write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SendReceipt {
     pub sequence: u64,
     pub json_bytes: usize,
     pub observed_at_unix_ms: i64,
+}
+
+/// Receiver acceptance of one written observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AckReceipt {
+    pub sequence: u64,
+    pub state_revision: u64,
+    pub world_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HealthAckReceipt {
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub player_guid: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerState {
+    Alive,
+    Closed,
+    UnexpectedData,
 }
 
 /// A single, already-connected observation sink.
@@ -121,6 +144,12 @@ impl LoopbackSink {
             ServerFrame::Error { code, message } => {
                 return Err(Error::HandshakeRejected { code, message });
             }
+            ServerFrame::Ack { .. } => {
+                return Err(Error::UnexpectedServerFrame("ack before hello_ack"));
+            }
+            ServerFrame::HealthAck { .. } => {
+                return Err(Error::UnexpectedServerFrame("health_ack before hello_ack"));
+            }
             ServerFrame::HelloAck {
                 protocol,
                 protocol_version,
@@ -160,7 +189,7 @@ impl LoopbackSink {
             }
         };
 
-        stream.set_read_timeout(None)?;
+        stream.set_read_timeout(Some(config.read_timeout))?;
 
         Ok(Self {
             stream,
@@ -226,6 +255,179 @@ impl LoopbackSink {
             json_bytes: bytes.len(),
             observed_at_unix_ms: observation.observed_at_unix_ms,
         })
+    }
+
+    /// Sends one observation and requires the receiver's matching acceptance ACK.
+    pub fn send_and_ack(&mut self, observation: &Observation) -> Result<AckReceipt> {
+        self.send(observation)?;
+        self.wait_ack(observation)
+    }
+
+    /// Sends world-session health and requires the receiver's scope acknowledgement.
+    pub fn send_health(&mut self, health: &SourceHealth) -> Result<HealthAckReceipt> {
+        health.validate()?;
+        let frame = HealthFrame {
+            kind: "health",
+            health,
+        };
+        let bytes = encode(&frame)?;
+        if bytes.len() > self.max_frame_bytes {
+            return Err(Error::FrameTooLarge {
+                len: bytes.len(),
+                max: self.max_frame_bytes,
+            });
+        }
+        if let Err(error) = write_frame(&mut self.stream, &bytes) {
+            self.broken = true;
+            return Err(error);
+        }
+        let ack_bytes = match read_frame(&mut self.stream) {
+            Ok(bytes) => bytes,
+            Err(Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                self.broken = true;
+                return Err(Error::AckTimeout);
+            }
+            Err(error) => {
+                self.broken = true;
+                return Err(error);
+            }
+        };
+        let frame: ServerFrame = serde_json::from_slice(&ack_bytes)?;
+        match frame {
+            ServerFrame::HealthAck {
+                session_epoch,
+                world_generation,
+                player_guid,
+            } if session_epoch == health.session_epoch
+                && world_generation == health.world_generation
+                && player_guid == health.player_guid =>
+            {
+                Ok(HealthAckReceipt {
+                    session_epoch,
+                    world_generation,
+                    player_guid,
+                })
+            }
+            ServerFrame::HealthAck {
+                session_epoch,
+                world_generation,
+                player_guid,
+            } => {
+                self.broken = true;
+                Err(Error::HealthAckMismatch {
+                    session_epoch,
+                    world_generation,
+                    player_guid,
+                })
+            }
+            ServerFrame::Error { code, message } => {
+                self.broken = true;
+                Err(Error::ReceiverRejected { code, message })
+            }
+            ServerFrame::Ack { .. } => {
+                self.broken = true;
+                Err(Error::UnexpectedServerFrame("ack for health"))
+            }
+            ServerFrame::HelloAck { .. } => {
+                self.broken = true;
+                Err(Error::UnexpectedServerFrame("hello_ack for health"))
+            }
+        }
+    }
+
+    /// Waits for the ACK matching the observation just written.
+    pub fn wait_ack(&mut self, observation: &Observation) -> Result<AckReceipt> {
+        let ack_bytes = match read_frame(&mut self.stream) {
+            Ok(bytes) => bytes,
+            Err(Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                self.broken = true;
+                return Err(Error::AckTimeout);
+            }
+            Err(error) => {
+                self.broken = true;
+                return Err(error);
+            }
+        };
+        let frame: ServerFrame = serde_json::from_slice(&ack_bytes)?;
+        match frame {
+            ServerFrame::Ack {
+                sequence,
+                state_revision,
+                world_generation,
+            } => {
+                if sequence == observation.sequence
+                    && state_revision == observation.state_revision
+                    && world_generation == observation.world_generation
+                {
+                    Ok(AckReceipt {
+                        sequence,
+                        state_revision,
+                        world_generation,
+                    })
+                } else {
+                    self.broken = true;
+                    Err(Error::AckMismatch {
+                        sequence,
+                        state_revision,
+                        world_generation,
+                    })
+                }
+            }
+            ServerFrame::Error { code, message } => {
+                self.broken = true;
+                Err(Error::ReceiverRejected { code, message })
+            }
+            ServerFrame::HealthAck { .. } => {
+                self.broken = true;
+                Err(Error::UnexpectedServerFrame("health_ack for observation"))
+            }
+            ServerFrame::HelloAck { .. } => {
+                self.broken = true;
+                Err(Error::UnexpectedServerFrame("hello_ack"))
+            }
+        }
+    }
+
+    /// Nonblocking-ish peer liveness probe used between publications.
+    ///
+    /// A tiny temporary read timeout keeps this bounded on the publisher worker; `Alive` means no
+    /// EOF was observed, not that a future write will succeed.
+    pub fn poll_peer(&mut self) -> Result<PeerState> {
+        let previous = self.stream.read_timeout()?;
+        self.stream
+            .set_read_timeout(Some(Duration::from_millis(25)))?;
+        let mut byte = [0_u8; 1];
+        let result = self.stream.peek(&mut byte);
+        self.stream.set_read_timeout(previous)?;
+        match result {
+            Ok(0) => {
+                self.broken = true;
+                Ok(PeerState::Closed)
+            }
+            Ok(_) => Ok(PeerState::UnexpectedData),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(PeerState::Alive)
+            }
+            Err(error) => {
+                self.broken = true;
+                Err(Error::Io(error))
+            }
+        }
     }
 
     /// Shuts the connection down. The sink must not be reused afterwards.

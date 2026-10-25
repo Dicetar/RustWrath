@@ -8,6 +8,7 @@
 use std::fmt;
 
 use crate::error::Error;
+use crate::health::SourceHealth;
 use crate::producer::{observation_from_producer, ProducerSnapshot};
 use crate::publisher::{ObservationPublisher, PublishOutcome, PublishReceipt};
 
@@ -47,6 +48,10 @@ pub trait ProducerSession {
 
     /// True while the producer retains an un-handed-off snapshot or has newer source state.
     fn export_due(&self) -> bool;
+
+    /// Client↔world-server health, separate from observation freshness. `None` before a player
+    /// scope exists.
+    fn source_health(&self) -> Option<SourceHealth>;
 
     /// Returns the current snapshot to hand off, or `None` when fully handed off.
     fn export(
@@ -130,6 +135,12 @@ pub fn pump_once<S>(
 where
     S: ProducerSession,
 {
+    if let Some(health) = producer.source_health() {
+        publisher
+            .publish_health(health)
+            .map_err(PumpError::Publisher)?;
+    }
+
     if !producer.export_due() {
         return Ok(PumpResult::Idle);
     }

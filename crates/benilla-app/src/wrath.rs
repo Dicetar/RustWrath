@@ -412,6 +412,28 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
     }
     impl benilla_wm_native::ProducerSession for Adapter<'_> {
         type Snapshot = SnapshotOwned;
+        fn source_health(&self) -> Option<benilla_wm_native::SourceHealth> {
+            let state = match self.session.phase() {
+                benilla_protocol_wrath::session::Phase::InWorld => {
+                    benilla_wm_native::SourceSessionState::InWorld
+                }
+                benilla_protocol_wrath::session::Phase::TransferPending
+                | benilla_protocol_wrath::session::Phase::Loading => {
+                    benilla_wm_native::SourceSessionState::Transferring
+                }
+                _ if self.session.world_established() => {
+                    benilla_wm_native::SourceSessionState::InWorld
+                }
+                _ => benilla_wm_native::SourceSessionState::Disconnected,
+            };
+            Some(benilla_wm_native::SourceHealth::new(
+                self.session.epoch(),
+                self.session.world_generation(),
+                self.session.player_guid().unwrap_or(0),
+                state,
+                self.session.last_server_packet_at_unix_ms(),
+            ).ok()?)
+        }
         fn export_due(&self) -> bool {
             self.session.export_due()
         }
@@ -445,6 +467,12 @@ pub fn run_session(feed: &WrathFeed, config: &WrathSessionConfig) -> anyhow::Res
         }
         fn state_revision(&self) -> u64 {
             self.0.state_revision
+        }
+        fn world_generation(&self) -> u64 {
+            self.0.world_generation
+        }
+        fn position_observed_at_unix_ms(&self) -> i64 {
+            self.0.position_observed_at_unix_ms
         }
         fn observed_at_unix_ms(&self) -> i64 {
             self.0.observed_at_unix_ms

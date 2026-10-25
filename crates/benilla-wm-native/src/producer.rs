@@ -22,6 +22,7 @@ pub struct ProducerPosition {
 /// fields default to `None`; they are not prerequisites for conversion.
 pub trait ProducerSnapshot {
     fn session_epoch(&self) -> u64;
+    fn world_generation(&self) -> u64;
     fn player_guid(&self) -> u64;
     fn sequence(&self) -> u64;
 
@@ -32,6 +33,7 @@ pub trait ProducerSnapshot {
     fn observed_at_unix_ms(&self) -> i64;
     fn client_uptime_ms(&self) -> u64;
     fn map_id(&self) -> u32;
+    fn position_observed_at_unix_ms(&self) -> i64;
     fn position(&self) -> ProducerPosition;
 
     /// `Unknown` is only for a producer that exports before target state is observed.
@@ -60,6 +62,7 @@ where
     let position = source.position();
     Observation::new(
         source.session_epoch(),
+        source.world_generation(),
         source.player_guid(),
         source.sequence(),
         source.state_revision(),
@@ -69,6 +72,7 @@ where
         source.map_id(),
         source.zone_id(),
         source.area_id(),
+        source.position_observed_at_unix_ms(),
         Position::new(
             position.x,
             position.y,

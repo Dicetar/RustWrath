@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Version of the observation object and the matching Python receiver.
-pub const OBSERVATION_SCHEMA_VERSION: &str = "wm.native.observation.v2";
+pub const OBSERVATION_SCHEMA_VERSION: &str = "wm.native.observation.v2.1";
 
 /// Hard bound on the number of visible GUIDs exported in one observation.
 pub const MAX_VISIBLE_GUIDS: usize = 256;
@@ -280,6 +280,7 @@ impl Visibility {
 pub struct Observation {
     schema_version: String,
     pub session_epoch: u64,
+    pub world_generation: u64,
     pub player_guid: u64,
     pub sequence: u64,
     pub state_revision: u64,
@@ -289,6 +290,7 @@ pub struct Observation {
     pub map_id: u32,
     pub zone_id: Option<u32>,
     pub area_id: Option<u32>,
+    pub position_observed_at_unix_ms: i64,
     pub position: Position,
     pub target: TargetObservation,
     pub visibility: Visibility,
@@ -298,6 +300,7 @@ impl Observation {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_epoch: u64,
+        world_generation: u64,
         player_guid: u64,
         sequence: u64,
         state_revision: u64,
@@ -307,6 +310,7 @@ impl Observation {
         map_id: u32,
         zone_id: Option<u32>,
         area_id: Option<u32>,
+        position_observed_at_unix_ms: i64,
         position: Position,
         target: TargetObservation,
         visibility: Visibility,
@@ -314,6 +318,7 @@ impl Observation {
         let observation = Self {
             schema_version: OBSERVATION_SCHEMA_VERSION.to_owned(),
             session_epoch,
+            world_generation,
             player_guid,
             sequence,
             state_revision,
@@ -323,6 +328,7 @@ impl Observation {
             map_id,
             zone_id,
             area_id,
+            position_observed_at_unix_ms,
             position,
             target,
             visibility,
@@ -347,6 +353,11 @@ impl Observation {
                 "session_epoch must be non-zero",
             ));
         }
+        if self.world_generation == 0 {
+            return Err(Error::InvalidObservation(
+                "world_generation must be non-zero",
+            ));
+        }
         if self.player_guid == 0 {
             return Err(Error::InvalidObservation("player_guid must be non-zero"));
         }
@@ -363,6 +374,16 @@ impl Observation {
         if self.exported_at_unix_ms < self.observed_at_unix_ms {
             return Err(Error::InvalidObservation(
                 "exported_at_unix_ms must not precede observed_at_unix_ms",
+            ));
+        }
+        if self.position_observed_at_unix_ms < 0 {
+            return Err(Error::InvalidObservation(
+                "position_observed_at_unix_ms must not be negative",
+            ));
+        }
+        if self.position_observed_at_unix_ms > self.observed_at_unix_ms {
+            return Err(Error::InvalidObservation(
+                "position_observed_at_unix_ms must not follow observed_at_unix_ms",
             ));
         }
         self.position.validate()?;
@@ -385,10 +406,12 @@ impl Observation {
     pub fn same_state(&self, other: &Self) -> bool {
         self.schema_version == other.schema_version
             && self.session_epoch == other.session_epoch
+            && self.world_generation == other.world_generation
             && self.player_guid == other.player_guid
             && self.map_id == other.map_id
             && self.zone_id == other.zone_id
             && self.area_id == other.area_id
+            && self.position_observed_at_unix_ms == other.position_observed_at_unix_ms
             && self.position == other.position
             && self.target == other.target
             && self.visibility == other.visibility
@@ -417,6 +440,12 @@ impl Observation {
         if self.session_epoch > previous.session_epoch {
             return Ok(());
         }
+        if self.world_generation < previous.world_generation {
+            return Err(Error::WorldGenerationRegression {
+                last: previous.world_generation,
+                got: self.world_generation,
+            });
+        }
         if self.sequence == previous.sequence {
             return Err(Error::DuplicateSequence {
                 last: previous.sequence,
@@ -438,6 +467,14 @@ impl Observation {
             return Err(Error::ObservationTimeRegression {
                 last: previous.observed_at_unix_ms,
                 got: self.observed_at_unix_ms,
+            });
+        }
+        if self.world_generation == previous.world_generation
+            && self.position_observed_at_unix_ms < previous.position_observed_at_unix_ms
+        {
+            return Err(Error::PositionTimeRegression {
+                last: previous.position_observed_at_unix_ms,
+                got: self.position_observed_at_unix_ms,
             });
         }
         if self.state_revision < previous.state_revision {
