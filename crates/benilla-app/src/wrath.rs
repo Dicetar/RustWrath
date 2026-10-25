@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 
 use benilla_protocol::{
     messages::ObjectType, EntityKind, MoveSpeeds, ObjectFields, SessionEvent,
@@ -42,8 +42,8 @@ use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use crate::entities::Equipment;
 use crate::items::{Countdowns, ItemObject};
 use crate::net::{
-    ClientCommand, Guid, GuidIndex, NetCommandTap, NetEntity, NetEventSink, ObjectStore, SelfGuid,
-    SelfPlayer, UnitSpeeds, WorldEnterCascadeMessage, EnteredWorldMessage, FieldChanged,
+    ClientCommand, Guid, GuidIndex, NetCommandTap, NetEntity, ObjectStore, SelfGuid, SelfPlayer,
+    UnitSpeeds, WorldEnterCascadeMessage, EnteredWorldMessage, FieldChanged,
 };
 use benilla_protocol::messages::{
     ActionButton, AttackSwingError, GossipOption as ProtocolGossipOption,
@@ -80,6 +80,37 @@ pub struct WrathOutbound {
     pub payload: Vec<u8>,
 }
 
+/// A translated gameplay reply tagged with the source session and world scope. The app rejects
+/// replies older than the scope it has already adopted, so a queue race across a transfer cannot
+/// apply a retired world's tooltip, quest or inventory reply to the replacement world.
+pub struct WrathSessionEvent {
+    session_epoch: u64,
+    world_generation: u64,
+    event: SessionEvent,
+    /// Terminal lifecycle events must be delivered even after the scope was invalidated.
+    force: bool,
+}
+
+impl WrathSessionEvent {
+    fn scoped(session: &SessionState, event: SessionEvent) -> Self {
+        Self {
+            session_epoch: session.epoch(),
+            world_generation: session.world_generation(),
+            event,
+            force: false,
+        }
+    }
+
+    fn forced(event: SessionEvent) -> Self {
+        Self {
+            session_epoch: 0,
+            world_generation: 0,
+            event,
+            force: true,
+        }
+    }
+}
+
 /// The app-side sender for the selected session thread.
 pub type WrathOutbox = Arc<Mutex<VecDeque<WrathOutbound>>>;
 
@@ -99,7 +130,12 @@ pub enum WrathFeedEvent {
     /// The IO-thread session ended (Ok = clean logout; Err = failure reason).
     SessionEnded(Result<(), String>),
     /// The current gossip menu's identity, needed by the 3.3.5 select-option message.
-    GossipMenu { npc: u64, menu_id: u32 },
+    GossipMenu {
+        npc: u64,
+        menu_id: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
 }
 
 impl WrathFeedEvent {
@@ -267,9 +303,9 @@ pub struct WrathControl {
     ended: bool,
     /// Terminal failure from the last worker run. A clean end leaves this `None`.
     pub last_error: Option<String>,
-    /// The stock inbound stream, used for replies whose consumers already exist as
-    /// `SessionEvent` handlers. `None` in a test app without the net plugin.
-    events_out: Option<Sender<SessionEvent>>,
+    /// Replies for the established `SessionEvent` handlers, tagged by source scope and drained
+    /// in the Net stage rather than through the stock 1.12 inbound channel.
+    session_events: Option<Receiver<WrathSessionEvent>>,
 }
 
 impl WrathControl {
@@ -290,7 +326,9 @@ impl WrathControl {
         self.cancel = Arc::new(AtomicBool::new(false));
         let cancel = Arc::clone(&self.cancel);
         let commands = self.commands.take();
-        let events_out = self.events_out.clone();
+        let (events_out, events_in) = crossbeam_channel::unbounded();
+        self.session_events = Some(events_in);
+        let events_out = Some(events_out);
         let handle = std::thread::Builder::new()
             .name("wrath-session".to_owned())
             .spawn(move || {
@@ -314,7 +352,10 @@ impl WrathControl {
                         .err()
                         .map(|e| format!("{e:#}"))
                         .unwrap_or_else(|| "wrath session ended".to_owned());
-                    let _ = sink.send(SessionEvent::Disconnected { reason, end });
+                    let _ = sink.send(WrathSessionEvent::forced(SessionEvent::Disconnected {
+                        reason,
+                        end,
+                    }));
                 }
             })
             .expect("spawn wrath session thread");
@@ -356,6 +397,20 @@ impl WrathControl {
             }
             _ => Vec::new(),
         }
+    }
+
+    fn take_session_events(&mut self) -> Vec<WrathSessionEvent> {
+        let Some(receiver) = self.session_events.as_ref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        while out.len() < WRATH_DRAIN_LIMIT {
+            match receiver.try_recv() {
+                Ok(event) => out.push(event),
+                Err(_) => break,
+            }
+        }
+        out
     }
 }
 
@@ -420,10 +475,6 @@ pub struct WrathNetPlugin {
 impl Plugin for WrathNetPlugin {
     fn build(&self, app: &mut App) {
         let commands: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
-        let events_out = app
-            .world()
-            .get_resource::<NetEventSink>()
-            .map(|sink| sink.0.clone());
         app.insert_resource(WrathControl {
             config: self.config.clone(),
             worker: None,
@@ -432,7 +483,7 @@ impl Plugin for WrathNetPlugin {
             commands: Some(Arc::clone(&commands)),
             ended: false,
             last_error: None,
-            events_out,
+            session_events: None,
         })
         .init_resource::<WrathWorldView>();
         if self.config.is_some() {
@@ -446,7 +497,12 @@ impl Plugin for WrathNetPlugin {
             );
             app.add_systems(
                 Update,
-                (wrath_net_drain, wrath_apply_world, wrath_tap_commands)
+                (
+                    wrath_net_drain,
+                    wrath_apply_world,
+                    wrath_tap_commands,
+                    wrath_dispatch_events,
+                )
                     .chain()
                     .in_set(WorldStage::Net),
             );
@@ -1106,6 +1162,52 @@ fn wrath_tap_commands(
     }
 }
 
+/// Whether a tagged event belongs to a scope the view has already left. A newer event is kept:
+/// the digest that adopts its scope may still be in flight, and applying it against the previous
+/// scope is the existing packet-before-digest order rather than a stale replay.
+fn scope_is_older(
+    current_epoch: u64,
+    current_world: u64,
+    event_epoch: u64,
+    event_world: u64,
+) -> bool {
+    event_epoch < current_epoch
+        || (event_epoch == current_epoch && event_world < current_world)
+}
+
+/// Deliver Wrath replies after the Net stage has adopted the matching world scope. This is the
+/// only path for Wrath gameplay replies; the stock 1.12 inbound channel is not used, so a queued
+/// old-world reply cannot overtake the transfer teardown.
+fn wrath_dispatch_events(world: &mut World) {
+    let (current_epoch, current_world) = world
+        .get_resource::<WrathWorldView>()
+        .map_or((0, 0), |view| (view.session_epoch, view.world_generation));
+    let Some(mut control) = world.get_resource_mut::<WrathControl>() else {
+        return;
+    };
+    let ended = control.ended;
+    let tagged = control.take_session_events();
+    drop(control);
+
+    let mut deliver = Vec::with_capacity(tagged.len());
+    for event in tagged {
+        if event.force
+            || (!ended
+                && !scope_is_older(
+                    current_epoch,
+                    current_world,
+                    event.session_epoch,
+                    event.world_generation,
+                ))
+        {
+            deliver.push(event.event);
+        }
+    }
+    if !deliver.is_empty() {
+        crate::net::handlers::dispatch(world, deliver);
+    }
+}
+
 fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorldView>) {
     let mut drained = 0usize;
     for event in control.take_events() {
@@ -1125,8 +1227,20 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
                 view.entered_world = false;
                 view.last_changes.world_transferred = true;
             }
-            WrathFeedEvent::GossipMenu { npc, menu_id } => {
-                view.gossip_menu = Some((npc, menu_id));
+            WrathFeedEvent::GossipMenu {
+                npc,
+                menu_id,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.gossip_menu = Some((npc, menu_id));
+                }
             }
             WrathFeedEvent::ExportSkipped(reason) => {
                 debug!("wrath export skipped: {reason}");
@@ -1843,7 +1957,7 @@ pub fn run_session_with_cancel(
     config: &WrathSessionConfig,
     cancel: &AtomicBool,
     commands: Option<WrathOutbox>,
-    events_out: Option<Sender<SessionEvent>>,
+    events_out: Option<Sender<WrathSessionEvent>>,
 ) -> anyhow::Result<()> {
     use benilla_wm_native::{
         pump_once, replace_publisher, retire_publisher, PublisherConfig, PublisherRetirement,
@@ -2069,11 +2183,17 @@ pub fn run_session_with_cancel(
                 if let Some(parsed) = gameplay::parse(p.opcode, &p.payload) {
                     match parsed {
                         Ok(event @ WrathGameplayEvent::Gossip { npc, menu_id, .. }) => {
-                            feed.push_event(WrathFeedEvent::GossipMenu { npc, menu_id });
+                            feed.push_event(WrathFeedEvent::GossipMenu {
+                                npc,
+                                menu_id,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
                                     for event in translate_gameplay(event) {
-                                        let _ = events_out.send(event);
+                                        let _ = events_out
+                                            .send(WrathSessionEvent::scoped(&session, event));
                                     }
                                 }
                             }
@@ -2081,14 +2201,17 @@ pub fn run_session_with_cancel(
                         Ok(WrathGameplayEvent::LoggedOut) => {
                             logged_out = true;
                             if let Some(events_out) = events_out.as_ref() {
-                                let _ = events_out.send(SessionEvent::LoggedOut);
+                                let _ = events_out.send(WrathSessionEvent::forced(
+                                    SessionEvent::LoggedOut,
+                                ));
                             }
                         }
                         Ok(event) => {
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
                                     for event in translate_gameplay(event) {
-                                        let _ = events_out.send(event);
+                                        let _ = events_out
+                                            .send(WrathSessionEvent::scoped(&session, event));
                                     }
                                 }
                             }
