@@ -4,10 +4,10 @@
 use std::collections::HashMap;
 
 use crate::Chain;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{i32_at, loc_str, parse, u32_at};
+use crate::dbc::{field_count, i32_at, loc_str, parse, u32_at};
 
 const SHAPESHIFT_FORM: &str = "DBFilesClient\\SpellShapeshiftForm.dbc";
 
@@ -19,14 +19,14 @@ pub struct ShapeshiftForm {
     /// The name (the block at column 2, read at the locale), the tooltip's `SPELL_REQUIRED_FORM` "Requires %s"
     /// (`0x52f10a`-`0x52f2ae`).
     pub name: String,
-    /// `flags1` (column 11): bit 0 marks a stance, bit 1 blocks cancelling the active form.
+    /// `flags1` (vanilla column 11, WotLK 19): bit 0 marks a stance, bit 1 blocks cancelling it.
     pub flags: u32,
-    /// `creatureType` (column 12): the form's creature-type override, which the resolver
-    /// (`0x605570`) reads before the creature template or race, so a cat-form druid tracks as a
-    /// Beast; `<= 0` is no override, and the template or race answers.
+    /// `creatureType` (vanilla column 12, WotLK 20): the form's creature-type override. The
+    /// resolver (`0x605570`) reads it before the creature template or race, so a cat-form druid
+    /// tracks as a Beast; `<= 0` is no override, and the template or race answers.
     pub creature_type: i32,
-    /// `AttackIconID` (column 13) through `SpellIcon.dbc`: the Attack action shows the current
-    /// form's icon before the main-hand weapon's (`0x4e6870`); `None` falls through to the weapon.
+    /// `AttackIconID` (vanilla column 13, WotLK 21) through `SpellIcon.dbc`: the Attack action
+    /// shows the form's icon before the main-hand weapon's (`0x4e6870`); `None` uses the weapon.
     pub attack_icon: Option<String>,
 }
 
@@ -59,10 +59,21 @@ pub fn load_shapeshift_forms(chain: &mut Chain) -> Result<HashMap<u32, Shapeshif
     let bytes = chain
         .read_file(SHAPESHIFT_FORM)
         .context("reading SpellShapeshiftForm.dbc")?;
+    // AzerothCore DBCStructure.h::SpellShapeshiftFormEntry: sixteen name locales shift
+    // flags/type/icon to 19/20/21; the row continues with attack speed, models and spells.
+    let (columns, flags_column, creature_type_column, attack_icon_column) =
+        match field_count(&bytes) {
+            Some(14) => (14, 11, 12, 13),
+            Some(35) => (35, 19, 20, 21),
+            Some(columns) => bail!(
+                "unsupported SpellShapeshiftForm.dbc layout: {columns} fields (expected 14 or 35)"
+            ),
+            None => bail!("parsing SpellShapeshiftForm.dbc header: truncated field count"),
+        };
     let mut schema = Schema::new("SpellShapeshiftForm");
-    for i in 0..14 {
+    for i in 0..columns {
         match i {
-            // Column 2: the name locstring's first column (2..10, eight locales and a flag word).
+            // The localized name starts at 2 in both supported layouts.
             2 => schema.add_field(SchemaField::new("Name", FieldType::String)),
             _ => schema.add_field(SchemaField::new(format!("F{i}"), FieldType::UInt32)),
         }
@@ -79,9 +90,9 @@ pub fn load_shapeshift_forms(chain: &mut Chain) -> Result<HashMap<u32, Shapeshif
                 ShapeshiftForm {
                     bonus_bar: u32_at(r, 1).unwrap_or(0),
                     name: loc_str(&set, r, 2, locale).unwrap_or_default(),
-                    flags: u32_at(r, 11).unwrap_or(0),
-                    creature_type: i32_at(r, 12).unwrap_or(0),
-                    attack_icon: u32_at(r, 13)
+                    flags: u32_at(r, flags_column).unwrap_or(0),
+                    creature_type: i32_at(r, creature_type_column).unwrap_or(0),
+                    attack_icon: u32_at(r, attack_icon_column)
                         .filter(|&i| i != 0)
                         .and_then(|i| icons.get(&i).cloned()),
                 },

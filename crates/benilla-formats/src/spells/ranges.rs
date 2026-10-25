@@ -4,10 +4,10 @@
 use std::collections::HashMap;
 
 use crate::Chain;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, parse, u32_at};
+use crate::dbc::{f32_at, field_count, parse, u32_at};
 
 /// One `SpellRange.dbc` row, in yards.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -226,16 +226,32 @@ pub fn min_max_range_reads_ranged_slot(
 #[derive(Default)]
 pub struct SpellRangeCatalog {
     ranges: HashMap<u32, SpellRange>,
+    friendly_ranges: HashMap<u32, SpellRange>,
 }
 
 impl SpellRangeCatalog {
+    /// The authored range; for WotLK this is the hostile pair. Use [`Self::get_for_target`]
+    /// when the target relationship is known, since WotLK stores a separate friendly pair.
     pub fn get(&self, index: u32) -> Option<&SpellRange> {
         self.ranges.get(&index)
     }
 
+    /// Select the authored target relationship (`SpellInfo.cpp::GetMinRange/GetMaxRange`).
+    /// Vanilla has one pair for both relationships.
+    pub fn get_for_target(&self, index: u32, friendly: bool) -> Option<&SpellRange> {
+        if friendly {
+            self.friendly_ranges.get(&index).or_else(|| self.get(index))
+        } else {
+            self.get(index)
+        }
+    }
+
     /// Fixture constructor for tests; the live path is [`load_spell_ranges`].
     pub fn from_rows(ranges: HashMap<u32, SpellRange>) -> Self {
-        Self { ranges }
+        Self {
+            ranges,
+            friendly_ranges: HashMap::new(),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -249,34 +265,62 @@ impl SpellRangeCatalog {
 
 const SPELL_RANGE: &str = "DBFilesClient\\SpellRange.dbc";
 const SPELL_RANGE_FIELDS: usize = 22;
+const WRATH_SPELL_RANGE_FIELDS: usize = 40;
 
 /// Load `SpellRange.dbc` off the patch chain.
 pub fn load_spell_ranges(chain: &mut Chain) -> Result<SpellRangeCatalog> {
     let bytes = chain
         .read_file(SPELL_RANGE)
         .context("reading SpellRange.dbc")?;
+    // AzerothCore DBCStructure.h::SpellRangeEntry: min[hostile,friendly] at 1-2,
+    // max[hostile,friendly] at 3-4, flags at 5, then two 16-locale string blocks.
+    let (columns, max_column, flags_column) = match field_count(&bytes) {
+        Some(SPELL_RANGE_FIELDS) => (SPELL_RANGE_FIELDS, 2, 3),
+        Some(WRATH_SPELL_RANGE_FIELDS) => (WRATH_SPELL_RANGE_FIELDS, 3, 5),
+        Some(columns) => bail!(
+            "unsupported SpellRange.dbc layout: {columns} fields (expected 22 or 40)"
+        ),
+        None => bail!("parsing SpellRange.dbc header: truncated field count"),
+    };
+    let wrath = columns == WRATH_SPELL_RANGE_FIELDS;
     let mut schema = Schema::new("SpellRange");
-    for i in 0..SPELL_RANGE_FIELDS {
-        match i {
-            1 => schema.add_field(SchemaField::new("MinRange", FieldType::Float32)),
-            2 => schema.add_field(SchemaField::new("MaxRange", FieldType::Float32)),
-            _ => schema.add_field(SchemaField::new(format!("F{i}"), FieldType::UInt32)),
-        }
+    let float_columns = if wrath { 1..=4 } else { 1..=2 };
+    for i in 0..columns {
+        let ty = if float_columns.contains(&i) {
+            FieldType::Float32
+        } else {
+            FieldType::UInt32
+        };
+        schema.add_field(SchemaField::new(format!("F{i}"), ty));
     }
     let set = parse(&bytes, schema, "SpellRange.dbc")?;
     let mut ranges = HashMap::new();
+    let mut friendly_ranges = HashMap::new();
     for r in set.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         ranges.insert(
             id,
             SpellRange {
                 min: f32_at(r, 1).unwrap_or(0.0),
-                max: f32_at(r, 2).unwrap_or(0.0),
-                flags: u32_at(r, 3).unwrap_or(0),
+                max: f32_at(r, max_column).unwrap_or(0.0),
+                flags: u32_at(r, flags_column).unwrap_or(0),
             },
         );
+        if wrath {
+            friendly_ranges.insert(
+                id,
+                SpellRange {
+                    min: f32_at(r, 2).unwrap_or(0.0),
+                    max: f32_at(r, 4).unwrap_or(0.0),
+                    flags: u32_at(r, flags_column).unwrap_or(0),
+                },
+            );
+        }
     }
-    Ok(SpellRangeCatalog { ranges })
+    Ok(SpellRangeCatalog {
+        ranges,
+        friendly_ranges,
+    })
 }
 
 #[cfg(test)]
