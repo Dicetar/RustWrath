@@ -121,7 +121,7 @@ pub fn generate(spec: &ProcgenSpec) -> Result<ProcgenOutput, ValidationError> {
         terrain,
         spawns,
         manifest_hash,
-    }
+    })
 }
 
 /// Canonical v2 manifest: fixed field order, explicit enum tags, little-endian numbers,
