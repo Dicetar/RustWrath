@@ -19,12 +19,15 @@ pub(super) fn fire_global(lua: &Lua, event: &str, args: &[ScriptValue]) {
 }
 
 /// Fire a frame's `OnEvent` with the given args; the walk has set `event`.
-pub(super) fn fire_event_handler(lua: &Lua, id: u32, args: &[ScriptValue]) -> mlua::Result<()> {
-    let extra: Vec<Value> = args
+pub(super) fn fire_event_handler(lua: &Lua, id: u32, event: &str, args: &[ScriptValue]) -> mlua::Result<()> {
+    let mut extra: Vec<Value> = args
         .iter()
         .cloned()
         .map(|a| a.into_lua(lua))
         .collect::<mlua::Result<_>>()?;
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        extra.insert(0, Value::String(lua.create_string(event)?));
+    }
     fire(lua, id, "OnEvent", extra)
 }
 
@@ -133,6 +136,12 @@ pub(crate) fn invoke_with_globals(
     func: &Function,
     extra: Vec<Value>,
 ) -> mlua::Result<()> {
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        let mut arguments = Vec::with_capacity(extra.len() + 1);
+        arguments.push(Value::Table(wrapper));
+        arguments.extend(extra);
+        return func.call::<()>(mlua::MultiValue::from_vec(arguments));
+    }
     let mut globals: Vec<(&str, Value)> = Vec::with_capacity(2 + extra.len());
     globals.push(("this", Value::Table(wrapper)));
     let names: Vec<Cow<'static, str>> = (1..=extra.len()).map(arg_name).collect();

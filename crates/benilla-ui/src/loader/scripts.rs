@@ -1,4 +1,4 @@
-use mlua::{Function, ObjectLike, Table};
+use mlua::{Function, ObjectLike, Table, Value};
 
 use crate::framexml::Element;
 
@@ -24,7 +24,8 @@ impl Loader<'_> {
                 // function: `SetScript` (`0x7025c0`) tests only NULL and the first byte
                 // (`0x7025f8`), and nothing trims the body (`0x6f29d0`). The stock blanks
                 // (`BuffFrame.xml:101`) are whitespace, so their `GetScript` answers a function.
-                let cleared = handler.body.is_empty();
+                let wrath = self.model().target == crate::script::UiTarget::Wrath335;
+                let cleared = handler.body.is_empty() && (!wrath || handler.attr("function").is_none());
                 let func = if cleared {
                     None
                 } else {
@@ -84,16 +85,35 @@ impl Loader<'_> {
     ) -> Option<Function> {
         // The raw body, never trimmed: a whitespace body is a real empty chunk (`apply_scripts`).
         let body = handler.body.as_str();
+        let wrath = self.model().target == crate::script::UiTarget::Wrath335;
+        if wrath {
+            if let Some(function) = handler.attr("function") {
+                if !body.trim().is_empty() {
+                    self.report.fault(format!("{dbg}: <{name}> combines function= and an inline body; this form is not implemented"));
+                    return None;
+                }
+                let result = named_handler(self.lua(), function);
+                return match result {
+                    Ok(function) => Some(function),
+                    Err(error) => {
+                        self.report.raise(format!("{dbg}: <{name} function=\"{function}\">: {error}"), &error);
+                        None
+                    }
+                };
+            }
+        }
         if body.is_empty() {
             return None;
         }
-        match self
-            .lua()
-            .load(body)
-            .set_name(format!("{owner}:{name}"))
-            .set_mode(mlua::ChunkMode::Text)
-            .into_function()
-        {
+        let result = if wrath {
+            let source = format!("return function({}) {body}\nend", handler_parameters(name));
+            self.lua().load(source).set_name(format!("{owner}:{name}"))
+                .set_mode(mlua::ChunkMode::Text).eval::<Function>()
+        } else {
+            self.lua().load(body).set_name(format!("{owner}:{name}"))
+                .set_mode(mlua::ChunkMode::Text).into_function()
+        };
+        match result {
             Ok(f) => {
                 // An insecure addon's handler is its code whoever fires it ([`crate::script::taint`]).
                 crate::script::taint::tag_for_load(self.lua(), &f);
@@ -174,5 +194,50 @@ impl Loader<'_> {
         if let Err(e) = region.call_method::<()>(method, args) {
             self.report.fault(format!("{dbg}: region {method}: {e}"));
         }
+    }
+}
+
+/// Resolve a named handler without evaluating the attribute as arbitrary Lua source.
+fn named_handler(lua: &mlua::Lua, name: &str) -> mlua::Result<Function> {
+    let mut value = Value::Table(lua.globals());
+    for part in name.split('.') {
+        if part.is_empty() || !part.bytes().enumerate().all(|(index, byte)| {
+            byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
+        }) {
+            return Err(mlua::Error::runtime("invalid named script handler"));
+        }
+        let Value::Table(table) = value else {
+            return Err(mlua::Error::runtime("named script handler parent is not a table"));
+        };
+        value = table.get(part)?;
+    }
+    match value {
+        Value::Function(function) => Ok(function),
+        _ => Err(mlua::Error::runtime("named script handler is not a function")),
+    }
+}
+
+fn handler_parameters(name: &str) -> &'static str {
+    match name {
+        "OnEvent" => "self, event, ...",
+        "OnUpdate" => "self, elapsed, ...",
+        "OnClick" => "self, button, down, ...",
+        "OnDoubleClick" | "OnMouseDown" | "OnMouseUp" => "self, button, ...",
+        "OnMouseWheel" => "self, delta, ...",
+        "OnEnter" | "OnLeave" => "self, motion, ...",
+        "OnKeyDown" | "OnKeyUp" => "self, key, ...",
+        "OnChar" => "self, text, ...",
+        "OnSizeChanged" => "self, width, height, ...",
+        "OnValueChanged" => "self, value, ...",
+        "OnTextChanged" => "self, userInput, ...",
+        "OnCursorChanged" => "self, x, y, width, height, ...",
+        "OnInputLanguageChanged" => "self, language, ...",
+        "OnHorizontalScroll" | "OnVerticalScroll" => "self, offset, ...",
+        "OnScrollRangeChanged" => "self, xrange, yrange, ...",
+        "OnHyperlinkClick" => "self, link, text, button, ...",
+        "OnHyperlinkEnter" | "OnHyperlinkLeave" => "self, link, text, ...",
+        "OnColorSelect" => "self, r, g, b, ...",
+        "OnMovieShowSubtitle" => "self, text, ...",
+        _ => "self, ...",
     }
 }

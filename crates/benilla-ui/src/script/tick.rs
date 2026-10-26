@@ -321,9 +321,12 @@ pub(crate) fn fire_event_into(lua: &Lua, event: &str, args: Vec<ScriptValue>) {
         return;
     }
     let globals = lua.globals();
-    let saved = globals.get::<mlua::Value>("event").ok();
-    if let Ok(name) = lua.create_string(event) {
-        let _ = globals.set("event", name);
+    let legacy = model_mut().target == super::UiTarget::Vanilla112;
+    let saved = if legacy { globals.get::<mlua::Value>("event").ok() } else { None };
+    if legacy {
+        if let Ok(name) = lua.create_string(event) {
+            let _ = globals.set("event", name);
+        }
     }
     while let Some(h) = at {
         let mut model = model_mut();
@@ -341,7 +344,7 @@ pub(crate) fn fire_event_into(lua: &Lua, event: &str, args: Vec<ScriptValue>) {
             .and_then(|l| l.get(pos + 1).copied());
         let id = model.frame_id(h);
         drop(model);
-        if let Err(e) = event::fire_event_handler(lua, id, &args) {
+        if let Err(e) = event::fire_event_handler(lua, id, event, &args) {
             model_mut().record_lua_error(&e);
         }
         at = next;
