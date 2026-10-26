@@ -206,6 +206,10 @@ Base `cc65287b` through `00043f25`:
 - `ee1656b9` carries chat and the addon lane; `452c9b67` adds chat notices.
 - `0575dee0` restores vendor-row documentation.
 - `00043f25` clears gossip/vendor state on a new session or world scope.
+- `67eb57e3` carries item use/equip/swap/split/destroy and the item guid+spell fields.
+- `206861ea` carries the full cast-target block for object/item/corpse/dest/source casts.
+- `ba58390c` removes duplicate target-flag constants.
+- `629c719c` carries stand/sheath/mount-special/action-bar verbs.
 
 ## Acceptance scenarios prepared (all execution-gated)
 
