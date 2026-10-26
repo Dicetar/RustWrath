@@ -2229,10 +2229,21 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_SELL_ITEM,
                 gameplay::sell_item(vendor, item_guid, u32::from(count)),
             )),
-            ClientCommand::BuybackItem { vendor, slot } => Some((
-                benilla_protocol_wrath::opcode::CMSG_BUYBACK_ITEM,
-                gameplay::buyback_item(vendor, slot),
-            )),
+            ClientCommand::BuybackItem { vendor, slot } => {
+                // The stock owner names the absolute 1.12 buyback slot 69-80; 12340 starts at 74.
+                const STOCK_START: u32 = 69;
+                const WRATH_START: u32 = 74;
+                let wrath_slot = slot
+                    .checked_sub(STOCK_START)
+                    .filter(|index| *index < 12)
+                    .map(|index| index + WRATH_START);
+                wrath_slot.map(|slot| {
+                    (
+                        benilla_protocol_wrath::opcode::CMSG_BUYBACK_ITEM,
+                        gameplay::buyback_item(vendor, slot),
+                    )
+                })
+            }
             ClientCommand::RepairItem { vendor, item_guid } => Some((
                 benilla_protocol_wrath::opcode::CMSG_REPAIR_ITEM,
                 gameplay::repair_item(vendor, item_guid, false),

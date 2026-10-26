@@ -53,6 +53,11 @@ vendor reply. This slice closes the wire half:
   with no matching open row is dropped visibly rather than encoded against a wrong row.
 - Vendor state is cleared at world transfer, session end and a new epoch.
 
+Correction: the stock buyback command names the absolute 1.12 slot 69-80, while 12340 starts
+buyback at 74; the tap now rebases the 12 slots (69..=80 -> 74..=85) instead of sending the
+1.12 index. The same index table differs for bank bags (1.12 63-68, 12340 67-73) and keyring
+(1.12 81-112, 12340 86-117); bank commands below use the bank-bag rebase.
+
 Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (stored, not shown),
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
