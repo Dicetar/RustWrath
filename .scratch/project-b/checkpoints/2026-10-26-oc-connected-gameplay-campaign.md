@@ -62,6 +62,18 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: bank authority path (committed with this record)
+
+Bank open, slot purchase and item deposit/withdraw were absent from the Wrath tap. Added the six
+12340 opcodes (CMSG_BANKER_ACTIVATE 0x1B7, SMSG_SHOW_BANK 0x1B8, CMSG_BUY_BANK_SLOT 0x1B9,
+SMSG_BUY_BANK_SLOT_RESULT 0x1BA, CMSG_AUTOSTORE_BANK_ITEM 0x282,
+CMSG_AUTOBANK_ITEM 0x283) and the BankPackets.cpp layouts. Withdraw commands rebase the six
+stock bank bags (63-68) to 12340's 67-72; bank slots 39-62 and inventory/backpack indices agree.
+12340 sends ERR_BANKSLOT_OK (3) on success, while the stock handler treats every result as a
+refusal, so OK is filtered and the raised PLAYER_BYTES_2 count is the success signal.
+Explicit gap: the 1.12 bank presents 24 of 28 slots and six of seven bank bags; the extra
+positions remain unpresented, not silently remapped.
+
 ## Slice: cancel verbs and WM cast-cancel resolution (committed with this record)
 
 ClientCommand::CancelCast, CancelChannelling, CancelAura and CancelAutoRepeat were still

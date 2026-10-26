@@ -1235,6 +1235,16 @@ fn wrath_wm_action_intake(
     }
 }
 
+/// 12340 bank bags start at 67 where the stock owner uses 63; slots inside the bank block
+/// (39-66) and the inventory/backpack indices agree, so only the six stock bank bags move.
+fn wrath_bank_bag(bag: u8) -> u8 {
+    if (63..=68).contains(&bag) {
+        bag + 4
+    } else {
+        bag
+    }
+}
+
 /// The 1-based row for `entry` in the open vendor list. 12340 buy packets address the row;
 /// without a matching open row the command cannot be encoded faithfully and is dropped.
 fn vendor_row(view: &WrathWorldView, vendor: u64, entry: u32) -> Option<u32> {
@@ -1766,6 +1776,16 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             spell_id,
             error,
         }],
+        WrathGameplayEvent::ShowBank { banker } => vec![SessionEvent::ShowBank { banker }],
+        WrathGameplayEvent::BuyBankSlotResult { result } => {
+            // 12340 sends OK on success; the stock bank handler treats every result as a
+            // refusal and the raised slot count in PLAYER_BYTES_2 already shows the purchase.
+            if result == benilla_protocol::messages::bank_slot_result::OK {
+                Vec::new()
+            } else {
+                vec![SessionEvent::BuyBankSlotResult { result }]
+            }
+        }
         WrathGameplayEvent::VendorInventory { vendor, items } => {
             vec![SessionEvent::VendorInventory {
                 vendor,
@@ -2271,6 +2291,22 @@ fn wrath_tap_commands(
             ClientCommand::CancelAutoRepeat => Some((
                 benilla_protocol_wrath::opcode::CMSG_CANCEL_AUTO_REPEAT_SPELL,
                 gameplay::cancel_auto_repeat(),
+            )),
+            ClientCommand::BankerActivate { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_BANKER_ACTIVATE,
+                gameplay::banker_activate(guid),
+            )),
+            ClientCommand::BuyBankSlot { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_BUY_BANK_SLOT,
+                gameplay::buy_bank_slot(guid),
+            )),
+            ClientCommand::AutoBankItem { bag, slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUTOBANK_ITEM,
+                gameplay::autobank_item(bag, slot),
+            )),
+            ClientCommand::AutoStoreBankItem { bag, slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BANK_ITEM,
+                gameplay::autostore_bank_item(wrath_bank_bag(bag), slot),
             )),
             _ => None,
         };

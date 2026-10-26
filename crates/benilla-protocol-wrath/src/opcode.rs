@@ -188,6 +188,14 @@ pub const CMSG_BUYBACK_ITEM: u32 = 0x290;
 pub const CMSG_REPAIR_ITEM: u32 = 0x2A8;
 /// Trainer window (`NPCHandler.cpp:81-135`, `NPCPackets.cpp:25-58`): 12340 rows carry two
 /// point-cost words and three required abilities, where 1.12 carries two booleans.
+/// Bank window (`BankHandler.cpp:44-190`, `BankPackets.cpp:20-47`): the stock owner's bag
+/// indices 63-68 are rebased to 12340's 67-73 by the tap.
+pub const CMSG_BANKER_ACTIVATE: u32 = 0x1B7;
+pub const SMSG_SHOW_BANK: u16 = 0x1B8;
+pub const CMSG_BUY_BANK_SLOT: u32 = 0x1B9;
+pub const SMSG_BUY_BANK_SLOT_RESULT: u16 = 0x1BA;
+pub const CMSG_AUTOSTORE_BANK_ITEM: u32 = 0x282;
+pub const CMSG_AUTOBANK_ITEM: u32 = 0x283;
 pub const CMSG_TRAINER_LIST: u32 = 0x1B0;
 pub const SMSG_TRAINER_LIST: u16 = 0x1B1;
 pub const CMSG_TRAINER_BUY_SPELL: u32 = 0x1B2;

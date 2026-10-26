@@ -227,6 +227,27 @@ pub fn repair_item(vendor: u64, item_guid: u64, guild_bank: bool) -> Vec<u8> {
     p
 }
 
+/// `CMSG_BANKER_ACTIVATE` (`BankHandler.cpp:44`): the banker guid.
+pub fn banker_activate(banker: u64) -> Vec<u8> {
+    banker.to_le_bytes().to_vec()
+}
+
+/// `CMSG_BUY_BANK_SLOT` (`BankPackets.cpp:36`): the banker guid; the server buys the next slot.
+pub fn buy_bank_slot(banker: u64) -> Vec<u8> {
+    banker.to_le_bytes().to_vec()
+}
+
+/// `CMSG_AUTOBANK_ITEM` (`BankPackets.cpp:20`): source bag and slot in the bank block.
+pub fn autobank_item(bag: u8, slot: u8) -> Vec<u8> {
+    vec![bag, slot]
+}
+
+/// `CMSG_AUTOSTORE_BANK_ITEM` (`BankPackets.cpp:26`): source bag and slot; the server decides
+/// whether the position is in the bank or the bags, so the same verb moves both ways.
+pub fn autostore_bank_item(bag: u8, slot: u8) -> Vec<u8> {
+    vec![bag, slot]
+}
+
 /// `CMSG_CANCEL_CAST` (`SpellHandler.cpp:552`): an ignored counter byte, then the spell id.
 pub fn cancel_cast(spell_id: u32) -> Vec<u8> {
     let mut p = Vec::with_capacity(5);
@@ -800,6 +821,13 @@ pub enum ServerEvent {
         spell_id: u32,
         error: u32,
     },
+    ShowBank {
+        banker: u64,
+    },
+    /// `ERR_BANKSLOT_*` (`ItemDefines`/`bank_slot_result`); 12340 sends OK too, unlike 1.12.
+    BuyBankSlotResult {
+        result: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -913,6 +941,10 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_TRAINER_LIST => read_trainer_list(body),
         SMSG_TRAINER_BUY_SUCCEEDED => read_trainer_buy_succeeded(body),
         SMSG_TRAINER_BUY_FAILED => read_trainer_buy_failed(body),
+        SMSG_SHOW_BANK => read_show_bank(body),
+        SMSG_BUY_BANK_SLOT_RESULT => u32_body(body).map(|result| ServerEvent::BuyBankSlotResult {
+            result,
+        }),
         _ => return None,
     })
 }
@@ -1009,6 +1041,13 @@ fn read_trainer_buy_succeeded(b: &[u8]) -> Result<ServerEvent> {
     Ok(ServerEvent::TrainerBuySucceeded {
         trainer: r.u64()?,
         spell_id: r.u32()?,
+    })
+}
+
+fn read_show_bank(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::ShowBank {
+        banker: r.u64()?,
     })
 }
 
