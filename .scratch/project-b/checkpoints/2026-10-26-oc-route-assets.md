@@ -1,97 +1,95 @@
 # OpenCode checkpoint - pinned route asset manifest (O5)
 
-Date: 2026-10-26
-Owner: OpenCode (client/gameplay integration lead)
-Base HEAD: `07e1aefe` (Astra's loop inventory on top of the death slice)
+Date: 2026-10-26 (corrected). Owner: OpenCode (client/gameplay integration lead)
+Base HEAD: `23ec4589` (Astra's O5 source review; see
+`.scratch/project-b/checkpoints/2026-10-26-astra-o5-source-review.md`)
 Work package: `.scratch/project-b/work-packages/2026-10-26-opencode-client.md`, stage O5.
-Purpose: pin the route's data dependencies from static sources, verify the source pipeline
-stages, name the demonstrated parser repairs, and hand the future graphical/live gate a
-concrete manifest and failure checklist. Source-only: no launch, no archive extraction, no
-install writes.
+Classification: **static preparation only — not completed route integration**. The graphical
+and live gates (G/L) remain unauthorized and unrun.
 
-## File claim
+## Correction: the WMO offset claim is retracted
 
-Editing: this checkpoint only. No client source change in this slice; the WMO finding below
-needs a version-aware layout decision before code moves.
+The earlier version of this checkpoint claimed a 12340 shift of the WMO group header (flags
+0x08 -> 0x10, groupLiquid 0x34 -> 0x3C). That was wrong: it compared extractor reads made from
+the whole-chunk cursor (after the chunk's 4-byte FourCC + 4-byte size prefix) with the Rust
+parsers' payload-relative offsets. Astra's review identified the arithmetic error; both existing
+parsers (`benilla-wmo::parse_group`, `benilla-formats::models::wmo::group::wmo_group_header`)
+read payload offsets and are consistent with the extractor.
 
-## Install and profile provenance (read-only inspection)
+Asset-level check with one consistent origin (read-only, from the active profile):
+`WORLD\WMO\AZEROTH\BUILDINGS\NSABBEY\NSABBEY_000.WMO` (root `NSABBEY.WMO`, MVER 17, MOHD 30
+textures / 14 groups) has its MOGP payload at the chunk bytes +8; payload+0x08 reads
+`0x00002a05` (flags), payload+0x34 reads `0` (groupLiquid), and the first sub-chunk after
+payload+68 is `MOPY` with a plausible size. All 14 group files `NSABBEY_000..013.WMO` exist in
+`common-2.mpq` with MVER 17. No parser or version branch was or should be added on this basis.
+This still does not prove every WMO/asset is compatible; a real defect needs asset evidence at
+one origin.
 
-- Client install: `D:/WOW/world of warcraft 3.3.5a hd/data` (build-12340 MPQ set). Locale
-  archives live under `data/enus/`; `patch-5/j/u.mpq` are owner-disabled.
-- Approved profile manifests (protected worktree, read-only): `base.mpqlist` (stock archives
-  only) and `wm-hd.mpqlist` (stock + owner's custom `patch-6/7/8/S/a/b/c/e/f/k/w/y/z` and
-  `enus/patch-enus-{a,c,f,k,m,q,w}`). Selection: `WM_ASSET_MANIFEST` + `WM_ASSET_PROFILE`;
-  without the variable the vanilla discovery path is used.
-- In-repo source chain read: `benilla-profile` (line-based manifest, ascending precedence,
-  absent/disabled archive is a hard error, `Status` reports the winning archive), then
-  `ProfileAssetReader`/`ProfileLooseAssetReader` (`mpq://`, `mpq-loose://`), then Bevy loaders.
+## Install and profile identities
 
-## Pinned route dependencies (static)
+- Client install inspected read-only: `D:/WOW/world of warcraft 3.3.5a hd/data` (build-12340 MPQ
+  set; `data/enus/` locale archives; `patch-5/j/u.mpq` owner-disabled).
+- `base.mpqlist` SHA-256 `00c7357f2a5599b05ea7b97e4b3529198deb17a458b47199f6567259a1bde1cf`
+  (stock `common`, `common-2`, `expansion`, `lichking`, `patch`, `patch-2`, `patch-3` plus the
+  six `enus` locale/speech/expansion/lichking/patch-enus{,-2,-3}` archives).
+- `wm-hd.mpqlist` SHA-256 `439bdc21d09f5509073cd88cc341adb2eb05854b425f4d9dec1d2bcee5083d59`
+  (base plus `patch-6/7/8/S/a/b/c/e/f/k/w/y/z` and `enus/patch-enus-{a,c,f,k,m,q,w}`; a
+  manifest entry whose archive is absent or `.disabled` is a hard error, not a silent fallback).
 
-- Map 0 = `Azeroth` (`Map.dbc` row 0, directory name field), confirmed from the server's
-  3.3.5 DBC extract.
-- Willem `(-8947.64, -132.319, 83.7199)` and Garrick `(-9056.48, -460.903, 72.8318)` both land
-  in ADT tile `(tile_x, tile_y) = (32, 48)` by `world_to_tile`'s axis-swapped formula. Central
-  tile: `World/Maps/Azeroth/Azeroth_32_48.adt`. The chunk-window streamer keeps a 3×3
-  neighbourhood ready and widens to the farclip window, so the manifest must carry tiles
-  31–33 × 47–49 at minimum (WDT `MAIN` gates the rest; `Azeroth.wdt` and `Azeroth.wdl` are the
-  map-level files).
-- Willem display 2072 and Garrick display 2073 (`creature_template_model.sql:667,94`) both map
-  to `CreatureDisplayInfo` 2072/2073 → model 49 → `Character\Human\Male\HumanMale.mdx`, i.e.
-  `Character/Human/Male/HumanMale.m2` plus its external LOD-0 `HumanMale00.skin`, with no
-  texture variations on either display. The `.mdx`/`.mdl`→`.m2` extension rule and the external
-  skin load already exist (`benilla-assets/src/lib.rs:206-324`, `m2.rs:238-247`), and the M2
-  reader accepts version 264 (`benilla-m2/src/lib.rs:45-49`).
-- Item 182 (Garrick's Head) display 7038 → icon `INV_Misc_Head_Human_01`; item 6076 (Tapered
-  Pants) display 16843 → icon `INV_Pants_11` (`ItemDisplayInfo.dbc`, inventory-icon columns).
-  Both resolve under `Interface/Icons/…blp` through the same profile reader. The reward's worn
-  leg texture columns are not required for the route's quest receipt.
-- Fireball 133 → `SpellVisual` 67 (precast kit 30, cast kit 38, impact kit 286), from
-  `Spell.dbc`/`SpellVisual.dbc`; the existing creature-anim spell-visual path consumes these
-  kit ids from the active profile's DBCs.
+## Pinned route dependencies (from the active profile's bytes, read-only)
 
-## Pipeline stages verified in source
+- Map 0 = `Azeroth` (`Map.dbc`). Willem `(-8947.64, -132.319, 83.7199)` and Garrick
+  `(-9056.48, -460.903, 72.8318)` both fall in ADT tile `(32, 48)`; the central terrain file is
+  `World\Maps\Azeroth\Azeroth_32_48.adt`, present in `common-2.mpq` and superseded by
+  `patch.mpq` (876,720 compressed / 1,824,447 bytes, chunks MVER/MHDR/MCIN/MCNK/MH2O/MDDF/MODF/
+  MWMO/MWID/MMDX/MMID/MTEX). Neighbours 31-33 x 47-49 are the streamer's 3x3 readiness ring;
+  `World\Maps\Azeroth\Azeroth.wdt` gates which exist.
+- WMO paths used by the tile (`MWMO`, exact internal names): `WORLD\WMO\AZEROTH\BUILDINGS\
+  NSABBEY\NSABBEY.WMO` (abbey, 14 groups `NSABBEY_000.WMO`..`NSABBEY_013.WMO`),
+  `WORLD\WMO\AZEROTH\COLLIDABLE DOODADS\ELWYNN\ABBEYGATE02\ABBEYGATE02.WMO`,
+  `...\ABBEYGATE\ABBEYGATE01.WMO`, `...\WIDEBRIDGE\ELWYNNWIDEBRIDGE.WMO`. The tile also carries
+  `STORMWIND.WMO`, `REDRIDGE_STABLE.WMO` and two mine WMOs, and only the MODF-referenced ones load.
+- Abbey interior doodads (`NSABBEY.WMO` MODN, `.MDX` refs): `WORLD\GENERIC\HUMAN\PASSIVE
+  DOODADS\BOOKSTACKS\GENERALBOOKSTACKTALL01.MDX`, `...\STATUES\NORTHSHIREABBEYBUST01.MDX`,
+  `WORLD\GENERIC\PASSIVEDOODADS\LIGHTS\CANDELABRATALLWALL01.MDX`, `...\DRAPERY\DRAPERY01.MDX`,
+  `...\HANGINGLANTERNS\GENERALHANGINGLANTERN01.MDX` (first five of thirty textures).
+- Route environment doodads (`MDDF`, exact `.M2` paths): `WORLD\AZEROTH\ELWYNN\
+  PASSIVEDOODADS\TREES\ELWYNNTREE01\ELWYNNPINE01.M2`, `...\TREES\ELWYNNTREEMID01.M2`,
+  `...\ELWYNNTREECANOPY01.M2`, `...\CLIFFROCKS\ELWYNNCLIFFROCK01.M2`, `...\ELWYNNFENCES\
+  ELWYNNSTONEFENCE.M2`, `...\ELWYNNWOODFENCE01.M2`, `...\LAMPPOST\LAMPPOST.M2`,
+  `...\DETAIL\ELWYNNVINEYARD\ELWYNNVINEYARD01.M2`, `...\WATERBASIN\WATERBASIN.M2`,
+  `...\WATERFALL\ELWYNNTALLWATERFALL01.M2`, `WORLD\GENERIC\BUILDINGS\HUMANTENTLARGE\
+  HUMANTENTLARGE.M2`.
+- Creature displays: Willem display 2072, Garrick display 2073 -> `CreatureModelData` 49 ->
+  `Character\Human\Male\HumanMale.mdx` (`.m2` + external `HumanMale00.skin`), no texture
+  variations. The `.mdx`/`.mdl`->`.m2` rule and external-skin load already exist, as does M2
+  version 264. These pins do **not** identify the selected player; the Auto boot still enters
+  the first enumerated character, so the gate must record the actual character identity.
+- Items: 182 display 7038 -> icon `INV_Misc_Head_Human_01`; 6076 display 16843 -> icon
+  `INV_Pants_11` (`Interface/Icons/...blp` through the same profile). Worn reward appearance is
+  outside a narrow receipt proof but remains required replacement behavior.
+- Fireball 133 -> `SpellVisual` 67 -> kits and their effect textures (read from
+  SpellVisualKit/ModelAttach/EffectName): precast kit 30 -> effect 287 `Spells\Fire_Precast_Hand.mdx`
+  (SoundKit 702); cast kit 38 -> effect 288 `Spells\Fire_Cast_Hand.mdx` (SoundKit 1484); impact
+  kit 286 -> effect 321 `Spells\MoltenBlast_Impact_Chest.mdx` (SoundKit 1507).
 
-- Terrain: ADT chunks read by reversed magic with per-chunk `MCNK` offsets; the header offsets
-  are the 12340 layout (position at 0x68), and `MH2O` is parsed alongside the legacy `MCLQ`
-  (`benilla-adt/src/lib.rs:499-568`, 171-234). 3.3.5 layer/alpha data is handled
-  (`combined_alpha.rs`). WDT `MAIN` gates streaming; WDL exists for the far shell.
-- Models/doodads: ADT placements (MDDF/MODF) feed the same `.m2`/`.wmo` loaders; WMO group
-  files are `<stem>_NNN.wmo`; collision accumulation for terrain and WMO groups is wired.
-- DBC path: the 3.3.5 reader loads from the same profile; Map/CreatureDisplayInfo/
-  CreatureModelData/ItemDisplayInfo/Spell/SpellVisual chains are available.
+## Pipeline stages verified in source (unchanged)
 
-## Demonstrated parser mismatch (needs a version decision before code)
+Profile/manifest reader; `.mdx`->`.m2` and external `.skin`; M2 v264; ADT `MCNK` 12340 offsets
+and `MH2O`; WDT gating; `<stem>_NNN.wmo` group loading; terrain and WMO collision accumulation;
+DBC catalogs from the active profile.
 
-The WMO group header is read with vanilla offsets: `flags` at 0x08, portal refs at 0x24,
-fog indices at 0x30, `group_liquid` at 0x34 (`benilla-formats/src/models/wmo/group.rs:59-80`,
-`benilla-wmo/src/lib.rs:236-241`). The 12340 layout, per the local build's own vmap extractor
-(`src/tools/vmap4_extractor/wmo.cpp:196-210`), is: groupName 0x08, descGroupName 0x0C, flags
-0x10, bbox 0x14–0x2C, moprIdx 0x2C, moprNItems 0x2E, nBatchA 0x30, nBatchB 0x32, nBatchC 0x34,
-fogIdx 0x38, groupLiquid 0x3C, groupWMOID 0x40; the sub-chunk list still starts at 68 in both.
-Consequence: 3.3.5 WMO geometry, batches and textures load correctly, but indoor/outdoor flags,
-WMO liquids, fog and portal refs are read from the wrong fields. Repair requires a
-version-aware header (or a 1.12-client confirmation that the donor offsets are the vanilla
-ones), so it is recorded here rather than edited blind. This is the first WMO repair for the
-graphical gate; the tracked file claim for it will name the two parsers and the version source.
+## Retained open items
 
-## Route and failure checklist for the gate (not executed)
+- Route integration itself (camera, collision, actual streamed scene) is not proven; G/L remain
+  unauthorized and UNKNOWN.
+- Movement flags and command admission are being repaired in the source slice after this
+  document (falling/root/transport bits; movement must never evict critical commands).
+- Aster's inventory reconciliation (`23ec4589`) governs behavior coverage; this document only
+  pins assets.
 
-1. Launch with the `base` profile and the source identity recorded (launch card:
-   `2026-10-25-oc-graphical-acceptance.md`).
-2. Expect a non-empty world, camera follow, and the player body from `HumanMale.m2`; a
-   placeholder cube means the display/model chain or the profile read failed.
-3. Tiles 32/48 and neighbours must appear with terrain, doodads and the abbey WMO; a void
-   horizon means the WDT/tile window or the streamer failed.
-4. Willem must render as a human male NPC (display 2072); Garrick as display 2073.
-5. Icons `INV_Misc_Head_Human_01` and `INV_Pants_11` must resolve in the loot/reward UI; a white
-   icon means the ItemDisplayInfo icon column or the BLP read failed.
-6. Fireball must show its precast/cast/impact kits (30/38/286).
-7. Failure triage order stays: source/profile identity, catalog/asset path (Map,
-   CreatureDisplayInfo, CreatureModelData, M2/SKIN/BLP), translation/camera, server response.
+## Evidence level
 
-## Pending
-
-Graphical and live acceptance remain separately gated (G/L), so every item above is
-source-observed only. The WMO header decision and the Fireball kit-to-texture resolution are the
-two facts the gate itself must confirm against the install.
+All facts above are source/asset reads. No build, test, linter, formatter, archive extraction to
+disk, renderer, socket, server, WM/receiver or live acceptance ran. Any full-route acceptance
+still needs the authorized gate and the run card.
