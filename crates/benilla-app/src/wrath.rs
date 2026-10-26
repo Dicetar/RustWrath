@@ -69,7 +69,7 @@ use benilla_protocol::messages::{
     PeriodicTick as ProtocolPeriodicTick, QuestComplete, QuestDetails, QuestGiverList,
     QuestListEntry, QuestObjective, QuestOfferReward, QuestRequestItems, QuestRewardItem,
     QuestTemplate, SpellDamageLog as ProtocolSpellDamageLog,
-    VendorItem as ProtocolVendorItem,
+    TrainerSpell as ProtocolTrainerSpell, VendorItem as ProtocolVendorItem,
 };
 
 use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, SessionState};
@@ -1719,6 +1719,44 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
                 .collect(),
         }],
         WrathGameplayEvent::GossipComplete => vec![SessionEvent::GossipComplete],
+        WrathGameplayEvent::TrainerList {
+            trainer,
+            trainer_type,
+            services,
+            greeting,
+        } => vec![SessionEvent::TrainerList {
+            trainer,
+            trainer_type,
+            greeting,
+            services: services
+                .into_iter()
+                .map(|row| ProtocolTrainerSpell {
+                    spell: row.spell_id,
+                    state: row.state,
+                    cost: row.cost,
+                    // 12340 collapses the 1.12 pair into PointCost[1]: the primary-profession
+                    // first-rank flag both enables the row and asks for the slot confirmation.
+                    can_learn_primary_prof: row.point_cost[1] != 0,
+                    is_primary_prof_first_rank: row.point_cost[1] != 0,
+                    req_level: row.req_level,
+                    req_skill: row.req_skill_line,
+                    req_skill_value: row.req_skill_rank,
+                    req_spells: row.req_ability,
+                })
+                .collect(),
+        }],
+        WrathGameplayEvent::TrainerBuySucceeded { trainer, spell_id } => {
+            vec![SessionEvent::TrainerBuySucceeded { trainer, spell_id }]
+        }
+        WrathGameplayEvent::TrainerBuyFailed {
+            trainer,
+            spell_id,
+            error,
+        } => vec![SessionEvent::TrainerBuyFailed {
+            trainer,
+            spell_id,
+            error,
+        }],
         WrathGameplayEvent::VendorInventory { vendor, items } => {
             vec![SessionEvent::VendorInventory {
                 vendor,
@@ -2189,6 +2227,14 @@ fn wrath_tap_commands(
             ClientCommand::RepairItem { vendor, item_guid } => Some((
                 benilla_protocol_wrath::opcode::CMSG_REPAIR_ITEM,
                 gameplay::repair_item(vendor, item_guid, false),
+            )),
+            ClientCommand::TrainerList { trainer } => Some((
+                benilla_protocol_wrath::opcode::CMSG_TRAINER_LIST,
+                gameplay::trainer_list(trainer),
+            )),
+            ClientCommand::TrainerBuySpell { trainer, spell_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_TRAINER_BUY_SPELL,
+                gameplay::trainer_buy_spell(trainer, spell_id),
             )),
             _ => None,
         };

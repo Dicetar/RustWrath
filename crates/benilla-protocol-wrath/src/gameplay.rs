@@ -227,6 +227,19 @@ pub fn repair_item(vendor: u64, item_guid: u64, guild_bank: bool) -> Vec<u8> {
     p
 }
 
+/// `CMSG_TRAINER_LIST` (`NPCHandler.cpp:81`): the `Hello` packet's unit guid.
+pub fn trainer_list(trainer: u64) -> Vec<u8> {
+    trainer.to_le_bytes().to_vec()
+}
+
+/// `CMSG_TRAINER_BUY_SPELL` (`NPCPackets.cpp:48`): trainer guid then the service spell.
+pub fn trainer_buy_spell(trainer: u64, spell_id: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&trainer.to_le_bytes());
+    p.extend_from_slice(&spell_id.to_le_bytes());
+    p
+}
+
 /// `CMSG_REPOP_REQUEST` (`MiscHandler.cpp:58-86`): the 12340 handler reads one byte.
 pub fn repop_request() -> Vec<u8> {
     vec![0]
@@ -507,6 +520,21 @@ pub struct VendorRow {
     pub extended_cost: u32,
 }
 
+/// One 12340 `SMSG_TRAINER_LIST` row (`NPCPackets.cpp:31-41`): `point_cost[0]` is the talent
+/// cost (always zero for trainer services) and `point_cost[1]` is the primary-profession
+/// first-rank flag the 1.12 owner splits into its two booleans.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrainerRow {
+    pub spell_id: u32,
+    pub state: u8,
+    pub cost: u32,
+    pub point_cost: [u32; 2],
+    pub req_level: u8,
+    pub req_skill_line: u32,
+    pub req_skill_rank: u32,
+    pub req_ability: [u32; 3],
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ItemPush {
     pub player: u64,
@@ -734,6 +762,21 @@ pub enum ServerEvent {
         /// 12340 writes this word only when non-zero (`PlayerStorage.cpp:4168`).
         param: Option<u32>,
     },
+    TrainerList {
+        trainer: u64,
+        trainer_type: u32,
+        services: Vec<TrainerRow>,
+        greeting: String,
+    },
+    TrainerBuySucceeded {
+        trainer: u64,
+        spell_id: u32,
+    },
+    TrainerBuyFailed {
+        trainer: u64,
+        spell_id: u32,
+        error: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -844,6 +887,9 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_BUY_ITEM => read_buy_item(body),
         SMSG_BUY_FAILED => read_buy_failed(body),
         SMSG_SELL_ITEM => read_sell_failed(body),
+        SMSG_TRAINER_LIST => read_trainer_list(body),
+        SMSG_TRAINER_BUY_SUCCEEDED => read_trainer_buy_succeeded(body),
+        SMSG_TRAINER_BUY_FAILED => read_trainer_buy_failed(body),
         _ => return None,
     })
 }
@@ -906,6 +952,49 @@ fn read_sell_failed(b: &[u8]) -> Result<ServerEvent> {
         item_guid,
         reason: r.u8()?,
         param,
+    })
+}
+
+fn read_trainer_list(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let trainer = r.u64()?;
+    let trainer_type = r.u32()?;
+    let count = r.u32()?;
+    let mut services = Vec::with_capacity((count as usize).min(1024));
+    for _ in 0..count {
+        services.push(TrainerRow {
+            spell_id: r.u32()?,
+            state: r.u8()?,
+            cost: r.u32()?,
+            point_cost: [r.u32()?, r.u32()?],
+            req_level: r.u8()?,
+            req_skill_line: r.u32()?,
+            req_skill_rank: r.u32()?,
+            req_ability: [r.u32()?, r.u32()?, r.u32()?],
+        });
+    }
+    Ok(ServerEvent::TrainerList {
+        trainer,
+        trainer_type,
+        services,
+        greeting: r.cstring()?,
+    })
+}
+
+fn read_trainer_buy_succeeded(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::TrainerBuySucceeded {
+        trainer: r.u64()?,
+        spell_id: r.u32()?,
+    })
+}
+
+fn read_trainer_buy_failed(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::TrainerBuyFailed {
+        trainer: r.u64()?,
+        spell_id: r.u32()?,
+        error: r.u32()?,
     })
 }
 

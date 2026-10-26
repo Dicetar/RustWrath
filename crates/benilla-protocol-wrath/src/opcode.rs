@@ -186,6 +186,13 @@ pub const SMSG_BUY_ITEM: u16 = 0x1A4;
 pub const SMSG_BUY_FAILED: u16 = 0x1A5;
 pub const CMSG_BUYBACK_ITEM: u32 = 0x290;
 pub const CMSG_REPAIR_ITEM: u32 = 0x2A8;
+/// Trainer window (`NPCHandler.cpp:81-135`, `NPCPackets.cpp:25-58`): 12340 rows carry two
+/// point-cost words and three required abilities, where 1.12 carries two booleans.
+pub const CMSG_TRAINER_LIST: u32 = 0x1B0;
+pub const SMSG_TRAINER_LIST: u16 = 0x1B1;
+pub const CMSG_TRAINER_BUY_SPELL: u32 = 0x1B2;
+pub const SMSG_TRAINER_BUY_SUCCEEDED: u16 = 0x1B3;
+pub const SMSG_TRAINER_BUY_FAILED: u16 = 0x1B4;
 pub const SMSG_BINDPOINTUPDATE: u16 = 0x155;
 pub const CMSG_QUERY_TIME: u32 = 0x1CE;
 pub const CMSG_PING: u32 = 0x1DC;

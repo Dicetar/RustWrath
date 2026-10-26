@@ -57,6 +57,17 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: trainer authority path (committed with this record)
+
+Trainer list and purchase were also absent from the Wrath tap. Added the five 12340 opcodes
+(CMSG_TRAINER_LIST 0x1B0, SMSG_TRAINER_LIST 0x1B1, CMSG_TRAINER_BUY_SPELL 0x1B2,
+SMSG_TRAINER_BUY_SUCCEEDED 0x1B3, SMSG_TRAINER_BUY_FAILED 0x1B4), the 38-byte row layout
+from NPCPackets.cpp:25-41, and the two request encoders from NPCPackets.cpp:48-52. The
+12340 row collapses the 1.12 boolean pair into PointCost[1] (primary-profession first rank);
+both 1.12 booleans derive from that word. State values (0 available, 1 unavailable, 2 known)
+match the 1.12 owner, so they pass through. Refresh and purchase now reach the existing trainer
+UI. Live purchase/refusal remains execution-gated.
+
 ## Slice: toggleable combat boundary and UI contract (committed with this record)
 
 `crates/benilla-app/src/combat_mode.rs` owns the only new client state and it is a read model, not
