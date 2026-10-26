@@ -60,6 +60,13 @@ pub fn cast_spell_item(cast_count: u8, spell_id: u32, item_guid: u64) -> Vec<u8>
     cast_spell_with_target(cast_count, spell_id, CastTarget::Item(item_guid))
 }
 
+/// `CMSG_CAST_SPELL` at the partner's trade slot (`CastSpellTradeItem`): 12340 treats the
+/// trade-item guid field as the slot value, with only `TRADE_SLOT_NONTRADED` (6) accepted by
+/// `SpellCastTargets::Update` (`Spell.cpp:487-493`).
+pub fn cast_spell_trade_item(cast_count: u8, spell_id: u32, slot: u8) -> Vec<u8> {
+    cast_spell_with_target(cast_count, spell_id, CastTarget::TradeItem(slot))
+}
+
 /// `CMSG_CAST_SPELL` at a corpse (`CastSpellCorpse`): the ally or enemy corpse mask.
 pub fn cast_spell_corpse(
     cast_count: u8,
@@ -267,7 +274,7 @@ pub enum CastTarget {
     Unit(u64),
     GameObject(u64),
     Item(u64),
-    TradeItem(u64),
+    TradeItem(u8),
     Source([f32; 3]),
     Dest([f32; 3]),
     CorpseAlly(u64),
@@ -291,7 +298,7 @@ fn write_cast_target(p: &mut Vec<u8>, target: CastTarget) {
         CastTarget::Unit(guid) => (TARGET_FLAG_UNIT, guid),
         CastTarget::GameObject(guid) => (TARGET_FLAG_GAMEOBJECT, guid),
         CastTarget::Item(guid) => (TARGET_FLAG_ITEM, guid),
-        CastTarget::TradeItem(guid) => (TARGET_FLAG_TRADE_ITEM, guid),
+        CastTarget::TradeItem(slot) => (TARGET_FLAG_TRADE_ITEM, u64::from(slot)),
         CastTarget::CorpseAlly(guid) => (TARGET_FLAG_CORPSE_ALLY, guid),
         CastTarget::CorpseEnemy(guid) => (TARGET_FLAG_CORPSE_ENEMY, guid),
         CastTarget::Source(point) => {
@@ -431,6 +438,16 @@ pub fn push_quest_to_party(quest: u32) -> Vec<u8> {
     quest.to_le_bytes().to_vec()
 }
 
+/// `MSG_QUEST_PUSH_RESULT` (`QuestHandler.cpp:620-635`): the sharer guid, the quest id and the
+/// one-byte verdict. 12340 requires the quest id the 1.12 command does not carry.
+pub fn quest_push_result(sharer: u64, quest: u32, msg: u8) -> Vec<u8> {
+    let mut p = Vec::with_capacity(13);
+    p.extend_from_slice(&sharer.to_le_bytes());
+    p.extend_from_slice(&quest.to_le_bytes());
+    p.push(msg);
+    p
+}
+
 /// `CMSG_BINDER_ACTIVATE` (`NPCHandler.cpp:286`): the binder guid.
 pub fn binder_activate(binder: u64) -> Vec<u8> {
     binder.to_le_bytes().to_vec()
@@ -465,6 +482,12 @@ pub fn random_roll(min: u32, max: u32) -> Vec<u8> {
     p.extend_from_slice(&min.to_le_bytes());
     p.extend_from_slice(&max.to_le_bytes());
     p
+}
+
+/// `CMSG_ITEM_TEXT_QUERY` (`ItemHandler.cpp:1463`): the item guid. This is the 3.3.5 inscribed
+/// item text, not the 1.12 mail-text `(text_id, mail_id)` form.
+pub fn item_text_query(item_guid: u64) -> Vec<u8> {
+    item_guid.to_le_bytes().to_vec()
 }
 
 /// `CMSG_PAGE_TEXT_QUERY` (`QueryHandler.cpp:361`): page id then the queried guid.
@@ -883,11 +906,19 @@ pub enum ServerEvent {
         spell_id: u32,
         reason: cast_failure::Reason,
         arg: Option<u32>,
+        /// 12340's leading cast counter; the native lifecycle matches terminal edges on it.
+        cast_count: u8,
+        /// The raw `SpellCastResult` code, before the 1.12 reason mapping.
+        raw_reason: u8,
     },
     SpellStart {
         caster: u64,
         spell_id: u32,
         cast_flags: u32,
+        /// 12340's `m_cast_count`: the client's cast identity for this attempt.
+        cast_count: u8,
+        /// The cast item guid when the packet's first guid is not the caster.
+        cast_item: Option<u64>,
         /// 12340's `m_timer`: the time left when the packet was written, not the full cast time.
         cast_time_ms: i32,
         targets: SpellTargets,
@@ -897,6 +928,10 @@ pub enum ServerEvent {
         caster: u64,
         spell_id: u32,
         cast_flags: u32,
+        /// 12340's `m_cast_count`, matching the START that opened this attempt.
+        cast_count: u8,
+        /// 12340's server game-time timestamp on GO, in its own clock domain.
+        server_time_ms: u32,
         hits: Vec<u64>,
         misses: Vec<(u64, u8, u8)>,
         targets: SpellTargets,
@@ -923,7 +958,12 @@ pub enum ServerEvent {
     ChannelUpdate { caster: u64, remaining_ms: u32 },
     /// `SMSG_SPELL_DELAYED`: pushback on a cast in flight.
     SpellDelayed { caster: u64, delay_ms: u32 },
-    SpellFailure { caster: u64, spell_id: u32 },
+    SpellFailure {
+        caster: u64,
+        spell_id: u32,
+        cast_count: u8,
+        raw_reason: u8,
+    },
     /// `SMSG_ATTACKERSTATEUPDATE` mapped onto the 1.12 swing shape.
     AttackerState {
         attacker: u64,
@@ -1122,6 +1162,8 @@ pub enum ServerEvent {
     },
     ServerUnixTime {
         unix_time: u32,
+        /// 12340's `TimeResponse`: seconds until the next daily reset, a distinct native fact.
+        reset_in_secs: u32,
     },
     RandomRoll {
         min: u32,
@@ -1133,6 +1175,23 @@ pub enum ServerEvent {
         page_id: u32,
         text: String,
         next_page_id: u32,
+    },
+    /// `SMSG_INVENTORY_CHANGE_FAILURE`: the raw error, the two item guids and the error-specific
+    /// tail. The shared 1.12 owner consumes only `reason`; the native contract keeps the rest.
+    InventoryFailure {
+        reason: u8,
+        item: Option<u64>,
+        item2: Option<u64>,
+        bag_type: u8,
+        required_level: Option<u32>,
+        item_limit_category: Option<u32>,
+    },
+    /// `SMSG_ITEM_TEXT_QUERY_RESPONSE` (`ItemHandler.cpp:1463-1483`): `has_text == false` means
+    /// the one-byte absent form and no text.
+    ItemText {
+        has_text: bool,
+        item_guid: u64,
+        text: String,
     },
     ShowBank {
         banker: u64,
@@ -1258,9 +1317,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_GM_MESSAGECHAT => read_message_chat(body, true),
         SMSG_CHAT_PLAYER_NOT_FOUND => Reader::new(body).cstring().map(|name| ServerEvent::ChatPlayerNotFound { name }),
         SMSG_NOTIFICATION => Reader::new(body).cstring().map(|text| ServerEvent::Notification { text }),
-        SMSG_AREA_TRIGGER_MESSAGE => Reader::new(body)
-            .cstring()
-            .map(|text| ServerEvent::AreaTriggerMessage { text }),
+        SMSG_AREA_TRIGGER_MESSAGE => read_area_trigger_message(body),
         SMSG_QUEST_CONFIRM_ACCEPT => read_quest_confirm_accept(body),
         MSG_QUEST_PUSH_RESULT => read_quest_push_result(body),
         SMSG_BINDER_CONFIRM => read_binder_confirm(body),
@@ -1270,6 +1327,8 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_QUERY_TIME_RESPONSE => read_server_time(body),
         MSG_RANDOM_ROLL => read_random_roll(body),
         SMSG_PAGE_TEXT_QUERY_RESPONSE => read_page_text(body),
+        SMSG_INVENTORY_CHANGE_FAILURE => read_inventory_failure(body),
+        SMSG_ITEM_TEXT_QUERY_RESPONSE => read_item_text(body),
         SMSG_SHOW_BANK => read_show_bank(body),
         SMSG_BUY_BANK_SLOT_RESULT => u32_body(body).map(|result| ServerEvent::BuyBankSlotResult {
             result,
@@ -1458,6 +1517,43 @@ fn read_quest_push_result(b: &[u8]) -> Result<ServerEvent> {
     })
 }
 
+/// `SMSG_AREA_TRIGGER_MESSAGE` (`WorldSession.cpp:268`): `u32 length` including the terminating
+/// NUL, then the line. The length is authoritative; a mismatch, embedded NUL or trailing byte is
+/// a malformed packet, not an empty message.
+fn read_area_trigger_message(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let length = r.u32()? as usize;
+    if length == 0 {
+        return Err(anyhow::anyhow!("area trigger message length is zero"));
+    }
+    if length > r.remaining() {
+        return Err(anyhow::anyhow!(
+            "area trigger message length {length} exceeds remaining {}",
+            r.remaining()
+        ));
+    }
+    let bytes = r.take(length)?;
+    if bytes.last() != Some(&0) {
+        return Err(anyhow::anyhow!(
+            "area trigger message is not NUL-terminated"
+        ));
+    }
+    if bytes[..length - 1].contains(&0) {
+        return Err(anyhow::anyhow!(
+            "area trigger message contains an embedded NUL"
+        ));
+    }
+    if r.remaining() != 0 {
+        return Err(anyhow::anyhow!(
+            "area trigger message has {} trailing byte(s)",
+            r.remaining()
+        ));
+    }
+    Ok(ServerEvent::AreaTriggerMessage {
+        text: String::from_utf8_lossy(&bytes[..length - 1]).into_owned(),
+    })
+}
+
 fn read_binder_confirm(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     Ok(ServerEvent::BinderConfirm {
@@ -1495,7 +1591,7 @@ fn read_server_time(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     Ok(ServerEvent::ServerUnixTime {
         unix_time: r.u32()?,
-        // The 12340 packet also carries the next daily reset; the 1.12 owner has no field.
+        reset_in_secs: r.u32()?,
     })
 }
 
@@ -1515,6 +1611,69 @@ fn read_page_text(b: &[u8]) -> Result<ServerEvent> {
         page_id: r.u32()?,
         text: r.cstring()?,
         next_page_id: r.u32()?,
+    })
+}
+
+/// `SMSG_INVENTORY_CHANGE_FAILURE` (`PlayerStorage.cpp:4113-4154`): `u8 reason`; when non-zero,
+/// two raw item guids, a bag-type byte, then the reason-specific tail (level, autoequip triple or
+/// item-limit category). `EQUIP_ERR_OK` writes only the reason byte.
+fn read_inventory_failure(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let reason = r.u8()?;
+    if reason == 0 {
+        return Ok(ServerEvent::InventoryFailure {
+            reason,
+            item: None,
+            item2: None,
+            bag_type: 0,
+            required_level: None,
+            item_limit_category: None,
+        });
+    }
+    let item = r.u64()?;
+    let item2 = r.u64()?;
+    let bag_type = r.u8()?;
+    let mut required_level = None;
+    let mut item_limit_category = None;
+    match reason {
+        // EQUIP_ERR_CANT_EQUIP_LEVEL_I / EQUIP_ERR_PURCHASE_LEVEL_TOO_LOW.
+        1 | 87 => required_level = Some(r.u32()?),
+        // EQUIP_ERR_EVENT_AUTOEQUIP_BIND_CONFIRM: item guid, slot, container guid.
+        81 => {
+            let _item = r.u64()?;
+            let _slot = r.u32()?;
+            let _container = r.u64()?;
+        }
+        // EQUIP_ERR_ITEM_MAX_LIMIT_CATEGORY_{COUNT,SOCKETED,EQUIPPED}_EXCEEDED.
+        84 | 85 | 89 => item_limit_category = Some(r.u32()?),
+        _ => {}
+    }
+    Ok(ServerEvent::InventoryFailure {
+        reason,
+        item: Some(item).filter(|value| *value != 0),
+        item2: Some(item2).filter(|value| *value != 0),
+        bag_type,
+        required_level,
+        item_limit_category,
+    })
+}
+
+/// `SMSG_ITEM_TEXT_QUERY_RESPONSE` (`ItemHandler.cpp:1470-1481`): `u8 has_text`; 0 means the
+/// item guid and text follow, 1 means the item has no text and nothing follows.
+fn read_item_text(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let flag = r.u8()?;
+    if flag != 0 {
+        return Ok(ServerEvent::ItemText {
+            has_text: false,
+            item_guid: 0,
+            text: String::new(),
+        });
+    }
+    Ok(ServerEvent::ItemText {
+        has_text: true,
+        item_guid: r.u64()?,
+        text: r.cstring()?,
     })
 }
 
@@ -1727,7 +1886,7 @@ fn read_periodic_aura(b: &[u8]) -> Result<ServerEvent> {
 
 fn read_cast_failed(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    let _cast_count = r.u8()?;
+    let cast_count = r.u8()?;
     let spell_id = r.u32()?;
     let wrath_reason = r.u8()?;
     // `WriteCastResultInfo` (`Spell.cpp:4521-4632`): one argument word for these reasons.
@@ -1745,6 +1904,8 @@ fn read_cast_failed(b: &[u8]) -> Result<ServerEvent> {
         spell_id,
         reason: cast_failure::reason(wrath_reason),
         arg,
+        cast_count,
+        raw_reason: wrath_reason,
     })
 }
 
@@ -1899,9 +2060,9 @@ fn read_spell_go_payloads(
 
 fn read_spell_start(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    let _item = r.packed_guid()?;
+    let item_or_caster = r.packed_guid()?;
     let caster = r.packed_guid()?;
-    let _cast_count = r.u8()?;
+    let cast_count = r.u8()?;
     let spell_id = r.u32()?;
     let cast_flags = r.u32()?;
     let cast_time_ms = r.i32()?;
@@ -1911,6 +2072,8 @@ fn read_spell_start(b: &[u8]) -> Result<ServerEvent> {
         caster,
         spell_id,
         cast_flags,
+        cast_count,
+        cast_item: (item_or_caster != caster).then_some(item_or_caster),
         cast_time_ms,
         targets,
         ammo_display_id,
@@ -2174,13 +2337,18 @@ fn read_logout_response(b: &[u8]) -> Result<ServerEvent> {
 fn read_spell_failure(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let caster = r.packed_guid()?;
-    let _cast_count = r.u8()?;
+    let cast_count = r.u8()?;
     let spell_id = r.u32()?;
-    let _reason = r.u8()?;
+    let raw_reason = r.u8()?;
     // 12340's `SendInterrupted` broadcasts this to every observer, self included (`Spell.cpp:
     // 5126-5141`); 1.12's matching event is `SMSG_SPELL_FAILED_OTHER`, caster-keyed and never a
     // player `SMSG_CAST_RESULT`.
-    Ok(ServerEvent::SpellFailure { caster, spell_id })
+    Ok(ServerEvent::SpellFailure {
+        caster,
+        spell_id,
+        cast_count,
+        raw_reason,
+    })
 }
 
 fn read_spell_delayed(b: &[u8]) -> Result<ServerEvent> {
@@ -2307,10 +2475,10 @@ fn read_spell_go(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let item_or_caster = r.packed_guid()?;
     let caster = r.packed_guid()?;
-    let _cast_count = r.u8()?;
+    let cast_count = r.u8()?;
     let spell_id = r.u32()?;
     let cast_flags = r.u32()?;
-    let _timestamp = r.u32()?;
+    let server_time_ms = r.u32()?;
     let hit_count = r.u8()?;
     let mut hits = Vec::with_capacity(hit_count as usize);
     for _ in 0..hit_count {
@@ -2330,6 +2498,8 @@ fn read_spell_go(b: &[u8]) -> Result<ServerEvent> {
         caster,
         spell_id,
         cast_flags,
+        cast_count,
+        server_time_ms,
         hits,
         misses,
         targets,

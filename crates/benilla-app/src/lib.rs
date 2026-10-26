@@ -195,6 +195,7 @@ mod world_backdrop;
 mod world_console;
 mod world_state;
 mod wrath;
+mod wrath_native;
 mod world_state_ui;
 
 use bevy::prelude::*;

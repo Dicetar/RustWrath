@@ -1,0 +1,737 @@
+//! Native cast/channel lifecycle contract.
+//!
+//! The vanilla `CastBarEdge` is deliberately lossy at its terminal edges: `Stop`,
+//! `Failed` and `Interrupted` carry no spell or cast identity. This module keeps the
+//! 12340 facts needed by `UnitCastingInfo`, `UnitChannelInfo` and the native
+//! `UNIT_SPELLCAST_*` payloads without inventing a second gameplay authority:
+//!
+//! - `WrathNativeUpdate` is the wire-fact feed produced by the session IO thread.
+//! - [`WrathWorldView`] keeps the active cast/channel snapshots keyed by caster.
+//! - [`WrathCastEvent`] is the Bevy message carrying the resolved identity through
+//!   terminal edges (launch, failure, interruption, channel end, scope loss).
+//!
+//! Clock domains are explicit. `observed_at_unix_ms` is the producer's packet-arrival wall
+//! clock. `start_remaining_ms` is 12340's `SMSG_SPELL_START` `m_timer`, the time left when the
+//! packet was written, not the full cast time. `server_time_ms` is 12340's game-time timestamp
+//! on `SMSG_SPELL_GO`, a different clock. No start timestamp, cast id or total cast time is
+//! invented here; the UI resolves display/rank and total time from its spell catalog.
+//!
+//! Interruptibility is `None` unless the wire actually establishes it (it does not in the
+//! START/GO payloads). The consumer must use spell metadata for the "not interruptible" bit.
+
+use bevy::prelude::*;
+
+use benilla_protocol_wrath::gameplay::{ServerEvent as WrathGameplayEvent, SpellTargets};
+
+/// A session/world/revision scope. Native state from an older scope is never valid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WrathScope {
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub state_revision: u64,
+}
+
+/// The facts that identify one cast attempt across its wire edges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathCastIdentity {
+    pub caster: u64,
+    pub spell_id: u32,
+    /// 12340's `m_cast_count`; `None` only where the specific wire edge omits it.
+    pub cast_count: Option<u8>,
+    /// The cast item guid from START/GO when the first guid is not the caster.
+    pub cast_item: Option<u64>,
+}
+
+/// The wire targeting context of a cast, kept separately from the unit target so game-object,
+/// item, source-point and destination-point casts are not collapsed into "no target".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WrathTargetContext {
+    None,
+    Unit(u64),
+    GameObject(u64),
+    Item(u64),
+    Source([f32; 3]),
+    Dest([f32; 3]),
+}
+
+/// A unit's observed health and all seven Wrath power pairs, in protocol units. Each field is
+/// independently `Some` only when the server delivered that word; `Some(0)` is an observed zero,
+/// `None` is unavailable. Display conversions (rage 0-1000, energy/runic 0-100, happiness) belong
+/// to the UI owner, not this contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathUnitResources {
+    pub health: Option<u32>,
+    pub max_health: Option<u32>,
+    pub powers: [Option<u32>; 7],
+    pub max_powers: [Option<u32>; 7],
+    /// `UNIT_FIELD_BYTES_0` high byte: the protocol power type, not a displayed value.
+    pub power_type: Option<u8>,
+}
+
+/// One active cast, as the native read model exposes it. Not a gameplay authority: a
+/// terminal edge removes the entry, and the underlying owners still decide behavior.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathActiveCast {
+    pub scope: WrathScope,
+    pub identity: WrathCastIdentity,
+    pub target: Option<u64>,
+    pub target_context: WrathTargetContext,
+    /// 12340 `m_timer` from START: milliseconds left at packet write.
+    pub start_remaining_ms: Option<u32>,
+    /// 12340 START cast flags, preserved for the consumer.
+    pub cast_flags: u32,
+    pub ammo_display_id: Option<u32>,
+    /// Producer packet-arrival wall clock in ms since the Unix epoch.
+    pub observed_at_unix_ms: i64,
+    /// Accumulated `SMSG_SPELL_DELAYED` pushback observed for this cast.
+    pub pushback_ms: u32,
+    /// 12340's GO game-time timestamp, only once the launch edge arrived.
+    pub go_server_time_ms: Option<u32>,
+    /// A local cancel command was issued; the authoritative terminal is still awaited.
+    pub cancel_requested: bool,
+    /// `None` when the wire does not establish interruptibility.
+    pub interruptible: Option<bool>,
+}
+
+/// A resolved item-text reply (3.3.5 inscription text by item guid). No 1.12 owner exists for
+/// this shape: the vanilla mail-text event addresses `(text_id, mail_id)` instead.
+#[derive(Message, Clone, Debug, PartialEq, Eq)]
+pub struct WrathItemText {
+    pub scope: WrathScope,
+    pub item_guid: u64,
+    pub has_text: bool,
+    pub text: String,
+}
+
+/// One native inventory failure, including the item identities and reason-specific tail the
+/// shared vanilla event cannot carry. `reason` is the 12340 `EQUIP_ERR_*` code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathInventoryFailure {
+    pub reason: u8,
+    pub item: Option<u64>,
+    pub item2: Option<u64>,
+    pub bag_type: u8,
+    pub required_level: Option<u32>,
+    pub item_limit_category: Option<u32>,
+}
+
+/// One native feed item. Kept on its own queue so cast/channel traffic cannot displace lifecycle
+/// edges from the bounded session queue.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WrathNativeFeedEvent {
+    Cast(WrathNativeUpdate),
+    ItemText(WrathItemText),
+    InventoryFailure {
+        failure: WrathInventoryFailure,
+        scope: WrathScope,
+    },
+}
+
+impl WrathNativeFeedEvent {
+    /// The session/world scope this native fact belongs to.
+    pub fn scope(&self) -> WrathScope {
+        match self {
+            Self::Cast(update) => update.scope(),
+            Self::ItemText(text) => text.scope,
+            Self::InventoryFailure { scope, .. } => *scope,
+        }
+    }
+}
+
+/// One active channel, keyed by caster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathActiveChannel {
+    pub scope: WrathScope,
+    pub caster: u64,
+    pub spell_id: u32,
+    pub duration_ms: u32,
+    pub remaining_ms: u32,
+    pub observed_at_unix_ms: i64,
+    pub updated_at_unix_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WrathCastEnd {
+    Launched,
+    Failed,
+    Interrupted,
+    ScopeLost,
+}
+
+/// The last terminal cast edge, retaining the identity after the active map entry is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathCastEnded {
+    pub scope: WrathScope,
+    pub identity: WrathCastIdentity,
+    pub target: Option<u64>,
+    pub ended_at_unix_ms: i64,
+    pub outcome: WrathCastEnd,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WrathScopeLoss {
+    WorldTransfer,
+    SessionEnded,
+    SessionReplaced,
+}
+
+/// One wire fact from the IO thread, before identity resolution against the active map.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WrathNativeUpdate {
+    CastStart {
+        scope: WrathScope,
+        caster: u64,
+        spell_id: u32,
+        cast_count: u8,
+        cast_item: Option<u64>,
+        target: Option<u64>,
+        target_context: WrathTargetContext,
+        remaining_ms: Option<u32>,
+        cast_flags: u32,
+        ammo_display_id: Option<u32>,
+        observed_at_unix_ms: i64,
+    },
+    CastDelayed {
+        scope: WrathScope,
+        caster: u64,
+        delay_ms: u32,
+        observed_at_unix_ms: i64,
+    },
+    CastLaunched {
+        scope: WrathScope,
+        caster: u64,
+        spell_id: u32,
+        cast_count: u8,
+        server_time_ms: u32,
+        observed_at_unix_ms: i64,
+    },
+    CastFailed {
+        scope: WrathScope,
+        caster: u64,
+        spell_id: u32,
+        cast_count: u8,
+        reason: u8,
+        observed_at_unix_ms: i64,
+    },
+    CastInterrupted {
+        scope: WrathScope,
+        caster: u64,
+        spell_id: u32,
+        cast_count: u8,
+        reason: u8,
+        observed_at_unix_ms: i64,
+    },
+    ChannelStart {
+        scope: WrathScope,
+        caster: u64,
+        spell_id: u32,
+        duration_ms: u32,
+        observed_at_unix_ms: i64,
+    },
+    ChannelUpdate {
+        scope: WrathScope,
+        caster: u64,
+        remaining_ms: u32,
+        observed_at_unix_ms: i64,
+    },
+}
+
+/// The resolved native cast/channel edge for UI and WM consumers.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct WrathCastEvent {
+    pub scope: WrathScope,
+    /// Resolved from the active map where the wire edge omits spell/identity.
+    pub identity: Option<WrathCastIdentity>,
+    pub target: Option<u64>,
+    pub target_context: WrathTargetContext,
+    pub observed_at_unix_ms: i64,
+    pub kind: WrathCastEventKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WrathCastEventKind {
+    Started {
+        remaining_ms: Option<u32>,
+    },
+    Delayed {
+        delay_ms: u32,
+        accumulated_ms: u32,
+    },
+    Launched {
+        server_time_ms: u32,
+    },
+    Failed {
+        reason: u8,
+    },
+    Interrupted {
+        reason: u8,
+    },
+    ChannelStarted {
+        duration_ms: u32,
+    },
+    ChannelUpdated {
+        remaining_ms: u32,
+    },
+    ChannelEnded,
+    ScopeInvalidated {
+        reason: WrathScopeLoss,
+    },
+}
+
+/// The wire scope carried by every update.
+impl WrathNativeUpdate {
+    pub fn scope(&self) -> WrathScope {
+        match self {
+            Self::CastStart { scope, .. }
+            | Self::CastDelayed { scope, .. }
+            | Self::CastLaunched { scope, .. }
+            | Self::CastFailed { scope, .. }
+            | Self::CastInterrupted { scope, .. }
+            | Self::ChannelStart { scope, .. }
+            | Self::ChannelUpdate { scope, .. } => *scope,
+        }
+    }
+}
+
+fn take_matching_cast(
+    view: &mut crate::wrath::WrathWorldView,
+    caster: u64,
+    spell_id: u32,
+    cast_count: u8,
+) -> Option<WrathActiveCast> {
+    let matches = view.casts.get(&caster).is_some_and(|cast| {
+        cast.identity.spell_id == spell_id && cast.identity.cast_count == Some(cast_count)
+    });
+    if matches {
+        view.casts.remove(&caster)
+    } else {
+        None
+    }
+}
+
+/// Apply one wire update to the view and return the resolved event to publish. The caller
+/// writes it as a Bevy message; this function only uses the view's active maps.
+pub(crate) fn apply_update(
+    view: &mut crate::wrath::WrathWorldView,
+    update: WrathNativeUpdate,
+) -> Option<WrathCastEvent> {
+    match update {
+        WrathNativeUpdate::CastStart {
+            scope,
+            caster,
+            spell_id,
+            cast_count,
+            cast_item,
+            target,
+            target_context,
+            remaining_ms,
+            cast_flags,
+            ammo_display_id,
+            observed_at_unix_ms,
+        } => {
+            let identity = WrathCastIdentity {
+                caster,
+                spell_id,
+                cast_count: Some(cast_count),
+                cast_item,
+            };
+            view.casts.insert(
+                caster,
+                WrathActiveCast {
+                    scope,
+                    identity,
+                    target,
+                    target_context,
+                    start_remaining_ms: remaining_ms,
+                    cast_flags,
+                    ammo_display_id,
+                    observed_at_unix_ms,
+                    pushback_ms: 0,
+                    go_server_time_ms: None,
+                    cancel_requested: false,
+                    interruptible: None,
+                },
+            );
+            Some(WrathCastEvent {
+                scope,
+                identity: Some(identity),
+                target,
+                target_context,
+                observed_at_unix_ms,
+                kind: WrathCastEventKind::Started { remaining_ms },
+            })
+        }
+        WrathNativeUpdate::CastDelayed {
+            scope,
+            caster,
+            delay_ms,
+            observed_at_unix_ms,
+        } => {
+            if let Some(cast) = view.casts.get_mut(&caster) {
+                cast.pushback_ms = cast.pushback_ms.saturating_add(delay_ms);
+                Some(WrathCastEvent {
+                    scope,
+                    identity: Some(cast.identity),
+                    target: cast.target,
+                    target_context: cast.target_context,
+                    observed_at_unix_ms,
+                    kind: WrathCastEventKind::Delayed {
+                        delay_ms,
+                        accumulated_ms: cast.pushback_ms,
+                    },
+                })
+            } else {
+                // A delay without an active START cannot be attached to an identity; do not
+                // manufacture one for the UI.
+                None
+            }
+        }
+        WrathNativeUpdate::CastLaunched {
+            scope,
+            caster,
+            spell_id,
+            cast_count,
+            server_time_ms,
+            observed_at_unix_ms,
+        } => {
+            let ended = take_matching_cast(&mut *view, caster, spell_id, cast_count);
+            let (identity, target, target_context) = match ended {
+                Some(cast) => (cast.identity, cast.target, cast.target_context),
+                None => (
+                    WrathCastIdentity {
+                        caster,
+                        spell_id,
+                        cast_count: Some(cast_count),
+                        cast_item: None,
+                    },
+                    None,
+                    WrathTargetContext::None,
+                ),
+            };
+            view.last_cast_end = Some(WrathCastEnded {
+                scope,
+                identity,
+                target,
+                ended_at_unix_ms: observed_at_unix_ms,
+                outcome: WrathCastEnd::Launched,
+            });
+            Some(WrathCastEvent {
+                scope,
+                identity: Some(identity),
+                target,
+                target_context,
+                observed_at_unix_ms,
+                kind: WrathCastEventKind::Launched { server_time_ms },
+            })
+        }
+        WrathNativeUpdate::CastFailed {
+            scope,
+            caster,
+            spell_id,
+            cast_count,
+            reason,
+            observed_at_unix_ms,
+        } => {
+            let caster = if caster == 0 { view.player_guid } else { caster };
+            let ended = take_matching_cast(&mut *view, caster, spell_id, cast_count);
+            let (identity, target, target_context) = match ended {
+                Some(cast) => (cast.identity, cast.target, cast.target_context),
+                None => (
+                    WrathCastIdentity {
+                        caster,
+                        spell_id,
+                        cast_count: Some(cast_count),
+                        cast_item: None,
+                    },
+                    None,
+                    WrathTargetContext::None,
+                ),
+            };
+            view.last_cast_end = Some(WrathCastEnded {
+                scope,
+                identity,
+                target,
+                ended_at_unix_ms: observed_at_unix_ms,
+                outcome: WrathCastEnd::Failed,
+            });
+            Some(WrathCastEvent {
+                scope,
+                identity: Some(identity),
+                target,
+                target_context,
+                observed_at_unix_ms,
+                kind: WrathCastEventKind::Failed { reason },
+            })
+        }
+        WrathNativeUpdate::CastInterrupted {
+            scope,
+            caster,
+            spell_id,
+            cast_count,
+            reason,
+            observed_at_unix_ms,
+        } => {
+            let ended = take_matching_cast(&mut *view, caster, spell_id, cast_count);
+            let (identity, target, target_context) = match ended {
+                Some(cast) => (cast.identity, cast.target, cast.target_context),
+                None => (
+                    WrathCastIdentity {
+                        caster,
+                        spell_id,
+                        cast_count: Some(cast_count),
+                        cast_item: None,
+                    },
+                    None,
+                    WrathTargetContext::None,
+                ),
+            };
+            view.last_cast_end = Some(WrathCastEnded {
+                scope,
+                identity,
+                target,
+                ended_at_unix_ms: observed_at_unix_ms,
+                outcome: WrathCastEnd::Interrupted,
+            });
+            Some(WrathCastEvent {
+                scope,
+                identity: Some(identity),
+                target,
+                target_context,
+                observed_at_unix_ms,
+                kind: WrathCastEventKind::Interrupted { reason },
+            })
+        }
+        WrathNativeUpdate::ChannelStart {
+            scope,
+            caster,
+            spell_id,
+            duration_ms,
+            observed_at_unix_ms,
+        } => {
+            view.channels.insert(
+                caster,
+                WrathActiveChannel {
+                    scope,
+                    caster,
+                    spell_id,
+                    duration_ms,
+                    remaining_ms: duration_ms,
+                    observed_at_unix_ms,
+                    updated_at_unix_ms: observed_at_unix_ms,
+                },
+            );
+            Some(WrathCastEvent {
+                scope,
+                identity: Some(WrathCastIdentity {
+                    caster,
+                    spell_id,
+                    cast_count: None,
+                    cast_item: None,
+                }),
+                target: None,
+                target_context: WrathTargetContext::None,
+                observed_at_unix_ms,
+                kind: WrathCastEventKind::ChannelStarted { duration_ms },
+            })
+        }
+        WrathNativeUpdate::ChannelUpdate {
+            scope,
+            caster,
+            remaining_ms,
+            observed_at_unix_ms,
+        } => {
+            let ended = if remaining_ms == 0 {
+                view.channels.remove(&caster)
+            } else {
+                view.channels.get_mut(&caster).map(|channel| {
+                    channel.remaining_ms = remaining_ms;
+                    channel.updated_at_unix_ms = observed_at_unix_ms;
+                    *channel
+                })
+            };
+            ended.map(|channel| WrathCastEvent {
+                scope,
+                identity: Some(WrathCastIdentity {
+                    caster,
+                    spell_id: channel.spell_id,
+                    cast_count: None,
+                    cast_item: None,
+                }),
+                target: None,
+                target_context: WrathTargetContext::None,
+                observed_at_unix_ms,
+                kind: if remaining_ms == 0 {
+                    WrathCastEventKind::ChannelEnded
+                } else {
+                    WrathCastEventKind::ChannelUpdated { remaining_ms }
+                },
+            })
+        }
+    }
+}
+
+/// Drop all active native cast/channel state for a scope loss, returning the events the UI
+/// needs to close its bars. Does not invent success or failure: the outcome is `ScopeLost`.
+pub(crate) fn invalidate_scope(
+    view: &mut crate::wrath::WrathWorldView,
+    reason: WrathScopeLoss,
+    observed_at_unix_ms: i64,
+) -> Vec<WrathCastEvent> {
+    let mut events = Vec::new();
+    for (_, cast) in std::mem::take(&mut view.casts) {
+        view.last_cast_end = Some(WrathCastEnded {
+            scope: cast.scope,
+            identity: cast.identity,
+            target: cast.target,
+            ended_at_unix_ms: observed_at_unix_ms,
+            outcome: WrathCastEnd::ScopeLost,
+        });
+        events.push(WrathCastEvent {
+            scope: cast.scope,
+            identity: Some(cast.identity),
+            target: cast.target,
+            target_context: cast.target_context,
+            observed_at_unix_ms,
+            kind: WrathCastEventKind::ScopeInvalidated { reason },
+        });
+    }
+    for (_, channel) in std::mem::take(&mut view.channels) {
+        events.push(WrathCastEvent {
+            scope: channel.scope,
+            identity: Some(WrathCastIdentity {
+                caster: channel.caster,
+                spell_id: channel.spell_id,
+                cast_count: None,
+                cast_item: None,
+            }),
+            target: None,
+            target_context: WrathTargetContext::None,
+            observed_at_unix_ms,
+            kind: WrathCastEventKind::ScopeInvalidated { reason },
+        });
+    }
+    events
+}
+
+/// Map the parsed target block onto the contract, preferring the object target. The unit guid is
+/// also kept in `WrathActiveCast::target`; a destination/source-only cast therefore still carries
+/// its points here.
+fn target_context(targets: &SpellTargets) -> WrathTargetContext {
+    if let Some(guid) = targets.unit {
+        WrathTargetContext::Unit(guid)
+    } else if let Some(guid) = targets.gameobject {
+        WrathTargetContext::GameObject(guid)
+    } else if let Some(guid) = targets.item {
+        WrathTargetContext::Item(guid)
+    } else if let Some(point) = targets.source {
+        WrathTargetContext::Source(point)
+    } else if let Some(point) = targets.dest {
+        WrathTargetContext::Dest(point)
+    } else {
+        WrathTargetContext::None
+    }
+}
+
+/// Translate one parsed gameplay event into a wire-fact update. `scope` and the arrival time
+/// come from the session loop, not from a UI clock.
+pub(crate) fn update_from_gameplay(
+    event: &WrathGameplayEvent,
+    scope: WrathScope,
+    observed_at_unix_ms: i64,
+) -> Option<WrathNativeUpdate> {
+    Some(match event {
+        WrathGameplayEvent::SpellStart {
+            caster,
+            spell_id,
+            cast_flags,
+            cast_count,
+            cast_item,
+            cast_time_ms,
+            targets,
+            ammo_display_id,
+        } => WrathNativeUpdate::CastStart {
+            scope,
+            caster: *caster,
+            spell_id: *spell_id,
+            cast_count: *cast_count,
+            cast_item: *cast_item,
+            target: targets.unit,
+            target_context: target_context(targets),
+            remaining_ms: (*cast_time_ms >= 0).then_some(*cast_time_ms as u32),
+            cast_flags: *cast_flags,
+            ammo_display_id: *ammo_display_id,
+            observed_at_unix_ms,
+        },
+        WrathGameplayEvent::SpellDelayed { caster, delay_ms } => {
+            WrathNativeUpdate::CastDelayed {
+                scope,
+                caster: *caster,
+                delay_ms: *delay_ms,
+                observed_at_unix_ms,
+            }
+        }
+        WrathGameplayEvent::SpellGo {
+            caster,
+            spell_id,
+            cast_count,
+            server_time_ms,
+            ..
+        } => WrathNativeUpdate::CastLaunched {
+            scope,
+            caster: *caster,
+            spell_id: *spell_id,
+            cast_count: *cast_count,
+            server_time_ms: *server_time_ms,
+            observed_at_unix_ms,
+        },
+        WrathGameplayEvent::CastFailed {
+            spell_id,
+            cast_count,
+            raw_reason,
+            ..
+        } => WrathNativeUpdate::CastFailed {
+            scope,
+            // `SMSG_CAST_FAILED` names no caster: it is the local client's own attempt.
+            caster: 0,
+            spell_id: *spell_id,
+            cast_count: *cast_count,
+            reason: *raw_reason,
+            observed_at_unix_ms,
+        },
+        WrathGameplayEvent::SpellFailure {
+            caster,
+            spell_id,
+            cast_count,
+            raw_reason,
+            ..
+        } => WrathNativeUpdate::CastInterrupted {
+            scope,
+            caster: *caster,
+            spell_id: *spell_id,
+            cast_count: *cast_count,
+            reason: *raw_reason,
+            observed_at_unix_ms,
+        },
+        WrathGameplayEvent::ChannelStart {
+            caster,
+            spell_id,
+            duration_ms,
+        } => WrathNativeUpdate::ChannelStart {
+            scope,
+            caster: *caster,
+            spell_id: *spell_id,
+            duration_ms: *duration_ms,
+            observed_at_unix_ms,
+        },
+        WrathGameplayEvent::ChannelUpdate {
+            caster,
+            remaining_ms,
+        } => WrathNativeUpdate::ChannelUpdate {
+            scope,
+            caster: *caster,
+            remaining_ms: *remaining_ms,
+            observed_at_unix_ms,
+        },
+        _ => return None,
+    })
+}

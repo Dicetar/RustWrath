@@ -1644,6 +1644,14 @@ pub(crate) enum ClientCommand {
         sharer: u64,
         msg: benilla_protocol::messages::QuestShareMsg,
     },
+    /// Wrath-only typed contract: `MSG_QUEST_PUSH_RESULT` also carries the quest id
+    /// (`QuestHandler.cpp:620-635`). The 1.12 form above cannot express it and is refused on the
+    /// Wrath path instead of guessing.
+    QuestPushResultForQuest {
+        sharer: u64,
+        quest: u32,
+        msg: benilla_protocol::messages::QuestShareMsg,
+    },
     // ── Mail ──
     /// `CMSG_GET_MAIL_LIST`: the window's open and refresh.
     GetMailList {
@@ -1698,6 +1706,12 @@ pub(crate) enum ClientCommand {
     ItemTextQuery {
         text_id: u32,
         mail_id: u32,
+    },
+    /// Wrath-only typed contract: `CMSG_ITEM_TEXT_QUERY` by the item guid (3.3.5 inscription
+    /// text). The 1.12 mail-text form above has no equivalent wire body; this variant is ignored
+    /// on the baseline connection.
+    ItemTextByGuid {
+        item_guid: u64,
     },
     /// `MSG_QUERY_NEXT_MAIL_TIME`, on entering the world, to seed `HasNewMail()`.
     QueryNextMailTime,

@@ -1,5 +1,20 @@
 # OC — connected gameplay campaign (2026-10-26)
 
+## Corrections (native contract campaign, base `bf9aaf5e`)
+
+- `SMSG_AREA_TRIGGER_MESSAGE` is `u32 length` (including NUL) + line, not a C string from byte 0.
+  The parser now enforces the length, the terminator, no embedded NUL and no trailing bytes.
+- `SMSG_QUERY_TIME_RESPONSE` carries `ServerTime` and `TimeResponse`; both are parsed and the
+  reset word is retained in `WrathServerClock` (the earlier “parsed and dropped” claim was wrong).
+- `SMSG_PLAYED_TIME`'s `TriggerScriptEvent` byte is retained in `WrathPlayedTime`; “parsed” is not
+  presented as faithfully consumed when the shared owner cannot express it.
+- Item-text query is now implemented as a typed 3.3.5 contract (item guid + native reply), not
+  skipped. The 1.12 `(text_id, mail_id)` form is not overloaded.
+- Quest-share decline now has a typed quest-id form; the 1.12 form is explicitly refused on the
+  Wrath path instead of silently dropped.
+- These findings are parser/data corrections. Packet framing is a separate layer; no claim here
+  asserts stream desynchronization.
+
 Base: `cc65287b` on `wotlk`. This claim covers the client/protocol/gameplay lane requested in the
 six-hour campaign. Astra owns UI-host/API compatibility, installed-addon compatibility and
 combat-mode presentation; procgen files stay out of scope.

@@ -79,6 +79,9 @@ use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, Session
 /// Bounded lifecycle queue depth: lifetimes of interest are short (one world transfer is one
 /// event); 16 gives many frames of headroom at one-event-per-transfer rates.
 pub const WRATH_EVENT_CAPACITY: usize = 16;
+/// Native cast/channel/item-text queue depth. Separate from the lifecycle queue so game traffic
+/// cannot evict a terminal lifecycle edge.
+pub const WRATH_NATIVE_EVENT_CAPACITY: usize = 64;
 
 /// Per-frame drain bound for the Net-stage system: a burst longer than this leaves the rest
 /// for the next frame instead of starving input (R5 budget; measured, not tuned, per frame).
@@ -174,6 +177,23 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// The 12340 server clock: unix seconds plus the seconds until the next daily reset. The
+    /// shared vanilla event carries only the unix time.
+    ServerClock {
+        unix_time: u32,
+        reset_in_secs: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `/played` plus 12340's script-event trigger, so the native consumer can distinguish the
+    /// chat-display case the shared owner cannot express.
+    PlayedTime {
+        total: u32,
+        level: u32,
+        trigger_script_event: bool,
+        session_epoch: u64,
+        world_generation: u64,
+    },
 }
 
 impl WrathFeedEvent {
@@ -191,6 +211,9 @@ impl WrathFeedEvent {
 pub struct WrathFeed {
     pub latest: WrathLatest,
     pub events: WrathEvents,
+    /// Native cast/channel/item-text/failure traffic on its own bounded queue so it cannot
+    /// displace the lifecycle edges.
+    native: Arc<Mutex<VecDeque<crate::wrath_native::WrathNativeFeedEvent>>>,
 }
 
 impl WrathFeed {
@@ -198,6 +221,9 @@ impl WrathFeed {
         Self {
             latest: Arc::new(Mutex::new(None)),
             events: Arc::new(Mutex::new(VecDeque::with_capacity(WRATH_EVENT_CAPACITY))),
+            native: Arc::new(Mutex::new(VecDeque::with_capacity(
+                WRATH_NATIVE_EVENT_CAPACITY,
+            ))),
         }
     }
 
@@ -208,6 +234,22 @@ impl WrathFeed {
             }
             queue.push_back(event);
         }
+    }
+
+    fn push_native(&self, event: crate::wrath_native::WrathNativeFeedEvent) {
+        if let Ok(mut queue) = self.native.lock() {
+            if queue.len() >= WRATH_NATIVE_EVENT_CAPACITY {
+                queue.pop_front();
+            }
+            queue.push_back(event);
+        }
+    }
+
+    fn take_native(&self) -> Vec<crate::wrath_native::WrathNativeFeedEvent> {
+        self.native
+            .lock()
+            .map(|mut queue| queue.drain(..).collect())
+            .unwrap_or_default()
     }
 
     fn publish_digest(&self, digest: WorldDigest) {
@@ -290,6 +332,11 @@ pub struct WrathEntity {
     pub scale: Option<f32>,
     pub health: Option<u32>,
     pub max_health: Option<u32>,
+    /// Wrath's seven current power slots, protocol units, each independently observed. `None`
+    /// means the word was never delivered; `Some(0)` is an observed zero.
+    pub powers: [Option<u32>; 7],
+    /// The seven matching maxima, same observed/unavailable semantics.
+    pub max_powers: [Option<u32>; 7],
     pub level: Option<u32>,
     /// `UNIT_FIELD_BYTES_0`: race, class, sex, power type.
     pub bytes_0: Option<u32>,
@@ -702,6 +749,23 @@ impl WrathControl {
     }
 }
 
+/// 12340's server clock as a native fact pair: the unix second the server reported and the
+/// seconds until its next daily reset. The vanilla clock owner keeps only the former.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathServerClock {
+    pub unix_time: u32,
+    pub reset_in_secs: u32,
+}
+
+/// `/played`'s answer with 12340's `TriggerScriptEvent` meaning preserved. `true` is the
+/// script-triggered form, which does not request the normal chat display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathPlayedTime {
+    pub total: u32,
+    pub level: u32,
+    pub trigger_script_event: bool,
+}
+
 /// The drained replicated world, as the Input/Stream/Presentation stages read it. Maintained
 /// by the Net-stage drain; a world-generation change clears the entity map before anything
 /// downstream runs this frame.
@@ -726,6 +790,20 @@ pub struct WrathWorldView {
     /// The open vendor's 12340 rows (vendor guid, rows). Buy packets address the 1-based row,
     /// while the stock command carries only the template entry.
     pub vendor: Option<(u64, Vec<gameplay::VendorRow>)>,
+    /// The last 12340 server clock answer; retained across a world transfer, cleared by a new
+    /// session or a terminal edge.
+    pub server_clock: Option<WrathServerClock>,
+    /// The last `/played` answer with its trigger semantics; session-scoped state.
+    pub played_time: Option<WrathPlayedTime>,
+    /// Active native casts keyed by caster, retaining 12340 identity/timing beyond the vanilla
+    /// cast-bar edges. Removed by the authoritative terminal edge.
+    pub casts: BTreeMap<u64, crate::wrath_native::WrathActiveCast>,
+    /// Active native channels keyed by caster.
+    pub channels: BTreeMap<u64, crate::wrath_native::WrathActiveChannel>,
+    /// The last terminal cast edge, retained after its active entry is removed.
+    pub last_cast_end: Option<crate::wrath_native::WrathCastEnded>,
+    /// The last native inventory failure with identities/tail; transient display state.
+    pub last_inventory_failure: Option<crate::wrath_native::WrathInventoryFailure>,
     /// Monotonic cast count for `CMSG_CAST_SPELL`.
     pub next_cast_count: u8,
 }
@@ -745,15 +823,79 @@ impl Default for WrathWorldView {
             entered_world: false,
             gossip_menu: None,
             vendor: None,
+            server_clock: None,
+            played_time: None,
+            casts: BTreeMap::new(),
+            channels: BTreeMap::new(),
+            last_cast_end: None,
+            last_inventory_failure: None,
             next_cast_count: 1,
             empty: (),
         }
     }
 }
 
+impl WrathWorldView {
+    /// The active native cast for `unit`, if the START edge is still open. `None` after the
+    /// authoritative launch/failure/interruption edge, even though `last_cast_end` keeps its
+    /// identity for diagnostics.
+    pub fn casting(&self, unit: u64) -> Option<&crate::wrath_native::WrathActiveCast> {
+        self.casts.get(&unit)
+    }
+
+    /// The active native channel for `unit`, if any.
+    pub fn channeling(&self, unit: u64) -> Option<&crate::wrath_native::WrathActiveChannel> {
+        self.channels.get(&unit)
+    }
+
+    /// Record that a local cancel command was issued for `spell_id`. This is not a terminal
+    /// state: the authoritative failure/interruption/launch edge still decides the outcome.
+    pub fn note_cancel_requested(&mut self, caster: u64, spell_id: u32) -> bool {
+        if let Some(cast) = self.casts.get_mut(&caster) {
+            if cast.identity.spell_id == spell_id {
+                cast.cancel_requested = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The observed resources for any replicated unit. See
+    /// [`crate::wrath_native::WrathUnitResources`] for the observed-zero/unavailable contract.
+    pub fn resources(&self, guid: u64) -> Option<crate::wrath_native::WrathUnitResources> {
+        let entity = self.entities.get(&guid)?;
+        Some(crate::wrath_native::WrathUnitResources {
+            health: entity.health,
+            max_health: entity.max_health,
+            powers: entity.powers,
+            max_powers: entity.max_powers,
+            power_type: entity
+                .bytes_0
+                .map(|bytes| ((bytes >> 24) & 0xff) as u8),
+        })
+    }
+
+    /// The full native aura slots for `guid`; each slot retains 12340's caster, flags, charges
+    /// and durations. The synthesized vanilla aura fields are a separate projection.
+    pub fn auras(&self, guid: u64) -> &[benilla_protocol_wrath::reducer::AuraSlot] {
+        self.entities
+            .get(&guid)
+            .map_or(&[], |entity| entity.auras.as_slice())
+    }
+
+    /// The last terminal cast edge only when it belongs to the currently adopted scope. A
+    /// transfer/replacement leaves the old record in place for diagnostics but this accessor
+    /// never presents it as current.
+    pub fn last_cast_end_in_scope(&self) -> Option<&crate::wrath_native::WrathCastEnded> {
+        self.last_cast_end.as_ref().filter(|ended| {
+            ended.scope.session_epoch == self.session_epoch
+                && ended.scope.world_generation == self.world_generation
+        })
+    }
+}
+
 #[derive(Default, Clone, Debug, PartialEq)]
-pub struct WrathChanges {
-    pub created: Vec<u64>,
+pub struct WrathChanges {    pub created: Vec<u64>,
     pub updated: Vec<u64>,
     pub removed: Vec<u64>,
     pub world_transferred: bool,
@@ -790,7 +932,9 @@ impl Plugin for WrathNetPlugin {
             publisher_retire_rx: None,
             wm_actions: None,
         })
-        .init_resource::<WrathWorldView>();
+        .init_resource::<WrathWorldView>()
+        .add_message::<crate::wrath_native::WrathCastEvent>()
+        .add_message::<crate::wrath_native::WrathItemText>();
         if self.config.is_some() {
             app.insert_resource(WrathInput(commands));
             // The select screen's asks and Enters travel the stock `CharPick` channel, whose
@@ -1369,7 +1513,7 @@ fn wrath_cast_target(
         UseItemTarget::Source(point) => gameplay::CastTarget::Source(point),
         UseItemTarget::Corpse(CorpseTarget::Ally, guid) => gameplay::CastTarget::CorpseAlly(guid),
         UseItemTarget::Corpse(CorpseTarget::Enemy, guid) => gameplay::CastTarget::CorpseEnemy(guid),
-        UseItemTarget::TradeItem(_) => return None,
+        UseItemTarget::TradeItem(slot) => gameplay::CastTarget::TradeItem(slot),
     })
 }
 
@@ -1569,6 +1713,7 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             spell_id,
             reason,
             arg,
+            ..
         } => {
             let (reason, arg) = match reason {
                 cast_failure::Reason::Vanilla(reason) => (Some(reason), arg),
@@ -1593,6 +1738,7 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             cast_time_ms,
             targets,
             ammo_display_id,
+            ..
         } => vec![SessionEvent::SpellStart {
             caster,
             spell_id,
@@ -1674,7 +1820,11 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
         }
         WrathGameplayEvent::LoggedOut => vec![SessionEvent::LoggedOut],
         WrathGameplayEvent::LogoutCancelled => vec![SessionEvent::LogoutCancelled],
-        WrathGameplayEvent::SpellFailure { caster, spell_id } => {
+        WrathGameplayEvent::SpellFailure {
+            caster,
+            spell_id,
+            ..
+        } => {
             vec![SessionEvent::SpellFailedOther { caster, spell_id }]
         }
         WrathGameplayEvent::SpellGo {
@@ -1686,6 +1836,7 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             targets,
             ammo_display_id,
             item_caster,
+            ..
         } => vec![SessionEvent::SpellGo {
             caster,
             spell_id,
@@ -1943,7 +2094,10 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             level,
             trigger: _,
         } => vec![SessionEvent::PlayedTime { total, level }],
-        WrathGameplayEvent::ServerUnixTime { unix_time } => {
+        WrathGameplayEvent::ServerUnixTime {
+            unix_time,
+            reset_in_secs: _,
+        } => {
             vec![SessionEvent::ServerUnixTime { unix_time }]
         }
         WrathGameplayEvent::RandomRoll {
@@ -1957,6 +2111,10 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             roll,
             guid,
         }],
+        WrathGameplayEvent::InventoryFailure { reason, .. } => {
+            vec![SessionEvent::InventoryFailure { reason }]
+        }
+        WrathGameplayEvent::ItemText { .. } => Vec::new(),
         WrathGameplayEvent::PageText {
             page_id,
             text,
@@ -2393,10 +2551,16 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_SET_ACTIVE_MOVER,
                 guid.to_le_bytes().to_vec(),
             )),
-            ClientCommand::SetActionButton { button, packed } => Some((
+            ClientCommand::SetActionButton { button, packed } if button < 144 => Some((
                 0x128, // CMSG_SET_ACTION_BUTTON
                 gameplay::set_action_button(button, packed),
             )),
+            ClientCommand::SetActionButton { button, .. } => {
+                debug!(
+                    "wrath: action button {button} is outside the 12340 0..143 range; refused"
+                );
+                None
+            }
             ClientCommand::RepopRequest => Some((
                 benilla_protocol_wrath::opcode::CMSG_REPOP_REQUEST,
                 gameplay::repop_request(),
@@ -2505,6 +2669,20 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_PUSHQUESTTOPARTY,
                 gameplay::push_quest_to_party(quest),
             )),
+            ClientCommand::QuestPushResultForQuest {
+                sharer,
+                quest,
+                msg,
+            } => Some((
+                benilla_protocol_wrath::opcode::MSG_QUEST_PUSH_RESULT,
+                gameplay::quest_push_result(sharer, quest, msg.0),
+            )),
+            ClientCommand::QuestPushResult { .. } => {
+                debug!(
+                    "wrath: quest-share decline refused: the 12340 packet requires a quest id"
+                );
+                None
+            }
             ClientCommand::BinderActivate { binder } => Some((
                 benilla_protocol_wrath::opcode::CMSG_BINDER_ACTIVATE,
                 gameplay::binder_activate(binder),
@@ -2533,6 +2711,10 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_PAGE_TEXT_QUERY,
                 gameplay::page_text_query(page_id, guid),
             )),
+            ClientCommand::ItemTextByGuid { item_guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_ITEM_TEXT_QUERY,
+                gameplay::item_text_query(item_guid),
+            )),
             ClientCommand::SetSheathed { state } => Some((
                 benilla_protocol_wrath::opcode::CMSG_SET_SHEATHED,
                 gameplay::set_sheathed(state),
@@ -2549,14 +2731,22 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_SET_ACTIONBAR_TOGGLES,
                 gameplay::set_action_bar_toggles(toggles),
             )),
-            ClientCommand::CancelCast { spell_id } => Some((
-                benilla_protocol_wrath::opcode::CMSG_CANCEL_CAST,
-                gameplay::cancel_cast(spell_id),
-            )),
-            ClientCommand::CancelChannelling { spell_id } => Some((
-                benilla_protocol_wrath::opcode::CMSG_CANCEL_CHANNELLING,
-                gameplay::cancel_channelling(spell_id),
-            )),
+            ClientCommand::CancelCast { spell_id } => {
+                let self_guid = view.player_guid;
+                view.note_cancel_requested(self_guid, spell_id);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_CANCEL_CAST,
+                    gameplay::cancel_cast(spell_id),
+                ))
+            }
+            ClientCommand::CancelChannelling { spell_id } => {
+                let self_guid = view.player_guid;
+                view.note_cancel_requested(self_guid, spell_id);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_CANCEL_CHANNELLING,
+                    gameplay::cancel_channelling(spell_id),
+                ))
+            }
             ClientCommand::CancelAura { spell_id } => Some((
                 benilla_protocol_wrath::opcode::CMSG_CANCEL_AURA,
                 gameplay::cancel_aura(spell_id),
@@ -2595,6 +2785,14 @@ fn wrath_tap_commands(
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
                     gameplay::cast_spell_item(count, spell_id, item_guid),
+                ))
+            }
+            ClientCommand::CastSpellTradeItem { spell_id, slot } => {
+                let count = view.next_cast_count;
+                view.next_cast_count = count.wrapping_add(1).max(1);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
+                    gameplay::cast_spell_trade_item(count, spell_id, slot),
                 ))
             }
             ClientCommand::CastSpellCorpse {
@@ -2965,7 +3163,14 @@ fn wrath_net_drain(
     mut control: ResMut<WrathControl>,
     mut view: ResMut<WrathWorldView>,
     mut actions: Option<ResMut<WrathWmActions>>,
+    mut cast_events: MessageWriter<crate::wrath_native::WrathCastEvent>,
+    mut item_text_events: MessageWriter<crate::wrath_native::WrathItemText>,
 ) {
+    let native = control
+        .feed
+        .as_ref()
+        .map(|feed| feed.take_native())
+        .unwrap_or_default();
     let mut drained = 0usize;
     for event in control.take_events() {
         if drained >= WRATH_DRAIN_LIMIT {
@@ -2976,6 +3181,13 @@ fn wrath_net_drain(
             WrathFeedEvent::Phase(phase) => view.phase = Some(phase),
             WrathFeedEvent::WorldTransfer { world_generation, map_id } => {
                 // Same-frame teardown: old-scope entities are gone before Input runs.
+                for event in crate::wrath_native::invalidate_scope(
+                    &mut *view,
+                    crate::wrath_native::WrathScopeLoss::WorldTransfer,
+                    now_ms(),
+                ) {
+                    cast_events.write(event);
+                }
                 view.entities.clear();
                 view.world_generation = world_generation;
                 view.map_id = map_id;
@@ -2983,6 +3195,7 @@ fn wrath_net_drain(
                 view.player_guid = 0;
                 view.entered_world = false;
                 view.vendor = None;
+                view.last_inventory_failure = None;
                 view.last_changes.world_transferred = true;
             }
             WrathFeedEvent::GossipMenu {
@@ -3013,6 +3226,44 @@ fn wrath_net_drain(
                     world_generation,
                 ) {
                     view.vendor = Some((vendor, items));
+                }
+            }
+            WrathFeedEvent::ServerClock {
+                unix_time,
+                reset_in_secs,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.server_clock = Some(WrathServerClock {
+                        unix_time,
+                        reset_in_secs,
+                    });
+                }
+            }
+            WrathFeedEvent::PlayedTime {
+                total,
+                level,
+                trigger_script_event,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.played_time = Some(WrathPlayedTime {
+                        total,
+                        level,
+                        trigger_script_event,
+                    });
                 }
             }
             WrathFeedEvent::ExportSkipped(reason) => {
@@ -3060,12 +3311,22 @@ fn wrath_net_drain(
                         "session ended before an authoritative result",
                     );
                 }
+                for event in crate::wrath_native::invalidate_scope(
+                    &mut *view,
+                    crate::wrath_native::WrathScopeLoss::SessionEnded,
+                    now_ms(),
+                ) {
+                    cast_events.write(event);
+                }
                 view.entities.clear();
                 view.self_observation = None;
                 view.player_guid = 0;
                 view.entered_world = false;
                 view.gossip_menu = None;
                 view.vendor = None;
+                view.server_clock = None;
+                view.played_time = None;
+                view.last_inventory_failure = None;
                 view.session_epoch = 0;
                 view.world_generation = 0;
                 view.state_revision = 0;
@@ -3073,6 +3334,35 @@ fn wrath_net_drain(
                 view.next_cast_count = 0;
                 view.phase = None;
                 view.last_changes.world_transferred = true;
+            }
+        }
+    }
+
+    // Native cast/channel/item-text/failure traffic is drained from its own queue so a burst
+    // cannot evict a lifecycle edge. Old-scope facts are rejected before they touch the view.
+    if !control.ended {
+        for event in native {
+            let scope = event.scope();
+            if scope_is_older(
+                view.session_epoch,
+                view.world_generation,
+                scope.session_epoch,
+                scope.world_generation,
+            ) {
+                continue;
+            }
+            match event {
+                crate::wrath_native::WrathNativeFeedEvent::Cast(update) => {
+                    if let Some(event) = crate::wrath_native::apply_update(&mut *view, update) {
+                        cast_events.write(event);
+                    }
+                }
+                crate::wrath_native::WrathNativeFeedEvent::ItemText(text) => {
+                    item_text_events.write(text);
+                }
+                crate::wrath_native::WrathNativeFeedEvent::InventoryFailure { failure, .. } => {
+                    view.last_inventory_failure = Some(failure);
+                }
             }
         }
     }
@@ -3086,12 +3376,22 @@ fn wrath_net_drain(
                 "session ended before an authoritative result",
             );
         }
+        for event in crate::wrath_native::invalidate_scope(
+            &mut *view,
+            crate::wrath_native::WrathScopeLoss::SessionEnded,
+            now_ms(),
+        ) {
+            cast_events.write(event);
+        }
         view.entities.clear();
         view.self_observation = None;
         view.player_guid = 0;
         view.entered_world = false;
         view.gossip_menu = None;
         view.vendor = None;
+        view.server_clock = None;
+        view.played_time = None;
+        view.last_inventory_failure = None;
         view.session_epoch = 0;
         view.world_generation = 0;
         view.state_revision = 0;
@@ -3119,9 +3419,19 @@ fn wrath_net_drain(
         // A replacement session restarts its epoch, world generation and revision counters.
         // Adopt them as a new scope rather than comparing them with the retired session's
         // monotonic values.
+        for event in crate::wrath_native::invalidate_scope(
+            &mut *view,
+            crate::wrath_native::WrathScopeLoss::SessionReplaced,
+            now_ms(),
+        ) {
+            cast_events.write(event);
+        }
         view.entities.clear();
         view.gossip_menu = None;
         view.vendor = None;
+        view.server_clock = None;
+        view.played_time = None;
+        view.last_inventory_failure = None;
         view.last_changes.world_transferred = true;
         view.state_revision = 0;
     } else {
@@ -3134,6 +3444,13 @@ fn wrath_net_drain(
                     ActionStatus::Unknown,
                     "world scope changed before an authoritative result",
                 );
+            }
+            for event in crate::wrath_native::invalidate_scope(
+                &mut *view,
+                crate::wrath_native::WrathScopeLoss::WorldTransfer,
+                now_ms(),
+            ) {
+                cast_events.write(event);
             }
             view.entities.clear();
             view.gossip_menu = None;
@@ -4409,6 +4726,106 @@ pub fn run_session_with_cancel(
                                 }
                             }
                         }
+                        Ok(event @ WrathGameplayEvent::PlayedTime {
+                            total,
+                            level,
+                            trigger,
+                        }) => {
+                            feed.push_event(WrathFeedEvent::PlayedTime {
+                                total,
+                                level,
+                                trigger_script_event: trigger != 0,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if let Some(events_out) = events_out.as_ref() {
+                                if session.player_guid().is_some() {
+                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                        let _ = events_out
+                                            .send(WrathSessionEvent::scoped(&session, event));
+                                    }
+                                }
+                            }
+                        }
+                        Ok(event @ WrathGameplayEvent::ServerUnixTime {
+                            unix_time,
+                            reset_in_secs,
+                        }) => {
+                            feed.push_event(WrathFeedEvent::ServerClock {
+                                unix_time,
+                                reset_in_secs,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if let Some(events_out) = events_out.as_ref() {
+                                if session.player_guid().is_some() {
+                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                        let _ = events_out
+                                            .send(WrathSessionEvent::scoped(&session, event));
+                                    }
+                                }
+                            }
+                        }
+                        Ok(event @ WrathGameplayEvent::InventoryFailure {
+                            reason,
+                            item,
+                            item2,
+                            bag_type,
+                            required_level,
+                            item_limit_category,
+                        }) => {
+                            feed.push_native(
+                                crate::wrath_native::WrathNativeFeedEvent::InventoryFailure {
+                                    failure: crate::wrath_native::WrathInventoryFailure {
+                                        reason,
+                                        item,
+                                        item2,
+                                        bag_type,
+                                        required_level,
+                                        item_limit_category,
+                                    },
+                                    scope: crate::wrath_native::WrathScope {
+                                        session_epoch: session.epoch(),
+                                        world_generation: session.world_generation(),
+                                        state_revision: session.state_revision(),
+                                    },
+                                },
+                            );
+                            if let Some(events_out) = events_out.as_ref() {
+                                if session.player_guid().is_some() {
+                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                        let _ = events_out
+                                            .send(WrathSessionEvent::scoped(&session, event));
+                                    }
+                                }
+                            }
+                        }
+                        Ok(event @ WrathGameplayEvent::ItemText {
+                            has_text,
+                            item_guid,
+                            ref text,
+                        }) => {
+                            feed.push_native(crate::wrath_native::WrathNativeFeedEvent::ItemText(
+                                crate::wrath_native::WrathItemText {
+                                    scope: crate::wrath_native::WrathScope {
+                                        session_epoch: session.epoch(),
+                                        world_generation: session.world_generation(),
+                                        state_revision: session.state_revision(),
+                                    },
+                                    item_guid,
+                                    has_text,
+                                    text: text.clone(),
+                                },
+                            ));
+                            if let Some(events_out) = events_out.as_ref() {
+                                if session.player_guid().is_some() {
+                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                        let _ = events_out
+                                            .send(WrathSessionEvent::scoped(&session, event));
+                                    }
+                                }
+                            }
+                        }
                         Ok(WrathGameplayEvent::LoggedOut) => {
                             logged_out = true;
                             if let Some(events_out) = events_out.as_ref() {
@@ -4418,6 +4835,19 @@ pub fn run_session_with_cancel(
                             }
                         }
                         Ok(event) => {
+                            if let Some(update) = crate::wrath_native::update_from_gameplay(
+                                &event,
+                                crate::wrath_native::WrathScope {
+                                    session_epoch: session.epoch(),
+                                    world_generation: session.world_generation(),
+                                    state_revision: session.state_revision(),
+                                },
+                                now_ms(),
+                            ) {
+                                feed.push_native(crate::wrath_native::WrathNativeFeedEvent::Cast(
+                                    update,
+                                ));
+                            }
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
                                     for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
@@ -4569,6 +4999,18 @@ fn build_digest(session: &SessionState) -> WorldDigest {
     use benilla_protocol_wrath::fields;
     let mut entities = BTreeMap::new();
     for (guid, entry) in session.world().iter() {
+        let observed = |index: u16| {
+            entry
+                .field_delivered(index)
+                .then(|| entry.field(index))
+                .flatten()
+        };
+        let mut powers = [None; 7];
+        let mut max_powers = [None; 7];
+        for i in 0..7u16 {
+            powers[usize::from(i)] = observed(fields::UNIT_FIELD_POWER1 + i);
+            max_powers[usize::from(i)] = observed(fields::UNIT_FIELD_MAXPOWER1 + i);
+        }
         entities.insert(
             *guid,
             WrathEntity {
@@ -4577,8 +5019,10 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 entry: entry.field(fields::OBJECT_FIELD_ENTRY),
                 display_id: entry.field(fields::UNIT_FIELD_DISPLAYID),
                 scale: entry.field(fields::OBJECT_FIELD_SCALE_X).map(f32::from_bits),
-                health: entry.field(fields::UNIT_FIELD_HEALTH),
-                max_health: entry.field(fields::UNIT_FIELD_MAXHEALTH),
+                health: observed(fields::UNIT_FIELD_HEALTH),
+                max_health: observed(fields::UNIT_FIELD_MAXHEALTH),
+                powers,
+                max_powers,
                 level: entry.field(fields::UNIT_FIELD_LEVEL),
                 bytes_0: entry.field(fields::UNIT_FIELD_BYTES_0),
                 faction: entry.field(fields::UNIT_FIELD_FACTIONTEMPLATE),
@@ -4699,6 +5143,8 @@ mod command_tap_tests {
                 scale: Some(1.0),
                 health: Some(10),
                 max_health: Some(10),
+                powers: [None; 7],
+                max_powers: [None; 7],
                 level: Some(1),
                 bytes_0: Some(0),
                 faction: None,

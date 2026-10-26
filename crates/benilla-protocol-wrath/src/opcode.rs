@@ -245,6 +245,12 @@ pub const SMSG_QUERY_TIME_RESPONSE: u16 = 0x1CF;
 pub const MSG_RANDOM_ROLL: u16 = 0x1FB;
 pub const CMSG_PAGE_TEXT_QUERY: u32 = 0x05A;
 pub const SMSG_PAGE_TEXT_QUERY_RESPONSE: u16 = 0x05B;
+/// `SMSG_INVENTORY_CHANGE_FAILURE` (`PlayerStorage.cpp:4113-4154`).
+pub const SMSG_INVENTORY_CHANGE_FAILURE: u16 = 0x112;
+/// Item inscription text (`ItemHandler.cpp:1463-1483`): request by item guid, reply with a
+/// present/absent byte, the guid and the text.
+pub const CMSG_ITEM_TEXT_QUERY: u32 = 0x243;
+pub const SMSG_ITEM_TEXT_QUERY_RESPONSE: u16 = 0x244;
 /// Area triggers (`MiscHandler.cpp:700`) and quest-log/share verbs (`QuestHandler.cpp:400-635`).
 pub const CMSG_AREATRIGGER: u32 = 0x0B4;
 pub const SMSG_AREA_TRIGGER_MESSAGE: u16 = 0x2B8;

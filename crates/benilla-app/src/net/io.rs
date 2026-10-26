@@ -1636,6 +1636,8 @@ pub(super) fn writer_loop(
                     ClientCommand::QuestPushResult { sharer, msg } => {
                         w.quest_push_result(sharer, msg)
                     }
+                    // Wrath-only typed form; the baseline writer has no quest id to send.
+                    ClientCommand::QuestPushResultForQuest { .. } => Ok(()),
                     ClientCommand::GetMailList { mailbox } => w.get_mail_list(mailbox),
                     ClientCommand::SendMail {
                         mailbox,
@@ -1676,6 +1678,8 @@ pub(super) fn writer_loop(
                     ClientCommand::ItemTextQuery { text_id, mail_id } => {
                         w.item_text_query(text_id, mail_id)
                     }
+                    // Wrath-only item-guid text query; the 1.12 wire has no equivalent.
+                    ClientCommand::ItemTextByGuid { .. } => Ok(()),
                     ClientCommand::QueryNextMailTime => w.query_next_mail_time(),
                     // The auction house: the auctioneer guid rides on every verb.
                     ClientCommand::AuctionHello { auctioneer } => w.auction_hello(auctioneer),
