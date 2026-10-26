@@ -1,5 +1,7 @@
 # Durable generated artifact handoff proposal
 
+Historical design snapshot. The later substantial implementation goal supersedes the implementation-pending and proposal-only scope statements below. See [artifact-api.md](artifact-api.md), [encounter-planning.md](encounter-planning.md), [wm-drafts.md](wm-drafts.md) and [offline-cli.md](offline-cli.md) for actual source interfaces and current limits. No runtime/schema production acceptance or ADR acceptance is implied.
+
 Date: 2026-10-26, Europe/Moscow. Author: Astra. Status: concrete design proposal for review, NOT an accepted schema, implemented codec, generated artifact or production publication. Scope: the current whole-slice `ProcgenSpec`/`ProcgenOutput` generator, not arbitrary direct item requests. ADR-0001 remains Proposed and is not approval of this separate persistence seam.
 
 ## Existing owners and selected approach

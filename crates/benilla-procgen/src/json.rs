@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use serde::de::{DeserializeOwned, DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
-use serde::{Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use crate::ValidationError;
 
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -88,6 +88,25 @@ impl<'de> Visitor<'de> for Scan<'_> {
 
 fn error(e: impl fmt::Display) -> ValidationError {
     ValidationError::new("json", &e.to_string())
+}
+
+/// A field-specific collection budget, enforced before decoding another element.
+pub(crate) fn bounded_vec<'de, D, T, const LIMIT: usize>(de: D) -> Result<Vec<T>, D::Error>
+where D: Deserializer<'de>, T: Deserialize<'de> {
+    struct Bounded<T, const N: usize>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>, const N: usize> Visitor<'de> for Bounded<T, N> {
+        type Value = Vec<T>;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "at most {N} entries") }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
+            let mut output = Vec::new();
+            loop {
+                if output.len() == N { seq.next_element_seed(RejectElement)?; break; }
+                match seq.next_element()? { Some(value) => output.push(value), None => break }
+            }
+            Ok(output)
+        }
+    }
+    de.deserialize_seq(Bounded::<T, LIMIT>(std::marker::PhantomData))
 }
 
 /// Decode only after the whole input passes resource and duplicate-key checks.

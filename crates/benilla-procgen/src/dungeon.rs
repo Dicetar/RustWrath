@@ -58,6 +58,7 @@ pub struct Room {
     pub h: u32,
     pub archetype: RoomArchetype,
     /// Adjacent rooms (corridor-connected), in connection insertion order.
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 1023>")]
     pub connections: Vec<usize>,
 }
 
@@ -77,7 +78,9 @@ impl Room {
 pub struct Dungeon {
     pub width: u32,
     pub height: u32,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 1_048_576>")]
     pub tiles: Vec<Tile>,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 1024>")]
     pub rooms: Vec<Room>,
     pub entrance: usize,
     pub boss_room: usize,

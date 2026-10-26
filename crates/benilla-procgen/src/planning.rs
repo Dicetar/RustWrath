@@ -27,7 +27,10 @@ pub enum HeightRule {
     /// Only valid for terrain samples. Generated terrain is not stock-map elevation.
     Terrain { vertical_scale: FloatBits },
     /// Absolute world Z for every cell in this domain, in row-major order.
-    Samples { elevations: Vec<FloatBits> },
+    Samples {
+        #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 1_048_576>")]
+        elevations: Vec<FloatBits>
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +55,7 @@ pub struct TemplateBinding {
     pub min_level: u32,
     pub max_level: u32,
     /// Caller-attested configured services. Role tags never configure the server.
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 3>")]
     pub services: Vec<NpcRole>,
 }
 
@@ -62,7 +66,9 @@ pub struct PlacementRequest {
     pub candidate_manifest: Hex64,
     pub revision: String,
     pub scope: WorldScope,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 2>")]
     pub transforms: Vec<DomainTransform>,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 16>")]
     pub templates: Vec<TemplateBinding>,
     pub minimum: [FloatBits; 3],
     pub maximum: [FloatBits; 3],
@@ -93,6 +99,7 @@ pub struct EncounterPlan {
     pub schema_version: String,
     pub source_identity: BuildIdentity,
     pub request: PlacementRequest,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 100_000>")]
     pub actors: Vec<PlannedActor>,
     /// Always requires the existing WM owner to recheck live scope and placement.
     pub requires_owner_preflight: bool,

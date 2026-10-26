@@ -97,7 +97,9 @@ pub struct Stat { pub stat: StatId, pub value: FloatBits }
 #[serde(deny_unknown_fields)]
 pub struct PartDefinition {
     pub id: String, pub slot: PartSlot, pub name: String, pub weight: u32,
-    pub min_rarity: Rarity, pub bonuses: Vec<Stat>,
+    pub min_rarity: Rarity,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 8>")]
+    pub bonuses: Vec<Stat>,
 }
 
 impl PartDefinition {
@@ -111,14 +113,23 @@ impl PartDefinition {
 #[serde(deny_unknown_fields)]
 pub struct Item {
     pub id: Hex64, pub name: String, pub kind: ItemKind, pub rarity: Rarity,
-    pub level: u32, pub stats: Vec<Stat>, pub part_ids: Vec<String>,
+    pub level: u32,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 8>")]
+    pub stats: Vec<Stat>,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 5>")]
+    pub part_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Terrain {
-    pub width: u32, pub height: u32, pub heights: Vec<FloatBits>,
-    pub moisture: Vec<FloatBits>, pub biomes: Vec<Biome>,
+    pub width: u32, pub height: u32,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 1_048_576>")]
+    pub heights: Vec<FloatBits>,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 1_048_576>")]
+    pub moisture: Vec<FloatBits>,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 1_048_576>")]
+    pub biomes: Vec<Biome>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,10 +156,13 @@ pub struct Candidate {
     pub request: Request,
     /// Generator v2 has a fixed effective item center level of ten.
     pub effective_item_level: u32,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 50_000>")]
     pub part_definitions: Vec<PartDefinition>,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 10_000>")]
     pub items: Vec<Item>,
     pub dungeon: Dungeon,
     pub terrain: Terrain,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 100_000>")]
     pub spawns: Vec<Actor>,
     pub manifest_hash: Hex64,
 }

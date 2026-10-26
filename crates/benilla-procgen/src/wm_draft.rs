@@ -26,7 +26,12 @@ pub struct NativeStep { pub kind: String, pub action_kind: String, pub payload: 
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Bundle { pub schema_version: String, pub id: String, pub steps: Vec<NativeStep> }
+pub struct Bundle {
+    pub schema_version: String,
+    pub id: String,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 512>")]
+    pub steps: Vec<NativeStep>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,6 +51,7 @@ pub struct WmDraft {
     pub options: DraftOptions,
     pub requires_owner_preflight: bool,
     pub bundle: Bundle,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 512>")]
     pub cleanup: Vec<CleanupRequirement>,
     pub partial_application_policy: String,
 }
@@ -180,6 +186,7 @@ pub struct ApplicationReceipt {
     pub plan_fingerprint: Hex64,
     pub scope: WorldScope,
     pub mode: String,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 512>")]
     pub steps: Vec<StepReceipt>,
     pub report_fingerprint: Hex64,
 }
@@ -192,6 +199,7 @@ pub struct CleanupDraft {
     pub original_run_key: String,
     pub scope: WorldScope,
     pub requires_owner_preflight: bool,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 512>")]
     pub reconciliation_required: Vec<u32>,
     /// None means no confirmed owned IDs; unknown effects can still require reconciliation.
     pub bundle: Option<Bundle>,
@@ -293,7 +301,9 @@ pub struct CleanupReceipt {
     pub cleanup_run_key: String,
     pub scope: WorldScope,
     pub mode: String,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 512>")]
     pub objects: Vec<CleanupObject>,
+    #[serde(deserialize_with = "crate::json::bounded_vec::<_, _, 512>")]
     pub unresolved_spawn_steps: Vec<u32>,
     pub requires_reconciliation: bool,
     pub report_fingerprint: Hex64,
