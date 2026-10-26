@@ -215,6 +215,7 @@ impl Loader<'_> {
             };
             // The title region's layout load is `0x767800` itself (`0x81c528[2]`, called at
             // `0x769b8a`), which never re-enters `inherits`: the node alone.
+            self.publish_parent_key(tr.attr("parentKey"), &region, dbg);
             self.apply_geometry(tr, &region, true, self_name, dbg);
         }
     }

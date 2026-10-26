@@ -182,6 +182,8 @@ impl Loader<'_> {
             }
             self.call(wrapper, "SetText", label, dbg);
             if let Ok(region) = wrapper.call_method::<Table>("GetFontString", ()) {
+                let parent_key = label_levels.iter().filter_map(|node| node.attr("parentKey")).last();
+                self.publish_parent_key(parent_key, &region, dbg);
                 // Clear, lay out, then the implicit step, as both reference legs do (`0x6f27f5`,
                 // `0x778b96`); the button's own adopter anchor never fires on them (`0x778d5f`).
                 // On `<NormalText>` the justify is the Normal font's, so the implicit anchor reads
@@ -344,6 +346,7 @@ impl Loader<'_> {
             if el.tag.eq_ignore_ascii_case("EditBox") {
                 let text = crate::script::editbox_text_region_wrapper(self.lua(), wrapper);
                 if let Some(text) = text {
+                    self.publish_parent_key(child.attr("parentKey"), &text, dbg);
                     if let Err(e) = crate::script::adopt_text_region(self.lua(), wrapper, &text) {
                         self.report.fault(format!("{dbg}: adopt text region: {e}"));
                     }
