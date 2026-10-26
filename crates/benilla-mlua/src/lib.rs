@@ -555,6 +555,7 @@ impl Lua {
             V::Str(_) => Value::String(String(self.make_ref(v))),
             V::Table(_) => Value::Table(Table(self.make_ref(v))),
             V::Func(_) => Value::Function(Function(self.make_ref(v))),
+            V::Thread(_) => Value::Thread(Thread(self.make_ref(v))),
             V::User(u) => Value::LightUserData(LightUserData(u.0 as usize as *mut c_void)),
             V::Light(p) => Value::LightUserData(LightUserData(p as *mut c_void)),
         }
@@ -571,7 +572,8 @@ impl Lua {
             Value::Table(t) => self.unref(&t.0),
             Value::Function(f) => self.unref(&f.0),
             Value::LightUserData(l) => benilla_lua::Value::Light(l.0 as usize),
-            Value::Thread(_) | Value::Error(_) => benilla_lua::Value::Nil,
+            Value::Thread(thread) => self.unref(&thread.0),
+            Value::Error(_) => benilla_lua::Value::Nil,
         }
     }
 
@@ -1144,9 +1146,9 @@ pub struct Function(pub(crate) RefH);
 #[derive(Clone, Debug)]
 pub struct String(pub(crate) RefH);
 
-/// A coroutine; 1.12 has none, so no value ever is one.
+/// A rooted Lua execution context; ordinary vanilla states create none.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Thread(());
+pub struct Thread(pub(crate) RefH);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LightUserData(pub *mut c_void);
@@ -1337,6 +1339,7 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a.0 == b.0,
             (Value::Table(a), Value::Table(b)) => a == b,
             (Value::Function(a), Value::Function(b)) => a == b,
+            (Value::Thread(a), Value::Thread(b)) => a == b,
             _ => false,
         }
     }

@@ -360,6 +360,7 @@ fn address(v: Value) -> u32 {
         V::Table(r) => (1u32, r.0),
         V::Func(r) => (2, r.0),
         V::User(r) => (3, r.0),
+        V::Thread(r) => (4, r.0),
         V::Light(p) => return p as u32,
         _ => (0, 0),
     };

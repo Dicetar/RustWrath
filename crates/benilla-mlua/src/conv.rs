@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::{
     BorrowedBytes, BorrowedStr, Error, Function, LightUserData, Lua, MultiValue, Result, String,
-    Table, Value, Variadic,
+    Table, Thread, Value, Variadic,
 };
 
 pub trait IntoLua: Sized {
@@ -135,6 +135,7 @@ macro_rules! handle {
 
 handle!(Table);
 handle!(Function);
+handle!(Thread);
 
 impl IntoLua for String {
     fn into_lua(self, _: &Lua) -> Result<Value> {
@@ -170,6 +171,15 @@ impl FromLua for Function {
         match v {
             Value::Function(f) => Ok(f),
             other => Err(conversion(other.type_name(), "function", None)),
+        }
+    }
+}
+
+impl FromLua for Thread {
+    fn from_lua(v: Value, _: &Lua) -> Result<Self> {
+        match v {
+            Value::Thread(thread) => Ok(thread),
+            other => Err(conversion(other.type_name(), "thread", None)),
         }
     }
 }

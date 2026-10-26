@@ -19,6 +19,7 @@ const T_TABLE: u64 = 3;
 const T_FUNC: u64 = 4;
 const T_USER: u64 = 5;
 const T_LIGHT: u64 = 6;
+const T_THREAD: u64 = 7;
 
 const fn tagged(tag: u64, payload: u64) -> u64 {
     TAGGED | (tag << TAG_SHIFT) | payload
@@ -47,6 +48,9 @@ pub struct FuncRef(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UserRef(pub u32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ThreadRef(pub u32);
+
 /// A Lua value in 8 bytes. Build one with the constructors named after the types
 /// (`Value::Num(1.0)`, `Value::Nil`); read one with [`Value::unpack`] or the `as_*` accessors.
 /// `==` compares bits, which is raw equality for everything but numbers (`0 == -0`, NaN):
@@ -69,6 +73,8 @@ pub enum V {
     User(UserRef),
     /// 5.0's light userdata: a bare host pointer, compared by value.
     Light(usize),
+    /// A Lua execution context sharing this VM's heap.
+    Thread(ThreadRef),
 }
 
 impl Default for Value {
@@ -144,6 +150,11 @@ impl Value {
     }
 
     #[inline(always)]
+    pub fn Thread(thread: ThreadRef) -> Value {
+        Value(tagged(T_THREAD, thread.0 as u64))
+    }
+
+    #[inline(always)]
     fn tag(self) -> u64 {
         (self.0 >> TAG_SHIFT) & 7
     }
@@ -169,6 +180,7 @@ impl Value {
             T_TABLE => V::Table(TableRef(p as u32)),
             T_FUNC => V::Func(FuncRef(p as u32)),
             T_USER => V::User(UserRef(p as u32)),
+            T_THREAD => V::Thread(ThreadRef(p as u32)),
             _ => V::Light(p as usize),
         }
     }
@@ -252,6 +264,7 @@ impl Value {
             T_STR => "string",
             T_TABLE => "table",
             T_FUNC => "function",
+            T_THREAD => "thread",
             _ => "userdata",
         }
     }

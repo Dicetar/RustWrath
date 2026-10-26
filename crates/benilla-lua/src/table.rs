@@ -261,7 +261,7 @@ impl Table {
         n.val = Value::Nil;
         if matches!(
             n.key.unpack(),
-            V::Str(_) | V::Table(_) | V::Func(_) | V::User(_)
+            V::Str(_) | V::Table(_) | V::Func(_) | V::User(_) | V::Thread(_)
         ) {
             n.key = Value::NONE_KEY;
             n.dead = false;
@@ -299,6 +299,7 @@ impl Table {
             V::Table(r) => self.hashmod(r.0),
             V::Func(r) => self.hashmod(r.0),
             V::User(r) => self.hashmod(r.0),
+            V::Thread(r) => self.hashmod(r.0),
             V::Light(p) => self.hashmod(p as u32),
             V::Nil => 0,
         }

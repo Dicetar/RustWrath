@@ -113,6 +113,93 @@ impl Frame {
     }
 }
 
+/// An inactive execution stack. Objects and code remain in the shared heap; only execution
+/// registers, frames and protected-call state move when a coroutine suspends or resumes.
+#[derive(Clone)]
+pub(crate) struct ThreadContext {
+    stack: Vec<Value>,
+    top: usize,
+    frames: Vec<Frame>,
+    open: Vec<(usize, u32)>,
+    globals: TableRef,
+    c_depth: u32,
+    ci_size: usize,
+    ci_limit: usize,
+    clear_below: usize,
+    in_handler: u32,
+    stack_base: usize,
+    handlers: Vec<Option<Value>>,
+    stack_block: Block,
+    ci_block: Block,
+    in_hook: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ThreadStatus {
+    Fresh,
+    Suspended,
+    Running,
+    Normal,
+    Dead,
+}
+
+#[derive(Clone)]
+pub(crate) struct ThreadObj {
+    context: Option<ThreadContext>,
+    entry: Value,
+    env: TableRef,
+    status: ThreadStatus,
+}
+
+impl ThreadObj {
+    pub(crate) fn dead() -> Self {
+        Self { context: None, entry: Value::Nil, env: TableRef(0), status: ThreadStatus::Dead }
+    }
+
+    pub(crate) fn roots(&self, values: &mut Vec<Value>, upvalues: &mut Vec<u32>) {
+        values.push(self.entry);
+        values.push(Value::Table(self.env));
+        if let Some(context) = &self.context {
+            values.extend_from_slice(&context.stack[..context.top]);
+            values.push(Value::Table(context.globals));
+            values.extend(context.frames.iter().map(|frame| Value::Func(frame.func)));
+            values.extend(context.handlers.iter().flatten().copied());
+            upvalues.extend(context.open.iter().map(|&(_, upvalue)| upvalue));
+        }
+    }
+
+    pub(crate) fn stack_value(&self, index: usize) -> Value {
+        self.context.as_ref().and_then(|context| context.stack.get(index))
+            .copied().unwrap_or(Value::Nil)
+    }
+
+    pub(crate) fn set_stack_value(&mut self, index: usize, value: Value) {
+        if let Some(slot) = self.context.as_mut().and_then(|context| context.stack.get_mut(index)) {
+            *slot = value;
+        }
+    }
+
+    pub(crate) fn closed_upvalues(&self) -> Vec<(u32, Value)> {
+        self.context.as_ref().map_or_else(Vec::new, |context| {
+            context.open.iter().map(|&(index, upvalue)| (upvalue, context.stack[index])).collect()
+        })
+    }
+
+    pub(crate) fn has_frames(&self) -> bool {
+        self.context.as_ref().is_some_and(|context| !context.frames.is_empty())
+    }
+
+    pub(crate) fn blocks(&self) -> [Block; 2] {
+        self.context.as_ref().map_or([Block::None; 2], |context| [context.stack_block, context.ci_block])
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.context.as_ref().map_or(0, |context| {
+            STACK_SLOT_BYTES * context.stack.len() + CI_BYTES * context.ci_size
+        })
+    }
+}
+
 /// Metamethod and library names, interned once.
 #[derive(Clone)]
 pub struct Names {
@@ -1075,6 +1162,7 @@ impl Vm {
     fn upval_set(&mut self, u: u32, v: Value) {
         match self.heap.upval(u) {
             UpvalObj::Open(i) => self.stack[i as usize] = v,
+            UpvalObj::Suspended { thread, index } => self.heap.thread_mut(thread).set_stack_value(index as usize, v),
             UpvalObj::Closed(_) => *self.heap.upval_mut(u) = UpvalObj::Closed(v),
         }
     }
@@ -1976,6 +2064,7 @@ impl Vm {
     pub fn read_upvalue(&self, u: u32) -> Value {
         match self.heap.upval(u) {
             UpvalObj::Open(i) => self.stack.get(i as usize).copied().unwrap_or(Value::Nil),
+            UpvalObj::Suspended { thread, index } => self.heap.thread(thread).stack_value(index as usize),
             UpvalObj::Closed(v) => v,
         }
     }
@@ -1988,6 +2077,7 @@ impl Vm {
                     *slot = v;
                 }
             }
+            UpvalObj::Suspended { thread, index } => self.heap.thread_mut(thread).set_stack_value(index as usize, v),
             UpvalObj::Closed(_) => *self.heap.upval_mut(u) = UpvalObj::Closed(v),
         }
     }
@@ -2397,7 +2487,7 @@ impl Vm {
         }
         // A frame running code a hot reload replaced reads that code's constants and upvalues;
         // with no frame left, nothing runs it.
-        if self.frames.is_empty() {
+        if self.frames.is_empty() && !self.heap.suspended_frames() {
             self.retired.clear();
         }
         let fixed = [self.stack_block, self.ci_block];
@@ -2848,6 +2938,7 @@ impl Vm {
                                 unsafe { *regs.sub(base!()).add(i as usize) }
                             }
                             UpvalObj::Closed(v) => v,
+                            UpvalObj::Suspended { thread, index } => self.heap.thread(thread).stack_value(index as usize),
                         };
                         r!(a) = v;
                     }

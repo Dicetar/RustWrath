@@ -6,7 +6,8 @@ use std::rc::Rc;
 use crate::pools::{Block, Pools, Tally};
 use crate::proto::Proto;
 use crate::table::{Account, Growth, Table};
-use crate::value::{FuncRef, StrRef, TableRef, UserRef, Value, STR_HASH_MASK, STR_ID_BITS, V};
+use crate::value::{FuncRef, StrRef, TableRef, ThreadRef, UserRef, Value, STR_HASH_MASK, STR_ID_BITS, V};
+use crate::vm::ThreadObj;
 
 /// A native function. Its arguments are the `nargs` values below the top of the stack; it pushes
 /// its results and answers how many.
@@ -257,6 +258,8 @@ pub enum FuncObj {
 pub enum UpvalObj {
     /// Still a register: the absolute stack slot.
     Open(u32),
+    /// A register on a suspended shared-heap execution stack.
+    Suspended { thread: ThreadRef, index: u32 },
     Closed(Value),
 }
 
@@ -336,6 +339,10 @@ impl Dead for UserObj {
     fn dead() -> Self {
         UserObj { meta: None, tag: 0 }
     }
+}
+
+impl Dead for ThreadObj {
+    fn dead() -> Self { ThreadObj::dead() }
 }
 
 impl<T: Dead> Arena<T> {
@@ -469,6 +476,7 @@ pub struct Heap {
     funcs: Arena<FuncObj>,
     upvals: Arena<UpvalObj>,
     users: Arena<UserObj>,
+    threads: Arena<ThreadObj>,
     /// 5.0's block count (`nblocks`, `[G+0x28]`): every object at the size the 32-bit client
     /// allocates it, recounted whole at each collection and added to as objects are made; table
     /// resizes are added as [`Heap::bytes`] reads it.
@@ -603,6 +611,7 @@ impl Default for Heap {
             funcs: Arena::new(),
             upvals: Arena::new(),
             users: Arena::new(),
+            threads: Arena::new(),
             bytes: strt_bytes(STRT_FIRST),
             threshold: 64 * 1024,
             trigger: 64 * 1024,
@@ -971,6 +980,20 @@ impl Heap {
         self.users.get_mut(u.0)
     }
 
+    pub(crate) fn new_thread(&mut self, thread: ThreadObj) -> ThreadRef {
+        self.bytes += thread.bytes();
+        self.pools().alloc(std::mem::size_of::<ThreadObj>());
+        ThreadRef(self.threads.alloc(thread))
+    }
+
+    pub(crate) fn thread(&self, thread: ThreadRef) -> &ThreadObj { self.threads.get(thread.0) }
+
+    pub(crate) fn thread_mut(&mut self, thread: ThreadRef) -> &mut ThreadObj { self.threads.get_mut(thread.0) }
+
+    pub(crate) fn suspended_frames(&self) -> bool {
+        self.threads.iter_live().any(|(_, thread)| thread.has_frames())
+    }
+
     /// The metatable of a value: tables and userdata carry one; 1.12 has none for any other type.
     pub fn metatable(&self, v: Value) -> Option<TableRef> {
         match v.unpack() {
@@ -1027,8 +1050,12 @@ impl Heap {
         loop {
             if let Some(u) = gray_upvals.pop() {
                 if self.upvals.mark(u) {
-                    if let UpvalObj::Closed(v) = self.upval(u) {
-                        gray.push(v);
+                    match self.upval(u) {
+                        UpvalObj::Closed(value) => gray.push(value),
+                        UpvalObj::Suspended { thread, index } => {
+                            gray.push(self.thread(thread).stack_value(index as usize));
+                        }
+                        UpvalObj::Open(_) => {}
                     }
                 }
                 continue;
@@ -1069,7 +1096,7 @@ impl Heap {
                         V::Str(s) => {
                             strs.mark(s.id);
                         }
-                        V::Table(_) | V::Func(_) | V::User(_) if !weak => gray.push(v),
+                        V::Table(_) | V::Func(_) | V::User(_) | V::Thread(_) if !weak => gray.push(v),
                         _ => {}
                     };
                     for &v in &tab.array {
@@ -1121,6 +1148,11 @@ impl Heap {
                         gray.push(Value::Table(m));
                     }
                 }
+                V::Thread(thread) => {
+                    if self.threads.mark(thread.0) {
+                        self.thread(thread).roots(&mut gray, &mut gray_upvals);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1133,6 +1165,7 @@ impl Heap {
                 V::Table(r) => self.tables.arena.state.get(r.0 as usize) == Some(&MARKED),
                 V::Func(r) => self.funcs.state.get(r.0 as usize) == Some(&MARKED),
                 V::User(r) => self.users.state.get(r.0 as usize) == Some(&MARKED),
+                V::Thread(r) => self.threads.state.get(r.0 as usize) == Some(&MARKED),
                 _ => true,
             };
             if !marked {
@@ -1143,16 +1176,18 @@ impl Heap {
         // (`0x6f7970`), every node of a weak-keyed table, and `cleartablevalues`, every live
         // node of a weak-valued one, each by `removekey`.
         for t in weak_tables {
-            let (tables, funcs, users) = (
+            let (tables, funcs, users, threads) = (
                 &self.tables.arena.state,
                 &self.funcs.state,
                 &self.users.state,
+                &self.threads.state,
             );
             let marked = |st: &Vec<u8>, i: u32| st.get(i as usize) == Some(&MARKED);
             let alive = |v: Value| match v.unpack() {
                 V::Table(r) => marked(tables, r.0),
                 V::Func(r) => marked(funcs, r.0),
                 V::User(r) => marked(users, r.0),
+                V::Thread(r) => marked(threads, r.0),
                 _ => true,
             };
             let tab = &mut self.tables.arena.items[t as usize];
@@ -1171,8 +1206,22 @@ impl Heap {
                 }
             }
         }
+        // A surviving closure can keep an upvalue without keeping its abandoned coroutine.
+        // Close those cells before reclaiming the stack; their values were already traced.
+        for (index, thread) in self.threads.iter_live() {
+            if self.threads.state[index] != MARKED {
+                for (upvalue, value) in thread.closed_upvalues() {
+                    *self.upvals.get_mut(upvalue) = UpvalObj::Closed(value);
+                }
+            }
+        }
         // Sweep. Dead strings leave the intern chains.
         let mut live = 0usize;
+        live += sweep(&mut self.threads, |thread| {
+            tally.count_size(std::mem::size_of::<ThreadObj>());
+            for block in thread.blocks() { tally.count(block); }
+            thread.bytes()
+        }, |_| false, drop);
         live += sweep(
             &mut self.tables,
             |t| {
@@ -1337,6 +1386,7 @@ impl Heap {
             V::Table(t) => self.tables.is_live(t.0),
             V::Func(f) => self.funcs.is_live(f.0),
             V::User(u) => self.users.is_live(u.0),
+            V::Thread(thread) => self.threads.is_live(thread.0),
             _ => true,
         }
     }
@@ -1391,7 +1441,7 @@ fn dead_function(vm: &mut crate::vm::Vm, _: usize) -> Result<usize, crate::vm::L
 fn is_collectable(v: Value) -> bool {
     matches!(
         v.unpack(),
-        V::Str(_) | V::Table(_) | V::Func(_) | V::User(_)
+        V::Str(_) | V::Table(_) | V::Func(_) | V::User(_) | V::Thread(_)
     )
 }
 
