@@ -107,6 +107,27 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         "GetScript",
         lua.create_function(|lua, (this, name): (Table, String)| get_script(lua, &this, &name))?,
     )?;
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        m.set("HookScript", lua.create_function(|lua, (this, name, hook): (Table, String, Function)| {
+            let kind = SCRIPT_KINDS.iter().copied()
+                .find(|kind| kind.eq_ignore_ascii_case(&name))
+                .ok_or_else(|| mlua::Error::runtime(format!("HookScript: unsupported script '{name}'")))?;
+            let h = frame_handle_of(lua, &this)?;
+            let id = lua.app_data_mut::<Model>().expect("model").frame_id(h);
+            let original = match get_script(lua, &this, kind)? {
+                Value::Function(function) => Some(function),
+                _ => None,
+            };
+            if original.is_none() && !crate::script::event::has_script_hooks(lua, id, kind) {
+                set_script(lua, &this, kind, Some(hook))?;
+            } else {
+                let hook = crate::script::posthook::invocation(lua, hook)?;
+                crate::script::event::append_script_hook(lua, id, kind, hook)?;
+                set_script(lua, &this, kind, original)?;
+            }
+            Ok(true)
+        })?)?;
+    }
     // `HasScript(name)`: 1 if the widget can carry that script kind, else nil, whether or not one
     // is set. Answered from the flat `SCRIPT_KINDS`, so another type's kind reads 1 too, where the
     // reference's tables are per widget type (base `0x76a0d0`; a plain Frame has no `OnClick`).
@@ -255,9 +276,10 @@ fn set_script(lua: &Lua, this: &Table, name: &str, func: Option<Function>) -> ml
             t
         }
     };
-    match func {
-        Some(f) => {
-            per.set(kind, f)?;
+    let present = func.is_some() || crate::script::event::has_script_hooks(lua, id, kind);
+    per.set(kind, func)?;
+    match present {
+        true => {
             let mut model = lua.app_data_mut::<Model>().expect("model");
             // The first handler of a kind joins that kind's list; nothing else writes `scripts`.
             if model.scripts.entry(h).or_default().insert(kind) {
@@ -272,8 +294,7 @@ fn set_script(lua: &Lua, this: &Table, name: &str, func: Option<Function>) -> ml
                 }
             }
         }
-        None => {
-            per.set(kind, Value::Nil)?;
+        false => {
             let mut model = lua.app_data_mut::<Model>().expect("model");
             if let Some(set) = model.scripts.get_mut(&h) {
                 if set.remove(&kind) {

@@ -683,6 +683,7 @@ fn open_state_for_target(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
     stdlib::install(&lua)?;
     if target == UiTarget::Wrath335 {
         posthook::install(&lua)?;
+        event::install_wrath(&lua)?;
     }
 
     Ok(lua)

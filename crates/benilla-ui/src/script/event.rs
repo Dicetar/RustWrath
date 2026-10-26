@@ -13,6 +13,51 @@ use mlua::{Function, Lua, Table, Value};
 use super::{Model, ScriptValue, REG_SCRIPTS};
 use crate::script::object::frame_wrapper;
 
+const REG_SCRIPT_HOOKS: &str = "__benilla_script_hooks";
+
+pub(super) fn install_wrath(lua: &Lua) -> mlua::Result<()> {
+    lua.set_named_registry_value(REG_SCRIPT_HOOKS, lua.create_table()?)
+}
+
+fn script_hooks(lua: &Lua, id: u32, script: &str) -> mlua::Result<Vec<Function>> {
+    let Some(hooks) = lua.named_registry_value::<Option<Table>>(REG_SCRIPT_HOOKS)? else {
+        return Ok(Vec::new());
+    };
+    let Some(per) = hooks.raw_get::<Option<Table>>(id)? else { return Ok(Vec::new()) };
+    let Some(list) = per.raw_get::<Option<Table>>(script)? else { return Ok(Vec::new()) };
+    list.sequence_values::<Function>().collect()
+}
+
+pub(crate) fn has_script_hooks(lua: &Lua, id: u32, script: &str) -> bool {
+    let read = || -> mlua::Result<bool> {
+        let Some(hooks) = lua.named_registry_value::<Option<Table>>(REG_SCRIPT_HOOKS)? else { return Ok(false) };
+        let Some(per) = hooks.raw_get::<Option<Table>>(id)? else { return Ok(false) };
+        Ok(per.raw_get::<Option<Table>>(script)?.is_some_and(|list| list.raw_len() > 0))
+    };
+    read().unwrap_or(false)
+}
+
+pub(crate) fn append_script_hook(lua: &Lua, id: u32, script: &str, hook: Function) -> mlua::Result<()> {
+    let hooks: Table = lua.named_registry_value(REG_SCRIPT_HOOKS)?;
+    let per = match hooks.raw_get::<Option<Table>>(id)? {
+        Some(per) => per,
+        None => {
+            let per = lua.create_table()?;
+            hooks.raw_set(id, per.clone())?;
+            per
+        }
+    };
+    let list = match per.raw_get::<Option<Table>>(script)? {
+        Some(list) => list,
+        None => {
+            let list = lua.create_table()?;
+            per.raw_set(script, list.clone())?;
+            list
+        }
+    };
+    list.raw_set(list.raw_len() + 1, hook)
+}
+
 /// `UiScript::fire_event` for engine code that holds only the Lua context.
 pub(super) fn fire_global(lua: &Lua, event: &str, args: &[ScriptValue]) {
     super::tick::fire_event_into(lua, event, args.to_vec());
@@ -82,23 +127,26 @@ pub(super) fn has_widget_handler(lua: &Lua, id: u32, script: &str) -> bool {
     let Ok(scripts) = lua.named_registry_value::<Table>(REG_SCRIPTS) else {
         return false;
     };
-    match scripts.get::<Value>(id) {
+    let primary = match scripts.get::<Value>(id) {
         Ok(Value::Table(per)) => matches!(per.get::<Value>(script), Ok(Value::Function(_))),
         _ => false,
-    }
+    };
+    primary || has_script_hooks(lua, id, script)
 }
 
 /// The one firing path: `extra` is the `arg1..argN`. Holds no model borrow across the call. An
 /// engine step that cannot lend the host holds the handler for it ([`super::host::holding`]).
 fn fire(lua: &Lua, id: u32, script: &str, extra: Vec<Value>) -> mlua::Result<()> {
     let scripts: Table = lua.named_registry_value(REG_SCRIPTS)?;
-    let func: Function = match scripts.get::<Value>(id)? {
+    let func: Option<Function> = match scripts.get::<Value>(id)? {
         Value::Table(per) => match per.get::<Value>(script)? {
-            Value::Function(f) => f,
-            _ => return Ok(()),
+            Value::Function(f) => Some(f),
+            _ => None,
         },
-        _ => return Ok(()),
+        _ => None,
     };
+    let hooks = script_hooks(lua, id, script)?;
+    if func.is_none() && hooks.is_empty() { return Ok(()); }
     if super::host::holding(lua) {
         let script = script.to_string();
         super::calls::hold(lua, super::calls::Held::Handler { id, script, extra });
@@ -110,7 +158,38 @@ fn fire(lua: &Lua, id: u32, script: &str, extra: Vec<Value>) -> mlua::Result<()>
     // when the guard drops, unwinds included.
     let _fire =
         super::handler_prof::armed().then(|| super::handler_prof::Fire::open(lua, id, script));
-    invoke_with_globals(lua, wrapper, &func, extra)
+    invoke_with_hooks(lua, wrapper, func.as_ref(), hooks, extra)
+}
+
+pub(crate) fn invoke_onload(lua: &Lua, wrapper: Table, func: &Function) -> mlua::Result<()> {
+    let id = super::object::decode_id(&wrapper)?;
+    let hooks = script_hooks(lua, id, "OnLoad")?;
+    invoke_with_hooks(lua, wrapper, Some(func), hooks, Vec::new())
+}
+
+fn invoke_with_hooks(
+    lua: &Lua,
+    wrapper: Table,
+    func: Option<&Function>,
+    hooks: Vec<Function>,
+    extra: Vec<Value>,
+) -> mlua::Result<()> {
+    if hooks.is_empty() {
+        return match func {
+            Some(func) => invoke_with_globals(lua, wrapper, func, extra),
+            None => Ok(()),
+        };
+    }
+    let result = match func {
+        Some(func) => invoke_with_globals(lua, wrapper.clone(), func, extra.clone()),
+        None => Ok(()),
+    };
+    for hook in hooks {
+        if let Err(error) = invoke_with_globals(lua, wrapper.clone(), &hook, extra.clone()) {
+            lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+        }
+    }
+    result
 }
 
 /// The `argN` global names, spelled out so the common arities allocate nothing.

@@ -383,7 +383,7 @@ impl Loader<'_> {
         wrapper: &mlua::Table,
         func: &mlua::Function,
     ) -> mlua::Result<()> {
-        crate::script::event::invoke_with_globals(self.lua, wrapper.clone(), func, Vec::new())
+        crate::script::event::invoke_onload(self.lua, wrapper.clone(), func)
     }
 
     /// An object's name as the reference's load lines print it: its own name (vtable `+4`), else

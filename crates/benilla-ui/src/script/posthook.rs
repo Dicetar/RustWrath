@@ -6,12 +6,13 @@ use mlua::{Function, Lua, MultiValue, Value, Variadic};
 use super::{diagnostics::DiagnosticKind, model::HandlerArg, taint, Model};
 
 const REG_FACTORY: &str = "__benilla_posthook_factory";
+const REG_INVOKE_FACTORY: &str = "__benilla_posthook_invoke_factory";
 const USAGE: &str = "Usage: hooksecurefunc([table,] functionName, hookFunction)";
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let run_hook = lua.create_function(|lua, (hook, args): (Function, Variadic<Value>)| {
         if let Err(error) = hook.call::<()>(args) {
-            let message = format!("hooksecurefunc: {}", super::lua_message(&error));
+            let message = format!("Post-hook: {}", super::lua_message(&error));
             let mut model = lua.app_data_mut::<Model>().expect("model");
             model.diagnostics.record(DiagnosticKind::Error, &message);
             model.errors.push(message);
@@ -19,12 +20,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         }
         Ok(())
     })?;
-    let factory: Function = lua.load(FACTORY)
+    let (factory, invoke_factory): (Function, Function) = lua.load(FACTORY)
         .set_name("=[benilla posthook factory]")
         .set_mode(mlua::ChunkMode::Text)
         .call(run_hook)?;
     lua.set_named_registry_value(REG_FACTORY, factory)?;
+    lua.set_named_registry_value(REG_INVOKE_FACTORY, invoke_factory)?;
     lua.globals().set("hooksecurefunc", lua.create_function(register)?)
+}
+
+pub(super) fn invocation(lua: &Lua, hook: Function) -> mlua::Result<Function> {
+    let factory: Function = lua.named_registry_value(REG_INVOKE_FACTORY)?;
+    let invoke: Function = factory.call(hook)?;
+    taint::tag(lua, &invoke, &taint::current(lua));
+    Ok(invoke)
 }
 
 fn register(lua: &Lua, args: MultiValue) -> mlua::Result<()> {
@@ -58,12 +67,15 @@ const FACTORY: &str = r#"
 local run_hook = ...
 local select, unpack = select, unpack
 local function pack(...) return { n = select('#', ...), ... } end
+local function make_invoke(hook)
+    return function(...) run_hook(hook, ...) end
+end
 return function(original, hook)
-    local function invoke(...) run_hook(hook, ...) end
+    local invoke = make_invoke(hook)
     return function(...)
         local results = pack(original(...))
         invoke(...)
         return unpack(results, 1, results.n)
     end, invoke
-end
+end, make_invoke
 "#;
