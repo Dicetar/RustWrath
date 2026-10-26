@@ -27,6 +27,8 @@ pub const GENERATOR_VERSION: &str = "procgen-v2";
 
 pub mod dungeon;
 pub mod artifact;
+pub mod content;
+pub mod content_allocation;
 pub mod json;
 pub mod planning;
 pub mod wm_draft;

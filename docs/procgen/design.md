@@ -44,6 +44,8 @@ The RNG forks from immutable master seed and domain without consuming master his
 
 ## Owned artifact boundary
 
+The active authoring campaign adds [generated item content plans and owner-allocation handoff](item-content.md). This is source support with explicit mapping/refusal semantics; it does not publish or grant items.
+
 The source now includes owned candidate capture, strict bounded JSON and supported-build/catalog restoration with complete manifest verification. See [artifact-api.md](artifact-api.md) for the implemented API and evidence limits. Serde and serde_json reuse dependencies already present in the workspace lock; the crate remains independent of Bevy, MPQ and any running WM/server. Compilation and roundtrip acceptance are pending.
 
 ## Production consumer seams — not accepted at runtime
