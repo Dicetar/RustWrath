@@ -2718,6 +2718,12 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_ITEM_TEXT_QUERY,
                 gameplay::item_text_query(item_guid),
             )),
+            ClientCommand::ItemTextQuery { .. } => {
+                debug!(
+                    "wrath: 1.12 mail-text query has no 12340 equivalent; use the native by-guid path"
+                );
+                None
+            }
             ClientCommand::SetSheathed { state } => Some((
                 benilla_protocol_wrath::opcode::CMSG_SET_SHEATHED,
                 gameplay::set_sheathed(state),
