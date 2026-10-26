@@ -12,7 +12,7 @@ pub const CATALOG_VERSION: &str = "project-b.builtin-parts.v1";
 
 macro_rules! hex_type {
     ($name:ident, $ty:ty, $digits:literal) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub struct $name(pub $ty);
         impl Serialize for $name {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -189,6 +189,32 @@ impl Candidate {
         source.validate()?;
         ensure(output.generator_version == GENERATOR_VERSION && output.seed == spec.seed,
             "artifact.identity", "output does not match generator/request")?;
+        ensure(output.items.len() == spec.items as usize && output.spawns.len() <= 100_000
+            && output.dungeon.width == spec.dungeon.width && output.dungeon.height == spec.dungeon.height
+            && output.dungeon.tiles.len() as u64 == u64::from(spec.dungeon.width) * u64::from(spec.dungeon.height)
+            && output.dungeon.rooms.len() <= spec.dungeon.target_rooms as usize
+            && output.dungeon.rooms.iter().all(|r| r.connections.len() <= 1023)
+            && output.terrain.width == spec.terrain.width && output.terrain.height == spec.terrain.height
+            && output.terrain.heights.len() as u64 == u64::from(spec.terrain.width) * u64::from(spec.terrain.height)
+            && output.terrain.moisture.len() == output.terrain.heights.len()
+            && output.terrain.biomes.len() == output.terrain.heights.len(),
+            "artifact.capture", "output exceeds request/shape budgets; refusing before copying")?;
+        for i in &output.items {
+            ensure(i.name.len() <= 512 && i.stats.len() <= 8 && i.parts.len() == 5,
+                "artifact.capture", "item exceeds capture budget")?;
+            for part in &i.parts {
+                ensure(part.id.len() <= 128 && part.name.len() <= 512 && part.bonuses.len() <= 8,
+                    "artifact.capture", "part exceeds capture budget")?;
+                let supported = item::default_catalog().iter().flat_map(|(_, p)| p.iter()).find(|p| p.id == part.id)
+                    .ok_or_else(|| ValidationError::new("artifact.catalog", "output contains unsupported part"))?;
+                ensure(PartDefinition::capture(part) == PartDefinition::capture(supported),
+                    "artifact.catalog", "output part definition differs from supported catalog")?;
+            }
+        }
+        ensure(output.spawns.iter().all(|s| match s.kind {
+            SpawnKind::Enemy { archetype, .. } => archetype.len() <= 128,
+            SpawnKind::Npc { .. } => true,
+        }), "artifact.capture", "actor archetype exceeds capture budget")?;
         let parts = catalog();
         let candidate = Self {
             schema_version: SCHEMA.into(), generator_version: GENERATOR_VERSION.into(),
@@ -240,7 +266,9 @@ impl Candidate {
             "artifact.items", "item count must match bounded request")?;
         crate::validation::validate_world(self, &spec)?;
         let mut items = Vec::with_capacity(self.items.len());
+        let mut item_ids = std::collections::HashSet::new();
         for i in &self.items {
+            ensure(item_ids.insert(i.id), "artifact.item_id", "duplicate item identity")?;
             ensure(!i.name.is_empty() && i.name.len() <= 512 && (1..=80).contains(&i.level), "artifact.item", "invalid item name/level")?;
             ensure(i.part_ids.len() == 5 && i.stats.len() <= 8, "artifact.item", "five ordered parts and at most eight distinct stats required")?;
             let mut seen = std::collections::HashSet::new();
@@ -270,7 +298,7 @@ impl Candidate {
     }
 }
 
-fn supported_archetype(name: &str) -> Result<&'static str, ValidationError> {
+pub(crate) fn supported_archetype(name: &str) -> Result<&'static str, ValidationError> {
     match name {
         "patrol" => Ok("patrol"), "ambush" => Ok("ambush"), "cultists" => Ok("cultists"),
         "beasts" => Ok("beasts"), "undead" => Ok("undead"), "elemental" => Ok("elemental"),

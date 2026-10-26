@@ -148,6 +148,9 @@ impl PlacementRequest {
             }
         }
         for (i, binding) in self.templates.iter().enumerate() {
+            if let ActorKind::Enemy { archetype, .. } = &binding.kind {
+                crate::artifact::supported_archetype(archetype)?;
+            }
             ensure(!self.templates[..i].iter().any(|b| b.kind == binding.kind), "placement.template", "duplicate actor-kind binding")?;
             ensure(binding.creature_entry > 0 && digest(&binding.database_snapshot_sha256) && digest(&binding.template_record_sha256)
                 && (1..=80).contains(&binding.min_level) && (binding.min_level..=80).contains(&binding.max_level),

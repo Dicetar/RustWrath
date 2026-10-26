@@ -1,8 +1,9 @@
 //! Resource-bounded JSON boundary shared by offline artifact and placement readers.
 //!
-//! A non-allocating structural pass precedes typed deserialization. It rejects duplicate
+//! A streaming structural pass precedes typed deserialization. It rejects duplicate
 //! keys (including escaped aliases), excessive nesting and oversized collections before
-//! the typed reader allocates its vectors. Semantic limits remain the owning type's job.
+//! the typed reader allocates its vectors. Only bounded key sets/parser scratch are retained,
+//! not a complete value tree. Semantic limits remain the owning type's job.
 
 use std::collections::BTreeSet;
 use std::fmt;

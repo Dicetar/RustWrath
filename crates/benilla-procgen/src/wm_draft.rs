@@ -225,6 +225,78 @@ impl ApplicationReceipt {
             original_run_key: self.run_key.clone(), scope: self.scope.clone(), requires_owner_preflight: true,
             reconciliation_required: unknown, bundle })
     }
+
+    /// Confirm only actual native despawn outcomes from a separately retained cleanup run.
+    /// A created cleanup draft, elapsed duration or missing live creature is not retirement.
+    pub fn import_cleanup_report(&self, original_report: &[u8], draft: &WmDraft, plan: &EncounterPlan,
+        candidate: &Candidate, build: &BuildIdentity, cleanup_report: &[u8],
+        cleanup_run_key: &str) -> Result<CleanupReceipt, ValidationError> {
+        let cleanup = self.cleanup_draft(original_report, draft, plan, candidate, build)?;
+        ensure(token(cleanup_run_key, 48) && cleanup_run_key != self.run_key,
+            "wm_cleanup.run", "distinct explicit cleanup run key required")?;
+        let bundle = cleanup.bundle.as_ref().ok_or_else(|| ValidationError::new("wm_cleanup.bundle", "no confirmed owned objects to clean"))?;
+        let report: Value = crate::json::decode(cleanup_report)?;
+        ensure(report["bundle_id"].as_str() == Some(bundle.id.as_str())
+            && report["run_key"].as_str() == Some(cleanup_run_key), "wm_cleanup.identity", "cleanup report belongs to another bundle/run")?;
+        let mode = report["mode"].as_str().unwrap_or("");
+        ensure(mode == "apply" || mode == "dry-run", "wm_cleanup.mode", "explicit apply/dry-run mode required")?;
+        let results = report["steps"].as_array().ok_or_else(|| ValidationError::new("wm_cleanup.steps", "missing ordered results"))?;
+        ensure(!results.is_empty() && results.len() <= bundle.steps.len(), "wm_cleanup.steps", "invalid cleanup result prefix")?;
+        let mut objects = Vec::with_capacity(bundle.steps.len());
+        for (i, step) in bundle.steps.iter().enumerate() {
+            let id = step.payload["object_id"].as_u64().ok_or_else(|| ValidationError::new("wm_cleanup.object", "missing derived ObjectID"))?;
+            let outcome = if let Some(result) = results.get(i) {
+                ensure(result["index"].as_u64() == Some(i as u64) && result["kind"].as_str() == Some("native")
+                    && result["ok"].is_boolean(), "wm_cleanup.step", "invalid cleanup result order/kind")?;
+                let ok = result["ok"].as_bool() == Some(true);
+                ensure(ok || i + 1 == results.len(), "wm_cleanup.step", "runner continued after failed cleanup")?;
+                let native = &result["result"]["world_result"];
+                if mode == "dry-run" { CleanupOutcome::Preview }
+                else if ok && result["result"]["status"].as_str() == Some("applied")
+                    && native["ok"].as_bool() == Some(true) && native["status"].as_str() == Some("done")
+                    && native["action_kind"].as_str() == Some("creature_despawn")
+                    && native["message"].as_str() == Some("creature_despawned") && native["object_id"].as_u64() == Some(id) {
+                    CleanupOutcome::Removed
+                } else { CleanupOutcome::Unknown }
+            } else { CleanupOutcome::NotAttempted };
+            objects.push(CleanupObject { object_id: Hex64(id), outcome });
+        }
+        let all_ok = results.iter().all(|r| r["ok"].as_bool() == Some(true));
+        let status = if results.len() == bundle.steps.len() && all_ok { "complete" }
+            else if results.iter().any(|r| r["ok"].as_bool() == Some(true)) { "partial" } else { "failed" };
+        ensure(report["status"].as_str() == Some(status) && (status == "complete" || !all_ok),
+            "wm_cleanup.status", "inconsistent or truncated cleanup report")?;
+        let requires_reconciliation = !cleanup.reconciliation_required.is_empty()
+            || objects.iter().any(|o| o.outcome != CleanupOutcome::Removed);
+        Ok(CleanupReceipt { schema_version: "project-b.procgen.cleanup-receipt.v1".into(),
+            original_bundle_id: self.bundle_id.clone(), cleanup_bundle_id: bundle.id.clone(),
+            cleanup_run_key: cleanup_run_key.into(), scope: self.scope.clone(), mode: mode.into(),
+            objects, unresolved_spawn_steps: cleanup.reconciliation_required, requires_reconciliation,
+            report_fingerprint: fingerprint_bytes(cleanup_report) })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupOutcome { Removed, Unknown, NotAttempted, Preview }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupObject { pub object_id: Hex64, pub outcome: CleanupOutcome }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupReceipt {
+    pub schema_version: String,
+    pub original_bundle_id: String,
+    pub cleanup_bundle_id: String,
+    pub cleanup_run_key: String,
+    pub scope: WorldScope,
+    pub mode: String,
+    pub objects: Vec<CleanupObject>,
+    pub unresolved_spawn_steps: Vec<u32>,
+    pub requires_reconciliation: bool,
+    pub report_fingerprint: Hex64,
 }
 
 fn fingerprint_bytes(bytes: &[u8]) -> Hex64 {

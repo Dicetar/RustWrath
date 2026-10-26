@@ -80,7 +80,8 @@ pub(crate) fn validate_world(c: &Candidate, spec: &ProcgenSpec) -> Result<(), Va
                 ensure(s.x < d.width && s.y < d.height, "artifact.spawn", "dungeon coordinate out of bounds")?;
                 ensure(d.tiles[(s.y * d.width + s.x) as usize].walkable(), "artifact.spawn", "actor on solid tile")?;
                 let entrance = &d.rooms[d.entrance];
-                if let ActorKind::Enemy { boss, .. } = &s.kind {
+                if let ActorKind::Enemy { archetype, boss } = &s.kind {
+                    ensure(*boss == (archetype == "boss"), "artifact.spawn", "boss flag/archetype mismatch")?;
                     ensure(!entrance.contains(s.x, s.y), "artifact.spawn", "enemy in safe entrance")?;
                     if *boss {
                         bosses += 1;
