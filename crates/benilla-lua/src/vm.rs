@@ -716,6 +716,17 @@ impl Vm {
         f: Value,
         globals: &[(StrRef, Value)],
     ) -> Result<(), Value> {
+        self.call_with_globals_args(f, globals, &[])
+    }
+
+    /// The same rooted save/restore operation with explicit handler arguments. The caller
+    /// roots `args` until this returns, just as it roots `f` and the global values.
+    pub fn call_with_globals_args(
+        &mut self,
+        f: Value,
+        globals: &[(StrRef, Value)],
+        args: &[Value],
+    ) -> Result<(), Value> {
         let base = self.top;
         let n = globals.len();
         let g = Value::Table(self.globals);
@@ -742,7 +753,8 @@ impl Vm {
         let called = set.and_then(|()| {
             let func_idx = self.top;
             self.push(f);
-            match self.pcall_at(func_idx, 0, 0, None) {
+            for &argument in args { self.push(argument); }
+            match self.pcall_at(func_idx, args.len(), 0, None) {
                 Ok(()) => Ok(()),
                 Err(e) => Err(e.value),
             }

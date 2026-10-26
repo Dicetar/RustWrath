@@ -158,13 +158,13 @@ fn fire(lua: &Lua, id: u32, script: &str, extra: Vec<Value>) -> mlua::Result<()>
     // when the guard drops, unwinds included.
     let _fire =
         super::handler_prof::armed().then(|| super::handler_prof::Fire::open(lua, id, script));
-    invoke_with_hooks(lua, wrapper, func.as_ref(), hooks, extra)
+    invoke_with_hooks(lua, wrapper, func.as_ref(), hooks, extra, script == "OnEvent")
 }
 
 pub(crate) fn invoke_onload(lua: &Lua, wrapper: Table, func: &Function) -> mlua::Result<()> {
     let id = super::object::decode_id(&wrapper)?;
     let hooks = script_hooks(lua, id, "OnLoad")?;
-    invoke_with_hooks(lua, wrapper, Some(func), hooks, Vec::new())
+    invoke_with_hooks(lua, wrapper, Some(func), hooks, Vec::new(), false)
 }
 
 fn invoke_with_hooks(
@@ -173,19 +173,20 @@ fn invoke_with_hooks(
     func: Option<&Function>,
     hooks: Vec<Function>,
     extra: Vec<Value>,
+    event_payload: bool,
 ) -> mlua::Result<()> {
     if hooks.is_empty() {
         return match func {
-            Some(func) => invoke_with_globals(lua, wrapper, func, extra),
+            Some(func) => invoke_with_globals(lua, wrapper, func, extra, event_payload),
             None => Ok(()),
         };
     }
     let result = match func {
-        Some(func) => invoke_with_globals(lua, wrapper.clone(), func, extra.clone()),
+        Some(func) => invoke_with_globals(lua, wrapper.clone(), func, extra.clone(), event_payload),
         None => Ok(()),
     };
     for hook in hooks {
-        if let Err(error) = invoke_with_globals(lua, wrapper.clone(), &hook, extra.clone()) {
+        if let Err(error) = invoke_with_globals(lua, wrapper.clone(), &hook, extra.clone(), event_payload) {
             lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
         }
     }
@@ -207,26 +208,32 @@ fn arg_name(i: usize) -> Cow<'static, str> {
 }
 
 /// The calling convention, shared by [`fire`] and the loader's `OnLoad`: sets `this` and
-/// `arg1..argN` and calls the handler with no arguments, as `0x705199` calls `lua_pcall` with
-/// zero; the globals are restored after the call, even on error, so nested fires are safe.
+/// `arg1..argN`. Vanilla passes no arguments; Wrath also passes self and the explicit payload.
+/// OnEvent's event name is an explicit argument, not legacy arg1. Globals restore on errors too.
 pub(crate) fn invoke_with_globals(
     lua: &Lua,
     wrapper: Table,
     func: &Function,
     extra: Vec<Value>,
+    event_payload: bool,
 ) -> mlua::Result<()> {
-    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+    let wrath = lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335;
+    let arguments = if wrath {
         let mut arguments = Vec::with_capacity(extra.len() + 1);
-        arguments.push(Value::Table(wrapper));
-        arguments.extend(extra);
-        return func.call::<()>(mlua::MultiValue::from_vec(arguments));
-    }
-    let mut globals: Vec<(&str, Value)> = Vec::with_capacity(2 + extra.len());
+        arguments.push(Value::Table(wrapper.clone()));
+        arguments.extend(extra.iter().cloned());
+        Some(mlua::MultiValue::from_vec(arguments))
+    } else { None };
+    let payload: Vec<Value> = if wrath && event_payload { extra.into_iter().skip(1).collect() } else { extra };
+    let mut globals: Vec<(&str, Value)> = Vec::with_capacity(2 + payload.len());
     globals.push(("this", Value::Table(wrapper)));
-    let names: Vec<Cow<'static, str>> = (1..=extra.len()).map(arg_name).collect();
-    for (name, v) in names.iter().zip(extra) {
+    let names: Vec<Cow<'static, str>> = (1..=payload.len()).map(arg_name).collect();
+    for (name, v) in names.iter().zip(payload) {
         globals.push((name.as_ref(), v));
     }
     // A protected call; the globals are put back before its outcome returns.
-    lua.call_with_globals(func, &globals)
+    match arguments {
+        Some(arguments) => lua.call_with_globals_args(func, &globals, arguments),
+        None => lua.call_with_globals(func, &globals),
+    }
 }
