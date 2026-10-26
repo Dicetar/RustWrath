@@ -95,6 +95,8 @@ impl Loader<'_> {
                     return None;
                 }
             };
+        let parent_key = levels.iter().filter_map(|node| node.attr("parentKey")).last();
+        self.publish_parent_key(parent_key, &region_wrapper, dbg);
         for node in &levels {
             if is_texture {
                 self.load_texture_level(node, &region_wrapper, parent_name, dbg);

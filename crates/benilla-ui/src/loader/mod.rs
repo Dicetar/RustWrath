@@ -246,6 +246,26 @@ pub(super) fn model_kind_tag(tag: &str) -> bool {
 }
 
 impl Loader<'_> {
+    /// Wrath's XML parentKey publishes the existing wrapper without creating a second object.
+    pub(super) fn publish_parent_key(&mut self, key: Option<&str>, child: &Table, dbg: &str) {
+        if self.model().target != crate::script::UiTarget::Wrath335 {
+            return;
+        }
+        let Some(key) = key.filter(|key| !key.is_empty()) else {
+            return;
+        };
+        let parent = child.call_method::<Option<Table>>("GetParent", ());
+        match parent {
+            Ok(Some(parent)) => {
+                if let Err(error) = parent.raw_set(key, child.clone()) {
+                    self.report.raise(format!("{dbg}: parentKey {key:?}: {error}"), &error);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.report.raise(format!("{dbg}: parentKey {key:?}: {error}"), &error),
+        }
+    }
+
     /// A provider path as a status line names it: under [`Loader::status_root`], `\`-separated.
     fn status_path(&self, path: &str) -> String {
         status::install_path(&format!("{}{path}", self.status_root))
@@ -881,6 +901,7 @@ impl Loader<'_> {
     ) {
         // This frame's deferred anchors drain before its OnLoad; a nested frame drains its own.
         let deferred_mark = self.deferred_anchors.len();
+        self.publish_parent_key(el.attr("parentKey"), wrapper, dbg_name);
         // 1c · the pre-load hook opens the frame's load window (`0x7697c2`): until the post-load
         //      hook, its own OnShow and OnHide fire nothing.
         crate::script::visibility::set_load_window(self.lua(), wrapper, true);
