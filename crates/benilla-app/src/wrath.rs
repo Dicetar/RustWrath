@@ -385,6 +385,9 @@ pub struct WrathWmActions {
 
 struct PendingWmAction {
     intent: ActionIntent,
+    /// The spell this action commits to, resolved at admission: a cast's own id or the cast
+    /// being cancelled. Reply matching uses it so a cancel is attributed to its spell.
+    cast_spell: Option<u32>,
     deadline: Instant,
     session_epoch: u64,
     world_generation: u64,
@@ -1185,10 +1188,16 @@ fn wrath_wm_action_intake(
             );
             continue;
         }
+        let cast_spell = match &request.intent {
+            ActionIntent::Cast { spell_id, .. } => Some(*spell_id),
+            ActionIntent::CastCancel => actions.last_cast_spell,
+            _ => None,
+        };
         actions.pending.insert(
             request.request_id.clone(),
             PendingWmAction {
                 intent: request.intent.clone(),
+                cast_spell,
                 deadline: Instant::now() + Duration::from_secs(30),
                 session_epoch: request.session_epoch,
                 world_generation: request.world_generation,
@@ -2236,6 +2245,22 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_TRAINER_BUY_SPELL,
                 gameplay::trainer_buy_spell(trainer, spell_id),
             )),
+            ClientCommand::CancelCast { spell_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CANCEL_CAST,
+                gameplay::cancel_cast(spell_id),
+            )),
+            ClientCommand::CancelChannelling { spell_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CANCEL_CHANNELLING,
+                gameplay::cancel_channelling(spell_id),
+            )),
+            ClientCommand::CancelAura { spell_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CANCEL_AURA,
+                gameplay::cancel_aura(spell_id),
+            )),
+            ClientCommand::CancelAutoRepeat => Some((
+                benilla_protocol_wrath::opcode::CMSG_CANCEL_AUTO_REPEAT_SPELL,
+                gameplay::cancel_auto_repeat(),
+            )),
             _ => None,
         };
         if let Some((opcode, payload)) = packet {
@@ -2356,11 +2381,13 @@ fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
                 }
                 (
                     SessionEvent::SpellFailedOther { caster, spell_id },
-                    ActionIntent::Cast {
-                        spell_id: wanted, ..
-                    },
-                ) if Some(*caster) == self_guid && spell_id == wanted => {
-                    Some((ActionStatus::Failed, Some("cast interrupted".to_owned())))
+                    (ActionIntent::Cast { .. } | ActionIntent::CastCancel),
+                ) if Some(*caster) == self_guid && pending.cast_spell == Some(*spell_id) => {
+                    let status = match pending.intent {
+                        ActionIntent::CastCancel => ActionStatus::Succeeded,
+                        _ => ActionStatus::Failed,
+                    };
+                    Some((status, Some("cast interrupted".to_owned())))
                 }
                 (SessionEvent::AttackSwingError(_), ActionIntent::AttackStart { .. }) => {
                     Some((ActionStatus::Failed, Some("attack swing refused".to_owned())))
@@ -2427,6 +2454,11 @@ fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
         }
         for (id, status, detail) in resolved {
             if let Some(pending) = actions.pending.remove(&id) {
+                if let ActionIntent::Cast { spell_id, .. } = &pending.intent {
+                    if actions.last_cast_spell == Some(*spell_id) {
+                        actions.last_cast_spell = None;
+                    }
+                }
                 actions.answer(
                     id,
                     status,

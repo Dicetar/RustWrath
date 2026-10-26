@@ -57,6 +57,16 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: cancel verbs and WM cast-cancel resolution (committed with this record)
+
+ClientCommand::CancelCast, CancelChannelling, CancelAura and CancelAutoRepeat were still
+dropped by the Wrath tap, including the command the WM cast_cancel action maps onto. Added the
+four 12340 opcodes and encoders (CMSG_CANCEL_CAST 0x12F with its ignored counter byte,
+CMSG_CANCEL_AURA 0x136, CMSG_CANCEL_CHANNELLING 0x13B,
+CMSG_CANCEL_AUTO_REPEAT_SPELL 0x26D). A pending WM cast now records the spell it commits to, so
+a self SMSG_SPELL_FAILED_OTHER resolves the matching cast as failed and the matching cancel as
+succeeded; a resolved cast clears the remembered spell so a later cancel cannot name a stale one.
+
 ## Slice: trainer authority path (committed with this record)
 
 Trainer list and purchase were also absent from the Wrath tap. Added the five 12340 opcodes

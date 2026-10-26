@@ -227,6 +227,29 @@ pub fn repair_item(vendor: u64, item_guid: u64, guild_bank: bool) -> Vec<u8> {
     p
 }
 
+/// `CMSG_CANCEL_CAST` (`SpellHandler.cpp:552`): an ignored counter byte, then the spell id.
+pub fn cancel_cast(spell_id: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(5);
+    p.push(0);
+    p.extend_from_slice(&spell_id.to_le_bytes());
+    p
+}
+
+/// `CMSG_CANCEL_CHANNELLING` (`SpellHandler.cpp:651`): the spell id (the server reads it).
+pub fn cancel_channelling(spell_id: u32) -> Vec<u8> {
+    spell_id.to_le_bytes().to_vec()
+}
+
+/// `CMSG_CANCEL_AURA` (`SpellHandler.cpp:566`): the aura's spell id.
+pub fn cancel_aura(spell_id: u32) -> Vec<u8> {
+    spell_id.to_le_bytes().to_vec()
+}
+
+/// `CMSG_CANCEL_AUTO_REPEAT_SPELL` (`SpellHandler.cpp:644`): empty.
+pub fn cancel_auto_repeat() -> Vec<u8> {
+    Vec::new()
+}
+
 /// `CMSG_TRAINER_LIST` (`NPCHandler.cpp:81`): the `Hello` packet's unit guid.
 pub fn trainer_list(trainer: u64) -> Vec<u8> {
     trainer.to_le_bytes().to_vec()

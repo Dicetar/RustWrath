@@ -193,6 +193,12 @@ pub const SMSG_TRAINER_LIST: u16 = 0x1B1;
 pub const CMSG_TRAINER_BUY_SPELL: u32 = 0x1B2;
 pub const SMSG_TRAINER_BUY_SUCCEEDED: u16 = 0x1B3;
 pub const SMSG_TRAINER_BUY_FAILED: u16 = 0x1B4;
+/// Cancel verbs (`SpellHandler.cpp:552-660`): 12340 `CMSG_CANCEL_CAST` leads with an ignored
+/// counter byte, the others carry only the spell id or nothing.
+pub const CMSG_CANCEL_CAST: u32 = 0x12F;
+pub const CMSG_CANCEL_AURA: u32 = 0x136;
+pub const CMSG_CANCEL_CHANNELLING: u32 = 0x13B;
+pub const CMSG_CANCEL_AUTO_REPEAT_SPELL: u32 = 0x26D;
 pub const SMSG_BINDPOINTUPDATE: u16 = 0x155;
 pub const CMSG_QUERY_TIME: u32 = 0x1CE;
 pub const CMSG_PING: u32 = 0x1DC;
