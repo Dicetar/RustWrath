@@ -37,6 +37,26 @@ pub fn open(vm: &mut Vm) {
 /// the client.
 const MAX_SHIFT: i64 = 1_000_000;
 
+pub(crate) fn open_51(vm: &mut Vm) {
+    let table = vm.get_global("table").as_table().expect("table library installed");
+    let function = vm.new_native("maxn", maxn);
+    let name = vm.str(b"maxn");
+    vm.heap.table_mut(table).set(name, function).expect("library key");
+}
+
+fn maxn(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let table = vm.check_table(nargs, 1)?;
+    let mut key = Value::Nil;
+    let mut maximum = 0.0f64;
+    loop {
+        let step = vm.heap.table(table).next(key).map_err(|_| vm.rt_error("invalid key to 'next'"))?;
+        let Some((next, _)) = step else { break; };
+        if let Some(number) = next.as_num() { maximum = maximum.max(number); }
+        key = next;
+    }
+    Ok(vm.ret1(Value::Num(maximum)))
+}
+
 /// `luaB_getn` (`0x7fb630`).
 fn getn_(vm: &mut Vm, nargs: usize) -> R<usize> {
     let t = vm.check_table(nargs, 1)?;
@@ -46,6 +66,7 @@ fn getn_(vm: &mut Vm, nargs: usize) -> R<usize> {
 
 /// `luaB_setn` (`0x7fb670`).
 fn setn_(vm: &mut Vm, nargs: usize) -> R<usize> {
+    if vm.dialect().is_51() { return Err(vm.error_at(1, "'setn' is obsolete")); }
     let t = vm.check_table(nargs, 1)?;
     let n = vm.check_int(nargs, 2)?;
     setn(vm, t, n);

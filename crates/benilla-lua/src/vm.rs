@@ -405,6 +405,10 @@ impl Vm {
 
     pub fn dialect(&self) -> crate::Dialect { self.dialect }
 
+    pub fn set_string_metatable(&mut self, table: Option<TableRef>) {
+        if self.dialect.is_51() { self.heap.string_meta = table; }
+    }
+
     pub fn with_dialect(dialect: crate::Dialect) -> Vm {
         let mut heap = Heap::default();
         let mut s = |b: &[u8]| heap.intern(b);
@@ -2333,6 +2337,7 @@ impl Vm {
         let mut roots: Vec<Value> = self.stack[..self.top].to_vec();
         roots.push(Value::Table(self.globals));
         roots.push(Value::Table(self.registry));
+        if let Some(meta) = self.heap.string_meta { roots.push(Value::Table(meta)); }
         for f in &self.frames {
             roots.push(Value::Func(f.func));
         }

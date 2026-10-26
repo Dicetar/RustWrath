@@ -54,7 +54,12 @@ pub fn crt_float(v: f64, conv: u8, precision: Option<usize>) -> String {
 /// host replaces: a new value under a key keeps the layout. There is no `_G`: an addon reaches the
 /// globals by `getfenv(0)`.
 pub fn new_state() -> Vm {
-    let mut vm = Vm::new();
+    new_state_with_dialect(Dialect::Vanilla50)
+}
+
+/// Explicit language/library selection; the ordinary constructor remains donor-compatible.
+pub fn new_state_with_dialect(dialect: Dialect) -> Vm {
+    let mut vm = Vm::with_dialect(dialect);
     // `InitLua` sets 256 KB right after `lua_open` (`0x7039f2`), before any library.
     vm.set_gc_threshold(0x100);
     let meta = vm.heap.new_table(0, 0);
@@ -63,6 +68,7 @@ pub fn new_state() -> Vm {
     lib_string::open(&mut vm);
     lib_table::open(&mut vm);
     lib_math::open(&mut vm);
+    if dialect.is_51() { lib_base::open_51(&mut vm); lib_table::open_51(&mut vm); lib_string::open_51(&mut vm); }
     vm.exec(COMPAT, b"=[benilla-lua compat]")
         .expect("the compat chunk runs");
     vm

@@ -61,6 +61,24 @@ pub fn open(vm: &mut Vm, host: crate::heap::NativeFn) {
     }
 }
 
+pub(crate) fn open_51(vm: &mut Vm) {
+    vm.register("select", select);
+    vm.set_global("_G", Value::Table(vm.globals));
+    let version = vm.str(b"Lua 5.1");
+    vm.set_global("_VERSION", version);
+}
+
+fn select(vm: &mut Vm, nargs: usize) -> R<usize> {
+    if let V::Str(text) = vm.arg(nargs, 0).unpack() {
+        if vm.heap.str(text).first() == Some(&b'#') { return Ok(vm.ret1(Value::Num(nargs.saturating_sub(1) as f64))); }
+    }
+    let requested = i64::from(vm.check_int(nargs, 1)?);
+    let count = nargs as i64;
+    let index = if requested < 0 { count + requested } else { requested.min(count) };
+    if index < 1 { return Err(vm.arg_error(1, "index out of range")); }
+    Ok((count - index) as usize)
+}
+
 /// `luaB_error`: a string message gets the position `level` up (default 1).
 /// 5.1's `error`: no value raises nil.
 fn error(vm: &mut Vm, nargs: usize) -> R<usize> {
@@ -349,7 +367,7 @@ fn assert(vm: &mut Vm, nargs: usize) -> R<usize> {
         let m = m[..m.iter().position(|&b| b == 0).unwrap_or(m.len())].to_vec();
         return Err(vm.error_at_bytes(1, &m));
     }
-    Ok(vm.ret1(v))
+    if vm.dialect().is_51() { Ok(nargs) } else { Ok(vm.ret1(v)) }
 }
 
 /// `checkint` (`0x6f4f80`): `lua_tonumber` (`0x6f4f8a`) and `__ftol`'s low word, so a numeric
@@ -361,6 +379,7 @@ fn checkint(vm: &Vm, v: Value) -> i32 {
 /// `luaL_getn` (`0x6f5050`): `t.n` if `checkint` takes it, else the size `setn` remembered, else
 /// a count to the first nil.
 pub fn getn(vm: &mut Vm, t: crate::value::TableRef) -> usize {
+    if vm.dialect().is_51() { return vm.heap.table(t).length(); }
     let n = checkint(vm, vm.heap.table(t).get(Value::Str(vm.names.n)));
     if n >= 0 {
         return n as usize;
@@ -374,6 +393,7 @@ pub fn getn(vm: &mut Vm, t: crate::value::TableRef) -> usize {
 /// `luaL_setn` (`0x6f4ea0`): into `t.n`, as a number, when `checkint` takes the one there, else the
 /// remembered size; either keeps a negative size as given.
 pub fn setn(vm: &mut Vm, t: crate::value::TableRef, n: i32) {
+    if vm.dialect().is_51() { return; }
     let key = Value::Str(vm.names.n);
     if checkint(vm, vm.heap.table(t).get(key)) >= 0 {
         vm.heap
@@ -394,6 +414,17 @@ const MAXCSTACK_50: usize = 0x800;
 /// slots in use are the arguments.
 fn unpack(vm: &mut Vm, nargs: usize) -> R<usize> {
     let t = vm.check_table(nargs, 1)?;
+    if vm.dialect().is_51() {
+        let first = vm.opt_int(nargs, 2, 1)?;
+        let default_end = getn(vm, t).min(i32::MAX as usize) as i32;
+        let last = vm.opt_int(nargs, 3, default_end)?;
+        let count = (i64::from(last) - i64::from(first) + 1).max(0) as usize;
+        if count > 8000usize.saturating_sub(vm.top - vm.native_base()) {
+            return Err(vm.error_at(1, "too many results to unpack"));
+        }
+        for offset in 0..count { let value = vm.heap.table(t).get_int(first + offset as i32); vm.push(value); }
+        return Ok(count);
+    }
     let n = getn(vm, t);
     if vm.top - vm.native_base() + n > MAXCSTACK_50 {
         // `luaL_checkstack` (`0x6f4b20`): `luaL_error` with `stack overflow (%s)` (`0x8716b0`).
@@ -486,6 +517,7 @@ fn collectgarbage(vm: &mut Vm, nargs: usize) -> R<usize> {
 /// 1.12's `gcinfo()` (`0x703200`): live and threshold kilobytes.
 fn gcinfo(vm: &mut Vm, _nargs: usize) -> R<usize> {
     let kb = vm.heap.bytes() >> 10;
+    if vm.dialect().is_51() { return Ok(vm.ret1(Value::Num(kb as f64))); }
     vm.push(Value::Num(kb as f64));
     vm.push(Value::Num((vm.heap.threshold() >> 10) as f64));
     Ok(2)

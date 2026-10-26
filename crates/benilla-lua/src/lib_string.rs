@@ -32,6 +32,26 @@ pub fn open(vm: &mut Vm) {
     vm.set_global("string", Value::Table(t));
 }
 
+pub(crate) fn open_51(vm: &mut Vm) {
+    let table = vm.get_global("string").as_table().expect("string library installed");
+    let functions: [(&'static str, crate::heap::NativeFn); 3] = [("match", match_), ("gmatch", gfind), ("reverse", reverse)];
+    for (name, function) in functions {
+        let value = vm.new_native(name, function);
+        let key = vm.str(name.as_bytes());
+        vm.heap.table_mut(table).set(key, value).expect("library key");
+    }
+    let meta = vm.heap.new_table(0, 0);
+    vm.set_string_metatable(Some(meta));
+    let index = vm.str(b"__index");
+    vm.heap.table_mut(meta).set(index, Value::Table(table)).expect("string method index");
+}
+
+fn reverse(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let string = vm.check_str(nargs, 1)?;
+    let bytes: Vec<_> = vm.heap.str(string).iter().rev().copied().collect();
+    Ok(vm.ret_str(&bytes))
+}
+
 /// 5.1's `posrelat`: a negative position counts back from the end, and one before the start is 0.
 fn posrelat(pos: i64, len: usize) -> i64 {
     let pos = if pos < 0 {
@@ -815,6 +835,7 @@ fn find_in(vm: &mut Vm, nargs: usize, [src, pat, cpat]: &mut [Vec<u8>; 3]) -> R<
     if init < 0 {
         init = 0;
     } else if init as usize > l1 {
+        if vm.dialect().is_51() { return Ok(vm.ret1(Value::Nil)); }
         init = l1 as i64;
     }
     let init = init as usize;
@@ -869,6 +890,40 @@ fn find_in(vm: &mut Vm, nargs: usize, [src, pat, cpat]: &mut [Vec<u8>; 3]) -> R<
         if s1 > src.len() || anchor {
             break;
         }
+    }
+    Ok(vm.ret1(Value::Nil))
+}
+
+fn match_(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let mut buffers = vm.take_bufs::<2>();
+    let result = match_in(vm, nargs, &mut buffers);
+    vm.give_bufs(buffers);
+    result
+}
+
+fn match_in(vm: &mut Vm, nargs: usize, [subject, pattern]: &mut [Vec<u8>; 2]) -> R<usize> {
+    let string = vm.check_str(nargs, 1)?;
+    let pat = vm.check_str(nargs, 2)?;
+    let length = vm.heap.str(string).len();
+    let initial = (posrelat(vm.opt_integer(nargs, 3, 1)?, length) - 1).max(0) as usize;
+    if initial > length { return Ok(vm.ret1(Value::Nil)); }
+    subject.extend_from_slice(vm.heap.str(string));
+    c_pattern(vm.heap.str(pat), pattern);
+    let anchored = pattern[0] == b'^';
+    let start = usize::from(anchored);
+    let mut state = new_state(vm, subject, pattern);
+    for position in initial..=length {
+        state.level = 0;
+        match state.do_match(position, start) {
+            Err(error) => return Err(pat_err(vm, error)),
+            Ok(Some(end)) => {
+                let values = state.captures(vm, Some((position, end))).map_err(|e| pat_err(vm, e))?;
+                for value in &values { vm.push(*value); }
+                return Ok(values.len());
+            }
+            Ok(None) => {}
+        }
+        if anchored { break; }
     }
     Ok(vm.ret1(Value::Nil))
 }
@@ -945,6 +1000,7 @@ fn gsub_in(vm: &mut Vm, nargs: usize, [src, cpat, out, repl_buf]: &mut [Vec<u8>;
         _ if nargs < 3 => None,
         V::Str(_) | V::Num(_) => Some(0),
         V::Func(_) => Some(1),
+        V::Table(_) if vm.dialect().is_51() => Some(2),
         _ => None,
     };
     let Some(kind) = kind else {
@@ -1038,6 +1094,12 @@ fn add_value(
                 if !d.is_ascii_digit() {
                     out.push(d);
                 } else {
+                    if vm.dialect().is_51() && (d == b'0' || (d == b'1' && ms.level == 0)) {
+                        vm.reserve(out, e - s)?;
+                        out.extend_from_slice(&ms.src[s..e]);
+                        i += 1;
+                        continue;
+                    }
                     let v = ms
                         .check_capture(d)
                         .and_then(|l| ms.capture_value(vm, l))
@@ -1054,7 +1116,14 @@ fn add_value(
     let caps = ms
         .captures(vm, Some((s, e)))
         .map_err(|err| pat_err(vm, err))?;
-    let v = vm.call_value(repl, &caps, 1)?[0];
+    let v = if kind == 2 {
+        vm.index(repl, caps[0], None)?
+    } else { vm.call_value(repl, &caps, 1)?[0] };
+    if vm.dialect().is_51() && !v.truthy() {
+        vm.reserve(out, e - s)?;
+        out.extend_from_slice(&ms.src[s..e]);
+        return Ok(());
+    }
     // A string or number result is added, anything else dropped with the match
     // (`0x7fd392`-`0x7fd3b7`).
     if let Some(sv) = matches!(v.unpack(), V::Str(_) | V::Num(_))
@@ -1063,6 +1132,8 @@ fn add_value(
     {
         vm.reserve(out, vm.heap.str(sv).len())?;
         out.extend_from_slice(vm.heap.str(sv));
+    } else if vm.dialect().is_51() {
+        return Err(vm.rt_error(&format!("invalid replacement value (a {})", v.type_name())));
     }
     Ok(())
 }

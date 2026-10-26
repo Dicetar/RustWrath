@@ -395,8 +395,12 @@ impl Lua {
     /// A state opened as the client opens its own ([`benilla_lua::new_state`]): the base array,
     /// the `string`, `table`, `math` and `bit` libraries and the compat globals, in its order.
     pub fn new() -> Lua {
+        Self::with_dialect(benilla_lua::Dialect::Vanilla50)
+    }
+
+    pub fn with_dialect(dialect: benilla_lua::Dialect) -> Lua {
         Lua::over(
-            Box::new(benilla_lua::new_state()),
+            Box::new(benilla_lua::new_state_with_dialect(dialect)),
             NEXT_FAMILY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         )
     }
@@ -949,8 +953,13 @@ impl Lua {
         Ok(())
     }
 
-    /// 1.12 has no type metatables, and this VM none to set: a string never has one.
-    pub fn set_type_metatable<T>(&self, _metatable: Option<Table>) {}
+    /// The supported primitive metatable is the string library's 5.1 method table.
+    pub fn set_type_metatable<T>(&self, metatable: Option<Table>) {
+        if std::any::type_name::<T>() == std::any::type_name::<String>() {
+            let table = metatable.as_ref().map(|m| self.unref(&m.0).as_table().expect("table metatable"));
+            self.vm().set_string_metatable(table);
+        }
+    }
 
     // ── debugging ────────────────────────────────────────────────────────────────────────────
 

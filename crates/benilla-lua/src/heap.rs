@@ -450,6 +450,7 @@ pub struct Census {
 #[derive(Clone)]
 pub struct Heap {
     pub(crate) identity: Identity,
+    pub(crate) string_meta: Option<TableRef>,
     strs: Arena<StrObj>,
     /// The intern table: open addressing, linear probing, at most half full.
     strt: Vec<u32>,
@@ -589,6 +590,7 @@ impl Default for Heap {
     fn default() -> Self {
         let mut h = Heap {
             identity: Identity::default(),
+            string_meta: None,
             strs: Arena::new(),
             strt: vec![STRT_EMPTY; 128],
             strt_buckets: STRT_FIRST,
@@ -974,6 +976,7 @@ impl Heap {
         match v.unpack() {
             V::Table(t) => self.table(t).meta,
             V::User(u) => self.user(u).meta,
+            V::Str(_) => self.string_meta,
             _ => None,
         }
     }
