@@ -19,6 +19,10 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 
+/// Local admission bound: the broker caps itself at 16, so 64 leaves headroom while keeping a
+/// misbehaving peer from growing the client queue without limit.
+const MAX_QUEUED_ACTIONS: usize = 64;
+
 /// Configuration for the one-shot, loopback-only sink.
 #[derive(Clone, Debug)]
 pub struct LoopbackConfig {
@@ -321,7 +325,7 @@ impl LoopbackSink {
                     });
                 }
                 ServerFrame::ActionRequest { request } => self.enqueue_action(request)?,
-                ServerFrame::ActionCancel { request_id } => self.cancels.push_back(request_id),
+                ServerFrame::ActionCancel { request_id } => self.enqueue_cancel(request_id),
                 ServerFrame::Error { code, message } => {
                     self.broken = true;
                     return Err(Error::ReceiverRejected { code, message });
@@ -405,7 +409,7 @@ impl LoopbackSink {
                     Ok(PeerState::Alive)
                 }
                 ServerFrame::ActionCancel { request_id } => {
-                    self.cancels.push_back(request_id);
+                    self.enqueue_cancel(request_id);
                     Ok(PeerState::Alive)
                 }
                 _ => {
@@ -458,8 +462,20 @@ impl LoopbackSink {
 
     fn enqueue_action(&mut self, request: ActionRequest) -> Result<()> {
         request.validate()?;
+        if self.actions.len() >= MAX_QUEUED_ACTIONS {
+            return Err(Error::InvalidAction(
+                "too many pending action requests".to_owned(),
+            ));
+        }
         self.actions.push_back(request);
         Ok(())
+    }
+
+    /// Bounded, best-effort admission-level cancellation; a dropped cancel still resolves by deadline.
+    fn enqueue_cancel(&mut self, request_id: String) {
+        if self.cancels.len() < MAX_QUEUED_ACTIONS {
+            self.cancels.push_back(request_id);
+        }
     }
 
     /// Reads one server frame, mapping an idle read timeout on a half-read frame to a broken link.

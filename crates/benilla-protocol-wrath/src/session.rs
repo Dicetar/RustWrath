@@ -72,6 +72,32 @@ pub struct SelfVisibility {
     pub guids: Vec<u64>,
 }
 
+/// Observed combat state from `UNIT_FIELD_FLAGS`; unknown until that word is delivered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfCombat {
+    Unknown,
+    OutOfCombat,
+    InCombat,
+}
+
+/// Self health and power, each field independently observed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelfResources {
+    pub health: Option<u32>,
+    pub max_health: Option<u32>,
+    pub power_type: Option<u8>,
+    pub power: Option<u32>,
+}
+
+/// Self life state; ghost takes precedence over dead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfDeath {
+    Unknown,
+    Alive,
+    Dead,
+    Ghost,
+}
+
 /// A valid self-world snapshot: every populated field is source-observed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelfObservation {

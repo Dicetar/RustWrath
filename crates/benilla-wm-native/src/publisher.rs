@@ -751,10 +751,6 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
             return;
         }
 
-        if let (Some(active), Some(bridge)) = (sink.as_mut(), config.actions.as_ref()) {
-            pump_actions(shared, active, bridge);
-        }
-
         if timed_out {
             if let Some(active) = sink.as_mut() {
                 match active.poll_peer() {
@@ -818,6 +814,12 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
                     }
                 }
             }
+        }
+
+        // Forward peer-delivered intents (and any answers) after the idle poll, so a request
+        // read on this tick reaches the app without an extra 500 ms wait.
+        if let (Some(active), Some(bridge)) = (sink.as_mut(), config.actions.as_ref()) {
+            pump_actions(shared, active, bridge);
         }
 
         let source_health = latest_source_health(shared, config.producer_health_ttl);
