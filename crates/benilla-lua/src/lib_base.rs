@@ -63,9 +63,42 @@ pub fn open(vm: &mut Vm, host: crate::heap::NativeFn) {
 
 pub(crate) fn open_51(vm: &mut Vm) {
     vm.register("select", select);
+    let pairs = vm.new_closure("pairs", pairs_51, vec![vm.builtin_next]);
+    vm.set_global("pairs", pairs);
+    let generator = vm.new_native("ipairsaux", ipairs_aux_51);
+    let ipairs = vm.new_closure("ipairs", ipairs_51, vec![generator]);
+    vm.set_global("ipairs", ipairs);
     vm.set_global("_G", Value::Table(vm.globals));
     let version = vm.str(b"Lua 5.1");
     vm.set_global("_VERSION", version);
+}
+
+fn pairs_51(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let table = vm.check_table(nargs, 1)?;
+    let generator = vm.upvalue(0);
+    vm.push(generator);
+    vm.push(Value::Table(table));
+    vm.push(Value::Nil);
+    Ok(3)
+}
+
+fn ipairs_51(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let table = vm.check_table(nargs, 1)?;
+    let generator = vm.upvalue(0);
+    vm.push(generator);
+    vm.push(Value::Table(table));
+    vm.push(Value::Num(0.0));
+    Ok(3)
+}
+
+fn ipairs_aux_51(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let index = vm.check_int(nargs, 2)?.wrapping_add(1);
+    let table = vm.check_table(nargs, 1)?;
+    let value = vm.heap.table(table).get_int(index);
+    if value.is_nil() { return Ok(0); }
+    vm.push(Value::Num(f64::from(index)));
+    vm.push(value);
+    Ok(2)
 }
 
 fn select(vm: &mut Vm, nargs: usize) -> R<usize> {
