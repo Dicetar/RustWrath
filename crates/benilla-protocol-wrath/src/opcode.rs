@@ -62,6 +62,11 @@ pub const MSG_MOVE_FALL_LAND: u32 = 0x0C9;
 pub const MSG_MOVE_SET_FACING: u32 = 0x0DA;
 pub const MSG_MOVE_HEARTBEAT: u32 = 0x0EE;
 pub const CMSG_SET_SELECTION: u32 = 0x13D;
+/// Chat (`ChatHandler.cpp:59-300`, `Chat.cpp:374-443`): 12340 has a uniform body; the
+/// GM variant adds an inline sender name.
+pub const CMSG_MESSAGECHAT: u32 = 0x095;
+pub const SMSG_MESSAGECHAT: u16 = 0x096;
+pub const SMSG_GM_MESSAGECHAT: u16 = 0x3B3;
 pub const SMSG_AI_REACTION: u16 = 0x13C;
 pub const CMSG_ATTACKSWING: u32 = 0x141;
 pub const CMSG_ATTACKSTOP: u32 = 0x142;

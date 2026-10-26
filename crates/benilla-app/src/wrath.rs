@@ -69,7 +69,8 @@ use benilla_protocol::messages::{
     PeriodicTick as ProtocolPeriodicTick, QuestComplete, QuestDetails, QuestGiverList,
     QuestListEntry, QuestObjective, QuestOfferReward, QuestRequestItems, QuestRewardItem,
     QuestTemplate, SpellDamageLog as ProtocolSpellDamageLog,
-    TrainerSpell as ProtocolTrainerSpell, VendorItem as ProtocolVendorItem,
+    ChatMessage as ProtocolChatMessage, TrainerSpell as ProtocolTrainerSpell,
+    VendorItem as ProtocolVendorItem,
 };
 
 use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, SessionState};
@@ -1235,6 +1236,103 @@ fn wrath_wm_action_intake(
     }
 }
 
+/// The stock chat bar's kind in the 12340 `ChatMsg` numbering.
+fn wrath_chat_type(kind: crate::net::ChatKind) -> u32 {
+    use crate::net::ChatKind;
+    match kind {
+        ChatKind::Say => 0x01,
+        ChatKind::Yell => 0x06,
+        ChatKind::Emote => 0x0A,
+        ChatKind::Whisper => 0x07,
+        ChatKind::Party => 0x02,
+        ChatKind::Raid => 0x03,
+        ChatKind::RaidLeader => 0x27,
+        ChatKind::RaidWarning => 0x28,
+        ChatKind::Guild => 0x04,
+        ChatKind::Officer => 0x05,
+        ChatKind::Battleground => 0x2C,
+        ChatKind::BattlegroundLeader => 0x2D,
+        ChatKind::Afk => 0x17,
+        ChatKind::Dnd => 0x18,
+        ChatKind::Channel => 0x11,
+    }
+}
+
+/// The language the stock send would use when the frame names none: AFK/DND accept universal,
+/// every character otherwise speaks its race's native tongue (Common 7 or Orcish 1).
+fn stock_chat_language(
+    kind: crate::net::ChatKind,
+    requested: Option<u32>,
+    view: &WrathWorldView,
+) -> u32 {
+    if let Some(language) = requested {
+        return language;
+    }
+    if matches!(kind, crate::net::ChatKind::Afk | crate::net::ChatKind::Dnd) {
+        return 0;
+    }
+    let race = view
+        .entities
+        .get(&view.player_guid)
+        .and_then(|entity| entity.bytes_0)
+        .map(|bytes| (bytes & 0xff) as u8);
+    match race {
+        Some(2 | 5 | 6 | 8 | 10) => 1, // Orcish
+        _ => 7,                         // Common
+    }
+}
+
+/// `AddonDistribution` in the 12340 `ChatMsg` numbering; LANG_ADDON marks the addon lane.
+fn addon_chat_type(distribution: benilla_ui::script::AddonDistribution) -> u32 {
+    use benilla_ui::script::AddonDistribution;
+    match distribution {
+        AddonDistribution::Party => 0x02,
+        AddonDistribution::Raid => 0x03,
+        AddonDistribution::Guild => 0x04,
+        AddonDistribution::Battleground => 0x2C,
+    }
+}
+
+/// The 12340 chat type as the stock owner's wire value. Wrath-only types with no 1.12 owner
+/// (achievement, monster party, skill/loot/money lines, battlenet) are dropped explicitly
+/// rather than projected onto an unrelated event.
+fn chat_type_112(chat_type: u8) -> Option<u8> {
+    use benilla_protocol::messages as m;
+    Some(match chat_type {
+        0x00 => m::CHAT_MSG_SYSTEM,
+        0x01 => m::CHAT_MSG_SAY,
+        0x02 => m::CHAT_MSG_PARTY,
+        0x03 => m::CHAT_MSG_RAID,
+        0x04 => m::CHAT_MSG_GUILD,
+        0x05 => m::CHAT_MSG_OFFICER,
+        0x06 => m::CHAT_MSG_YELL,
+        0x07 | 0x08 => m::CHAT_MSG_WHISPER,
+        0x09 => m::CHAT_MSG_WHISPER_INFORM,
+        0x0A => m::CHAT_MSG_EMOTE,
+        0x0C => m::CHAT_MSG_MONSTER_SAY,
+        0x0E => m::CHAT_MSG_MONSTER_YELL,
+        0x0F => m::CHAT_MSG_MONSTER_WHISPER,
+        0x10 => m::CHAT_MSG_MONSTER_EMOTE,
+        0x11 => m::CHAT_MSG_CHANNEL,
+        0x17 => m::CHAT_MSG_AFK,
+        0x18 => m::CHAT_MSG_DND,
+        0x19 => m::CHAT_MSG_IGNORED,
+        0x24 => m::CHAT_MSG_BG_SYSTEM_NEUTRAL,
+        0x25 => m::CHAT_MSG_BG_SYSTEM_ALLIANCE,
+        0x26 => m::CHAT_MSG_BG_SYSTEM_HORDE,
+        0x27 => m::CHAT_MSG_RAID_LEADER,
+        0x28 => m::CHAT_MSG_RAID_WARNING,
+        0x29 => m::CHAT_MSG_RAID_BOSS_EMOTE,
+        0x2A => m::CHAT_MSG_RAID_BOSS_WHISPER,
+        0x2B => m::CHAT_MSG_FILTERED,
+        0x2C => m::CHAT_MSG_BATTLEGROUND,
+        0x2D => m::CHAT_MSG_BATTLEGROUND_LEADER,
+        0x2E => m::CHAT_MSG_SYSTEM,
+        0x33 => m::CHAT_MSG_PARTY,
+        _ => return None,
+    })
+}
+
 /// 12340 bank bags start at 67 where the stock owner uses 63; slots inside the bank block
 /// (39-66) and the inventory/backpack indices agree, so only the six stock bank bags move.
 fn wrath_bank_bag(bag: u8) -> u8 {
@@ -1844,6 +1942,22 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
                 reason,
             }]
         }
+        WrathGameplayEvent::Chat(line) => match chat_type_112(line.chat_type) {
+            Some(chat_type) => vec![SessionEvent::Chat(ProtocolChatMessage {
+                chat_type,
+                language: line.language,
+                sender_guid: line.sender_guid,
+                target_guid: line.target_guid,
+                sender_name: line.sender_name,
+                channel: line.channel,
+                text: line.text,
+                chat_tag: line.chat_tag,
+            })],
+            None => {
+                debug!("wrath: chat type 0x{:X} has no 1.12 owner", line.chat_type);
+                Vec::new()
+            }
+        },
         WrathGameplayEvent::QuestGiverStatus { npc, status } => {
             vec![SessionEvent::QuestGiverStatus { npc, status }]
         }
@@ -2307,6 +2421,29 @@ fn wrath_tap_commands(
             ClientCommand::AutoStoreBankItem { bag, slot } => Some((
                 benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BANK_ITEM,
                 gameplay::autostore_bank_item(wrath_bank_bag(bag), slot),
+            )),
+            ClientCommand::Chat {
+                kind,
+                target,
+                text,
+                language,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_MESSAGECHAT,
+                gameplay::message_chat(
+                    wrath_chat_type(kind),
+                    stock_chat_language(kind, language, &view),
+                    target.as_deref(),
+                    &text,
+                ),
+            )),
+            ClientCommand::AddonMessage { distribution, text } => Some((
+                benilla_protocol_wrath::opcode::CMSG_MESSAGECHAT,
+                gameplay::message_chat(
+                    addon_chat_type(distribution),
+                    0xFFFF_FFFF,
+                    None,
+                    &text,
+                ),
             )),
             _ => None,
         };

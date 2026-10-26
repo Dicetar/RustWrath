@@ -227,6 +227,22 @@ pub fn repair_item(vendor: u64, item_guid: u64, guild_bank: bool) -> Vec<u8> {
     p
 }
 
+/// `CMSG_MESSAGECHAT` (`ChatHandler.cpp:59`): u32 type, u32 language, then the whisper/channel
+/// target as a cstring when present, then the message as a cstring. The client's own language
+/// is native (Common 7 or Orcish 1); AFK/DND accept universal 0.
+pub fn message_chat(chat_type: u32, language: u32, target: Option<&str>, text: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12 + target.map_or(0, str::len) + text.len());
+    p.extend_from_slice(&chat_type.to_le_bytes());
+    p.extend_from_slice(&language.to_le_bytes());
+    if let Some(target) = target {
+        p.extend_from_slice(target.as_bytes());
+        p.push(0);
+    }
+    p.extend_from_slice(text.as_bytes());
+    p.push(0);
+    p
+}
+
 /// `CMSG_BANKER_ACTIVATE` (`BankHandler.cpp:44`): the banker guid.
 pub fn banker_activate(banker: u64) -> Vec<u8> {
     banker.to_le_bytes().to_vec()
@@ -552,6 +568,21 @@ pub struct LootItem {
 /// One 12340 `SMSG_LIST_INVENTORY` row (`ItemHandler.cpp:941`): eight words, the last the
 /// extended cost the 1.12 merchant owner cannot present. `slot` is the 1-based row the buy
 /// packets address; `current_count` `0xFFFF_FFFF` is unlimited.
+/// One 12340 `SMSG_MESSAGECHAT`/`SMSG_GM_MESSAGECHAT` line (`Chat.cpp:374-443`). `chat_type`
+/// stays in the 12340 `ChatMsg` numbering; the app maps it to the 1.12 owner's values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatLine {
+    pub chat_type: u8,
+    pub language: u32,
+    pub sender_guid: u64,
+    pub target_guid: u64,
+    pub sender_name: Option<String>,
+    pub channel: Option<String>,
+    pub text: String,
+    pub chat_tag: u8,
+    pub achievement_id: Option<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VendorRow {
     pub slot: u32,
@@ -821,6 +852,7 @@ pub enum ServerEvent {
         spell_id: u32,
         error: u32,
     },
+    Chat(ChatLine),
     ShowBank {
         banker: u64,
     },
@@ -941,6 +973,8 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_TRAINER_LIST => read_trainer_list(body),
         SMSG_TRAINER_BUY_SUCCEEDED => read_trainer_buy_succeeded(body),
         SMSG_TRAINER_BUY_FAILED => read_trainer_buy_failed(body),
+        SMSG_MESSAGECHAT => read_message_chat(body, false),
+        SMSG_GM_MESSAGECHAT => read_message_chat(body, true),
         SMSG_SHOW_BANK => read_show_bank(body),
         SMSG_BUY_BANK_SLOT_RESULT => u32_body(body).map(|result| ServerEvent::BuyBankSlotResult {
             result,
@@ -1042,6 +1076,74 @@ fn read_trainer_buy_succeeded(b: &[u8]) -> Result<ServerEvent> {
         trainer: r.u64()?,
         spell_id: r.u32()?,
     })
+}
+
+/// 12340 `ObjectGuid::GetHigh()` is bits 48-63; players have high `0x0000`, pets `0xF140`.
+fn guid_high(guid: u64) -> u16 {
+    ((guid >> 48) & 0xffff) as u16
+}
+
+fn read_message_chat(b: &[u8], gm: bool) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let chat_type = r.u8()?;
+    let language = r.u32()?;
+    let sender_guid = r.u64()?;
+    let _unknown = r.u32()?; // 2.1.0
+    let mut sender_name = None;
+    let mut target_guid = 0u64;
+    let mut channel = None;
+    match chat_type {
+        0x08 | 0x0C..=0x10 | 0x29 | 0x2A | 0x2F => {
+            // `senderName` is length-prefixed (NUL included), then the unit target.
+            let _name_len = r.u32()?;
+            sender_name = Some(r.cstring()?);
+            target_guid = r.u64()?;
+            let target_high = guid_high(target_guid);
+            if chat_type != 0x08
+                && target_guid != 0
+                && target_high != 0x0000
+                && target_high != 0xF140
+            {
+                let _target_len = r.u32()?;
+                let _target_name = r.cstring()?;
+            }
+        }
+        0x24..=0x26 => {
+            target_guid = r.u64()?;
+            if target_guid != 0 && guid_high(target_guid) != 0x0000 {
+                let _target_len = r.u32()?;
+                let _target_name = r.cstring()?;
+            }
+        }
+        0x30 | 0x31 => {
+            target_guid = r.u64()?;
+        }
+        _ => {
+            if gm {
+                let _name_len = r.u32()?;
+                sender_name = Some(r.cstring()?);
+            }
+            if chat_type == 0x11 {
+                channel = Some(r.cstring()?);
+            }
+            target_guid = r.u64()?;
+        }
+    }
+    let _text_len = r.u32()?;
+    let text = r.cstring()?;
+    let chat_tag = r.u8()?;
+    let achievement_id = matches!(chat_type, 0x30 | 0x31).then(|| r.u32()).transpose()?;
+    Ok(ServerEvent::Chat(ChatLine {
+        chat_type,
+        language,
+        sender_guid,
+        target_guid,
+        sender_name,
+        channel,
+        text,
+        chat_tag,
+        achievement_id,
+    }))
 }
 
 fn read_show_bank(b: &[u8]) -> Result<ServerEvent> {

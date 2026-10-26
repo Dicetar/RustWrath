@@ -62,6 +62,18 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: chat and addon lane (committed with this record)
+
+Chat was absent in both directions, so the stock chat bar and the installed addons had no wire
+path under the Wrath session. Added CMSG_MESSAGECHAT 0x095, SMSG_MESSAGECHAT 0x096 and
+SMSG_GM_MESSAGECHAT 0x3B3, the uniform 3.3.5 body from Chat.cpp:374-443, and the outbound
+ChatHandler.cpp:59 layout. Outbound kinds map to the 3.3.5 ChatMsg values; the language is
+the frame's explicit choice or the race's native tongue (Common 7 / Orcish 1; universal 0 only
+for AFK/DND). SendAddonMessage uses LANG_ADDON with the distribution type. Inbound types map
+back to the 1.12 owner's wire values; Wrath-only achievement/monster-party/skill/loot/money/
+battlenet lines are dropped explicitly rather than mislabelled. Achievement ids are consumed and
+not presented (the 1.12 host has no achievement UI). Live send/receive remains execution-gated.
+
 ## Slice: bank authority path (committed with this record)
 
 Bank open, slot purchase and item deposit/withdraw were absent from the Wrath tap. Added the six
