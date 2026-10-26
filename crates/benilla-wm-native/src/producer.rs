@@ -49,9 +49,9 @@ pub trait ProducerSnapshot {
         CombatObservation::Unknown
     }
 
-    /// Observed self health and power; every field may be absent.
-    fn resources(&self) -> ResourceObservation {
-        ResourceObservation::default()
+    /// Observed self health and power; construction errors reach the pump as a producer failure.
+    fn resources(&self) -> Result<ResourceObservation> {
+        Ok(ResourceObservation::all_unobserved())
     }
 
     /// Observed self life state; default Unknown.
@@ -118,7 +118,7 @@ where
         )?,
         source.target()?,
         source.combat(),
-        source.resources(),
+        source.resources()?,
         source.death(),
         source.casting(),
         source.channeling(),

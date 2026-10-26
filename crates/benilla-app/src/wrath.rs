@@ -4589,7 +4589,9 @@ pub fn run_session_with_cancel(
                 }
             }
         }
-        fn resources(&self) -> benilla_wm_native::ResourceObservation {
+        fn resources(
+            &self,
+        ) -> benilla_wm_native::Result<benilla_wm_native::ResourceObservation> {
             benilla_wm_native::ResourceObservation::pairs(
                 self.0.resources.health,
                 self.0.resources.max_health,
@@ -4598,7 +4600,6 @@ pub fn run_session_with_cancel(
                 self.0.resources.powers,
                 self.0.resources.max_powers,
             )
-            .unwrap_or_default()
         }
         fn death(&self) -> benilla_wm_native::DeathObservation {
             match self.0.death {
