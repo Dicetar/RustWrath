@@ -975,7 +975,8 @@ fn wrath_wm_action_intake(
 
     // A cancel is admission-level only: before dispatch it prevents the commands; after
     // dispatch the command may already be on the wire, so the honest answer is Unknown.
-    for request_id in actions.cancels.try_iter() {
+    let cancels: Vec<String> = actions.cancels.try_iter().collect();
+    for request_id in cancels {
         if let Some(pending) = actions.pending.remove(&request_id) {
             actions.answer(
                 request_id,
@@ -2157,7 +2158,7 @@ fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
                     } else {
                         ActionStatus::Failed
                     },
-                    reason.map(|reason| format!("cast result {reason}")),
+                    (*reason).map(|reason| format!("cast result {reason}")),
                 )),
                 (
                     SessionEvent::SpellGo {
@@ -2190,7 +2191,7 @@ fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
                 {
                     Some((ActionStatus::Succeeded, None))
                 }
-                (SessionEvent::Gossip { npc, .. }, ActionIntent::Interact { guid })
+                (SessionEvent::GossipMenu { npc, .. }, ActionIntent::Interact { guid })
                     if npc == guid =>
                 {
                     Some((ActionStatus::Succeeded, None))
