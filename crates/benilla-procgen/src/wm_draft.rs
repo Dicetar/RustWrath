@@ -105,7 +105,7 @@ impl WmDraft {
     /// caller-supplied evidence, not a cryptographic attestation or a fresh server query.
     pub fn import_report(&self, bytes: &[u8], plan: &EncounterPlan, candidate: &Candidate, build: &BuildIdentity) -> Result<ApplicationReceipt, ValidationError> {
         self.verify(plan, candidate, build)?;
-        let report: Value = crate::json::decode(bytes)?;
+        let report = crate::json::decode_wm_report(bytes)?;
         ensure(report["bundle_id"].as_str() == Some(self.bundle.id.as_str())
             && report["run_key"].as_str() == Some(self.options.run_key.as_str()),
             "wm_receipt.identity", "report bundle/run does not match draft")?;
@@ -206,6 +206,19 @@ pub struct CleanupDraft {
 }
 
 impl ApplicationReceipt {
+    pub fn decode(bytes: &[u8], original_report: &[u8], draft: &WmDraft, plan: &EncounterPlan,
+        candidate: &Candidate, build: &BuildIdentity) -> Result<Self, ValidationError> {
+        let receipt: Self = crate::json::decode(bytes)?;
+        receipt.verify(original_report, draft, plan, candidate, build)?;
+        Ok(receipt)
+    }
+
+    pub fn encode(&self, original_report: &[u8], draft: &WmDraft, plan: &EncounterPlan,
+        candidate: &Candidate, build: &BuildIdentity) -> Result<Vec<u8>, ValidationError> {
+        self.verify(original_report, draft, plan, candidate, build)?;
+        crate::json::encode(self)
+    }
+
     /// Reconcile against the retained original report; never trust an edited receipt alone.
     pub fn verify(&self, original_report: &[u8], draft: &WmDraft, plan: &EncounterPlan,
         candidate: &Candidate, build: &BuildIdentity) -> Result<(), ValidationError> {
@@ -243,7 +256,7 @@ impl ApplicationReceipt {
         ensure(token(cleanup_run_key, 48) && cleanup_run_key != self.run_key,
             "wm_cleanup.run", "distinct explicit cleanup run key required")?;
         let bundle = cleanup.bundle.as_ref().ok_or_else(|| ValidationError::new("wm_cleanup.bundle", "no confirmed owned objects to clean"))?;
-        let report: Value = crate::json::decode(cleanup_report)?;
+        let report = crate::json::decode_wm_report(cleanup_report)?;
         ensure(report["bundle_id"].as_str() == Some(bundle.id.as_str())
             && report["run_key"].as_str() == Some(cleanup_run_key), "wm_cleanup.identity", "cleanup report belongs to another bundle/run")?;
         let mode = report["mode"].as_str().unwrap_or("");
@@ -307,6 +320,36 @@ pub struct CleanupReceipt {
     pub unresolved_spawn_steps: Vec<u32>,
     pub requires_reconciliation: bool,
     pub report_fingerprint: Hex64,
+}
+
+/// The retained evidence needed to verify a saved cleanup receipt. No external lookup.
+pub struct CleanupEvidence<'a> {
+    pub application: &'a ApplicationReceipt,
+    pub original_report: &'a [u8],
+    pub draft: &'a WmDraft,
+    pub plan: &'a EncounterPlan,
+    pub candidate: &'a Candidate,
+    pub build: &'a BuildIdentity,
+    pub cleanup_report: &'a [u8],
+    pub cleanup_run_key: &'a str,
+}
+
+impl CleanupReceipt {
+    pub fn verify(&self, evidence: &CleanupEvidence<'_>) -> Result<(), ValidationError> {
+        let expected = evidence.application.import_cleanup_report(evidence.original_report,
+            evidence.draft, evidence.plan, evidence.candidate, evidence.build,
+            evidence.cleanup_report, evidence.cleanup_run_key)?;
+        ensure(self == &expected, "wm_cleanup.integrity", "cleanup receipt differs from retained original reports")
+    }
+    pub fn decode(bytes: &[u8], evidence: &CleanupEvidence<'_>) -> Result<Self, ValidationError> {
+        let receipt: Self = crate::json::decode(bytes)?;
+        receipt.verify(evidence)?;
+        Ok(receipt)
+    }
+    pub fn encode(&self, evidence: &CleanupEvidence<'_>) -> Result<Vec<u8>, ValidationError> {
+        self.verify(evidence)?;
+        crate::json::encode(self)
+    }
 }
 
 fn fingerprint_bytes(bytes: &[u8]) -> Hex64 {

@@ -15,7 +15,13 @@ pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_NODES: usize = 4_300_000;
 const MAX_STRING_BYTES: usize = MAX_BYTES;
 
-struct Budget { nodes: usize, strings: usize }
+#[derive(Clone, Copy)]
+struct Profile { depth: usize, string: usize, keys: usize }
+const CANDIDATE: Profile = Profile { depth: 16, string: 1024, keys: 64 };
+// WM reports retain coordinator plans/diagnostics as well as the native result. They are
+// bounded separately so normal diagnostic strings do not relax the candidate wire schema.
+const WM_REPORT: Profile = Profile { depth: 32, string: 65_536, keys: 256 };
+struct Budget { nodes: usize, strings: usize, profile: Profile }
 struct Scan<'a> { budget: &'a mut Budget, depth: usize }
 struct RejectElement;
 impl<'de> DeserializeSeed<'de> for RejectElement {
@@ -28,7 +34,7 @@ impl<'de> DeserializeSeed<'de> for RejectElement {
 impl<'de> DeserializeSeed<'de> for Scan<'_> {
     type Value = ();
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
-        if self.depth > 16 || self.budget.nodes == MAX_NODES {
+        if self.depth > self.budget.profile.depth || self.budget.nodes == MAX_NODES {
             return Err(D::Error::custom("JSON depth/node budget exceeded"));
         }
         self.budget.nodes += 1;
@@ -49,7 +55,7 @@ impl<'de> Visitor<'de> for Scan<'_> {
     }
     fn visit_unit<E: Error>(self) -> Result<(), E> { Ok(()) }
     fn visit_str<E: Error>(self, v: &str) -> Result<(), E> {
-        if v.len() > 1024 || self.budget.strings + v.len() > MAX_STRING_BYTES {
+        if v.len() > self.budget.profile.string || self.budget.strings + v.len() > MAX_STRING_BYTES {
             return Err(E::custom("JSON string budget exceeded"));
         }
         self.budget.strings += v.len();
@@ -73,7 +79,7 @@ impl<'de> Visitor<'de> for Scan<'_> {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         let mut keys = BTreeSet::new();
         while let Some(key) = map.next_key::<String>()? {
-            if key.len() > 128 || keys.len() == 64 || !keys.insert(key.clone()) {
+            if key.len() > 128 || keys.len() == self.budget.profile.keys || !keys.insert(key.clone()) {
                 return Err(A::Error::custom("duplicate/oversized JSON object key"));
             }
             self.budget.strings += key.len();
@@ -111,8 +117,18 @@ where D: Deserializer<'de>, T: Deserialize<'de> {
 
 /// Decode only after the whole input passes resource and duplicate-key checks.
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ValidationError> {
+    decode_profile(bytes, CANDIDATE)
+}
+
+/// Existing WM reports contain nested coordinator diagnostics, not candidate-schema data.
+/// Keep a separate explicit bounded profile for that external owner's envelope.
+pub(crate) fn decode_wm_report(bytes: &[u8]) -> Result<serde_json::Value, ValidationError> {
+    decode_profile(bytes, WM_REPORT)
+}
+
+fn decode_profile<T: DeserializeOwned>(bytes: &[u8], profile: Profile) -> Result<T, ValidationError> {
     if bytes.len() > MAX_BYTES { return Err(error("maximum JSON size is 64 MiB")); }
-    let mut budget = Budget { nodes: 0, strings: 0 };
+    let mut budget = Budget { nodes: 0, strings: 0, profile };
     let mut de = serde_json::Deserializer::from_slice(bytes);
     Scan { budget: &mut budget, depth: 0 }.deserialize(&mut de).map_err(error)?;
     de.end().map_err(error)?;
@@ -136,7 +152,7 @@ pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, ValidationError> {
     let mut writer = LimitedWriter(Vec::new());
     serde_json::to_writer(&mut writer, value).map_err(error)?;
     // Apply exactly the same envelope budgets to producer and consumer output.
-    let mut budget = Budget { nodes: 0, strings: 0 };
+    let mut budget = Budget { nodes: 0, strings: 0, profile: CANDIDATE };
     let mut de = serde_json::Deserializer::from_slice(&writer.0);
     Scan { budget: &mut budget, depth: 0 }.deserialize(&mut de).map_err(error)?;
     de.end().map_err(error)?;

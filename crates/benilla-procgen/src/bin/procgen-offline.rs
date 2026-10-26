@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use benilla_procgen::artifact::{BuildIdentity, Candidate, Request};
 use benilla_procgen::planning::{EncounterPlan, PlacementRequest};
-use benilla_procgen::wm_draft::{ApplicationReceipt, DraftOptions, WmDraft};
+use benilla_procgen::wm_draft::{ApplicationReceipt, CleanupEvidence, DraftOptions, WmDraft};
 use benilla_procgen::json;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -29,7 +29,9 @@ struct CleanupRun { run_key: String }
 
 fn read(path: &OsString) -> Result<Vec<u8>> {
     let file = File::open(Path::new(path))?;
-    if file.metadata()?.len() > json::MAX_BYTES as u64 {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() { return Err("input must be a regular file".into()); }
+    if metadata.len() > json::MAX_BYTES as u64 {
         return Err("input exceeds 64 MiB".into());
     }
     let mut bytes = Vec::new();
@@ -138,15 +140,19 @@ fn run() -> Result<()> {
                 let plan = EncounterPlan::decode(&inputs[2], &candidate, &build)?;
                 let draft = WmDraft::decode(&inputs[3], &plan, &candidate, &build)?;
                 if command == "receipt" {
-                    json::encode(&draft.import_report(&inputs[4], &plan, &candidate, &build)?)?
+                    draft.import_report(&inputs[4], &plan, &candidate, &build)?
+                        .encode(&inputs[4], &draft, &plan, &candidate, &build)?
                 } else {
-                    let receipt: ApplicationReceipt = json::decode(&inputs[5])?;
+                    let receipt = ApplicationReceipt::decode(&inputs[5], &inputs[4], &draft, &plan, &candidate, &build)?;
                     if command == "cleanup" {
                         json::encode(&receipt.cleanup_draft(&inputs[4], &draft, &plan, &candidate, &build)?)?
                     } else {
                         let cleanup_run: CleanupRun = json::decode(&inputs[7])?;
-                        json::encode(&receipt.import_cleanup_report(&inputs[4], &draft, &plan, &candidate,
-                            &build, &inputs[6], &cleanup_run.run_key)?)?
+                        let cleanup = receipt.import_cleanup_report(&inputs[4], &draft, &plan, &candidate,
+                            &build, &inputs[6], &cleanup_run.run_key)?;
+                        cleanup.encode(&CleanupEvidence { application: &receipt, original_report: &inputs[4],
+                            draft: &draft, plan: &plan, candidate: &candidate, build: &build,
+                            cleanup_report: &inputs[6], cleanup_run_key: &cleanup_run.run_key })?
                     }
                 }
             }

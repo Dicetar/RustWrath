@@ -4,7 +4,7 @@ Owner instruction: substantial coding sessions with multiple cohesive implementa
 
 ## Astra: durable procedural content and encounter planning
 
-ACTIVE source claim at base 5a6eaaa4: `crates/benilla-procgen/**`, `docs/procgen/**`, this file, Astra checkpoints. Narrow shared claim: the `benilla-procgen` dependency stanza in `Cargo.lock`; no other lock changes. OC must leave these paths/index entries alone. GLM has no assignment.
+Source claim at base 5a6eaaa4: `crates/benilla-procgen/**`, `docs/procgen/**`, this file, Astra checkpoints. Narrow shared claim: the `benilla-procgen` dependency stanza in `Cargo.lock`; no other lock changes. Released by the source handoff in `../checkpoints/2026-10-26-astra-procgen-system.md`. OC retains its system goal and must establish a new exact claim before editing this lane. GLM has no assignment.
 
 Implement an owned versioned artifact model, lossless float/integer encoding, bounded strict JSON, pinned build/catalog identities, supported-catalog restoration, complete manifest verification, defensive imported-data validation, deterministic encounter placement with independent coordinate domains and explicit server template mappings, inert drafts conforming to the existing WM bundle/action owners, cleanup/partial-application receipts and an offline CLI. No server IDs, NPC services, collision proof or execution authority may be invented. Read actual WM payload contracts before emitting drafts.
 

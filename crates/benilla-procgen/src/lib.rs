@@ -15,9 +15,10 @@
 //! - [`spawns`]: encounter population over a dungeon or terrain field — enemy packs by room
 //!   archetype and depth, entrance-safe NPC placement, one boss in multi-room dungeons.
 //!
-//! Boundaries: this crate emits **data only**. It knows nothing about Bevy, MPQs, ADT
-//! authoring, the WM bridge, or the server — integration mapping lives in
-//! `docs/procgen/design.md`, and each consumer owns its own seam.
+//! Boundaries: this crate emits **data only**. It has no Bevy/MPQ dependency, ADT author,
+//! network transport or server mutation owner. Owned candidates, encounter proposals and
+//! inert existing-owner WM bundles live in [`artifact`], [`planning`] and [`wm_draft`].
+//! Integration acceptance remains the consumer's responsibility; see `docs/procgen/design.md`.
 
 /// Generator identity stamped on every output. Bump on any change that can alter outputs
 /// for the same `(spec, seed)` — this is the code half of the provenance pair (the seed is
