@@ -49,7 +49,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             let h = frame_handle_of(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             // A name the VM's event table lacks registers nothing and raises nothing (`0x702140`).
-            let Some(event) = model.vm.event_key(&event) else {
+            let Some(event) = model.target.event_key(model.vm, &event) else {
                 return Ok(());
             };
             register(&mut model, h, event);
@@ -62,7 +62,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             let h = frame_handle_of(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             // Matched as `RegisterEvent` matches (`0x702280`).
-            let Some(event) = model.vm.event_key(&event).map(str::to_string) else {
+            let Some(event) = model.target.event_key(model.vm, &event).map(str::to_string) else {
                 return Ok(());
             };
             if let Some(list) = model.event_to_frames.get_mut(&event) {
@@ -82,7 +82,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         lua.create_function(|lua, this: Table| {
             let h = frame_handle_of(lua, &this)?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
-            for &event in model.vm.events() {
+            for event in model.target.events(model.vm) {
                 register(&mut model, h, event);
             }
             Ok(())

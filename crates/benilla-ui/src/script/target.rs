@@ -8,6 +8,18 @@ pub enum UiTarget {
 }
 
 impl UiTarget {
+    pub(crate) fn events(self, vm: super::VmKind) -> impl Iterator<Item = &'static str> {
+        let extra: &'static [&'static str] = match (self, vm) {
+            (Self::Wrath335, super::VmKind::InGame) => WRATH_CAST_EVENTS,
+            _ => &[],
+        };
+        vm.events().iter().copied().chain(extra.iter().copied())
+    }
+
+    pub(crate) fn event_key(self, vm: super::VmKind, name: &str) -> Option<&'static str> {
+        self.events(vm).find(|event| event.eq_ignore_ascii_case(name))
+    }
+
     pub(crate) fn inheritance(self) -> crate::framexml::Inheritance {
         match self {
             Self::Vanilla112 => crate::framexml::Inheritance::Single,
@@ -50,3 +62,18 @@ impl UiTarget {
         }
     }
 }
+
+// The 3.3.5 CastingBarFrame's subscriptions. Native state/event producers remain separate from
+// this registration table; admitting a listener must not invent a cast, identity or timestamp.
+const WRATH_CAST_EVENTS: &[&str] = &[
+    "UNIT_SPELLCAST_START",
+    "UNIT_SPELLCAST_STOP",
+    "UNIT_SPELLCAST_FAILED",
+    "UNIT_SPELLCAST_INTERRUPTED",
+    "UNIT_SPELLCAST_DELAYED",
+    "UNIT_SPELLCAST_CHANNEL_START",
+    "UNIT_SPELLCAST_CHANNEL_UPDATE",
+    "UNIT_SPELLCAST_CHANNEL_STOP",
+    "UNIT_SPELLCAST_INTERRUPTIBLE",
+    "UNIT_SPELLCAST_NOT_INTERRUPTIBLE",
+];
