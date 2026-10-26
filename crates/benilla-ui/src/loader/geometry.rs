@@ -289,6 +289,11 @@ impl Loader<'_> {
                 region,
                 args,
                 offset: children_named(anchor, "Offset").next().cloned(),
+                inline_offset: if self.model().target == crate::script::UiTarget::Wrath335 {
+                    ["x", "y"].map(|key| Len::Script(super::xml_float_attr(anchor, key).unwrap_or(0.0)))
+                } else {
+                    [Len::Script(0.0); 2]
+                },
                 rel_raw: rel_raw.unwrap_or_default().to_string(),
                 dbg: dbg.to_string(),
             };

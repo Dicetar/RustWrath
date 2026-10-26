@@ -341,6 +341,8 @@ pub(super) struct DeferredAnchor {
     pub(super) args: (String, Option<String>, String),
     /// The anchor's first `<Offset>`, read only once the target passes (`0x767992`).
     pub(super) offset: Option<Element>,
+    /// Wrath's inline Anchor x/y, used when no Offset child supplies the offset.
+    pub(super) inline_offset: [Len; 2],
     /// `relativeTo` as spelled, before `$parent` expands: what the anchor lines print (`0x76796f`,
     /// `0x767984`).
     pub(super) rel_raw: String,
@@ -999,12 +1001,13 @@ impl Loader<'_> {
             region,
             args: (point, _, rel_point),
             offset,
+            inline_offset,
             dbg,
             ..
         } = d;
         // The first `<Offset>`, read whatever it answers, after the target's miss and self tests
         // (`0x767946`-`0x7679ad`), so a skipped anchor reads none.
-        let v = offset.map_or([Len::Script(0.0); 2], |o| self.dimension(&o).v);
+        let v = offset.map_or(inline_offset, |o| self.dimension(&o).v);
         let [x, y] = v.map(|l| l.script(self.model().layout_units()));
         let args = (point.clone(), rel, rel_point, x, y);
         if region {
