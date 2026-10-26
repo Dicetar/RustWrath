@@ -57,6 +57,29 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: toggleable combat boundary and UI contract (committed with this record)
+
+`crates/benilla-app/src/combat_mode.rs` owns the only new client state and it is a read model, not
+an authority:
+
+| Field | Meaning | Source / lifecycle |
+|---|---|---|
+| `requested` | last user mode request | request API only; `None` before any request |
+| `effective` | authoritative accepted mode | always `Baseline` today; only a server mode message may change it |
+| `availability` | whether a server mode channel exists | `Unavailable(ServerModeChannelMissing)` from the installed server/mod audit |
+| `last_refusal` | why the last experimental request was not sent | request API |
+| `resources` | health/max/power type/power | existing `WrathWorldView.self_observation.resources`; each field independently `None` until delivered |
+| `committed_action` | cast/channel currently owned by the cast owner | existing `PendingCast` / `ActiveChannel` |
+| `cooldown` | ordinary recovery of the committed spell | existing `Cooldowns::info`; not an experimental stamina/i-frame window |
+| `revision` | observed-state change counter | projection |
+
+`request_experimental` returns `NotSent { ServerModeChannelMissing }` and emits no packet;
+`request_baseline` returns `AlreadyEffective` and sends nothing. Cancellation is observed as
+`committed_action` becoming `None`; the existing cast owner publishes no separate reason.
+Experimental stamina, dodge/i-frames, commitment windows and telegraphs remain absent because the
+server owner is absent. Astra's UI should render baseline availability and the refusal reason
+instead of a working toggle.
+
 ## Combat authority audit (source evidence)
 
 The installed mod set has no dodge/stamina/mode primitive. `mod-wm-bridge` emits only

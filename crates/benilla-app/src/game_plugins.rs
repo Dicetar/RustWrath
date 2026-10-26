@@ -136,6 +136,9 @@ impl PluginGroup for GamePlugins {
             .add(crate::wrath::WrathNetPlugin {
                 config: self.wrath,
             })
+            // The toggleable combat boundary's read model. Baseline only: it never sends a
+            // mode request or invents stamina/dodge, and is the UI host's state contract.
+            .add(crate::combat_mode::CombatModePlugin)
             .add(crate::death::DeathPlugin)
             .add(crate::client_state::ClientStatePlugin { start: self.start })
             .add(crate::glue_session::GlueSessionPlugin)
