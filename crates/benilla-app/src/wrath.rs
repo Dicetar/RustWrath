@@ -50,14 +50,15 @@ use benilla_protocol::{
 };
 use crate::client_state::ClientState;
 use benilla_protocol_wrath::cast_failure;
+use benilla_wm_native::{ActionBridge, ActionIntent, ActionRequest, ActionResult, ActionStatus};
 use benilla_protocol_wrath::gameplay::{self, ServerEvent as WrathGameplayEvent};
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use crate::entities::Equipment;
 use crate::items::{Countdowns, ItemObject};
 use crate::net::{
-    CharPick, CharRequest, ClientCommand, Guid, GuidIndex, NetCommandTap, NetEntity, ObjectStore,
-    ParkRequest, ParkSender, SelfGuid, SelfPlayer, UnitSpeeds, WorldEnterCascadeMessage,
-    EnteredWorldMessage, FieldChanged,
+    CharPick, CharRequest, ClientCommand, Guid, GuidIndex, NetCommandTap, NetCommands, NetEntity,
+    ObjectStore, ParkRequest, ParkSender, SelfGuid, SelfPlayer, UnitSpeeds,
+    WorldEnterCascadeMessage, EnteredWorldMessage, FieldChanged,
 };
 use benilla_protocol::messages::{
     ActionButton, AttackSwingError, AttackerState as ProtocolAttackerState,
@@ -217,6 +218,9 @@ pub struct WrathSessionConfig {
     pub wm_token: Option<String>,
     /// `None` keeps the graphical session alive until the app cancels it.
     pub dwell: Option<Duration>,
+    /// The typed action seam attached to this session's publisher. `None` keeps the session
+    /// observation-only (the renderless driver's mode).
+    pub actions: Option<ActionBridge>,
 }
 
 /// Whether this launch explicitly selects the Wrath session path. The stock 1.12 path stays the
@@ -256,6 +260,7 @@ impl WrathSessionConfig {
             world_addr,
             wm_token,
             dwell,
+            actions: None,
         }))
     }
 }
@@ -353,6 +358,72 @@ pub(crate) struct ParkedInput {
 #[derive(Resource)]
 pub struct WrathPickQueue(pub(crate) Receiver<ParkRequest>);
 
+/// The app's end of the typed WM action seam, plus the bounded in-flight set. One intent is in
+/// flight from admission until an authoritative reply, a scope end, or its deadline.
+#[derive(Resource)]
+pub struct WrathWmActions {
+    pub(crate) bridge: Option<ActionBridge>,
+    pub(crate) requests: Receiver<ActionRequest>,
+    pub(crate) cancels: Receiver<String>,
+    pub(crate) results: Sender<ActionResult>,
+    pending: BTreeMap<String, PendingWmAction>,
+    /// Admission-level cancellations that arrived before their request.
+    cancelled: Vec<String>,
+    last_cast_spell: Option<u32>,
+    pub(crate) received: u64,
+    pub(crate) refused: u64,
+    pub(crate) completed: u64,
+}
+
+struct PendingWmAction {
+    intent: ActionIntent,
+    deadline: Instant,
+    session_epoch: u64,
+    world_generation: u64,
+}
+
+impl WrathWmActions {
+    fn answer(
+        &mut self,
+        request_id: String,
+        status: ActionStatus,
+        session_epoch: u64,
+        world_generation: u64,
+        observed_state_revision: Option<u64>,
+        detail: Option<String>,
+    ) {
+        self.completed += 1;
+        let _ = self.results.send(ActionResult {
+            request_id,
+            status,
+            session_epoch,
+            world_generation,
+            observed_state_revision,
+            detail,
+        });
+    }
+
+    /// Terminal scope loss: every remaining intent becomes `Unknown`, because a command may
+    /// already have reached the server. Nothing is replayed.
+    fn fail_all(&mut self, status: ActionStatus, detail: &str) {
+        let ids: Vec<String> = self.pending.keys().cloned().collect();
+        for id in ids {
+            if let Some(pending) = self.pending.remove(&id) {
+                self.answer(
+                    id,
+                    status,
+                    pending.session_epoch,
+                    pending.world_generation,
+                    None,
+                    Some(detail.to_owned()),
+                );
+            }
+        }
+        self.cancelled.clear();
+        self.last_cast_spell = None;
+    }
+}
+
 /// Application selection/configuration and worker ownership. Inserted by
 /// [`WrathNetPlugin`]; a `None` config keeps the plugin inert (baseline login untouched).
 #[derive(Resource)]
@@ -405,6 +476,9 @@ pub struct WrathControl {
     publisher_retiring: Vec<benilla_wm_native::PublisherRetirement>,
     /// The current worker's handoff of unfinished publisher retirements.
     publisher_retire_rx: Option<Receiver<benilla_wm_native::PublisherRetirement>>,
+    /// The typed action seam shared with every publisher this worker replaces. The app's own
+    /// ends live in [`WrathWmActions`].
+    wm_actions: Option<ActionBridge>,
 }
 
 impl WrathControl {
@@ -430,7 +504,8 @@ impl WrathControl {
     }
 
     fn start(&mut self, kind: WrathSessionStart) {
-        let Some(config) = self.config.clone() else { return };
+        let Some(mut config) = self.config.clone() else { return };
+        config.actions = self.wm_actions.clone();
         if self.shutdown || self.worker.is_some() || self.retiring.is_some() {
             return;
         }
@@ -696,6 +771,7 @@ impl Plugin for WrathNetPlugin {
             park_commands: None,
             publisher_retiring: Vec::new(),
             publisher_retire_rx: None,
+            wm_actions: None,
         })
         .init_resource::<WrathWorldView>();
         if self.config.is_some() {
@@ -708,6 +784,31 @@ impl Plugin for WrathNetPlugin {
             let (pick_tx, pick_rx) = crossbeam_channel::unbounded();
             app.insert_resource(CharPick(ParkSender::park(pick_tx)))
                 .insert_resource(WrathPickQueue(pick_rx));
+            // One typed action seam for the app's lifetime; every publisher replacement clones
+            // these channel ends, so a world transfer never strands a pending intent.
+            let (action_tx, action_rx) = crossbeam_channel::unbounded::<ActionRequest>();
+            let (cancel_tx, cancel_rx) = crossbeam_channel::unbounded::<String>();
+            let (result_tx, result_rx) = crossbeam_channel::unbounded::<ActionResult>();
+            let bridge = ActionBridge {
+                requests: action_tx,
+                cancels: cancel_tx,
+                results: result_rx,
+            };
+            app.world_mut()
+                .resource_mut::<WrathControl>()
+                .wm_actions = Some(bridge.clone());
+            app.insert_resource(WrathWmActions {
+                bridge: Some(bridge),
+                requests: action_rx,
+                cancels: cancel_rx,
+                results: result_tx,
+                pending: BTreeMap::new(),
+                cancelled: Vec::new(),
+                last_cast_spell: None,
+                received: 0,
+                refused: 0,
+                completed: 0,
+            });
             // Session ownership: the worker starts on the first ownership tick. Joining here only
             // records the terminal edge; the feed stays readable so the Net drain can consume the
             // final `SessionEnded` and invalidate before Input.
@@ -725,6 +826,7 @@ impl Plugin for WrathNetPlugin {
                 (
                     wrath_net_drain,
                     wrath_apply_world,
+                    wrath_wm_action_intake,
                     wrath_tap_commands,
                     wrath_dispatch_events,
                 )
@@ -854,6 +956,250 @@ fn wrath_pick_admission(
                 // The parked session's stop is app-owned (the shutdown edge owns the cancel);
                 // a select-screen Back is the stock run's park, not a Wrath flow.
             }
+        }
+    }
+}
+
+/// Drains WM intents from the publisher worker, fences them against the adopted scope and
+/// deadline, maps them onto the existing `ClientCommand` owners and records them as in flight.
+/// Admission is answered `Accepted`; terminal states come from replies, scope loss or the
+/// deadline.
+fn wrath_wm_action_intake(
+    mut actions: ResMut<WrathWmActions>,
+    view: Res<WrathWorldView>,
+    net: Option<Res<NetCommands>>,
+) {
+    let Some(net) = net else { return };
+    let Some(phase) = view.phase else { return };
+    let revision = Some(view.state_revision);
+
+    // A cancel is admission-level only: before dispatch it prevents the commands; after
+    // dispatch the command may already be on the wire, so the honest answer is Unknown.
+    for request_id in actions.cancels.try_iter() {
+        if let Some(pending) = actions.pending.remove(&request_id) {
+            actions.answer(
+                request_id,
+                ActionStatus::Unknown,
+                pending.session_epoch,
+                pending.world_generation,
+                revision,
+                Some("cancellation arrived after dispatch; the command may still execute".to_owned()),
+            );
+        } else {
+            actions.cancelled.push(request_id);
+        }
+    }
+
+    let requests: Vec<_> = actions.requests.try_iter().collect();
+    for request in requests {
+        actions.received += 1;
+        if actions.pending.len() >= 16 {
+            actions.refused += 1;
+            actions.answer(
+                request.request_id,
+                ActionStatus::Rejected,
+                request.session_epoch,
+                request.world_generation,
+                revision,
+                Some("client action queue is full".to_owned()),
+            );
+            continue;
+        }
+        if request.player_guid != view.player_guid
+            || request.session_epoch != view.session_epoch
+            || request.world_generation != view.world_generation
+            || phase != Phase::InWorld
+        {
+            actions.refused += 1;
+            actions.answer(
+                request.request_id,
+                ActionStatus::Rejected,
+                request.session_epoch,
+                request.world_generation,
+                revision,
+                Some("intent scope does not match the adopted world".to_owned()),
+            );
+            continue;
+        }
+        if request.deadline_unix_ms > 0 && now_ms() > request.deadline_unix_ms {
+            actions.refused += 1;
+            actions.answer(
+                request.request_id,
+                ActionStatus::Expired,
+                request.session_epoch,
+                request.world_generation,
+                revision,
+                Some("intent deadline passed before dispatch".to_owned()),
+            );
+            continue;
+        }
+        if matches!(
+            &request.intent,
+            ActionIntent::MoveStart { .. } | ActionIntent::MoveStop
+        ) {
+            actions.refused += 1;
+            actions.answer(
+                request.request_id,
+                ActionStatus::Unsupported,
+                request.session_epoch,
+                request.world_generation,
+                revision,
+                Some("no remote movement owner exists; movement is the human input controller".to_owned()),
+            );
+            continue;
+        }
+        if actions.cancelled.iter().any(|id| id == &request.request_id) {
+            actions.cancelled.retain(|id| id != &request.request_id);
+            actions.refused += 1;
+            actions.answer(
+                request.request_id,
+                ActionStatus::Cancelled,
+                request.session_epoch,
+                request.world_generation,
+                revision,
+                Some("cancelled before dispatch".to_owned()),
+            );
+            continue;
+        }
+        if actions.pending.contains_key(&request.request_id) {
+            actions.refused += 1;
+            actions.answer(
+                request.request_id,
+                ActionStatus::Rejected,
+                request.session_epoch,
+                request.world_generation,
+                revision,
+                Some("duplicate request id".to_owned()),
+            );
+            continue;
+        }
+
+        let mut commands: Vec<ClientCommand> = Vec::new();
+        let mut refused: Option<&str> = None;
+        match &request.intent {
+            ActionIntent::SetTarget { guid } => {
+                commands.push(ClientCommand::SetSelection { guid: *guid });
+            }
+            ActionIntent::AttackStart { guid } => {
+                commands.push(ClientCommand::AttackSwing { guid: *guid });
+            }
+            ActionIntent::AttackStop => commands.push(ClientCommand::AttackStop),
+            ActionIntent::Cast { spell_id, target } => {
+                actions.last_cast_spell = Some(*spell_id);
+                commands.push(ClientCommand::CastSpell {
+                    spell_id: *spell_id,
+                    target: *target,
+                });
+            }
+            ActionIntent::CastCancel => match actions.last_cast_spell {
+                Some(spell_id) => commands.push(ClientCommand::CancelCast { spell_id }),
+                None => refused = Some("no client-known cast to cancel"),
+            },
+            ActionIntent::Interact { guid } => {
+                commands.push(ClientCommand::GossipHello { guid: *guid });
+            }
+            ActionIntent::QuestAccept { npc, quest } => {
+                commands.push(ClientCommand::QuestgiverAccept {
+                    npc: *npc,
+                    quest: *quest,
+                });
+            }
+            ActionIntent::QuestComplete { npc, quest } => {
+                commands.push(ClientCommand::QuestgiverComplete {
+                    npc: *npc,
+                    quest: *quest,
+                });
+            }
+            ActionIntent::QuestChooseReward { npc, quest, reward } => {
+                commands.push(ClientCommand::QuestgiverChooseReward {
+                    npc: *npc,
+                    quest: *quest,
+                    choice: *reward,
+                });
+            }
+            ActionIntent::LootTake { source, slot } => {
+                // The stock owner opens the window then takes the slot; both commands are
+                // idempotent at this layer and the server answers authoritatively.
+                commands.push(ClientCommand::Loot { guid: *source });
+                commands.push(ClientCommand::AutostoreLootItem { slot: *slot });
+            }
+            ActionIntent::LootMoney { source } => {
+                commands.push(ClientCommand::Loot { guid: *source });
+                commands.push(ClientCommand::LootMoney);
+            }
+            ActionIntent::LootRelease { source } => {
+                commands.push(ClientCommand::LootRelease { guid: *source });
+            }
+            ActionIntent::MoveStart { .. } | ActionIntent::MoveStop => {}
+        }
+        if let Some(reason) = refused {
+            actions.refused += 1;
+            actions.answer(
+                request.request_id,
+                ActionStatus::Rejected,
+                request.session_epoch,
+                request.world_generation,
+                revision,
+                Some(reason.to_owned()),
+            );
+            continue;
+        }
+        let mut owner_failed = false;
+        for command in commands {
+            if net.0.send(command).is_err() {
+                owner_failed = true;
+                break;
+            }
+        }
+        if owner_failed {
+            actions.refused += 1;
+            actions.answer(
+                request.request_id,
+                ActionStatus::Rejected,
+                request.session_epoch,
+                request.world_generation,
+                revision,
+                Some("the command owner is unavailable".to_owned()),
+            );
+            continue;
+        }
+        actions.pending.insert(
+            request.request_id.clone(),
+            PendingWmAction {
+                intent: request.intent.clone(),
+                deadline: Instant::now() + Duration::from_secs(30),
+                session_epoch: request.session_epoch,
+                world_generation: request.world_generation,
+            },
+        );
+        actions.answer(
+            request.request_id,
+            ActionStatus::Accepted,
+            request.session_epoch,
+            request.world_generation,
+            revision,
+            None,
+        );
+    }
+
+    // A dispatched intent with no authoritative reply by its deadline is Unknown, not success
+    // and not failure: the server may have acted.
+    let expired: Vec<String> = actions
+        .pending
+        .iter()
+        .filter(|(_, pending)| Instant::now() >= pending.deadline)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in expired {
+        if let Some(pending) = actions.pending.remove(&id) {
+            actions.answer(
+                id,
+                ActionStatus::Unknown,
+                pending.session_epoch,
+                pending.world_generation,
+                revision,
+                Some("no authoritative reply within the client action deadline".to_owned()),
+            );
         }
     }
 }
@@ -1777,11 +2123,143 @@ fn wrath_dispatch_events(world: &mut World) {
         }
     }
     if !deliver.is_empty() {
+        route_wm_action_outcomes(world, &deliver);
         crate::net::handlers::dispatch(world, deliver);
     }
 }
 
-fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorldView>) {
+/// Feed the existing translated replies to the in-flight action set. Only server replies and
+/// session state resolve an intent; the observation stream remains the separate authority for
+/// world state.
+fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
+    let self_guid = world.get_resource::<SelfGuid>().and_then(|g| g.0);
+    let revision = world.get_resource::<WrathWorldView>().map(|v| v.state_revision);
+    let Some(mut actions) = world.get_resource_mut::<WrathWmActions>() else {
+        return;
+    };
+    for event in events {
+        let mut resolved: Vec<(String, ActionStatus, Option<String>)> = Vec::new();
+        for (id, pending) in &actions.pending {
+            let outcome = match (event, &pending.intent) {
+                (
+                    SessionEvent::CastResult {
+                        spell_id,
+                        success,
+                        reason,
+                        ..
+                    },
+                    ActionIntent::Cast {
+                        spell_id: wanted, ..
+                    },
+                ) if spell_id == wanted => Some((
+                    if *success {
+                        ActionStatus::Succeeded
+                    } else {
+                        ActionStatus::Failed
+                    },
+                    reason.map(|reason| format!("cast result {reason}")),
+                )),
+                (
+                    SessionEvent::SpellGo {
+                        caster, spell_id, ..
+                    },
+                    ActionIntent::Cast {
+                        spell_id: wanted, ..
+                    },
+                ) if Some(*caster) == self_guid && spell_id == wanted => {
+                    Some((ActionStatus::Succeeded, None))
+                }
+                (
+                    SessionEvent::SpellFailedOther { caster, spell_id },
+                    ActionIntent::Cast {
+                        spell_id: wanted, ..
+                    },
+                ) if Some(*caster) == self_guid && spell_id == wanted => {
+                    Some((ActionStatus::Failed, Some("cast interrupted".to_owned())))
+                }
+                (SessionEvent::AttackSwingError(_), ActionIntent::AttackStart { .. }) => {
+                    Some((ActionStatus::Failed, Some("attack swing refused".to_owned())))
+                }
+                (SessionEvent::AttackStart { attacker, .. }, ActionIntent::AttackStart { .. })
+                    if Some(*attacker) == self_guid =>
+                {
+                    Some((ActionStatus::Succeeded, None))
+                }
+                (SessionEvent::AttackStop { attacker, .. }, ActionIntent::AttackStop)
+                    if Some(*attacker) == self_guid =>
+                {
+                    Some((ActionStatus::Succeeded, None))
+                }
+                (SessionEvent::Gossip { npc, .. }, ActionIntent::Interact { guid })
+                    if npc == guid =>
+                {
+                    Some((ActionStatus::Succeeded, None))
+                }
+                (
+                    SessionEvent::QuestComplete(complete),
+                    ActionIntent::QuestComplete { quest, .. },
+                ) if complete.quest_id == *quest => Some((ActionStatus::Succeeded, None)),
+                (
+                    SessionEvent::QuestComplete(complete),
+                    ActionIntent::QuestChooseReward { quest, .. },
+                ) if complete.quest_id == *quest => Some((ActionStatus::Succeeded, None)),
+                (
+                    SessionEvent::QuestGiverFailed { quest_id, reason },
+                    ActionIntent::QuestComplete { quest, .. }
+                    | ActionIntent::QuestChooseReward { quest, .. }
+                    | ActionIntent::QuestAccept { quest, .. },
+                ) if quest_id == quest => {
+                    Some((ActionStatus::Failed, Some(format!("quest failed ({reason})"))))
+                }
+                (SessionEvent::LootRemoved { slot }, ActionIntent::LootTake { slot: wanted, .. })
+                    if slot == wanted =>
+                {
+                    Some((ActionStatus::Succeeded, None))
+                }
+                (SessionEvent::LootMoneyNotify { .. }, ActionIntent::LootMoney { .. }) => {
+                    Some((ActionStatus::Succeeded, None))
+                }
+                (
+                    SessionEvent::LootReleaseResponse { guid, .. },
+                    ActionIntent::LootRelease { source },
+                ) if guid == source => Some((ActionStatus::Succeeded, None)),
+                (SessionEvent::LootError { guid, error }, ActionIntent::LootTake { source, .. })
+                | (SessionEvent::LootError { guid, error }, ActionIntent::LootMoney { source })
+                    if guid == source =>
+                {
+                    let _ = error;
+                    Some((ActionStatus::Failed, Some("loot refused".to_owned())))
+                }
+                (SessionEvent::Disconnected { .. }, _) => Some((
+                    ActionStatus::Unknown,
+                    Some("session ended before an authoritative result".to_owned()),
+                )),
+                _ => None,
+            };
+            if let Some((status, detail)) = outcome {
+                resolved.push((id.clone(), status, detail));
+            }
+        }
+        for (id, status, detail) in resolved {
+            if let Some(pending) = actions.pending.remove(&id) {
+                actions.answer(
+                    id,
+                    status,
+                    pending.session_epoch,
+                    pending.world_generation,
+                    revision,
+                    detail,
+                );
+            }
+        }
+    }
+}
+
+fn wrath_net_drain(
+    mut control: ResMut<WrathControl>,
+    mut view: ResMut<WrathWorldView>,
+    mut actions: Option<ResMut<WrathWmActions>>,
+) {
     let mut drained = 0usize;
     for event in control.take_events() {
         if drained >= WRATH_DRAIN_LIMIT {
@@ -1854,6 +2332,12 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
                     control.retry_at = None;
                 }
                 control.entered_world = false;
+                if let Some(actions) = actions.as_deref_mut() {
+                    actions.fail_all(
+                        ActionStatus::Unknown,
+                        "session ended before an authoritative result",
+                    );
+                }
                 view.entities.clear();
                 view.self_observation = None;
                 view.player_guid = 0;
@@ -1873,6 +2357,12 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
     // A worker can exit after its final event was already drained (or panicked without one). The
     // exposed view is invalid on that terminal edge even when no digest follows.
     if control.ended {
+        if let Some(actions) = actions.as_deref_mut() {
+            actions.fail_all(
+                ActionStatus::Unknown,
+                "session ended before an authoritative result",
+            );
+        }
         view.entities.clear();
         view.self_observation = None;
         view.player_guid = 0;
@@ -1896,6 +2386,12 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
     let Some(digest) = control.take_digest() else { return };
     let new_session = digest.session_epoch != view.session_epoch;
     if new_session {
+        if let Some(actions) = actions.as_deref_mut() {
+            actions.fail_all(
+                ActionStatus::Unknown,
+                "world scope changed before an authoritative result",
+            );
+        }
         // A replacement session restarts its epoch, world generation and revision counters.
         // Adopt them as a new scope rather than comparing them with the retired session's
         // monotonic values.
@@ -1907,6 +2403,12 @@ fn wrath_net_drain(mut control: ResMut<WrathControl>, mut view: ResMut<WrathWorl
             return; // stale world scope
         }
         if digest.world_generation != view.world_generation {
+            if let Some(actions) = actions.as_deref_mut() {
+                actions.fail_all(
+                    ActionStatus::Unknown,
+                    "world scope changed before an authoritative result",
+                );
+            }
             view.entities.clear();
             view.last_changes.world_transferred = true;
         }
@@ -2824,7 +3326,10 @@ pub fn run_session_with_cancel(
                 std::net::SocketAddr::from(([127, 0, 0, 1], benilla_wm_native::DEFAULT_PORT)),
                 benilla_wm_native::AuthToken::new(token.clone())?,
             )?;
-            Some(PublisherConfig::new(loopback))
+            Some(match config.actions.as_ref() {
+                Some(bridge) => PublisherConfig::new(loopback).with_actions(bridge.clone()),
+                None => PublisherConfig::new(loopback),
+            })
         }
         None => None,
     };

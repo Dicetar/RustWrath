@@ -311,11 +311,6 @@ impl ResourceObservation {
                     "resources.power_type must be 0..=6",
                 ));
             }
-            if self.power.is_none() {
-                return Err(Error::InvalidObservation(
-                    "resources.power requires an observed resources.power_type",
-                ));
-            }
         }
         if self.power.is_some() && self.power_type.is_none() {
             return Err(Error::InvalidObservation(

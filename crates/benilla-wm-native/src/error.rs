@@ -9,6 +9,8 @@ pub enum Error {
     Config(&'static str),
     /// An observation violates the versioned wire contract.
     InvalidObservation(&'static str),
+    /// A WM action request/result violates its typed wire contract.
+    InvalidAction(String),
     /// A zero-length frame was read or attempted.
     EmptyFrame,
     /// A frame exceeds the negotiated or protocol maximum.
@@ -80,6 +82,7 @@ impl fmt::Display for Error {
         match self {
             Self::Config(message) => write!(f, "invalid configuration: {message}"),
             Self::InvalidObservation(message) => write!(f, "invalid observation: {message}"),
+            Self::InvalidAction(message) => write!(f, "invalid action: {message}"),
             Self::EmptyFrame => f.write_str("empty frame"),
             Self::FrameTooLarge { len, max } => {
                 write!(f, "frame is {len} bytes; maximum is {max}")

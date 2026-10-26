@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use crate::auth::AuthToken;
 use crate::error::{Error, Result};
+use crate::action::{ActionRequest, ActionResult};
 use crate::frame::{
-    HealthFrame, HelloFrame, MAX_FRAME_BYTES, ObservationFrame, PROTOCOL_NAME, PROTOCOL_VERSION,
-    ServerFrame, encode, read_frame, write_frame,
+    ActionResultFrame, HealthFrame, HelloFrame, MAX_FRAME_BYTES, ObservationFrame, PROTOCOL_NAME,
+    PROTOCOL_VERSION, ServerFrame, encode, read_frame, write_frame,
 };
 use crate::health::SourceHealth;
 use crate::observation::{OBSERVATION_SCHEMA_VERSION, Observation};
@@ -117,6 +118,10 @@ pub struct LoopbackSink {
     max_frame_bytes: usize,
     last: Option<Observation>,
     broken: bool,
+    /// Intents the receiver delivered before an expected ACK; drained by the publisher worker.
+    actions: std::collections::VecDeque<ActionRequest>,
+    /// Admission-level cancellations, newest after older intents.
+    cancels: std::collections::VecDeque<String>,
 }
 
 impl LoopbackSink {
@@ -149,6 +154,9 @@ impl LoopbackSink {
             }
             ServerFrame::HealthAck { .. } => {
                 return Err(Error::UnexpectedServerFrame("health_ack before hello_ack"));
+            }
+            ServerFrame::ActionRequest { .. } | ServerFrame::ActionCancel { .. } => {
+                return Err(Error::UnexpectedServerFrame("action frame before hello_ack"));
             }
             ServerFrame::HelloAck {
                 protocol,
@@ -197,6 +205,8 @@ impl LoopbackSink {
             max_frame_bytes,
             last: None,
             broken: false,
+            actions: std::collections::VecDeque::new(),
+            cancels: std::collections::VecDeque::new(),
         })
     }
 
@@ -281,119 +291,94 @@ impl LoopbackSink {
             self.broken = true;
             return Err(error);
         }
-        let ack_bytes = match read_frame(&mut self.stream) {
-            Ok(bytes) => bytes,
-            Err(Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                self.broken = true;
-                return Err(Error::AckTimeout);
-            }
-            Err(error) => {
-                self.broken = true;
-                return Err(error);
-            }
-        };
-        let frame: ServerFrame = serde_json::from_slice(&ack_bytes)?;
-        match frame {
-            ServerFrame::HealthAck {
-                session_epoch,
-                world_generation,
-                player_guid,
-            } if session_epoch == health.session_epoch
-                && world_generation == health.world_generation
-                && player_guid == health.player_guid =>
-            {
-                Ok(HealthAckReceipt {
+        loop {
+            let frame = self.read_server_frame()?;
+            match frame {
+                ServerFrame::HealthAck {
                     session_epoch,
                     world_generation,
                     player_guid,
-                })
-            }
-            ServerFrame::HealthAck {
-                session_epoch,
-                world_generation,
-                player_guid,
-            } => {
-                self.broken = true;
-                Err(Error::HealthAckMismatch {
+                } if session_epoch == health.session_epoch
+                    && world_generation == health.world_generation
+                    && player_guid == health.player_guid =>
+                {
+                    return Ok(HealthAckReceipt {
+                        session_epoch,
+                        world_generation,
+                        player_guid,
+                    });
+                }
+                ServerFrame::HealthAck {
                     session_epoch,
                     world_generation,
                     player_guid,
-                })
-            }
-            ServerFrame::Error { code, message } => {
-                self.broken = true;
-                Err(Error::ReceiverRejected { code, message })
-            }
-            ServerFrame::Ack { .. } => {
-                self.broken = true;
-                Err(Error::UnexpectedServerFrame("ack for health"))
-            }
-            ServerFrame::HelloAck { .. } => {
-                self.broken = true;
-                Err(Error::UnexpectedServerFrame("hello_ack for health"))
+                } => {
+                    self.broken = true;
+                    return Err(Error::HealthAckMismatch {
+                        session_epoch,
+                        world_generation,
+                        player_guid,
+                    });
+                }
+                ServerFrame::ActionRequest { request } => self.enqueue_action(request)?,
+                ServerFrame::ActionCancel { request_id } => self.cancels.push_back(request_id),
+                ServerFrame::Error { code, message } => {
+                    self.broken = true;
+                    return Err(Error::ReceiverRejected { code, message });
+                }
+                ServerFrame::Ack { .. } => {
+                    self.broken = true;
+                    return Err(Error::UnexpectedServerFrame("ack for health"));
+                }
+                ServerFrame::HelloAck { .. } => {
+                    self.broken = true;
+                    return Err(Error::UnexpectedServerFrame("hello_ack for health"));
+                }
             }
         }
     }
 
     /// Waits for the ACK matching the observation just written.
     pub fn wait_ack(&mut self, observation: &Observation) -> Result<AckReceipt> {
-        let ack_bytes = match read_frame(&mut self.stream) {
-            Ok(bytes) => bytes,
-            Err(Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                self.broken = true;
-                return Err(Error::AckTimeout);
-            }
-            Err(error) => {
-                self.broken = true;
-                return Err(error);
-            }
-        };
-        let frame: ServerFrame = serde_json::from_slice(&ack_bytes)?;
-        match frame {
-            ServerFrame::Ack {
-                sequence,
-                state_revision,
-                world_generation,
-            } => {
-                if sequence == observation.sequence
-                    && state_revision == observation.state_revision
-                    && world_generation == observation.world_generation
-                {
-                    Ok(AckReceipt {
-                        sequence,
-                        state_revision,
-                        world_generation,
-                    })
-                } else {
+        loop {
+            let frame = self.read_server_frame()?;
+            match frame {
+                ServerFrame::Ack {
+                    sequence,
+                    state_revision,
+                    world_generation,
+                } => {
+                    if sequence == observation.sequence
+                        && state_revision == observation.state_revision
+                        && world_generation == observation.world_generation
+                    {
+                        return Ok(AckReceipt {
+                            sequence,
+                            state_revision,
+                            world_generation,
+                        });
+                    }
                     self.broken = true;
-                    Err(Error::AckMismatch {
+                    return Err(Error::AckMismatch {
                         sequence,
                         state_revision,
                         world_generation,
-                    })
+                    });
                 }
-            }
-            ServerFrame::Error { code, message } => {
-                self.broken = true;
-                Err(Error::ReceiverRejected { code, message })
-            }
-            ServerFrame::HealthAck { .. } => {
-                self.broken = true;
-                Err(Error::UnexpectedServerFrame("health_ack for observation"))
-            }
-            ServerFrame::HelloAck { .. } => {
-                self.broken = true;
-                Err(Error::UnexpectedServerFrame("hello_ack"))
+                ServerFrame::ActionRequest { request } => self.enqueue_action(request)?,
+                ServerFrame::ActionCancel { request_id } => self.cancels.push_back(request_id),
+                ServerFrame::Error { code, message } => {
+                    self.broken = true;
+                    return Err(Error::ReceiverRejected { code, message });
+                }
+                ServerFrame::HealthAck { .. } => {
+                    self.broken = true;
+                    return Err(Error::UnexpectedServerFrame("health_ack for observation"));
+                }
+                ServerFrame::HelloAck { .. } => {
+                    self.broken = true;
+                    return Err(Error::UnexpectedServerFrame("hello_ack"));
+                }
             }
         }
     }
@@ -414,7 +399,20 @@ impl LoopbackSink {
                 self.broken = true;
                 Ok(PeerState::Closed)
             }
-            Ok(_) => Ok(PeerState::UnexpectedData),
+            Ok(_) => match self.read_server_frame()? {
+                ServerFrame::ActionRequest { request } => {
+                    self.enqueue_action(request)?;
+                    Ok(PeerState::Alive)
+                }
+                ServerFrame::ActionCancel { request_id } => {
+                    self.cancels.push_back(request_id);
+                    Ok(PeerState::Alive)
+                }
+                _ => {
+                    self.broken = true;
+                    Ok(PeerState::UnexpectedData)
+                }
+            },
             Err(error)
                 if matches!(
                     error.kind(),
@@ -428,6 +426,64 @@ impl LoopbackSink {
                 Err(Error::Io(error))
             }
         }
+    }
+
+    /// Sends one authoritative action result. No acknowledgement is expected: the WM broker owns
+    /// result admission, and a lost result is resolved by its deadline as `Unknown`.
+    pub fn send_action_result(&mut self, result: &ActionResult) -> Result<()> {
+        if self.broken {
+            return Err(Error::Disconnected);
+        }
+        result.validate()?;
+        let frame = ActionResultFrame {
+            kind: "action_result",
+            result,
+        };
+        let bytes = encode(&frame)?;
+        if bytes.len() > self.max_frame_bytes {
+            return Err(Error::FrameTooLarge {
+                len: bytes.len(),
+                max: self.max_frame_bytes,
+            });
+        }
+        write_frame(&mut self.stream, &bytes)
+    }
+
+    /// Drains intents and cancellations delivered before the last expected ACK or idle poll.
+    pub fn take_actions(&mut self) -> (Vec<ActionRequest>, Vec<String>) {
+        let actions = self.actions.drain(..).collect();
+        let cancels = self.cancels.drain(..).collect();
+        (actions, cancels)
+    }
+
+    fn enqueue_action(&mut self, request: ActionRequest) -> Result<()> {
+        request.validate()?;
+        self.actions.push_back(request);
+        Ok(())
+    }
+
+    /// Reads one server frame, mapping an idle read timeout on a half-read frame to a broken link.
+    fn read_server_frame(&mut self) -> Result<ServerFrame> {
+        let bytes = match read_frame(&mut self.stream) {
+            Ok(bytes) => bytes,
+            Err(Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                self.broken = true;
+                return Err(Error::AckTimeout);
+            }
+            Err(error) => {
+                self.broken = true;
+                return Err(error);
+            }
+        };
+        serde_json::from_slice(&bytes).map_err(|error| {
+            self.broken = true;
+            Error::Json(error)
+        })
     }
 
     /// Shuts the connection down. The sink must not be reused afterwards.

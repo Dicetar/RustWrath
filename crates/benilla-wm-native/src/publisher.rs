@@ -2,6 +2,7 @@ use std::sync::{Arc, Condvar, Mutex, TryLockError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::action::{ActionRequest, ActionResult};
 use crate::client::{
     AckReceipt, HealthAckReceipt, LoopbackConfig, LoopbackSink, PeerState,
 };
@@ -18,6 +19,25 @@ pub const DEFAULT_HEALTH_SEND_INTERVAL: Duration = Duration::from_secs(5);
 /// How long a producer's last `publish_health` call stays live. It is a lease on the producer
 /// loop, not on the world session: a quiet server keeps renewing it from the same event loop.
 pub const DEFAULT_PRODUCER_HEALTH_TTL: Duration = Duration::from_secs(15);
+/// Hard bound on results forwarded to the socket per worker tick.
+const MAX_RESULTS_PER_TICK: usize = 32;
+
+/// The two ends of the same loopback seam for typed player actions. The worker forwards
+/// `requests` to the application and writes `results` back; both are bounded by the WM broker and
+/// the client adapter, never by an invented second bus.
+#[derive(Clone)]
+pub struct ActionBridge {
+    pub requests: crossbeam_channel::Sender<ActionRequest>,
+    /// Admission-level cancellations, forwarded to the app before its request drain.
+    pub cancels: crossbeam_channel::Sender<String>,
+    pub results: crossbeam_channel::Receiver<ActionResult>,
+}
+
+impl std::fmt::Debug for ActionBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ActionBridge")
+    }
+}
 
 /// Configuration for the bounded, background-I/O publisher.
 #[derive(Clone, Debug)]
@@ -28,6 +48,7 @@ pub struct PublisherConfig {
     retry_max_age: Duration,
     health_poll_interval: Duration,
     producer_health_ttl: Duration,
+    actions: Option<ActionBridge>,
 }
 
 impl PublisherConfig {
@@ -39,7 +60,15 @@ impl PublisherConfig {
             retry_max_age: DEFAULT_RETRY_MAX_AGE,
             health_poll_interval: DEFAULT_HEALTH_POLL_INTERVAL,
             producer_health_ttl: DEFAULT_PRODUCER_HEALTH_TTL,
+            actions: None,
         }
+    }
+
+    /// Attaches the typed action seam to this publisher. Without it the transport remains
+    /// observation-only (the renderless driver's mode).
+    pub fn with_actions(mut self, actions: ActionBridge) -> Self {
+        self.actions = Some(actions);
+        self
     }
 
     pub fn with_reconnect_backoff(
@@ -62,6 +91,7 @@ impl PublisherConfig {
             retry_max_age: DEFAULT_RETRY_MAX_AGE,
             health_poll_interval: DEFAULT_HEALTH_POLL_INTERVAL,
             producer_health_ttl: DEFAULT_PRODUCER_HEALTH_TTL,
+            actions: None,
         })
     }
 
@@ -164,6 +194,10 @@ pub struct PublisherHealth {
     pub last_written: Option<SnapshotStamp>,
     pub last_accepted: Option<AckReceipt>,
     pub last_health_ack: Option<HealthAckReceipt>,
+    pub actions_received: u64,
+    pub action_results: u64,
+    pub action_errors: u64,
+    pub last_action_error: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -185,6 +219,10 @@ impl Default for PublisherHealth {
             last_written: None,
             last_accepted: None,
             last_health_ack: None,
+            actions_received: 0,
+            action_results: 0,
+            action_errors: 0,
+            last_action_error: None,
             last_error: None,
         }
     }
@@ -651,6 +689,36 @@ fn latest_source_health(shared: &Arc<Shared>, ttl: Duration) -> Option<SourceHea
     Some(health)
 }
 
+/// Moves delivered intents to the application and queued results to the socket. A closed app
+/// receiver is not a transport failure: the worker keeps the observation/health stream alive and
+/// the broker expires unanswered requests.
+fn pump_actions(shared: &Arc<Shared>, sink: &mut LoopbackSink, bridge: &ActionBridge) {
+    let (requests, cancels) = sink.take_actions();
+    for request in requests {
+        let _ = bridge.requests.send(request);
+        update_health(shared, |health| health.actions_received += 1);
+    }
+    for request_id in cancels {
+        // The application answers cancellation itself; a cancel for an already-finished request
+        // is ignored there.
+        let _ = bridge.cancels.send(request_id);
+    }
+    let results: Vec<_> = bridge
+        .results
+        .try_iter()
+        .take(MAX_RESULTS_PER_TICK)
+        .collect();
+    for result in results {
+        match sink.send_action_result(&result) {
+            Ok(()) => update_health(shared, |health| health.action_results += 1),
+            Err(error) => update_health(shared, |health| {
+                health.action_errors += 1;
+                health.last_action_error = Some(error.to_string());
+            }),
+        }
+    }
+}
+
 fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
     let mut sink: Option<LoopbackSink> = None;
     let mut retry: Option<Observation> = None;
@@ -681,6 +749,10 @@ fn run_worker(shared: &Arc<Shared>, config: PublisherConfig) {
                 active.close();
             }
             return;
+        }
+
+        if let (Some(active), Some(bridge)) = (sink.as_mut(), config.actions.as_ref()) {
+            pump_actions(shared, active, bridge);
         }
 
         if timed_out {

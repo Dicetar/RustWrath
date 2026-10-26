@@ -22,6 +22,7 @@
 
 #![forbid(unsafe_code)]
 
+mod action;
 mod auth;
 mod client;
 mod error;
@@ -32,6 +33,10 @@ mod producer;
 mod publisher;
 mod pump;
 
+pub use action::{
+    ActionIntent, ActionRequest, ActionResult, ActionStatus, MAX_ACTION_DETAIL_CHARS,
+    MAX_REQUEST_ID_CHARS, MoveDirection,
+};
 pub use auth::AuthToken;
 pub use client::{
     AckReceipt, HealthAckReceipt, PeerState, DEFAULT_PORT, LoopbackConfig, LoopbackSink,
@@ -48,7 +53,7 @@ pub use producer::{observation_from_producer, ProducerPosition, ProducerSnapshot
 pub use publisher::{
     DEFAULT_BUSY_RETRY_DELAY, DEFAULT_HEALTH_POLL_INTERVAL, DEFAULT_HEALTH_SEND_INTERVAL,
     DEFAULT_RECONNECT_INITIAL_DELAY, DEFAULT_RECONNECT_MAX_DELAY, DEFAULT_RETRY_MAX_AGE,
-    DEFAULT_PRODUCER_HEALTH_TTL, LinkState, ObservationPublisher, PublishOutcome, PublishReceipt,
+    ActionBridge, DEFAULT_PRODUCER_HEALTH_TTL, LinkState, ObservationPublisher, PublishOutcome, PublishReceipt,
     PublisherConfig, PublisherHealth, PublisherRetirement, RetainReason, RetainedObservation,
     SnapshotStamp, WorkerState, replace_publisher, retire_publisher,
 };

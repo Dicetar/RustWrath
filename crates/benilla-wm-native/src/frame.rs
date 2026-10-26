@@ -3,6 +3,7 @@ use std::net::TcpStream;
 
 use serde::{Deserialize, Serialize};
 
+use crate::action::{ActionRequest, ActionResult};
 use crate::error::{Error, Result};
 use crate::health::SourceHealth;
 use crate::observation::{OBSERVATION_SCHEMA_VERSION, Observation};
@@ -11,7 +12,7 @@ use crate::observation::{OBSERVATION_SCHEMA_VERSION, Observation};
 pub const PROTOCOL_NAME: &str = "benilla.wm_native";
 
 /// Wire protocol version.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Hard frame bound shared by the Rust sender and Python receiver.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
@@ -40,6 +41,13 @@ pub(crate) struct HealthFrame<'a> {
     pub health: &'a SourceHealth,
 }
 
+#[derive(Serialize)]
+pub(crate) struct ActionResultFrame<'a> {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub result: &'a ActionResult,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ServerFrame {
@@ -54,6 +62,10 @@ pub(crate) enum ServerFrame {
         state_revision: u64,
         world_generation: u64,
     },
+    /// One typed player intent from WM; answered by [`ActionResultFrame`] on this connection.
+    ActionRequest { request: ActionRequest },
+    /// A best-effort admission-level cancellation; the client cannot recall a sent command.
+    ActionCancel { request_id: String },
     HealthAck {
         session_epoch: u64,
         world_generation: u64,
