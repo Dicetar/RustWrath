@@ -5,10 +5,17 @@
 //! 12340 facts needed by `UnitCastingInfo`, `UnitChannelInfo` and the native
 //! `UNIT_SPELLCAST_*` payloads without inventing a second gameplay authority:
 //!
-//! - `WrathNativeUpdate` is the wire-fact feed produced by the session IO thread.
-//! - [`WrathWorldView`] keeps the active cast/channel snapshots keyed by caster.
+//! - [`NativeCastState`] is the single authority that resolves wire facts, owned by the
+//!   session IO thread. Each edge is resolved exactly once, [here](NativeCastState::apply).
+//! - [`WrathResolvedCast`] hands the resolved edge plus the authoritative entries it left
+//!   behind to the app, which mirrors them for presentation and never re-resolves.
 //! - [`WrathCastEvent`] is the Bevy message carrying the resolved identity through
 //!   terminal edges (launch, failure, interruption, channel end, scope loss).
+//!
+//! The authority has no UI clock and no Bevy dependency in its resolution path: the
+//! `*_ui_now_seconds` fields stay `None` here and are stamped by the presentation drain
+//! when it consumes a resolved edge. The `GetTime()` conversion is therefore explicit and
+//! happens only in presentation.
 //!
 //! Clock domains are explicit. `observed_at_unix_ms` is the producer's packet-arrival wall
 //! clock. `start_remaining_ms` is 12340's `SMSG_SPELL_START` `m_timer`, the time left when the
@@ -19,9 +26,54 @@
 //! Interruptibility is `None` unless the wire actually establishes it (it does not in the
 //! START/GO payloads). The consumer must use spell metadata for the "not interruptible" bit.
 
+use std::collections::BTreeMap;
+
 use bevy::prelude::*;
 
 use benilla_protocol_wrath::gameplay::{ServerEvent as WrathGameplayEvent, SpellTargets};
+
+/// The authoritative native cast/channel read model, owned by the session IO thread.
+///
+/// This is the only place wire facts are resolved: an edge updates these maps exactly once,
+/// and the resolved event plus the entries it left for that caster are handed to the app as a
+/// snapshot. The app-facing mirror never resolves the same fact again, and the WM export reads
+/// these maps directly, so it needs no Bevy world, UI entity or presentation clock.
+#[derive(Clone, Debug)]
+pub struct NativeCastState {
+    /// Active casts keyed by caster. Removed by the authoritative terminal edge.
+    pub casts: BTreeMap<u64, WrathActiveCast>,
+    /// Active channels keyed by caster.
+    pub channels: BTreeMap<u64, WrathActiveChannel>,
+    /// The last terminal cast edge, retained after its active entry is removed.
+    pub last_cast_end: Option<WrathCastEnded>,
+    /// Stable per-attempt handle source. Independent of wire `cast_count`.
+    pub next_cast_serial: u64,
+}
+
+impl Default for NativeCastState {
+    fn default() -> Self {
+        Self {
+            casts: BTreeMap::new(),
+            channels: BTreeMap::new(),
+            last_cast_end: None,
+            next_cast_serial: 1,
+        }
+    }
+}
+
+/// One resolved native fact: the presentation edge and the authoritative entries the edge left
+/// for its caster. The app mirrors exactly these values; absence (`None`) is the authority's
+/// observed no-cast/no-channel for that caster.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrathResolvedCast {
+    pub event: WrathCastEvent,
+    /// The edge caster's active cast after resolution.
+    pub casting: Option<(u64, WrathActiveCast)>,
+    /// The edge caster's active channel after resolution.
+    pub channeling: Option<(u64, WrathActiveChannel)>,
+    /// The authority's retained last terminal cast edge after resolution.
+    pub last_cast_end: Option<WrathCastEnded>,
+}
 
 /// A session/world/revision scope. Native state from an older scope is never valid.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -117,7 +169,8 @@ pub struct WrathInventoryFailure {
 /// edges from the bounded session queue.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WrathNativeFeedEvent {
-    Cast(WrathNativeUpdate),
+    /// One resolved cast/channel edge, carrying the authoritative entries it left for its caster.
+    Cast(WrathResolvedCast),
     ItemText(WrathItemText),
     InventoryFailure {
         failure: WrathInventoryFailure,
@@ -129,7 +182,7 @@ impl WrathNativeFeedEvent {
     /// The session/world scope this native fact belongs to.
     pub fn scope(&self) -> WrathScope {
         match self {
-            Self::Cast(update) => update.scope(),
+            Self::Cast(resolved) => resolved.event.scope,
             Self::ItemText(text) => text.scope,
             Self::InventoryFailure { scope, .. } => *scope,
         }
@@ -291,362 +344,397 @@ pub enum WrathCastEventKind {
     },
 }
 
-/// The wire scope carried by every update.
+/// The caster whose entry an update can change.
 impl WrathNativeUpdate {
-    pub fn scope(&self) -> WrathScope {
+    pub fn caster(&self) -> u64 {
         match self {
-            Self::CastStart { scope, .. }
-            | Self::CastDelayed { scope, .. }
-            | Self::CastLaunched { scope, .. }
-            | Self::CastFailed { scope, .. }
-            | Self::CastInterrupted { scope, .. }
-            | Self::ChannelStart { scope, .. }
-            | Self::ChannelUpdate { scope, .. } => *scope,
+            Self::CastStart { caster, .. }
+            | Self::CastDelayed { caster, .. }
+            | Self::CastLaunched { caster, .. }
+            | Self::CastFailed { caster, .. }
+            | Self::CastInterrupted { caster, .. }
+            | Self::ChannelStart { caster, .. }
+            | Self::ChannelUpdate { caster, .. } => *caster,
         }
     }
 }
 
-fn take_matching_cast(
-    view: &mut crate::wrath::WrathWorldView,
-    caster: u64,
-    spell_id: u32,
-    cast_count: u8,
-) -> Option<WrathActiveCast> {
-    let matches = view.casts.get(&caster).is_some_and(|cast| {
-        cast.identity.spell_id == spell_id && cast.identity.cast_count == Some(cast_count)
-    });
-    if matches {
-        view.casts.remove(&caster)
-    } else {
-        None
+impl NativeCastState {
+    /// Resolve one wire update exactly once and return the edge with the authority's entries
+    /// for that caster. `None` means the fact carried no resolvable state (e.g. a delay or a
+    /// channel update with no active entry); nothing changed and no export is owed.
+    pub fn apply(&mut self, update: WrathNativeUpdate) -> Option<WrathResolvedCast> {
+        let caster = update.caster();
+        let event = self.apply_event(update)?;
+        Some(WrathResolvedCast {
+            event,
+            casting: self.casts.get(&caster).map(|cast| (caster, cast.clone())),
+            channeling: self.channels.get(&caster).map(|channel| (caster, *channel)),
+            last_cast_end: self.last_cast_end.clone(),
+        })
     }
-}
 
-/// Apply one wire update to the view and return the resolved event to publish. The caller
-/// writes it as a Bevy message; this function only uses the view's active maps.
-pub(crate) fn apply_update(
-    view: &mut crate::wrath::WrathWorldView,
-    update: WrathNativeUpdate,
-) -> Option<WrathCastEvent> {
-    match update {
-        WrathNativeUpdate::CastStart {
-            scope,
-            caster,
-            spell_id,
-            cast_count,
-            cast_item,
-            target,
-            targets,
-            remaining_ms,
-            cast_flags,
-            ammo_display_id,
-            observed_at_unix_ms,
-        } => {
-            let attempt_serial = view.next_cast_serial;
-            view.next_cast_serial = view.next_cast_serial.wrapping_add(1).max(1);
-            let identity = WrathCastIdentity {
+    fn take_matching_cast(
+        &mut self,
+        caster: u64,
+        spell_id: u32,
+        cast_count: u8,
+    ) -> Option<WrathActiveCast> {
+        let matches = self.casts.get(&caster).is_some_and(|cast| {
+            cast.identity.spell_id == spell_id && cast.identity.cast_count == Some(cast_count)
+        });
+        if matches {
+            self.casts.remove(&caster)
+        } else {
+            None
+        }
+    }
+
+    /// Record that the local cancel command for `spell_id` was sent. This is not a terminal
+    /// state: the authoritative failure/interruption/launch edge still decides the outcome.
+    /// Returns whether an active attempt matched, so the caller can advance the revision.
+    pub fn note_cancel_requested(&mut self, caster: u64, spell_id: u32) -> bool {
+        if let Some(cast) = self.casts.get_mut(&caster) {
+            if cast.identity.spell_id == spell_id {
+                cast.cancel_requested = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Drop all native state for a scope loss. Silent: the app closes its own presentation from
+    /// the same lifecycle trigger, and no wire fact is being resolved here.
+    pub fn invalidate_scope(&mut self) {
+        self.casts.clear();
+        self.channels.clear();
+        self.last_cast_end = None;
+    }
+
+    fn apply_event(&mut self, update: WrathNativeUpdate) -> Option<WrathCastEvent> {
+        match update {
+            WrathNativeUpdate::CastStart {
+                scope,
                 caster,
                 spell_id,
-                cast_count: Some(cast_count),
+                cast_count,
                 cast_item,
-            };
-            view.casts.insert(
+                target,
+                targets,
+                remaining_ms,
+                cast_flags,
+                ammo_display_id,
+                observed_at_unix_ms,
+            } => {
+                let attempt_serial = self.next_cast_serial;
+                self.next_cast_serial = self.next_cast_serial.wrapping_add(1).max(1);
+                let identity = WrathCastIdentity {
+                    caster,
+                    spell_id,
+                    cast_count: Some(cast_count),
+                    cast_item,
+                };
+                self.casts.insert(
+                    caster,
+                    WrathActiveCast {
+                        scope,
+                        attempt_serial,
+                        identity,
+                        target,
+                        targets: targets.clone(),
+                        start_remaining_ms: remaining_ms,
+                        cast_flags,
+                        ammo_display_id,
+                        observed_at_unix_ms,
+                        start_ui_now_seconds: None,
+                        last_update_ui_now_seconds: None,
+                        pushback_ms: 0,
+                        go_server_time_ms: None,
+                        cancel_requested: false,
+                        interruptible: None,
+                    },
+                );
+                Some(WrathCastEvent {
+                    scope,
+                    attempt_serial: Some(attempt_serial),
+                    identity: Some(identity),
+                    target,
+                    targets: Some(targets),
+                    observed_at_unix_ms,
+                    start_ui_now_seconds: None,
+                    ui_now_seconds: None,
+                    kind: WrathCastEventKind::Started { remaining_ms },
+                })
+            }
+            WrathNativeUpdate::CastDelayed {
+                scope,
                 caster,
-                WrathActiveCast {
+                delay_ms,
+                observed_at_unix_ms,
+            } => {
+                if let Some(cast) = self.casts.get_mut(&caster) {
+                    cast.pushback_ms = cast.pushback_ms.saturating_add(delay_ms);
+                    Some(WrathCastEvent {
+                        scope,
+                        attempt_serial: Some(cast.attempt_serial),
+                        identity: Some(cast.identity),
+                        target: cast.target,
+                        targets: Some(cast.targets.clone()),
+                        observed_at_unix_ms,
+                        start_ui_now_seconds: cast.start_ui_now_seconds,
+                        ui_now_seconds: None,
+                        kind: WrathCastEventKind::Delayed {
+                            delay_ms,
+                            accumulated_ms: cast.pushback_ms,
+                        },
+                    })
+                } else {
+                    // A delay without an active START cannot be attached to an identity; do
+                    // not manufacture one for the UI.
+                    None
+                }
+            }
+            WrathNativeUpdate::CastLaunched {
+                scope,
+                caster,
+                spell_id,
+                cast_count,
+                server_time_ms,
+                observed_at_unix_ms,
+            } => {
+                let ended = self.take_matching_cast(caster, spell_id, cast_count);
+                let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended
+                {
+                    Some(cast) => (
+                        cast.identity,
+                        cast.target,
+                        Some(cast.targets),
+                        Some(cast.attempt_serial),
+                        cast.start_ui_now_seconds,
+                    ),
+                    None => (
+                        WrathCastIdentity {
+                            caster,
+                            spell_id,
+                            cast_count: Some(cast_count),
+                            cast_item: None,
+                        },
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                };
+                self.last_cast_end = Some(WrathCastEnded {
                     scope,
                     attempt_serial,
                     identity,
                     target,
                     targets: targets.clone(),
-                    start_remaining_ms: remaining_ms,
-                    cast_flags,
-                    ammo_display_id,
-                    observed_at_unix_ms,
-                    start_ui_now_seconds: None,
-                    last_update_ui_now_seconds: None,
-                    pushback_ms: 0,
-                    go_server_time_ms: None,
-                    cancel_requested: false,
-                    interruptible: None,
-                },
-            );
-            Some(WrathCastEvent {
-                scope,
-                attempt_serial: Some(attempt_serial),
-                identity: Some(identity),
-                target,
-                targets: Some(targets),
-                observed_at_unix_ms,
-                start_ui_now_seconds: None,
-                ui_now_seconds: None,
-                kind: WrathCastEventKind::Started { remaining_ms },
-            })
-        }
-        WrathNativeUpdate::CastDelayed {
-            scope,
-            caster,
-            delay_ms,
-            observed_at_unix_ms,
-        } => {
-            if let Some(cast) = view.casts.get_mut(&caster) {
-                cast.pushback_ms = cast.pushback_ms.saturating_add(delay_ms);
+                    start_ui_now_seconds,
+                    ended_at_unix_ms: observed_at_unix_ms,
+                    outcome: WrathCastEnd::Launched,
+                });
                 Some(WrathCastEvent {
                     scope,
-                    attempt_serial: Some(cast.attempt_serial),
-                    identity: Some(cast.identity),
-                    target: cast.target,
-                    targets: Some(cast.targets.clone()),
+                    attempt_serial,
+                    identity: Some(identity),
+                    target,
+                    targets,
                     observed_at_unix_ms,
-                    start_ui_now_seconds: cast.start_ui_now_seconds,
+                    start_ui_now_seconds,
                     ui_now_seconds: None,
-                    kind: WrathCastEventKind::Delayed {
-                        delay_ms,
-                        accumulated_ms: cast.pushback_ms,
-                    },
+                    kind: WrathCastEventKind::Launched { server_time_ms },
                 })
-            } else {
-                // A delay without an active START cannot be attached to an identity; do not
-                // manufacture one for the UI.
-                None
             }
-        }
-        WrathNativeUpdate::CastLaunched {
-            scope,
-            caster,
-            spell_id,
-            cast_count,
-            server_time_ms,
-            observed_at_unix_ms,
-        } => {
-            let ended = take_matching_cast(&mut *view, caster, spell_id, cast_count);
-            let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended {
-                Some(cast) => (
-                    cast.identity,
-                    cast.target,
-                    Some(cast.targets),
-                    Some(cast.attempt_serial),
-                    cast.start_ui_now_seconds,
-                ),
-                None => (
-                    WrathCastIdentity {
-                        caster,
-                        spell_id,
-                        cast_count: Some(cast_count),
-                        cast_item: None,
-                    },
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-            };
-            view.last_cast_end = Some(WrathCastEnded {
+            WrathNativeUpdate::CastFailed {
                 scope,
-                attempt_serial,
-                identity,
-                target,
-                targets: targets.clone(),
-                start_ui_now_seconds,
-                ended_at_unix_ms: observed_at_unix_ms,
-                outcome: WrathCastEnd::Launched,
-            });
-            Some(WrathCastEvent {
-                scope,
-                attempt_serial,
-                identity: Some(identity),
-                target,
-                targets,
-                observed_at_unix_ms,
-                start_ui_now_seconds,
-                ui_now_seconds: None,
-                kind: WrathCastEventKind::Launched { server_time_ms },
-            })
-        }
-        WrathNativeUpdate::CastFailed {
-            scope,
-            caster,
-            spell_id,
-            cast_count,
-            reason,
-            observed_at_unix_ms,
-        } => {
-            let caster = if caster == 0 { view.player_guid } else { caster };
-            let ended = take_matching_cast(&mut *view, caster, spell_id, cast_count);
-            let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended {
-                Some(cast) => (
-                    cast.identity,
-                    cast.target,
-                    Some(cast.targets),
-                    Some(cast.attempt_serial),
-                    cast.start_ui_now_seconds,
-                ),
-                None => (
-                    WrathCastIdentity {
-                        caster,
-                        spell_id,
-                        cast_count: Some(cast_count),
-                        cast_item: None,
-                    },
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-            };
-            view.last_cast_end = Some(WrathCastEnded {
-                scope,
-                attempt_serial,
-                identity,
-                target,
-                targets: targets.clone(),
-                start_ui_now_seconds,
-                ended_at_unix_ms: observed_at_unix_ms,
-                outcome: WrathCastEnd::Failed,
-            });
-            Some(WrathCastEvent {
-                scope,
-                attempt_serial,
-                identity: Some(identity),
-                target,
-                targets,
-                observed_at_unix_ms,
-                start_ui_now_seconds,
-                ui_now_seconds: None,
-                kind: WrathCastEventKind::Failed { reason },
-            })
-        }
-        WrathNativeUpdate::CastInterrupted {
-            scope,
-            caster,
-            spell_id,
-            cast_count,
-            reason,
-            observed_at_unix_ms,
-        } => {
-            let ended = take_matching_cast(&mut *view, caster, spell_id, cast_count);
-            let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended {
-                Some(cast) => (
-                    cast.identity,
-                    cast.target,
-                    Some(cast.targets),
-                    Some(cast.attempt_serial),
-                    cast.start_ui_now_seconds,
-                ),
-                None => (
-                    WrathCastIdentity {
-                        caster,
-                        spell_id,
-                        cast_count: Some(cast_count),
-                        cast_item: None,
-                    },
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-            };
-            view.last_cast_end = Some(WrathCastEnded {
-                scope,
-                attempt_serial,
-                identity,
-                target,
-                targets: targets.clone(),
-                start_ui_now_seconds,
-                ended_at_unix_ms: observed_at_unix_ms,
-                outcome: WrathCastEnd::Interrupted,
-            });
-            Some(WrathCastEvent {
-                scope,
-                attempt_serial,
-                identity: Some(identity),
-                target,
-                targets,
-                observed_at_unix_ms,
-                start_ui_now_seconds,
-                ui_now_seconds: None,
-                kind: WrathCastEventKind::Interrupted { reason },
-            })
-        }
-        WrathNativeUpdate::ChannelStart {
-            scope,
-            caster,
-            spell_id,
-            duration_ms,
-            observed_at_unix_ms,
-        } => {
-            view.channels.insert(
                 caster,
-                WrathActiveChannel {
+                spell_id,
+                cast_count,
+                reason,
+                observed_at_unix_ms,
+            } => {
+                let ended = self.take_matching_cast(caster, spell_id, cast_count);
+                let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended
+                {
+                    Some(cast) => (
+                        cast.identity,
+                        cast.target,
+                        Some(cast.targets),
+                        Some(cast.attempt_serial),
+                        cast.start_ui_now_seconds,
+                    ),
+                    None => (
+                        WrathCastIdentity {
+                            caster,
+                            spell_id,
+                            cast_count: Some(cast_count),
+                            cast_item: None,
+                        },
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                };
+                self.last_cast_end = Some(WrathCastEnded {
                     scope,
-                    caster,
-                    spell_id,
-                    duration_ms,
-                    remaining_ms: duration_ms,
+                    attempt_serial,
+                    identity,
+                    target,
+                    targets: targets.clone(),
+                    start_ui_now_seconds,
+                    ended_at_unix_ms: observed_at_unix_ms,
+                    outcome: WrathCastEnd::Failed,
+                });
+                Some(WrathCastEvent {
+                    scope,
+                    attempt_serial,
+                    identity: Some(identity),
+                    target,
+                    targets,
                     observed_at_unix_ms,
-                    updated_at_unix_ms: observed_at_unix_ms,
-                    start_ui_now_seconds: None,
-                    last_update_ui_now_seconds: None,
-                },
-            );
-            Some(WrathCastEvent {
-                scope,
-                attempt_serial: None,
-                identity: Some(WrathCastIdentity {
-                    caster,
-                    spell_id,
-                    cast_count: None,
-                    cast_item: None,
-                }),
-                target: None,
-                targets: None,
-                observed_at_unix_ms,
-                start_ui_now_seconds: None,
-                ui_now_seconds: None,
-                kind: WrathCastEventKind::ChannelStarted { duration_ms },
-            })
-        }
-        WrathNativeUpdate::ChannelUpdate {
-            scope,
-            caster,
-            remaining_ms,
-            observed_at_unix_ms,
-        } => {
-            let ended = if remaining_ms == 0 {
-                view.channels.remove(&caster)
-            } else {
-                view.channels.get_mut(&caster).map(|channel| {
-                    channel.remaining_ms = remaining_ms;
-                    channel.updated_at_unix_ms = observed_at_unix_ms;
-                    *channel
+                    start_ui_now_seconds,
+                    ui_now_seconds: None,
+                    kind: WrathCastEventKind::Failed { reason },
                 })
-            };
-            ended.map(|channel| WrathCastEvent {
+            }
+            WrathNativeUpdate::CastInterrupted {
                 scope,
-                attempt_serial: None,
-                identity: Some(WrathCastIdentity {
-                    caster,
-                    spell_id: channel.spell_id,
-                    cast_count: None,
-                    cast_item: None,
-                }),
-                target: None,
-                targets: None,
+                caster,
+                spell_id,
+                cast_count,
+                reason,
                 observed_at_unix_ms,
-                start_ui_now_seconds: channel.start_ui_now_seconds,
-                ui_now_seconds: None,
-                kind: if remaining_ms == 0 {
-                    WrathCastEventKind::ChannelEnded
+            } => {
+                let ended = self.take_matching_cast(caster, spell_id, cast_count);
+                let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended
+                {
+                    Some(cast) => (
+                        cast.identity,
+                        cast.target,
+                        Some(cast.targets),
+                        Some(cast.attempt_serial),
+                        cast.start_ui_now_seconds,
+                    ),
+                    None => (
+                        WrathCastIdentity {
+                            caster,
+                            spell_id,
+                            cast_count: Some(cast_count),
+                            cast_item: None,
+                        },
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                };
+                self.last_cast_end = Some(WrathCastEnded {
+                    scope,
+                    attempt_serial,
+                    identity,
+                    target,
+                    targets: targets.clone(),
+                    start_ui_now_seconds,
+                    ended_at_unix_ms: observed_at_unix_ms,
+                    outcome: WrathCastEnd::Interrupted,
+                });
+                Some(WrathCastEvent {
+                    scope,
+                    attempt_serial,
+                    identity: Some(identity),
+                    target,
+                    targets,
+                    observed_at_unix_ms,
+                    start_ui_now_seconds,
+                    ui_now_seconds: None,
+                    kind: WrathCastEventKind::Interrupted { reason },
+                })
+            }
+            WrathNativeUpdate::ChannelStart {
+                scope,
+                caster,
+                spell_id,
+                duration_ms,
+                observed_at_unix_ms,
+            } => {
+                self.channels.insert(
+                    caster,
+                    WrathActiveChannel {
+                        scope,
+                        caster,
+                        spell_id,
+                        duration_ms,
+                        remaining_ms: duration_ms,
+                        observed_at_unix_ms,
+                        updated_at_unix_ms: observed_at_unix_ms,
+                        start_ui_now_seconds: None,
+                        last_update_ui_now_seconds: None,
+                    },
+                );
+                Some(WrathCastEvent {
+                    scope,
+                    attempt_serial: None,
+                    identity: Some(WrathCastIdentity {
+                        caster,
+                        spell_id,
+                        cast_count: None,
+                        cast_item: None,
+                    }),
+                    target: None,
+                    targets: None,
+                    observed_at_unix_ms,
+                    start_ui_now_seconds: None,
+                    ui_now_seconds: None,
+                    kind: WrathCastEventKind::ChannelStarted { duration_ms },
+                })
+            }
+            WrathNativeUpdate::ChannelUpdate {
+                scope,
+                caster,
+                remaining_ms,
+                observed_at_unix_ms,
+            } => {
+                let ended = if remaining_ms == 0 {
+                    self.channels.remove(&caster)
                 } else {
-                    WrathCastEventKind::ChannelUpdated { remaining_ms }
-                },
-            })
+                    self.channels.get_mut(&caster).map(|channel| {
+                        channel.remaining_ms = remaining_ms;
+                        channel.updated_at_unix_ms = observed_at_unix_ms;
+                        *channel
+                    })
+                };
+                ended.map(|channel| WrathCastEvent {
+                    scope,
+                    attempt_serial: None,
+                    identity: Some(WrathCastIdentity {
+                        caster,
+                        spell_id: channel.spell_id,
+                        cast_count: None,
+                        cast_item: None,
+                    }),
+                    target: None,
+                    targets: None,
+                    observed_at_unix_ms,
+                    start_ui_now_seconds: channel.start_ui_now_seconds,
+                    ui_now_seconds: None,
+                    kind: if remaining_ms == 0 {
+                        WrathCastEventKind::ChannelEnded
+                    } else {
+                        WrathCastEventKind::ChannelUpdated { remaining_ms }
+                    },
+                })
+            }
         }
     }
 }
 
-/// Drop all active native cast/channel state for a scope loss, returning the events the UI
-/// needs to close its bars. Does not invent success or failure: the outcome is `ScopeLost`.
-pub(crate) fn invalidate_scope(
+/// Drop the app's mirrored native state for a scope loss, returning the presentation events the
+/// UI needs to close its bars. Presentation only: the authority cleared itself from the same
+/// lifecycle trigger and does not invent success or failure (`ScopeLost`).
+pub(crate) fn invalidate_presentation(
     view: &mut crate::wrath::WrathWorldView,
     reason: WrathScopeLoss,
     observed_at_unix_ms: i64,
@@ -694,6 +782,7 @@ pub(crate) fn invalidate_scope(
             kind: WrathCastEventKind::ScopeInvalidated { reason },
         });
     }
+    view.last_cast_end = None;
     events
 }
 
@@ -800,4 +889,417 @@ pub(crate) fn update_from_gameplay(
         },
         _ => return None,
     })
+}
+
+/// The WM observation block for the self unit's active cast, read from the authority. The UI
+/// clocks stay `None`: the authority has no client-process clock, and presentation stamps its
+/// own mirror when it drains the resolved edge.
+pub(crate) fn cast_observation(
+    state: &NativeCastState,
+    player_guid: u64,
+) -> benilla_wm_native::CastObservation {
+    let Some(cast) = state.casts.get(&player_guid) else {
+        return benilla_wm_native::CastObservation::none();
+    };
+    benilla_wm_native::CastObservation {
+        state: benilla_wm_native::ActivityState::Active,
+        attempt_serial: cast.attempt_serial,
+        spell_id: cast.identity.spell_id,
+        cast_count: cast.identity.cast_count,
+        cast_item: cast.identity.cast_item,
+        targets: Some(spell_targets_observation(&cast.targets)),
+        cast_flags: Some(cast.cast_flags),
+        ammo_display_id: cast.ammo_display_id,
+        start_remaining_ms: cast.start_remaining_ms,
+        pushback_ms: cast.pushback_ms,
+        cancel_requested: cast.cancel_requested,
+        interruptible: cast.interruptible,
+        go_server_time_ms: cast.go_server_time_ms,
+        start_observed_at_unix_ms: cast.observed_at_unix_ms,
+        start_ui_now_seconds: None,
+        last_update_ui_now_seconds: None,
+    }
+}
+
+/// The WM observation block for the self unit's active channel, read from the authority.
+pub(crate) fn channel_observation(
+    state: &NativeCastState,
+    player_guid: u64,
+) -> benilla_wm_native::ChannelObservation {
+    let Some(channel) = state.channels.get(&player_guid) else {
+        return benilla_wm_native::ChannelObservation::none();
+    };
+    benilla_wm_native::ChannelObservation {
+        state: benilla_wm_native::ActivityState::Active,
+        spell_id: Some(channel.spell_id),
+        duration_ms: Some(channel.duration_ms),
+        remaining_ms: Some(channel.remaining_ms),
+        start_observed_at_unix_ms: Some(channel.observed_at_unix_ms),
+        update_observed_at_unix_ms: Some(channel.updated_at_unix_ms),
+        start_ui_now_seconds: None,
+        last_update_ui_now_seconds: None,
+    }
+}
+
+/// The WM observation block for the self unit's last terminal cast edge. A retained edge from an
+/// older scope is never presented as current.
+pub(crate) fn last_cast_end_observation(
+    state: &NativeCastState,
+    player_guid: u64,
+    session_epoch: u64,
+    world_generation: u64,
+) -> benilla_wm_native::LastCastEndObservation {
+    let ended = state.last_cast_end.as_ref().filter(|ended| {
+        ended.identity.caster == player_guid
+            && ended.scope.session_epoch == session_epoch
+            && ended.scope.world_generation == world_generation
+    });
+    let Some(ended) = ended else {
+        return benilla_wm_native::LastCastEndObservation::unknown();
+    };
+    benilla_wm_native::LastCastEndObservation {
+        state: benilla_wm_native::TerminalState::Present,
+        outcome: match ended.outcome {
+            WrathCastEnd::Launched => benilla_wm_native::CastOutcome::Launched,
+            WrathCastEnd::Failed => benilla_wm_native::CastOutcome::Failed,
+            WrathCastEnd::Interrupted => benilla_wm_native::CastOutcome::Interrupted,
+            WrathCastEnd::ScopeLost => benilla_wm_native::CastOutcome::ScopeLost,
+        },
+        attempt_serial: ended.attempt_serial,
+        spell_id: Some(ended.identity.spell_id),
+        cast_count: ended.identity.cast_count,
+        cast_item: ended.identity.cast_item,
+        target: ended.target,
+        targets: ended.targets.as_ref().map(spell_targets_observation),
+        ended_observed_at_unix_ms: Some(ended.ended_at_unix_ms),
+    }
+}
+
+/// The WM observation block for the self unit's observed aura slots: raw wire values with the
+/// own-aura marker preserved, sorted by slot and explicitly bounded (never silently truncated).
+pub(crate) fn auras_observation(
+    slots: &[benilla_protocol_wrath::reducer::AuraSlot],
+) -> benilla_wm_native::AurasObservation {
+    let mut by_slot = BTreeMap::new();
+    for slot in slots {
+        by_slot.insert(
+            slot.slot,
+            benilla_wm_native::AuraObservation {
+                slot: slot.slot,
+                spell_id: slot.spell_id,
+                flags: slot.flags,
+                level: slot.level,
+                charges: slot.charges,
+                caster_guid: slot.caster,
+                max_duration_ms: slot.max_duration_ms,
+                duration_ms: slot.duration_ms,
+            },
+        );
+    }
+    let total = by_slot.len();
+    let slots: Vec<_> = by_slot
+        .into_values()
+        .take(benilla_wm_native::MAX_AURA_SLOTS)
+        .collect();
+    benilla_wm_native::AurasObservation {
+        state: benilla_wm_native::AuraKnowledge::Known,
+        complete: total <= benilla_wm_native::MAX_AURA_SLOTS,
+        slots,
+    }
+}
+
+fn spell_targets_observation(targets: &SpellTargets) -> benilla_wm_native::SpellTargetsObservation {
+    benilla_wm_native::SpellTargetsObservation {
+        mask: targets.mask,
+        unit: targets.unit,
+        gameobject: targets.gameobject,
+        item: targets.item,
+        source: targets.source,
+        source_transport: targets.source_transport,
+        dest: targets.dest,
+        dest_transport: targets.dest_transport,
+        string: targets.string.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use benilla_protocol_wrath::reducer::AuraSlot;
+
+    fn scope() -> WrathScope {
+        WrathScope {
+            session_epoch: 7,
+            world_generation: 3,
+            state_revision: 11,
+        }
+    }
+
+    fn empty_targets() -> SpellTargets {
+        SpellTargets {
+            mask: 0,
+            unit: None,
+            gameobject: None,
+            item: None,
+            source: None,
+            source_transport: None,
+            dest: None,
+            dest_transport: None,
+            string: None,
+        }
+    }
+
+    fn start(guid: u64, spell_id: u32, count: u8, target: u64) -> WrathNativeUpdate {
+        let mut targets = empty_targets();
+        targets.mask = 0x2;
+        targets.unit = Some(target);
+        WrathNativeUpdate::CastStart {
+            scope: scope(),
+            caster: guid,
+            spell_id,
+            cast_count: count,
+            cast_item: None,
+            target: Some(target),
+            targets,
+            remaining_ms: Some(1_500),
+            cast_flags: 0x100,
+            ammo_display_id: None,
+            observed_at_unix_ms: 10_000,
+        }
+    }
+
+    #[test]
+    fn cast_edges_resolve_once_in_the_authority() {
+        let guid = 0xA11CE;
+        let mut state = NativeCastState::default();
+
+        let started = state.apply(start(guid, 133, 4, 0xBEEF)).expect("start resolves");
+        assert_eq!(started.event.kind, WrathCastEventKind::Started { remaining_ms: Some(1_500) });
+        let (caster, cast) = started.casting.expect("authority holds the active cast");
+        assert_eq!(caster, guid);
+        assert_ne!(cast.attempt_serial, 0);
+        assert_eq!(cast.identity.cast_count, Some(4));
+        assert_eq!(cast.targets.unit, Some(0xBEEF), "the complete target block survives");
+        assert_eq!(cast.start_ui_now_seconds, None, "the authority has no UI clock");
+        assert_eq!(started.last_cast_end, None);
+
+        let block = cast_observation(&state, guid);
+        assert_eq!(block.state, benilla_wm_native::ActivityState::Active);
+        assert_eq!(block.attempt_serial, cast.attempt_serial);
+        assert_eq!(block.start_ui_now_seconds, None);
+        assert_eq!(block.targets.as_ref().and_then(|t| t.unit), Some(0xBEEF));
+        assert!(!block.cancel_requested);
+        block.validate().expect("the active block is schema-valid");
+
+        let delayed = state
+            .apply(WrathNativeUpdate::CastDelayed {
+                scope: scope(),
+                caster: guid,
+                delay_ms: 250,
+                observed_at_unix_ms: 10_100,
+            })
+            .expect("the delay attaches to the live attempt");
+        assert_eq!(
+            delayed.event.kind,
+            WrathCastEventKind::Delayed {
+                delay_ms: 250,
+                accumulated_ms: 250
+            }
+        );
+        let (_, cast) = delayed.casting.expect("still casting");
+        assert_eq!(cast.attempt_serial, started.event.attempt_serial.unwrap());
+        assert_eq!(cast.observed_at_unix_ms, 10_000, "pushback never rewrites the origin");
+        assert_eq!(cast_observation(&state, guid).pushback_ms, 250);
+
+        let launched = state
+            .apply(WrathNativeUpdate::CastLaunched {
+                scope: scope(),
+                caster: guid,
+                spell_id: 133,
+                cast_count: 4,
+                server_time_ms: 86_399_000,
+                observed_at_unix_ms: 10_200,
+            })
+            .expect("launch resolves");
+        assert_eq!(launched.casting, None, "the terminal edge removes the active entry");
+        let ended = launched.last_cast_end.expect("the terminal edge is retained");
+        assert_eq!(ended.outcome, WrathCastEnd::Launched);
+        assert_eq!(ended.attempt_serial, started.event.attempt_serial);
+        assert_eq!(ended.targets.as_ref().and_then(|t| t.unit), Some(0xBEEF));
+
+        let channel = channel_observation(&state, guid);
+        assert_eq!(channel.state, benilla_wm_native::ActivityState::None);
+        channel.validate().expect("an observed no-channel is schema-valid");
+        let block = cast_observation(&state, guid);
+        assert_eq!(block.state, benilla_wm_native::ActivityState::None);
+        block.validate().expect("an observed no-cast is schema-valid");
+        let terminal = last_cast_end_observation(&state, guid, 7, 3);
+        assert_eq!(terminal.state, benilla_wm_native::TerminalState::Present);
+        assert_eq!(terminal.outcome, benilla_wm_native::CastOutcome::Launched);
+        assert_eq!(terminal.attempt_serial, started.event.attempt_serial);
+        terminal.validate().expect("the terminal block is schema-valid");
+        assert_eq!(
+            last_cast_end_observation(&state, guid, 7, 4).state,
+            benilla_wm_native::TerminalState::Unknown,
+            "an edge from a retired world scope is never presented as current"
+        );
+    }
+
+    #[test]
+    fn terminal_edge_without_start_never_invents_an_attempt() {
+        let guid = 0xA11CE;
+        let mut state = NativeCastState::default();
+        let resolved = state
+            .apply(WrathNativeUpdate::CastFailed {
+                scope: scope(),
+                caster: guid,
+                spell_id: 116,
+                cast_count: 9,
+                reason: 100,
+                observed_at_unix_ms: 20_000,
+            })
+            .expect("the failure resolves");
+        assert_eq!(resolved.event.kind, WrathCastEventKind::Failed { reason: 100 });
+        assert_eq!(resolved.casting, None);
+        let ended = resolved.last_cast_end.expect("retained");
+        assert_eq!(ended.outcome, WrathCastEnd::Failed);
+        assert_eq!(ended.attempt_serial, None);
+        assert_eq!(ended.identity.spell_id, 116);
+        let terminal = last_cast_end_observation(&state, guid, 7, 3);
+        assert_eq!(terminal.outcome, benilla_wm_native::CastOutcome::Failed);
+        terminal.validate().expect("schema-valid");
+    }
+
+    #[test]
+    fn channel_edges_carry_both_clock_anchors() {
+        let guid = 0xA11CE;
+        let mut state = NativeCastState::default();
+        let started = state
+            .apply(WrathNativeUpdate::ChannelStart {
+                scope: scope(),
+                caster: guid,
+                spell_id: 5143,
+                duration_ms: 4_000,
+                observed_at_unix_ms: 30_000,
+            })
+            .expect("channel start resolves");
+        assert_eq!(
+            started.event.kind,
+            WrathCastEventKind::ChannelStarted { duration_ms: 4_000 }
+        );
+        let (_, channel) = started.channeling.expect("active channel");
+        assert_eq!(channel.start_ui_now_seconds, None);
+        let block = channel_observation(&state, guid);
+        assert_eq!(block.state, benilla_wm_native::ActivityState::Active);
+        assert_eq!(block.start_observed_at_unix_ms, Some(30_000));
+        assert_eq!(block.update_observed_at_unix_ms, Some(30_000));
+        assert_eq!(block.start_ui_now_seconds, None);
+        block.validate().expect("schema-valid");
+
+        let updated = state
+            .apply(WrathNativeUpdate::ChannelUpdate {
+                scope: scope(),
+                caster: guid,
+                remaining_ms: 2_500,
+                observed_at_unix_ms: 31_500,
+            })
+            .expect("channel update resolves");
+        assert_eq!(
+            updated.event.kind,
+            WrathCastEventKind::ChannelUpdated { remaining_ms: 2_500 }
+        );
+        let block = channel_observation(&state, guid);
+        assert_eq!(block.start_observed_at_unix_ms, Some(30_000), "the anchor survives");
+        assert_eq!(block.update_observed_at_unix_ms, Some(31_500));
+        assert_eq!(block.remaining_ms, Some(2_500));
+
+        let ended = state
+            .apply(WrathNativeUpdate::ChannelUpdate {
+                scope: scope(),
+                caster: guid,
+                remaining_ms: 0,
+                observed_at_unix_ms: 32_000,
+            })
+            .expect("the completing update resolves");
+        assert_eq!(ended.event.kind, WrathCastEventKind::ChannelEnded);
+        assert_eq!(ended.channeling, None);
+        let block = channel_observation(&state, guid);
+        assert_eq!(block.state, benilla_wm_native::ActivityState::None);
+        block.validate().expect("schema-valid");
+    }
+
+    #[test]
+    fn cancel_is_authority_state_not_an_outcome() {
+        let guid = 0xA11CE;
+        let mut state = NativeCastState::default();
+        state.apply(start(guid, 133, 4, 0xBEEF)).expect("start");
+        assert!(!state.note_cancel_requested(guid, 999), "another spell does not match");
+        assert!(state.note_cancel_requested(guid, 133));
+        let block = cast_observation(&state, guid);
+        assert!(block.cancel_requested);
+        assert_eq!(block.state, benilla_wm_native::ActivityState::Active, "not an outcome");
+        block.validate().expect("schema-valid");
+        assert_eq!(state.last_cast_end.as_ref().map(|e| e.outcome), None);
+    }
+
+    #[test]
+    fn scope_loss_clears_every_authority_entry() {
+        let guid = 0xA11CE;
+        let mut state = NativeCastState::default();
+        state.apply(start(guid, 133, 4, 0xBEEF)).expect("start");
+        state
+            .apply(WrathNativeUpdate::ChannelStart {
+                scope: scope(),
+                caster: guid,
+                spell_id: 5143,
+                duration_ms: 4_000,
+                observed_at_unix_ms: 30_000,
+            })
+            .expect("channel");
+        state.invalidate_scope();
+        assert!(state.casts.is_empty());
+        assert!(state.channels.is_empty());
+        assert!(state.last_cast_end.is_none());
+        assert_eq!(
+            cast_observation(&state, guid).state,
+            benilla_wm_native::ActivityState::None,
+            "the fresh scope observes no active cast"
+        );
+        assert_eq!(
+            last_cast_end_observation(&state, guid, 8, 4).state,
+            benilla_wm_native::TerminalState::Unknown
+        );
+    }
+
+    #[test]
+    fn aura_export_is_sorted_unique_and_bounded() {
+        let mut slots = Vec::new();
+        for i in 0..130u8 {
+            slots.push(AuraSlot {
+                slot: 255 - i,
+                spell_id: u32::from(i) + 1,
+                flags: 0x08,
+                level: 80,
+                charges: 1,
+                caster: 0,
+                max_duration_ms: 1_000,
+                duration_ms: 500,
+            });
+        }
+        slots[0].slot = slots[1].slot; // a duplicate slot keeps the last row only
+        let export = auras_observation(&slots);
+        assert_eq!(export.state, benilla_wm_native::AuraKnowledge::Known);
+        assert!(!export.complete, "the bound cut the set; never silently complete");
+        assert_eq!(export.slots.len(), benilla_wm_native::MAX_AURA_SLOTS);
+        assert!(
+            export.slots.windows(2).all(|pair| pair[0].slot < pair[1].slot),
+            "slots sorted ascending and unique"
+        );
+        export.validate().expect("schema-valid");
+
+        let empty = auras_observation(&[]);
+        assert_eq!(empty.state, benilla_wm_native::AuraKnowledge::Known);
+        assert!(empty.slots.is_empty(), "an observed zero-aura state is not unknown");
+        assert!(empty.complete);
+    }
 }

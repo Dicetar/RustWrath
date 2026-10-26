@@ -617,6 +617,13 @@ impl ChannelObservation {
         }
     }
 
+    /// An observed no-channel: the source tracks channel edges and has none active.
+    pub fn none() -> Self {
+        let mut channel = Self::unknown();
+        channel.state = ActivityState::None;
+        channel
+    }
+
     pub fn validate(&self) -> Result<()> {
         match self.state {
             ActivityState::Unknown | ActivityState::None => {

@@ -25,78 +25,81 @@ struct ProducerAdapter<'a> {
 }
 
 /// Owned snapshot handed to the pump, implementing the bridge's `ProducerSnapshot` trait.
-struct SnapshotOwned(benilla_protocol_wrath::session::SelfObservation);
+struct SnapshotOwned {
+    snapshot: benilla_protocol_wrath::session::SelfObservation,
+    auras: benilla_wm_native::AurasObservation,
+}
 
 impl std::fmt::Debug for SnapshotOwned {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "seq {} rev {} map {} pos ({:.1}, {:.1}, {:.1}, {:.1}) target {:?} visible {}/{} complete={} age_ms {}",
-            self.0.sequence,
-            self.0.state_revision,
-            self.0.map_id,
-            self.0.position.x,
-            self.0.position.y,
-            self.0.position.z,
-            self.0.position.o,
-            match &self.0.target {
+            self.snapshot.sequence,
+            self.snapshot.state_revision,
+            self.snapshot.map_id,
+            self.snapshot.position.x,
+            self.snapshot.position.y,
+            self.snapshot.position.z,
+            self.snapshot.position.o,
+            match &self.snapshot.target {
                 SelfTarget::Unknown => "unknown".to_string(),
                 SelfTarget::None => "none".to_string(),
                 SelfTarget::Target(g) => format!("{g}"),
             },
-            self.0.visibility.guids.len(),
-            self.0.visibility.total_guid_count,
-            self.0.visibility.complete,
-            format!("position_observed_at={}", self.0.position_observed_at_unix_ms),
+            self.snapshot.visibility.guids.len(),
+            self.snapshot.visibility.total_guid_count,
+            self.snapshot.visibility.complete,
+            format!("position_observed_at={}", self.snapshot.position_observed_at_unix_ms),
         )
     }
 }
 
 impl ProducerSnapshot for SnapshotOwned {
     fn session_epoch(&self) -> u64 {
-        self.0.session_epoch
+        self.snapshot.session_epoch
     }
     fn player_guid(&self) -> u64 {
-        self.0.player_guid
+        self.snapshot.player_guid
     }
     fn sequence(&self) -> u64 {
-        self.0.sequence
+        self.snapshot.sequence
     }
     fn state_revision(&self) -> u64 {
-        self.0.state_revision
+        self.snapshot.state_revision
     }
     fn world_generation(&self) -> u64 {
-        self.0.world_generation
+        self.snapshot.world_generation
     }
     fn position_observed_at_unix_ms(&self) -> i64 {
-        self.0.position_observed_at_unix_ms
+        self.snapshot.position_observed_at_unix_ms
     }
     fn observed_at_unix_ms(&self) -> i64 {
-        self.0.observed_at_unix_ms
+        self.snapshot.observed_at_unix_ms
     }
     fn client_uptime_ms(&self) -> u64 {
-        self.0.client_uptime_ms
+        self.snapshot.client_uptime_ms
     }
     fn map_id(&self) -> u32 {
-        self.0.map_id
+        self.snapshot.map_id
     }
     fn position(&self) -> benilla_wm_native::ProducerPosition {
         benilla_wm_native::ProducerPosition {
-            x: self.0.position.x,
-            y: self.0.position.y,
-            z: self.0.position.z,
-            orientation: self.0.position.o,
+            x: self.snapshot.position.x,
+            y: self.snapshot.position.y,
+            z: self.snapshot.position.z,
+            orientation: self.snapshot.position.o,
         }
     }
     fn target(&self) -> benilla_wm_native::Result<benilla_wm_native::TargetObservation> {
-        Ok(match &self.0.target {
+        Ok(match &self.snapshot.target {
             SelfTarget::Unknown => benilla_wm_native::TargetObservation::Unknown,
             SelfTarget::None => benilla_wm_native::TargetObservation::None,
             SelfTarget::Target(g) => benilla_wm_native::TargetObservation::target(*g)?,
         })
     }
     fn combat(&self) -> benilla_wm_native::CombatObservation {
-        match self.0.combat {
+        match self.snapshot.combat {
             benilla_protocol_wrath::session::SelfCombat::Unknown => {
                 benilla_wm_native::CombatObservation::Unknown
             }
@@ -110,16 +113,16 @@ impl ProducerSnapshot for SnapshotOwned {
     }
     fn resources(&self) -> benilla_wm_native::Result<benilla_wm_native::ResourceObservation> {
         benilla_wm_native::ResourceObservation::pairs(
-            self.0.resources.health,
-            self.0.resources.max_health,
-            self.0.resources.power_type,
-            self.0.resources.power,
-            self.0.resources.powers,
-            self.0.resources.max_powers,
+            self.snapshot.resources.health,
+            self.snapshot.resources.max_health,
+            self.snapshot.resources.power_type,
+            self.snapshot.resources.power,
+            self.snapshot.resources.powers,
+            self.snapshot.resources.max_powers,
         )
     }
     fn death(&self) -> benilla_wm_native::DeathObservation {
-        match self.0.death {
+        match self.snapshot.death {
             benilla_protocol_wrath::session::SelfDeath::Unknown => {
                 benilla_wm_native::DeathObservation::Unknown
             }
@@ -136,16 +139,29 @@ impl ProducerSnapshot for SnapshotOwned {
     }
     fn visibility(&self) -> benilla_wm_native::Result<benilla_wm_native::Visibility> {
         benilla_wm_native::Visibility::new(
-            self.0.visibility.complete,
-            self.0.visibility.total_guid_count,
-            self.0.visibility.guids.clone(),
+            self.snapshot.visibility.complete,
+            self.snapshot.visibility.total_guid_count,
+            self.snapshot.visibility.guids.clone(),
         )
     }
+    /// The renderless driver resolves no native cast gameplay; honest `Unknown`, not a none.
+    fn casting(&self) -> benilla_wm_native::CastObservation {
+        benilla_wm_native::CastObservation::unknown()
+    }
+    fn channeling(&self) -> benilla_wm_native::ChannelObservation {
+        benilla_wm_native::ChannelObservation::unknown()
+    }
+    fn last_cast_end(&self) -> benilla_wm_native::LastCastEndObservation {
+        benilla_wm_native::LastCastEndObservation::unknown()
+    }
+    fn auras(&self) -> benilla_wm_native::AurasObservation {
+        self.auras.clone()
+    }
     fn zone_id(&self) -> Option<u32> {
-        self.0.zone_id
+        self.snapshot.zone_id
     }
     fn area_id(&self) -> Option<u32> {
-        self.0.area_id
+        self.snapshot.area_id
     }
 }
 
@@ -183,7 +199,12 @@ impl ProducerSession for ProducerAdapter<'_> {
     ) -> std::result::Result<Option<SnapshotOwned>, benilla_wm_native::ProducerExportError> {
         match self.session.export(exported_at_unix_ms, client_uptime_ms) {
             Ok(Some(snapshot)) => {
-                let owned = SnapshotOwned(snapshot);
+                let player_guid = snapshot.player_guid;
+                let auras = match self.session.world().get(player_guid) {
+                    Some(entry) => auras_observation(&entry.auras),
+                    None => benilla_wm_native::AurasObservation::unknown(),
+                };
+                let owned = SnapshotOwned { snapshot, auras };
                 println!("[wm] export {owned:?}");
                 Ok(Some(owned))
             }
@@ -194,6 +215,39 @@ impl ProducerSession for ProducerAdapter<'_> {
 
     fn mark_published(&mut self) {
         self.session.mark_published();
+    }
+}
+
+/// The driver never parses native cast gameplay, so its cast/channel/terminal blocks stay
+/// `Unknown` (never a fabricated none); the aura set is real replicated state it does own.
+fn auras_observation(
+    slots: &[benilla_protocol_wrath::reducer::AuraSlot],
+) -> benilla_wm_native::AurasObservation {
+    let mut by_slot = std::collections::BTreeMap::new();
+    for slot in slots {
+        by_slot.insert(
+            slot.slot,
+            benilla_wm_native::AuraObservation {
+                slot: slot.slot,
+                spell_id: slot.spell_id,
+                flags: slot.flags,
+                level: slot.level,
+                charges: slot.charges,
+                caster_guid: slot.caster,
+                max_duration_ms: slot.max_duration_ms,
+                duration_ms: slot.duration_ms,
+            },
+        );
+    }
+    let total = by_slot.len();
+    let slots: Vec<_> = by_slot
+        .into_values()
+        .take(benilla_wm_native::MAX_AURA_SLOTS)
+        .collect();
+    benilla_wm_native::AurasObservation {
+        state: benilla_wm_native::AuraKnowledge::Known,
+        complete: total <= benilla_wm_native::MAX_AURA_SLOTS,
+        slots,
     }
 }
 

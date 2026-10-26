@@ -565,6 +565,15 @@ impl SessionState {
         }
     }
 
+    /// A native gameplay edge (cast/channel edge or a sent local cancel) changed observed
+    /// state that is not a descriptor field. Advance the one source-change revision so the
+    /// export fires on its own, without a movement or world digest, while position provenance
+    /// stays untouched: publishing native state never renews the position timestamp.
+    pub fn note_native_state_change(&mut self, observed_at_unix_ms: i64) {
+        self.state_revision += 1;
+        self.last_state_change_at = Some(observed_at_unix_ms);
+    }
+
     /// The retained, not-yet-handed-off snapshot, if any (diagnostics).
     pub fn unsent(&self) -> Option<&SelfObservation> {
         self.unsent.as_ref()

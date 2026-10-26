@@ -795,17 +795,16 @@ pub struct WrathWorldView {
     pub server_clock: Option<WrathServerClock>,
     /// The last `/played` answer with its trigger semantics; session-scoped state.
     pub played_time: Option<WrathPlayedTime>,
-    /// Active native casts keyed by caster, retaining 12340 identity/timing beyond the vanilla
-    /// cast-bar edges. Removed by the authoritative terminal edge.
+    /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
+    /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
+    /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
     pub casts: BTreeMap<u64, crate::wrath_native::WrathActiveCast>,
-    /// Active native channels keyed by caster.
+    /// Presentation mirror of the authority's active channels, keyed by caster.
     pub channels: BTreeMap<u64, crate::wrath_native::WrathActiveChannel>,
-    /// The last terminal cast edge, retained after its active entry is removed.
+    /// Mirror of the authority's last terminal cast edge.
     pub last_cast_end: Option<crate::wrath_native::WrathCastEnded>,
     /// The last native inventory failure with identities/tail; transient display state.
     pub last_inventory_failure: Option<crate::wrath_native::WrathInventoryFailure>,
-    /// Stable per-attempt native handle source. Independent of wire `cast_count`.
-    pub next_cast_serial: u64,
     /// Monotonic cast count for `CMSG_CAST_SPELL`.
     pub next_cast_count: u8,
 }
@@ -831,7 +830,6 @@ impl Default for WrathWorldView {
             channels: BTreeMap::new(),
             last_cast_end: None,
             last_inventory_failure: None,
-            next_cast_serial: 1,
             next_cast_count: 1,
             empty: (),
         }
@@ -839,20 +837,23 @@ impl Default for WrathWorldView {
 }
 
 impl WrathWorldView {
-    /// The active native cast for `unit`, if the START edge is still open. `None` after the
-    /// authoritative launch/failure/interruption edge, even though `last_cast_end` keeps its
-    /// identity for diagnostics.
+    /// The mirrored active native cast for `unit`, if the authority's last resolved edge left
+    /// one. `None` after the authoritative launch/failure/interruption edge, even though
+    /// `last_cast_end` keeps its identity for diagnostics.
+    #[allow(dead_code)] // presentation accessor for UI consumers of the mirrored authority
     pub fn casting(&self, unit: u64) -> Option<&crate::wrath_native::WrathActiveCast> {
         self.casts.get(&unit)
     }
 
-    /// The active native channel for `unit`, if any.
+    /// The mirrored active native channel for `unit`, if any.
+    #[allow(dead_code)] // presentation accessor for UI consumers of the mirrored authority
     pub fn channeling(&self, unit: u64) -> Option<&crate::wrath_native::WrathActiveChannel> {
         self.channels.get(&unit)
     }
 
-    /// Record that a local cancel command was issued for `spell_id`. This is not a terminal
-    /// state: the authoritative failure/interruption/launch edge still decides the outcome.
+    /// Mirror the local cancel intent for display. This is not a terminal state and never
+    /// decides an outcome: the authority separately records the request when the command is
+    /// actually sent, and the export carries the authority's value.
     pub fn note_cancel_requested(&mut self, caster: u64, spell_id: u32) -> bool {
         if let Some(cast) = self.casts.get_mut(&caster) {
             if cast.identity.spell_id == spell_id {
@@ -882,6 +883,7 @@ impl WrathWorldView {
     /// level, charges, caster and both durations. Helpful/harmful and dispel class are not carried
     /// by the aura packet and are therefore not inferred here; the spell catalog owns them. The
     /// synthesized vanilla aura fields remain a separate projection.
+    #[allow(dead_code)] // presentation accessor; the WM export reads the session's own world
     pub fn auras(&self, guid: u64) -> &[benilla_protocol_wrath::reducer::AuraSlot] {
         self.entities
             .get(&guid)
@@ -891,6 +893,7 @@ impl WrathWorldView {
     /// The last terminal cast edge only when it belongs to the currently adopted scope. A
     /// transfer/replacement leaves the old record in place for diagnostics but this accessor
     /// never presents it as current.
+    #[allow(dead_code)] // presentation accessor for UI consumers of the mirrored authority
     pub fn last_cast_end_in_scope(&self) -> Option<&crate::wrath_native::WrathCastEnded> {
         self.last_cast_end.as_ref().filter(|ended| {
             ended.scope.session_epoch == self.session_epoch
@@ -3207,7 +3210,7 @@ fn wrath_net_drain(
             WrathFeedEvent::Phase(phase) => view.phase = Some(phase),
             WrathFeedEvent::WorldTransfer { world_generation, map_id } => {
                 // Same-frame teardown: old-scope entities are gone before Input runs.
-                for event in crate::wrath_native::invalidate_scope(
+                for event in crate::wrath_native::invalidate_presentation(
                     &mut *view,
                     crate::wrath_native::WrathScopeLoss::WorldTransfer,
                     now_ms(),
@@ -3338,7 +3341,7 @@ fn wrath_net_drain(
                         "session ended before an authoritative result",
                     );
                 }
-                for event in crate::wrath_native::invalidate_scope(
+                for event in crate::wrath_native::invalidate_presentation(
                     &mut *view,
                     crate::wrath_native::WrathScopeLoss::SessionEnded,
                     now_ms(),
@@ -3368,6 +3371,8 @@ fn wrath_net_drain(
 
     // Native cast/channel/item-text/failure traffic is drained from its own queue so a burst
     // cannot evict a lifecycle edge. Old-scope facts are rejected before they touch the view.
+    // Cast facts arrive already resolved by the session authority: this drain only mirrors the
+    // authoritative entries for presentation and stamps the presentation clock.
     if !control.ended {
         for event in native {
             let scope = event.scope();
@@ -3380,59 +3385,81 @@ fn wrath_net_drain(
                 continue;
             }
             match event {
-                crate::wrath_native::WrathNativeFeedEvent::Cast(update) => {
-                    if let Some(mut event) =
-                        crate::wrath_native::apply_update(&mut *view, update)
-                    {
-                        let started = matches!(
-                            &event.kind,
-                            crate::wrath_native::WrathCastEventKind::Started { .. }
-                                | crate::wrath_native::WrathCastEventKind::ChannelStarted { .. }
-                        );
-                        let cast_edge = matches!(
-                            &event.kind,
-                            crate::wrath_native::WrathCastEventKind::Started { .. }
-                                | crate::wrath_native::WrathCastEventKind::Delayed { .. }
-                                | crate::wrath_native::WrathCastEventKind::Launched { .. }
-                                | crate::wrath_native::WrathCastEventKind::Failed { .. }
-                                | crate::wrath_native::WrathCastEventKind::Interrupted { .. }
-                        );
-                        let channel_edge = matches!(
-                            &event.kind,
-                            crate::wrath_native::WrathCastEventKind::ChannelStarted { .. }
-                                | crate::wrath_native::WrathCastEventKind::ChannelUpdated { .. }
-                                | crate::wrath_native::WrathCastEventKind::ChannelEnded
-                        );
-                        if started {
-                            event.start_ui_now_seconds = ui_now_seconds;
-                        }
-                        event.ui_now_seconds = ui_now_seconds;
-                        if let Some(identity) = event.identity {
-                            if cast_edge {
-                                if let Some(cast) = view.casts.get_mut(&identity.caster) {
-                                    if matches!(
-                                        &event.kind,
-                                        crate::wrath_native::WrathCastEventKind::Started { .. }
-                                    ) {
-                                        cast.start_ui_now_seconds = ui_now_seconds;
-                                    }
-                                    cast.last_update_ui_now_seconds = ui_now_seconds;
-                                }
-                            }
-                            if channel_edge {
-                                if let Some(channel) = view.channels.get_mut(&identity.caster) {
-                                    if matches!(
-                                        &event.kind,
-                                        crate::wrath_native::WrathCastEventKind::ChannelStarted { .. }
-                                    ) {
-                                        channel.start_ui_now_seconds = ui_now_seconds;
-                                    }
-                                    channel.last_update_ui_now_seconds = ui_now_seconds;
-                                }
-                            }
-                        }
-                        cast_events.write(event);
+                crate::wrath_native::WrathNativeFeedEvent::Cast(resolved) => {
+                    let mut event = resolved.event;
+                    let started = matches!(
+                        &event.kind,
+                        crate::wrath_native::WrathCastEventKind::Started { .. }
+                            | crate::wrath_native::WrathCastEventKind::ChannelStarted { .. }
+                    );
+                    if started {
+                        event.start_ui_now_seconds = ui_now_seconds;
+                    } else if let Some(identity) = event.identity {
+                        // The authority carries no UI clock; carry the attempt's origin from
+                        // the mirror it is about to replace, so later edges never rewrite it.
+                        event.start_ui_now_seconds = view
+                            .casts
+                            .get(&identity.caster)
+                            .filter(|cast| event.attempt_serial == Some(cast.attempt_serial))
+                            .and_then(|cast| cast.start_ui_now_seconds)
+                            .or_else(|| {
+                                view.channels
+                                    .get(&identity.caster)
+                                    .and_then(|channel| channel.start_ui_now_seconds)
+                            });
                     }
+                    event.ui_now_seconds = ui_now_seconds;
+                    let mut last_cast_end = resolved.last_cast_end;
+                    if let Some(ended) = last_cast_end.as_mut() {
+                        if ended.ended_at_unix_ms == event.observed_at_unix_ms {
+                            ended.start_ui_now_seconds = event.start_ui_now_seconds;
+                        }
+                    }
+                    if let Some(identity) = event.identity {
+                        let caster = identity.caster;
+                        match resolved.casting {
+                            Some((_, mut cast)) => {
+                                if started {
+                                    cast.start_ui_now_seconds = ui_now_seconds;
+                                } else if let Some(existing) = view.casts.get(&caster) {
+                                    if existing.attempt_serial == cast.attempt_serial {
+                                        cast.start_ui_now_seconds =
+                                            existing.start_ui_now_seconds;
+                                    }
+                                }
+                                cast.last_update_ui_now_seconds = ui_now_seconds;
+                                view.casts.insert(caster, cast);
+                            }
+                            None => {
+                                view.casts.remove(&caster);
+                            }
+                        }
+                        match resolved.channeling {
+                            Some((_, mut channel)) => {
+                                let channel_started = matches!(
+                                    &event.kind,
+                                    crate::wrath_native::WrathCastEventKind::ChannelStarted { .. }
+                                );
+                                if channel_started {
+                                    channel.start_ui_now_seconds = ui_now_seconds;
+                                } else if let Some(existing) = view.channels.get(&caster) {
+                                    channel.start_ui_now_seconds =
+                                        existing.start_ui_now_seconds;
+                                }
+                                channel.last_update_ui_now_seconds = ui_now_seconds;
+                                view.channels.insert(caster, channel);
+                            }
+                            None => {
+                                view.channels.remove(&caster);
+                            }
+                        }
+                    } else {
+                        // Identity-less edges cannot name a caster to mirror; nothing to sync.
+                        view.casts.clear();
+                        view.channels.clear();
+                    }
+                    view.last_cast_end = last_cast_end;
+                    cast_events.write(event);
                 }
                 crate::wrath_native::WrathNativeFeedEvent::ItemText(text) => {
                     item_text_events.write(text);
@@ -3453,7 +3480,7 @@ fn wrath_net_drain(
                 "session ended before an authoritative result",
             );
         }
-        for event in crate::wrath_native::invalidate_scope(
+        for event in crate::wrath_native::invalidate_presentation(
             &mut *view,
             crate::wrath_native::WrathScopeLoss::SessionEnded,
             now_ms(),
@@ -3497,7 +3524,7 @@ fn wrath_net_drain(
         // A replacement session restarts its epoch, world generation and revision counters.
         // Adopt them as a new scope rather than comparing them with the retired session's
         // monotonic values.
-        for event in crate::wrath_native::invalidate_scope(
+        for event in crate::wrath_native::invalidate_presentation(
             &mut *view,
             crate::wrath_native::WrathScopeLoss::SessionReplaced,
             now_ms(),
@@ -3524,7 +3551,7 @@ fn wrath_net_drain(
                     "world scope changed before an authoritative result",
                 );
             }
-            for event in crate::wrath_native::invalidate_scope(
+            for event in crate::wrath_native::invalidate_presentation(
                 &mut *view,
                 crate::wrath_native::WrathScopeLoss::WorldTransfer,
                 now_ms(),
@@ -4470,6 +4497,9 @@ pub fn run_session_with_cancel(
     };
     let mut session = SessionState::new();
     session.start_session(1); // placeholder; re-started with the real GUID after the enum
+    // The single native cast/channel authority for this session; it resolves each wire fact
+    // exactly once and feeds both presentation mirrors and the WM export.
+    let mut native = crate::wrath_native::NativeCastState::default();
     feed.push_event(WrathFeedEvent::Phase(session.phase()));
     let started = std::time::Instant::now();
 
@@ -4481,6 +4511,8 @@ pub fn run_session_with_cancel(
 
     struct Adapter<'a> {
         session: &'a mut SessionState,
+        /// The session's single native cast/channel authority, read directly by the export.
+        native: &'a crate::wrath_native::NativeCastState,
     }
     impl benilla_wm_native::ProducerSession for Adapter<'_> {
         type Snapshot = SnapshotOwned;
@@ -4516,7 +4548,26 @@ pub fn run_session_with_cancel(
         ) -> std::result::Result<Option<SnapshotOwned>, benilla_wm_native::ProducerExportError> {
             match self.session.export(exported_at_unix_ms, client_uptime_ms) {
                 Ok(Some(snapshot)) => {
-                    Ok(Some(SnapshotOwned(snapshot)))
+                    let player_guid = snapshot.player_guid;
+                    let auras = match self.session.world().get(player_guid) {
+                        Some(entry) => crate::wrath_native::auras_observation(&entry.auras),
+                        None => benilla_wm_native::AurasObservation::unknown(),
+                    };
+                    Ok(Some(SnapshotOwned {
+                        casting: crate::wrath_native::cast_observation(self.native, player_guid),
+                        channeling: crate::wrath_native::channel_observation(
+                            self.native,
+                            player_guid,
+                        ),
+                        last_cast_end: crate::wrath_native::last_cast_end_observation(
+                            self.native,
+                            player_guid,
+                            snapshot.session_epoch,
+                            snapshot.world_generation,
+                        ),
+                        auras,
+                        snapshot,
+                    }))
                 }
                 Ok(None) => Ok(None),
                 Err(e) => Err(benilla_wm_native::ProducerExportError::new(e.to_string())),
@@ -4526,45 +4577,51 @@ pub fn run_session_with_cancel(
             self.session.mark_published();
         }
     }
-    struct SnapshotOwned(SelfObservation);
+    struct SnapshotOwned {
+        snapshot: SelfObservation,
+        casting: benilla_wm_native::CastObservation,
+        channeling: benilla_wm_native::ChannelObservation,
+        last_cast_end: benilla_wm_native::LastCastEndObservation,
+        auras: benilla_wm_native::AurasObservation,
+    }
     impl benilla_wm_native::ProducerSnapshot for SnapshotOwned {
         fn session_epoch(&self) -> u64 {
-            self.0.session_epoch
+            self.snapshot.session_epoch
         }
         fn player_guid(&self) -> u64 {
-            self.0.player_guid
+            self.snapshot.player_guid
         }
         fn sequence(&self) -> u64 {
-            self.0.sequence
+            self.snapshot.sequence
         }
         fn state_revision(&self) -> u64 {
-            self.0.state_revision
+            self.snapshot.state_revision
         }
         fn world_generation(&self) -> u64 {
-            self.0.world_generation
+            self.snapshot.world_generation
         }
         fn position_observed_at_unix_ms(&self) -> i64 {
-            self.0.position_observed_at_unix_ms
+            self.snapshot.position_observed_at_unix_ms
         }
         fn observed_at_unix_ms(&self) -> i64 {
-            self.0.observed_at_unix_ms
+            self.snapshot.observed_at_unix_ms
         }
         fn client_uptime_ms(&self) -> u64 {
-            self.0.client_uptime_ms
+            self.snapshot.client_uptime_ms
         }
         fn map_id(&self) -> u32 {
-            self.0.map_id
+            self.snapshot.map_id
         }
         fn position(&self) -> benilla_wm_native::ProducerPosition {
             benilla_wm_native::ProducerPosition {
-                x: self.0.position.x,
-                y: self.0.position.y,
-                z: self.0.position.z,
-                orientation: self.0.position.o,
+                x: self.snapshot.position.x,
+                y: self.snapshot.position.y,
+                z: self.snapshot.position.z,
+                orientation: self.snapshot.position.o,
             }
         }
         fn target(&self) -> benilla_wm_native::Result<benilla_wm_native::TargetObservation> {
-            Ok(match &self.0.target {
+            Ok(match &self.snapshot.target {
                 benilla_protocol_wrath::session::SelfTarget::Unknown => {
                     benilla_wm_native::TargetObservation::Unknown
                 }
@@ -4577,7 +4634,7 @@ pub fn run_session_with_cancel(
             })
         }
         fn combat(&self) -> benilla_wm_native::CombatObservation {
-            match self.0.combat {
+            match self.snapshot.combat {
                 benilla_protocol_wrath::session::SelfCombat::Unknown => {
                     benilla_wm_native::CombatObservation::Unknown
                 }
@@ -4593,16 +4650,16 @@ pub fn run_session_with_cancel(
             &self,
         ) -> benilla_wm_native::Result<benilla_wm_native::ResourceObservation> {
             benilla_wm_native::ResourceObservation::pairs(
-                self.0.resources.health,
-                self.0.resources.max_health,
-                self.0.resources.power_type,
-                self.0.resources.power,
-                self.0.resources.powers,
-                self.0.resources.max_powers,
+                self.snapshot.resources.health,
+                self.snapshot.resources.max_health,
+                self.snapshot.resources.power_type,
+                self.snapshot.resources.power,
+                self.snapshot.resources.powers,
+                self.snapshot.resources.max_powers,
             )
         }
         fn death(&self) -> benilla_wm_native::DeathObservation {
-            match self.0.death {
+            match self.snapshot.death {
                 benilla_protocol_wrath::session::SelfDeath::Unknown => {
                     benilla_wm_native::DeathObservation::Unknown
                 }
@@ -4619,16 +4676,28 @@ pub fn run_session_with_cancel(
         }
         fn visibility(&self) -> benilla_wm_native::Result<benilla_wm_native::Visibility> {
             benilla_wm_native::Visibility::new(
-                self.0.visibility.complete,
-                self.0.visibility.total_guid_count,
-                self.0.visibility.guids.clone(),
+                self.snapshot.visibility.complete,
+                self.snapshot.visibility.total_guid_count,
+                self.snapshot.visibility.guids.clone(),
             )
         }
+        fn casting(&self) -> benilla_wm_native::CastObservation {
+            self.casting.clone()
+        }
+        fn channeling(&self) -> benilla_wm_native::ChannelObservation {
+            self.channeling.clone()
+        }
+        fn last_cast_end(&self) -> benilla_wm_native::LastCastEndObservation {
+            self.last_cast_end.clone()
+        }
+        fn auras(&self) -> benilla_wm_native::AurasObservation {
+            self.auras.clone()
+        }
         fn zone_id(&self) -> Option<u32> {
-            self.0.zone_id
+            self.snapshot.zone_id
         }
         fn area_id(&self) -> Option<u32> {
-            self.0.area_id
+            self.snapshot.area_id
         }
     }
 
@@ -4753,6 +4822,7 @@ pub fn run_session_with_cancel(
     feed.publish_digest(build_digest(&session)); // initial state (character selection)
     while deadline.is_none_or(|deadline| std::time::Instant::now() < deadline) {
         if cancel.load(Ordering::SeqCst) {
+            native.invalidate_scope();
             publisher.retire_all();
             return Ok(());
         }
@@ -4763,6 +4833,27 @@ pub fn run_session_with_cancel(
                 .unwrap_or_default();
             for command in pending {
                 world.send(command.opcode, &command.payload)?;
+                // A cancel request is client authority state recorded when the command
+                // actually leaves, not when the UI asked for it. The authoritative terminal
+                // edge still decides the outcome; the export publishes only the request.
+                let spell_id = match command.opcode {
+                    benilla_protocol_wrath::opcode::CMSG_CANCEL_CAST => {
+                        command.payload.get(1..5)
+                    }
+                    benilla_protocol_wrath::opcode::CMSG_CANCEL_CHANNELLING => {
+                        command.payload.get(0..4)
+                    }
+                    _ => None,
+                };
+                if let Some(spell_id) = spell_id
+                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                    .map(u32::from_le_bytes)
+                {
+                    let self_guid = session.player_guid().unwrap_or(0);
+                    if native.note_cancel_requested(self_guid, spell_id) {
+                        session.note_native_state_change(now_ms());
+                    }
+                }
             }
         }
         if last_ping.elapsed() >= Duration::from_secs(10) {
@@ -4906,6 +4997,7 @@ pub fn run_session_with_cancel(
                                     ),
                                 );
                             }
+                            let observed_at_unix_ms = now_ms();
                             if let Some(update) = crate::wrath_native::update_from_gameplay(
                                 &event,
                                 crate::wrath_native::WrathScope {
@@ -4913,12 +5005,18 @@ pub fn run_session_with_cancel(
                                     world_generation: session.world_generation(),
                                     state_revision: session.state_revision(),
                                 },
-                                now_ms(),
+                                observed_at_unix_ms,
                                 session.player_guid().unwrap_or(0),
                             ) {
-                                feed.push_native(crate::wrath_native::WrathNativeFeedEvent::Cast(
-                                    update,
-                                ));
+                                if let Some(resolved) = native.apply(update) {
+                                    // One source-change revision covers replicated-world and
+                                    // native-state edges alike: the export fires on its own,
+                                    // and position provenance stays untouched.
+                                    session.note_native_state_change(observed_at_unix_ms);
+                                    feed.push_native(
+                                        crate::wrath_native::WrathNativeFeedEvent::Cast(resolved),
+                                    );
+                                }
                             }
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
@@ -4947,6 +5045,7 @@ pub fn run_session_with_cancel(
             Err(e) => return Err(e),
         }
         if logged_out {
+            native.invalidate_scope();
             session.finish_session();
             feed.push_event(WrathFeedEvent::Phase(session.phase()));
             publisher.retire_all();
@@ -4967,6 +5066,7 @@ pub fn run_session_with_cancel(
                 }
             }
             publisher.retire_all();
+            native.invalidate_scope();
             anyhow::bail!(
                 "world server made no response for {} s",
                 SERVER_RESPONSE_TIMEOUT.as_secs()
@@ -4974,7 +5074,10 @@ pub fn run_session_with_cancel(
         }
         for event in session.take_lifecycle() {
             // The same lifecycle policy as the renderless driver: retire the old scope and order
-            // the replacement after that worker stops, without blocking the packet loop.
+            // the replacement after that worker stops, without blocking the packet loop. Native
+            // authority state from the retired world scope is dropped before the replacement
+            // can export it.
+            native.invalidate_scope();
             replace_publisher(
                 publisher_config.as_ref(),
                 &mut publisher.publisher,
@@ -5006,6 +5109,7 @@ pub fn run_session_with_cancel(
         let outcome = publisher.as_mut().map(|publisher| {
             let mut adapter = Adapter {
                 session: &mut session,
+                native: &native,
             };
             pump_once(publisher, &mut adapter, now_ms(), started.elapsed().as_millis() as u64)
         });
