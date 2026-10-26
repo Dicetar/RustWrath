@@ -804,6 +804,8 @@ pub struct WrathWorldView {
     pub last_cast_end: Option<crate::wrath_native::WrathCastEnded>,
     /// The last native inventory failure with identities/tail; transient display state.
     pub last_inventory_failure: Option<crate::wrath_native::WrathInventoryFailure>,
+    /// Stable per-attempt native handle source. Independent of wire `cast_count`.
+    pub next_cast_serial: u64,
     /// Monotonic cast count for `CMSG_CAST_SPELL`.
     pub next_cast_count: u8,
 }
@@ -829,6 +831,7 @@ impl Default for WrathWorldView {
             channels: BTreeMap::new(),
             last_cast_end: None,
             last_inventory_failure: None,
+            next_cast_serial: 1,
             next_cast_count: 1,
             empty: (),
         }

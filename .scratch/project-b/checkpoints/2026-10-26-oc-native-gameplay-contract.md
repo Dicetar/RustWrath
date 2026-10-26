@@ -71,24 +71,28 @@ Read methods on `WrathWorldView`:
 
 Bevy messages (registered by `WrathNetPlugin`):
 
-- `MessageReader<WrathCastEvent>`: `scope`, `identity: Option<WrathCastIdentity>`, `target`,
-  `target_context`, `observed_at_unix_ms`, `kind` (`Started`, `Delayed`, `Launched`, `Failed`,
-  `Interrupted`, `ChannelStarted`, `ChannelUpdated`, `ChannelEnded`, `ScopeInvalidated`).
+- `MessageReader<WrathCastEvent>`: `scope`, `attempt_serial`, `identity`, `target`,
+  `targets: Option<SpellTargets>` (the complete START block: unit/gameobject/item/source/dest,
+  transport and string all retained), `observed_at_unix_ms`, `ui_now_seconds`, and `kind`
+  (`Started`, `Delayed`, `Launched`, `Failed`, `Interrupted`, `ChannelStarted`,
+  `ChannelUpdated`, `ChannelEnded`, `ScopeInvalidated`).
 - `MessageReader<WrathItemText>`: `scope`, `item_guid`, `has_text`, `text`.
 
 Semantics that must not be invented in the UI:
 
-- `cast_count` is 12340's attempt identity; `cast_item` is the item provenance from START/GO.
+- `attempt_serial` is this native model's stable per-attempt handle. It is not the wire
+  `cast_count` and not a client-global line id; use it to pair one attempt's edges. `cast_count`
+  remains the wire identity, and `cast_item` is the item provenance from START/GO.
 - `start_remaining_ms` is START's `m_timer` (time left at packet write), not total cast time.
 - `observed_at_unix_ms` is packet-arrival wall time; `server_time_ms` on `Launched` is the 12340
   game-time timestamp on GO. They are different clocks.
 - `ui_now_seconds` is the app `GetTime()` value at the drain instant. With the spell catalog's
   total cast time, a UI can derive `start = ui_now - (total - start_remaining_ms)/1000`; this is
   the only supported clock anchor. Neither wall time nor the wire timestamp is a `GetTime` value.
-- `interruptible` is `None`: the wire does not establish it. Rank/display and the “not
-  interruptible” bit require the spell catalog.
-- `target_context` distinguishes unit/game-object/item/source/destination; it does not collapse a
-  point cast into “no target”.
+- `interruptible` is `None`: the wire does not establish it. Rank/display and the "not
+  interruptible" bit require the spell catalog.
+- `targets` carries the whole parsed target block; the scalar `target` is only the unit
+  convenience field. A unit+destination or source+destination cast keeps every field.
 - `cancel_requested` records a local cancel command, not a terminal result.
 - A native cast without a matching START/GO identity is a wire-only observation; no cast id or
   start timestamp is synthesized.
