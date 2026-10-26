@@ -150,18 +150,16 @@ pub(crate) enum ThreadStatus {
 pub(crate) struct ThreadObj {
     context: Option<ThreadContext>,
     entry: Value,
-    env: TableRef,
     status: ThreadStatus,
 }
 
 impl ThreadObj {
     pub(crate) fn dead() -> Self {
-        Self { context: None, entry: Value::Nil, env: TableRef(0), status: ThreadStatus::Dead }
+        Self { context: None, entry: Value::Nil, status: ThreadStatus::Dead }
     }
 
     pub(crate) fn roots(&self, values: &mut Vec<Value>, upvalues: &mut Vec<u32>) {
         values.push(self.entry);
-        values.push(Value::Table(self.env));
         if let Some(context) = &self.context {
             values.extend_from_slice(&context.stack[..context.top]);
             values.push(Value::Table(context.globals));

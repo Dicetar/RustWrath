@@ -21,7 +21,6 @@ impl Vm {
         };
         self.heap.new_thread(ThreadObj {
             entry,
-            env: self.globals,
             status: ThreadStatus::Fresh,
             context: Some(ThreadContext {
                 stack: vec![Value::Nil; BASIC_STACK_SIZE], top: 0,
@@ -88,7 +87,7 @@ impl Vm {
         let parent = previous.unwrap_or_else(|| {
             if let Some(main) = self.main_thread { return main; }
             let main = self.heap.new_thread(ThreadObj {
-                context: None, entry: Value::Nil, env: self.globals, status: ThreadStatus::Running,
+                context: None, entry: Value::Nil, status: ThreadStatus::Running,
             });
             self.main_thread = Some(main);
             main
