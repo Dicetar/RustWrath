@@ -11,6 +11,14 @@ use crate::widget::{FrameHandle, RegionKind};
 
 use super::{decode_id, draw_layer_from_str, frame_handle_of, publish_global};
 
+fn script_kind(lua: &Lua, name: &str) -> Option<&'static str> {
+    let extra: &[&'static str] = if lua.app_data_ref::<Model>().expect("model").target
+        == crate::script::UiTarget::Wrath335 {
+        &["OnTooltipSetItem", "OnTooltipSetSpell"]
+    } else { &[] };
+    SCRIPT_KINDS.iter().chain(extra).copied().find(|kind| kind.eq_ignore_ascii_case(name))
+}
+
 /// Append `h` to `event`'s listener list unless it is there (`0x7021a8` → `0x702264`): the walk
 /// (`0x703e50`) follows registration order, and a re-register keeps its place and never fires twice.
 fn register(model: &mut Model, h: FrameHandle, event: &'static str) {
@@ -109,8 +117,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     )?;
     if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
         m.set("HookScript", lua.create_function(|lua, (this, name, hook): (Table, String, Function)| {
-            let kind = SCRIPT_KINDS.iter().copied()
-                .find(|kind| kind.eq_ignore_ascii_case(&name))
+            let kind = script_kind(lua, &name)
                 .ok_or_else(|| mlua::Error::runtime(format!("HookScript: unsupported script '{name}'")))?;
             let h = frame_handle_of(lua, &this)?;
             let id = lua.app_data_mut::<Model>().expect("model").frame_id(h);
@@ -133,9 +140,9 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // reference's tables are per widget type (base `0x76a0d0`; a plain Frame has no `OnClick`).
     m.set(
         "HasScript",
-        lua.create_function(|_, (_this, name): (Table, String)| {
+        lua.create_function(|lua, (_this, name): (Table, String)| {
             Ok(crate::script::binding_abi::flag(
-                SCRIPT_KINDS.iter().any(|k| k.eq_ignore_ascii_case(&name)),
+                script_kind(lua, &name).is_some(),
             ))
         })?,
     )?;
@@ -258,10 +265,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
 /// ([`super::super::movieframe`]) is the one thing that fires them. `OnAttributeChanged` is 2.0's,
 /// with no 1.12 slot.
 fn set_script(lua: &Lua, this: &Table, name: &str, func: Option<Function>) -> mlua::Result<()> {
-    let kind = SCRIPT_KINDS
-        .iter()
-        .copied()
-        .find(|&k| k.eq_ignore_ascii_case(name))
+    let kind = script_kind(lua, name)
         .ok_or_else(|| mlua::Error::runtime(format!("SetScript: unsupported script '{name}'")))?;
     let h = frame_handle_of(lua, this)?;
     let id = lua.app_data_mut::<Model>().expect("model").frame_id(h);
@@ -314,11 +318,7 @@ fn set_script(lua: &Lua, this: &Table, name: &str, func: Option<Function>) -> ml
 }
 
 fn get_script(lua: &Lua, this: &Table, name: &str) -> mlua::Result<Value> {
-    let kind = match SCRIPT_KINDS
-        .iter()
-        .copied()
-        .find(|&k| k.eq_ignore_ascii_case(name))
-    {
+    let kind = match script_kind(lua, name) {
         Some(k) => k,
         None => return Ok(Value::Nil),
     };

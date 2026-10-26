@@ -32,6 +32,8 @@ use crate::widget::FrameHandle;
 #[derive(Clone, Default)]
 pub(crate) struct ItemBuild {
     pub(in crate::script) item_id: u32,
+    /// Exact link from the source; never reconstruct random properties or enchant fields.
+    pub(in crate::script) source_link: Option<String>,
     pub(in crate::script) flags: BuilderFlags,
     /// The item object's or block's fields; `None` for a template source.
     pub(in crate::script) inst: Option<ItemInstance>,
@@ -326,6 +328,9 @@ pub(in crate::script) fn build_item(
         }
     }
     show_or_hide_empty(lua, h);
+    if lua.app_data_ref::<Model>().expect("model").item_builds.contains_key(&h) {
+        crate::script::tooltip::fire_content(lua, h, "OnTooltipSetItem");
+    }
     Ok(live)
 }
 

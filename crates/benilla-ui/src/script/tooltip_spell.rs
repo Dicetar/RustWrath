@@ -715,7 +715,9 @@ fn fill_spell(
     fallback_name: Option<String>,
     opts: SpellRenderOpts,
 ) -> mlua::Result<bool> {
-    let live = match spell_view_of(lua, spell_id, opts.alt_caster) {
+    let view = spell_view_of(lua, spell_id, opts.alt_caster);
+    let resolved = view.is_some();
+    let live = match view {
         Some(v) => render_spell(lua, this, &v, opts, None)?,
         None => {
             if let Some(name) = fallback_name.clone() {
@@ -727,6 +729,9 @@ fn fill_spell(
         }
     };
     super::tooltip::show_or_hide_empty(lua, h);
+    if resolved {
+        super::tooltip::fire_content(lua, h, "OnTooltipSetSpell");
+    }
     Ok(live)
 }
 
@@ -775,6 +780,19 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             Ok(flag(set_spell_flagged(lua, &this, spell_id, name, opts)?))
         })?,
     )?;
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        m.set("SetSpellBookItem", m.get::<mlua::Function>("SetSpell")?)?;
+        m.set("SetSpellByID", lua.create_function(|lua, (this, id): (Table, Value)| {
+            let id = lua.coerce_number(id)?.filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))
+                .ok_or_else(|| mlua::Error::runtime("Usage: GameTooltip:SetSpellByID(spellID)"))? as u32;
+            let name = {
+                let model = lua.app_data_ref::<Model>().expect("model");
+                model.spellbook.slots.iter().chain(&model.pet_book.slots)
+                    .find(|slot| slot.spell_id == id).map(|slot| slot.name.clone())
+            };
+            set_spell_by_id(lua, &this, id, name, SpellRenderOpts::default())
+        })?)?;
+    }
     // GameTooltip:SetShapeshift(index): the stance-bar hover, the form's spell tooltip. It answers
     // the builder's return value, 1 or nil, with a cooldown running (`0x532a89`).
     m.set(

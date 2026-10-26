@@ -346,6 +346,16 @@ fn set_quest_item_view(
 
 /// Register the item content channels into the GameTooltip kind method table.
 pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        m.set("GetItem", lua.create_function(|lua, this: Table| {
+            let h = frame_handle_of(lua, &this)?;
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let Some(build) = model.item_builds.get(&h) else { return Ok((None::<String>, None::<String>)) };
+            let name = model.item_templates.get(&build.item_id).map(|view| view.name.clone())
+                .or_else(|| build.source_link.as_deref().and_then(link_name).map(str::to_owned));
+            Ok((name, build.source_link.clone()))
+        })?)?;
+    }
     // GameTooltip:SetQuestItem(type, index) / SetQuestLogItem(type, index) (`0x533610`,
     // `0x533760`; `QuestFrameTemplates.xml:148`, `QuestLogFrame.xml:113`), no returns. `type` is
     // `GetQuestItemInfo`'s; an unknown type or index leaves the tooltip empty, as in the reference.
@@ -443,6 +453,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 ItemBuild {
                     inst: Some(inst),
                     in_flight,
+                    source_link: Some(link),
                     ..ItemBuild::new(id)
                 },
             )?;
@@ -575,6 +586,8 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 // The merchant prices an object the player holds at slot index 23 or more
                 // (`0x52e40f`): the vault, the bank bags and the keyring, never a worn item.
                 let sold = (inst.object && inst.guid != 0 && slot0 >= 23).then_some(count);
+                let source_link = lua.app_data_ref::<Model>().expect("model").inv_slot(&unit, slot)
+                    .and_then(|view| view.link.clone());
                 let live = build_item(
                     lua,
                     &this,
@@ -584,6 +597,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                         inst: Some(inst),
                         in_flight,
                         sell_count: sold,
+                        source_link,
                         ..ItemBuild::new(item_id)
                     },
                 )?;
@@ -675,6 +689,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     inst: Some(inst),
                     in_flight,
                     sell_count: Some(count),
+                    source_link: link,
                     ..ItemBuild::new(item_id)
                 },
             )?;

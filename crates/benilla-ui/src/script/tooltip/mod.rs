@@ -250,6 +250,17 @@ pub(super) fn fire_cleared(lua: &Lua, h: FrameHandle) {
     }
 }
 
+pub(super) fn fire_content(lua: &Lua, h: FrameHandle, script: &str) {
+    let id = {
+        let mut model = lua.app_data_mut::<Model>().expect("model");
+        if model.target != super::UiTarget::Wrath335 { return; }
+        model.frame_id(h)
+    };
+    if let Err(error) = event::fire_widget_handler(lua, id, script, Vec::new()) {
+        lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+    }
+}
+
 /// A content `Set*`'s tail: the builders' show, the shown bit and the show slot (`0x52a711`/
 /// `0x52a71b`, `0x52e14e`), whose override restores full alpha and disarms a fade, or, for a plate
 /// with no owner or no lines, hides and un-owns it (`0x530aba`). An item builder whose template is
