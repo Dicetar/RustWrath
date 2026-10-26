@@ -62,5 +62,8 @@ tiny_y=[] tiny_tris=[]
   path in the same run (base exits before world attach), so the reproducer as run is: wm-hd
   profile + `water-noon` capture.
 
-Action status: BROKEN (graphical capture path), evidence above. Native WM client-observation work,
-builds and focused tests are unaffected by this panic.
+Action status: REPAIRED at the mechanism (`a8a51af9`). `third_party/parry3d` vendors 0.26.1 with
+`rebuild_range_binned`'s bin index clamped (`third_party/parry3d/BENILLA.md`). Verified with a
+standalone reproducer outside the repo: the registry crate panics on two valid nearly coincident
+flat triangles at exactly this panic site; the patched crate builds the same 66-triangle mesh.
+The graphical capture itself (terrain spawn, route) still needs its own authorized run.
