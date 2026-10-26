@@ -3176,7 +3176,7 @@ fn wrath_net_drain(
     mut item_text_events: MessageWriter<crate::wrath_native::WrathItemText>,
     clock: Option<Res<crate::ui_script::UiClock>>,
 ) {
-    let ui_now_seconds = clock.as_ref().map_or(0.0, |clock| clock.ui_now);
+    let ui_now_seconds = clock.as_ref().map(|clock| clock.ui_now);
     let native = control
         .feed
         .as_ref()
@@ -3369,10 +3369,51 @@ fn wrath_net_drain(
                     if let Some(mut event) =
                         crate::wrath_native::apply_update(&mut *view, update)
                     {
+                        let started = matches!(
+                            &event.kind,
+                            crate::wrath_native::WrathCastEventKind::Started { .. }
+                                | crate::wrath_native::WrathCastEventKind::ChannelStarted { .. }
+                        );
+                        let cast_edge = matches!(
+                            &event.kind,
+                            crate::wrath_native::WrathCastEventKind::Started { .. }
+                                | crate::wrath_native::WrathCastEventKind::Delayed { .. }
+                                | crate::wrath_native::WrathCastEventKind::Launched { .. }
+                                | crate::wrath_native::WrathCastEventKind::Failed { .. }
+                                | crate::wrath_native::WrathCastEventKind::Interrupted { .. }
+                        );
+                        let channel_edge = matches!(
+                            &event.kind,
+                            crate::wrath_native::WrathCastEventKind::ChannelStarted { .. }
+                                | crate::wrath_native::WrathCastEventKind::ChannelUpdated { .. }
+                                | crate::wrath_native::WrathCastEventKind::ChannelEnded
+                        );
+                        if started {
+                            event.start_ui_now_seconds = ui_now_seconds;
+                        }
                         event.ui_now_seconds = ui_now_seconds;
                         if let Some(identity) = event.identity {
-                            if let Some(cast) = view.casts.get_mut(&identity.caster) {
-                                cast.ui_now_seconds = ui_now_seconds;
+                            if cast_edge {
+                                if let Some(cast) = view.casts.get_mut(&identity.caster) {
+                                    if matches!(
+                                        &event.kind,
+                                        crate::wrath_native::WrathCastEventKind::Started { .. }
+                                    ) {
+                                        cast.start_ui_now_seconds = ui_now_seconds;
+                                    }
+                                    cast.last_update_ui_now_seconds = ui_now_seconds;
+                                }
+                            }
+                            if channel_edge {
+                                if let Some(channel) = view.channels.get_mut(&identity.caster) {
+                                    if matches!(
+                                        &event.kind,
+                                        crate::wrath_native::WrathCastEventKind::ChannelStarted { .. }
+                                    ) {
+                                        channel.start_ui_now_seconds = ui_now_seconds;
+                                    }
+                                    channel.last_update_ui_now_seconds = ui_now_seconds;
+                                }
                             }
                         }
                         cast_events.write(event);

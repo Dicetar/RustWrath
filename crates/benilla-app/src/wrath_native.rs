@@ -76,9 +76,11 @@ pub struct WrathActiveCast {
     pub ammo_display_id: Option<u32>,
     /// Producer packet-arrival wall clock in ms since the Unix epoch.
     pub observed_at_unix_ms: i64,
-    /// `GetTime()` seconds when the app drained the START/update. This is the UI clock anchor;
-    /// it is distinct from `observed_at_unix_ms`.
-    pub ui_now_seconds: f64,
+    /// `GetTime()` seconds when the app drained the START. This is the cast's timeline origin;
+    /// it is not updated by later pushback/channel edges. `None` when no UI clock existed.
+    pub start_ui_now_seconds: Option<f64>,
+    /// `GetTime()` seconds of the latest resolved edge; updates on pushback, not the origin.
+    pub last_update_ui_now_seconds: Option<f64>,
     /// Accumulated `SMSG_SPELL_DELAYED` pushback observed for this cast.
     pub pushback_ms: u32,
     /// 12340's GO game-time timestamp, only once the launch edge arrived.
@@ -135,7 +137,7 @@ impl WrathNativeFeedEvent {
 }
 
 /// One active channel, keyed by caster.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WrathActiveChannel {
     pub scope: WrathScope,
     pub caster: u64,
@@ -144,6 +146,10 @@ pub struct WrathActiveChannel {
     pub remaining_ms: u32,
     pub observed_at_unix_ms: i64,
     pub updated_at_unix_ms: i64,
+    /// `GetTime()` seconds when START was drained; survives later updates for UI reload.
+    pub start_ui_now_seconds: Option<f64>,
+    /// `GetTime()` seconds of the latest channel update.
+    pub last_update_ui_now_seconds: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,6 +168,7 @@ pub struct WrathCastEnded {
     pub identity: WrathCastIdentity,
     pub target: Option<u64>,
     pub targets: Option<SpellTargets>,
+    pub start_ui_now_seconds: Option<f64>,
     pub ended_at_unix_ms: i64,
     pub outcome: WrathCastEnd,
 }
@@ -246,8 +253,11 @@ pub struct WrathCastEvent {
     /// The full START target block where one is available; channel/scope edges carry `None`.
     pub targets: Option<SpellTargets>,
     pub observed_at_unix_ms: i64,
-    /// `GetTime()` seconds when the app drained the edge; 0.0 if no UI clock was available.
-    pub ui_now_seconds: f64,
+    /// `GetTime()` seconds when the attempt's START was drained; `None` if unavailable.
+    pub start_ui_now_seconds: Option<f64>,
+    /// `GetTime()` seconds when this edge was drained; `None` if unavailable. Delayed/terminal
+    /// edges carry both the start and this edge clock, so pushback never rewrites the origin.
+    pub ui_now_seconds: Option<f64>,
     pub kind: WrathCastEventKind,
 }
 
@@ -352,7 +362,8 @@ pub(crate) fn apply_update(
                     cast_flags,
                     ammo_display_id,
                     observed_at_unix_ms,
-                    ui_now_seconds: 0.0,
+                    start_ui_now_seconds: None,
+                    last_update_ui_now_seconds: None,
                     pushback_ms: 0,
                     go_server_time_ms: None,
                     cancel_requested: false,
@@ -366,7 +377,8 @@ pub(crate) fn apply_update(
                 target,
                 targets: Some(targets),
                 observed_at_unix_ms,
-                ui_now_seconds: 0.0,
+                start_ui_now_seconds: None,
+                ui_now_seconds: None,
                 kind: WrathCastEventKind::Started { remaining_ms },
             })
         }
@@ -385,7 +397,8 @@ pub(crate) fn apply_update(
                     target: cast.target,
                     targets: Some(cast.targets.clone()),
                     observed_at_unix_ms,
-                    ui_now_seconds: 0.0,
+                    start_ui_now_seconds: cast.start_ui_now_seconds,
+                    ui_now_seconds: None,
                     kind: WrathCastEventKind::Delayed {
                         delay_ms,
                         accumulated_ms: cast.pushback_ms,
@@ -406,12 +419,13 @@ pub(crate) fn apply_update(
             observed_at_unix_ms,
         } => {
             let ended = take_matching_cast(&mut *view, caster, spell_id, cast_count);
-            let (identity, target, targets, attempt_serial) = match ended {
+            let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended {
                 Some(cast) => (
                     cast.identity,
                     cast.target,
                     Some(cast.targets),
                     Some(cast.attempt_serial),
+                    cast.start_ui_now_seconds,
                 ),
                 None => (
                     WrathCastIdentity {
@@ -423,6 +437,7 @@ pub(crate) fn apply_update(
                     None,
                     None,
                     None,
+                    None,
                 ),
             };
             view.last_cast_end = Some(WrathCastEnded {
@@ -431,6 +446,7 @@ pub(crate) fn apply_update(
                 identity,
                 target,
                 targets: targets.clone(),
+                start_ui_now_seconds,
                 ended_at_unix_ms: observed_at_unix_ms,
                 outcome: WrathCastEnd::Launched,
             });
@@ -441,7 +457,8 @@ pub(crate) fn apply_update(
                 target,
                 targets,
                 observed_at_unix_ms,
-                ui_now_seconds: 0.0,
+                start_ui_now_seconds,
+                ui_now_seconds: None,
                 kind: WrathCastEventKind::Launched { server_time_ms },
             })
         }
@@ -455,12 +472,13 @@ pub(crate) fn apply_update(
         } => {
             let caster = if caster == 0 { view.player_guid } else { caster };
             let ended = take_matching_cast(&mut *view, caster, spell_id, cast_count);
-            let (identity, target, targets, attempt_serial) = match ended {
+            let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended {
                 Some(cast) => (
                     cast.identity,
                     cast.target,
                     Some(cast.targets),
                     Some(cast.attempt_serial),
+                    cast.start_ui_now_seconds,
                 ),
                 None => (
                     WrathCastIdentity {
@@ -472,6 +490,7 @@ pub(crate) fn apply_update(
                     None,
                     None,
                     None,
+                    None,
                 ),
             };
             view.last_cast_end = Some(WrathCastEnded {
@@ -480,6 +499,7 @@ pub(crate) fn apply_update(
                 identity,
                 target,
                 targets: targets.clone(),
+                start_ui_now_seconds,
                 ended_at_unix_ms: observed_at_unix_ms,
                 outcome: WrathCastEnd::Failed,
             });
@@ -490,7 +510,8 @@ pub(crate) fn apply_update(
                 target,
                 targets,
                 observed_at_unix_ms,
-                ui_now_seconds: 0.0,
+                start_ui_now_seconds,
+                ui_now_seconds: None,
                 kind: WrathCastEventKind::Failed { reason },
             })
         }
@@ -503,12 +524,13 @@ pub(crate) fn apply_update(
             observed_at_unix_ms,
         } => {
             let ended = take_matching_cast(&mut *view, caster, spell_id, cast_count);
-            let (identity, target, targets, attempt_serial) = match ended {
+            let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended {
                 Some(cast) => (
                     cast.identity,
                     cast.target,
                     Some(cast.targets),
                     Some(cast.attempt_serial),
+                    cast.start_ui_now_seconds,
                 ),
                 None => (
                     WrathCastIdentity {
@@ -520,6 +542,7 @@ pub(crate) fn apply_update(
                     None,
                     None,
                     None,
+                    None,
                 ),
             };
             view.last_cast_end = Some(WrathCastEnded {
@@ -528,6 +551,7 @@ pub(crate) fn apply_update(
                 identity,
                 target,
                 targets: targets.clone(),
+                start_ui_now_seconds,
                 ended_at_unix_ms: observed_at_unix_ms,
                 outcome: WrathCastEnd::Interrupted,
             });
@@ -538,7 +562,8 @@ pub(crate) fn apply_update(
                 target,
                 targets,
                 observed_at_unix_ms,
-                ui_now_seconds: 0.0,
+                start_ui_now_seconds,
+                ui_now_seconds: None,
                 kind: WrathCastEventKind::Interrupted { reason },
             })
         }
@@ -559,6 +584,8 @@ pub(crate) fn apply_update(
                     remaining_ms: duration_ms,
                     observed_at_unix_ms,
                     updated_at_unix_ms: observed_at_unix_ms,
+                    start_ui_now_seconds: None,
+                    last_update_ui_now_seconds: None,
                 },
             );
             Some(WrathCastEvent {
@@ -573,7 +600,8 @@ pub(crate) fn apply_update(
                 target: None,
                 targets: None,
                 observed_at_unix_ms,
-                ui_now_seconds: 0.0,
+                start_ui_now_seconds: None,
+                ui_now_seconds: None,
                 kind: WrathCastEventKind::ChannelStarted { duration_ms },
             })
         }
@@ -604,7 +632,8 @@ pub(crate) fn apply_update(
                 target: None,
                 targets: None,
                 observed_at_unix_ms,
-                ui_now_seconds: 0.0,
+                start_ui_now_seconds: channel.start_ui_now_seconds,
+                ui_now_seconds: None,
                 kind: if remaining_ms == 0 {
                     WrathCastEventKind::ChannelEnded
                 } else {
@@ -621,7 +650,7 @@ pub(crate) fn invalidate_scope(
     view: &mut crate::wrath::WrathWorldView,
     reason: WrathScopeLoss,
     observed_at_unix_ms: i64,
-    ui_now_seconds: f64,
+    ui_now_seconds: Option<f64>,
 ) -> Vec<WrathCastEvent> {
     let mut events = Vec::new();
     for (_, cast) in std::mem::take(&mut view.casts) {
@@ -631,6 +660,7 @@ pub(crate) fn invalidate_scope(
             identity: cast.identity,
             target: cast.target,
             targets: Some(cast.targets.clone()),
+            start_ui_now_seconds: cast.start_ui_now_seconds,
             ended_at_unix_ms: observed_at_unix_ms,
             outcome: WrathCastEnd::ScopeLost,
         });
@@ -641,6 +671,7 @@ pub(crate) fn invalidate_scope(
             target: cast.target,
             targets: Some(cast.targets),
             observed_at_unix_ms,
+            start_ui_now_seconds: cast.start_ui_now_seconds,
             ui_now_seconds,
             kind: WrathCastEventKind::ScopeInvalidated { reason },
         });
@@ -658,6 +689,7 @@ pub(crate) fn invalidate_scope(
             target: None,
             targets: None,
             observed_at_unix_ms,
+            start_ui_now_seconds: channel.start_ui_now_seconds,
             ui_now_seconds,
             kind: WrathCastEventKind::ScopeInvalidated { reason },
         });

@@ -73,9 +73,9 @@ Bevy messages (registered by `WrathNetPlugin`):
 
 - `MessageReader<WrathCastEvent>`: `scope`, `attempt_serial`, `identity`, `target`,
   `targets: Option<SpellTargets>` (the complete START block: unit/gameobject/item/source/dest,
-  transport and string all retained), `observed_at_unix_ms`, `ui_now_seconds`, and `kind`
-  (`Started`, `Delayed`, `Launched`, `Failed`, `Interrupted`, `ChannelStarted`,
-  `ChannelUpdated`, `ChannelEnded`, `ScopeInvalidated`).
+  transport and string all retained), `observed_at_unix_ms`, `start_ui_now_seconds`,
+  `ui_now_seconds`, and `kind` (`Started`, `Delayed`, `Launched`, `Failed`, `Interrupted`,
+  `ChannelStarted`, `ChannelUpdated`, `ChannelEnded`, `ScopeInvalidated`).
 - `MessageReader<WrathItemText>`: `scope`, `item_guid`, `has_text`, `text`.
 
 Semantics that must not be invented in the UI:
@@ -86,9 +86,13 @@ Semantics that must not be invented in the UI:
 - `start_remaining_ms` is START's `m_timer` (time left at packet write), not total cast time.
 - `observed_at_unix_ms` is packet-arrival wall time; `server_time_ms` on `Launched` is the 12340
   game-time timestamp on GO. They are different clocks.
-- `ui_now_seconds` is the app `GetTime()` value at the drain instant. With the spell catalog's
-  total cast time, a UI can derive `start = ui_now - (total - start_remaining_ms)/1000`; this is
-  the only supported clock anchor. Neither wall time nor the wire timestamp is a `GetTime` value.
+- `ui_now_seconds` is the app `GetTime()` value when this specific edge was drained; it is
+  `None` when no UI clock was available, so a valid zero is never confused with unavailable.
+- `start_ui_now_seconds` is the origin captured on START and never rewritten by pushback. Use it,
+  not the delayed edge clock, in `start = start_ui_now_seconds - (total - start_remaining_ms)/1000`;
+  the total comes from the spell catalog. Channel snapshots keep the same start anchor plus the
+  latest update anchor, and their START/UPDATE/END events carry both. Neither wall time nor the
+  wire timestamp is a `GetTime` value.
 - `interruptible` is `None`: the wire does not establish it. Rank/display and the "not
   interruptible" bit require the spell catalog.
 - `targets` carries the whole parsed target block; the scalar `target` is only the unit
