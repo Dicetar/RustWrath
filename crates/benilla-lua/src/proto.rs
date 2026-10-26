@@ -141,12 +141,15 @@ pub enum Op {
     ForLoop(Reg, i32),
     /// `ForLoop` whose step the compiler knows is a positive constant: the test is `<=`.
     ForLoopUp(Reg, i32),
+    ForPrep51(Reg, i32),
+    ForLoop51(Reg, i32),
     /// 5.0's `TFORPREP`: a table generator becomes `next` over it; then the jump.
     TForPrep(Reg, i32),
     /// The client's `TFORLOOP` (`0x6f933b`): `R(a)(R(a+1), R(a+2))`, called from above the `b`
     /// variables, into the variables from `R(a+2)`, the first of them the control; when it is
     /// nil the next instruction, the jump back to the body, is skipped.
     TForLoop(Reg, u8),
+    TForLoop51(Reg, u8),
     /// 5.0's `SETLIST`: `R(a)[base + i] = R(a + i)` for `i` from `n` down to 1, each by
     /// `luaH_setnum` (`0x6f95b1`), the array part as it is.
     SetList(Reg, u32, u16),
@@ -618,6 +621,8 @@ impl Proto {
                     reg(x as usize + 2);
                     to(0, off);
                 }
+                Op::ForPrep51(x, off) => { reg(x as usize + 2); to(0, off); }
+                Op::ForLoop51(x, off) => { reg(x as usize + 3); to(0, off); }
                 Op::TForPrep(x, off) => {
                     reg(x as usize + 2);
                     to(0, off);
@@ -628,6 +633,12 @@ impl Proto {
                     let nb = nb as usize;
                     reg(x as usize + 1 + nb + nb.max(3));
                     to(1, 0);
+                }
+                Op::TForLoop51(x, nb) => {
+                    if nb == 0 { fail(pc, "generic for without variables"); }
+                    reg(x as usize + 2 + (nb as usize).max(3));
+                    to(1, 0);
+                    if !matches!(self.code.get(pc + 1), Some(Op::Jmp(_))) { fail(pc, "generic for missing its back jump"); }
                 }
                 Op::SetList(x, _, cnt) => reg(x as usize + cnt as usize),
                 Op::Closure(x, i) => {

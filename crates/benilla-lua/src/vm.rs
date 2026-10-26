@@ -3356,6 +3356,42 @@ impl Vm {
                             jump!(off);
                         }
                     }
+                    Op::ForPrep51(a, off) => {
+                        for (offset, label) in ["initial value", "limit", "step"].iter().enumerate() {
+                            let register = a as usize + offset;
+                            let number = self.tonumber(r!(register)).ok_or_else(|| self.rt_error(&format!("'for' {label} must be a number")))?;
+                            r!(register) = Value::Num(number);
+                        }
+                        r!(a) = Value::Num(r!(a).as_num().unwrap_or(f64::NAN) - r!(a + 2).as_num().unwrap_or(f64::NAN));
+                        jump!(off);
+                    }
+                    Op::ForLoop51(a, off) => {
+                        let step = r!(a + 2).as_num().unwrap_or(f64::NAN);
+                        let index = r!(a).as_num().unwrap_or(f64::NAN) + step;
+                        let limit = r!(a + 1).as_num().unwrap_or(f64::NAN);
+                        if if step > 0.0 { index <= limit } else { limit <= index } {
+                            r!(a) = Value::Num(index);
+                            r!(a + 3) = Value::Num(index);
+                            jump!(off);
+                        }
+                    }
+                    Op::TForLoop51(a, nvar) => {
+                        let call = a as usize + 3;
+                        r!(call + 2) = r!(a + 2);
+                        r!(call + 1) = r!(a + 1);
+                        r!(call) = r!(a);
+                        self.top = base!() + call + 3;
+                        let call_at = base!() + call;
+                        slow!(self.call_at(call_at, 2, nvar as i32))?;
+                        self.top = base!() + maxstack!();
+                        if r!(call).is_nil() { skip!(1); }
+                        else {
+                            r!(a + 2) = r!(call);
+                            // SAFETY: verified TForLoop51 is followed by its back jump.
+                            let Op::Jmp(back) = (unsafe { *ip }) else { unreachable!() };
+                            jump!(1 + back);
+                        }
+                    }
                     // The client's `TFORPREP` (`0x6f94a2`): a table generator becomes the raw
                     // global `next` over it once, at loop entry. The C build's patch swaps at
                     // every `TFORLOOP` instead, so where the global `next` is a callable table
@@ -3621,6 +3657,9 @@ fn symbexec(p: &Proto, lastpc: usize, reg: usize) -> Option<usize> {
             Op::Call(a, ..) | Op::TailCall(a, ..) => reg >= a as usize,
             // The client's rule writes every register from `a` up (`0x6fc22c`).
             Op::TForLoop(a, _) => reg >= a as usize,
+            Op::TForLoop51(a, _) => reg >= a as usize + 2,
+            Op::ForPrep51(a, _) => (a as usize..=a as usize + 2).contains(&reg),
+            Op::ForLoop51(a, _) => reg == a as usize || reg == a as usize + 3,
             _ => false,
         };
         if hit {
@@ -3631,6 +3670,8 @@ fn symbexec(p: &Proto, lastpc: usize, reg: usize) -> Option<usize> {
             | Op::TForPrep(_, off)
             | Op::ForLoop(_, off)
             | Op::ForLoopUp(_, off)
+            | Op::ForPrep51(_, off)
+            | Op::ForLoop51(_, off)
             | Op::JmpIf(_, _, off)
             | Op::TestSet(_, _, _, off)
             | Op::JmpCmp(_, _, _, off)

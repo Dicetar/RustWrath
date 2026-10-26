@@ -55,6 +55,17 @@ pub fn fb2int(x: u32) -> u32 {
     (x & 7) << (x >> 3)
 }
 
+pub(crate) fn int2fb_51(mut value: u32) -> u32 {
+    let mut exponent = 0;
+    while value >= 16 { value = value.div_ceil(2); exponent += 1; }
+    if value < 8 { value } else { ((exponent + 1) << 3) | (value - 8) }
+}
+
+pub(crate) fn fb2int_51(value: u32) -> u32 {
+    let exponent = (value >> 3) & 31;
+    if exponent == 0 { value } else { ((value & 7) + 8) << (exponent - 1) }
+}
+
 /// 5.1's `expkind`, with each kind's `info` in it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Kind {
@@ -449,6 +460,8 @@ fn jump_of(op: &Op) -> Option<i32> {
         | Op::TestSet(_, _, _, o)
         | Op::ForLoop(_, o)
         | Op::ForLoopUp(_, o)
+        | Op::ForPrep51(_, o)
+        | Op::ForLoop51(_, o)
         | Op::TForPrep(_, o) => Some(o),
         _ => None,
     }
@@ -464,6 +477,8 @@ fn set_jump(op: &mut Op, off: i32) {
         | Op::TestSet(_, _, _, o)
         | Op::ForLoop(_, o)
         | Op::ForLoopUp(_, o)
+        | Op::ForPrep51(_, o)
+        | Op::ForLoop51(_, o)
         | Op::TForPrep(_, o) => *o = off,
         op => unreachable!("not a jump: {op:?}"),
     }
@@ -1433,7 +1448,8 @@ impl<'a> Parser<'a> {
     pub(crate) fn setlist(&mut self, base: Reg, nelems: u32, tostore: i32) -> R<()> {
         // The batch's base, as `OP_SETLIST` clears the low bits of `Bx = nelems - 1` (`0x6f9593`):
         // a word every 32 items, as the client's 5.0 emits them.
-        let first = (nelems - 1) / FIELDS_PER_FLUSH * FIELDS_PER_FLUSH;
+        let batch = self.fields_per_flush();
+        let first = (nelems - 1) / batch * batch;
         let op = if tostore < 0 {
             Op::SetListTop(base, first)
         } else {
@@ -1442,6 +1458,10 @@ impl<'a> Parser<'a> {
         self.code(op, 1)?;
         self.fs().freereg = base + 1;
         Ok(())
+    }
+
+    pub(crate) fn fields_per_flush(&self) -> u32 {
+        if self.lx.dialect.is_51() { 50 } else { FIELDS_PER_FLUSH }
     }
 
     // ── functions ────────────────────────────────────────────────────────────────────────────

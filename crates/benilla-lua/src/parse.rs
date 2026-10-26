@@ -330,8 +330,9 @@ impl<'a> Parser<'a> {
         if let Some(i) = fs.upvals.iter().position(|&u| u == key) {
             return Ok(Some(Kind::Upval(i as u16)));
         }
-        if fs.upvals.len() + 1 > MAXUPVALUES {
-            return Err(self.errorlimit(MAXUPVALUES, "upvalues"));
+        let limit = if self.lx.dialect.is_51() { 60 } else { MAXUPVALUES };
+        if fs.upvals.len() + 1 > limit {
+            return Err(self.errorlimit(limit, "upvalues"));
         }
         let decl = match k {
             Kind::Local(r) => self.fs[level - 1].local_decl(r),
@@ -445,8 +446,9 @@ impl<'a> Parser<'a> {
             }
         }
         self.adjustlocalvars(nparams);
-        if self.fsr().nactvar as usize > MAXPARAMS {
-            return Err(self.errorlimit(MAXPARAMS, "parameters"));
+        let limit = if self.lx.dialect.is_51() { MAXVARS } else { MAXPARAMS };
+        if self.fsr().nactvar as usize > limit {
+            return Err(self.errorlimit(limit, "parameters"));
         }
         self.fs().nparams = self.fsr().nactvar;
         if self.fsr().vararg {
@@ -661,6 +663,7 @@ impl<'a> Parser<'a> {
     /// `(for limit)` and `(for step)` (`0x6fe390`..`0x6fe3ac`); the step is taken off the start
     /// by a plain subtraction (`0x6fe42c`), and a jump enters the loop at its test.
     fn fornum(&mut self, varname: &[u8], line: u32) -> R<()> {
+        if self.lx.dialect.is_51() { return self.fornum_51(varname, line); }
         let base = self.fsr().freereg;
         self.new_localvar(varname, 0)?;
         self.new_localvar(b"(for limit)", 1)?;
@@ -689,6 +692,7 @@ impl<'a> Parser<'a> {
     /// of them the control the generator is passed. The values are adjusted to all of them
     /// (`0x6fe5db`), with room for the call above them (`0x6fe5e7`).
     fn forlist(&mut self, indexname: &[u8]) -> R<()> {
+        if self.lx.dialect.is_51() { return self.forlist_51(indexname); }
         let base = self.fsr().freereg;
         self.new_localvar(b"(for generator)", 0)?;
         self.new_localvar(b"(for state)", 1)?;
@@ -718,6 +722,67 @@ impl<'a> Parser<'a> {
         // jumps to the `TFORLOOP`.
         let prep = self.code(Op::TForPrep(base, NO_JUMP), 1)?;
         self.forbody(base, line, nvars, None, prep)
+    }
+
+    fn forbody_51(&mut self, base: Reg, line: u32, names: usize, numeric: bool) -> R<()> {
+        self.adjustlocalvars(3);
+        self.checknext(Tok::Do)?;
+        let prep = if numeric { self.code(Op::ForPrep51(base, NO_JUMP), 1)? } else { self.jump()? as usize };
+        self.enterblock(true);
+        self.enterblock(false);
+        self.adjustlocalvars(names);
+        self.reserveregs(names as u32)?;
+        self.block()?;
+        // User loop variables close before the next iteration; hidden controls stay live.
+        self.leaveblock()?;
+        self.patchtohere(prep as i32)?;
+        let test = if numeric { self.code(Op::ForLoop51(base, NO_JUMP), 1)? }
+            else { self.code(Op::TForLoop51(base, names as u8), 1)? };
+        self.fixline(line);
+        let back = if numeric { test as i32 } else { self.jump()? };
+        self.patchlist(back, prep + 1)?;
+        self.leaveblock()
+    }
+
+    fn fornum_51(&mut self, name: &[u8], line: u32) -> R<()> {
+        let base = self.fsr().freereg;
+        self.new_localvar(b"(for index)", 0)?;
+        self.new_localvar(b"(for limit)", 1)?;
+        self.new_localvar(b"(for step)", 2)?;
+        self.new_localvar(name, 3)?;
+        self.checknext(Tok::Char(b'='))?;
+        self.exp1()?;
+        self.checknext(Tok::Char(b','))?;
+        self.exp1()?;
+        if self.testnext(Tok::Char(b','))? { self.exp1()?; }
+        else {
+            let register = self.fsr().freereg;
+            let constant = self.number_k(1.0)?;
+            self.number_k50(1.0);
+            self.code(Op::LoadK(register, constant), 1)?;
+            self.reserveregs(1)?;
+        }
+        self.forbody_51(base, line, 1, true)
+    }
+
+    fn forlist_51(&mut self, first_name: &[u8]) -> R<()> {
+        let base = self.fsr().freereg;
+        self.new_localvar(b"(for generator)", 0)?;
+        self.new_localvar(b"(for state)", 1)?;
+        self.new_localvar(b"(for control)", 2)?;
+        self.new_localvar(first_name, 3)?;
+        let mut names = 1;
+        while self.testnext(Tok::Char(b','))? {
+            let name = self.str_checkname()?;
+            self.new_localvar(name, names + 3)?;
+            names += 1;
+        }
+        self.checknext(Tok::In)?;
+        let line = self.lx.line;
+        let (count, mut last) = self.explist1()?;
+        self.adjust_assign(3, count, &mut last)?;
+        self.checkstack(names.max(3) as u32)?;
+        self.forbody_51(base, line, names, false)
     }
 
     /// The client's `forstat` (`0x6fe300`): the loop's locals live in a block of their own,
@@ -992,7 +1057,7 @@ impl<'a> Parser<'a> {
         let mut key = if self.tok() == Tok::Name {
             // The 1.12 grammar's placement: only a `name = v` field counts toward the hash
             // size hint, as 5.0's `recfield` counted it.
-            cc.nh += 1;
+            if !self.lx.dialect.is_51() { cc.nh += 1; }
             let name = self.str_checkname()?;
             if let Some(p) = &cc.prefix {
                 let mut n = p.clone();
@@ -1009,6 +1074,7 @@ impl<'a> Parser<'a> {
         let mut val = self.expr()?;
         let rv = self.exp2rk(&mut val)?;
         self.code_settable(cc.t, rkkey, rv)?;
+        if self.lx.dialect.is_51() { cc.nh += 1; }
         self.fs().freereg = reg;
         Ok(())
     }
@@ -1019,7 +1085,7 @@ impl<'a> Parser<'a> {
         }
         self.exp2nextreg(&mut cc.v)?;
         cc.v.k = Kind::Void;
-        if cc.tostore == FIELDS_PER_FLUSH {
+        if cc.tostore == self.fields_per_flush() {
             self.setlist(cc.t, cc.na, cc.tostore as i32)?;
             cc.tostore = 0;
         }
@@ -1035,6 +1101,7 @@ impl<'a> Parser<'a> {
             // The call counts as one item toward the array hint, as 5.0's `lastlistfield` leaves
             // `na` (`0x6fd72b`).
             self.setlist(cc.t, cc.na, -1)?;
+            if self.lx.dialect.is_51() { cc.na -= 1; }
         } else {
             if cc.v.k != Kind::Void {
                 self.exp2nextreg(&mut cc.v)?;
@@ -1075,7 +1142,7 @@ impl<'a> Parser<'a> {
         };
         self.checknext(Tok::Char(b'{'))?;
         loop {
-            self.testnext(Tok::Char(b';'))?;
+            if !self.lx.dialect.is_51() { self.testnext(Tok::Char(b';'))?; }
             if self.tok() == Tok::Char(b'}') {
                 break;
             }
@@ -1099,11 +1166,11 @@ impl<'a> Parser<'a> {
         self.lastlistfield(&mut cc)?;
         // `OP_NEWTABLE`'s hints: the array size as a floating point byte (`0x6fd53c`), kept
         // decoded, and the hash part's log size, `luaO_log2(nh) + 1` (`0x6fd563`, `0x6fd568`).
-        self.fs().code[pc] = Op::NewTable(
-            treg,
-            crate::compile::fb2int(crate::compile::int2fb(cc.na)),
-            crate::table::lsize_for(cc.nh as usize),
-        );
+        let (array, hash) = if self.lx.dialect.is_51() {
+            (crate::compile::fb2int_51(crate::compile::int2fb_51(cc.na)),
+                crate::compile::fb2int_51(crate::compile::int2fb_51(cc.nh)))
+        } else { (crate::compile::fb2int(crate::compile::int2fb(cc.na)), cc.nh) };
+        self.fs().code[pc] = Op::NewTable(treg, array, crate::table::lsize_for(hash as usize));
         Ok(t)
     }
 
