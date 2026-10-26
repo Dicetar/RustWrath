@@ -404,7 +404,9 @@ pub(crate) fn fire(
     match notice {
         // A unit with no token flags carries no bridge (`0x60c4a0`).
         FieldNotice::Unit { guid, id } => {
-            if matches!(id, 41 | 107) && script.target() == benilla_ui::script::UiTarget::Wrath335 {
+            if matches!(id, 41 | 107) && script.target() == benilla_ui::script::UiTarget::Wrath335
+                && script.unit_is_held(guid)
+            {
                 // Native slots own Wrath aura-list changes. Explicit Signal notices (including
                 // unit-flag visibility changes) still use the established signal path below.
                 return;
@@ -531,6 +533,14 @@ pub(crate) fn fire_unit_notice(script: &mut UiScript, notice: FieldNotice) {
 /// `0x515e50(guid, id)`: the event `id` names, once per token naming the unit (`0x515c50`), `arg1`
 /// the token (`0x515e7a`); nothing for a unit no token names.
 fn signal_unit(script: &mut UiScript, guid: u64, id: u16) {
+    if script.target() == benilla_ui::script::UiTarget::Wrath335
+        && script.unit_is_held(guid)
+        && matches!(id, 17..=21 | 23..=27 | 30 | 167 | 174)
+    {
+        // Wrath power/type notifications read the native seven-pair owner. The donor's event-ID
+        // arithmetic is valid for only five kinds and must not classify runic power as max mana.
+        return;
+    }
     let Some(event) = unit_event(id) else {
         return;
     };

@@ -66,6 +66,11 @@ impl super::UiScript {
         self.model_ref().unit_guids.held.keys().copied().collect()
     }
 
+    /// A point lookup in the same resolver set, without allocating a complete GUID list.
+    pub fn unit_is_held(&self, guid: u64) -> bool {
+        self.model_ref().unit_guids.held.contains_key(&guid)
+    }
+
     /// The unit tokens that name a unit now ([`super::UnitGuids::bound_tokens`]): the set a
     /// field's change is fanned out to (`0x515e50`).
     pub fn bound_unit_tokens(&self) -> Vec<String> {

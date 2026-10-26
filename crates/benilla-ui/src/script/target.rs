@@ -10,7 +10,7 @@ pub enum UiTarget {
 impl UiTarget {
     pub(crate) fn events(self, vm: super::VmKind) -> impl Iterator<Item = &'static str> {
         let extra: &'static [&'static str] = match (self, vm) {
-            (Self::Wrath335, super::VmKind::InGame) => WRATH_CAST_EVENTS,
+            (Self::Wrath335, super::VmKind::InGame) => WRATH_INGAME_EVENTS,
             _ => &[],
         };
         vm.events().iter().copied().chain(extra.iter().copied())
@@ -63,9 +63,11 @@ impl UiTarget {
     }
 }
 
-// The 3.3.5 CastingBarFrame's subscriptions plus the success event used by installed combatlogfix.
+// The target CastingBarFrame/UnitFrame subscriptions plus installed combatlogfix's success event.
 // Producers remain separate; admitting a listener must not invent a cast, identity or timestamp.
-const WRATH_CAST_EVENTS: &[&str] = &[
+const WRATH_INGAME_EVENTS: &[&str] = &[
+    "UNIT_RUNIC_POWER",
+    "UNIT_MAXRUNIC_POWER",
     "UNIT_SPELLCAST_START",
     "UNIT_SPELLCAST_STOP",
     "UNIT_SPELLCAST_SUCCEEDED",
