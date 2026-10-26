@@ -232,6 +232,9 @@ Base `cc65287b` through `00043f25`:
 - `206861ea` carries the full cast-target block for object/item/corpse/dest/source casts.
 - `ba58390c` removes duplicate target-flag constants.
 - `629c719c` carries stand/sheath/mount-special/action-bar verbs.
+- `458466ec` carries binder/summon/talent-wipe/played-time/server-time/random-roll/page-text.
+- `c4c9e52e` carries area triggers and the quest log/share replies.
+- `3ae63721` removes the duplicate query-time opcode.
 
 ## Acceptance scenarios prepared (all execution-gated)
 
