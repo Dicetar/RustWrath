@@ -34,8 +34,8 @@ mod publisher;
 mod pump;
 
 pub use action::{
-    ActionIntent, ActionRequest, ActionResult, ActionStatus, MAX_ACTION_DETAIL_CHARS,
-    MAX_REQUEST_ID_CHARS, MoveDirection,
+    ActionCorrelation, ActionEvidence, ActionIntent, ActionRequest, ActionResult, ActionStatus,
+    MAX_ACTION_DETAIL_CHARS, MAX_REQUEST_ID_CHARS, MoveDirection,
 };
 pub use auth::AuthToken;
 pub use client::{

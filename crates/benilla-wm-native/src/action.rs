@@ -178,13 +178,17 @@ impl ActionRequest {
     }
 }
 
-/// Terminal or in-flight action state. `Accepted` is admission into a command owner, not
-/// gameplay success; `Unknown` is the only honest terminal state when the link failed after a
-/// command may have been sent.
+/// Terminal or in-flight action state. `Accepted` is admission into a command owner and `Sent`
+/// is the first authoritative witness that the command left the client; neither is gameplay
+/// success. `Launched` is a cast that completed; it is not evidence of damage, quest progress or
+/// any other gameplay outcome. `Unknown` is the only honest terminal state when the link failed
+/// after a command may have been sent.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionStatus {
     Accepted,
+    Sent,
+    Launched,
     Succeeded,
     Failed,
     Rejected,
@@ -196,8 +200,34 @@ pub enum ActionStatus {
 
 impl ActionStatus {
     pub fn is_terminal(self) -> bool {
-        !matches!(self, Self::Accepted)
+        !matches!(self, Self::Accepted | Self::Sent)
     }
+}
+
+/// How a result was correlated to the client-side action.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionCorrelation {
+    /// The client bound the cast attempt at its START edge and matched the terminal edge to it.
+    StartIdentity,
+    /// The client could not bind a START (the terminal arrived without one, or the bounded
+    /// presentation feed dropped it); the request was matched by per-spell wire order.
+    WireOrder,
+    /// Confirmed directly by a server reply that names the intent's own identity.
+    Direct,
+}
+
+/// Authoritative evidence retained with a result.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionEvidence {
+    /// The client's per-attempt handle, when the action bound one.
+    pub attempt_serial: Option<u64>,
+    /// 12340's `m_cast_count` observed on the matched edge.
+    pub cast_count: Option<u8>,
+    /// The terminal cast outcome that resolved the action, when this action is a cast.
+    pub terminal: Option<crate::observation::CastOutcome>,
+    pub correlation: ActionCorrelation,
 }
 
 /// The client's answer for one request. `detail` is short, printable and carries no credentials or
@@ -211,12 +241,21 @@ pub struct ActionResult {
     pub world_generation: u64,
     /// The adopted world revision when the outcome was observed, when one exists.
     pub observed_state_revision: Option<u64>,
+    /// The matching authoritative evidence, when the action has one.
+    pub evidence: Option<ActionEvidence>,
     pub detail: Option<String>,
 }
 
 impl ActionResult {
     pub fn validate(&self) -> Result<()> {
         validate_request_id(&self.request_id)?;
+        if let Some(evidence) = self.evidence.as_ref() {
+            if evidence.attempt_serial == Some(0) {
+                return Err(Error::InvalidAction(
+                    "evidence attempt_serial must be non-zero".to_owned(),
+                ));
+            }
+        }
         if let Some(detail) = self.detail.as_deref() {
             if detail.len() > MAX_ACTION_DETAIL_CHARS {
                 return Err(Error::InvalidAction(

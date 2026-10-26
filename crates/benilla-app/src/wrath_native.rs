@@ -231,6 +231,9 @@ pub enum WrathScopeLoss {
     WorldTransfer,
     SessionEnded,
     SessionReplaced,
+    /// The bounded presentation feed dropped resolved edges: the mirror is no longer a complete
+    /// copy of the authority and is cleared until the next resolved edges repopulate it.
+    FeedOverflow,
 }
 
 /// One wire fact from the IO thread, before identity resolution against the active map.

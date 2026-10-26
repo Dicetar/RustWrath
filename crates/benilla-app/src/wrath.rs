@@ -50,7 +50,10 @@ use benilla_protocol::{
 };
 use crate::client_state::ClientState;
 use benilla_protocol_wrath::cast_failure;
-use benilla_wm_native::{ActionBridge, ActionIntent, ActionRequest, ActionResult, ActionStatus};
+use benilla_wm_native::{
+    ActionBridge, ActionCorrelation, ActionEvidence, ActionIntent, ActionRequest, ActionResult,
+    ActionStatus,
+};
 use benilla_protocol_wrath::gameplay::{self, ServerEvent as WrathGameplayEvent};
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use crate::entities::Equipment;
@@ -214,6 +217,10 @@ pub struct WrathFeed {
     /// Native cast/channel/item-text/failure traffic on its own bounded queue so it cannot
     /// displace the lifecycle edges.
     native: Arc<Mutex<VecDeque<crate::wrath_native::WrathNativeFeedEvent>>>,
+    /// Resolved native edges dropped by the bounded queue. The presentation drain clears its
+    /// mirror and resynchronizes when this advances; the WM export authority never reads this
+    /// queue, so bridge consumers are unaffected.
+    native_dropped: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl WrathFeed {
@@ -224,6 +231,7 @@ impl WrathFeed {
             native: Arc::new(Mutex::new(VecDeque::with_capacity(
                 WRATH_NATIVE_EVENT_CAPACITY,
             ))),
+            native_dropped: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -240,6 +248,7 @@ impl WrathFeed {
         if let Ok(mut queue) = self.native.lock() {
             if queue.len() >= WRATH_NATIVE_EVENT_CAPACITY {
                 queue.pop_front();
+                self.native_dropped.fetch_add(1, Ordering::Relaxed);
             }
             queue.push_back(event);
         }
@@ -250,6 +259,11 @@ impl WrathFeed {
             .lock()
             .map(|mut queue| queue.drain(..).collect())
             .unwrap_or_default()
+    }
+
+    /// Consume the cumulative dropped-edge count (a presentation resynchronization trigger).
+    fn take_native_dropped(&self) -> u64 {
+        self.native_dropped.swap(0, Ordering::Relaxed)
     }
 
     fn publish_digest(&self, digest: WorldDigest) {
@@ -427,6 +441,8 @@ pub struct WrathWmActions {
     /// Admission-level cancellations that arrived before their request.
     cancelled: Vec<String>,
     last_cast_spell: Option<u32>,
+    /// Monotonic admission order; the wire-order fallback resolves the oldest matching intent.
+    next_admission: u64,
     pub(crate) received: u64,
     pub(crate) refused: u64,
     pub(crate) completed: u64,
@@ -434,9 +450,18 @@ pub struct WrathWmActions {
 
 struct PendingWmAction {
     intent: ActionIntent,
+    /// The admitted player guid; a resolved edge's caster must match it. The native-cast
+    /// correlation never trusts a bare spell id alone.
+    player_guid: u64,
     /// The spell this action commits to, resolved at admission: a cast's own id or the cast
-    /// being cancelled. Reply matching uses it so a cancel is attributed to its spell.
+    /// being cancelled.
     cast_spell: Option<u32>,
+    /// The resolved cast attempt bound at its START edge (or, for a cancel, the attempt that was
+    /// active at admission). Terminal outcomes only resolve the matching attempt.
+    cast_attempt: Option<u64>,
+    cast_count: Option<u8>,
+    /// Monotonic admission order for the per-spell wire-order fallback.
+    admitted: u64,
     deadline: Instant,
     session_epoch: u64,
     world_generation: u64,
@@ -452,6 +477,28 @@ impl WrathWmActions {
         observed_state_revision: Option<u64>,
         detail: Option<String>,
     ) {
+        self.answer_with_evidence(
+            request_id,
+            status,
+            session_epoch,
+            world_generation,
+            observed_state_revision,
+            None,
+            detail,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn answer_with_evidence(
+        &mut self,
+        request_id: String,
+        status: ActionStatus,
+        session_epoch: u64,
+        world_generation: u64,
+        observed_state_revision: Option<u64>,
+        evidence: Option<ActionEvidence>,
+        detail: Option<String>,
+    ) {
         self.completed += 1;
         let _ = self.results.send(ActionResult {
             request_id,
@@ -459,6 +506,7 @@ impl WrathWmActions {
             session_epoch,
             world_generation,
             observed_state_revision,
+            evidence,
             detail,
         });
     }
@@ -481,6 +529,210 @@ impl WrathWmActions {
         }
         self.cancelled.clear();
         self.last_cast_spell = None;
+    }
+
+    /// Bind a newly observed cast START to the oldest admitted cast intent of that spell. The
+    /// binding is what later terminal edges match; it also reports the `Sent` milestone.
+    fn bind_native_cast(
+        &mut self,
+        caster: u64,
+        spell_id: u32,
+        attempt: Option<u64>,
+        cast_count: Option<u8>,
+        revision: Option<u64>,
+    ) {
+        let Some(attempt) = attempt else { return };
+        let Some(id) = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| {
+                pending.player_guid == caster
+                    && pending.cast_attempt.is_none()
+                    && matches!(
+                        &pending.intent,
+                        ActionIntent::Cast { spell_id: wanted, .. } if *wanted == spell_id
+                    )
+            })
+            .min_by_key(|(_, pending)| pending.admitted)
+            .map(|(id, _)| id.clone())
+        else {
+            return;
+        };
+        let (epoch, generation) = {
+            let pending = self.pending.get_mut(&id).expect("iterated above");
+            pending.cast_attempt = Some(attempt);
+            pending.cast_count = cast_count;
+            (pending.session_epoch, pending.world_generation)
+        };
+        self.answer_with_evidence(
+            id,
+            ActionStatus::Sent,
+            epoch,
+            generation,
+            revision,
+            Some(ActionEvidence {
+                attempt_serial: Some(attempt),
+                cast_count,
+                terminal: None,
+                correlation: ActionCorrelation::StartIdentity,
+            }),
+            Some("the cast attempt was observed beginning".to_owned()),
+        );
+    }
+
+    /// A channelling cancel is confirmed by the observed channel ending for that caster and
+    /// spell; the channel carries no cast attempt identity.
+    fn resolve_channel_cancel(&mut self, caster: u64, spell_id: u32, revision: Option<u64>) {
+        let Some(id) = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| {
+                pending.player_guid == caster
+                    && pending.cast_attempt.is_none()
+                    && pending.cast_spell == Some(spell_id)
+                    && matches!(&pending.intent, ActionIntent::CastCancel)
+            })
+            .min_by_key(|(_, pending)| pending.admitted)
+            .map(|(id, _)| id.clone())
+        else {
+            return;
+        };
+        let Some(pending) = self.pending.remove(&id) else { return };
+        self.answer_with_evidence(
+            id,
+            ActionStatus::Succeeded,
+            pending.session_epoch,
+            pending.world_generation,
+            revision,
+            Some(ActionEvidence {
+                attempt_serial: None,
+                cast_count: None,
+                terminal: None,
+                correlation: ActionCorrelation::Direct,
+            }),
+            Some("the observed channel ended".to_owned()),
+        );
+    }
+
+    /// Correlate one resolved native cast edge with in-flight WM cast intents. A terminal edge
+    /// with a bound attempt resolves only that attempt; a terminal observed without a START (the
+    /// attempt was never bound) resolves the oldest matching intent by wire order. A launch
+    /// answers `Launched`: the cast completed, no gameplay outcome is claimed.
+    fn observe_native(
+        &mut self,
+        resolved: &crate::wrath_native::WrathResolvedCast,
+        revision: Option<u64>,
+    ) {
+        use crate::wrath_native::WrathCastEventKind;
+
+        let event = &resolved.event;
+        let Some(identity) = &event.identity else { return };
+        let caster = identity.caster;
+        let spell_id = identity.spell_id;
+        let attempt = event.attempt_serial;
+        let cast_count = identity.cast_count;
+
+        if matches!(&event.kind, WrathCastEventKind::Started { .. }) {
+            self.bind_native_cast(caster, spell_id, attempt, cast_count, revision);
+            return;
+        }
+        if matches!(&event.kind, WrathCastEventKind::ChannelEnded) {
+            self.resolve_channel_cancel(caster, spell_id, revision);
+            return;
+        }
+        let (terminal, reason) = match &event.kind {
+            WrathCastEventKind::Launched { .. } => (benilla_wm_native::CastOutcome::Launched, None),
+            WrathCastEventKind::Failed { reason } => (
+                benilla_wm_native::CastOutcome::Failed,
+                Some(format!("the server refused the cast (reason {reason})")),
+            ),
+            WrathCastEventKind::Interrupted { reason } => (
+                benilla_wm_native::CastOutcome::Interrupted,
+                Some(format!("the cast was interrupted (reason {reason})")),
+            ),
+            _ => return,
+        };
+
+        let mut matched: Vec<String> = Vec::new();
+        let mut correlation = ActionCorrelation::StartIdentity;
+        if attempt.is_some() {
+            matched = self
+                .pending
+                .iter()
+                .filter(|(_, pending)| {
+                    pending.player_guid == caster
+                        && pending.cast_attempt == attempt
+                        && matches!(
+                            &pending.intent,
+                            ActionIntent::Cast { .. } | ActionIntent::CastCancel
+                        )
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+        } else if let Some(id) = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| {
+                pending.player_guid == caster
+                    && pending.cast_attempt.is_none()
+                    && pending.cast_spell == Some(spell_id)
+                    && matches!(
+                        &pending.intent,
+                        ActionIntent::Cast { .. } | ActionIntent::CastCancel
+                    )
+            })
+            .min_by_key(|(_, pending)| pending.admitted)
+            .map(|(id, _)| id.clone())
+        {
+            // A terminal with no START cannot be identity-matched. Resolve the oldest admitted
+            // same-spell intent instead of whichever edge arrived most recently.
+            matched.push(id);
+            correlation = ActionCorrelation::WireOrder;
+        }
+
+        for id in matched {
+            let Some(pending) = self.pending.remove(&id) else { continue };
+            let cancelling = matches!(&pending.intent, ActionIntent::CastCancel);
+            let (status, detail) = match (cancelling, terminal) {
+                (false, benilla_wm_native::CastOutcome::Launched) => (
+                    ActionStatus::Launched,
+                    Some("cast launched; no gameplay outcome is claimed".to_owned()),
+                ),
+                (false, benilla_wm_native::CastOutcome::Failed) => {
+                    (ActionStatus::Rejected, reason.clone())
+                }
+                (false, benilla_wm_native::CastOutcome::Interrupted) => {
+                    (ActionStatus::Failed, reason.clone())
+                }
+                (true, benilla_wm_native::CastOutcome::Launched) => (
+                    ActionStatus::Failed,
+                    Some("the cast launched before the cancel took effect".to_owned()),
+                ),
+                (true, _) => (
+                    ActionStatus::Succeeded,
+                    Some("the cast ended".to_owned()),
+                ),
+            };
+            if let ActionIntent::Cast { spell_id, .. } = &pending.intent {
+                if self.last_cast_spell == Some(*spell_id) {
+                    self.last_cast_spell = None;
+                }
+            }
+            self.answer_with_evidence(
+                id,
+                status,
+                pending.session_epoch,
+                pending.world_generation,
+                revision,
+                Some(ActionEvidence {
+                    attempt_serial: pending.cast_attempt,
+                    cast_count,
+                    terminal: Some(terminal),
+                    correlation,
+                }),
+                detail,
+            );
+        }
     }
 }
 
@@ -973,6 +1225,7 @@ impl Plugin for WrathNetPlugin {
                 pending: BTreeMap::new(),
                 cancelled: Vec::new(),
                 last_cast_spell: None,
+                next_admission: 1,
                 received: 0,
                 refused: 0,
                 completed: 0,
@@ -1243,8 +1496,61 @@ fn wrath_wm_action_intake(
             continue;
         }
 
+        // Observed-conflict refusals: only a positively observed state blocks, and the detail
+        // names the fact. This is the client's own resolved mirror, not a second resolution.
+        let self_dead = view.self_observation.as_ref().is_some_and(|observation| {
+            matches!(
+                observation.death,
+                benilla_protocol_wrath::session::SelfDeath::Dead
+                    | benilla_protocol_wrath::session::SelfDeath::Ghost
+            )
+        });
+        let observed_refusal: Option<String> = match &request.intent {
+            ActionIntent::Cast { .. } => {
+                if self_dead {
+                    Some("the client observes the player dead; refusing cast".to_owned())
+                } else if let Some(cast) = view.casting(view.player_guid) {
+                    Some(format!(
+                        "the client already observes cast attempt {} of spell {}; wait for its terminal edge or cancel it",
+                        cast.attempt_serial, cast.identity.spell_id
+                    ))
+                } else if let Some(channel) = view.channeling(view.player_guid) {
+                    Some(format!(
+                        "the client already observes channel spell {}",
+                        channel.spell_id
+                    ))
+                } else {
+                    None
+                }
+            }
+            ActionIntent::CastCancel => {
+                if view.casting(view.player_guid).is_none()
+                    && view.channeling(view.player_guid).is_none()
+                {
+                    Some("the client observes no active cast or channel to cancel".to_owned())
+                } else {
+                    None
+                }
+            }
+            ActionIntent::AttackStart { .. } if self_dead => {
+                Some("the client observes the player dead; refusing the intent".to_owned())
+            }
+            _ => None,
+        };
+        if let Some(reason) = observed_refusal {
+            actions.refused += 1;
+            actions.answer(
+                request.request_id,
+                ActionStatus::Rejected,
+                request.session_epoch,
+                request.world_generation,
+                revision,
+                Some(reason),
+            );
+            continue;
+        }
         let mut commands: Vec<ClientCommand> = Vec::new();
-        let mut refused: Option<&str> = None;
+        let mut refused: Option<String> = None;
         match &request.intent {
             ActionIntent::SetTarget { guid } => {
                 commands.push(ClientCommand::SetSelection { guid: *guid });
@@ -1260,10 +1566,24 @@ fn wrath_wm_action_intake(
                     target: *target,
                 });
             }
-            ActionIntent::CastCancel => match actions.last_cast_spell {
-                Some(spell_id) => commands.push(ClientCommand::CancelCast { spell_id }),
-                None => refused = Some("no client-known cast to cancel"),
-            },
+            ActionIntent::CastCancel => {
+                // Cancel what the resolved mirror says is actually running, so the command
+                // owner reaches the same attempt the observation reported.
+                if let Some(cast) = view.casting(view.player_guid) {
+                    actions.last_cast_spell = Some(cast.identity.spell_id);
+                    commands.push(ClientCommand::CancelCast {
+                        spell_id: cast.identity.spell_id,
+                    });
+                } else if let Some(channel) = view.channeling(view.player_guid) {
+                    commands.push(ClientCommand::CancelChannelling {
+                        spell_id: channel.spell_id,
+                    });
+                } else if let Some(spell_id) = actions.last_cast_spell {
+                    commands.push(ClientCommand::CancelCast { spell_id });
+                } else {
+                    refused = Some("no client-known cast to cancel".to_owned());
+                }
+            }
             ActionIntent::Interact { guid } => {
                 commands.push(ClientCommand::GossipHello { guid: *guid });
             }
@@ -1344,14 +1664,33 @@ fn wrath_wm_action_intake(
         }
         let cast_spell = match &request.intent {
             ActionIntent::Cast { spell_id, .. } => Some(*spell_id),
-            ActionIntent::CastCancel => actions.last_cast_spell,
+            ActionIntent::CastCancel => view
+                .casting(view.player_guid)
+                .map(|cast| cast.identity.spell_id)
+                .or_else(|| view.channeling(view.player_guid).map(|channel| channel.spell_id))
+                .or(actions.last_cast_spell),
             _ => None,
         };
+        // A cancel binds the attempt that is active at admission, so its authoritative terminal
+        // resolves this cancel and not another cast of the same spell. A cast binds at its START.
+        let (cast_attempt, cast_count) = match &request.intent {
+            ActionIntent::CastCancel => view
+                .casting(view.player_guid)
+                .map(|cast| (Some(cast.attempt_serial), cast.identity.cast_count))
+                .unwrap_or((None, None)),
+            _ => (None, None),
+        };
+        let admitted = actions.next_admission;
+        actions.next_admission = actions.next_admission.saturating_add(1);
         actions.pending.insert(
             request.request_id.clone(),
             PendingWmAction {
                 intent: request.intent.clone(),
+                player_guid: request.player_guid,
                 cast_spell,
+                cast_attempt,
+                cast_count,
+                admitted,
                 deadline: Instant::now() + Duration::from_secs(30),
                 session_epoch: request.session_epoch,
                 world_generation: request.world_generation,
@@ -3064,45 +3403,15 @@ fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
     for event in events {
         let mut resolved: Vec<(String, ActionStatus, Option<String>)> = Vec::new();
         for (id, pending) in &actions.pending {
+            // Cast intents resolve only from resolved native cast edges (`observe_native`),
+            // never from a bare spell id or whichever cast reply arrived most recently.
+            if matches!(
+                &pending.intent,
+                ActionIntent::Cast { .. } | ActionIntent::CastCancel
+            ) {
+                continue;
+            }
             let outcome = match (event, &pending.intent) {
-                (
-                    SessionEvent::CastResult {
-                        spell_id,
-                        success,
-                        reason,
-                        ..
-                    },
-                    ActionIntent::Cast {
-                        spell_id: wanted, ..
-                    },
-                ) if spell_id == wanted => Some((
-                    if *success {
-                        ActionStatus::Succeeded
-                    } else {
-                        ActionStatus::Failed
-                    },
-                    (*reason).map(|reason| format!("cast result {reason}")),
-                )),
-                (
-                    SessionEvent::SpellGo {
-                        caster, spell_id, ..
-                    },
-                    ActionIntent::Cast {
-                        spell_id: wanted, ..
-                    },
-                ) if Some(*caster) == self_guid && spell_id == wanted => {
-                    Some((ActionStatus::Succeeded, None))
-                }
-                (
-                    SessionEvent::SpellFailedOther { caster, spell_id },
-                    ActionIntent::Cast { .. } | ActionIntent::CastCancel,
-                ) if Some(*caster) == self_guid && pending.cast_spell == Some(*spell_id) => {
-                    let status = match pending.intent {
-                        ActionIntent::CastCancel => ActionStatus::Succeeded,
-                        _ => ActionStatus::Failed,
-                    };
-                    Some((status, Some("cast interrupted".to_owned())))
-                }
                 (SessionEvent::AttackSwingError(_), ActionIntent::AttackStart { .. }) => {
                     Some((ActionStatus::Failed, Some("attack swing refused".to_owned())))
                 }
@@ -3195,10 +3504,10 @@ fn wrath_net_drain(
     clock: Option<Res<crate::ui_script::UiClock>>,
 ) {
     let ui_now_seconds = clock.as_ref().map(|clock| clock.ui_now);
-    let native = control
+    let (native, native_dropped) = control
         .feed
         .as_ref()
-        .map(|feed| feed.take_native())
+        .map(|feed| (feed.take_native(), feed.take_native_dropped()))
         .unwrap_or_default();
     let mut drained = 0usize;
     for event in control.take_events() {
@@ -3209,7 +3518,15 @@ fn wrath_net_drain(
         match event {
             WrathFeedEvent::Phase(phase) => view.phase = Some(phase),
             WrathFeedEvent::WorldTransfer { world_generation, map_id } => {
-                // Same-frame teardown: old-scope entities are gone before Input runs.
+                // Same-frame teardown: old-scope entities are gone before Input runs. An intent
+                // admitted against the retired world can never be answered by the new one, so it
+                // becomes Unknown here and is never replayed.
+                if let Some(actions) = actions.as_deref_mut() {
+                    actions.fail_all(
+                        ActionStatus::Unknown,
+                        "world scope changed before an authoritative result",
+                    );
+                }
                 for event in crate::wrath_native::invalidate_presentation(
                     &mut *view,
                     crate::wrath_native::WrathScopeLoss::WorldTransfer,
@@ -3386,6 +3703,11 @@ fn wrath_net_drain(
             }
             match event {
                 crate::wrath_native::WrathNativeFeedEvent::Cast(resolved) => {
+                    // Correlate in-flight WM cast intents with the resolved edge before the
+                    // presentation mirror consumes it.
+                    if let Some(actions) = actions.as_deref_mut() {
+                        actions.observe_native(&resolved, Some(view.state_revision));
+                    }
                     let mut event = resolved.event;
                     let started = matches!(
                         &event.kind,
@@ -3468,6 +3790,23 @@ fn wrath_net_drain(
                     view.last_inventory_failure = Some(failure);
                 }
             }
+        }
+    }
+
+    // The bounded native queue dropped resolved edges: the presentation mirror is no longer a
+    // complete copy of the authority. Close its bars and clear it; the next resolved edges
+    // repopulate it. The WM export reads the authority directly and is unaffected.
+    if native_dropped > 0 && !control.ended {
+        debug!(
+            "wrath: native presentation feed dropped {native_dropped} resolved edges; resynchronizing the mirror"
+        );
+        for event in crate::wrath_native::invalidate_presentation(
+            &mut *view,
+            crate::wrath_native::WrathScopeLoss::FeedOverflow,
+            now_ms(),
+            ui_now_seconds,
+        ) {
+            cast_events.write(event);
         }
     }
 
