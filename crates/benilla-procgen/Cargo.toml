@@ -9,3 +9,5 @@ description = "Deterministic procedural generation for Project B: Borderlands-st
 workspace = true
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

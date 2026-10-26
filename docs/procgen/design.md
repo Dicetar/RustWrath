@@ -42,7 +42,11 @@ Persist the complete request, version, artifacts and fingerprint together. Outpu
 
 The RNG forks from immutable master seed and domain without consuming master history. Changing item count therefore does not advance dungeon/terrain/population streams. Population intentionally depends on generated dungeon and terrain data; changing geometry may change actors. Dungeon and overworld population currently share one stream and encounter-ID sequence. No per-actor or per-domain population edit stability is promised.
 
-## Consumer seams — proposed, not implemented
+## Owned artifact boundary
+
+The source now includes owned candidate capture, strict bounded JSON and supported-build/catalog restoration with complete manifest verification. See [artifact-api.md](artifact-api.md) for the implemented API and evidence limits. Serde and serde_json reuse dependencies already present in the workspace lock; the crate remains independent of Bevy, MPQ and any running WM/server. Compilation and roundtrip acceptance are pending.
+
+## Production consumer seams — not accepted at runtime
 
 | Data | Next consumer responsibility | Acceptance needed |
 |---|---|---|

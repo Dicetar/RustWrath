@@ -25,6 +25,9 @@
 pub const GENERATOR_VERSION: &str = "procgen-v2";
 
 pub mod dungeon;
+pub mod artifact;
+pub mod json;
+mod validation;
 pub mod item;
 pub mod rng;
 pub mod spawns;

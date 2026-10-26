@@ -9,7 +9,8 @@ use crate::rng::ProcRng;
 pub const DOMAIN: u64 = 0x4455_4e47_4f4e_0002; // "DUNGEON"
 
 /// One tile of the carved map.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Tile {
     Solid,
     Floor,
@@ -33,7 +34,8 @@ impl Tile {
 }
 
 /// What a room is for. Assignment is by graph distance from the entrance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RoomArchetype {
     /// Safe entry: no enemies, the NPC home.
     Entrance,
@@ -46,7 +48,8 @@ pub enum RoomArchetype {
 }
 
 /// A carved room in world-tile coordinates.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Room {
     pub id: usize,
     pub x: u32,
@@ -69,7 +72,8 @@ impl Room {
 }
 
 /// A complete dungeon: the tile map plus the typed room graph.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Dungeon {
     pub width: u32,
     pub height: u32,
@@ -80,7 +84,8 @@ pub struct Dungeon {
 }
 
 /// Generation parameters. Defaults are a comfortable mid-size layout.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DungeonSpec {
     /// Map bounds in tiles.
     pub width: u32,

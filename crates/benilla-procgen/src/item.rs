@@ -14,7 +14,8 @@ pub const DOMAIN: u64 = 0x4954_454d_0000_0001; // "ITEM"
 
 /// Which stat a number is. Deliberately closed and small: affixes the rest of the project
 /// already understands in some form.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StatId {
     Damage,
     Armor,
@@ -42,7 +43,8 @@ impl StatId {
 }
 
 /// Rarity tiers with drop weights and a global quality scalar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Rarity {
     Common,
     Uncommon,
@@ -97,7 +99,8 @@ impl Rarity {
 }
 
 /// The equipment slot an item occupies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ItemKind {
     Sword,
     Axe,
@@ -120,7 +123,8 @@ impl ItemKind {
 }
 
 /// One part slot in the composition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PartSlot {
     Body,
     Grip,

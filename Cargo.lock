@@ -634,6 +634,10 @@ dependencies = [
 [[package]]
 name = "benilla-procgen"
 version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "benilla-profile"

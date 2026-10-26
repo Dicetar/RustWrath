@@ -31,7 +31,8 @@ impl SpawnKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NpcRole {
     Vendor,
     QuestGiver,
@@ -41,7 +42,8 @@ pub enum NpcRole {
 /// Which coordinate space a spawn lives in. Dungeon spawns are tile coordinates inside the
 /// generated map; overworld spawns are sample coordinates on the terrain field. The two
 /// spaces are independent — consumers must never compare across them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SpawnDomain {
     Dungeon,
     Overworld,
@@ -59,7 +61,8 @@ pub struct Spawn {
 }
 
 /// Population parameters.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpawnSpec {
     /// Base enemy level at the entrance; deeper is higher.
     pub base_level: u32,

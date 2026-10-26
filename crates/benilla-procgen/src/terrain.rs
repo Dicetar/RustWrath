@@ -9,7 +9,8 @@ use crate::ValidationError;
 pub const DOMAIN: u64 = 0x5445_5252_4149_0003; // "TERRAIN"
 
 /// Biome classification from (height, moisture).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Biome {
     Ocean,
     Beach,
