@@ -95,9 +95,10 @@ page text. Layouts come from NPCHandler.cpp:286, MovementHandler.cpp:851,
 SkillHandler.cpp:58, CharacterPackets.cpp:37-49, QueryHandler.cpp:72/361,
 MiscPackets.cpp:85-99. Two 12340 additions are handled explicitly: CMSG_PLAYED_TIME now
 carries a trigger byte, SMSG_PLAYED_TIME a third byte the 1.12 owner has no field for, and
-SMSG_QUERY_TIME_RESPONSE carries the next-reset word after the unix time; those extras are
-parsed and dropped, not left to desync the stream. Item-text query is deliberately skipped: its
-3.3.5 body is an item guid while the 1.12 command addresses mail text by (text_id, mail_id).
+SMSG_QUERY_TIME_RESPONSE carries the next-reset word after the unix time. The native campaign
+later retained those fields in `WrathPlayedTime`/`WrathServerClock` rather than dropping them;
+item text was later implemented as the typed item-guid contract. The 1.12 `(text_id, mail_id)`
+form is not overloaded.
 
 ## Slice: posture and presentation verbs (committed with this record)
 
@@ -114,9 +115,9 @@ CastSpellCorpse were still dropped even though the stock UI emits them. The 1234
 CMSG_CAST_SPELL body is now built from the shared target writer: unit, game object, item,
 corpse ally/enemy, source and destination (the last two with the 12340 zero transport guid).
 The existing unit cast keeps its layout and every cast advances the client cast counter. A
-trade-item cast still needs the partner item's real guid, which the stock command carries only
-as a slot, so it remains unsupported. Casts at a destination/source now reach the server instead
-of being silently discarded.
+trade-item cast is now encoded with the trade slot as the target guid field, matching the 12340
+`TRADE_SLOT_NONTRADED` (6) contract; other slot values are the server's to refuse. Casts at a
+destination/source now reach the server instead of being silently discarded.
 
 ## Slice: item use, equip and bag movement (committed with this record)
 
@@ -127,8 +128,9 @@ CMSG_SPLIT_ITEM 0x10E, CMSG_DESTROYITEM 0x111, CMSG_SET_AMMO 0x268. CMSG_USE_ITE
 (SpellHandler.cpp:58-73) needs the item guid and the actual spell id, which the 1.12 command
 did not carry; ClientCommand::UseItem now carries both, resolved by the cast owner, while the
 1.12 writer keeps using its spell slot. The target block writer covers unit, game object, item,
-corpse ally/enemy, source and destination; a trade-item target needs the real item guid and is
-left unsupported rather than guessed. All bag/slot fields use the 12340 player-array mapping
+corpse ally/enemy, source and destination; a trade-item target now uses the slot as the 12340
+trade-guid field (only the non-traded slot is accepted by the server). All bag/slot fields use
+the 12340 player-array mapping
 (bank bags 63-68 -> 67-72, keyring/buyback 69-96 -> +5). Bag movement, split, destroy and ammo
 now reach the server. Live use/equip/swap remains execution-gated.
 

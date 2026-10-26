@@ -109,5 +109,16 @@ WM consequence: the native state lives in the app process. It is not yet in the 
 schema; the exact additional observation fields are the next dependency (self powers, self
 cast/channel, self auras). That is recorded as a gap, not claimed as delivered.
 
+## Commits
+
+- `f8a1993b` parser/layout corrections, native cast/resources/auras view, command contracts.
+- `22b8690a` first UI-clock anchor on native cast edges.
+- `8609b12d` complete target block and per-attempt serial.
+- `42a34287` legacy mail-text refusal on the Wrath path.
+- `a3b5764f` START anchor separated from update clocks; unavailable clock is `None`.
+- `757dbe6e` exact experimental-combat server authority gap.
+- `a8e8d3fa` self cast failures use the session player guid.
+- `25ea6f1e` raw aura polarity boundary.
+
 Execution: source inspection/implementation/commits only. No builds, tests, new tests, linters,
 formatters, interpreter/AST scripts or runtime operations.
