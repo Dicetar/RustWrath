@@ -148,7 +148,16 @@ fn open(data: Option<std::path::PathBuf>) -> (Option<Chain>, Option<Notice>) {
             )),
         );
     };
-    match benilla_formats::open_chain(&data) {
+    // Match the app's source selection. A selected manifest that fails must not silently
+    // substitute the auto-discovered donor archives for FrameXML/GlueXML or demand loads.
+    let opened = match std::env::var_os("WM_ASSET_MANIFEST").map(std::path::PathBuf::from) {
+        Some(manifest) => {
+            let profile = std::env::var("WM_ASSET_PROFILE").unwrap_or_else(|_| "base".to_owned());
+            benilla_assets::open_profile_chain(&data, &manifest, &profile)
+        }
+        None => benilla_formats::open_chain(&data),
+    };
+    match opened {
         Ok(chain) => (Some(chain), None),
         Err(e) => (
             None,

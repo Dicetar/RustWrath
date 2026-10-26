@@ -6,7 +6,8 @@
 use bevy::prelude::*;
 
 use benilla_assets::{LockRecover, LooseOpen};
-use benilla_ui::script::UiScript;
+use benilla_ui::mlua;
+use benilla_ui::script::{UiScript, UiTarget};
 use benilla_world::frame_pace::FrameStep;
 
 use super::manifest::silenced_ui_load;
@@ -15,6 +16,22 @@ use crate::ui_script::addons;
 
 pub(crate) fn setup_script(world: &mut World) {
     install_glue_side_vm(world, super::glue::GlueScreen::Login.key());
+}
+
+fn selected_ui_target() -> UiTarget {
+    if crate::wrath::selected_from_env() {
+        UiTarget::Wrath335
+    } else {
+        UiTarget::Vanilla112
+    }
+}
+
+fn make_ingame_vm() -> mlua::Result<UiScript> {
+    UiScript::with_target(selected_ui_target())
+}
+
+fn make_glue_vm() -> mlua::Result<UiScript> {
+    UiScript::glue_with_target(selected_ui_target())
 }
 
 /// Install the VM the world holds outside the world: the glue screens', put up on the screen
@@ -39,7 +56,7 @@ fn install_boot_vm(world: &mut World) {
 /// world holds the glue VM. `None` (the world's VM removed) when
 /// the VM cannot start.
 pub(crate) fn strings_vm(world: &mut World) -> Option<UiScript> {
-    let script = new_vm(world, UiScript::new)?;
+    let script = new_vm(world, make_ingame_vm)?;
     load_global_strings(world, &script);
     load_emote_tokens(world, &script);
     Some(script)
@@ -50,7 +67,7 @@ pub(crate) fn strings_vm(world: &mut World) -> Option<UiScript> {
 /// world). It holds what the glue state holds and nothing of a boot VM's: no `GlobalStrings.lua`,
 /// no emote tokens.
 fn install_glue_vm(world: &mut World, screen: &str) -> bool {
-    let Some(mut script) = new_vm(world, UiScript::new_glue) else {
+    let Some(mut script) = new_vm(world, make_glue_vm) else {
         return false;
     };
     // The build's size and aspect, and its clear of a pending rebuild (`0x46a7e0`, `0x46a81c`).
@@ -163,7 +180,10 @@ fn new_vm<E: std::fmt::Display>(
         script.lua().srand(1);
     }
     install_addon_asset_resolvers(world, &mut script);
-    info!("ui_script: new VM, session {}", script.session());
+    info!("ui_script: new {:?} VM, session {}", script.target(), script.session());
+    if script.target() == UiTarget::Wrath335 {
+        warn!("ui_script: Wrath host source integration is incomplete; addon/API and rendered acceptance remain unverified");
+    }
     Some(script)
 }
 
@@ -300,7 +320,7 @@ pub(crate) fn arm_entry_ui_load(world: &mut World) {
 /// `GlobalStrings.lua` and `Fonts.xml` as its first rows, and `ChatFrame.lua` the emote tokens.
 fn mint_entry_vm(world: &mut World) {
     crate::cvars::fold_dying_vm_cvars(world);
-    if let Some(mut script) = new_vm(world, UiScript::new) {
+    if let Some(mut script) = new_vm(world, make_ingame_vm) {
         crate::ui_macro::install_icon_source(world, &mut script);
         world.insert_non_send_resource(script);
     }
