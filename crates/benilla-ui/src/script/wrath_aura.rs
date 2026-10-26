@@ -59,20 +59,7 @@ fn text(lua: &Lua, value: Option<&str>) -> mlua::Result<Value> {
 fn caster_token(lua: &Lua, guid: Option<u64>) -> Option<String> {
     let guid = guid?;
     let model = lua.app_data_ref::<Model>().expect("model");
-    let units = &model.unit_guids;
-    for (name, current) in [("player", units.player), ("pet", units.pet), ("target", units.target),
-        ("mouseover", units.mouseover), ("npc", units.npc)]
-    {
-        if current != 0 && current == guid { return Some(name.to_owned()); }
-    }
-    for (prefix, members) in [("party", units.party.as_slice()), ("partypet", units.party_pets.as_slice()),
-        ("raid", units.raid.as_slice()), ("raidpet", units.raid_pets.as_slice())]
-    {
-        if let Some(index) = members.iter().position(|&current| current != 0 && current == guid) {
-            return Some(format!("{prefix}{}", index + 1));
-        }
-    }
-    None
+    model.unit_guids.tokens_of(guid).into_iter().next()
 }
 
 fn find(lua: &Lua, args: &MultiValue, forced: Option<bool>) -> mlua::Result<Option<(u64, WrathAuraView)>> {

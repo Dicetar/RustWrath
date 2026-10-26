@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use bevy::ecs::message::{MessageCursor, Messages};
 use bevy::prelude::*;
-use benilla_ui::script::{ScriptValue, UiScript, UiTarget};
+use benilla_ui::script::{ScriptValue, UiTarget};
 
 use crate::wrath_native::{WrathCastEvent, WrathCastEventKind as Kind};
 
@@ -22,25 +22,6 @@ pub(crate) struct CastMemo {
     scope: Option<(u64, u64)>,
     // Caster plus channel/cast, since a channel START can precede the cast's final edge.
     displayed: BTreeMap<(u64, bool, Option<u64>), DisplayedCast>,
-}
-
-fn tokens(script: &UiScript, guid: u64) -> Vec<String> {
-    if guid == 0 { return Vec::new(); }
-    let units = script.unit_guids_view();
-    let mut result = Vec::new();
-    for (token, current) in [("player", units.player), ("pet", units.pet),
-        ("target", units.target), ("mouseover", units.mouseover), ("npc", units.npc)]
-    {
-        if current == guid { result.push(token.to_owned()); }
-    }
-    for (prefix, members) in [("party", units.party.as_slice()), ("partypet", units.party_pets.as_slice()),
-        ("raid", units.raid.as_slice()), ("raidpet", units.raid_pets.as_slice())]
-    {
-        for (index, &current) in members.iter().enumerate() {
-            if current == guid { result.push(format!("{prefix}{}", index + 1)); }
-        }
-    }
-    result
 }
 
 pub(crate) fn feed(
@@ -86,7 +67,7 @@ pub(crate) fn feed(
             let channel = matches!(&event.kind, Kind::ChannelStarted { .. } | Kind::ChannelUpdated { .. }
                 | Kind::ChannelEnded) || (invalidated && event.attempt_serial.is_none());
             let key = (identity.caster, channel, event.attempt_serial);
-            let mut aliases = tokens(script, identity.caster);
+            let mut aliases = script.unit_tokens_of(identity.caster);
             if invalidated && aliases.is_empty() && memo.scope == Some(scope) {
                 if let Some(previous) = memo.displayed.get(&key) { aliases = previous.tokens.clone(); }
             }
