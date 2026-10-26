@@ -3,7 +3,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use benilla_ui::script::SpellInfoView;
+use benilla_ui::script::{SpellInfoView, UnitCastView};
 
 #[derive(SystemParam)]
 pub(crate) struct SpellQueries<'w, 's> {
@@ -18,6 +18,37 @@ pub(crate) struct SpellQueries<'w, 's> {
 }
 
 impl SpellQueries<'_, '_> {
+    pub(crate) fn unit_cast(&self, guid: u64, channel: bool) -> Option<UnitCastView> {
+        let world = self.world.as_ref()?;
+        if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) { return None; }
+        let (scope, spell_id, start_ms, end_ms, cast_id, interruptible) = if channel {
+            let active = world.channeling(guid)?;
+            let start = active.start_ui_now_seconds? * 1000.0;
+            let updated = active.last_update_ui_now_seconds? * 1000.0;
+            let end = updated + f64::from(active.remaining_ms);
+            (active.scope, active.spell_id, start, end, None, None)
+        } else {
+            let active = world.casting(guid)?;
+            // START supplies time remaining, not the original server start or total haste-
+            // adjusted duration. Display the observed interval without inventing either.
+            let start = active.start_ui_now_seconds? * 1000.0 + f64::from(active.pushback_ms);
+            let end = start + f64::from(active.start_remaining_ms?);
+            // Lua numbers must retain the same exact identity in getters and event payloads.
+            if active.attempt_serial > (1u64 << 53) { return None; }
+            (active.scope, active.identity.spell_id, start, end, Some(active.attempt_serial), active.interruptible)
+        };
+        if scope.session_epoch != world.session_epoch || scope.world_generation != world.world_generation
+            || !start_ms.is_finite() || !end_ms.is_finite() || end_ms < start_ms
+        { return None; }
+        let spell = self.spells.as_deref()?.catalog.get(spell_id)?;
+        Some(UnitCastView {
+            name: spell.name.clone(), rank: spell.rank.clone(), icon: spell.icon.clone(),
+            start_ms, end_ms,
+            trade_skill: spell.attributes & benilla_formats::SPELL_ATTR_IS_TRADESKILL != 0,
+            cast_id, not_interruptible: interruptible.map(|value| !value),
+        })
+    }
+
     pub(crate) fn power(&self, guid: u64, kind: u8, maximum: bool) -> Option<u32> {
         let world = self.world.as_ref()?;
         if kind > 6 || world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) {

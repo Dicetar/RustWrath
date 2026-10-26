@@ -66,7 +66,7 @@ mod target;
 mod posthook;
 mod wrath_spell;
 mod wrath_unit;
-pub use wrath_spell::SpellInfoView;
+pub use wrath_spell::{SpellInfoView, UnitCastView};
 pub use target::UiTarget;
 mod char_name;
 mod client;

@@ -529,6 +529,10 @@ impl CallHost for ScriptCallHost<'_, '_> {
         self.appliers.spell_queries().power_type(guid)
     }
 
+    fn unit_cast(&mut self, guid: u64, channel: bool) -> Option<benilla_ui::script::UnitCastView> {
+        self.appliers.spell_queries().unit_cast(guid, channel)
+    }
+
     fn apply(&mut self, script: &mut UiScript, call: ScriptCall) -> Option<CallTail> {
         #[cfg(test)]
         self.census_probe();

@@ -42,6 +42,11 @@ pub trait CallHost {
         None
     }
 
+    /// Current scoped native cast/channel presentation. No local cast simulation or commands.
+    fn unit_cast(&mut self, _guid: u64, _channel: bool) -> Option<super::UnitCastView> {
+        None
+    }
+
     /// Apply `call`, with the input events it was made under raised. The host is out of the VM
     /// while this runs, so a call a handler makes meanwhile waits, and applies next, ahead of any
     /// made after this one, or at a signal point the apply reaches ([`UiScript::signal_point`]).

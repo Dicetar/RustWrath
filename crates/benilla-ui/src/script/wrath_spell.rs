@@ -17,6 +17,20 @@ pub struct SpellInfoView {
     pub max_range: Option<f32>,
 }
 
+/// A presentation interval from the native cast owner, in GetTime milliseconds. The engine
+/// owns the identity and timeline; Lua bindings only shape the stock return tuple.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnitCastView {
+    pub name: String,
+    pub rank: Option<String>,
+    pub icon: Option<String>,
+    pub start_ms: f64,
+    pub end_ms: f64,
+    pub trade_skill: bool,
+    pub cast_id: Option<u64>,
+    pub not_interruptible: Option<bool>,
+}
+
 fn spell_id(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<u32>> {
     let input = args.front().cloned().unwrap_or(Value::Nil);
     if let Some(book) = args.get(1).filter(|value| !matches!(value, Value::Nil)) {
@@ -42,8 +56,34 @@ fn string(lua: &Lua, value: Option<&str>) -> mlua::Result<Value> {
     value.map_or(Ok(Value::Nil), |value| lua.create_string(value).map(Value::String))
 }
 
+fn unit_cast(lua: &Lua, token: Value, channel: bool) -> mlua::Result<MultiValue> {
+    let usage = if channel { "Usage: UnitChannelInfo(unit)" } else { "Usage: UnitCastingInfo(unit)" };
+    let token = super::binding_abi::string_arg(lua, token, usage)?;
+    super::unit::check_unit_token(&Some(token.clone()))?;
+    let guid = {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        model.unit(&token).map(|unit| unit.guid)
+    };
+    let view = guid.and_then(|guid| host::with_host(lua, |host| host.unit_cast(guid, channel)).flatten());
+    let Some(view) = view else { return Ok(MultiValue::from_vec(vec![Value::Nil])); };
+    let name = string(lua, Some(&view.name))?;
+    let mut values = vec![
+        name.clone(), string(lua, Some(view.rank.as_deref().unwrap_or("")))?, name,
+        string(lua, view.icon.as_deref())?, Value::Number(view.start_ms), Value::Number(view.end_ms),
+        Value::Boolean(view.trade_skill),
+    ];
+    // The target CastingBarFrame uses slot eight for cast identity, but channel tuples omit it.
+    if !channel {
+        values.push(view.cast_id.map_or(Value::Nil, |id| Value::Number(id as f64)));
+    }
+    values.push(view.not_interruptible.map_or(Value::Nil, Value::Boolean));
+    Ok(MultiValue::from_vec(values))
+}
+
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
+    globals.set("UnitCastingInfo", lua.create_function(|lua, token: Value| unit_cast(lua, token, false))?)?;
+    globals.set("UnitChannelInfo", lua.create_function(|lua, token: Value| unit_cast(lua, token, true))?)?;
     globals.set("IsSpellKnown", lua.create_function(|lua, (id, pet): (Value, Option<bool>)| {
         let id = lua.coerce_number(id)?.filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))
             .ok_or_else(|| mlua::Error::runtime("Usage: IsSpellKnown(spellID [, isPet])"))? as u32;
