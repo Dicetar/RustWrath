@@ -404,6 +404,11 @@ pub(crate) fn fire(
     match notice {
         // A unit with no token flags carries no bridge (`0x60c4a0`).
         FieldNotice::Unit { guid, id } => {
+            if matches!(id, 41 | 107) && script.target() == benilla_ui::script::UiTarget::Wrath335 {
+                // Native slots own Wrath aura-list changes. Explicit Signal notices (including
+                // unit-flag visibility changes) still use the established signal path below.
+                return;
+            }
             if script.unit_has_field_watchers(guid) {
                 signal_unit(script, guid, id);
             }

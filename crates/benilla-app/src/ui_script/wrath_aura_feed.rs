@@ -1,0 +1,67 @@
+//! UI change detection over the native aura owner. The memo is limited to the resolver's
+//! currently reachable units and expires with its VM/session/world/object generation.
+
+use std::collections::BTreeMap;
+
+use bevy::prelude::*;
+use benilla_protocol_wrath::reducer::AuraSlot;
+use benilla_ui::script::{ScriptValue, UiTarget};
+
+#[derive(Default)]
+pub(crate) struct AuraMemo {
+    scope: Option<(u64, u64, u64)>,
+    visible: BTreeMap<u64, (u32, Vec<AuraSlot>)>,
+}
+
+pub(crate) fn feed(
+    mut vm: crate::script_calls::VmWith<Option<Res<'static, crate::wrath::WrathWorldView>>>,
+    mut memo: Local<AuraMemo>,
+) {
+    vm.feed(|script, world, fires| {
+        let Some(script) = script.filter(|script| script.target() == UiTarget::Wrath335) else {
+            *memo = AuraMemo::default();
+            return;
+        };
+        let Some(world) = world.filter(|world|
+            world.phase == Some(benilla_protocol_wrath::session::Phase::InWorld)) else {
+            *memo = AuraMemo::default();
+            return;
+        };
+        let scope = (script.session(), world.session_epoch, world.world_generation);
+        if memo.scope != Some(scope) {
+            memo.visible.clear();
+            memo.scope = Some(scope);
+        }
+        let mut retained = BTreeMap::new();
+        let mut visible = script.held_unit_guids();
+        visible.sort_unstable();
+        for guid in visible {
+            let previous = memo.visible.remove(&guid);
+            let Some(unit) = world.entities.get(&guid) else {
+                if previous.is_some() {
+                    for token in script.unit_tokens_of(guid) {
+                        fires.post("UNIT_AURA", vec![ScriptValue::Str(token)]);
+                    }
+                }
+                continue;
+            };
+            let changed = previous.as_ref().is_none_or(|(generation, auras)|
+                *generation != unit.generation || auras != &unit.auras);
+            if changed {
+                for token in script.unit_tokens_of(guid) {
+                    fires.post("UNIT_AURA", vec![ScriptValue::Str(token)]);
+                }
+            }
+            // Move unchanged lists rather than cloning every slot on movement-only frames.
+            let snapshot = if changed { (unit.generation, unit.auras.clone()) }
+                else { previous.expect("unchanged visible unit") };
+            retained.insert(guid, snapshot);
+        }
+        for &guid in memo.visible.keys() {
+            for token in script.unit_tokens_of(guid) {
+                fires.post("UNIT_AURA", vec![ScriptValue::Str(token)]);
+            }
+        }
+        memo.visible = retained;
+    });
+}

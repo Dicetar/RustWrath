@@ -17,6 +17,7 @@ pub(crate) mod addons;
 mod content;
 pub(crate) mod wrath_queries;
 mod wrath_cast;
+mod wrath_aura_feed;
 pub(crate) mod extract;
 /// The stock glue screens as the session and the instruments see them.
 pub(crate) mod glue;
@@ -428,6 +429,7 @@ impl Plugin for UiScriptPlugin {
             .init_resource::<WorldFrameTimes>()
             .add_systems(Update, feed_framerate.in_set(UiFeed))
             .add_systems(Update, wrath_cast::feed.in_set(UiFeed).after(UnitFeed))
+            .add_systems(Update, wrath_aura_feed::feed.in_set(UiFeed).after(UnitFeed).run_if(ingame_ui_up))
             .add_systems(
                 Update,
                 record_world_frame_time
