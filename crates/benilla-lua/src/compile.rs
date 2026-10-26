@@ -35,6 +35,10 @@ pub fn compile(src: &[u8], chunkname: &[u8], heap: &mut Heap) -> R<Rc<Proto>> {
     crate::parse::parse(src, chunkname, heap)
 }
 
+pub fn compile_with_dialect(src: &[u8], chunkname: &[u8], heap: &mut Heap, dialect: crate::Dialect) -> R<Rc<Proto>> {
+    crate::parse::parse_with_dialect(src, chunkname, heap, dialect)
+}
+
 /// 5.0's `luaO_int2fb` (`0x6f5810`): a size as a "floating point byte" `mmmmmxxx`, `xxx * 2^m`,
 /// halved and rounded up while it is 8 or more.
 pub fn int2fb(mut x: u32) -> u32 {
@@ -181,6 +185,7 @@ pub(crate) enum BinOpr {
     Sub,
     Mul,
     Div,
+    Mod,
     Pow,
     Concat,
     Ne,
@@ -197,6 +202,7 @@ pub(crate) enum BinOpr {
 pub(crate) enum UnOpr {
     Minus,
     Not,
+    Len,
 }
 
 /// 5.1's `BlockCnt`.
@@ -483,6 +489,7 @@ fn set_a(op: &mut Op, r: Reg) {
         | Op::Mul(a, ..)
         | Op::Div(a, ..)
         | Op::Pow(a, ..)
+        | Op::Mod(a, ..)
         | Op::AddK(a, ..)
         | Op::SubK(a, ..)
         | Op::MulK(a, ..)
@@ -492,6 +499,7 @@ fn set_a(op: &mut Op, r: Reg) {
         | Op::MulKR(a, ..)
         | Op::DivKR(a, ..)
         | Op::Unm(a, _)
+        | Op::Len(a, _)
         | Op::Not(a, _)
         | Op::Concat(a, ..)
         | Op::Closure(a, _) => *a = r,
@@ -522,6 +530,7 @@ fn fold(op: BinOpr, a: f64, b: f64) -> Option<f64> {
             }
             a / b
         }
+        BinOpr::Mod if b != 0.0 => a - (a / b).floor() * b,
         _ => return None,
     };
     (!r.is_nan()).then_some(r)
@@ -1250,6 +1259,10 @@ impl<'a> Parser<'a> {
             e1.k = Kind::Reloc(self.code(Op::Pow(0, o1, o2), 1)?);
             return Ok(());
         }
+        if op == BinOpr::Mod {
+            e1.k = Kind::Reloc(self.code(Op::Mod(0, o1, o2), 1)?);
+            return Ok(());
+        }
         if op == BinOpr::Concat {
             e1.k = Kind::Reloc(self.code(Op::Concat(0, o1 as Reg, o2 as Reg), 1)?);
             return Ok(());
@@ -1328,6 +1341,12 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             UnOpr::Not => self.codenot(e),
+            UnOpr::Len => {
+                let r = self.exp2anyreg(e)?;
+                self.freeexp(e);
+                e.k = Kind::Reloc(self.code(Op::Len(0, r), 1)?);
+                Ok(())
+            }
         }
     }
 
@@ -1337,7 +1356,7 @@ impl<'a> Parser<'a> {
             BinOpr::And => self.goiftrue(v),
             BinOpr::Or => self.goiffalse(v),
             BinOpr::Concat => self.exp2nextreg(v),
-            BinOpr::Add | BinOpr::Sub | BinOpr::Mul | BinOpr::Div | BinOpr::Pow => {
+            BinOpr::Add | BinOpr::Sub | BinOpr::Mul | BinOpr::Div | BinOpr::Mod | BinOpr::Pow => {
                 if v.is_numeral().is_none() {
                     self.exp2rk(v)?;
                 }
@@ -1386,7 +1405,7 @@ impl<'a> Parser<'a> {
                 self.exp2nextreg(e2)?;
                 self.codearith(op, e1, e2)?;
             }
-            BinOpr::Add | BinOpr::Sub | BinOpr::Mul | BinOpr::Div | BinOpr::Pow => {
+            BinOpr::Add | BinOpr::Sub | BinOpr::Mul | BinOpr::Div | BinOpr::Mod | BinOpr::Pow => {
                 self.codearith(op, e1, e2)?
             }
             BinOpr::Eq => self.codecomp(Cmp::Eq, true, e1, e2)?,

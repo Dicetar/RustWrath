@@ -22,6 +22,7 @@ pub mod value;
 pub mod vm;
 
 pub use compile::compile;
+pub use compile::compile_with_dialect;
 pub use dialect::Dialect;
 pub use lex::SyntaxError;
 pub use lib_base::{object_text, tostring_value};

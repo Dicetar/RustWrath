@@ -63,7 +63,11 @@ struct ConsControl {
 /// `luaY_parser`: a chunk compiled into its main function, which is vararg but declares no
 /// `arg` (only `parlist` does), so `arg` at chunk level is a global.
 pub(crate) fn parse(src: &[u8], chunkname: &[u8], heap: &mut Heap) -> R<Rc<Proto>> {
-    let lx = Lexer::new(src, chunkname)?;
+    parse_with_dialect(src, chunkname, heap, crate::Dialect::Vanilla50)
+}
+
+pub(crate) fn parse_with_dialect(src: &[u8], chunkname: &[u8], heap: &mut Heap, dialect: crate::Dialect) -> R<Rc<Proto>> {
+    let lx = if dialect.is_51() { Lexer::with_dialect(src, chunkname, dialect)? } else { Lexer::new(src, chunkname)? };
     let mut p = Parser {
         lx,
         fs: Vec::new(),
@@ -92,21 +96,23 @@ fn block_follow(t: Tok) -> bool {
     )
 }
 
-fn getunopr(t: Tok) -> Option<UnOpr> {
+fn getunopr(t: Tok, dialect: crate::Dialect) -> Option<UnOpr> {
     match t {
         Tok::Not => Some(UnOpr::Not),
         Tok::Char(b'-') => Some(UnOpr::Minus),
+        Tok::Char(b'#') if dialect.is_51() => Some(UnOpr::Len),
         _ => None,
     }
 }
 
 /// The 1.12 grammar's binary operators: 5.1's without `%`.
-fn getbinopr(t: Tok) -> Option<BinOpr> {
+fn getbinopr(t: Tok, dialect: crate::Dialect) -> Option<BinOpr> {
     Some(match t {
         Tok::Char(b'+') => BinOpr::Add,
         Tok::Char(b'-') => BinOpr::Sub,
         Tok::Char(b'*') => BinOpr::Mul,
         Tok::Char(b'/') => BinOpr::Div,
+        Tok::Char(b'%') if dialect.is_51() => BinOpr::Mod,
         Tok::Char(b'^') => BinOpr::Pow,
         Tok::Concat => BinOpr::Concat,
         Tok::Ne => BinOpr::Ne,
@@ -125,7 +131,7 @@ fn getbinopr(t: Tok) -> Option<BinOpr> {
 fn priority(op: BinOpr) -> (u8, u8) {
     match op {
         BinOpr::Add | BinOpr::Sub => (6, 6),
-        BinOpr::Mul | BinOpr::Div => (7, 7),
+        BinOpr::Mul | BinOpr::Div | BinOpr::Mod => (7, 7),
         BinOpr::Pow => (10, 9),
         BinOpr::Concat => (5, 4),
         BinOpr::Eq | BinOpr::Ne | BinOpr::Lt | BinOpr::Le | BinOpr::Gt | BinOpr::Ge => (3, 3),
@@ -1298,7 +1304,7 @@ impl<'a> Parser<'a> {
     /// answers the first untreated operator.
     fn subexpr(&mut self, limit: u8) -> R<(Exp, Option<BinOpr>)> {
         self.enterlevel()?;
-        let mut v = match getunopr(self.tok()) {
+        let mut v = match getunopr(self.tok(), self.lx.dialect) {
             Some(uop) => {
                 self.next()?;
                 let (mut v, _) = self.subexpr(UNARY_PRIORITY)?;
@@ -1307,7 +1313,7 @@ impl<'a> Parser<'a> {
             }
             None => self.simpleexp()?,
         };
-        let mut op = getbinopr(self.tok());
+        let mut op = getbinopr(self.tok(), self.lx.dialect);
         while let Some(o) = op {
             let (left, right) = priority(o);
             if left <= limit {

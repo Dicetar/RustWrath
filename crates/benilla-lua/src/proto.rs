@@ -64,6 +64,7 @@ pub enum Arith {
     Sub,
     Mul,
     Div,
+    Mod,
     Pow,
 }
 
@@ -97,6 +98,7 @@ pub enum Op {
     Mul(Reg, Reg, Reg),
     Div(Reg, Reg, Reg),
     Pow(Reg, Rk, Rk),
+    Mod(Reg, Rk, Rk),
     /// `R(a) = R(b) op K(c)`: the common `i + 1`, without the register-or-constant test.
     AddK(Reg, Reg, u16),
     SubK(Reg, Reg, u16),
@@ -108,6 +110,7 @@ pub enum Op {
     MulKR(Reg, u16, Reg),
     DivKR(Reg, u16, Reg),
     Unm(Reg, Reg),
+    Len(Reg, Reg),
     Not(Reg, Reg),
     /// `R(a) = R(b) .. ... .. R(c)`.
     Concat(Reg, Reg, Reg),
@@ -486,7 +489,7 @@ impl Proto {
             let r = |x: Reg| reg(x as usize);
             let ku = |i: u16| k(i as usize);
             match op {
-                Op::Move(x, y) | Op::Unm(x, y) | Op::Not(x, y) => {
+                Op::Move(x, y) | Op::Unm(x, y) | Op::Len(x, y) | Op::Not(x, y) => {
                     r(x);
                     r(y);
                 }
@@ -513,7 +516,7 @@ impl Proto {
                     r(y);
                     rk(z);
                 }
-                Op::SetTable(x, y, z) | Op::Pow(x, y, z) => {
+                Op::SetTable(x, y, z) | Op::Pow(x, y, z) | Op::Mod(x, y, z) => {
                     r(x);
                     rk(y);
                     rk(z);

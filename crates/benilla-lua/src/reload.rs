@@ -34,12 +34,16 @@ pub struct Report {
 /// left it after a reload. Both compile side by side in a scratch heap, so a string constant
 /// reads the same in each; `false` when either does not compile.
 pub fn top_level_changed(old: &[u8], new: &[u8]) -> bool {
+    top_level_changed_with_dialect(old, new, crate::Dialect::Vanilla50)
+}
+
+pub fn top_level_changed_with_dialect(old: &[u8], new: &[u8], dialect: crate::Dialect) -> bool {
     const NAME: &[u8] = b"=[top level]";
     let mut heap = crate::heap::Heap::default();
-    let Ok(a) = crate::compile::compile(old, NAME, &mut heap) else {
+    let Ok(a) = crate::compile::compile_with_dialect(old, NAME, &mut heap, dialect) else {
         return false;
     };
-    let Ok(b) = crate::compile::compile(new, NAME, &mut heap) else {
+    let Ok(b) = crate::compile::compile_with_dialect(new, NAME, &mut heap, dialect) else {
         return false;
     };
     a.code_digest() != b.code_digest()
@@ -63,7 +67,8 @@ impl Vm {
     /// closures of the same function. A syntax error leaves everything as it was.
     #[allow(clippy::mutable_key_type)] // as `walk`
     pub fn hot_reload(&mut self, chunkname: &[u8], src: &[u8]) -> Result<Report, SyntaxError> {
-        let root = crate::compile::compile(src, chunkname, &mut self.heap)?;
+        let dialect = self.dialect();
+        let root = crate::compile::compile_with_dialect(src, chunkname, &mut self.heap, dialect)?;
         // A constant the compiler could not make: `not enough memory`, as `Vm::load` answers.
         if self.heap.take_oom() {
             return Err(SyntaxError(b"not enough memory".to_vec()));
@@ -169,8 +174,9 @@ impl Vm {
         select: impl Fn(&Proto) -> bool,
     ) -> Result<usize, SyntaxError> {
         const PROBE: &[u8] = b"=[hot reload]";
-        let want = crate::compile::compile(old, PROBE, &mut self.heap)?;
-        crate::compile::compile(new, PROBE, &mut self.heap)?;
+        let dialect = self.dialect();
+        let want = crate::compile::compile_with_dialect(old, PROBE, &mut self.heap, dialect)?;
+        crate::compile::compile_with_dialect(new, PROBE, &mut self.heap, dialect)?;
         let digest = want.code_digest();
         let mut names: Vec<Bytes> = Vec::new();
         for f in self.heap.funcs_mut() {
@@ -187,7 +193,7 @@ impl Vm {
         }
         let mut fresh: HashMap<Bytes, Rc<Proto>> = HashMap::new();
         for name in names {
-            let p = crate::compile::compile(new, &name, &mut self.heap)?;
+            let p = crate::compile::compile_with_dialect(new, &name, &mut self.heap, dialect)?;
             fresh.insert(name, p);
         }
         if self.frames_empty() {

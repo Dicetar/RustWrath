@@ -136,6 +136,7 @@ pub struct Names {
 
 #[derive(Clone)]
 pub struct Vm {
+    dialect: crate::Dialect,
     pub heap: Heap,
     /// The value stack. Crate-internal: frames address it through raw pointers, so only the VM
     /// changes its length; the host reads and writes slots through `stack` and `stack_mut`.
@@ -396,6 +397,12 @@ impl Default for Vm {
 
 impl Vm {
     pub fn new() -> Vm {
+        Self::with_dialect(crate::Dialect::Vanilla50)
+    }
+
+    pub fn dialect(&self) -> crate::Dialect { self.dialect }
+
+    pub fn with_dialect(dialect: crate::Dialect) -> Vm {
         let mut heap = Heap::default();
         let mut s = |b: &[u8]| heap.intern(b);
         let names = Names {
@@ -424,6 +431,7 @@ impl Vm {
         let globals = heap.new_table(0, 4);
         let registry = heap.new_table(4, 4);
         let mut vm = Vm {
+            dialect,
             heap,
             stack: vec![Value::Nil; BASIC_STACK_SIZE],
             top: 0,
@@ -533,7 +541,7 @@ impl Vm {
     pub fn tonumber(&self, v: Value) -> Option<f64> {
         match v.unpack() {
             V::Num(n) => Some(n),
-            V::Str(s) => str2d(self.heap.str(s)),
+            V::Str(s) => if self.dialect.is_51() { crate::number::str2d_51(self.heap.str(s)) } else { str2d(self.heap.str(s)) },
             _ => None,
         }
     }
@@ -597,7 +605,7 @@ impl Vm {
 
     /// Compile a chunk into a function over the globals.
     pub fn load(&mut self, src: &[u8], chunkname: &[u8]) -> Result<Value, crate::SyntaxError> {
-        let proto = crate::compile::compile(src, chunkname, &mut self.heap)?;
+        let proto = crate::compile::compile_with_dialect(src, chunkname, &mut self.heap, self.dialect)?;
         self.heap.charge_proto(&proto);
         // A constant the compiler could not make: 5.1's `LUA_ERRMEM`.
         if self.heap.oom {
@@ -1213,7 +1221,8 @@ impl Vm {
                 Arith::Sub => crate::number::x87_op(x - y, x, y),
                 Arith::Mul => crate::number::x87_op(x * y, x, y),
                 Arith::Div => crate::number::x87_op(x / y, x, y),
-                Arith::Pow => return self.pow_global(x, y),
+                Arith::Mod => x - (x / y).floor() * y,
+                Arith::Pow => if self.dialect.is_51() { x.powf(y) } else { return self.pow_global(x, y) },
             }));
         }
         let name = match op {
@@ -1221,6 +1230,7 @@ impl Vm {
             Arith::Sub => self.names.sub,
             Arith::Mul => self.names.mul,
             Arith::Div => self.names.div,
+            Arith::Mod => self.heap.intern(b"__mod"),
             Arith::Pow => self.names.pow,
         };
         match self.bin_tm(a, b, name)? {
@@ -2976,6 +2986,26 @@ impl Vm {
                         let v = slow!(self.arith(Arith::Pow, x, y, (rkreg!(b), rkreg!(c))))?;
                         r!(a) = v;
                     }
+                    Op::Mod(a, b, c) => {
+                        let (x, y) = (rk!(b), rk!(c));
+                        let value = slow!(self.arith(Arith::Mod, x, y, (rkreg!(b), rkreg!(c))))?;
+                        r!(a) = value;
+                    }
+                    Op::Len(a, b) => {
+                        let x = r!(b);
+                        let value = match x.unpack() {
+                            V::Str(s) => Value::Num(self.heap.str(s).len() as f64),
+                            V::Table(t) => Value::Num(self.heap.table(t).length() as f64),
+                            _ => {
+                                let name = self.heap.intern(b"__len");
+                                match slow!(self.bin_tm(x, Value::Nil, name))? {
+                                    Some(value) => value,
+                                    None => return Err(self.type_error(x, Some(b as usize), "get length of")),
+                                }
+                            }
+                        };
+                        r!(a) = value;
+                    }
                     Op::Unm(a, b) => {
                         let x = r!(b);
                         match self.tonumber(x) {
@@ -3543,6 +3573,7 @@ fn symbexec(p: &Proto, lastpc: usize, reg: usize) -> Option<usize> {
             | Op::Mul(a, ..)
             | Op::Div(a, ..)
             | Op::Pow(a, ..)
+            | Op::Mod(a, ..)
             | Op::AddK(a, ..)
             | Op::SubK(a, ..)
             | Op::MulK(a, ..)
@@ -3552,6 +3583,7 @@ fn symbexec(p: &Proto, lastpc: usize, reg: usize) -> Option<usize> {
             | Op::MulKR(a, ..)
             | Op::DivKR(a, ..)
             | Op::Unm(a, _)
+            | Op::Len(a, _)
             | Op::Not(a, _)
             | Op::Concat(a, ..)
             | Op::JmpIf(a, ..)
