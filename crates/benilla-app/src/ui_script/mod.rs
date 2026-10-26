@@ -15,6 +15,7 @@ use benilla_world::schedule::WorldStage;
 /// The addon folder: discovery, manifests, the enable file and the load walk.
 pub(crate) mod addons;
 mod content;
+pub(crate) mod wrath_queries;
 pub(crate) mod extract;
 /// The stock glue screens as the session and the instruments see them.
 pub(crate) mod glue;

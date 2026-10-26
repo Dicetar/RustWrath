@@ -44,6 +44,11 @@ fn string(lua: &Lua, value: Option<&str>) -> mlua::Result<Value> {
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
+    globals.set("IsSpellKnown", lua.create_function(|lua, (id, pet): (Value, Option<bool>)| {
+        let id = lua.coerce_number(id)?.filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))
+            .ok_or_else(|| mlua::Error::runtime("Usage: IsSpellKnown(spellID [, isPet])"))? as u32;
+        Ok(host::with_host(lua, |host| host.spell_known(id, pet.unwrap_or(false))).flatten())
+    })?)?;
     globals.set("GetSpellInfo", lua.create_function(|lua, args: MultiValue| {
         let Some((_, view)) = query(lua, &args)? else { return Ok(MultiValue::from_vec(vec![Value::Nil])) };
         Ok(MultiValue::from_vec(vec![

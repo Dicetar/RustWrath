@@ -28,6 +28,10 @@ pub trait CallHost {
         None
     }
 
+    fn spell_known(&mut self, _id: u32, _pet: bool) -> Option<bool> {
+        None
+    }
+
     /// Apply `call`, with the input events it was made under raised. The host is out of the VM
     /// while this runs, so a call a handler makes meanwhile waits, and applies next, ahead of any
     /// made after this one, or at a signal point the apply reaches ([`UiScript::signal_point`]).
