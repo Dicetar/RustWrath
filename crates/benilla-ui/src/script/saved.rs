@@ -64,7 +64,6 @@ impl super::UiScript {
     pub fn saved_variables_bytes_for(&self, names: &[String]) -> Vec<u8> {
         let mut out = Vec::new();
         let mut unwritable = Vec::new();
-        let model = self.lua().app_data_ref::<Model>().expect("model");
         for name in names {
             let value: Value = match self.lua().globals().get(name.as_str()) {
                 Ok(v) => v,
@@ -74,7 +73,13 @@ impl super::UiScript {
                 }
             };
             let mut seen = HashSet::new();
-            match serialize(&value, 1, &mut seen, &model) {
+            // Global lookup may invoke addon __index code. Borrow the model only once that
+            // callback has returned; serialization uses raw table iteration/handle inspection.
+            let text = {
+                let model = self.lua().app_data_ref::<Model>().expect("model");
+                serialize(&value, 1, &mut seen, &model)
+            };
+            match text {
                 Some(text) => {
                     out.extend_from_slice(name.as_bytes());
                     out.extend_from_slice(b" = ");
@@ -84,7 +89,6 @@ impl super::UiScript {
                 None => unwritable.push(name.clone()),
             }
         }
-        drop(model);
         if !unwritable.is_empty() {
             self.model_mut().record_warning(format!(
                 "saved variables: not serializable, skipped: {}",
@@ -343,7 +347,7 @@ fn table(
     if depth > MAX_DEPTH || !seen.insert(t.to_pointer()) {
         return None;
     }
-    let mut ints: Vec<(i64, Vec<u8>)> = Vec::new();
+    let mut ints: Vec<(f64, String, Vec<u8>)> = Vec::new();
     let mut strs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for pair in t.pairs::<Value, Value>() {
         let Ok((k, v)) = pair else { continue };
@@ -351,15 +355,24 @@ fn table(
             continue; // an unserializable entry drops, like the reference's
         };
         match k {
-            Value::Integer(i) => ints.push((i, value)),
+            Value::Integer(i) => ints.push((i as f64, i.to_string(), value)),
             // A float key that is integral is the same slot as the integer in Lua 5.1.
-            Value::Number(n) if n.fract() == 0.0 => ints.push((n as i64, value)),
+            Value::Number(n) if n.fract() == 0.0 => {
+                if model.target == super::UiTarget::Wrath335 {
+                    if let Some(literal) = number(n) {
+                        ints.push((n, literal, value));
+                    }
+                } else {
+                    let key = n as i64;
+                    ints.push((key as f64, key.to_string(), value));
+                }
+            }
             Value::String(s) => strs.push((s.as_bytes().to_vec(), value)),
             _ => continue, // a table/bool/function key cannot be written as a literal
         }
     }
     seen.remove(&t.to_pointer());
-    ints.sort_by_key(|(k, _)| *k);
+    ints.sort_by(|(a, _, _), (b, _, _)| a.total_cmp(b));
     // Byte order, the same as `str` order for UTF-8 keys.
     strs.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -374,8 +387,8 @@ fn table(
         out.extend_from_slice(value);
         out.extend_from_slice(b",\n");
     };
-    for (k, v) in ints {
-        entry(k.to_string().as_bytes(), &v);
+    for (_, key, value) in ints {
+        entry(key.as_bytes(), &value);
     }
     for (k, v) in strs {
         entry(&quote(&k), &v);
