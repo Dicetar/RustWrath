@@ -3245,4 +3245,94 @@ mod tests {
             }
         );
     }
+    #[test]
+    fn area_trigger_message_uses_the_length_prefix() {
+        let mut body = 6u32.to_le_bytes().to_vec();
+        body.extend_from_slice(b"hello\0");
+        assert_eq!(
+            read_area_trigger_message(&body).unwrap(),
+            ServerEvent::AreaTriggerMessage { text: "hello".into() }
+        );
+        let mut overrun = 10u32.to_le_bytes().to_vec();
+        overrun.extend_from_slice(b"hi\0");
+        assert!(read_area_trigger_message(&overrun).is_err());
+        let mut unterminated = 5u32.to_le_bytes().to_vec();
+        unterminated.extend_from_slice(b"hello");
+        assert!(read_area_trigger_message(&unterminated).is_err());
+    }
+
+    #[test]
+    fn query_time_keeps_the_reset_word() {
+        let mut body = 1_700_000_000u32.to_le_bytes().to_vec();
+        body.extend_from_slice(&42_000u32.to_le_bytes());
+        assert_eq!(
+            read_server_time(&body).unwrap(),
+            ServerEvent::ServerUnixTime {
+                unix_time: 1_700_000_000,
+                reset_in_secs: 42_000,
+            }
+        );
+    }
+
+    #[test]
+    fn inventory_failure_keeps_both_item_guids() {
+        let mut body = vec![2u8];
+        body.extend_from_slice(&0x11u64.to_le_bytes());
+        body.extend_from_slice(&0x22u64.to_le_bytes());
+        body.push(7);
+        assert_eq!(
+            read_inventory_failure(&body).unwrap(),
+            ServerEvent::InventoryFailure {
+                reason: 2,
+                item: Some(0x11),
+                item2: Some(0x22),
+                bag_type: 7,
+                required_level: None,
+                item_limit_category: None,
+            }
+        );
+    }
+
+    #[test]
+    fn item_text_has_a_present_and_absent_form() {
+        let mut present = vec![0u8];
+        present.extend_from_slice(&0x33u64.to_le_bytes());
+        present.extend_from_slice(b"page\0");
+        assert_eq!(
+            read_item_text(&present).unwrap(),
+            ServerEvent::ItemText {
+                has_text: true,
+                item_guid: 0x33,
+                text: "page".into(),
+            }
+        );
+        assert_eq!(
+            read_item_text(&[1]).unwrap(),
+            ServerEvent::ItemText {
+                has_text: false,
+                item_guid: 0,
+                text: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn cast_failure_keeps_the_attempt_identity() {
+        let mut body = vec![7u8];
+        body.extend_from_slice(&133u32.to_le_bytes());
+        body.push(2);
+        match read_cast_failed(&body).unwrap() {
+            ServerEvent::CastFailed {
+                spell_id,
+                cast_count,
+                raw_reason,
+                ..
+            } => {
+                assert_eq!(spell_id, 133);
+                assert_eq!(cast_count, 7);
+                assert_eq!(raw_reason, 2);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
 }
