@@ -158,12 +158,16 @@ fn setmetatable(vm: &mut Vm, nargs: usize) -> R<usize> {
 
 /// 5.0's `getfunc` (`0x702af0`): argument 1 as a function, or the function at that stack level,
 /// the level optional (1) for both `getfenv` and `setfenv` (`luaL_optnumber`, `0x702b22`).
-fn getfunc(vm: &mut Vm, nargs: usize) -> R<Value> {
+fn getfunc(vm: &mut Vm, nargs: usize, optional: bool) -> R<Value> {
     let a = vm.arg(nargs, 0);
     if let V::Func(_) = a.unpack() {
         return Ok(a);
     }
-    let level = vm.opt_int(nargs, 1, 1)?;
+    let level = if vm.dialect().is_51() && !optional {
+        vm.check_int(nargs, 1)?
+    } else {
+        vm.opt_int(nargs, 1, 1)?
+    };
     if level < 0 {
         return Err(vm.arg_error(1, "level must be non-negative"));
     }
@@ -197,8 +201,11 @@ fn protected_env(vm: &mut Vm, env: crate::value::TableRef) -> Value {
 
 /// 5.0's `luaB_getfenv` (`0x702ac0`): the function's environment, or its `__fenv` when it has one.
 fn getfenv(vm: &mut Vm, nargs: usize) -> R<usize> {
-    let f = getfunc(vm, nargs)?;
+    let f = getfunc(vm, nargs, true)?;
     let env = env_of(vm, f);
+    if vm.dialect().is_51() {
+        return Ok(vm.ret1(Value::Table(env)));
+    }
     let fenv = protected_env(vm, env);
     let v = if fenv.is_nil() {
         Value::Table(env)
@@ -213,9 +220,9 @@ fn getfenv(vm: &mut Vm, nargs: usize) -> R<usize> {
 /// a native refuses (`0x702c70`). It answers nothing (`0x702c80`).
 fn setfenv(vm: &mut Vm, nargs: usize) -> R<usize> {
     let t = vm.check_table(nargs, 2)?;
-    let f = getfunc(vm, nargs)?;
+    let f = getfunc(vm, nargs, false)?;
     let env = env_of(vm, f);
-    if !protected_env(vm, env).is_nil() {
+    if !vm.dialect().is_51() && !protected_env(vm, env).is_nil() {
         return Err(vm.error_at(1, "`setfenv' cannot change a protected environment"));
     }
     let first = vm.arg(nargs, 0);
@@ -226,12 +233,15 @@ fn setfenv(vm: &mut Vm, nargs: usize) -> R<usize> {
     match f.unpack() {
         V::Func(fr) => {
             if !vm.set_function_env(fr, t) {
+                if vm.dialect().is_51() {
+                    return Err(vm.error_at(1, "'setfenv' cannot change environment of given object"));
+                }
                 return Err(vm.error_at(1, "`setfenv' cannot change environment of given function"));
             }
         }
         _ => unreachable!("getfunc answers a function"),
     }
-    Ok(0)
+    if vm.dialect().is_51() { Ok(vm.ret1(f)) } else { Ok(0) }
 }
 
 /// `luaB_next`: `lua_next` replaces the key argument with the next key and pushes its value,
