@@ -63,6 +63,7 @@ pub(crate) mod addon;
 mod addon_enable;
 pub mod addon_gate;
 mod target;
+mod posthook;
 pub use target::UiTarget;
 mod char_name;
 mod client;
@@ -680,6 +681,9 @@ fn open_state_for_target(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
     }
     taint::install(&lua)?;
     stdlib::install(&lua)?;
+    if target == UiTarget::Wrath335 {
+        posthook::install(&lua)?;
+    }
 
     Ok(lua)
 }
