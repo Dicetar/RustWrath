@@ -411,6 +411,26 @@ pub fn autostore_bank_item(bag: u8, slot: u8) -> Vec<u8> {
     vec![bag, slot]
 }
 
+/// `CMSG_AREATRIGGER` (`MiscHandler.cpp:700`): the AreaTrigger.dbc id.
+pub fn area_trigger(trigger_id: u32) -> Vec<u8> {
+    trigger_id.to_le_bytes().to_vec()
+}
+
+/// `CMSG_QUESTLOG_REMOVE_QUEST` (`QuestHandler.cpp:400`): the log slot byte.
+pub fn questlog_remove(slot: u8) -> Vec<u8> {
+    vec![slot]
+}
+
+/// `CMSG_QUEST_CONFIRM_ACCEPT` (`QuestHandler.cpp:453`): the escort quest id.
+pub fn quest_confirm_accept(quest: u32) -> Vec<u8> {
+    quest.to_le_bytes().to_vec()
+}
+
+/// `CMSG_PUSHQUESTTOPARTY` (`QuestHandler.cpp:540`): the quest id.
+pub fn push_quest_to_party(quest: u32) -> Vec<u8> {
+    quest.to_le_bytes().to_vec()
+}
+
 /// `CMSG_BINDER_ACTIVATE` (`NPCHandler.cpp:286`): the binder guid.
 pub fn binder_activate(binder: u64) -> Vec<u8> {
     binder.to_le_bytes().to_vec()
@@ -1070,6 +1090,18 @@ pub enum ServerEvent {
     Notification {
         text: String,
     },
+    AreaTriggerMessage {
+        text: String,
+    },
+    QuestConfirmAccept {
+        quest_id: u32,
+        title: String,
+        sender: u64,
+    },
+    QuestPushResult {
+        member: u64,
+        msg: u8,
+    },
     BinderConfirm {
         binder: u64,
     },
@@ -1226,6 +1258,11 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_GM_MESSAGECHAT => read_message_chat(body, true),
         SMSG_CHAT_PLAYER_NOT_FOUND => Reader::new(body).cstring().map(|name| ServerEvent::ChatPlayerNotFound { name }),
         SMSG_NOTIFICATION => Reader::new(body).cstring().map(|text| ServerEvent::Notification { text }),
+        SMSG_AREA_TRIGGER_MESSAGE => Reader::new(body)
+            .cstring()
+            .map(|text| ServerEvent::AreaTriggerMessage { text }),
+        SMSG_QUEST_CONFIRM_ACCEPT => read_quest_confirm_accept(body),
+        MSG_QUEST_PUSH_RESULT => read_quest_push_result(body),
         SMSG_BINDER_CONFIRM => read_binder_confirm(body),
         SMSG_SUMMON_REQUEST => read_summon_request(body),
         MSG_TALENT_WIPE_CONFIRM => read_talent_wipe_confirm(body),
@@ -1402,6 +1439,23 @@ fn read_message_chat(b: &[u8], gm: bool) -> Result<ServerEvent> {
         chat_tag,
         achievement_id,
     }))
+}
+
+fn read_quest_confirm_accept(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::QuestConfirmAccept {
+        quest_id: r.u32()?,
+        title: r.cstring()?,
+        sender: r.u64()?,
+    })
+}
+
+fn read_quest_push_result(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::QuestPushResult {
+        member: r.u64()?,
+        msg: r.u8()?,
+    })
 }
 
 fn read_binder_confirm(b: &[u8]) -> Result<ServerEvent> {

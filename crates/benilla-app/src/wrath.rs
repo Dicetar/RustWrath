@@ -68,7 +68,8 @@ use benilla_protocol::messages::{
     NpcTextBlock as ProtocolNpcTextBlock, PeriodicAuraLog as ProtocolPeriodicAuraLog,
     PeriodicTick as ProtocolPeriodicTick, QuestComplete, QuestDetails, QuestGiverList,
     QuestListEntry, QuestObjective, QuestOfferReward, QuestRequestItems, QuestRewardItem,
-    QuestTemplate, SpellDamageLog as ProtocolSpellDamageLog,
+    QuestConfirmAccept as ProtocolQuestConfirmAccept, QuestTemplate,
+    SpellDamageLog as ProtocolSpellDamageLog,
     ChatMessage as ProtocolChatMessage, TrainerSpell as ProtocolTrainerSpell,
     VendorItem as ProtocolVendorItem,
 };
@@ -1904,6 +1905,24 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             error,
         }],
         WrathGameplayEvent::ShowBank { banker } => vec![SessionEvent::ShowBank { banker }],
+        WrathGameplayEvent::AreaTriggerMessage { text } => {
+            vec![SessionEvent::AreaTriggerMessage { text }]
+        }
+        WrathGameplayEvent::QuestConfirmAccept {
+            quest_id,
+            title,
+            sender,
+        } => vec![SessionEvent::QuestConfirmAccept(ProtocolQuestConfirmAccept {
+            quest_id,
+            title,
+            sender,
+        })],
+        WrathGameplayEvent::QuestPushResult { member, msg } => {
+            vec![SessionEvent::QuestPushResult {
+                member,
+                msg: benilla_protocol::messages::QuestShareMsg(msg),
+            }]
+        }
         WrathGameplayEvent::BinderConfirm { binder } => {
             vec![SessionEvent::BinderConfirm { binder }]
         }
@@ -2469,6 +2488,22 @@ fn wrath_tap_commands(
             ClientCommand::TrainerBuySpell { trainer, spell_id } => Some((
                 benilla_protocol_wrath::opcode::CMSG_TRAINER_BUY_SPELL,
                 gameplay::trainer_buy_spell(trainer, spell_id),
+            )),
+            ClientCommand::AreaTrigger { trigger_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AREATRIGGER,
+                gameplay::area_trigger(trigger_id),
+            )),
+            ClientCommand::QuestlogRemove { slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUESTLOG_REMOVE_QUEST,
+                gameplay::questlog_remove(slot),
+            )),
+            ClientCommand::QuestConfirmAccept { quest } => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUEST_CONFIRM_ACCEPT,
+                gameplay::quest_confirm_accept(quest),
+            )),
+            ClientCommand::PushQuestToParty { quest } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PUSHQUESTTOPARTY,
+                gameplay::push_quest_to_party(quest),
             )),
             ClientCommand::BinderActivate { binder } => Some((
                 benilla_protocol_wrath::opcode::CMSG_BINDER_ACTIVATE,

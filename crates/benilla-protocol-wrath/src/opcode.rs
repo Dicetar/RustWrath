@@ -246,6 +246,14 @@ pub const SMSG_QUERY_TIME_RESPONSE: u16 = 0x1CF;
 pub const MSG_RANDOM_ROLL: u16 = 0x1FB;
 pub const CMSG_PAGE_TEXT_QUERY: u32 = 0x05A;
 pub const SMSG_PAGE_TEXT_QUERY_RESPONSE: u16 = 0x05B;
+/// Area triggers (`MiscHandler.cpp:700`) and quest-log/share verbs (`QuestHandler.cpp:400-635`).
+pub const CMSG_AREATRIGGER: u32 = 0x0B4;
+pub const SMSG_AREA_TRIGGER_MESSAGE: u16 = 0x2B8;
+pub const CMSG_QUESTLOG_REMOVE_QUEST: u32 = 0x194;
+pub const CMSG_QUEST_CONFIRM_ACCEPT: u32 = 0x19B;
+pub const SMSG_QUEST_CONFIRM_ACCEPT: u16 = 0x19C;
+pub const CMSG_PUSHQUESTTOPARTY: u32 = 0x19D;
+pub const MSG_QUEST_PUSH_RESULT: u16 = 0x276;
 pub const SMSG_BINDPOINTUPDATE: u16 = 0x155;
 pub const CMSG_QUERY_TIME: u32 = 0x1CE;
 pub const CMSG_PING: u32 = 0x1DC;

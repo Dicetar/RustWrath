@@ -62,6 +62,16 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: area triggers and quest log/share verbs (committed with this record)
+
+Added CMSG_AREATRIGGER 0x0B4 (u32 AreaTrigger.dbc id) plus its
+SMSG_AREA_TRIGGER_MESSAGE text, CMSG_QUESTLOG_REMOVE_QUEST 0x194 (slot byte),
+CMSG_QUEST_CONFIRM_ACCEPT 0x19B / SMSG_QUEST_CONFIRM_ACCEPT 0x19C (quest id, title,
+sender), CMSG_PUSHQUESTTOPARTY 0x19D and MSG_QUEST_PUSH_RESULT 0x276 (member guid + verdict).
+The stock quest/share owners now receive their replies, and area triggers reach the server
+instead of being dropped. The decline packet is left unmapped: 12340 reads a quest id the stock
+command does not carry.
+
 ## Slice: one-shot services and queries (committed with this record)
 
 Added the service/query verbs the stock UI emits but the tap dropped: binder activation and its
