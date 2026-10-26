@@ -1,5 +1,15 @@
 # Astra six-hour implementation campaign
 
+## Owner priority correction — authoritative current scope
+
+The owner's later instruction overrides the procgen-oriented wording below: faithful replacement of the CURRENT AzerothCore server, client and installed mods is the priority; toggleable Elden Ring-style combat and suitable UI are the next product capability. Procgen is a side project and its work is stopped. The six-hour campaign remains active with its original start/checkpoint times. Do not resume procgen from the older persistent-goal wording or treat the completed item-content commit as the campaign outcome.
+
+OC's replacement prompt assigns protocol/session/reducer, gameplay authority, world/assets and server/mod boundary to OC. Astra takes UI-host/API and installed-addon compatibility plus combat-mode presentation. Active implementation claim: `crates/benilla-ui/**`, `crates/benilla-lua/**`, `crates/benilla-mlua/**` and existing app UI lifecycle/loader owners under `crates/benilla-app/src/ui_script/**`, including its actual `lifecycle.rs`. Claim exact files in checkpoints before each edit. Do not edit OC's wrath.rs/session/bridge or assets claims concurrently. No new dependency/lock change is currently planned.
+
+Source findings directing the first main-project subsystem: the scripting engine enforces donor Lua 5.0 grammar/libraries; addon gates and build APIs are fixed to donor 11200/5875; source selection still needs tracing against the active Wrath profile. Implement real version-aware engine/host behavior and installed-mod API paths, not merely a version-string change. Preserve donor-mode semantics and existing owners. No build/test/new tests/runtime authorization is inferred.
+
+The remaining procgen description is the superseded initial assignment, retained only to explain the already committed 8998d3d1. It does not determine current priority or completion criteria.
+
 Direct owner instruction: a six-hour coding goal, continuing through substantial implementation rather than closing at a short milestone. Started 2026-10-26 09:00:47 Europe/Moscow (06:00:47 UTC). Six-hour checkpoint: 15:00:47 Europe/Moscow (12:00:47 UTC). Record actual work and remaining scope; no artificial waiting, background-work claims or invented execution evidence. Keep the persistent goal active across turns/compactions and intermediate commits.
 
 Source admission: 08601ddd plus OC-owned in-flight `benilla-app/src/wrath.rs`. The old untracked patch helper remains preserved. OC owns the native WM observation/action/runtime work; this campaign must not absorb its changes or compete for that ownership.

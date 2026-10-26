@@ -4,6 +4,25 @@
 
 use std::fmt::Write;
 
+/// Lua 5.1's decimal/hexadecimal string conversion for the 32-bit Windows target.
+/// The hexadecimal fallback reuses the existing MSVC unsigned-long conversion. Decimal
+/// overflow/underflow retains the parsed floating result; alphabetic inf/nan are not numerals.
+pub(crate) fn str2d_51(s: &[u8]) -> Option<f64> {
+    let s = &s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())];
+    let mut start = 0;
+    while s.get(start).is_some_and(|b| is_space(*b)) { start += 1; }
+    let unsigned = start + usize::from(matches!(s.get(start), Some(b'+' | b'-')));
+    if s.get(unsigned) == Some(&b'0') && matches!(s.get(unsigned + 1), Some(b'x' | b'X')) {
+        let (value, end) = strtoul(s, 16);
+        return (end > 0 && s[end..].iter().all(|b| is_space(*b))).then_some(f64::from(value));
+    }
+    let end = decimal_end(s)?;
+    if !s[end..].iter().all(|b| is_space(*b)) || s[start..end].iter().any(|b| matches!(b, b'd' | b'D')) {
+        return None;
+    }
+    std::str::from_utf8(&s[start..end]).ok()?.parse().ok()
+}
+
 /// C's `isspace`.
 fn is_space(b: u8) -> bool {
     matches!(b, 0x20 | 0x09..=0x0D)

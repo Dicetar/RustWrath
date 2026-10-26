@@ -1,0 +1,13 @@
+# ACTIVE Astra claim — Wrath scripting and installed-addon compatibility
+
+Owner priority correction: faithful current AzerothCore/client/mod replacement first, optional ER combat/UI next; procgen stopped. This is implementation inside the six-hour campaign, not a new short goal. Original checkpoint remains 15:00:47 Europe/Moscow.
+
+Current source admission: 8998d3d1 plus OC-owned session/client/publisher edits. Preserve them and the old patch helper. Exact first-slice files: `crates/benilla-lua/src/{lib.rs,dialect.rs,lex.rs,number.rs}` and this checkpoint plus the six-hour package priority correction. Next dependent slices may claim parser/compiler/VM/prototype files and benilla-mlua/UI host/lifecycle files after source inspection, before editing. No test files/cases or checks are authorized.
+
+Observed blockers: the interpreter is a deliberate Lua 5.0-compatible donor, not a ready Wrath Lua 5.1 host. Its parser rejects expression varargs, length and modulo; lexing rejects levelled long brackets and hexadecimal numerals. Libraries and vararg/generic-for VM semantics also differ. Merely advertising interface 30300 would be false completion. First implement an explicit language boundary while retaining donor defaults, then complete code generation/runtime/library paths before selecting it in production UI construction.
+
+Primary reference for language behavior: official Lua 5.1 source, especially llex.c, lparser.c, lobject.c and lvm.c. This is a language-reference baseline, not proof of every WoW-specific 12340 patch. Actual installed-mod behaviors and client-specific differences remain independently source-grounded requirements. No interpreter/client/game execution has occurred.
+
+First source milestone: explicit Dialect selection and a Lua-5.1 lexical path for levelled long strings/comments, CR/LF pairing and string line handling, full numeral-token rejection, hexadecimal conversion through the existing target-width converter and 5.1 quote style. Donor constructors still choose Vanilla50. The parser/VM/UI do not select the new path yet: expression varargs, operators, VM semantics and 5.1 libraries must be completed before production activation. No claim of functional Wrath addon hosting is made.
+
+References inspected read-only: https://www.lua.org/source/5.1/llex.c.html and https://www.lua.org/source/5.1/lobject.c.html . The level-zero nested-long-string diagnostic follows the default 5.1 compatibility setting; the exact target client's build-specific setting remains an explicit verification item. No tests/new cases/builds/linters/runtime checks ran. This commit is a continuing campaign milestone, not its conclusion.

@@ -3,6 +3,7 @@
 //! cloned, inspected and restored.
 
 pub mod api;
+pub mod dialect;
 mod cfmt;
 mod compile;
 pub mod heap;
@@ -21,6 +22,7 @@ pub mod value;
 pub mod vm;
 
 pub use compile::compile;
+pub use dialect::Dialect;
 pub use lex::SyntaxError;
 pub use lib_base::{object_text, tostring_value};
 pub use lib_math::{bit_library, math_pow};
