@@ -1942,6 +1942,10 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
                 reason,
             }]
         }
+        WrathGameplayEvent::ChatPlayerNotFound { name } => {
+            vec![SessionEvent::ChatPlayerNotFound { name }]
+        }
+        WrathGameplayEvent::Notification { text } => vec![SessionEvent::Notification { text }],
         WrathGameplayEvent::Chat(line) => match chat_type_112(line.chat_type) {
             Some(chat_type) => vec![SessionEvent::Chat(ProtocolChatMessage {
                 chat_type,

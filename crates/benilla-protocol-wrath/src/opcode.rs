@@ -67,6 +67,9 @@ pub const CMSG_SET_SELECTION: u32 = 0x13D;
 pub const CMSG_MESSAGECHAT: u32 = 0x095;
 pub const SMSG_MESSAGECHAT: u16 = 0x096;
 pub const SMSG_GM_MESSAGECHAT: u16 = 0x3B3;
+/// Chat-adjacent notices (MiscHandler/ChatHandler): one cstring each.
+pub const SMSG_CHAT_PLAYER_NOT_FOUND: u16 = 0x2A9;
+pub const SMSG_NOTIFICATION: u16 = 0x1CB;
 pub const SMSG_AI_REACTION: u16 = 0x13C;
 pub const CMSG_ATTACKSWING: u32 = 0x141;
 pub const CMSG_ATTACKSTOP: u32 = 0x142;

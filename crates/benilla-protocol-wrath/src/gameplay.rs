@@ -853,6 +853,12 @@ pub enum ServerEvent {
         error: u32,
     },
     Chat(ChatLine),
+    ChatPlayerNotFound {
+        name: String,
+    },
+    Notification {
+        text: String,
+    },
     ShowBank {
         banker: u64,
     },
@@ -975,6 +981,8 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_TRAINER_BUY_FAILED => read_trainer_buy_failed(body),
         SMSG_MESSAGECHAT => read_message_chat(body, false),
         SMSG_GM_MESSAGECHAT => read_message_chat(body, true),
+        SMSG_CHAT_PLAYER_NOT_FOUND => Reader::new(body).cstring().map(|name| ServerEvent::ChatPlayerNotFound { name }),
+        SMSG_NOTIFICATION => Reader::new(body).cstring().map(|text| ServerEvent::Notification { text }),
         SMSG_SHOW_BANK => read_show_bank(body),
         SMSG_BUY_BANK_SLOT_RESULT => u32_body(body).map(|result| ServerEvent::BuyBankSlotResult {
             result,
