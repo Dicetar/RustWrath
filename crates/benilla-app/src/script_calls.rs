@@ -511,6 +511,44 @@ impl ScriptCallHost<'_, '_> {
 }
 
 impl CallHost for ScriptCallHost<'_, '_> {
+    fn spell_info(&mut self, id: u32) -> Option<benilla_ui::script::SpellInfoView> {
+        let cast = self.appliers.cast();
+        let ladder = &cast.ladder;
+        let spells = ladder.spells.as_deref()?;
+        let definition = spells.catalog.get(id)?;
+        // A short-lived copy adapts ObjectFields to the existing cost/level owner's ObjectStore
+        // argument. It is never retained as another player snapshot or mutated by the query.
+        let player = ladder.objects.player_fields().cloned().map(crate::net::ObjectStore);
+        let skills = crate::spell::PlayerSkills {
+            lines: ladder.skill_lines.as_deref().map(|lines| &lines.catalog),
+            spells: Some(&spells.catalog),
+            items: Some(&ladder.items),
+        };
+        let cost = player.as_ref().map(|player| {
+            let raw = crate::spell::usable::power_cost(definition, player, skills,
+                &ladder.spell_mods, &mut crate::spell::Unrecorded);
+            let scale = if definition.power_type == 6 { 10 } else {
+                benilla_protocol::messages::power_display_scale(definition.power_type)
+            };
+            raw / scale as i32
+        });
+        let level = crate::spell::SpellLevel::Player { me: player.as_ref(), skills };
+        let cast_time_ms = spells.cast_time_ms(definition, player.as_ref().map(|player| &player.0),
+            level, &ladder.spell_mods);
+        let range = spells.ranges.get(definition.range_index);
+        Some(benilla_ui::script::SpellInfoView {
+            name: definition.name.clone(),
+            rank: definition.rank.clone(),
+            icon: definition.icon.clone(),
+            cost,
+            channeled: definition.tooltip_channeled(),
+            power_type: definition.power_type as i32,
+            cast_time_ms,
+            min_range: range.map(|range| range.min),
+            max_range: range.map(|range| range.max),
+        })
+    }
+
     fn apply(&mut self, script: &mut UiScript, call: ScriptCall) -> Option<CallTail> {
         #[cfg(test)]
         self.census_probe();

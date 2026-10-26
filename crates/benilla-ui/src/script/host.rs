@@ -22,6 +22,12 @@ use super::{ScriptCall, UiScript};
 
 /// The engine half of the script calls: what applies a call to the state outside the VM.
 pub trait CallHost {
+    /// Synchronous client-catalog projection. Absent when this host has no spell owner; a query
+    /// must not send a cast or create a second catalog in the scripting engine.
+    fn spell_info(&mut self, _id: u32) -> Option<super::SpellInfoView> {
+        None
+    }
+
     /// Apply `call`, with the input events it was made under raised. The host is out of the VM
     /// while this runs, so a call a handler makes meanwhile waits, and applies next, ahead of any
     /// made after this one, or at a signal point the apply reaches ([`UiScript::signal_point`]).
