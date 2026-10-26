@@ -878,8 +878,10 @@ impl WrathWorldView {
         })
     }
 
-    /// The full native aura slots for `guid`; each slot retains 12340's caster, flags, charges
-    /// and durations. The synthesized vanilla aura fields are a separate projection.
+    /// The full native aura slots for `guid`; each slot retains 12340's slot, spell, raw flags,
+    /// level, charges, caster and both durations. Helpful/harmful and dispel class are not carried
+    /// by the aura packet and are therefore not inferred here; the spell catalog owns them. The
+    /// synthesized vanilla aura fields remain a separate projection.
     pub fn auras(&self, guid: u64) -> &[benilla_protocol_wrath::reducer::AuraSlot] {
         self.entities
             .get(&guid)
