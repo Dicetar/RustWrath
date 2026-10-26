@@ -67,8 +67,10 @@ impl Vm {
         }
         let context = self.heap.thread(thread).context.as_ref().expect("resumable context");
         let base = context.frames.last().map_or(0, |frame| frame.base());
+        // A fresh thread retains its entry separately, but lua_checkstack counts that slot.
+        let occupied = if status == ThreadStatus::Fresh { 1 } else { context.top - base };
         if args.len() > crate::api::MAX_C_STACK
-            || context.top - base + args.len() > crate::api::MAX_C_STACK
+            || occupied + args.len() > crate::api::MAX_C_STACK
         {
             return Err(ResumeError::Raised(self.rt_error("too many arguments to resume")));
         }
@@ -115,7 +117,12 @@ impl Vm {
         let yielded = self.yielded.take();
         let suspended = yielded.is_some() && matches!(&result, Ok(Err(_))) && self.abort.is_none();
         let values = if let Some(count) = yielded.filter(|_| suspended) {
-            self.stack[self.top - count..self.top].to_vec()
+            let first = self.top - count;
+            let values = self.stack[first..self.top].to_vec();
+            // Results have moved to the resumer. Keep the yield call's frame/function, not its
+            // old arguments: resume arguments replace them, and abandoned results must not root.
+            self.top = first;
+            values
         } else { Vec::new() };
         if !suspended {
             self.close_upvals(0);
