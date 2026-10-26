@@ -565,9 +565,6 @@ pub struct LootItem {
     pub slot_type: u8,
 }
 
-/// One 12340 `SMSG_LIST_INVENTORY` row (`ItemHandler.cpp:941`): eight words, the last the
-/// extended cost the 1.12 merchant owner cannot present. `slot` is the 1-based row the buy
-/// packets address; `current_count` `0xFFFF_FFFF` is unlimited.
 /// One 12340 `SMSG_MESSAGECHAT`/`SMSG_GM_MESSAGECHAT` line (`Chat.cpp:374-443`). `chat_type`
 /// stays in the 12340 `ChatMsg` numbering; the app maps it to the 1.12 owner's values.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -583,6 +580,9 @@ pub struct ChatLine {
     pub achievement_id: Option<u32>,
 }
 
+/// One 12340 `SMSG_LIST_INVENTORY` row (`ItemHandler.cpp:941`): eight words, the last the
+/// extended cost the 1.12 merchant owner cannot present. `slot` is the 1-based row the buy
+/// packets address; `current_count` `0xFFFF_FFFF` is unlimited.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VendorRow {
     pub slot: u32,
