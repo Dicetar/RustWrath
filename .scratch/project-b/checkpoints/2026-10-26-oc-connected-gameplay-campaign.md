@@ -62,6 +62,17 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: full cast targets for spell commands (committed with this record)
+
+CastSpellAtDest, CastSpellAtSource, CastSpellGameObject, CastSpellItem and
+CastSpellCorpse were still dropped even though the stock UI emits them. The 12340
+CMSG_CAST_SPELL body is now built from the shared target writer: unit, game object, item,
+corpse ally/enemy, source and destination (the last two with the 12340 zero transport guid).
+The existing unit cast keeps its layout and every cast advances the client cast counter. A
+trade-item cast still needs the partner item's real guid, which the stock command carries only
+as a slot, so it remains unsupported. Casts at a destination/source now reach the server instead
+of being silently discarded.
+
 ## Slice: item use, equip and bag movement (committed with this record)
 
 The tap still dropped every inventory verb except loot and vendor buys. Added the 3.3.5 layouts:

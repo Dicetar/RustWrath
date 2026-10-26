@@ -2214,7 +2214,11 @@ fn wrath_tap_commands(
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
-                    gameplay::cast_spell(count, spell_id, target),
+                    gameplay::cast_spell(
+                        count,
+                        spell_id,
+                        target.map_or(gameplay::CastTarget::None, gameplay::CastTarget::Unit),
+                    ),
                 ))
             }
             ClientCommand::GossipHello { guid } => Some((
@@ -2455,6 +2459,56 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BANK_ITEM,
                 gameplay::autostore_bank_item(wrath_bank_bag(bag), slot),
             )),
+            ClientCommand::CastSpellGameObject { spell_id, go_guid } => {
+                let count = view.next_cast_count;
+                view.next_cast_count = count.wrapping_add(1).max(1);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
+                    gameplay::cast_spell_gameobject(count, spell_id, go_guid),
+                ))
+            }
+            ClientCommand::CastSpellItem { spell_id, item_guid } => {
+                let count = view.next_cast_count;
+                view.next_cast_count = count.wrapping_add(1).max(1);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
+                    gameplay::cast_spell_item(count, spell_id, item_guid),
+                ))
+            }
+            ClientCommand::CastSpellCorpse {
+                spell_id,
+                target,
+                corpse_guid,
+            } => {
+                use benilla_protocol::messages::CorpseTarget;
+                let count = view.next_cast_count;
+                view.next_cast_count = count.wrapping_add(1).max(1);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
+                    gameplay::cast_spell_corpse(
+                        count,
+                        spell_id,
+                        matches!(target, CorpseTarget::Ally),
+                        corpse_guid,
+                    ),
+                ))
+            }
+            ClientCommand::CastSpellAtDest { spell_id, dest } => {
+                let count = view.next_cast_count;
+                view.next_cast_count = count.wrapping_add(1).max(1);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
+                    gameplay::cast_spell_at_dest(count, spell_id, dest),
+                ))
+            }
+            ClientCommand::CastSpellAtSource { spell_id, src } => {
+                let count = view.next_cast_count;
+                view.next_cast_count = count.wrapping_add(1).max(1);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
+                    gameplay::cast_spell_at_source(count, spell_id, src),
+                ))
+            }
             ClientCommand::UseItem {
                 bag_index,
                 slot,

@@ -38,20 +38,54 @@ pub fn attack_stop() -> Vec<u8> {
 }
 
 /// `CMSG_CAST_SPELL` (`SpellHandler.cpp:376`): `u8 count, u32 spell, u8 castFlags`, then
-/// `SpellCastTargets::Read` (`Spell.cpp:127`) as `u32 mask` and a packed unit GUID.
-pub fn cast_spell(cast_count: u8, spell_id: u32, target: Option<u64>) -> Vec<u8> {
-    let mut p = Vec::with_capacity(4 + 8);
+/// `SpellCastTargets::Read` (`Spell.cpp:127`) as a 32-bit mask, packed object/item GUIDs,
+/// source/destination transport plus position, or a string.
+pub fn cast_spell(cast_count: u8, spell_id: u32, target: CastTarget) -> Vec<u8> {
+    cast_spell_with_target(cast_count, spell_id, target)
+}
+
+fn cast_spell_with_target(cast_count: u8, spell_id: u32, target: CastTarget) -> Vec<u8> {
+    let mut p = Vec::with_capacity(24);
     p.push(cast_count);
     p.extend_from_slice(&spell_id.to_le_bytes());
-    p.push(0);
-    match target {
-        Some(guid) => {
-            p.extend_from_slice(&TARGET_FLAG_UNIT.to_le_bytes());
-            p.extend_from_slice(&pack_guid(guid));
-        }
-        None => p.extend_from_slice(&0u32.to_le_bytes()),
-    }
+    p.push(0); // cast flags: no ammo/missile payload from a stock item/spell send
+    write_cast_target(&mut p, target);
     p
+}
+
+/// `CMSG_CAST_SPELL` at a game object (`CastSpellGameObject`): `TARGET_FLAG_GAMEOBJECT`.
+pub fn cast_spell_gameobject(cast_count: u8, spell_id: u32, go_guid: u64) -> Vec<u8> {
+    cast_spell_with_target(cast_count, spell_id, CastTarget::GameObject(go_guid))
+}
+
+/// `CMSG_CAST_SPELL` at an item (`CastSpellItem`): `TARGET_FLAG_ITEM`.
+pub fn cast_spell_item(cast_count: u8, spell_id: u32, item_guid: u64) -> Vec<u8> {
+    cast_spell_with_target(cast_count, spell_id, CastTarget::Item(item_guid))
+}
+
+/// `CMSG_CAST_SPELL` at a corpse (`CastSpellCorpse`): the ally or enemy corpse mask.
+pub fn cast_spell_corpse(
+    cast_count: u8,
+    spell_id: u32,
+    ally: bool,
+    corpse_guid: u64,
+) -> Vec<u8> {
+    let target = if ally {
+        CastTarget::CorpseAlly(corpse_guid)
+    } else {
+        CastTarget::CorpseEnemy(corpse_guid)
+    };
+    cast_spell_with_target(cast_count, spell_id, target)
+}
+
+/// `CMSG_CAST_SPELL` at a destination point (`CastSpellAtDest`): `TARGET_FLAG_DEST_LOCATION`.
+pub fn cast_spell_at_dest(cast_count: u8, spell_id: u32, dest: [f32; 3]) -> Vec<u8> {
+    cast_spell_with_target(cast_count, spell_id, CastTarget::Dest(dest))
+}
+
+/// `CMSG_CAST_SPELL` at a source point (`CastSpellAtSource`): `TARGET_FLAG_SOURCE_LOCATION`.
+pub fn cast_spell_at_source(cast_count: u8, spell_id: u32, src: [f32; 3]) -> Vec<u8> {
+    cast_spell_with_target(cast_count, spell_id, CastTarget::Source(src))
 }
 
 /// `CMSG_GOSSIP_HELLO` (`NPCHandler.cpp:137`): full `u64` GUID.
@@ -2743,7 +2777,7 @@ mod tests {
     #[test]
     fn cast_target_is_a_mask_then_a_packed_guid() {
         let target = 0x0000_0000_0000_002a;
-        let p = cast_spell(7, 133, Some(target));
+        let p = cast_spell(7, 133, CastTarget::Unit(target));
         assert_eq!(&p[..4], &[7, 0x85, 0, 0]);
         assert_eq!(u32::from_le_bytes(le::<4>(&p[6..10])), TARGET_FLAG_UNIT);
         assert_eq!(&p[10..], &pack_guid(target));
