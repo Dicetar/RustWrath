@@ -160,6 +160,36 @@ invent resources/outcomes. The UI contract is `CombatModeView` (requested/effect
 authoritative resource snapshots, committed action, recovery, cancellation) fed from existing
 owners; see the combat-mode slice record once committed.
 
+## Campaign milestones (this checkout, explicit paths)
+
+Base `cc65287b` through `00043f25`:
+
+- `cc65287b` restores the missing v2.2 observation types and bounds the native action queues.
+- `d6298139` carries the 12340 vendor path; `5d87f253` rebases the 1.12 buyback slot.
+- `9b8cad61` adds the baseline-only combat boundary and the UI read model.
+- `c1c7517e` carries the trainer list/purchase path.
+- `f4ccb1c4` carries the cancel verbs and resolves WM cast cancellation.
+- `db7507de` carries the bank open/purchase/move path.
+- `ee1656b9` carries chat and the addon lane; `452c9b67` adds chat notices.
+- `0575dee0` restores vendor-row documentation.
+- `00043f25` clears gossip/vendor state on a new session or world scope.
+
+## Acceptance scenarios prepared (all execution-gated)
+
+- Baseline combat: ordinary attack/cast/interrupt/cooldown/aura under Wrath; `CombatModeView`
+  reports `Baseline`, unavailable with `ServerModeChannelMissing`; no experimental packet.
+- Experimental refusal: `request_experimental` returns `NotSent`; effective stays `Baseline`;
+  revision increments; no traffic.
+- Transfer: entities, gossip, vendor rows and the self observation clear; committed action and
+  cooldown clear through their existing owners.
+- Death: health/power and death state come from the replicated self; the cast owner clears the
+  commitment; no fabricated resurrection or mode change.
+- Reconnect: session end/epoch change clears observed combat state, vendor/gossip scope and WM
+  pending actions (`Unknown`); the replacement session starts in baseline.
+- Vendor/trainer/bank/chat: normal, refusal and scope-loss paths described in their slices.
+- WM action: cast/cancel/attack/etc. reach the stock command owners; results come only from the
+  matching authoritative reply or a bounded Unknown.
+
 ## Pending acceptance (execution-gated)
 
 - Vendor: live list, buy, sell, buyback and refusal against the pinned server.
