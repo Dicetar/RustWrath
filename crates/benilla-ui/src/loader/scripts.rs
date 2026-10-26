@@ -221,7 +221,8 @@ fn handler_parameters(name: &str) -> &'static str {
     match name {
         "OnEvent" => "self, event, ...",
         "OnUpdate" => "self, elapsed, ...",
-        "OnClick" => "self, button, down, ...",
+        "OnClick" | "PreClick" | "PostClick" => "self, button, down, ...",
+        "OnAttributeChanged" => "self, name, value, ...",
         "OnDoubleClick" | "OnMouseDown" | "OnMouseUp" => "self, button, ...",
         "OnMouseWheel" => "self, delta, ...",
         "OnEnter" | "OnLeave" => "self, motion, ...",

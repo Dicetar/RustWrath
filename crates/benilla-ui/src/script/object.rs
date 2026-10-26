@@ -19,6 +19,7 @@ use crate::widget::{FrameHandle, FrameKind, KindState};
 
 // The frame method clusters, split out for size.
 pub(crate) mod anchor_args;
+mod attributes;
 mod events_regions;
 mod frame_state;
 mod layout_methods;
@@ -963,6 +964,9 @@ fn install_frame_methods(lua: &Lua) -> mlua::Result<()> {
     frame_state::install(lua, &m)?;
     layout_methods::install(lua, &m)?;
     events_regions::install(lua, &m)?;
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        attributes::install(lua, &m)?;
+    }
     movable::install(lua, &m)?;
     toplevel::install(lua, &m)?;
     lua.set_named_registry_value(REG_FRAME_METHODS, m)?;

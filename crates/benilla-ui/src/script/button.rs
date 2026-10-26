@@ -1198,10 +1198,18 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
         Ok(s) => Value::String(s),
         Err(_) => return,
     };
-    if let Err(e) = event::fire_widget_handler(lua, id, "OnClick", vec![btn]) {
-        lua.app_data_mut::<Model>()
-            .expect("model app_data")
-            .record_lua_error(&e);
+    let wrath = lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335;
+    if wrath {
+        let arguments = vec![btn, Value::Boolean(down)];
+        for script in ["PreClick", "OnClick", "PostClick"] {
+            if let Err(error) = event::fire_widget_handler(lua, id, script, arguments.clone()) {
+                lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+            }
+        }
+    } else {
+        if let Err(error) = event::fire_widget_handler(lua, id, "OnClick", vec![btn]) {
+            lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+        }
     }
     // A nameplate click selects its unit, from the pointer or `Click()` alike (the plate's
     // override `0x7cb910` chains the base), after the handler so an erroring hook cannot eat it. A
