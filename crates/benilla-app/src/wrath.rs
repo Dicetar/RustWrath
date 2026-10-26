@@ -2819,6 +2819,8 @@ fn wrath_net_drain(
         // Adopt them as a new scope rather than comparing them with the retired session's
         // monotonic values.
         view.entities.clear();
+        view.gossip_menu = None;
+        view.vendor = None;
         view.last_changes.world_transferred = true;
         view.state_revision = 0;
     } else {
@@ -2833,6 +2835,8 @@ fn wrath_net_drain(
                 );
             }
             view.entities.clear();
+            view.gossip_menu = None;
+            view.vendor = None;
             view.last_changes.world_transferred = true;
         }
         if digest.state_revision < view.state_revision {
