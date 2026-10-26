@@ -722,7 +722,7 @@ pub(crate) fn update_from_gameplay(
             cast_count: *cast_count,
             cast_item: *cast_item,
             target: targets.unit,
-            targets: targets.clone(),
+            targets: (*targets).clone(),
             remaining_ms: (*cast_time_ms >= 0).then_some(*cast_time_ms as u32),
             cast_flags: *cast_flags,
             ammo_display_id: *ammo_display_id,
