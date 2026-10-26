@@ -235,6 +235,9 @@ fn rep(vm: &mut Vm, nargs: usize) -> R<usize> {
 /// (`0x7fc247`), or nothing outside 1 to the length (`0x7fc24c`-`0x7fc252`). A third argument is
 /// never read.
 fn byte(vm: &mut Vm, nargs: usize) -> R<usize> {
+    if vm.dialect().is_51() {
+        return byte_51(vm, nargs);
+    }
     let s = vm.check_str(nargs, 1)?;
     let l = vm.heap.str(s).len();
     let pos = crate::api::c_int(vm.opt_number(nargs, 2, 1.0)?) as i64;
@@ -244,6 +247,24 @@ fn byte(vm: &mut Vm, nargs: usize) -> R<usize> {
     }
     let b = vm.heap.str(s)[pos as usize - 1];
     Ok(vm.ret1(Value::Num(b as f64)))
+}
+
+fn byte_51(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let string = vm.check_str(nargs, 1)?;
+    let length = vm.heap.str(string).len();
+    let first = posrelat(vm.opt_integer(nargs, 2, 1)?, length);
+    let last = posrelat(vm.opt_integer(nargs, 3, first)?, length).min(length as i64);
+    let first = first.max(1);
+    if first > last { return Ok(0); }
+    let count = (last - first + 1) as usize;
+    if count > 8000usize.saturating_sub(vm.top - vm.native_base()) {
+        return Err(vm.error_at(1, "string slice too long"));
+    }
+    for position in first as usize - 1..last as usize {
+        let byte = vm.heap.str(string)[position];
+        vm.push(Value::Num(f64::from(byte)));
+    }
+    Ok(count)
 }
 
 /// `str_dump` (`0x7fc330`): argument 1 must be a function (`0x7fc343`), but `lua_dump`

@@ -68,7 +68,12 @@ pub fn new_state_with_dialect(dialect: Dialect) -> Vm {
     lib_string::open(&mut vm);
     lib_table::open(&mut vm);
     lib_math::open(&mut vm);
-    if dialect.is_51() { lib_base::open_51(&mut vm); lib_table::open_51(&mut vm); lib_string::open_51(&mut vm); }
+    if dialect.is_51() {
+        lib_base::open_51(&mut vm);
+        lib_table::open_51(&mut vm);
+        lib_string::open_51(&mut vm);
+        lib_math::open_51(&mut vm);
+    }
     vm.exec(COMPAT, b"=[benilla-lua compat]")
         .expect("the compat chunk runs");
     vm

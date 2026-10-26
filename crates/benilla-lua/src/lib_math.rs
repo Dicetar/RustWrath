@@ -49,6 +49,38 @@ pub fn open(vm: &mut Vm) {
     open_bit(vm);
 }
 
+pub(crate) fn open_51(vm: &mut Vm) {
+    let table = vm.get_global("math").as_table().expect("math library installed");
+    let functions: [(&'static str, crate::heap::NativeFn); 5] = [
+        ("fmod", |vm, n| bin(vm, n, |a, b| a % b)),
+        ("modf", modf),
+        ("sinh", |vm, n| un(vm, n, f64::sinh)),
+        ("cosh", |vm, n| un(vm, n, f64::cosh)),
+        ("tanh", |vm, n| un(vm, n, f64::tanh)),
+    ];
+    for (name, function) in functions {
+        let value = vm.new_native(name, function);
+        let key = vm.str(name.as_bytes());
+        vm.heap.table_mut(table).set(key, value).expect("library key");
+    }
+    let huge = vm.str(b"huge");
+    vm.heap.table_mut(table).set(huge, Value::Num(f64::INFINITY)).expect("math.huge key");
+}
+
+fn modf(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let value = vm.check_number(nargs, 1)?;
+    let whole = value.trunc();
+    // C modf returns a signed zero fraction for infinities and integral values.
+    let fraction = if value.is_infinite() || value == whole {
+        0.0f64.copysign(value)
+    } else {
+        value - whole
+    };
+    vm.push(Value::Num(whole));
+    vm.push(Value::Num(fraction));
+    Ok(2)
+}
+
 /// `math_pow` (`0x7fb050`), which the client's `luaopen_math` also registers as the global
 /// `__pow` (`0x7fb4c4`), the function its `^` on two numbers calls (`0x6f9b52`).
 pub fn math_pow() -> crate::heap::NativeFn {
