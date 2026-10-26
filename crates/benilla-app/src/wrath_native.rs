@@ -83,6 +83,9 @@ pub struct WrathActiveCast {
     pub ammo_display_id: Option<u32>,
     /// Producer packet-arrival wall clock in ms since the Unix epoch.
     pub observed_at_unix_ms: i64,
+    /// `GetTime()` seconds when the app drained the START/update. This is the UI clock anchor;
+    /// it is distinct from `observed_at_unix_ms`.
+    pub ui_now_seconds: f64,
     /// Accumulated `SMSG_SPELL_DELAYED` pushback observed for this cast.
     pub pushback_ms: u32,
     /// 12340's GO game-time timestamp, only once the launch edge arrived.
@@ -245,6 +248,8 @@ pub struct WrathCastEvent {
     pub target: Option<u64>,
     pub target_context: WrathTargetContext,
     pub observed_at_unix_ms: i64,
+    /// `GetTime()` seconds when the app drained the edge; 0.0 if no UI clock was available.
+    pub ui_now_seconds: f64,
     pub kind: WrathCastEventKind,
 }
 
@@ -346,6 +351,7 @@ pub(crate) fn apply_update(
                     cast_flags,
                     ammo_display_id,
                     observed_at_unix_ms,
+                    ui_now_seconds: 0.0,
                     pushback_ms: 0,
                     go_server_time_ms: None,
                     cancel_requested: false,
@@ -358,6 +364,7 @@ pub(crate) fn apply_update(
                 target,
                 target_context,
                 observed_at_unix_ms,
+                ui_now_seconds: 0.0,
                 kind: WrathCastEventKind::Started { remaining_ms },
             })
         }
@@ -375,6 +382,7 @@ pub(crate) fn apply_update(
                     target: cast.target,
                     target_context: cast.target_context,
                     observed_at_unix_ms,
+                    ui_now_seconds: 0.0,
                     kind: WrathCastEventKind::Delayed {
                         delay_ms,
                         accumulated_ms: cast.pushback_ms,
@@ -421,6 +429,7 @@ pub(crate) fn apply_update(
                 target,
                 target_context,
                 observed_at_unix_ms,
+                ui_now_seconds: 0.0,
                 kind: WrathCastEventKind::Launched { server_time_ms },
             })
         }
@@ -460,6 +469,7 @@ pub(crate) fn apply_update(
                 target,
                 target_context,
                 observed_at_unix_ms,
+                ui_now_seconds: 0.0,
                 kind: WrathCastEventKind::Failed { reason },
             })
         }
@@ -498,6 +508,7 @@ pub(crate) fn apply_update(
                 target,
                 target_context,
                 observed_at_unix_ms,
+                ui_now_seconds: 0.0,
                 kind: WrathCastEventKind::Interrupted { reason },
             })
         }
@@ -531,6 +542,7 @@ pub(crate) fn apply_update(
                 target: None,
                 target_context: WrathTargetContext::None,
                 observed_at_unix_ms,
+                ui_now_seconds: 0.0,
                 kind: WrathCastEventKind::ChannelStarted { duration_ms },
             })
         }
@@ -560,6 +572,7 @@ pub(crate) fn apply_update(
                 target: None,
                 target_context: WrathTargetContext::None,
                 observed_at_unix_ms,
+                ui_now_seconds: 0.0,
                 kind: if remaining_ms == 0 {
                     WrathCastEventKind::ChannelEnded
                 } else {
@@ -576,6 +589,7 @@ pub(crate) fn invalidate_scope(
     view: &mut crate::wrath::WrathWorldView,
     reason: WrathScopeLoss,
     observed_at_unix_ms: i64,
+    ui_now_seconds: f64,
 ) -> Vec<WrathCastEvent> {
     let mut events = Vec::new();
     for (_, cast) in std::mem::take(&mut view.casts) {
@@ -592,6 +606,7 @@ pub(crate) fn invalidate_scope(
             target: cast.target,
             target_context: cast.target_context,
             observed_at_unix_ms,
+            ui_now_seconds,
             kind: WrathCastEventKind::ScopeInvalidated { reason },
         });
     }
@@ -607,6 +622,7 @@ pub(crate) fn invalidate_scope(
             target: None,
             target_context: WrathTargetContext::None,
             observed_at_unix_ms,
+            ui_now_seconds,
             kind: WrathCastEventKind::ScopeInvalidated { reason },
         });
     }

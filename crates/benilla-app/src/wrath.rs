@@ -3165,7 +3165,9 @@ fn wrath_net_drain(
     mut actions: Option<ResMut<WrathWmActions>>,
     mut cast_events: MessageWriter<crate::wrath_native::WrathCastEvent>,
     mut item_text_events: MessageWriter<crate::wrath_native::WrathItemText>,
+    clock: Option<Res<crate::ui_script::UiClock>>,
 ) {
+    let ui_now_seconds = clock.as_ref().map_or(0.0, |clock| clock.ui_now);
     let native = control
         .feed
         .as_ref()
@@ -3185,6 +3187,7 @@ fn wrath_net_drain(
                     &mut *view,
                     crate::wrath_native::WrathScopeLoss::WorldTransfer,
                     now_ms(),
+                    ui_now_seconds,
                 ) {
                     cast_events.write(event);
                 }
@@ -3315,6 +3318,7 @@ fn wrath_net_drain(
                     &mut *view,
                     crate::wrath_native::WrathScopeLoss::SessionEnded,
                     now_ms(),
+                    ui_now_seconds,
                 ) {
                     cast_events.write(event);
                 }
@@ -3353,7 +3357,15 @@ fn wrath_net_drain(
             }
             match event {
                 crate::wrath_native::WrathNativeFeedEvent::Cast(update) => {
-                    if let Some(event) = crate::wrath_native::apply_update(&mut *view, update) {
+                    if let Some(mut event) =
+                        crate::wrath_native::apply_update(&mut *view, update)
+                    {
+                        event.ui_now_seconds = ui_now_seconds;
+                        if let Some(identity) = event.identity {
+                            if let Some(cast) = view.casts.get_mut(&identity.caster) {
+                                cast.ui_now_seconds = ui_now_seconds;
+                            }
+                        }
                         cast_events.write(event);
                     }
                 }
@@ -3380,6 +3392,7 @@ fn wrath_net_drain(
             &mut *view,
             crate::wrath_native::WrathScopeLoss::SessionEnded,
             now_ms(),
+            ui_now_seconds,
         ) {
             cast_events.write(event);
         }
@@ -3423,6 +3436,7 @@ fn wrath_net_drain(
             &mut *view,
             crate::wrath_native::WrathScopeLoss::SessionReplaced,
             now_ms(),
+            ui_now_seconds,
         ) {
             cast_events.write(event);
         }
@@ -3449,6 +3463,7 @@ fn wrath_net_drain(
                 &mut *view,
                 crate::wrath_native::WrathScopeLoss::WorldTransfer,
                 now_ms(),
+                ui_now_seconds,
             ) {
                 cast_events.write(event);
             }

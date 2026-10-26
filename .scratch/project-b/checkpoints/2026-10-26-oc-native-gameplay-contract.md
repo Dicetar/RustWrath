@@ -82,6 +82,9 @@ Semantics that must not be invented in the UI:
 - `start_remaining_ms` is START's `m_timer` (time left at packet write), not total cast time.
 - `observed_at_unix_ms` is packet-arrival wall time; `server_time_ms` on `Launched` is the 12340
   game-time timestamp on GO. They are different clocks.
+- `ui_now_seconds` is the app `GetTime()` value at the drain instant. With the spell catalog's
+  total cast time, a UI can derive `start = ui_now - (total - start_remaining_ms)/1000`; this is
+  the only supported clock anchor. Neither wall time nor the wire timestamp is a `GetTime` value.
 - `interruptible` is `None`: the wire does not establish it. Rank/display and the “not
   interruptible” bit require the spell catalog.
 - `target_context` distinguishes unit/game-object/item/source/destination; it does not collapse a
