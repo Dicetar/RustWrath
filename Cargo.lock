@@ -717,6 +717,7 @@ dependencies = [
 name = "benilla-wm-native"
 version = "0.2.0"
 dependencies = [
+ "crossbeam-channel",
  "serde",
  "serde_json",
 ]

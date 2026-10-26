@@ -2116,9 +2116,22 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             roll,
             guid,
         }],
-        WrathGameplayEvent::InventoryFailure { reason, .. } => {
-            vec![SessionEvent::InventoryFailure { reason }]
-        }
+        WrathGameplayEvent::InventoryFailure {
+            reason,
+            item,
+            item2,
+            bag_type,
+            required_level,
+            ..
+        } => vec![SessionEvent::InventoryFailure {
+            reason,
+            required_level,
+            item_guid: item.unwrap_or(0),
+            item2_guid: item2.unwrap_or(0),
+            // 12340's third byte is the bag-type subclass; the 1.12 field is the destination
+            // bag slot. The native contract retains the raw value for the UI.
+            bag_slot: bag_type,
+        }],
         WrathGameplayEvent::ItemText { .. } => Vec::new(),
         WrathGameplayEvent::PageText {
             page_id,
@@ -2679,7 +2692,7 @@ fn wrath_tap_commands(
                 quest,
                 msg,
             } => Some((
-                benilla_protocol_wrath::opcode::MSG_QUEST_PUSH_RESULT,
+                u32::from(benilla_protocol_wrath::opcode::MSG_QUEST_PUSH_RESULT),
                 gameplay::quest_push_result(sharer, quest, msg.0),
             )),
             ClientCommand::QuestPushResult { .. } => {
@@ -2697,7 +2710,7 @@ fn wrath_tap_commands(
                 gameplay::summon_response(summoner, true),
             )),
             ClientCommand::TalentWipeConfirm { trainer } => Some((
-                benilla_protocol_wrath::opcode::MSG_TALENT_WIPE_CONFIRM,
+                u32::from(benilla_protocol_wrath::opcode::MSG_TALENT_WIPE_CONFIRM),
                 gameplay::talent_wipe_confirm(trainer),
             )),
             ClientCommand::PlayedTime => Some((
@@ -2709,7 +2722,7 @@ fn wrath_tap_commands(
                 gameplay::query_time(),
             )),
             ClientCommand::RandomRoll { min, max } => Some((
-                benilla_protocol_wrath::opcode::MSG_RANDOM_ROLL,
+                u32::from(benilla_protocol_wrath::opcode::MSG_RANDOM_ROLL),
                 gameplay::random_roll(min, max),
             )),
             ClientCommand::PageTextQuery { page_id, guid } => Some((
@@ -3079,7 +3092,7 @@ fn route_wm_action_outcomes(world: &mut World, events: &[SessionEvent]) {
                 }
                 (
                     SessionEvent::SpellFailedOther { caster, spell_id },
-                    (ActionIntent::Cast { .. } | ActionIntent::CastCancel),
+                    ActionIntent::Cast { .. } | ActionIntent::CastCancel,
                 ) if Some(*caster) == self_guid && pending.cast_spell == Some(*spell_id) => {
                     let status = match pending.intent {
                         ActionIntent::CastCancel => ActionStatus::Succeeded,
@@ -4761,22 +4774,6 @@ pub fn run_session_with_cancel(
                 session.reduce(p.opcode, &p.payload, now_ms())?;
                 if let Some(parsed) = gameplay::parse(p.opcode, &p.payload) {
                     match parsed {
-                        Ok(event @ WrathGameplayEvent::VendorInventory { vendor, ref items }) => {
-                            feed.push_event(WrathFeedEvent::VendorInventory {
-                                vendor,
-                                items: items.clone(),
-                                session_epoch: session.epoch(),
-                                world_generation: session.world_generation(),
-                            });
-                            if let Some(events_out) = events_out.as_ref() {
-                                if session.player_guid().is_some() {
-                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
-                                        let _ = events_out
-                                            .send(WrathSessionEvent::scoped(&session, event));
-                                    }
-                                }
-                            }
-                        }
                         Ok(event @ WrathGameplayEvent::Gossip { npc, menu_id, .. }) => {
                             feed.push_event(WrathFeedEvent::GossipMenu {
                                 npc,
@@ -4867,32 +4864,6 @@ pub fn run_session_with_cancel(
                                 }
                             }
                         }
-                        Ok(event @ WrathGameplayEvent::ItemText {
-                            has_text,
-                            item_guid,
-                            ref text,
-                        }) => {
-                            feed.push_native(crate::wrath_native::WrathNativeFeedEvent::ItemText(
-                                crate::wrath_native::WrathItemText {
-                                    scope: crate::wrath_native::WrathScope {
-                                        session_epoch: session.epoch(),
-                                        world_generation: session.world_generation(),
-                                        state_revision: session.state_revision(),
-                                    },
-                                    item_guid,
-                                    has_text,
-                                    text: text.clone(),
-                                },
-                            ));
-                            if let Some(events_out) = events_out.as_ref() {
-                                if session.player_guid().is_some() {
-                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
-                                        let _ = events_out
-                                            .send(WrathSessionEvent::scoped(&session, event));
-                                    }
-                                }
-                            }
-                        }
                         Ok(WrathGameplayEvent::LoggedOut) => {
                             logged_out = true;
                             if let Some(events_out) = events_out.as_ref() {
@@ -4902,6 +4873,35 @@ pub fn run_session_with_cancel(
                             }
                         }
                         Ok(event) => {
+                            if let WrathGameplayEvent::VendorInventory { vendor, items } = &event {
+                                feed.push_event(WrathFeedEvent::VendorInventory {
+                                    vendor: *vendor,
+                                    items: items.clone(),
+                                    session_epoch: session.epoch(),
+                                    world_generation: session.world_generation(),
+                                });
+                            }
+                            if let WrathGameplayEvent::ItemText {
+                                has_text,
+                                item_guid,
+                                text,
+                            } = &event
+                            {
+                                feed.push_native(
+                                    crate::wrath_native::WrathNativeFeedEvent::ItemText(
+                                        crate::wrath_native::WrathItemText {
+                                            scope: crate::wrath_native::WrathScope {
+                                                session_epoch: session.epoch(),
+                                                world_generation: session.world_generation(),
+                                                state_revision: session.state_revision(),
+                                            },
+                                            item_guid: *item_guid,
+                                            has_text: *has_text,
+                                            text: text.clone(),
+                                        },
+                                    ),
+                                );
+                            }
                             if let Some(update) = crate::wrath_native::update_from_gameplay(
                                 &event,
                                 crate::wrath_native::WrathScope {
