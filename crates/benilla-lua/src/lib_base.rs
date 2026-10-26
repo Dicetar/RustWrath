@@ -509,9 +509,29 @@ fn xpcall(vm: &mut Vm, nargs: usize) -> R<usize> {
 /// past `0x3fffff` KB, a negative count among them, the threshold is `0xffffffff` bytes; a count
 /// the quadword cannot hold, a NaN or an infinity, is 0. A count at the threshold collects.
 fn collectgarbage(vm: &mut Vm, nargs: usize) -> R<usize> {
+    if vm.dialect().is_51() { return collectgarbage_51(vm, nargs); }
     let kb = c_int(vm.opt_number(nargs, 1, 0.0)?) as u32;
     vm.set_gc_threshold(kb);
     Ok(0)
+}
+
+fn collectgarbage_51(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let option = vm.opt_str(nargs, 1, b"collect")?;
+    let option = vm.heap.str(option).to_vec();
+    let result = match option.as_slice() {
+        b"stop" => { vm.set_gc_running(false); 0.0 }
+        b"restart" => { vm.set_gc_running(true); 0.0 }
+        b"collect" => { vm.full_gc(); 0.0 }
+        b"count" => vm.heap.bytes() as f64 / 1024.0,
+        b"setpause" => {
+            let value = vm.opt_int(nargs, 2, 0)?;
+            if value < 0 { return Err(vm.arg_error(2, "negative collector pause is unsupported")); }
+            f64::from(vm.set_gc_pause(value as u32))
+        }
+        b"step" | b"setstepmul" => return Err(vm.rt_error("incremental collector controls are not implemented by this host")),
+        _ => return Err(vm.arg_error(1, "invalid option")),
+    };
+    Ok(vm.ret1(Value::Num(result)))
 }
 
 /// 1.12's `gcinfo()` (`0x703200`): live and threshold kilobytes.

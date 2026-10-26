@@ -140,6 +140,8 @@ pub struct Names {
 #[derive(Clone)]
 pub struct Vm {
     dialect: crate::Dialect,
+    gc_running: bool,
+    gc_pause: u32,
     pub heap: Heap,
     /// The value stack. Crate-internal: frames address it through raw pointers, so only the VM
     /// changes its length; the host reads and writes slots through `stack` and `stack_mut`.
@@ -439,6 +441,8 @@ impl Vm {
         let registry = heap.new_table(4, 4);
         let mut vm = Vm {
             dialect,
+            gc_running: true,
+            gc_pause: 200,
             heap,
             stack: vec![Value::Nil; BASIC_STACK_SIZE],
             top: 0,
@@ -499,6 +503,14 @@ impl Vm {
         };
         self.heap.set_threshold(t);
         self.check_gc();
+    }
+
+    pub fn set_gc_running(&mut self, running: bool) { self.gc_running = running; }
+
+    pub fn set_gc_pause(&mut self, pause: u32) -> u32 {
+        let previous = self.gc_pause;
+        self.gc_pause = pause;
+        previous
     }
 
     // ── strings and values ───────────────────────────────────────────────────────────────────
@@ -2322,7 +2334,7 @@ impl Vm {
     /// 5.0's `luaC_checkGC`, at a safe point: every live value is on the stack or reachable.
     #[inline]
     pub fn check_gc(&mut self) {
-        if self.heap.bytes() >= self.heap.trigger || self.gc_stress {
+        if self.gc_running && (self.heap.bytes() >= self.heap.trigger || self.gc_stress) {
             self.full_gc();
         }
     }
@@ -2380,7 +2392,10 @@ impl Vm {
         self.heap
             .collect(&roots, &open, &self.retired, self.names.mode, &fixed);
         self.heap.charge(self.state_bytes());
-        self.heap.pace();
+        if self.dialect.is_51() {
+            let threshold = (self.heap.bytes() / 100).saturating_mul(self.gc_pause as usize);
+            self.heap.set_threshold(threshold);
+        } else { self.heap.pace(); }
         // The host closures it freed drop last, with no arena borrowed, as host code: their
         // captures' destructors may use the state.
         if !self.heap.freed_hosts.is_empty() {
