@@ -7,12 +7,17 @@ use super::{host, unit, Model};
 fn power(lua: &Lua, token: Value, kind: Value, raw: Option<bool>, maximum: bool) -> mlua::Result<u32> {
     let token = super::binding_abi::string_arg(lua, token, "Usage: UnitPower(unit [, powerType [, unmodified]])")?;
     unit::check_unit_token(&Some(token.clone()))?;
-    let (guid, active) = {
+    let guid = {
         let model = lua.app_data_ref::<Model>().expect("model");
         let Some(unit) = model.unit(&token) else { return Ok(0) };
-        (unit.guid, unit.power_type)
+        unit.guid
     };
-    let kind = if matches!(kind, Value::Nil) { active } else {
+    let kind = if matches!(kind, Value::Nil) {
+        let Some(active) = host::with_host(lua, |host| host.unit_power_type(guid)).flatten() else {
+            return Ok(0);
+        };
+        active
+    } else {
         let kind = lua.coerce_number(kind)?
             .filter(|kind| kind.is_finite() && *kind >= 0.0 && *kind <= 6.0)
             .ok_or_else(|| mlua::Error::runtime("Invalid Wrath power type"))?;
@@ -38,7 +43,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     globals.set("UnitPowerType", lua.create_function(|lua, token: Value| {
         let token = super::binding_abi::string_arg(lua, token, "Usage: UnitPowerType(unit)")?;
         unit::check_unit_token(&Some(token.clone()))?;
-        let kind = lua.app_data_ref::<Model>().expect("model").unit(&token).map_or(0, |unit| unit.power_type);
+        let guid = lua.app_data_ref::<Model>().expect("model").unit(&token).map_or(0, |unit| unit.guid);
+        let kind = host::with_host(lua, |host| host.unit_power_type(guid)).flatten().unwrap_or(0);
         let name = match kind {
             0 => "MANA", 1 => "RAGE", 2 => "FOCUS", 3 => "ENERGY", 4 => "HAPPINESS",
             5 => "RUNES", 6 => "RUNIC_POWER", _ => "MANA",

@@ -525,6 +525,10 @@ impl CallHost for ScriptCallHost<'_, '_> {
         self.appliers.spell_queries().power(guid, kind, maximum)
     }
 
+    fn unit_power_type(&mut self, guid: u64) -> Option<u8> {
+        self.appliers.spell_queries().power_type(guid)
+    }
+
     fn apply(&mut self, script: &mut UiScript, call: ScriptCall) -> Option<CallTail> {
         #[cfg(test)]
         self.census_probe();

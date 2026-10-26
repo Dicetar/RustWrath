@@ -11,7 +11,6 @@ pub(crate) struct SpellQueries<'w, 's> {
     known: Option<Res<'w, crate::ui_action::PlayerActions>>,
     pet: Option<Res<'w, crate::ui_pet::PetBar>>,
     world: Option<Res<'w, crate::wrath::WrathWorldView>>,
-    objects: crate::net::Objects<'w, 's>,
     player: Query<'w, 's, &'static crate::net::ObjectStore, With<crate::net::SelfPlayer>>,
     modifiers: Res<'w, crate::spell::SpellModifiers>,
     lines: Option<Res<'w, crate::ui_spellbook::SkillLines>>,
@@ -24,14 +23,17 @@ impl SpellQueries<'_, '_> {
         if kind > 6 || world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) {
             return None;
         }
-        let entity = world.entities.get(&guid)?;
-        if let Some(fields) = entity.player_fields.as_ref() {
-            let base = if maximum { benilla_protocol_wrath::fields::UNIT_FIELD_MAXPOWER1 }
-                else { benilla_protocol_wrath::fields::UNIT_FIELD_POWER1 };
-            return fields.get(usize::from(base) + usize::from(kind)).copied();
+        let resources = world.resources(guid)?;
+        if maximum { resources.max_powers[usize::from(kind)] }
+        else { resources.powers[usize::from(kind)] }
+    }
+
+    pub(crate) fn power_type(&self, guid: u64) -> Option<u8> {
+        let world = self.world.as_ref()?;
+        if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) {
+            return None;
         }
-        let fields = self.objects.object(guid)?;
-        if maximum { fields.unit_max_power(kind) } else { fields.unit_power(kind) }
+        world.resources(guid)?.power_type.filter(|kind| *kind <= 6)
     }
 
     pub(crate) fn known(&self, id: u32, pet: bool) -> Option<bool> {
