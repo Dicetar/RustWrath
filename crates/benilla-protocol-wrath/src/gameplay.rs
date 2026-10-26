@@ -11,9 +11,6 @@ use anyhow::Result;
 
 use crate::cast_failure;
 
-/// `TARGET_FLAG_UNIT` (`SharedDefines.h`): a unit GUID follows the target mask, packed.
-pub const TARGET_FLAG_UNIT: u32 = 0x0002;
-
 /// `CMSG_SET_SELECTION` (`MiscHandler.cpp:543`): full `u64` GUID.
 pub fn logout_request() -> Vec<u8> {
     Vec::new()
@@ -276,16 +273,6 @@ pub enum CastTarget {
     CorpseAlly(u64),
     CorpseEnemy(u64),
 }
-
-/// TARGET_FLAG_* (`SpellInfo.h:46-63`).
-const TARGET_FLAG_UNIT: u32 = 0x0000_0002;
-const TARGET_FLAG_ITEM: u32 = 0x0000_0010;
-const TARGET_FLAG_SOURCE_LOCATION: u32 = 0x0000_0020;
-const TARGET_FLAG_DEST_LOCATION: u32 = 0x0000_0040;
-const TARGET_FLAG_CORPSE_ENEMY: u32 = 0x0000_0200;
-const TARGET_FLAG_GAMEOBJECT: u32 = 0x0000_0800;
-const TARGET_FLAG_TRADE_ITEM: u32 = 0x0000_1000;
-const TARGET_FLAG_CORPSE_ALLY: u32 = 0x0000_8000;
 
 fn write_point(p: &mut Vec<u8>, point: [f32; 3]) {
     // A zero transport guid, then the world position (`SpellCastTargets::Read`, Spell.cpp:140).
