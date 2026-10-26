@@ -712,6 +712,9 @@ impl WrathWmActions {
                     ActionStatus::Succeeded,
                     Some("the cast ended".to_owned()),
                 ),
+                // `terminal` is only the three gameplay outcomes above; keep the compiler's
+                // exhaustiveness without inventing a resolution for any other value.
+                (false, _) => continue,
             };
             if let ActionIntent::Cast { spell_id, .. } = &pending.intent {
                 if self.last_cast_spell == Some(*spell_id) {
