@@ -362,7 +362,6 @@ pub struct WrathPickQueue(pub(crate) Receiver<ParkRequest>);
 /// flight from admission until an authoritative reply, a scope end, or its deadline.
 #[derive(Resource)]
 pub struct WrathWmActions {
-    pub(crate) bridge: Option<ActionBridge>,
     pub(crate) requests: Receiver<ActionRequest>,
     pub(crate) cancels: Receiver<String>,
     pub(crate) results: Sender<ActionResult>,
@@ -798,7 +797,6 @@ impl Plugin for WrathNetPlugin {
                 .resource_mut::<WrathControl>()
                 .wm_actions = Some(bridge.clone());
             app.insert_resource(WrathWmActions {
-                bridge: Some(bridge),
                 requests: action_rx,
                 cancels: cancel_rx,
                 results: result_tx,

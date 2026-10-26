@@ -4,7 +4,8 @@ Date: 2026-10-26
 Owner: OpenCode (client/protocol/bridge integration and WM consumer/action implementation)
 Base HEAD at claim (Project B): `5a6eaaa4`; WM checkout base `011a7b3`
 Commits: `0a1d471b` (observation v2.2), `7a0ccc21` (typed action seam), `e435706f`
-(action-matching and admission hardening); WM-side edits remain
+(action-matching and admission hardening), `5df7d405` (compile surface), `107f9f48`
+(gossip selection and object use); WM-side edits remain
 uncommitted because `src/wm_native/` is untracked in that checkout (owner WIP) — see Provenance.
 Work: `.scratch/project-b/work-packages/2026-10-26-system-goals.md` (OpenCode 1-7).
 
