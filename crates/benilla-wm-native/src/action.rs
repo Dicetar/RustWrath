@@ -30,8 +30,13 @@ pub enum ActionIntent {
     Cast { spell_id: u32, target: Option<u64> },
     /// Cancel the in-flight cast (`CMSG_CANCEL_CAST` / the stock cancel owner).
     CastCancel,
-    /// Interact with a unit or game object through the stock gossip owner (`CMSG_GOSSIP_HELLO`).
+    /// Open a unit's gossip window (`CMSG_GOSSIP_HELLO`).
     Interact { guid: u64 },
+    /// Choose one gossip option (`CMSG_GOSSIP_SELECT_OPTION`); the live menu id comes from the
+    /// client's adopted gossip state, not from WM.
+    GossipSelect { guid: u64, option: u32 },
+    /// Use a game object (`CMSG_GAMEOBJ_USE`), such as a chest or door.
+    UseObject { guid: u64 },
     /// Accept a quest offered by an NPC (`CMSG_QUESTGIVER_ACCEPT_QUEST`).
     QuestAccept { npc: u64, quest: u32 },
     /// Hand in a completed quest (`CMSG_QUESTGIVER_COMPLETE_QUEST`).
@@ -73,9 +78,11 @@ impl ActionIntent {
             }
         };
         match self {
-            Self::SetTarget { guid } | Self::AttackStart { guid } | Self::Interact { guid } => {
-                nonzero(*guid, "guid")
-            }
+            Self::SetTarget { guid }
+            | Self::AttackStart { guid }
+            | Self::Interact { guid }
+            | Self::UseObject { guid } => nonzero(*guid, "guid"),
+            Self::GossipSelect { guid, .. } => nonzero(*guid, "guid"),
             Self::AttackStop | Self::CastCancel | Self::MoveStop => Ok(()),
             Self::Cast { spell_id, target } => {
                 if *spell_id == 0 {
@@ -116,6 +123,8 @@ impl ActionIntent {
             Self::Cast { .. } => "cast",
             Self::CastCancel => "cast_cancel",
             Self::Interact { .. } => "interact",
+            Self::GossipSelect { .. } => "gossip_select",
+            Self::UseObject { .. } => "use_object",
             Self::QuestAccept { .. } => "quest_accept",
             Self::QuestComplete { .. } => "quest_complete",
             Self::QuestChooseReward { .. } => "quest_choose_reward",

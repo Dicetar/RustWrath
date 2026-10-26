@@ -1099,6 +1099,16 @@ fn wrath_wm_action_intake(
             ActionIntent::Interact { guid } => {
                 commands.push(ClientCommand::GossipHello { guid: *guid });
             }
+            ActionIntent::GossipSelect { guid, option } => {
+                commands.push(ClientCommand::GossipSelectOption {
+                    guid: *guid,
+                    option: *option,
+                    code: None,
+                });
+            }
+            ActionIntent::UseObject { guid } => {
+                commands.push(ClientCommand::GameObjUse { guid: *guid });
+            }
             ActionIntent::QuestAccept { npc, quest } => {
                 commands.push(ClientCommand::QuestgiverAccept {
                     npc: *npc,
