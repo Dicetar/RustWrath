@@ -269,6 +269,22 @@ Base `cc65287b` through `00043f25`:
 - WM action: cast/cancel/attack/etc. reach the stock command owners; results come only from the
   matching authoritative reply or a bounded Unknown.
 
+## Build and focused-test evidence (execution grant)
+
+The owner granted build plus minimal-test execution (100-test limit, important tests only).
+Observed with `cargo` 1.99.1 on 2026-10-26:
+
+- `cargo check --workspace` — pass.
+- `cargo build -p benilla` — pass (dev profile, 6m 36s).
+- `cargo test -p benilla-protocol-wrath` — 30 lib + 2 replay + 14 session tests pass.
+- `cargo test -p benilla-app --lib wrath` — 6 pass; `vendor` — 26 pass; `item_text` — 10 pass.
+- `cargo test -p benilla-wm-native` — 0 tests defined.
+
+Total distinct tests run: 88, all passing. Added five regression tests for the repaired
+area-trigger, query-time, inventory-failure, item-text and cast-failure layouts. Not run: the
+other ~6,500 app tests, graphical startup, live server session, WM receiver, or rendered route.
+Those remain separate gates; no alpha claim is made from compilation alone.
+
 ## Pending acceptance (execution-gated)
 
 - Vendor: live list, buy, sell, buyback and refusal against the pinned server.
