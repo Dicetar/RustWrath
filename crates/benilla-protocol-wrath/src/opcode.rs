@@ -241,7 +241,6 @@ pub const SMSG_SUMMON_REQUEST: u16 = 0x2AB;
 pub const MSG_TALENT_WIPE_CONFIRM: u16 = 0x2AA;
 pub const CMSG_PLAYED_TIME: u32 = 0x1CC;
 pub const SMSG_PLAYED_TIME: u16 = 0x1CD;
-pub const CMSG_QUERY_TIME: u32 = 0x1CE;
 pub const SMSG_QUERY_TIME_RESPONSE: u16 = 0x1CF;
 pub const MSG_RANDOM_ROLL: u16 = 0x1FB;
 pub const CMSG_PAGE_TEXT_QUERY: u32 = 0x05A;
