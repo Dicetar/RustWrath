@@ -101,6 +101,9 @@ pub type WrathEvents = Arc<Mutex<VecDeque<WrathFeedEvent>>>;
 pub struct WrathOutbound {
     pub opcode: u32,
     pub payload: Vec<u8>,
+    /// Replaceable motion: under queue pressure only these may be dropped, never a cast, quest,
+    /// loot or logout command (ADR-0001's admission rule).
+    pub movement: bool,
 }
 
 /// A translated gameplay reply tagged with the source session and world scope. The app rejects
@@ -1706,13 +1709,31 @@ fn wrath_tap_commands(
         };
         if let Some((opcode, payload)) = packet {
             if let Ok(mut queue) = input.0.lock() {
-                if queue.len() < 256 {
-                    queue.push_back(WrathOutbound { opcode, payload });
+                if queue.len() < WRATH_OUTBOX_CAP {
+                    queue.push_back(WrathOutbound {
+                        opcode,
+                        payload,
+                        movement: false,
+                    });
+                } else {
+                    // The only way to fill this queue is a burst of uncapped actions or a
+                    // session whose writer stopped draining; refuse visibly instead of hiding
+                    // the loss. Movement never fills it (its own cap evicts motion first).
+                    warn!(
+                        "wrath: outbox full ({}), refusing client opcode {opcode:#x}",
+                        WRATH_OUTBOX_CAP
+                    );
                 }
             }
         }
     }
 }
+
+/// Uncapped actions admitted per frame boundary; movement is capped separately and may never
+/// evict these entries.
+const WRATH_OUTBOX_CAP: usize = 256;
+/// Replaceable motion entries allowed before the streamer evicts its own oldest pose.
+const WRATH_MOVEMENT_QUEUE_CAP: usize = 64;
 
 /// Whether a tagged event belongs to a scope the view has already left. A newer event is kept:
 /// the digest that adopts its scope may still be in flight, and applying it against the previous
@@ -2397,9 +2418,11 @@ fn wrath_apply_world(world: &mut World) {
                         | W_FLAG_TURN_LEFT
                         | W_FLAG_TURN_RIGHT
                         | W_FLAG_FALLING;
-                    let local_flags = world
-                        .get_resource::<crate::player::Player>()
-                        .map_or(0, crate::player::Player::move_flags);
+                    let local_flags = wrath_move_flags(
+                        world
+                            .get_resource::<crate::player::Player>()
+                            .map_or(0, crate::player::Player::move_flags),
+                    );
                     if server_flags & MOVING == 0 && local_flags & MOVING == 0 {
                         let bevy = wow_to_bevy([pose.x, pose.y, pose.z]);
                         let current = world
@@ -2502,8 +2525,41 @@ const W_FLAG_STRAFE_LEFT: u32 = 0x4;
 const W_FLAG_STRAFE_RIGHT: u32 = 0x8;
 const W_FLAG_TURN_LEFT: u32 = 0x10;
 const W_FLAG_TURN_RIGHT: u32 = 0x20;
-const W_FLAG_FALLING: u32 = 0x2000;
-const W_FLAG_SWIMMING: u32 = 0x200_0000;
+/// 12340 `MOVEMENTFLAG_ONTRANSPORT` (0x0200); the 1.12 client uses 0x02000000 for it, which
+/// 3.3.5 names `MOVEMENTFLAG_FLYING`.
+const W_FLAG_ONTRANSPORT: u32 = 0x200;
+/// 12340 `MOVEMENTFLAG_ROOT` (0x0800); 1.12 uses 0x1000.
+const W_FLAG_ROOT: u32 = 0x800;
+/// 12340 `MOVEMENTFLAG_FALLING` (0x1000); 1.12 uses 0x2000 and 3.3.5 uses 0x2000 for
+/// `MOVEMENTFLAG_FALLING_FAR`.
+const W_FLAG_FALLING: u32 = 0x1000;
+const W_FLAG_FALLING_FAR: u32 = 0x2000;
+/// 12340 `MOVEMENTFLAG_SWIMMING`, the same numeric bit as 1.12's.
+const W_FLAG_SWIMMING: u32 = 0x20_0000;
+
+/// The shared 1.12 controller's movement bits in 12340 placement. Only the meanings that moved
+/// are rewritten: ROOT, FALLING/FALLING_FAR and ON_TRANSPORT; walking, steering, swimming,
+/// levitation/disable-gravity, water-walking, safe-fall and hover share their bits.
+fn wrath_move_flags(flags: u32) -> u32 {
+    let rooted = flags & 0x1000 != 0;
+    let falling = flags & 0x2000 != 0;
+    let falling_far = flags & 0x4000 != 0;
+    let on_transport = flags & 0x0200_0000 != 0;
+    let mut out = flags & !(0x1000 | 0x2000 | 0x4000 | 0x0200_0000);
+    if rooted {
+        out |= W_FLAG_ROOT;
+    }
+    if falling {
+        out |= W_FLAG_FALLING;
+    }
+    if falling_far {
+        out |= W_FLAG_FALLING_FAR;
+    }
+    if on_transport {
+        out |= W_FLAG_ONTRANSPORT;
+    }
+    out
+}
 
 /// Stream the shared `Player` controller's pose onto the Wrath session. The existing action/input
 /// path remains the source of motion; this adapter only chooses the Wrath opcode for the edge and
@@ -2526,12 +2582,8 @@ fn wrath_stream_movement(
     if !player.active || player.detached || player.control_lost || player.settling {
         return;
     }
-    let mut flags = player.move_flags();
-    // 1.12 places swimming at 0x200000 and transport at 0x2000000; 3.3.5 swaps those meanings.
-    if flags & 0x20_0000 != 0 {
-        flags = (flags & !0x20_0000) | W_FLAG_SWIMMING;
-    }
-    if flags & 0x0200_0000 != 0 {
+    let flags = wrath_move_flags(player.move_flags());
+    if flags & W_FLAG_ONTRANSPORT != 0 {
         // Transport-local movement needs the transport block; the first route is on foot.
         return;
     }
@@ -2606,10 +2658,19 @@ fn wrath_stream_movement(
         payload.extend_from_slice(&[0u8; 16]); // zspeed, sin, cos, xyspeed
     }
     if let Ok(mut queue) = input.0.lock() {
-        if queue.len() >= 64 {
-            queue.pop_front();
+        if queue.len() >= WRATH_MOVEMENT_QUEUE_CAP {
+            // Evict only replaceable motion. A queue full of real actions refuses this pose
+            // instead of letting movement drop a cast, quest, loot or logout command.
+            let Some(oldest_motion) = queue.iter().position(|entry| entry.movement) else {
+                return;
+            };
+            let _ = queue.remove(oldest_motion);
         }
-        queue.push_back(WrathOutbound { opcode, payload });
+        queue.push_back(WrathOutbound {
+            opcode,
+            payload,
+            movement: true,
+        });
     }
     local.last_send = Some(now);
 }
@@ -3294,6 +3355,7 @@ mod tests {
         let outbox: WrathOutbox = Arc::new(Mutex::new(VecDeque::from([WrathOutbound {
             opcode: 1,
             payload: vec![1],
+            movement: false,
         }])));
         world.insert_resource(WrathInput(Arc::clone(&outbox)));
 
