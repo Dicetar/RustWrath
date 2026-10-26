@@ -222,7 +222,7 @@ pub use action::{
 };
 pub use addon::{addon_load_context, AddOnInfo, AddonLoad, AddonReply, AddonSecurity};
 pub use addon_enable::{AddonStateFiles, EnableHash, EnableStore};
-pub use addon_message::{AddonDistribution, AddonSend};
+pub use addon_message::{AddonDistribution, AddonSend, AddonWhisper};
 pub use auction::{
     cancel_fee, tick_ms as auction_tick_ms, AuctionBid, AuctionCall, AuctionCategory,
     AuctionHighBidder, AuctionItemRow, AuctionListState, AuctionQuery, AuctionRowBid,

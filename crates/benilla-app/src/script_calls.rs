@@ -630,6 +630,7 @@ impl CallHost for ScriptCallHost<'_, '_> {
             ScriptCall::Uninvite(name) => appliers.chat().uninvite(name),
             ScriptCall::RequestTimePlayed => appliers.chat().request_time_played(),
             ScriptCall::AddonMessage(send) => appliers.chat().addon_message(send),
+            ScriptCall::AddonWhisper(send) => appliers.chat().addon_whisper(send),
             ScriptCall::PickItem(pick) => popup = appliers.cursor().pick_item(pick),
             ScriptCall::EnchantConfirm(answer) => popup = appliers.cursor().confirm_enchant(answer),
             ScriptCall::Loot(call) => tail = appliers.loot().apply(script, call),

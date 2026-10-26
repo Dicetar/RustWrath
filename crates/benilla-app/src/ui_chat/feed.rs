@@ -522,6 +522,10 @@ impl ChatLog {
     /// with none it is all prefix (`0x49a8d0`); `distribution` names PARTY, RAID, GUILD and
     /// BATTLEGROUND, any other type `"UNKNOWN"` (`0x49aff4`).
     pub(crate) fn push_addon(&self, text: &str, chat_type: u8, guid: u64) {
+        self.push_addon_for_client(text, chat_type, guid, false);
+    }
+
+    pub(crate) fn push_addon_for_client(&self, text: &str, chat_type: u8, guid: u64, wrath: bool) {
         let (prefix, message) = match text.find('\t') {
             Some(i) => (text[..i].to_string(), text[i + 1..].to_string()),
             None => (text.to_string(), String::new()),
@@ -534,6 +538,7 @@ impl ChatLog {
                 m::CHAT_TYPE_RAID => "RAID",
                 m::CHAT_TYPE_GUILD => "GUILD",
                 m::CHAT_TYPE_BATTLEGROUND => "BATTLEGROUND",
+                m::CHAT_TYPE_WHISPER if wrath => "WHISPER",
                 _ => "UNKNOWN",
             }
         }

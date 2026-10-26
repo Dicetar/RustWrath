@@ -147,7 +147,7 @@ fn chat(
                     &format!("<- [{:#04x}] {:?}", m.chat_type, m.text),
                 );
             }
-            chat_log.push_addon(&m.text, m.chat_type, m.sender_guid);
+            chat_log.push_addon_for_client(&m.text, m.chat_type, m.sender_guid, crate::wrath::selected_from_env());
         }
         return;
     }

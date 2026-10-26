@@ -125,6 +125,24 @@ impl ChatSender<'_, '_> {
         }
     }
 
+    pub(crate) fn addon_whisper(&self, send: benilla_ui::script::AddonWhisper) {
+        if !crate::wrath::selected_from_env() {
+            warn!("chat: targeted addon message requires the Wrath session owner");
+            return;
+        }
+        // Use the existing targeted chat command. Addon data bypasses human-chat expansion,
+        // slurring and escape rewriting; the Wrath adapter already preserves LANG_ADDON.
+        let command = ClientCommand::Chat {
+            kind: ChatKind::Whisper,
+            target: Some(send.target),
+            text: send.text,
+            language: Some(u32::MAX),
+        };
+        if self.commands.0.send(command).is_err() {
+            warn!("chat: not connected; addon whisper dropped");
+        }
+    }
+
     /// `SendChatMessage` from its group gates on, in the reference's order: the group gates and
     /// the leader promotion, the channel slot, the AFK clear or the AFK arm, the DND arm, the dead
     /// check (`0x49f592`), the tutorial (`0x49f5fc`), the `%` expander (`0x49f60f`), the escape

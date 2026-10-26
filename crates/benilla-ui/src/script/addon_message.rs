@@ -81,6 +81,47 @@ pub struct AddonSend {
     pub distribution: AddonDistribution,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddonWhisper {
+    pub text: String,
+    pub target: String,
+}
+
+fn install_wrath(lua: &Lua) -> mlua::Result<()> {
+    lua.globals().set("SendAddonMessage", lua.create_function(
+        |lua, (prefix, message, distribution, target): (Value, Value, Value, Value)| {
+            let prefix = lua_tostring(lua, &prefix)?;
+            let message = lua_tostring(lua, &message)?;
+            if prefix.is_empty() && message.is_empty() {
+                return Err(mlua::Error::runtime("Usage: SendAddonMessage(prefix, message [, distribution [, target]])"));
+            }
+            if prefix.contains('\t') {
+                return Err(mlua::Error::runtime("Addon prefix cannot contain a tab"));
+            }
+            let text = format!("{prefix}\t{message}");
+            // The installed AzerothCore ChatHandler rejects messages past 255 bytes. Refuse
+            // an oversized structured message rather than silently truncating its payload.
+            if text.len() > 255 {
+                return Err(mlua::Error::runtime("Addon prefix and message exceed the server's 255-byte limit"));
+            }
+            let distribution = lua.coerce_string(distribution)?
+                .map_or_else(|| "PARTY".to_owned(), |value| value.to_string_lossy());
+            if distribution.eq_ignore_ascii_case("WHISPER") {
+                let target = lua_tostring(lua, &target)?;
+                if target.is_empty() {
+                    return Err(mlua::Error::runtime("Addon whisper missing target player"));
+                }
+                return super::calls::submit(lua, super::ScriptCall::AddonWhisper(AddonWhisper { text, target }));
+            }
+            // CHANNEL is intentionally not admitted: the installed server's LANG_ADDON
+            // whitelist excludes it. WMBridge can then take its explicit WHISPER fallback.
+            let distribution = AddonDistribution::from_token(&distribution)
+                .ok_or_else(|| mlua::Error::runtime("Unknown addon chat type"))?;
+            super::calls::submit(lua, super::ScriptCall::AddonMessage(AddonSend { text, distribution }))
+        },
+    )?)
+}
+
 /// `_snprintf(dst, 0x800, …)` writes at most 2047 bytes plus its NUL (`0x64a861`-`0x64a868`).
 const ADDON_MESSAGE_CAP: usize = 0x800 - 1;
 
@@ -100,6 +141,9 @@ fn lua_tostring(lua: &Lua, v: &Value) -> mlua::Result<String> {
 }
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        return install_wrath(lua);
+    }
     lua.globals().set(
         "SendAddonMessage",
         lua.create_function(

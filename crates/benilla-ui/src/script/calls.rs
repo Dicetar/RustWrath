@@ -133,6 +133,8 @@ pub enum ScriptCall {
     /// `SendAddonMessage(prefix, message, type)` (`0x49f920`) past its checks: the send at
     /// `0x49faff`.
     AddonMessage(super::AddonSend),
+    /// Wrath targeted addon traffic, preserving the recipient independently of the payload.
+    AddonWhisper(super::AddonWhisper),
     /// A channel verb past its binding's checks, or the recruitment cascade's join or leave: the
     /// host does the rest inside the call, the join's slot (`0x49ede8`-`0x49edf3`, the allocator
     /// `0x49b980`) and the packet, so the verb's next line and the events after it read the slot.
