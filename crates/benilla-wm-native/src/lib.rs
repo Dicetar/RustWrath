@@ -41,8 +41,8 @@ pub use error::{Error, Result};
 pub use frame::{MAX_FRAME_BYTES, PROTOCOL_NAME, PROTOCOL_VERSION};
 pub use health::{SourceHealth, SourceSessionState};
 pub use observation::{
-    MAX_VISIBLE_GUIDS, OBSERVATION_SCHEMA_VERSION, Observation, Position, TargetObservation,
-    Visibility,
+    CombatObservation, DeathObservation, MAX_VISIBLE_GUIDS, OBSERVATION_SCHEMA_VERSION,
+    Observation, Position, ResourceObservation, TargetObservation, Visibility,
 };
 pub use producer::{observation_from_producer, ProducerPosition, ProducerSnapshot};
 pub use publisher::{

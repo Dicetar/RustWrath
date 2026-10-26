@@ -5,7 +5,7 @@
 //! struct and a bridge dependency in the pure packet reducer.
 
 use crate::error::Result;
-use crate::observation::{Observation, Position, TargetObservation, Visibility};
+use crate::observation::{CombatObservation, DeathObservation, Observation, Position, ResourceObservation, TargetObservation, Visibility};
 
 /// Producer position with bridge-facing orientation naming. GLM's `PositionSnapshot::o` maps here.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -41,6 +41,21 @@ pub trait ProducerSnapshot {
 
     /// Must be explicitly complete or explicitly incomplete; never silently truncated.
     fn visibility(&self) -> Result<Visibility>;
+
+    /// The self unit's observed combat flag; default Unknown.
+    fn combat(&self) -> CombatObservation {
+        CombatObservation::Unknown
+    }
+
+    /// Observed self health and power; every field may be absent.
+    fn resources(&self) -> ResourceObservation {
+        ResourceObservation::default()
+    }
+
+    /// Observed self life state; default Unknown.
+    fn death(&self) -> DeathObservation {
+        DeathObservation::Unknown
+    }
 
     fn zone_id(&self) -> Option<u32> {
         None
@@ -80,6 +95,9 @@ where
             position.orientation,
         )?,
         source.target()?,
+        source.combat(),
+        source.resources(),
+        source.death(),
         source.visibility()?,
     )
 }

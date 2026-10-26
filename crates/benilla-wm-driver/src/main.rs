@@ -95,6 +95,43 @@ impl ProducerSnapshot for SnapshotOwned {
             SelfTarget::Target(g) => benilla_wm_native::TargetObservation::target(*g)?,
         })
     }
+    fn combat(&self) -> benilla_wm_native::CombatObservation {
+        match self.0.combat {
+            benilla_protocol_wrath::session::SelfCombat::Unknown => {
+                benilla_wm_native::CombatObservation::Unknown
+            }
+            benilla_protocol_wrath::session::SelfCombat::OutOfCombat => {
+                benilla_wm_native::CombatObservation::OutOfCombat
+            }
+            benilla_protocol_wrath::session::SelfCombat::InCombat => {
+                benilla_wm_native::CombatObservation::InCombat
+            }
+        }
+    }
+    fn resources(&self) -> benilla_wm_native::ResourceObservation {
+        benilla_wm_native::ResourceObservation {
+            health: self.0.resources.health,
+            max_health: self.0.resources.max_health,
+            power_type: self.0.resources.power_type,
+            power: self.0.resources.power,
+        }
+    }
+    fn death(&self) -> benilla_wm_native::DeathObservation {
+        match self.0.death {
+            benilla_protocol_wrath::session::SelfDeath::Unknown => {
+                benilla_wm_native::DeathObservation::Unknown
+            }
+            benilla_protocol_wrath::session::SelfDeath::Alive => {
+                benilla_wm_native::DeathObservation::Alive
+            }
+            benilla_protocol_wrath::session::SelfDeath::Dead => {
+                benilla_wm_native::DeathObservation::Dead
+            }
+            benilla_protocol_wrath::session::SelfDeath::Ghost => {
+                benilla_wm_native::DeathObservation::Ghost
+            }
+        }
+    }
     fn visibility(&self) -> benilla_wm_native::Result<benilla_wm_native::Visibility> {
         benilla_wm_native::Visibility::new(
             self.0.visibility.complete,

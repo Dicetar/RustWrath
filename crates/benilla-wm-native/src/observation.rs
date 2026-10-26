@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Version of the observation object and the matching Python receiver.
-pub const OBSERVATION_SCHEMA_VERSION: &str = "wm.native.observation.v2.1";
+pub const OBSERVATION_SCHEMA_VERSION: &str = "wm.native.observation.v2.2";
 
 /// Hard bound on the number of visible GUIDs exported in one observation.
 pub const MAX_VISIBLE_GUIDS: usize = 256;
@@ -214,7 +214,6 @@ impl Visibility {
         visibility.validate()?;
         Ok(visibility)
     }
-
     /// Constructs an explicitly complete export. Rejects over-bound/unsorted/invalid lists; never
     /// silently truncates.
     pub fn from_complete_guids(guids: Vec<u64>) -> Result<Self> {
@@ -264,6 +263,69 @@ impl Visibility {
     }
 }
 
+/// Observed combat state, from the replicated self unit's `UNIT_FIELD_FLAGS`.
+///
+/// `Unknown` means the producer has not observed the flag word; it is never a synonym for
+/// out of combat.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CombatObservation {
+    Unknown,
+    OutOfCombat,
+    InCombat,
+}
+
+/// Observed life state. Ghost is a player-only state and takes precedence over zero health.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DeathObservation {
+    Unknown,
+    Alive,
+    Dead,
+    Ghost,
+}
+
+/// Observed health and current power. Each field is independently observed: a missing value is
+/// `None`, never a zero.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceObservation {
+    pub health: Option<u32>,
+    pub max_health: Option<u32>,
+    pub power_type: Option<u8>,
+    pub power: Option<u32>,
+}
+
+impl ResourceObservation {
+    pub fn validate(&self) -> Result<()> {
+        if let (Some(health), Some(max_health)) = (self.health, self.max_health) {
+            if health > max_health {
+                return Err(Error::InvalidObservation(
+                    "resources.health must not exceed resources.max_health",
+                ));
+            }
+        }
+        if let Some(power_type) = self.power_type {
+            if power_type > 6 {
+                return Err(Error::InvalidObservation(
+                    "resources.power_type must be 0..=6",
+                ));
+            }
+            if self.power.is_none() {
+                return Err(Error::InvalidObservation(
+                    "resources.power requires an observed resources.power_type",
+                ));
+            }
+        }
+        if self.power.is_some() && self.power_type.is_none() {
+            return Err(Error::InvalidObservation(
+                "resources.power requires resources.power_type",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// One versioned native-client observation.
 ///
 /// `session_epoch` is a nonzero, process-local generation. It strictly increases on a new world
@@ -293,6 +355,12 @@ pub struct Observation {
     pub position_observed_at_unix_ms: i64,
     pub position: Position,
     pub target: TargetObservation,
+    /// The self unit's replicated combat flag; `Unknown` before that field is observed.
+    pub combat: CombatObservation,
+    /// Self health and current power, each independently observed.
+    pub resources: ResourceObservation,
+    /// Self life state (ghost precedence over zero health).
+    pub death: DeathObservation,
     pub visibility: Visibility,
 }
 
@@ -313,6 +381,9 @@ impl Observation {
         position_observed_at_unix_ms: i64,
         position: Position,
         target: TargetObservation,
+        combat: CombatObservation,
+        resources: ResourceObservation,
+        death: DeathObservation,
         visibility: Visibility,
     ) -> Result<Self> {
         let observation = Self {
@@ -331,6 +402,9 @@ impl Observation {
             position_observed_at_unix_ms,
             position,
             target,
+            combat,
+            resources,
+            death,
             visibility,
         };
         observation.validate()?;
@@ -388,6 +462,7 @@ impl Observation {
         }
         self.position.validate()?;
         self.target.validate()?;
+        self.resources.validate()?;
         self.visibility.validate()?;
         if self
             .visibility
@@ -414,6 +489,9 @@ impl Observation {
             && self.position_observed_at_unix_ms == other.position_observed_at_unix_ms
             && self.position == other.position
             && self.target == other.target
+            && self.combat == other.combat
+            && self.resources == other.resources
+            && self.death == other.death
             && self.visibility == other.visibility
     }
 

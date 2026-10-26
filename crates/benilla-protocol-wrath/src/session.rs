@@ -97,6 +97,12 @@ pub struct SelfObservation {
     /// provenance beyond what schema v2 carries (proposed for v2.1).
     pub position_observed_at_unix_ms: i64,
     pub target: SelfTarget,
+    /// UNIT_FIELD_FLAGS combat bit; unknown before that word is delivered.
+    pub combat: SelfCombat,
+    /// Self health and power, each field independently observed.
+    pub resources: SelfResources,
+    /// Self life state (ghost before dead).
+    pub death: SelfDeath,
     pub visibility: SelfVisibility,
 }
 
@@ -635,6 +641,38 @@ impl SessionState {
         let complete = total <= MAX_VISIBLE_GUIDS;
         let guids = if complete { all } else { all[..MAX_VISIBLE_GUIDS].to_vec() };
 
+        let observed = |index: u16| -> Option<u32> {
+            let entry = self_entry?;
+            entry.field_delivered(index).then(|| entry.field(index)).flatten()
+        };
+        let health = observed(fields::UNIT_FIELD_HEALTH);
+        let max_health = observed(fields::UNIT_FIELD_MAXHEALTH);
+        let power_type = observed(fields::UNIT_FIELD_BYTES_0)
+            .map(|bytes| ((bytes >> 24) & 0xff) as u8)
+            .filter(|power_type| *power_type <= 6);
+        let power = power_type.and_then(|power_type| {
+            observed(fields::UNIT_FIELD_POWER1 + u16::from(power_type))
+        });
+        let resources = SelfResources {
+            health,
+            max_health,
+            power_type,
+            power,
+        };
+        let combat = match observed(fields::UNIT_FIELD_FLAGS) {
+            Some(flags) if flags & 0x0008_0000 != 0 => SelfCombat::InCombat,
+            Some(_) => SelfCombat::OutOfCombat,
+            None => SelfCombat::Unknown,
+        };
+        let death = match observed(fields::PLAYER_FLAGS) {
+            Some(flags) if flags & 0x10 != 0 => SelfDeath::Ghost,
+            _ => match health {
+                Some(0) => SelfDeath::Dead,
+                Some(_) => SelfDeath::Alive,
+                None => SelfDeath::Unknown,
+            },
+        };
+
         Ok(SelfObservation {
             session_epoch: self.epoch,
             world_generation: self.world_generation,
@@ -649,6 +687,9 @@ impl SessionState {
             position,
             position_observed_at_unix_ms,
             target,
+            combat,
+            resources,
+            death,
             visibility: SelfVisibility {
                 complete,
                 total_guid_count: total as u64,
