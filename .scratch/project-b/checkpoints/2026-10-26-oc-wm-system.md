@@ -3,7 +3,8 @@
 Date: 2026-10-26
 Owner: OpenCode (client/protocol/bridge integration and WM consumer/action implementation)
 Base HEAD at claim (Project B): `5a6eaaa4`; WM checkout base `011a7b3`
-Commits: `0a1d471b` (observation v2.2), `7a0ccc21` (typed action seam); WM-side edits remain
+Commits: `0a1d471b` (observation v2.2), `7a0ccc21` (typed action seam), `e435706f`
+(action-matching and admission hardening); WM-side edits remain
 uncommitted because `src/wm_native/` is untracked in that checkout (owner WIP) — see Provenance.
 Work: `.scratch/project-b/work-packages/2026-10-26-system-goals.md` (OpenCode 1-7).
 
@@ -118,6 +119,9 @@ patch helper.
   second receiver, publisher, context store or execution bus.
 - The renderless driver remains observation-only; receive-side action frames from WM expire at
   the broker.
+- Human override is the stock input owner's precedence: WM intents are ordinary
+  `ClientCommand`s and never bypass it, and an explicit remote-input latch is not added.
+  Cancellation is admission-level only; no dispatch is recalled.
 
 ## Provenance
 

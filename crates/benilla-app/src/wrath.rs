@@ -4122,6 +4122,7 @@ mod command_tap_tests {
                 park_commands: Some(tx),
                 publisher_retiring: Vec::new(),
                 publisher_retire_rx: None,
+                wm_actions: None,
             },
             rx,
         )
