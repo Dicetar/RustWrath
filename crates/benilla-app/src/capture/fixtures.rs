@@ -114,7 +114,6 @@ pub(super) fn seed_ui_fixture(
     mut commands: Commands,
     progress: Res<WorldLoadProgress>,
     mut quest_log: ResMut<crate::ui_quest_log::QuestLog>,
-    mut trainer: ResMut<crate::ui_trainer::TrainerOpen>,
     icons: Option<Res<crate::entities::ItemDisplays>>,
 ) {
     let icons = icons.as_deref();
@@ -322,7 +321,15 @@ pub(super) fn seed_ui_fixture(
                         req_spells: [0; 3],
                     })
                     .collect();
-                trainer.open(NPC_GUID, seed.trainer_type, services, seed.greeting.into());
+                let trainer_type = seed.trainer_type;
+                let greeting: String = seed.greeting.into();
+                commands.queue(move |world: &mut World| {
+                    if let Some(mut trainer) =
+                        world.get_resource_mut::<crate::ui_trainer::TrainerOpen>()
+                    {
+                        trainer.open(NPC_GUID, trainer_type, services, greeting);
+                    }
+                });
                 lua = Some(Box::new(move |script: &mut UiScript| {
                     // The window's title and portrait read `UnitName("npc")`; no session seats it
                     // here.
