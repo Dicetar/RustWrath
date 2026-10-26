@@ -165,7 +165,29 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             Ok(())
         },
     )?;
-    // No `SetSize`: neither 1.12 method table has it.
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        set_shared(lua, m, Side::Frame, "SetSize", |lua, (this, width, height): (Table, f32, f32)| {
+            let h = frame_handle_of(lua, &this)?;
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            let width = crate::layout::Len::Script(width);
+            let height = crate::layout::Len::Script(height);
+            let input = model.layout_inputs.entry(h).or_default();
+            let changed = input.width.bits() != width.bits() || input.height.bits() != height.bits();
+            input.width = width;
+            input.height = height;
+            if let Some(record) = model.drag_authored.get_mut(&h) {
+                record.1 = width;
+                record.2 = height;
+            }
+            model.invalidate_frame(h, changed);
+            model.note_authored_size(h);
+            Ok(())
+        })?;
+        set_shared(lua, m, Side::Frame, "GetSize", |lua, this: Table| {
+            let h = frame_handle_of(lua, &this)?;
+            Ok((size_read(lua, h, true), size_read(lua, h, false)))
+        })?;
+    }
     set_shared(lua, m, Side::Frame, "GetWidth", |lua, this: Table| {
         let h = frame_handle_of(lua, &this)?;
         Ok(size_read(lua, h, true))

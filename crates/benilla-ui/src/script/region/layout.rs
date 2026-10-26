@@ -71,7 +71,22 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         },
     )?;
 
-    // No `SetSize`: not a 1.12 verb.
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        set_shared(lua, m, Side::Region, "SetSize", |lua, (this, width, height): (Table, f32, f32)| {
+            let rh = region_handle_of(lua, &this)?;
+            let mut model = lua.app_data_mut::<Model>().expect("model");
+            let data = model.region_data.entry(rh).or_default();
+            let size = Some((Len::Script(width), Len::Script(height)));
+            let changed = !size_bits_eq(data.size, size);
+            data.size = size;
+            if changed { model.touch_measure(rh); }
+            model.invalidate_region(rh, changed);
+            Ok(())
+        })?;
+        set_shared(lua, m, Side::Region, "GetSize", |lua, this: Table| {
+            Ok((region_size_read(lua, &this, true)?, region_size_read(lua, &this, false)?))
+        })?;
+    }
 
     // The frame's `GetWidth`/`GetHeight` (`0x7a1e00`, `0x7a2030`): the region's own size slot
     // ([`super::virtual_slot`]) as stored, when non-zero, with no resolve; else, resolving a

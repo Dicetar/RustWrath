@@ -61,6 +61,14 @@ pub(super) type Arm = Rc<dyn Fn(&Lua, MultiValue) -> mlua::Result<MultiValue>>;
 #[derive(Default)]
 pub(super) struct Arms(HashMap<(Side, &'static str), Arm>);
 
+pub(super) fn method_names(lua: &Lua) -> Vec<&'static str> {
+    let mut names = REGION_MAP_METHODS.to_vec();
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        names.extend(["SetSize", "GetSize"]);
+    }
+    names
+}
+
 /// Register one of the [`REGION_MAP_METHODS`] into its side's table and record its arm; [`install`]
 /// fails if a name lacks either arm. The entry written here keeps the tables complete until
 /// [`install`] replaces it, since the leaf tables are copied from the region table meanwhile.
@@ -113,7 +121,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         .remove_app_data::<Arms>()
         .expect("Region-map arms — opened by `open_arms`");
 
-    for name in REGION_MAP_METHODS {
+    for name in method_names(lua) {
         // The reference gives every widget all 19, so a missing arm fails here, not at an addon.
         let arm = |side: Side, which: &str| -> mlua::Result<Arm> {
             arms.0.get(&(side, name)).cloned().ok_or_else(|| {

@@ -156,7 +156,7 @@ pub(super) fn guard_receivers(lua: &Lua) -> mlua::Result<()> {
         }
     }
     let region: Table = lua.named_registry_value(super::REG_REGION_METHODS)?;
-    let shared: Vec<Value> = super::REGION_MAP_METHODS
+    let shared: Vec<Value> = super::region_map::method_names(lua)
         .iter()
         .map(|name| region.raw_get::<Value>(*name))
         .collect::<mlua::Result<_>>()?;
