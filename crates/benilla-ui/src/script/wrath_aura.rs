@@ -2,7 +2,7 @@
 //! Tuple consumer: the target BuffFrame.lua / AuraButton_Update. Missing policy or expiration
 //! observations are nil; a hidden-duration aura uses the client's numeric zero convention.
 
-use mlua::{Lua, MultiValue, Value};
+use mlua::{Lua, MultiValue, Table, Value, Variadic};
 use super::{host, Model};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -13,6 +13,7 @@ pub struct WrathAuraView {
     pub rank: Option<String>,
     pub icon: Option<String>,
     pub count: u8,
+    pub level: u8,
     pub dispel: Option<String>,
     pub helpful: Option<bool>,
     pub caster: Option<u64>,
@@ -135,5 +136,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         }
         Ok(())
     })?)?;
+    Ok(())
+}
+
+pub(super) fn install_tooltip_methods(lua: &Lua, methods: &Table) -> mlua::Result<()> {
+    for (name, forced) in [("SetUnitAura", None), ("SetUnitBuff", Some(true)), ("SetUnitDebuff", Some(false))] {
+        methods.set(name, lua.create_function(move |lua, (this, args): (Table, Variadic<Value>)| {
+            super::object::frame_handle_of(lua, &this)?;
+            // Match the getter's filtered ordinal or name/rank, including slots beyond 47.
+            let args = MultiValue::from_vec(args.into_iter().collect());
+            let Some((_, aura)) = find(lua, &args, forced)? else { return Ok(()); };
+            let key = super::AuraKey { spell_id: aura.spell_id, level: aura.level, stack: aura.count.max(1) };
+            super::tooltip_aura::set_aura(lua, &this, key, Some(aura.name), None)
+        })?)?;
+    }
     Ok(())
 }

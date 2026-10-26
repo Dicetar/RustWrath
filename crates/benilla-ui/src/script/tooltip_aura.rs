@@ -172,7 +172,7 @@ pub(super) fn fill_aura(
 
 /// A setter's call of the aura builder: the clear (`0x52f88d`), the lines, the show (`0x534db9`,
 /// `0x532c12`, `0x532cf0`).
-fn set_aura(
+pub(super) fn set_aura(
     lua: &Lua,
     this: &Table,
     key: AuraKey,
@@ -338,5 +338,8 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             set_aura(lua, &this, tracking_key(spell_id), name, None)
         })?,
     )?;
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        super::wrath_aura::install_tooltip_methods(lua, m)?;
+    }
     Ok(())
 }

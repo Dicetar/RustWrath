@@ -34,7 +34,7 @@ impl SpellQueries<'_, '_> {
             let timed = aura.flags & benilla_protocol_wrath::reducer::AFLAG_DURATION != 0;
             result.push(WrathAuraView {
                 slot: aura.slot, spell_id: aura.spell_id, name: spell.name.clone(),
-                rank: spell.rank.clone(), icon: spell.icon.clone(), count: aura.charges,
+                rank: spell.rank.clone(), icon: spell.icon.clone(), count: aura.charges, level: aura.level,
                 dispel: catalog.dispel_name(spell).map(str::to_owned), helpful,
                 caster: if aura.flags & benilla_protocol_wrath::reducer::AFLAG_CASTER != 0 {
                     Some(guid)
