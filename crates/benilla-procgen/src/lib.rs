@@ -28,6 +28,7 @@ pub mod dungeon;
 pub mod artifact;
 pub mod json;
 pub mod planning;
+pub mod wm_draft;
 mod validation;
 pub mod item;
 pub mod rng;

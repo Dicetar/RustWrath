@@ -1,5 +1,7 @@
 # Encounter planning API
 
+The existing-owner handoff is implemented separately in [wm-drafts.md](wm-drafts.md); it emits inert temporary-creature bundles and receipt-based cleanup proposals, not a new execution service.
+
 `planning::EncounterPlan::build(candidate, supported_build, request)` turns a validated owned candidate into a complete deterministic proposal. `encode` and `decode` require that candidate/build and rederive every planned actor. The plan has its own `project-b.procgen.encounter-plan.v1` schema and fingerprint. No file, network, WM, database or game operation occurs in the library.
 
 The placement request schema is `project-b.procgen.placement-request.v1`. Required fields are defined by the strict DTO in `planning.rs`: candidate manifest, explicit revision, player/map/instance/phase/world-generation scope, domain transforms, actor-kind template bindings, world bounds and minimum horizontal separation. It is not an executable WM action. All floats use the artifact API's bit strings; identities use the same fixed-width hex convention.
