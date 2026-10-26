@@ -32,6 +32,11 @@ pub trait CallHost {
         None
     }
 
+    /// Raw protocol units, preserving the distinction from a rounded display value.
+    fn unit_power(&mut self, _guid: u64, _kind: u8, _maximum: bool) -> Option<u32> {
+        None
+    }
+
     /// Apply `call`, with the input events it was made under raised. The host is out of the VM
     /// while this runs, so a call a handler makes meanwhile waits, and applies next, ahead of any
     /// made after this one, or at a signal point the apply reaches ([`UiScript::signal_point`]).
