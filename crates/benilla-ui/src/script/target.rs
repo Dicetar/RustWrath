@@ -63,11 +63,12 @@ impl UiTarget {
     }
 }
 
-// The 3.3.5 CastingBarFrame's subscriptions. Native state/event producers remain separate from
-// this registration table; admitting a listener must not invent a cast, identity or timestamp.
+// The 3.3.5 CastingBarFrame's subscriptions plus the success event used by installed combatlogfix.
+// Producers remain separate; admitting a listener must not invent a cast, identity or timestamp.
 const WRATH_CAST_EVENTS: &[&str] = &[
     "UNIT_SPELLCAST_START",
     "UNIT_SPELLCAST_STOP",
+    "UNIT_SPELLCAST_SUCCEEDED",
     "UNIT_SPELLCAST_FAILED",
     "UNIT_SPELLCAST_INTERRUPTED",
     "UNIT_SPELLCAST_DELAYED",
