@@ -633,12 +633,66 @@ pub(super) fn load_row(
             return false;
         }
     }
-    host.run(i);
+    {
+        let _scope = LoadScope::enter(lua, &name);
+        host.run(i);
+    }
     super::event::fire_global(lua, "ADDON_LOADED", &[super::ScriptValue::Str(name)]);
     for d in dependents {
         load_row(lua, host, d, demand, version_check);
     }
     true
+}
+
+/// Nested LoadAddOn calls restore the including addon's file arguments before it continues.
+struct LoadScope<'a> {
+    lua: &'a Lua,
+    previous: Option<String>,
+}
+
+impl<'a> LoadScope<'a> {
+    fn enter(lua: &'a Lua, name: &str) -> Self {
+        let previous = lua.app_data_mut::<Model>().expect("model")
+            .loading_addon.replace(name.to_owned());
+        Self { lua, previous }
+    }
+}
+
+impl Drop for LoadScope<'_> {
+    fn drop(&mut self) {
+        self.lua.app_data_mut::<Model>().expect("model").loading_addon = self.previous.take();
+    }
+}
+
+/// Run a top-level loaded file. Wrath passes one private namespace shared by all of an
+/// addon's Lua/XML chunks; saved-variable restoration deliberately uses the argument-free path.
+pub(crate) fn run_loaded_chunk(lua: &Lua, bytes: &[u8], name: &str) -> mlua::Result<()> {
+    let addon = {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        (model.target == super::UiTarget::Wrath335)
+            .then(|| model.loading_addon.clone()).flatten()
+    };
+    let chunk = lua.load(bytes)
+        .set_name(name).set_mode(mlua::ChunkMode::Text);
+    let Some(addon) = addon else { return chunk.exec() };
+    const REG_NAMESPACES: &str = "__benilla_addon_namespaces";
+    let namespaces = match lua.named_registry_value::<Option<mlua::Table>>(REG_NAMESPACES)? {
+        Some(table) => table,
+        None => {
+            let table = lua.create_table()?;
+            lua.set_named_registry_value(REG_NAMESPACES, table.clone())?;
+            table
+        }
+    };
+    let private = match namespaces.raw_get::<Option<mlua::Table>>(addon.as_str())? {
+        Some(table) => table,
+        None => {
+            let table = lua.create_table()?;
+            namespaces.raw_set(addon.as_str(), table.clone())?;
+            table
+        }
+    };
+    chunk.call::<()>((addon, private))
 }
 
 /// The first required dependency of row `i` that cannot load, for the gate's `DEP_` refusal: a
@@ -832,7 +886,7 @@ fn run_files(lua: &Lua, name: &str, read: &Reader, files: &[String], toc: &mut S
             continue;
         };
         if lua_file {
-            if let Err(e) = run_chunk(lua, &bytes, &crate::script::addon_chunk_name(name, file)) {
+            if let Err(e) = run_loaded_chunk(lua, crate::source::chunk(&bytes), &crate::script::addon_chunk_name(name, file)) {
                 log_error(lua, &format!("{name}/{file}: {e}"), &super::lua_message(&e));
             }
             continue;

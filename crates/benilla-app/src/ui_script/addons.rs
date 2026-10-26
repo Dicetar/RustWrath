@@ -887,7 +887,7 @@ impl benilla_ui::script::AddonLoad for Walk<'_> {
                  (the AddOns screen's 'Load out of date AddOns' loads it anyway)",
                 addon.name,
                 addon.toc.interface_version(),
-                benilla_ui::script::addon_gate::CLIENT_INTERFACE
+                self.script.target().interface()
             ),
             other => info!("ui_script: {} is not loaded ({other})", addon.name),
         }

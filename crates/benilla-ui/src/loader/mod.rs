@@ -368,11 +368,7 @@ impl Loader<'_> {
 
     /// Run a chunk under a complete chunk name, for a producer whose name is not a path.
     fn run_named(&self, chunk: &[u8], name: &str) -> mlua::Result<()> {
-        self.lua
-            .load(chunk)
-            .set_name(name)
-            .set_mode(mlua::ChunkMode::Text)
-            .exec()
+        crate::script::addon::run_loaded_chunk(self.lua, chunk, name)
     }
 
     fn model(&self) -> mlua::AppDataRefMut<'_, crate::script::Model> {

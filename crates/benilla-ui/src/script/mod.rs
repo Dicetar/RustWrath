@@ -1173,11 +1173,7 @@ impl UiScript {
     /// Run a chunk under the name the 1.12 client gives it ([`addon_chunk_name`] for addon files).
     pub fn run_chunk_named(&self, chunk: &[u8], name: &str) -> mlua::Result<()> {
         host::unheld(&self.lua, || {
-            self.lua
-                .load(crate::source::chunk(chunk))
-                .set_name(name)
-                .set_mode(mlua::ChunkMode::Text)
-                .exec()
+            addon::run_loaded_chunk(&self.lua, crate::source::chunk(chunk), name)
         })
     }
 

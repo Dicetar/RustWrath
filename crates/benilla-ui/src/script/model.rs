@@ -115,6 +115,8 @@ pub(crate) struct Model {
     /// Which FrameScript state this VM is: it picks the event table and the frame types.
     pub(crate) vm: super::glue::VmKind,
     pub(crate) target: super::UiTarget,
+    /// File-load identity, separate from security/taint: secure addons receive arguments too.
+    pub(crate) loading_addon: Option<String>,
     /// [`super::UiScript::session`], for a handle made inside a verb
     /// ([`super::UiScript::reentrant`]).
     pub(crate) session: u64,
@@ -1357,6 +1359,7 @@ impl Model {
         Model {
             vm: super::glue::VmKind::InGame,
             target: super::UiTarget::Vanilla112,
+            loading_addon: None,
             session: 0,
             addons: Vec::new(),
             addon_index: Vec::new(),
