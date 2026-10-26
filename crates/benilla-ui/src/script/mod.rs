@@ -62,6 +62,8 @@ pub(crate) use tooltip::post_load as tooltip_post_load;
 pub(crate) mod addon;
 mod addon_enable;
 pub mod addon_gate;
+mod target;
+pub use target::UiTarget;
 mod char_name;
 mod client;
 pub use client::FrameTimeRing;
@@ -653,11 +655,17 @@ pub fn addon_chunk_name(folder: &str, file: &str) -> String {
 
 /// The state as `0x7039e0` leaves it: benilla-lua's client-shaped opening with the host's base
 /// functions, the dialect and the stdlib layer set over it, which replace values and add no key.
+#[cfg(test)]
 fn open_state(vm: VmKind) -> mlua::Result<Lua> {
+    open_state_for_target(vm, UiTarget::Vanilla112)
+}
+
+fn open_state_for_target(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
     // `Lua::new` sets `InitLua`'s 256 KB threshold first (`0x7039f2`), then opens the state.
-    let lua = Lua::new();
+    let lua = Lua::with_dialect(target.dialect());
     let mut model = Model::new();
     model.vm = vm;
+    model.target = target;
     lua.set_app_data(model);
     // Before anything can fire a handler: every VM carries the profiler's slot and the call
     // host's.
@@ -667,7 +675,9 @@ fn open_state(vm: VmKind) -> mlua::Result<Lua> {
     // `0x7039e0`: the base array `0x811e28`, the four libraries and the compat chunk `0x8722e8`.
     stdlib::sandbox(&lua)?;
     // Before the stdlib layer, so its aliases bind the 5.0-shaped functions.
-    lua50::install(&lua)?;
+    if target == UiTarget::Vanilla112 {
+        lua50::install(&lua)?;
+    }
     taint::install(&lua)?;
     stdlib::install(&lua)?;
 
@@ -680,8 +690,8 @@ fn open_state(vm: VmKind) -> mlua::Result<Lua> {
 /// the glue registrar `0x46abb0` shares with `UI_Init`: `0x51bb20` (the clock, `ConsoleExec` and
 /// the file trio), `0x706350` (the frame factory globals and the 17 widget method tables) and
 /// `0x4587f0` (sound).
-fn install_framescript(vm: VmKind) -> mlua::Result<Lua> {
-    let lua = open_state(vm)?;
+fn install_framescript(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
+    let lua = open_state_for_target(vm, target)?;
 
     // `0x51bb20` (table `0x8503f4`): `GetTime`, `GetGameTime` and `ConsoleExec`. `ReadFile`,
     // `DeleteFile` and `AppendToFile` are not built.
@@ -805,7 +815,13 @@ impl UiScript {
     /// The in-game VM: FrameScript's base set and the registrars both states share
     /// ([`install_framescript`]), then the in-game surface `UI_Init` (`0x48fbf0`) registers.
     pub fn new() -> mlua::Result<UiScript> {
-        let lua = install_framescript(VmKind::InGame)?;
+        Self::with_target(UiTarget::Vanilla112)
+    }
+
+    /// Construct an in-game host for an explicit client contract. This selects source behavior;
+    /// it does not certify that all APIs required by that client's addons are implemented.
+    pub fn with_target(target: UiTarget) -> mlua::Result<UiScript> {
+        let lua = install_framescript(VmKind::InGame, target)?;
         install_in_game(&lua)?;
         object::guard_receivers(&lua)?;
         Ok(Self::host(lua))
@@ -817,7 +833,12 @@ impl UiScript {
     /// (`0x46ddf0`, `0x4736c0`, `0x471a20`, `0x46f480`) the screen verbs and the realm list are
     /// built ([`glue::install`]).
     pub fn new_glue() -> mlua::Result<UiScript> {
-        let lua = install_framescript(VmKind::Glue)?;
+        Self::glue_with_target(UiTarget::Vanilla112)
+    }
+
+    /// The glue host uses the same client contract as its in-game counterpart.
+    pub fn glue_with_target(target: UiTarget) -> mlua::Result<UiScript> {
+        let lua = install_framescript(VmKind::Glue, target)?;
         glue::install(&lua)?;
         object::guard_receivers(&lua)?;
         Ok(Self::host(lua))
@@ -850,6 +871,10 @@ impl UiScript {
     /// Which FrameScript state this VM is.
     pub fn vm_kind(&self) -> VmKind {
         self.model_ref().vm
+    }
+
+    pub fn target(&self) -> UiTarget {
+        self.model_ref().target
     }
 
     /// The embedded VM, for the app and the loader to add their bindings over this object model.

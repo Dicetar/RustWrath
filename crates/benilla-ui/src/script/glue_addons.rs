@@ -15,7 +15,7 @@ use mlua::{Lua, MultiValue, Value};
 
 use super::addon::{index_row, AddonSecurity};
 use super::addon_enable::{AddonStateFiles, EnableStore};
-use super::addon_gate::{can_load, GateRow};
+use super::addon_gate::{can_load_for_interface, GateRow};
 use super::binding_abi::{bool_or_default, flag, number_arg, s_str_to_int, string_arg};
 use super::glue_core::{queue, GlueRequest};
 use super::Model;
@@ -168,7 +168,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = model(lua);
             let i = row_arg(lua, &model, arg(&args, 0), USAGE_INFO)?;
             let rows = gate_rows(&model, &model.glue.addons.store);
-            let verdict = can_load(&rows, i, false, super::addon::version_check(&model));
+            let verdict = can_load_for_interface(&rows, i, false, super::addon::version_check(&model), model.target.interface());
             let a = &model.addons[i];
             Ok(MultiValue::from_vec(vec![
                 lua_str(lua, &a.name)?,

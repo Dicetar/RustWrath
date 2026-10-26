@@ -67,8 +67,19 @@ impl Verdict {
 /// `demand_only` is the in-game query (`dl=1`), where an unloaded addon that is not LoadOnDemand
 /// reports `NOT_DEMAND_LOADED`; `version_check` is the live `checkAddonVersion`, read per query.
 pub fn can_load(rows: &[GateRow], index: usize, demand_only: bool, version_check: bool) -> Verdict {
+    can_load_for_interface(rows, index, demand_only, version_check, CLIENT_INTERFACE)
+}
+
+/// The same load law with the owning VM's client interface, including every dependency.
+pub fn can_load_for_interface(
+    rows: &[GateRow],
+    index: usize,
+    demand_only: bool,
+    version_check: bool,
+    client_interface: u32,
+) -> Verdict {
     let mut visiting = vec![false; rows.len()];
-    walk(rows, index, demand_only, version_check, &mut visiting)
+    walk(rows, index, demand_only, version_check, client_interface, &mut visiting)
 }
 
 /// One level of the arbiter, its checks in the reference's order.
@@ -77,6 +88,7 @@ fn walk(
     i: usize,
     demand_only: bool,
     version_check: bool,
+    client_interface: u32,
     visiting: &mut [bool],
 ) -> Verdict {
     // Check 2: the visiting guard; a cycle resolves as loadable.
@@ -105,7 +117,7 @@ fn walk(
         };
     }
     // Check 6: the version gate, exact `==`; with the check off it falls through (`0x51e876`).
-    if row.interface != CLIENT_INTERFACE && version_check {
+    if row.interface != client_interface && version_check {
         return Verdict::Refused {
             reason: Some("INTERFACE_VERSION"),
             dep: None,
@@ -124,7 +136,7 @@ fn walk(
             },
             // A loaded dependency satisfies the walk before any recursion (`0x51e8ba`).
             Some(d) if rows[d].loaded => Verdict::Loadable,
-            Some(d) => walk(rows, d, demand_only, version_check, visiting),
+            Some(d) => walk(rows, d, demand_only, version_check, client_interface, visiting),
         };
         if let Verdict::Refused { reason, dep } = verdict {
             visiting[i] = false;

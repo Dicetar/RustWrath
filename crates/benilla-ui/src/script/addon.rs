@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use mlua::{Lua, MultiValue, Value};
 
-use super::addon_gate::{can_load, GateRow, Verdict};
+use super::addon_gate::{can_load_for_interface, GateRow, Verdict};
 use super::binding_abi::flag;
 use super::Model;
 use crate::status::Status;
@@ -287,13 +287,13 @@ pub(super) fn version_check(model: &Model) -> bool {
         .is_none_or(|s| super::binding_abi::s_str_to_int(&s.value) != 0)
 }
 
-/// [`can_load`] in the in-game flavour (`dl=1`). A loaded addon is loadable before the gate
+/// [`can_load_for_interface`] in the in-game flavour (`dl=1`). A loaded addon is loadable before the gate
 /// runs, as in `0x48e390`, so disabling it mid-session does not mark it unloadable.
 fn verdict(model: &Model, i: usize) -> Verdict {
     if model.addons[i].loaded {
         return Verdict::Loadable;
     }
-    can_load(&gate_rows(model), i, true, version_check(model))
+    can_load_for_interface(&gate_rows(model), i, true, version_check(model), model.target.interface())
 }
 
 fn lua_str(lua: &Lua, s: &str) -> mlua::Result<Value> {
@@ -591,7 +591,7 @@ pub(super) fn load_row(
         if a.loaded {
             return true;
         }
-        match can_load(&gate_rows(&model), i, demand, version_check) {
+        match can_load_for_interface(&gate_rows(&model), i, demand, version_check, model.target.interface()) {
             Verdict::Loadable => {}
             Verdict::Refused {
                 reason: Some(reason),
@@ -651,7 +651,8 @@ fn failing_dependency(model: &Model, i: usize, demand: bool, version_check: bool
         .find(|dep| match by_name(model, dep) {
             None => true,
             Some(d) => {
-                !model.addons[d].loaded && !can_load(&rows, d, demand, version_check).loadable()
+                !model.addons[d].loaded
+                    && !can_load_for_interface(&rows, d, demand, version_check, model.target.interface()).loadable()
             }
         })
         .or(a.dependencies.first())
