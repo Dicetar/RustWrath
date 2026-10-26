@@ -533,6 +533,10 @@ impl CallHost for ScriptCallHost<'_, '_> {
         self.appliers.spell_queries().unit_cast(guid, channel)
     }
 
+    fn unit_auras(&mut self, guid: u64) -> Option<Vec<benilla_ui::script::WrathAuraView>> {
+        self.appliers.spell_queries().unit_auras(guid)
+    }
+
     fn apply(&mut self, script: &mut UiScript, call: ScriptCall) -> Option<CallTail> {
         #[cfg(test)]
         self.census_probe();

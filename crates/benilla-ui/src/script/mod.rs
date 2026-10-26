@@ -65,6 +65,8 @@ pub mod addon_gate;
 mod target;
 mod posthook;
 mod wrath_spell;
+mod wrath_aura;
+pub use wrath_aura::WrathAuraView;
 mod wrath_unit;
 pub use wrath_spell::{SpellInfoView, UnitCastView};
 pub use target::UiTarget;
@@ -819,6 +821,7 @@ fn install_in_game(lua: &Lua) -> mlua::Result<()> {
     if lua.app_data_ref::<Model>().expect("model").target == UiTarget::Wrath335 {
         wrath_spell::install(lua)?;
         wrath_unit::install(lua)?;
+        wrath_aura::install(lua)?;
     }
     Ok(())
 }

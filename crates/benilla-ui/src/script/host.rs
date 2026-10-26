@@ -47,6 +47,11 @@ pub trait CallHost {
         None
     }
 
+    /// The full native slot list, with presentation availability retained per field.
+    fn unit_auras(&mut self, _guid: u64) -> Option<Vec<super::WrathAuraView>> {
+        None
+    }
+
     /// Apply `call`, with the input events it was made under raised. The host is out of the VM
     /// while this runs, so a call a handler makes meanwhile waits, and applies next, ahead of any
     /// made after this one, or at a signal point the apply reaches ([`UiScript::signal_point`]).

@@ -3,7 +3,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use benilla_ui::script::{SpellInfoView, UnitCastView};
+use benilla_ui::script::{SpellInfoView, UnitCastView, WrathAuraView};
 
 #[derive(SystemParam)]
 pub(crate) struct SpellQueries<'w, 's> {
@@ -18,6 +18,39 @@ pub(crate) struct SpellQueries<'w, 's> {
 }
 
 impl SpellQueries<'_, '_> {
+    pub(crate) fn unit_auras(&self, guid: u64) -> Option<Vec<WrathAuraView>> {
+        let world = self.world.as_ref()?;
+        if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld)
+            || !world.entities.contains_key(&guid) { return None; }
+        let catalog = &self.spells.as_deref()?.catalog;
+        let mut result = Vec::new();
+        for aura in world.auras(guid) {
+            let Some(spell) = catalog.get(aura.spell_id) else { continue; };
+            // AzerothCore SpellAuraDefines.h / AuraApplication::_InitFlags. These are not
+            // the 1.12 descriptor nibble's effect/cancel flags or a sign implied by slot number.
+            let helpful = match (aura.flags & 0x10 != 0, aura.flags & 0x80 != 0) {
+                (true, false) => Some(true), (false, true) => Some(false), _ => None,
+            };
+            let timed = aura.flags & benilla_protocol_wrath::reducer::AFLAG_DURATION != 0;
+            result.push(WrathAuraView {
+                slot: aura.slot, spell_id: aura.spell_id, name: spell.name.clone(),
+                rank: spell.rank.clone(), icon: spell.icon.clone(), count: aura.charges,
+                dispel: catalog.dispel_name(spell).map(str::to_owned), helpful,
+                caster: if aura.flags & benilla_protocol_wrath::reducer::AFLAG_CASTER != 0 {
+                    Some(guid)
+                } else { (aura.caster != 0).then_some(aura.caster) },
+                duration: if timed { f64::from(aura.max_duration_ms) / 1000.0 } else { 0.0 },
+                // There is no per-aura receipt clock in the native contract. Reusing query time
+                // would renew every timer; a world/movement timestamp can also age unrelated auras.
+                expiration: if timed { None } else { Some(0.0) },
+                cancelable: helpful == Some(true) && spell.attributes & (0x8000_0000 | 0x40) == 0,
+                stealable: None, consolidate: None,
+            });
+        }
+        result.sort_by_key(|aura| aura.slot);
+        Some(result)
+    }
+
     pub(crate) fn unit_cast(&self, guid: u64, channel: bool) -> Option<UnitCastView> {
         let world = self.world.as_ref()?;
         if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) { return None; }
