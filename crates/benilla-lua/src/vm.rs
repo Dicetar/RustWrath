@@ -10,6 +10,7 @@ use crate::proto::{Arith, Cmp, Op, Proto, Reg, Rk, RK_CONST};
 use crate::value::{FuncRef, StrRef, TableRef, ThreadRef, Value, V};
 
 mod coroutine;
+pub(crate) use coroutine::ResumeError;
 
 /// An error in flight: the error object, which `pcall` answers.
 #[derive(Clone, Copy, Debug)]

@@ -4,7 +4,7 @@
 use crate::api::R;
 use crate::heap::FuncObj;
 use crate::value::{ThreadRef, Value, V};
-use crate::vm::Vm;
+use crate::vm::{ResumeError, Vm};
 
 pub(crate) fn open(vm: &mut Vm) {
     let table = vm.heap.new_table(0, 0);
@@ -49,8 +49,9 @@ fn resume(vm: &mut Vm, nargs: usize) -> R<usize> {
             for &value in &values { vm.push(value); }
             Ok(values.len() + 1)
         }
-        Err(error) if vm.coroutine_aborted() => Err(error),
-        Err(error) => {
+        Err(ResumeError::Raised(error)) => Err(error),
+        Err(ResumeError::Failed(error)) if vm.coroutine_aborted() => Err(error),
+        Err(ResumeError::Failed(error)) => {
             vm.push(Value::Bool(false));
             vm.push(error.value);
             Ok(2)
@@ -92,8 +93,9 @@ fn wrapped_resume(vm: &mut Vm, nargs: usize) -> R<usize> {
             for &value in &values { vm.push(value); }
             Ok(values.len())
         }
-        Err(error) if vm.coroutine_aborted() => Err(error),
-        Err(error) => {
+        Err(ResumeError::Raised(error)) => Err(error),
+        Err(ResumeError::Failed(error)) if vm.coroutine_aborted() => Err(error),
+        Err(ResumeError::Failed(error)) => {
             let value = if let Some(string) = vm.tostr(error.value) {
                 let mut text = vm.where_(1);
                 text.extend_from_slice(vm.heap.str(string));

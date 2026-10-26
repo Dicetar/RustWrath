@@ -5,6 +5,13 @@
 
 use super::*;
 
+pub(crate) enum ResumeError {
+    /// An admission failure raised in the resumer (for example, its argument-stack limit).
+    Raised(LuaError),
+    /// A coroutine refusal or an error from its execution: resume returns false plus this value.
+    Failed(LuaError),
+}
+
 impl Vm {
     pub(crate) fn create_thread(&mut self, entry: Value) -> ThreadRef {
         let (stack_block, ci_block) = {
@@ -53,20 +60,18 @@ impl Vm {
         }
     }
 
-    pub(crate) fn resume_thread(&mut self, thread: ThreadRef, args: &[Value]) -> Result<Vec<Value>, LuaError> {
+    pub(crate) fn resume_thread(&mut self, thread: ThreadRef, args: &[Value]) -> Result<Vec<Value>, ResumeError> {
         let status = self.heap.thread(thread).status;
         if !matches!(status, ThreadStatus::Fresh | ThreadStatus::Suspended) {
-            let message: &[u8] = if status == ThreadStatus::Dead {
-                b"cannot resume dead coroutine"
-            } else { b"cannot resume non-suspended coroutine" };
-            return Err(LuaError { value: self.str(message) });
+            let message = [b"cannot resume ".as_slice(), self.thread_status(thread), b" coroutine"].concat();
+            return Err(ResumeError::Failed(LuaError { value: self.str(&message) }));
         }
         let context = self.heap.thread(thread).context.as_ref().expect("resumable context");
         let base = context.frames.last().map_or(0, |frame| frame.base());
         if args.len() > crate::api::MAX_C_STACK
             || context.top - base + args.len() > crate::api::MAX_C_STACK
         {
-            return Err(self.rt_error("too many arguments to resume"));
+            return Err(ResumeError::Raised(self.rt_error("too many arguments to resume")));
         }
         // Per-thread call depths alone cannot bound a chain of native resume calls.
         let marker = 0u8;
@@ -76,7 +81,7 @@ impl Vm {
         } else { self.resume_stack_base };
         let used = if cfg!(miri) { 0 } else { root_base.abs_diff(here) };
         if self.resume_parents.len() >= MAXCCALLS as usize || used > MAX_RUST_STACK {
-            return Err(self.rt_error("C stack overflow"));
+            return Err(ResumeError::Failed(LuaError { value: self.str(b"C stack overflow") }));
         }
         let previous = self.active_thread;
         self.resume_stack_base = root_base;
@@ -133,7 +138,7 @@ impl Vm {
         match result {
             Err(payload) => std::panic::resume_unwind(payload),
             Ok(_) if suspended => Ok(values),
-            Ok(result) => result,
+            Ok(result) => result.map_err(ResumeError::Failed),
         }
     }
 
