@@ -1333,14 +1333,43 @@ fn chat_type_112(chat_type: u8) -> Option<u8> {
     })
 }
 
+/// The stock wire position translated to 12340's player array. Bank slots 39-62 and the
+/// inventory/backpack agree; the six stock bank bags 63-68 move to 67-72, and the 1.12 keyring
+/// slots 81-96 (plus the buyback range) move five positions later.
+fn wrath_item_pos(bag: u8, slot: u8) -> (u8, u8) {
+    if (63..=68).contains(&bag) {
+        (bag + 4, slot)
+    } else if bag == 255 && (69..=112).contains(&slot) {
+        (bag, slot + 5)
+    } else {
+        (bag, slot)
+    }
+}
+
 /// 12340 bank bags start at 67 where the stock owner uses 63; slots inside the bank block
 /// (39-66) and the inventory/backpack indices agree, so only the six stock bank bags move.
 fn wrath_bank_bag(bag: u8) -> u8 {
-    if (63..=68).contains(&bag) {
-        bag + 4
-    } else {
-        bag
-    }
+    wrath_item_pos(bag, 0).0
+}
+
+/// Map the stock item-use target block onto the 12340 writer. A trade-item target needs the real
+/// item guid, which the stock command carries only as a slot, so it is left unsupported rather
+/// than encoded against a guessed guid.
+fn wrath_cast_target(
+    target: benilla_protocol::messages::UseItemTarget,
+) -> Option<gameplay::CastTarget> {
+    use benilla_protocol::messages::{CorpseTarget, UseItemTarget};
+    Some(match target {
+        UseItemTarget::SelfImplicit => gameplay::CastTarget::None,
+        UseItemTarget::Unit(guid) => gameplay::CastTarget::Unit(guid),
+        UseItemTarget::Object(guid) => gameplay::CastTarget::GameObject(guid),
+        UseItemTarget::Item(guid) => gameplay::CastTarget::Item(guid),
+        UseItemTarget::Dest(point) => gameplay::CastTarget::Dest(point),
+        UseItemTarget::Source(point) => gameplay::CastTarget::Source(point),
+        UseItemTarget::Corpse(CorpseTarget::Ally, guid) => gameplay::CastTarget::CorpseAlly(guid),
+        UseItemTarget::Corpse(CorpseTarget::Enemy, guid) => gameplay::CastTarget::CorpseEnemy(guid),
+        UseItemTarget::TradeItem(_) => return None,
+    })
 }
 
 /// The 1-based row for `entry` in the open vendor list. 12340 buy packets address the row;
@@ -2425,6 +2454,102 @@ fn wrath_tap_commands(
             ClientCommand::AutoStoreBankItem { bag, slot } => Some((
                 benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BANK_ITEM,
                 gameplay::autostore_bank_item(wrath_bank_bag(bag), slot),
+            )),
+            ClientCommand::UseItem {
+                bag_index,
+                slot,
+                spell_id,
+                item_guid,
+                target,
+                ..
+            } => match (item_guid, wrath_cast_target(target)) {
+                (Some(item_guid), Some(target)) => {
+                    let (bag, slot) = wrath_item_pos(bag_index, slot);
+                    let count = view.next_cast_count;
+                    view.next_cast_count = count.wrapping_add(1).max(1);
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_USE_ITEM,
+                        gameplay::use_item(bag, slot, count, spell_id, item_guid, target),
+                    ))
+                }
+                _ => {
+                    debug!(
+                        "wrath: item use dropped (no item guid or an unsupported target block)"
+                    );
+                    None
+                }
+            },
+            ClientCommand::OpenItem { bag_index, slot } => {
+                let (bag, slot) = wrath_item_pos(bag_index, slot);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_OPEN_ITEM,
+                    gameplay::open_item(bag, slot),
+                ))
+            }
+            ClientCommand::AutoEquipItem { bag_index, slot } => {
+                let (bag, slot) = wrath_item_pos(bag_index, slot);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_AUTOEQUIP_ITEM,
+                    gameplay::auto_equip_item(bag, slot),
+                ))
+            }
+            ClientCommand::SwapInvItem { src_slot, dst_slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SWAP_INV_ITEM,
+                gameplay::swap_inv_item(dst_slot, src_slot),
+            )),
+            ClientCommand::SwapItem {
+                dst_bag,
+                dst_slot,
+                src_bag,
+                src_slot,
+            } => {
+                let (dst_bag, dst_slot) = wrath_item_pos(dst_bag, dst_slot);
+                let (src_bag, src_slot) = wrath_item_pos(src_bag, src_slot);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_SWAP_ITEM,
+                    gameplay::swap_item(dst_bag, dst_slot, src_bag, src_slot),
+                ))
+            }
+            ClientCommand::AutoStoreBagItem {
+                src_bag,
+                src_slot,
+                dst_bag,
+            } => {
+                let (src_bag, src_slot) = wrath_item_pos(src_bag, src_slot);
+                let (dst_bag, _) = wrath_item_pos(dst_bag, 0);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BAG_ITEM,
+                    gameplay::auto_store_bag_item(src_bag, src_slot, dst_bag),
+                ))
+            }
+            ClientCommand::SplitItem {
+                src_bag,
+                src_slot,
+                dst_bag,
+                dst_slot,
+                count,
+            } => {
+                let (src_bag, src_slot) = wrath_item_pos(src_bag, src_slot);
+                let (dst_bag, dst_slot) = wrath_item_pos(dst_bag, dst_slot);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_SPLIT_ITEM,
+                    gameplay::split_item(src_bag, src_slot, dst_bag, dst_slot, u32::from(count)),
+                ))
+            }
+            ClientCommand::DestroyItem {
+                bag_index,
+                slot,
+                count,
+            } => {
+                let (bag, slot) = wrath_item_pos(bag_index, slot);
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_DESTROYITEM,
+                    gameplay::destroy_item(bag, slot, count),
+                ))
+            }
+            ClientCommand::SetAmmo { entry } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SET_AMMO,
+                gameplay::set_ammo(entry),
             )),
             ClientCommand::Chat {
                 kind,

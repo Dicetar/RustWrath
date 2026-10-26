@@ -62,6 +62,20 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: item use, equip and bag movement (committed with this record)
+
+The tap still dropped every inventory verb except loot and vendor buys. Added the 3.3.5 layouts:
+CMSG_USE_ITEM 0x0AB, CMSG_OPEN_ITEM 0x0AC, CMSG_AUTOEQUIP_ITEM 0x10A,
+CMSG_AUTOSTORE_BAG_ITEM 0x10B, CMSG_SWAP_ITEM 0x10C, CMSG_SWAP_INV_ITEM 0x10D,
+CMSG_SPLIT_ITEM 0x10E, CMSG_DESTROYITEM 0x111, CMSG_SET_AMMO 0x268. CMSG_USE_ITEM
+(SpellHandler.cpp:58-73) needs the item guid and the actual spell id, which the 1.12 command
+did not carry; ClientCommand::UseItem now carries both, resolved by the cast owner, while the
+1.12 writer keeps using its spell slot. The target block writer covers unit, game object, item,
+corpse ally/enemy, source and destination; a trade-item target needs the real item guid and is
+left unsupported rather than guessed. All bag/slot fields use the 12340 player-array mapping
+(bank bags 63-68 -> 67-72, keyring/buyback 69-96 -> +5). Bag movement, split, destroy and ammo
+now reach the server. Live use/equip/swap remains execution-gated.
+
 ## Slice: chat and addon lane (committed with this record)
 
 Chat was absent in both directions, so the stock chat bar and the installed addons had no wire

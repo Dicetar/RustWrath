@@ -366,6 +366,8 @@ impl CastLadder<'_, '_> {
                 bag_index,
                 slot,
                 spell_index,
+                spell_id,
+                item_guid: commit.item_guid(),
                 target: bound.block(),
             },
             CastCommit::Pet { caster } => ClientCommand::PetCastSpell {
@@ -1186,6 +1188,8 @@ fn send_spell_cast(
             bag_index,
             slot,
             spell_index,
+            spell_id,
+            item_guid: commit.item_guid(),
             target: match (on_object, item_target, target) {
                 (Some(go), _, _) => UseItemTarget::Object(go),
                 (None, Some(item), _) => UseItemTarget::Item(item),
@@ -2635,6 +2639,8 @@ mod tests {
                 bag_index: 255,
                 slot: 24,
                 spell_index: 0,
+                spell_id: HEARTHSTONE,
+                item_guid: None,
                 target: UseItemTarget::SelfImplicit
             })
         ));

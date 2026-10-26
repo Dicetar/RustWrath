@@ -64,6 +64,17 @@ pub const MSG_MOVE_HEARTBEAT: u32 = 0x0EE;
 pub const CMSG_SET_SELECTION: u32 = 0x13D;
 /// Chat (`ChatHandler.cpp:59-300`, `Chat.cpp:374-443`): 12340 has a uniform body; the
 /// GM variant adds an inline sender name.
+/// Item use and bag movement (`ItemHandler.cpp`). 12340 `CMSG_USE_ITEM` carries the item guid
+/// and spell id; the other verbs carry only wire bag/slot positions.
+pub const CMSG_USE_ITEM: u32 = 0x0AB;
+pub const CMSG_OPEN_ITEM: u32 = 0x0AC;
+pub const CMSG_AUTOEQUIP_ITEM: u32 = 0x10A;
+pub const CMSG_AUTOSTORE_BAG_ITEM: u32 = 0x10B;
+pub const CMSG_SWAP_ITEM: u32 = 0x10C;
+pub const CMSG_SWAP_INV_ITEM: u32 = 0x10D;
+pub const CMSG_SPLIT_ITEM: u32 = 0x10E;
+pub const CMSG_DESTROYITEM: u32 = 0x111;
+pub const CMSG_SET_AMMO: u32 = 0x268;
 pub const CMSG_MESSAGECHAT: u32 = 0x095;
 pub const SMSG_MESSAGECHAT: u16 = 0x096;
 pub const SMSG_GM_MESSAGECHAT: u16 = 0x3B3;

@@ -227,6 +227,132 @@ pub fn repair_item(vendor: u64, item_guid: u64, guild_bank: bool) -> Vec<u8> {
     p
 }
 
+/// A 12340 `SpellCastTargets` block for an item use. Coordinates are world-space (transport 0),
+/// matching the stock target block; trade-item targets need the real item guid and are not
+/// constructed here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CastTarget {
+    None,
+    Unit(u64),
+    GameObject(u64),
+    Item(u64),
+    TradeItem(u64),
+    Source([f32; 3]),
+    Dest([f32; 3]),
+    CorpseAlly(u64),
+    CorpseEnemy(u64),
+}
+
+/// TARGET_FLAG_* (`SpellInfo.h:46-63`).
+const TARGET_FLAG_UNIT: u32 = 0x0000_0002;
+const TARGET_FLAG_ITEM: u32 = 0x0000_0010;
+const TARGET_FLAG_SOURCE_LOCATION: u32 = 0x0000_0020;
+const TARGET_FLAG_DEST_LOCATION: u32 = 0x0000_0040;
+const TARGET_FLAG_CORPSE_ENEMY: u32 = 0x0000_0200;
+const TARGET_FLAG_GAMEOBJECT: u32 = 0x0000_0800;
+const TARGET_FLAG_TRADE_ITEM: u32 = 0x0000_1000;
+const TARGET_FLAG_CORPSE_ALLY: u32 = 0x0000_8000;
+
+fn write_point(p: &mut Vec<u8>, point: [f32; 3]) {
+    // A zero transport guid, then the world position (`SpellCastTargets::Read`, Spell.cpp:140).
+    p.push(0);
+    for value in point {
+        p.extend_from_slice(&value.to_le_bytes());
+    }
+}
+
+fn write_cast_target(p: &mut Vec<u8>, target: CastTarget) {
+    let (mask, guid) = match target {
+        CastTarget::None => {
+            p.extend_from_slice(&0u32.to_le_bytes());
+            return;
+        }
+        CastTarget::Unit(guid) => (TARGET_FLAG_UNIT, guid),
+        CastTarget::GameObject(guid) => (TARGET_FLAG_GAMEOBJECT, guid),
+        CastTarget::Item(guid) => (TARGET_FLAG_ITEM, guid),
+        CastTarget::TradeItem(guid) => (TARGET_FLAG_TRADE_ITEM, guid),
+        CastTarget::CorpseAlly(guid) => (TARGET_FLAG_CORPSE_ALLY, guid),
+        CastTarget::CorpseEnemy(guid) => (TARGET_FLAG_CORPSE_ENEMY, guid),
+        CastTarget::Source(point) => {
+            p.extend_from_slice(&TARGET_FLAG_SOURCE_LOCATION.to_le_bytes());
+            write_point(p, point);
+            return;
+        }
+        CastTarget::Dest(point) => {
+            p.extend_from_slice(&TARGET_FLAG_DEST_LOCATION.to_le_bytes());
+            write_point(p, point);
+            return;
+        }
+    };
+    p.extend_from_slice(&mask.to_le_bytes());
+    p.extend_from_slice(&pack_guid(guid));
+}
+
+/// `CMSG_USE_ITEM` (`SpellHandler.cpp:58-73`, `Spell.cpp:127-178`): bag, slot, cast count, spell
+/// id, the used item's guid, glyph index (0; 1.12 has none), cast flags (0; no ammo payload),
+/// then the 12340 targets block. The server verifies the guid against the bag/slot item.
+pub fn use_item(
+    bag: u8,
+    slot: u8,
+    cast_count: u8,
+    spell_id: u32,
+    item_guid: u64,
+    target: CastTarget,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(32);
+    p.push(bag);
+    p.push(slot);
+    p.push(cast_count);
+    p.extend_from_slice(&spell_id.to_le_bytes());
+    p.extend_from_slice(&item_guid.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes()); // glyph index
+    p.push(0); // cast flags
+    write_cast_target(&mut p, target);
+    p
+}
+
+/// `CMSG_OPEN_ITEM` (`ItemHandler.cpp`): bag and slot.
+pub fn open_item(bag: u8, slot: u8) -> Vec<u8> {
+    vec![bag, slot]
+}
+
+/// `CMSG_AUTOEQUIP_ITEM` (`ItemPackets.cpp:49`): source bag and slot.
+pub fn auto_equip_item(bag: u8, slot: u8) -> Vec<u8> {
+    vec![bag, slot]
+}
+
+/// `CMSG_SWAP_INV_ITEM` (`ItemPackets.cpp:29`): destination then source player-array slot.
+pub fn swap_inv_item(dst_slot: u8, src_slot: u8) -> Vec<u8> {
+    vec![dst_slot, src_slot]
+}
+
+/// `CMSG_SWAP_ITEM` (`ItemPackets.cpp:41`): destination bag/slot first, then source.
+pub fn swap_item(dst_bag: u8, dst_slot: u8, src_bag: u8, src_slot: u8) -> Vec<u8> {
+    vec![dst_bag, dst_slot, src_bag, src_slot]
+}
+
+/// `CMSG_AUTOSTORE_BAG_ITEM` (`ItemPackets.cpp:108`): source bag/slot, destination bag.
+pub fn auto_store_bag_item(src_bag: u8, src_slot: u8, dst_bag: u8) -> Vec<u8> {
+    vec![src_bag, src_slot, dst_bag]
+}
+
+/// `CMSG_SPLIT_ITEM` (`ItemPackets.cpp:20`): source bag/slot, destination bag/slot, u32 count.
+pub fn split_item(src_bag: u8, src_slot: u8, dst_bag: u8, dst_slot: u8, count: u32) -> Vec<u8> {
+    let mut p = vec![src_bag, src_slot, dst_bag, dst_slot];
+    p.extend_from_slice(&count.to_le_bytes());
+    p
+}
+
+/// `CMSG_DESTROYITEM` (`ItemPackets.cpp:55`): bag, slot, count and three unused bytes.
+pub fn destroy_item(bag: u8, slot: u8, count: u8) -> Vec<u8> {
+    vec![bag, slot, count, 0, 0, 0]
+}
+
+/// `CMSG_SET_AMMO` (`ItemHandler.cpp:1016`): the ammo template entry.
+pub fn set_ammo(entry: u32) -> Vec<u8> {
+    entry.to_le_bytes().to_vec()
+}
+
 /// `CMSG_MESSAGECHAT` (`ChatHandler.cpp:59`): u32 type, u32 language, then the whisper/channel
 /// target as a cstring when present, then the message as a cstring. The client's own language
 /// is native (Common 7 or Orcish 1); AFK/DND accept universal 0.

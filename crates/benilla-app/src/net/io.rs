@@ -1354,6 +1354,7 @@ pub(super) fn writer_loop(
                         slot,
                         spell_index,
                         target,
+                        ..
                     } => w.use_item(bag_index, slot, spell_index, target),
                     ClientCommand::OpenItem { bag_index, slot } => w.open_item(bag_index, slot),
                     ClientCommand::WrapItem {

@@ -1064,6 +1064,12 @@ pub(crate) enum ClientCommand {
         bag_index: u8,
         slot: u8,
         spell_index: u8,
+        /// The item's on-use spell, resolved by the caster. 1.12 sends `spell_index`; 3.3.5
+        /// `CMSG_USE_ITEM` names the spell id and verifies the item guid.
+        spell_id: u32,
+        /// The used item object's guid; 3.3.5 rejects a packet whose guid does not match the
+        /// bag/slot item. `None` only where the caller has no item object (a test commit).
+        item_guid: Option<u64>,
         target: benilla_protocol::messages::UseItemTarget,
     },
     /// `CMSG_OPEN_ITEM`: the server answers `SMSG_LOOT_RESPONSE` on the item's own guid; a wrapped
