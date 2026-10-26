@@ -129,6 +129,8 @@ pub enum Op {
     /// `b` is the argument count + 1 (0: up to the top), `c` the result count + 1 (0: all).
     Call(Reg, u8, u8),
     TailCall(Reg, u8),
+    /// Lua 5.1 varargs: count + 1, or zero for all values and an updated stack top.
+    Vararg(Reg, u8),
     /// Return `R(a)..`, `b - 1` values (0: up to the top).
     Return(Reg, u8),
     /// Return `R(a)` alone.
@@ -315,8 +317,10 @@ pub struct Proto {
     pub upval_decls: Vec<Decl>,
     /// Parameters including `self`.
     pub nparams: u8,
-    /// `...`: the extras become the `arg` table in register `nparams`.
+    /// The function accepts trailing arguments; table compatibility is selected separately.
     pub vararg: bool,
+    /// Compatibility `arg` table is needed; a 5.1 `...` expression clears this flag.
+    pub vararg_table: bool,
     /// The function has a generic `for` over more than three values, whose body can read the
     /// registers above its variables before anything writes them: what the calls under it left.
     /// While it runs, the VM clears each frame entered in its range as `luaD_precall` clears
@@ -598,6 +602,10 @@ impl Proto {
                     reg(x + (nc as usize).saturating_sub(2));
                 }
                 Op::TailCall(x, nb) => reg(x as usize + (nb as usize).saturating_sub(1)),
+                Op::Vararg(x, count) => {
+                    if !self.vararg { fail(pc, "vararg read in a fixed-argument function"); }
+                    reg(x as usize + (count as usize).saturating_sub(2));
+                }
                 // `Return(a, 1)` returns nothing, and its `a` may be the first free register.
                 Op::Return(x, nb) => {
                     if nb > 1 {

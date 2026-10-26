@@ -55,7 +55,9 @@ const MAXTAGLOOP: u32 = 100;
 #[derive(Clone, Copy)]
 struct Frame {
     func: FuncRef,
-    /// The first register; the called function sits just below, where its results go.
+    /// The function slot is below preserved extras in a Lua 5.1 vararg call.
+    func_slot: u32,
+    /// The first register; 5.1 varargs can sit between the function slot and this base.
     base: u32,
     /// The next instruction, saved as C Lua saves `savedpc`: a pointer, so resuming the frame
     /// reads one value to dispatch. Null for a native.
@@ -85,8 +87,9 @@ struct Frame {
     boundary: bool,
 }
 
-// A call writes one cache line of frame.
-const _: () = assert!(std::mem::size_of::<Frame>() == 64);
+// The original function slot keeps varargs on the rooted value stack, without a second
+// argument store. The additional index makes the Rust call record 72 bytes.
+const _: () = assert!(std::mem::size_of::<Frame>() == 72);
 
 impl Frame {
     /// The index of the next instruction, for error positions.
@@ -106,7 +109,7 @@ impl Frame {
     /// The stack slot of the called function, where its results go.
     #[inline(always)]
     fn func_idx(&self) -> usize {
-        self.base as usize - 1
+        self.func_slot as usize
     }
 }
 
@@ -1666,19 +1669,28 @@ impl Vm {
                 // SAFETY: the closure being called holds this code, and the closure sits in the
                 // stack slot `func_idx` for the whole call.
                 let proto = unsafe { &*pp };
-                let base = func_idx + 1;
                 let np = proto.nparams as usize;
+                let original_base = func_idx + 1;
+                let shifted_varargs = self.dialect.is_51() && proto.vararg;
+                let base = if shifted_varargs { original_base + nargs.max(np) } else { original_base };
                 let frame_top = base + proto.maxstack as usize;
                 self.checkstack(precall_top50(base, nargs, proto), proto.c_maxstack as usize);
                 self.ensure(frame_top + 1);
+                if shifted_varargs {
+                    for i in nargs..np { self.stack[original_base + i] = Value::Nil; }
+                    for i in 0..np {
+                        self.stack[base + i] = self.stack[original_base + i];
+                        self.stack[original_base + i] = Value::Nil;
+                    }
+                }
                 let mut fill_from = base + nargs;
-                if proto.vararg {
+                if proto.vararg && (!self.dialect.is_51() || proto.vararg_table) {
                     // 5.0's `adjust_varargs`: the extras into `arg`, made by
                     // `luaH_new(L, actual, 1)` (`0x6f6266`), with `n`.
                     let extra = nargs.saturating_sub(np);
                     let t = self.heap.new_table(extra, 1);
                     for i in 0..extra {
-                        let v = self.stack[base + np + i];
+                        let v = self.stack[original_base + np + i];
                         self.heap
                             .table_mut(t)
                             .set_int(i as i32 + 1, v)
@@ -1689,10 +1701,11 @@ impl Vm {
                         .table_mut(t)
                         .set(n, Value::Num(extra as f64))
                         .unwrap();
-                    for i in nargs..np {
-                        self.stack[base + i] = Value::Nil;
-                    }
+                    if !shifted_varargs { for i in nargs..np { self.stack[base + i] = Value::Nil; } }
                     self.stack[base + np] = Value::Table(t);
+                    fill_from = base + np + 1;
+                } else if shifted_varargs {
+                    self.stack[base + np] = Value::Nil;
                     fill_from = base + np + 1;
                 } else if nargs > np {
                     fill_from = base + np;
@@ -1715,6 +1728,7 @@ impl Vm {
                 self.top = frame_top;
                 self.frames.push(Frame {
                     func: fref,
+                    func_slot: func_idx as u32,
                     base: base as u32,
                     ip: proto.code.as_ptr(),
                     nresults: nres,
@@ -1760,6 +1774,7 @@ impl Vm {
         self.checkstack(self.top, LUA_MINSTACK);
         self.frames.push(Frame {
             func: fref,
+            func_slot: func_idx as u32,
             base: base as u32,
             ip: std::ptr::null(),
             nresults: nres,
@@ -2688,21 +2703,14 @@ impl Vm {
                     if !self.open.is_empty() {
                         self.close_upvals(base);
                     }
-                    // The returning frame's two fields that matter, read in place; its slot sits
-                    // just below `regs`.
-                    let (nresults, boundary) = {
+                    let (nresults, boundary, func_idx) = {
                         let me = self.frames.last().unwrap();
-                        (me.nresults, me.boundary)
+                        (me.nresults, me.boundary, me.func_idx())
                     };
-                    let func_idx = base - 1;
                     self.frames.truncate(fi);
                     if nresults == 1 && n >= 1 {
-                        // One result, the common call in an expression, into the callee's slot
-                        // just below this frame's registers.
-                        // SAFETY: `base` is at least 1 for a Lua frame; `regs` is still the
-                        // returning frame's, and `a` one of its registers (`r!` would check it
-                        // against the caller's frame, now on top).
-                        unsafe { *regs.sub(1) = *regs.add(a as usize) };
+                        // The original function slot can be below preserved varargs.
+                        self.stack[func_idx] = self.stack[first];
                     } else if nresults == 0 {
                         // None, a call statement.
                         self.top = func_idx;
@@ -3109,6 +3117,7 @@ impl Vm {
                                         nbase + nargs + shape.c_maxstack as usize + EXTRA_STACK + 2;
                                     let frame = Frame {
                                         func: f,
+                                        func_slot: nbase as u32 - 1,
                                         base: nbase as u32,
                                         ip: shape.code,
                                         nresults: c as i32 - 1,
@@ -3232,7 +3241,7 @@ impl Vm {
                         let b0 = base!();
                         self.close_upvals(b0);
                         let dest = fr!().func_idx();
-                        if SLOW && dest < self.clear_below {
+                        if SLOW && dest < self.clear_below && !self.dialect.is_51() {
                             // `OP_TAILCALL`'s order, where code may read what it leaves: the
                             // callee's frame is made where its function sits, registers cleared,
                             // then moved down whole over this one, and the place it was made
@@ -3248,6 +3257,7 @@ impl Vm {
                             self.stack.copy_within(func_idx..func_idx + 1 + cmax, dest);
                             self.top -= func_idx - dest;
                             new.base = dest as u32 + 1;
+                            new.func_slot = dest as u32;
                             // 5.1's `ci->tailcalls++` is a C int; saturated here so 2^32 tail
                             // calls cannot overflow, a count no traceback reaches.
                             new.tailcalls = me.tailcalls.saturating_add(1);
@@ -3298,6 +3308,20 @@ impl Vm {
                         ret!(a, n);
                     }
                     Op::Return1(a) => ret!(a, 1),
+                    Op::Vararg(a, count) => {
+                        let frame_base = base!();
+                        // SAFETY: a running Lua frame owns its live prototype.
+                        let parameters = unsafe { (*fr!().proto).nparams as usize };
+                        let available = frame_base - fr!().func_idx() - 1 - parameters;
+                        let source = frame_base - available;
+                        let destination = frame_base + a as usize;
+                        let wanted = if count == 0 { available } else { count as usize - 1 };
+                        slow!(self.ensure(destination + wanted + 1));
+                        let copied = available.min(wanted);
+                        self.stack.copy_within(source..source + copied, destination);
+                        self.stack[destination + copied..destination + wanted].fill(Value::Nil);
+                        if count == 0 { self.top = destination + wanted; }
+                    }
                     // The client's `OP_FORLOOP` (`0x6f9262`): the loop's own variable is the
                     // counter, so the body may move it; each pass checks it is a number, makes
                     // the limit and step numbers in place, steps it and, while within the
@@ -3584,6 +3608,7 @@ fn symbexec(p: &Proto, lastpc: usize, reg: usize) -> Option<usize> {
             | Op::DivKR(a, ..)
             | Op::Unm(a, _)
             | Op::Len(a, _)
+            | Op::Vararg(a, _)
             | Op::Not(a, _)
             | Op::Concat(a, ..)
             | Op::JmpIf(a, ..)

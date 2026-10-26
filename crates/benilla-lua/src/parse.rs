@@ -76,6 +76,7 @@ pub(crate) fn parse_with_dialect(src: &[u8], chunkname: &[u8], heap: &mut Heap, 
         name_hint: None,
     };
     p.fs.push(FuncState::new(Rc::from(chunkname), 0, Key::default()));
+    if dialect.is_51() { p.fs.last_mut().unwrap().vararg = true; }
     p.chunk()?;
     // The client's `luaY_parser` raises its own bare text past the last statement (`0x6fca1a`,
     // `0x871cf4`).
@@ -449,6 +450,7 @@ impl<'a> Parser<'a> {
         }
         self.fs().nparams = self.fsr().nactvar;
         if self.fsr().vararg {
+            self.fs().vararg_table = true;
             self.new_localvar(b"arg", 0)?;
             self.adjustlocalvars(1);
         }
@@ -1288,6 +1290,13 @@ impl<'a> Parser<'a> {
             Tok::Nil => Exp::new(Kind::Nil),
             Tok::True => Exp::new(Kind::True),
             Tok::False => Exp::new(Kind::False),
+            Tok::Dots if self.lx.dialect.is_51() => {
+                if !self.fsr().vararg { return Err(self.lx.error("cannot use '...' outside a vararg function")); }
+                self.fs().vararg_table = false;
+                let destination = self.fsr().freereg;
+                self.reserveregs(1)?;
+                Exp::new(Kind::Vararg(self.code(Op::Vararg(destination, 2), 1)?))
+            }
             Tok::Char(b'{') => return self.constructor(hint),
             Tok::Function => {
                 self.next()?;

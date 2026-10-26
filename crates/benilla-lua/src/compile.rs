@@ -79,6 +79,7 @@ pub(crate) enum Kind {
     NonReloc(Reg),
     /// The pc of an open call.
     Call(usize),
+    Vararg(usize),
 }
 
 /// 5.1's `expdesc`: a kind and the lists of jumps taken when it is true and false.
@@ -125,7 +126,7 @@ impl Exp {
     }
 
     pub fn has_multret(&self) -> bool {
-        matches!(self.k, Kind::Call(_))
+        matches!(self.k, Kind::Call(_) | Kind::Vararg(_))
     }
 }
 
@@ -258,6 +259,7 @@ pub(crate) struct FuncState {
     pub linedefined: u32,
     pub nparams: u8,
     pub vararg: bool,
+    pub vararg_table: bool,
     /// [`Proto::clears`].
     pub clears: bool,
     pub source: Bytes,
@@ -316,6 +318,7 @@ impl FuncState {
             linedefined,
             nparams: 0,
             vararg: false,
+            vararg_table: false,
             clears: false,
             source,
             key,
@@ -392,6 +395,7 @@ impl FuncState {
             upval_decls: self.upval_decls,
             nparams: self.nparams,
             vararg: self.vararg,
+            vararg_table: self.vararg_table,
             clears: self.clears,
             maxstack: (self.maxstack as u16 + 1).max(self.tfor_top),
             c_maxstack: self.c_maxstack,
@@ -500,6 +504,7 @@ fn set_a(op: &mut Op, r: Reg) {
         | Op::DivKR(a, ..)
         | Op::Unm(a, _)
         | Op::Len(a, _)
+        | Op::Vararg(a, _)
         | Op::Not(a, _)
         | Op::Concat(a, ..)
         | Op::Closure(a, _) => *a = r,
@@ -865,10 +870,10 @@ impl<'a> Parser<'a> {
 
     /// `luaK_setreturns`: an open call keeps `nresults` values (-1: all).
     pub(crate) fn setreturns(&mut self, e: &Exp, nresults: i32) {
-        if let Kind::Call(pc) = e.k {
-            if let Op::Call(_, _, c) = &mut self.fs().code[pc] {
-                *c = (nresults + 1) as u8;
-            }
+        match e.k {
+            Kind::Call(pc) => if let Op::Call(_, _, c) = &mut self.fs().code[pc] { *c = (nresults + 1) as u8; },
+            Kind::Vararg(pc) => if let Op::Vararg(_, count) = &mut self.fs().code[pc] { *count = (nresults + 1) as u8; },
+            _ => {}
         }
     }
 
@@ -883,6 +888,11 @@ impl<'a> Parser<'a> {
                 unreachable!()
             };
             e.k = Kind::NonReloc(a);
+        }
+        if let Kind::Vararg(pc) = e.k {
+            let Op::Vararg(a, count) = &mut self.fs().code[pc] else { unreachable!() };
+            *count = 2;
+            e.k = Kind::NonReloc(*a);
         }
     }
 
@@ -901,7 +911,7 @@ impl<'a> Parser<'a> {
                 };
                 e.k = Kind::Reloc(self.code(op, 1)?);
             }
-            Kind::Call(_) => self.setoneret(e),
+            Kind::Call(_) | Kind::Vararg(_) => self.setoneret(e),
             _ => {}
         }
         Ok(())
