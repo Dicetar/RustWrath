@@ -29,7 +29,7 @@ Paths below are relative to `D:/Projects/project-b-client` unless an absolute se
 | S7 | `gameplay.rs`: read_item_info, loot/item-push/quest readers; `benilla-protocol-wrath/src/cast_failure.rs` |
 | S8 | `benilla-app/src/spell/**`, `ui_action/**`, `net/handlers.rs`, donor quest/loot/inventory owners, selected SessionEvent handlers |
 | S9 | `benilla-app/src/net.rs`: stock ClientCommand variants, including item mutation and corpse/recovery commands |
-| S10 | `benilla-ui/src/script/addon_gate.rs`, `script/client.rs`, `benilla-app/src/ui_script/**`: selected host identity/API/event contract |
+| S10 | `benilla-ui/src/script/{target.rs,addon_gate.rs,event.rs,wrath_spell.rs,wrath_unit.rs}`, `loader/**`, `benilla-app/src/ui_script/**`: selected host identity/API/event contract; Astra source follow-up through `dd316dd3` |
 | S11 | Pinned server: `D:/WOW/WM_BridgeLab/src/azerothcore/src/server/game/Handlers/{Item,Spell,Quest,Movement,Character}Handler.cpp`, `Entities/Item/ItemTemplate.h`, `Entities/Unit/UnitDefines.h` |
 | S12 | `docs/architecture/architecture-review-2026-10-26.md` R01–R10, latest OC delivery checkpoints and the scenario checkpoint |
 
@@ -44,7 +44,7 @@ Paths below are relative to `D:/Projects/project-b-client` unless an absolute se
 | E05 | Validate an Enter World pick | Partial, S1 validates against the current enumeration | N picked known GUID sends player login; R removed/unknown/stale GUID does not enter another character | T prior session retired first; P fresh roster validation each time |
 | E06 | Establish received self/world state | Partial, S3/S4 login phase, self GUID and digest | N server confirms map/position and player ownership; R login failure/incomplete self state stays ineligible | T no old-map entities/observations; P received state rebuilt, not cached as authority |
 | E07 | Present the actual player and nearby actors | Partial, S4 plus profile/M2/SKIN source | N actual GUID/display/appearance/body and player camera; R missing assets diagnosed instead of accepted cubes | T remove/recreate by world and object generation; P consistent appearance restoration; issues 19–22 |
-| E08 | Keep donor and Wrath UI host contracts explicit | Broken required version contract, S10/R05 | N 3.3.5 API/event/addon identity matches behavior; R unsupported interfaces fail explicitly | T no stale glue/game host state; P addon/settings state restored; ADR-0001 remains Proposed |
+| E08 | Keep donor and Wrath UI host contracts explicit | Partial source integration, S10; explicit target/dialect/interface, production selection and selected addon API paths; full host remains incomplete | N 3.3.5 API/event/addon identity matches behavior; R unsupported interfaces fail explicitly | T no stale glue/game host state; P addon/settings state restored; ADR-0001 remains Proposed |
 
 ## Movement and targeting — issues 23–25
 
@@ -146,6 +146,8 @@ These are refinements under existing issues, not duplicate tickets or new permis
 No new behavior is accepted by this inventory. Source changes use exact ownership claims and cohesive commits. Build/check/graphical/lab/WM evidence remains separately gated. Full stock-client replacement remains mandatory; use no completion percentage derived from these 56 rows.
 
 ## Reconciliation and provenance
+
+Astra UI reconciliation through `dd316dd3`: production glue/game creation selects an explicit Wrath target, addon dependency gates use interface 30300, and the host selects the Lua 5.1 dialect while retaining vanilla defaults. Source now connects addon chunk name/private namespaces, explicit handler arguments plus legacy globals, named XML handlers, post-hooks, frame attributes (including XML), shared sizing, selected tooltip/spell/resource APIs and targeted addon whispers. E08's original fixed-version contradiction is superseded by these inspected paths. Acceptance remains UNKNOWN: coroutine support, complete collector/client API fidelity, secure execution, native cast/aura UI consumption, atomic cross-host asset reload, full installed-addon loading and runtime/rendered behavior are not established. This updates one source-support row, not the 56-row denominator or any release percentage. OC's current uncommitted native contract is not accepted by this update.
 
 Source-inspected follow-ups: 3ef23b0f adds cooldown list/event/clear/item deltas and player-gated channel events; 160d648e adds ordered aura state and a shortened descriptor projection; 430c4ce7 reads the correct two item damage records; e0be0d95 adds the death command/result path and ghost flag projection. Initial spellbook translation still supplies empty cooldowns; aura durations and upper slots remain gaps. Movement flags and shared action/movement eviction remain as described in the original source review. No build, test or live proof was added by this reconciliation.
 

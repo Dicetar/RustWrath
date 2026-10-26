@@ -16,6 +16,16 @@ Source admission: 08601ddd plus OC-owned in-flight `benilla-app/src/wrath.rs`. T
 
 ## Active claim and system outcome
 
+### Six-hour checkpoint assessment under corrected priority
+
+The wall-clock checkpoint has passed. This session spans inter-turn gaps; no claim of six uninterrupted active coding hours is made. Source delivery is substantial but the corrected product outcome is incomplete, so the goal is not achieved.
+
+Committed Astra source milestones include explicit Lua dialect and library/collector work; target/interface-aware addon admission and production UI construction; addon chunk arguments and private namespaces; handler argument/global compatibility; named XML handlers and post-hooks; shared sizing and tooltip integration; synchronous spell/known-spell/resource queries through existing gameplay owners; frame attributes/click callbacks; and targeted addon whisper transport. Latest source checkpoints are `aa5f5059` (handler compatibility) and `dd316dd3` (XML frame attributes). Detailed scope and limitations remain in the existing Astra UI-host checkpoint; E08 in the first-loop inventory now reflects partial source integration rather than its superseded fixed-version contradiction.
+
+Required remaining work includes complete Lua/client-host semantics (notably coroutines, unsupported incremental collector controls and secure UI execution), native cast/channel/aura UI consumption after OC's contract lands, complete installed-mod API/event coverage, atomic UI/render profile reload, faithful gameplay/world/WM integration and actual server-authorized combat mode with UI. The current authoring/procgen system is deferred, not counted as the main-project outcome. OC's dirty native gameplay work remains owned by OC and is not accepted as delivered here.
+
+Evidence is source/Git inspection only. No builds, tests/new cases, linters, interpreter/check scripts, addon/client/server/WM/socket/graphical runs or deployment occurred. Compilation, connected gameplay, WM consumption and rendered acceptance remain UNKNOWN. Full stock-client replacement remains the release gate; ADR-0001 remains Proposed. There is no defensible whole-project completion percentage from the local first-loop subset.
+
 Astra claims `crates/benilla-procgen/**`, `docs/procgen/**`, this package, Astra checkpoints and `.scratch/project-b/compatibility/**`. No current new dependency/lockfile change is planned. WM, server, bridge and client source are inspection-only unless ownership is explicitly transferred. Keep exact-path commits immediate; no long-lived staged index entries.
 
 Complete procedural content authoring around the existing artifact/encounter pipeline: generated item mapping into existing WM managed-item drafts, existing-owner reservation handoff, a retained offline authoring package connecting candidate/content/encounters, explicit refusal and lifecycle/reconciliation handling, recovery/provenance, practical diagnostics and source-grounded replacement coverage. Inspect real owner contracts first and preserve their authority. Supported conversion must retain original stat bits and explicit conversion policy; unsupported meanings must refuse, not silently turn into a different stat.
