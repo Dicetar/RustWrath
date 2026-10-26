@@ -1,5 +1,5 @@
-//! The virtual machine: one stack, one call-frame list, and the script host's 5.1 semantics for
-//! calls, metamethods, coercions and error messages.
+//! The virtual machine: an active stack and call-frame list over a shared heap, with parked
+//! coroutine contexts and the script host's call, metamethod and coercion semantics.
 
 use std::rc::Rc;
 
@@ -7,7 +7,9 @@ use crate::heap::{FuncObj, Heap, LuaFunc, NativeFn, UpvalObj, UserObj};
 use crate::number::str2d;
 use crate::pools::Block;
 use crate::proto::{Arith, Cmp, Op, Proto, Reg, Rk, RK_CONST};
-use crate::value::{FuncRef, StrRef, TableRef, Value, V};
+use crate::value::{FuncRef, StrRef, TableRef, ThreadRef, Value, V};
+
+mod coroutine;
 
 /// An error in flight: the error object, which `pcall` answers.
 #[derive(Clone, Copy, Debug)]
@@ -301,6 +303,11 @@ pub struct Vm {
     /// `math.random`'s generator.
     pub(crate) rand: crate::lib_math::CrtRand,
     identity: crate::heap::Identity,
+    active_thread: Option<ThreadRef>,
+    main_thread: Option<ThreadRef>,
+    resume_parents: Vec<ThreadRef>,
+    resume_stack_base: usize,
+    yielded: Option<usize>,
 }
 
 /// The host's way in: run the closure with the `&mut Vm` as the VM in effect.
@@ -563,6 +570,11 @@ impl Vm {
             reentry: None,
             rand: crate::lib_math::CrtRand::from_clock(),
             identity: Default::default(),
+            active_thread: None,
+            main_thread: None,
+            resume_parents: Vec::new(),
+            resume_stack_base: 0,
+            yielded: None,
         };
         vm.heap.charge(vm.state_bytes());
         // `stack_init` (`0x6f6bb8`, `0x6f6be4`); the two records are the system's (`mallocstate`
@@ -2457,6 +2469,9 @@ impl Vm {
         }
         roots.extend(self.handlers.iter().flatten().copied());
         roots.extend(self.roots.0.live());
+        roots.extend(self.active_thread.map(Value::Thread));
+        roots.extend(self.main_thread.map(Value::Thread));
+        roots.extend(self.resume_parents.iter().copied().map(Value::Thread));
         // The generic `for` fast path compares against it by identity: a freed `next` whose id
         // a new function took would step a table without calling that function.
         roots.push(self.builtin_next);

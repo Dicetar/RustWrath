@@ -9,6 +9,7 @@ mod compile;
 pub mod heap;
 mod lex;
 mod lib_base;
+mod lib_coroutine;
 mod lib_math;
 mod lib_string;
 mod lib_table;
@@ -73,6 +74,7 @@ pub fn new_state_with_dialect(dialect: Dialect) -> Vm {
         lib_table::open_51(&mut vm);
         lib_string::open_51(&mut vm);
         lib_math::open_51(&mut vm);
+        lib_coroutine::open(&mut vm);
     }
     vm.exec(COMPAT, b"=[benilla-lua compat]")
         .expect("the compat chunk runs");
