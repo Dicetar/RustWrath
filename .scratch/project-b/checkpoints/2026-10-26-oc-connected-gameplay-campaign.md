@@ -62,6 +62,18 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: one-shot services and queries (committed with this record)
+
+Added the service/query verbs the stock UI emits but the tap dropped: binder activation and its
+confirm, summon response/request, talent-wipe confirm, played time, server time, random roll and
+page text. Layouts come from NPCHandler.cpp:286, MovementHandler.cpp:851,
+SkillHandler.cpp:58, CharacterPackets.cpp:37-49, QueryHandler.cpp:72/361,
+MiscPackets.cpp:85-99. Two 12340 additions are handled explicitly: CMSG_PLAYED_TIME now
+carries a trigger byte, SMSG_PLAYED_TIME a third byte the 1.12 owner has no field for, and
+SMSG_QUERY_TIME_RESPONSE carries the next-reset word after the unix time; those extras are
+parsed and dropped, not left to desync the stream. Item-text query is deliberately skipped: its
+3.3.5 body is an item guid while the 1.12 command addresses mail text by (text_id, mail_id).
+
 ## Slice: posture and presentation verbs (committed with this record)
 
 The tap dropped the stock sit/stand, sheathe, mount-special and action-bar-toggle commands.

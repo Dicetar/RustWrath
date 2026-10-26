@@ -411,6 +411,50 @@ pub fn autostore_bank_item(bag: u8, slot: u8) -> Vec<u8> {
     vec![bag, slot]
 }
 
+/// `CMSG_BINDER_ACTIVATE` (`NPCHandler.cpp:286`): the binder guid.
+pub fn binder_activate(binder: u64) -> Vec<u8> {
+    binder.to_le_bytes().to_vec()
+}
+
+/// `CMSG_SUMMON_RESPONSE` (`MovementHandler.cpp:851`): summoner guid and the accept byte.
+pub fn summon_response(summoner: u64, accept: bool) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9);
+    p.extend_from_slice(&summoner.to_le_bytes());
+    p.push(u8::from(accept));
+    p
+}
+
+/// `MSG_TALENT_WIPE_CONFIRM` (`SkillHandler.cpp:58`): the trainer guid (accept only).
+pub fn talent_wipe_confirm(trainer: u64) -> Vec<u8> {
+    trainer.to_le_bytes().to_vec()
+}
+
+/// `CMSG_PLAYED_TIME` (`CharacterPackets.cpp:37`): one `TriggerScriptEvent` byte.
+pub fn played_time() -> Vec<u8> {
+    vec![0]
+}
+
+/// `CMSG_QUERY_TIME` (`QueryHandler.cpp:72`): empty.
+pub fn query_time() -> Vec<u8> {
+    Vec::new()
+}
+
+/// `MSG_RANDOM_ROLL` (`MiscPackets.cpp:85`): minimum then maximum.
+pub fn random_roll(min: u32, max: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(8);
+    p.extend_from_slice(&min.to_le_bytes());
+    p.extend_from_slice(&max.to_le_bytes());
+    p
+}
+
+/// `CMSG_PAGE_TEXT_QUERY` (`QueryHandler.cpp:361`): page id then the queried guid.
+pub fn page_text_query(page_id: u32, guid: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&page_id.to_le_bytes());
+    p.extend_from_slice(&guid.to_le_bytes());
+    p
+}
+
 /// `CMSG_STANDSTATECHANGE` (`MiscHandler.cpp:569`): u32 stand state.
 pub fn stand_state_change(state: u32) -> Vec<u8> {
     state.to_le_bytes().to_vec()
@@ -1026,6 +1070,38 @@ pub enum ServerEvent {
     Notification {
         text: String,
     },
+    BinderConfirm {
+        binder: u64,
+    },
+    SummonRequest {
+        summoner: u64,
+        zone: u32,
+        delay_ms: u32,
+    },
+    TalentWipeConfirm {
+        trainer: u64,
+        cost: u32,
+    },
+    PlayedTime {
+        total: u32,
+        level: u32,
+        /// 12340's third byte; the 1.12 owner has no script-event trigger.
+        trigger: u8,
+    },
+    ServerUnixTime {
+        unix_time: u32,
+    },
+    RandomRoll {
+        min: u32,
+        max: u32,
+        roll: u32,
+        guid: u64,
+    },
+    PageText {
+        page_id: u32,
+        text: String,
+        next_page_id: u32,
+    },
     ShowBank {
         banker: u64,
     },
@@ -1150,6 +1226,13 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_GM_MESSAGECHAT => read_message_chat(body, true),
         SMSG_CHAT_PLAYER_NOT_FOUND => Reader::new(body).cstring().map(|name| ServerEvent::ChatPlayerNotFound { name }),
         SMSG_NOTIFICATION => Reader::new(body).cstring().map(|text| ServerEvent::Notification { text }),
+        SMSG_BINDER_CONFIRM => read_binder_confirm(body),
+        SMSG_SUMMON_REQUEST => read_summon_request(body),
+        MSG_TALENT_WIPE_CONFIRM => read_talent_wipe_confirm(body),
+        SMSG_PLAYED_TIME => read_played_time(body),
+        SMSG_QUERY_TIME_RESPONSE => read_server_time(body),
+        MSG_RANDOM_ROLL => read_random_roll(body),
+        SMSG_PAGE_TEXT_QUERY_RESPONSE => read_page_text(body),
         SMSG_SHOW_BANK => read_show_bank(body),
         SMSG_BUY_BANK_SLOT_RESULT => u32_body(body).map(|result| ServerEvent::BuyBankSlotResult {
             result,
@@ -1319,6 +1402,66 @@ fn read_message_chat(b: &[u8], gm: bool) -> Result<ServerEvent> {
         chat_tag,
         achievement_id,
     }))
+}
+
+fn read_binder_confirm(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::BinderConfirm {
+        binder: r.u64()?,
+    })
+}
+
+fn read_summon_request(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::SummonRequest {
+        summoner: r.u64()?,
+        zone: r.u32()?,
+        delay_ms: r.u32()?,
+    })
+}
+
+fn read_talent_wipe_confirm(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::TalentWipeConfirm {
+        trainer: r.u64()?,
+        cost: r.u32()?,
+    })
+}
+
+fn read_played_time(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::PlayedTime {
+        total: r.u32()?,
+        level: r.u32()?,
+        trigger: r.u8()?,
+    })
+}
+
+fn read_server_time(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::ServerUnixTime {
+        unix_time: r.u32()?,
+        // The 12340 packet also carries the next daily reset; the 1.12 owner has no field.
+    })
+}
+
+fn read_random_roll(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::RandomRoll {
+        min: r.u32()?,
+        max: r.u32()?,
+        roll: r.u32()?,
+        guid: r.u64()?,
+    })
+}
+
+fn read_page_text(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::PageText {
+        page_id: r.u32()?,
+        text: r.cstring()?,
+        next_page_id: r.u32()?,
+    })
 }
 
 fn read_show_bank(b: &[u8]) -> Result<ServerEvent> {

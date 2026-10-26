@@ -1904,6 +1904,49 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             error,
         }],
         WrathGameplayEvent::ShowBank { banker } => vec![SessionEvent::ShowBank { banker }],
+        WrathGameplayEvent::BinderConfirm { binder } => {
+            vec![SessionEvent::BinderConfirm { binder }]
+        }
+        WrathGameplayEvent::SummonRequest {
+            summoner,
+            zone,
+            delay_ms,
+        } => vec![SessionEvent::SummonRequest {
+            summoner,
+            zone,
+            delay_ms,
+        }],
+        WrathGameplayEvent::TalentWipeConfirm { trainer, cost } => {
+            vec![SessionEvent::TalentWipeConfirm { trainer, cost }]
+        }
+        WrathGameplayEvent::PlayedTime {
+            total,
+            level,
+            trigger: _,
+        } => vec![SessionEvent::PlayedTime { total, level }],
+        WrathGameplayEvent::ServerUnixTime { unix_time } => {
+            vec![SessionEvent::ServerUnixTime { unix_time }]
+        }
+        WrathGameplayEvent::RandomRoll {
+            min,
+            max,
+            roll,
+            guid,
+        } => vec![SessionEvent::RandomRoll {
+            min,
+            max,
+            roll,
+            guid,
+        }],
+        WrathGameplayEvent::PageText {
+            page_id,
+            text,
+            next_page_id,
+        } => vec![SessionEvent::PageText {
+            page_id,
+            text,
+            next_page_id,
+        }],
         WrathGameplayEvent::BuyBankSlotResult { result } => {
             // 12340 sends OK on success; the stock bank handler treats every result as a
             // refusal and the raised slot count in PLAYER_BYTES_2 already shows the purchase.
@@ -2426,6 +2469,34 @@ fn wrath_tap_commands(
             ClientCommand::TrainerBuySpell { trainer, spell_id } => Some((
                 benilla_protocol_wrath::opcode::CMSG_TRAINER_BUY_SPELL,
                 gameplay::trainer_buy_spell(trainer, spell_id),
+            )),
+            ClientCommand::BinderActivate { binder } => Some((
+                benilla_protocol_wrath::opcode::CMSG_BINDER_ACTIVATE,
+                gameplay::binder_activate(binder),
+            )),
+            ClientCommand::SummonResponse { summoner } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SUMMON_RESPONSE,
+                gameplay::summon_response(summoner, true),
+            )),
+            ClientCommand::TalentWipeConfirm { trainer } => Some((
+                benilla_protocol_wrath::opcode::MSG_TALENT_WIPE_CONFIRM,
+                gameplay::talent_wipe_confirm(trainer),
+            )),
+            ClientCommand::PlayedTime => Some((
+                benilla_protocol_wrath::opcode::CMSG_PLAYED_TIME,
+                gameplay::played_time(),
+            )),
+            ClientCommand::QueryTime => Some((
+                benilla_protocol_wrath::opcode::CMSG_QUERY_TIME,
+                gameplay::query_time(),
+            )),
+            ClientCommand::RandomRoll { min, max } => Some((
+                benilla_protocol_wrath::opcode::MSG_RANDOM_ROLL,
+                gameplay::random_roll(min, max),
+            )),
+            ClientCommand::PageTextQuery { page_id, guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PAGE_TEXT_QUERY,
+                gameplay::page_text_query(page_id, guid),
             )),
             ClientCommand::SetSheathed { state } => Some((
                 benilla_protocol_wrath::opcode::CMSG_SET_SHEATHED,
