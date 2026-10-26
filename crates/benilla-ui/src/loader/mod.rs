@@ -886,6 +886,7 @@ impl Loader<'_> {
         crate::script::visibility::set_load_window(self.lua(), wrapper, true);
         // 2 · LoadXML attributes (`0x769820`).
         self.apply_attrs(el, levels, wrapper, dbg_name);
+        self.apply_frame_attributes(el, wrapper, dbg_name);
         // 3 · <Size> and 4 · <Anchors>, each level's own (the CLayoutFrame geometry base,
         //     `0x767800`).
         for level in levels {

@@ -1,4 +1,4 @@
-use mlua::{ObjectLike, Table};
+use mlua::{ObjectLike, Table, Value};
 
 use crate::framexml::{self, Element};
 use crate::layout::Len;
@@ -8,6 +8,53 @@ use crate::script::object;
 use super::{children_named, color_of, Levels, Loader};
 
 impl Loader<'_> {
+    /// Wrath XML attributes share the Lua setter's storage; merged template children precede
+    /// instance children, so later declarations replace earlier values before OnLoad.
+    pub(super) fn apply_frame_attributes(&mut self, el: &Element, wrapper: &Table, dbg: &str) {
+        if self.model().target != crate::script::UiTarget::Wrath335 {
+            return;
+        }
+        for attributes in children_named(el, "Attributes") {
+            for attribute in children_named(attributes, "Attribute") {
+                let Some(name) = attribute.attr("name") else {
+                    self.report.fault(format!("{dbg}: XML Attribute has no name"));
+                    continue;
+                };
+                let raw = attribute.attr("value").unwrap_or_default();
+                let kind = attribute.attr("type").unwrap_or("string");
+                let value: Result<Value, String> = match kind {
+                    "nil" => Ok(Value::Nil),
+                    "string" => self.lua().create_string(raw)
+                        .map(Value::String)
+                        .map_err(|error| error.to_string()),
+                    "boolean" => match raw.trim() {
+                        "true" | "1" => Ok(Value::Boolean(true)),
+                        "false" | "0" => Ok(Value::Boolean(false)),
+                        _ => Err(format!("invalid boolean {raw:?}")),
+                    },
+                    "number" => self.lua().create_string(raw)
+                        .and_then(|text| self.lua().coerce_number(Value::String(text)))
+                        .map_err(|error| error.to_string())
+                        .and_then(|number| {
+                            number.map(Value::Number)
+                                .ok_or_else(|| format!("invalid number {raw:?}"))
+                        }),
+                    _ => Err(format!("unsupported type {kind:?}")),
+                };
+                match value {
+                    Ok(value) => {
+                        if let Err(error) = wrapper.call_method::<()>(
+                            "SetAttribute", (name.to_string(), value),
+                        ) {
+                            self.report.raise(format!("{dbg}: Attribute {name:?}: {error}"), &error);
+                        }
+                    }
+                    Err(error) => self.report.fault(format!("{dbg}: Attribute {name:?}: {error}")),
+                }
+            }
+        }
+    }
+
     /// A frame element's LoadXML attributes and simple children (`0x769820`), and a model pane's
     /// own (`0x76cac0`): from the merged `el`, and `frameLevel` from each of `levels`.
     pub(super) fn apply_attrs(
