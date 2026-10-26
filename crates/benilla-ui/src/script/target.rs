@@ -8,6 +8,13 @@ pub enum UiTarget {
 }
 
 impl UiTarget {
+    pub(crate) fn inheritance(self) -> crate::framexml::Inheritance {
+        match self {
+            Self::Vanilla112 => crate::framexml::Inheritance::Single,
+            Self::Wrath335 => crate::framexml::Inheritance::List,
+        }
+    }
+
     pub const fn version(self) -> &'static str {
         match self {
             Self::Vanilla112 => super::client::VERSION,

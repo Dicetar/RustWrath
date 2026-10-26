@@ -161,7 +161,9 @@ impl Loader<'_> {
         // its font attributes (`0x770f72`), else a template, already loaded as a level of its own
         // ([`Loader::fontstring_levels`]). A name that is neither is logged (`0x8786a8`,
         // `0x770fa3`), whoever owns the font.
-        if let Some(name) = node.attr("inherits").filter(|n| !n.is_empty()) {
+        let inheritance = self.model().target.inheritance();
+        for name in inheritance.names(node.attr("inherits").unwrap_or_default())
+            .into_iter().filter(|name| !name.is_empty()) {
             if self.is_font_object(name) {
                 if own {
                     self.set_font_object(wrapper, "inherits", name, dbg);

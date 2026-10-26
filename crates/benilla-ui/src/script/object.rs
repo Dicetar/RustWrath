@@ -856,17 +856,20 @@ pub(super) fn create_frame(
     // the widget dispatcher (`0x704f10`) does for every handler. Any string fourth argument is
     // looked up (`lua_type` 4, `0x7061cb`), the empty one included, which no template names.
     if let Some(t) = template.as_deref() {
-        // One name, verbatim, case-folded, as `framexml::expand` resolves it.
-        let known = lua
-            .app_data_ref::<Model>()
-            .expect("model app_data")
-            .framexml_templates
-            .borrow()
-            .contains(t);
-        if !known {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        let templates = model.framexml_templates.borrow();
+        let names = model.target.inheritance().names(t);
+        if names.is_empty() {
             return Err(mlua::Error::runtime(format!(
                 "CreateFrame(): Couldn't find inherited node \"{t}\""
             )));
+        }
+        for name in names {
+            if !templates.contains(name) {
+                return Err(mlua::Error::runtime(format!(
+                    "CreateFrame(): Couldn't find inherited node \"{name}\""
+                )));
+            }
         }
     }
 

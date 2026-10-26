@@ -6,6 +6,24 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+/// Client-specific interpretation of an `inherits` attribute. The default public loaders keep
+/// the donor's literal single name; Wrath frame factories explicitly select list semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Inheritance {
+    Single,
+    List,
+}
+
+impl Inheritance {
+    pub(crate) fn names(self, text: &str) -> Vec<&str> {
+        match self {
+            Self::Single => vec![text],
+            Self::List => text.split(',').map(str::trim)
+                .filter(|name| !name.is_empty()).collect(),
+        }
+    }
+}
+
 /// An owned XML element, attributes in document order. Lookups fold case, as the reference's
 /// `GetAttribute 0x6f2cf0` and element-name compares (`0x64a4c0`) do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,6 +251,44 @@ impl Templates {
             out.push(t.element.clone());
         }
         out.reverse();
+        out
+    }
+
+    /// Wrath loads each named parent left-to-right, including that parent's ancestry first.
+    /// The active set is path-local: shared ancestors in distinct branches are not suppressed.
+    pub(crate) fn inherited_levels_for(
+        &self,
+        element: &Element,
+        inheritance: Inheritance,
+        is_font: impl Fn(&str) -> bool,
+    ) -> Vec<std::rc::Rc<Element>> {
+        if inheritance == Inheritance::Single {
+            return self.inherited_levels_until(element, is_font);
+        }
+        fn visit(
+            templates: &Templates,
+            element: &Element,
+            is_font: &dyn Fn(&str) -> bool,
+            active: &mut HashSet<String>,
+            out: &mut Vec<std::rc::Rc<Element>>,
+        ) {
+            for name in Inheritance::List.names(element.attr("inherits").unwrap_or_default()) {
+                if is_font(name) {
+                    continue;
+                }
+                let key = name.to_ascii_lowercase();
+                if !active.insert(key.clone()) {
+                    continue;
+                }
+                if let Some(template) = templates.entries.get(&key) {
+                    visit(templates, &template.element, is_font, active, out);
+                    out.push(template.element.clone());
+                }
+                active.remove(&key);
+            }
+        }
+        let mut out = Vec::new();
+        visit(self, element, &is_font, &mut HashSet::new(), &mut out);
         out
     }
 
@@ -483,8 +539,18 @@ pub fn expand_known(
     is_font: &dyn Fn(&str) -> bool,
     warnings: &mut Vec<String>,
 ) -> Element {
+    expand_known_for(element, templates, is_font, warnings, Inheritance::Single)
+}
+
+pub(crate) fn expand_known_for(
+    element: &Element,
+    templates: &dyn Inheritable,
+    is_font: &dyn Fn(&str) -> bool,
+    warnings: &mut Vec<String>,
+    inheritance: Inheritance,
+) -> Element {
     let mut active = HashSet::new();
-    expand_inner(element, templates, is_font, warnings, &mut active)
+    expand_inner(element, templates, is_font, warnings, &mut active, inheritance)
 }
 
 fn expand_inner(
@@ -493,18 +559,24 @@ fn expand_inner(
     is_font: &dyn Fn(&str) -> bool,
     warnings: &mut Vec<String>,
     active: &mut HashSet<String>,
+    inheritance: Inheritance,
 ) -> Element {
     let Some(inherits) = element.attr("inherits") else {
         return element.clone();
     };
 
-    // `inherits` is one name, not a list: `0x6ee6f0` has no splitter, so `"A, B"` misses (later
+    // Donor `inherits` is one name, not a list: `0x6ee6f0` has no splitter, so `"A, B"` misses (later
     // clients split it). It is used verbatim (`GetAttribute 0x6f2cf0` does not trim; `""` is
     // skipped, `" "` misses) and matched case-insensitively, ASCII only: `_strnicmp` at
     // `0x6ee747`, reached despite a mis-cased name because `SStrHash 0x64b3f0` uppercases.
     let mut base: Option<Element> = None;
-    for name in [inherits].into_iter().filter(|s| !s.is_empty()) {
-        if !active.insert(name.to_string()) {
+    for name in inheritance.names(inherits).into_iter().filter(|s| !s.is_empty()) {
+        let key = if inheritance == Inheritance::List {
+            name.to_ascii_lowercase()
+        } else {
+            name.to_string()
+        };
+        if !active.insert(key.clone()) {
             warnings.push(format!(
                 "inheritance cycle detected at template '{name}'; skipping this reference"
             ));
@@ -517,11 +589,11 @@ fn expand_inner(
                     "unknown template '{name}' referenced by inherits; skipping"
                 ));
             }
-            active.remove(name);
+            active.remove(&key);
             continue;
         };
-        let expanded_template = expand_inner(template, templates, is_font, warnings, active);
-        active.remove(name);
+        let expanded_template = expand_inner(template, templates, is_font, warnings, active, inheritance);
+        active.remove(&key);
         base = Some(match base {
             None => expanded_template,
             Some(acc) => merge(&acc, &expanded_template),

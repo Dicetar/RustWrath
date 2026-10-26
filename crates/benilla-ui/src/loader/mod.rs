@@ -172,7 +172,7 @@ pub fn apply_template(lua: &mlua::Lua, wrapper: &Table, kind: &str, template: &s
     {
         let model = loader.model();
         let templates = model.framexml_templates.borrow();
-        for name in [template].into_iter().filter(|s| !s.is_empty()) {
+        for name in model.target.inheritance().names(template).into_iter().filter(|s| !s.is_empty()) {
             let Some(el) = templates.get(name) else {
                 continue;
             };
@@ -568,7 +568,7 @@ impl Loader<'_> {
         // A font object in an inherit chain is skipped, not warned as an unknown template.
         let is_font = |name: &str| model.fonts.id(name).is_some();
         let mut warns = Vec::new();
-        let out = framexml::expand_known(el, &*templates, &is_font, &mut warns);
+        let out = framexml::expand_known_for(el, &*templates, &is_font, &mut warns, model.target.inheritance());
         drop(templates);
         drop(model);
         self.report.warnings.extend(warns);
@@ -577,11 +577,9 @@ impl Loader<'_> {
 
     /// The nodes `raw`'s `LoadXML` reads ([`Levels`]).
     pub(super) fn levels<'a>(&self, raw: &'a Element) -> Levels<'a> {
-        let inherited = self
-            .model()
-            .framexml_templates
-            .borrow()
-            .inherited_levels(raw);
+        let model = self.model();
+        let inherited = model.framexml_templates.borrow()
+            .inherited_levels_for(raw, model.target.inheritance(), |_| false);
         Levels {
             inherited,
             own: raw,
@@ -595,7 +593,7 @@ impl Loader<'_> {
         let inherited = model
             .framexml_templates
             .borrow()
-            .inherited_levels_until(raw, |name| model.fonts.id(name).is_some());
+            .inherited_levels_for(raw, model.target.inheritance(), |name| model.fonts.id(name).is_some());
         Levels {
             inherited,
             own: raw,
