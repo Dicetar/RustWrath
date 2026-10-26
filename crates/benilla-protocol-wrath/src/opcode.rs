@@ -226,6 +226,13 @@ pub const CMSG_CANCEL_CAST: u32 = 0x12F;
 pub const CMSG_CANCEL_AURA: u32 = 0x136;
 pub const CMSG_CANCEL_CHANNELLING: u32 = 0x13B;
 pub const CMSG_CANCEL_AUTO_REPEAT_SPELL: u32 = 0x26D;
+/// Posture and presentation verbs (`MiscHandler.cpp:569`, `CombatHandler.cpp:73`,
+/// `MovementHandler.cpp:803`): stand/sit state and sheathe are u32, mount special empty,
+/// action-bar toggles one byte.
+pub const CMSG_STANDSTATECHANGE: u32 = 0x101;
+pub const CMSG_SET_SHEATHED: u32 = 0x1E0;
+pub const CMSG_MOUNTSPECIAL_ANIM: u32 = 0x171;
+pub const CMSG_SET_ACTIONBAR_TOGGLES: u32 = 0x2BF;
 pub const SMSG_BINDPOINTUPDATE: u16 = 0x155;
 pub const CMSG_QUERY_TIME: u32 = 0x1CE;
 pub const CMSG_PING: u32 = 0x1DC;

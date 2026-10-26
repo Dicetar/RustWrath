@@ -411,6 +411,26 @@ pub fn autostore_bank_item(bag: u8, slot: u8) -> Vec<u8> {
     vec![bag, slot]
 }
 
+/// `CMSG_STANDSTATECHANGE` (`MiscHandler.cpp:569`): u32 stand state.
+pub fn stand_state_change(state: u32) -> Vec<u8> {
+    state.to_le_bytes().to_vec()
+}
+
+/// `CMSG_SET_SHEATHED` (`CombatHandler.cpp:73`): u32 sheath state.
+pub fn set_sheathed(state: u32) -> Vec<u8> {
+    state.to_le_bytes().to_vec()
+}
+
+/// `CMSG_MOUNTSPECIAL_ANIM` (`MovementHandler.cpp:803`): empty.
+pub fn mount_special() -> Vec<u8> {
+    Vec::new()
+}
+
+/// `CMSG_SET_ACTIONBAR_TOGGLES` (`MiscHandler.cpp:961`): one byte of bar toggles.
+pub fn set_action_bar_toggles(toggles: u8) -> Vec<u8> {
+    vec![toggles]
+}
+
 /// `CMSG_CANCEL_CAST` (`SpellHandler.cpp:552`): an ignored counter byte, then the spell id.
 pub fn cancel_cast(spell_id: u32) -> Vec<u8> {
     let mut p = Vec::with_capacity(5);

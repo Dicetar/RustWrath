@@ -2427,6 +2427,22 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_TRAINER_BUY_SPELL,
                 gameplay::trainer_buy_spell(trainer, spell_id),
             )),
+            ClientCommand::SetSheathed { state } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SET_SHEATHED,
+                gameplay::set_sheathed(state),
+            )),
+            ClientCommand::StandStateChange { state } => Some((
+                benilla_protocol_wrath::opcode::CMSG_STANDSTATECHANGE,
+                gameplay::stand_state_change(state),
+            )),
+            ClientCommand::MountSpecial => Some((
+                benilla_protocol_wrath::opcode::CMSG_MOUNTSPECIAL_ANIM,
+                gameplay::mount_special(),
+            )),
+            ClientCommand::SetActionBarToggles { toggles } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SET_ACTIONBAR_TOGGLES,
+                gameplay::set_action_bar_toggles(toggles),
+            )),
             ClientCommand::CancelCast { spell_id } => Some((
                 benilla_protocol_wrath::opcode::CMSG_CANCEL_CAST,
                 gameplay::cancel_cast(spell_id),

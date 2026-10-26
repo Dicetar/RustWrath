@@ -62,6 +62,14 @@ Gaps (explicit): the 1.12 merchant presenter ignores the 12340 extended cost (st
 failure params are logged only, and a duplicate template entry resolves to its first open row.
 Live list/buy/sell/buyback/refusal remains execution-gated.
 
+## Slice: posture and presentation verbs (committed with this record)
+
+The tap dropped the stock sit/stand, sheathe, mount-special and action-bar-toggle commands.
+Added CMSG_STANDSTATECHANGE 0x101, CMSG_SET_SHEATHED 0x1E0, CMSG_MOUNTSPECIAL_ANIM 0x171
+and CMSG_SET_ACTIONBAR_TOGGLES 0x2BF with the 12340 bodies from MiscHandler.cpp:569,
+CombatHandler.cpp:73, MovementHandler.cpp:803 and Packet definitions. None needs a new
+reply: the server echoes the stand/sheath fields and the rest are client-side state.
+
 ## Slice: full cast targets for spell commands (committed with this record)
 
 CastSpellAtDest, CastSpellAtSource, CastSpellGameObject, CastSpellItem and
