@@ -4908,6 +4908,7 @@ pub fn run_session_with_cancel(
                                     state_revision: session.state_revision(),
                                 },
                                 now_ms(),
+                                session.player_guid().unwrap_or(0),
                             ) {
                                 feed.push_native(crate::wrath_native::WrathNativeFeedEvent::Cast(
                                     update,

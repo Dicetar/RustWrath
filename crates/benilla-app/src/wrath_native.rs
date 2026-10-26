@@ -703,6 +703,7 @@ pub(crate) fn update_from_gameplay(
     event: &WrathGameplayEvent,
     scope: WrathScope,
     observed_at_unix_ms: i64,
+    self_guid: u64,
 ) -> Option<WrathNativeUpdate> {
     Some(match event {
         WrathGameplayEvent::SpellStart {
@@ -757,7 +758,7 @@ pub(crate) fn update_from_gameplay(
         } => WrathNativeUpdate::CastFailed {
             scope,
             // `SMSG_CAST_FAILED` names no caster: it is the local client's own attempt.
-            caster: 0,
+            caster: self_guid,
             spell_id: *spell_id,
             cast_count: *cast_count,
             reason: *raw_reason,
