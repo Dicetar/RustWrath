@@ -66,6 +66,24 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         .set_name("=[benilla wow stdlib]")
         .set_mode(mlua::ChunkMode::Text)
         .exec()?;
+    if lua.app_data_ref::<super::Model>().expect("model").target == super::UiTarget::Wrath335 {
+        install_wrath(lua)?;
+    }
+    Ok(())
+}
+
+fn install_wrath(lua: &Lua) -> mlua::Result<()> {
+    let globals = lua.globals();
+    let strings: mlua::Table = globals.get("string")?;
+    for (alias, member) in [("strmatch", "match"), ("strrev", "reverse"), ("gmatch", "gmatch")] {
+        globals.set(alias, strings.get::<mlua::Function>(member)?)?;
+    }
+    let wipe = lua.create_function(|_, table: mlua::Table| {
+        table.clear()?;
+        Ok(table)
+    })?;
+    globals.set("wipe", wipe.clone())?;
+    globals.get::<mlua::Table>("table")?.set("wipe", wipe)?;
     Ok(())
 }
 

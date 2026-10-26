@@ -131,16 +131,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Version, build and date, and no fourth value (the TOC number is a later expansion's): the
-    // in-game `GetBuildInfo` (`0x4884a0`) pushes three strings, the glue one (`0x46cd70`) five.
+    // Vanilla pushes three strings; Wrath adds its numeric TOC interface. Glue has its own
+    // version/build labels and signature, installed by glue_core rather than this binding.
     g.set(
         "GetBuildInfo",
         lua.create_function(|lua, ()| {
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(VERSION)?),
-                Value::String(lua.create_string(BUILD)?),
-                Value::String(lua.create_string(BUILD_DATE)?),
-            ]))
+            let target = lua.app_data_ref::<Model>().expect("model").target;
+            let mut values = vec![
+                Value::String(lua.create_string(target.version())?),
+                Value::String(lua.create_string(target.build())?),
+                Value::String(lua.create_string(target.build_date())?),
+            ];
+            if target == super::UiTarget::Wrath335 {
+                values.push(Value::Integer(i64::from(target.interface())));
+            }
+            Ok(MultiValue::from_vec(values))
         })?,
     )?;
 

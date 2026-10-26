@@ -871,12 +871,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetBuildInfo",
         lua.create_function(|lua, _: MultiValue| {
+            let target = lua.app_data_ref::<Model>().expect("model").target;
             Ok(MultiValue::from_vec(vec![
                 Value::String(lua.create_string(global_text(lua, "BETA_BUILD"))?),
                 Value::String(lua.create_string(global_text(lua, "RELEASE_BUILD"))?),
-                Value::String(lua.create_string(super::client::VERSION)?),
-                Value::String(lua.create_string(super::client::BUILD)?),
-                Value::String(lua.create_string(super::client::BUILD_DATE)?),
+                Value::String(lua.create_string(target.version())?),
+                Value::String(lua.create_string(target.build())?),
+                Value::String(lua.create_string(target.build_date())?),
             ]))
         })?,
     )?;

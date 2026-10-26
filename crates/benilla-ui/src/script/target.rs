@@ -8,6 +8,27 @@ pub enum UiTarget {
 }
 
 impl UiTarget {
+    pub const fn version(self) -> &'static str {
+        match self {
+            Self::Vanilla112 => super::client::VERSION,
+            Self::Wrath335 => "3.3.5",
+        }
+    }
+
+    pub const fn build(self) -> &'static str {
+        match self {
+            Self::Vanilla112 => super::client::BUILD,
+            Self::Wrath335 => "12340",
+        }
+    }
+
+    pub const fn build_date(self) -> &'static str {
+        match self {
+            Self::Vanilla112 => super::client::BUILD_DATE,
+            Self::Wrath335 => "Jun 24 2010",
+        }
+    }
+
     pub const fn interface(self) -> u32 {
         match self {
             Self::Vanilla112 => 11200,
