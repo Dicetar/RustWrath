@@ -69,6 +69,7 @@ use benilla_protocol::messages::{
     PeriodicTick as ProtocolPeriodicTick, QuestComplete, QuestDetails, QuestGiverList,
     QuestListEntry, QuestObjective, QuestOfferReward, QuestRequestItems, QuestRewardItem,
     QuestTemplate, SpellDamageLog as ProtocolSpellDamageLog,
+    VendorItem as ProtocolVendorItem,
 };
 
 use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, SessionState};
@@ -160,6 +161,14 @@ pub enum WrathFeedEvent {
     GossipMenu {
         npc: u64,
         menu_id: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// The vendor's 12340 stock rows, kept for the row-addressed buy packets. The shared
+    /// `VendorInventory` event cannot carry the 8th word (extended cost).
+    VendorInventory {
+        vendor: u64,
+        items: Vec<gameplay::VendorRow>,
         session_epoch: u64,
         world_generation: u64,
     },
@@ -709,6 +718,9 @@ pub struct WrathWorldView {
     pub entered_world: bool,
     /// The NPC and menu id from the last gossip reply; 3.3.5 requires the menu id on a select.
     pub gossip_menu: Option<(u64, u32)>,
+    /// The open vendor's 12340 rows (vendor guid, rows). Buy packets address the 1-based row,
+    /// while the stock command carries only the template entry.
+    pub vendor: Option<(u64, Vec<gameplay::VendorRow>)>,
     /// Monotonic cast count for `CMSG_CAST_SPELL`.
     pub next_cast_count: u8,
 }
@@ -727,6 +739,7 @@ impl Default for WrathWorldView {
             last_changes: WrathChanges::default(),
             entered_world: false,
             gossip_menu: None,
+            vendor: None,
             next_cast_count: 1,
             empty: (),
         }
@@ -1213,6 +1226,16 @@ fn wrath_wm_action_intake(
     }
 }
 
+/// The 1-based row for `entry` in the open vendor list. 12340 buy packets address the row;
+/// without a matching open row the command cannot be encoded faithfully and is dropped.
+fn vendor_row(view: &WrathWorldView, vendor: u64, entry: u32) -> Option<u32> {
+    view.vendor
+        .as_ref()
+        .filter(|(guid, _)| *guid == vendor)
+        .and_then(|(_, rows)| rows.iter().find(|row| row.entry == entry))
+        .map(|row| row.slot)
+}
+
 /// Application exit owns a bounded stop of the session thread; dropping a running `JoinHandle`
 /// alone is not cancellation.
 fn wrath_shutdown_on_exit(mut control: ResMut<WrathControl>, mut exits: MessageReader<AppExit>) {
@@ -1696,6 +1719,64 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
                 .collect(),
         }],
         WrathGameplayEvent::GossipComplete => vec![SessionEvent::GossipComplete],
+        WrathGameplayEvent::VendorInventory { vendor, items } => {
+            vec![SessionEvent::VendorInventory {
+                vendor,
+                items: items
+                    .into_iter()
+                    .map(|row| ProtocolVendorItem {
+                        slot: row.slot,
+                        entry: row.entry,
+                        display_id: row.display_id,
+                        current_count: row.current_count,
+                        price: row.price,
+                        max_durability: row.max_durability,
+                        buy_count: row.buy_count,
+                    })
+                    .collect(),
+            }]
+        }
+        WrathGameplayEvent::VendorBuyResult {
+            vendor,
+            slot,
+            new_count,
+            purchase_count,
+        } => vec![SessionEvent::VendorBuyResult {
+            vendor,
+            slot,
+            new_count,
+            purchase_count,
+        }],
+        WrathGameplayEvent::VendorBuyFailed {
+            vendor,
+            item_entry,
+            reason,
+            param,
+        } => {
+            if let Some(param) = param {
+                debug!("wrath: buy failure carries extended-cost param {param}");
+            }
+            vec![SessionEvent::VendorBuyFailed {
+                vendor,
+                item_entry,
+                reason,
+            }]
+        }
+        WrathGameplayEvent::VendorSellFailed {
+            vendor,
+            item_guid,
+            reason,
+            param,
+        } => {
+            if let Some(param) = param {
+                debug!("wrath: sell failure carries param {param}");
+            }
+            vec![SessionEvent::VendorSellFailed {
+                vendor,
+                item_guid,
+                reason,
+            }]
+        }
         WrathGameplayEvent::QuestGiverStatus { npc, status } => {
             vec![SessionEvent::QuestGiverStatus { npc, status }]
         }
@@ -2060,6 +2141,55 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_RESURRECT_RESPONSE,
                 gameplay::resurrect_response(caster, accept),
             )),
+            ClientCommand::ListInventory { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_LIST_INVENTORY,
+                gameplay::list_inventory(guid),
+            )),
+            ClientCommand::BuyItem {
+                vendor,
+                entry,
+                count,
+            } => vendor_row(&view, vendor, entry).map(|slot| {
+                (
+                    benilla_protocol_wrath::opcode::CMSG_BUY_ITEM,
+                    gameplay::buy_item(vendor, entry, slot, u32::from(count)),
+                )
+            }),
+            ClientCommand::BuyItemInSlot {
+                vendor,
+                entry,
+                bag_guid,
+                bag_slot,
+                count,
+            } => vendor_row(&view, vendor, entry).map(|slot| {
+                (
+                    benilla_protocol_wrath::opcode::CMSG_BUY_ITEM_IN_SLOT,
+                    gameplay::buy_item_in_slot(
+                        vendor,
+                        entry,
+                        slot,
+                        bag_guid,
+                        bag_slot,
+                        u32::from(count),
+                    ),
+                )
+            }),
+            ClientCommand::SellItem {
+                vendor,
+                item_guid,
+                count,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SELL_ITEM,
+                gameplay::sell_item(vendor, item_guid, u32::from(count)),
+            )),
+            ClientCommand::BuybackItem { vendor, slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_BUYBACK_ITEM,
+                gameplay::buyback_item(vendor, slot),
+            )),
+            ClientCommand::RepairItem { vendor, item_guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_REPAIR_ITEM,
+                gameplay::repair_item(vendor, item_guid, false),
+            )),
             _ => None,
         };
         if let Some((opcode, payload)) = packet {
@@ -2285,6 +2415,7 @@ fn wrath_net_drain(
                 view.self_observation = None;
                 view.player_guid = 0;
                 view.entered_world = false;
+                view.vendor = None;
                 view.last_changes.world_transferred = true;
             }
             WrathFeedEvent::GossipMenu {
@@ -2300,6 +2431,21 @@ fn wrath_net_drain(
                     world_generation,
                 ) {
                     view.gossip_menu = Some((npc, menu_id));
+                }
+            }
+            WrathFeedEvent::VendorInventory {
+                vendor,
+                items,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.vendor = Some((vendor, items));
                 }
             }
             WrathFeedEvent::ExportSkipped(reason) => {
@@ -2352,6 +2498,7 @@ fn wrath_net_drain(
                 view.player_guid = 0;
                 view.entered_world = false;
                 view.gossip_menu = None;
+                view.vendor = None;
                 view.session_epoch = 0;
                 view.world_generation = 0;
                 view.state_revision = 0;
@@ -2377,6 +2524,7 @@ fn wrath_net_drain(
         view.player_guid = 0;
         view.entered_world = false;
         view.gossip_menu = None;
+        view.vendor = None;
         view.session_epoch = 0;
         view.world_generation = 0;
         view.state_revision = 0;
@@ -3658,6 +3806,22 @@ pub fn run_session_with_cancel(
                 session.reduce(p.opcode, &p.payload, now_ms())?;
                 if let Some(parsed) = gameplay::parse(p.opcode, &p.payload) {
                     match parsed {
+                        Ok(event @ WrathGameplayEvent::VendorInventory { vendor, ref items }) => {
+                            feed.push_event(WrathFeedEvent::VendorInventory {
+                                vendor,
+                                items: items.clone(),
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if let Some(events_out) = events_out.as_ref() {
+                                if session.player_guid().is_some() {
+                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                        let _ = events_out
+                                            .send(WrathSessionEvent::scoped(&session, event));
+                                    }
+                                }
+                            }
+                        }
                         Ok(event @ WrathGameplayEvent::Gossip { npc, menu_id, .. }) => {
                             feed.push_event(WrathFeedEvent::GossipMenu {
                                 npc,

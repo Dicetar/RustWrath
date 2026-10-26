@@ -164,6 +164,69 @@ pub fn loot_release(guid: u64) -> Vec<u8> {
     guid.to_le_bytes().to_vec()
 }
 
+/// `CMSG_LIST_INVENTORY` (`ItemHandler.cpp:844`): the vendor guid.
+pub fn list_inventory(vendor: u64) -> Vec<u8> {
+    vendor.to_le_bytes().to_vec()
+}
+
+/// `CMSG_BUY_ITEM` (`ItemPackets.cpp:94`): guid, item entry, the 1-based vendor row, u32 count,
+/// and the trailing byte the stock client sends as 1. 12340 addresses the row, not the entry.
+pub fn buy_item(vendor: u64, entry: u32, slot: u32, count: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(21);
+    p.extend_from_slice(&vendor.to_le_bytes());
+    p.extend_from_slice(&entry.to_le_bytes());
+    p.extend_from_slice(&slot.to_le_bytes());
+    p.extend_from_slice(&count.to_le_bytes());
+    p.push(1);
+    p
+}
+
+/// `CMSG_BUY_ITEM_IN_SLOT` (`ItemPackets.cpp:84`): guid, entry, 1-based row, bag guid, bag slot,
+/// u32 count.
+pub fn buy_item_in_slot(
+    vendor: u64,
+    entry: u32,
+    slot: u32,
+    bag_guid: u64,
+    bag_slot: u8,
+    count: u32,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(29);
+    p.extend_from_slice(&vendor.to_le_bytes());
+    p.extend_from_slice(&entry.to_le_bytes());
+    p.extend_from_slice(&slot.to_le_bytes());
+    p.extend_from_slice(&bag_guid.to_le_bytes());
+    p.push(bag_slot);
+    p.extend_from_slice(&count.to_le_bytes());
+    p
+}
+
+/// `CMSG_SELL_ITEM` (`ItemPackets.cpp:71`): guid, item guid, u32 count (0 sells the stack).
+pub fn sell_item(vendor: u64, item_guid: u64, count: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(20);
+    p.extend_from_slice(&vendor.to_le_bytes());
+    p.extend_from_slice(&item_guid.to_le_bytes());
+    p.extend_from_slice(&count.to_le_bytes());
+    p
+}
+
+/// `CMSG_BUYBACK_ITEM` (`ItemPackets.cpp:78`): guid and the absolute buyback slot.
+pub fn buyback_item(vendor: u64, slot: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&vendor.to_le_bytes());
+    p.extend_from_slice(&slot.to_le_bytes());
+    p
+}
+
+/// `CMSG_REPAIR_ITEM` (`NPCHandler.cpp:752`): guid, item guid (0 = all), u8 guild-bank money.
+pub fn repair_item(vendor: u64, item_guid: u64, guild_bank: bool) -> Vec<u8> {
+    let mut p = Vec::with_capacity(17);
+    p.extend_from_slice(&vendor.to_le_bytes());
+    p.extend_from_slice(&item_guid.to_le_bytes());
+    p.push(u8::from(guild_bank));
+    p
+}
+
 /// `CMSG_REPOP_REQUEST` (`MiscHandler.cpp:58-86`): the 12340 handler reads one byte.
 pub fn repop_request() -> Vec<u8> {
     vec![0]
@@ -429,6 +492,21 @@ pub struct LootItem {
     pub slot_type: u8,
 }
 
+/// One 12340 `SMSG_LIST_INVENTORY` row (`ItemHandler.cpp:941`): eight words, the last the
+/// extended cost the 1.12 merchant owner cannot present. `slot` is the 1-based row the buy
+/// packets address; `current_count` `0xFFFF_FFFF` is unlimited.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VendorRow {
+    pub slot: u32,
+    pub entry: u32,
+    pub display_id: u32,
+    pub current_count: u32,
+    pub price: u32,
+    pub max_durability: u32,
+    pub buy_count: u32,
+    pub extended_cost: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ItemPush {
     pub player: u64,
@@ -632,6 +710,30 @@ pub enum ServerEvent {
     LootMoney { amount: u32 },
     LootClearMoney,
     ItemPush(ItemPush),
+    VendorInventory {
+        vendor: u64,
+        items: Vec<VendorRow>,
+    },
+    VendorBuyResult {
+        vendor: u64,
+        slot: u32,
+        new_count: u32,
+        purchase_count: u32,
+    },
+    VendorBuyFailed {
+        vendor: u64,
+        item_entry: u32,
+        reason: u8,
+        /// 12340 writes this word only when non-zero (`PlayerStorage.cpp:4156`).
+        param: Option<u32>,
+    },
+    VendorSellFailed {
+        vendor: u64,
+        item_guid: u64,
+        reason: u8,
+        /// 12340 writes this word only when non-zero (`PlayerStorage.cpp:4168`).
+        param: Option<u32>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -738,7 +840,72 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_LOOT_MONEY_NOTIFY => u32_body(body).map(|amount| ServerEvent::LootMoney { amount }),
         SMSG_LOOT_CLEAR_MONEY => Ok(ServerEvent::LootClearMoney),
         SMSG_ITEM_PUSH_RESULT => read_item_push(body),
+        SMSG_LIST_INVENTORY => read_list_inventory(body),
+        SMSG_BUY_ITEM => read_buy_item(body),
+        SMSG_BUY_FAILED => read_buy_failed(body),
+        SMSG_SELL_ITEM => read_sell_failed(body),
         _ => return None,
+    })
+}
+
+fn read_list_inventory(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let vendor = r.u64()?;
+    let count = r.u8()?;
+    let mut items = Vec::with_capacity(count as usize);
+    if count == 0 {
+        // `ItemHandler.cpp:958-961`: an empty list appends one more zero byte.
+        let _no_inventory = r.u8()?;
+        return Ok(ServerEvent::VendorInventory { vendor, items });
+    }
+    for _ in 0..count {
+        items.push(VendorRow {
+            slot: r.u32()?,
+            entry: r.u32()?,
+            display_id: r.u32()?,
+            current_count: r.u32()?,
+            price: r.u32()?,
+            max_durability: r.u32()?,
+            buy_count: r.u32()?,
+            extended_cost: r.u32()?,
+        });
+    }
+    Ok(ServerEvent::VendorInventory { vendor, items })
+}
+
+fn read_buy_item(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::VendorBuyResult {
+        vendor: r.u64()?,
+        slot: r.u32()?,
+        new_count: r.u32()?,
+        purchase_count: r.u32()?,
+    })
+}
+
+fn read_buy_failed(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let vendor = r.u64()?;
+    let item_entry = r.u32()?;
+    let param = if r.remaining() >= 5 { Some(r.u32()?) } else { None };
+    Ok(ServerEvent::VendorBuyFailed {
+        vendor,
+        item_entry,
+        reason: r.u8()?,
+        param,
+    })
+}
+
+fn read_sell_failed(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let vendor = r.u64()?;
+    let item_guid = r.u64()?;
+    let param = if r.remaining() >= 5 { Some(r.u32()?) } else { None };
+    Ok(ServerEvent::VendorSellFailed {
+        vendor,
+        item_guid,
+        reason: r.u8()?,
+        param,
     })
 }
 

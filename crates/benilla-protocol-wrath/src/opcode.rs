@@ -173,6 +173,19 @@ pub const SMSG_LOOT_MONEY_NOTIFY: u16 = 0x163;
 pub const SMSG_LOOT_CLEAR_MONEY: u16 = 0x165;
 pub const SMSG_ITEM_PUSH_RESULT: u16 = 0x166;
 pub const CMSG_AUTOSTORE_LOOT_ITEM: u32 = 0x108;
+/// Vendor window (ItemHandler.cpp:844 / :854): the 12340 row carries the extended cost
+/// (8th word) that 1.12 does not.
+pub const CMSG_LIST_INVENTORY: u32 = 0x19E;
+pub const SMSG_LIST_INVENTORY: u16 = 0x19F;
+pub const CMSG_SELL_ITEM: u32 = 0x1A0;
+pub const SMSG_SELL_ITEM: u16 = 0x1A1;
+/// 12340 BuyItem::Read (ItemPackets.cpp:94): guid, item, 1-based slot, u32 count, u8 unk.
+pub const CMSG_BUY_ITEM: u32 = 0x1A2;
+pub const CMSG_BUY_ITEM_IN_SLOT: u32 = 0x1A3;
+pub const SMSG_BUY_ITEM: u16 = 0x1A4;
+pub const SMSG_BUY_FAILED: u16 = 0x1A5;
+pub const CMSG_BUYBACK_ITEM: u32 = 0x290;
+pub const CMSG_REPAIR_ITEM: u32 = 0x2A8;
 pub const SMSG_BINDPOINTUPDATE: u16 = 0x155;
 pub const CMSG_QUERY_TIME: u32 = 0x1CE;
 pub const CMSG_PING: u32 = 0x1DC;
