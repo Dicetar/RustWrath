@@ -204,6 +204,38 @@ fn chain() -> Option<&'static Chain> {
     chain
 }
 
+/// Root addon manifests from the selected composite chain. Cache names only, once alongside
+/// the process-lifetime UI chain; reading each TOC still uses the winning source/loose overlay.
+pub(super) fn addon_manifests() -> Vec<(String, String)> {
+    static MANIFESTS: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    MANIFESTS.get_or_init(|| {
+        let Some(chain) = chain() else { return Vec::new() };
+        let entries = match chain.list() {
+            Ok(entries) => entries,
+            Err(error) => {
+                error!("ui_script: enumerating Wrath addon manifests: {error:#}");
+                return Vec::new();
+            }
+        };
+        let mut manifests = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for entry in entries {
+            let path = entry.name.replace('\\', "/");
+            let parts: Vec<_> = path.split('/').collect();
+            if parts.len() != 4 || !parts[0].eq_ignore_ascii_case("Interface")
+                || !parts[1].eq_ignore_ascii_case("AddOns") || parts[2].is_empty()
+                || matches!(parts[2], "." | "..")
+                || !parts[3].eq_ignore_ascii_case(&format!("{}.toc", parts[2])) {
+                continue;
+            }
+            if seen.insert(parts[2].to_ascii_lowercase()) {
+                manifests.push((parts[2].to_owned(), path));
+            }
+        }
+        manifests
+    }).clone()
+}
+
 /// [`client_locale`] for the one caller that runs before the log plugin: the primary window's
 /// birth. It opens the same chain, but whatever the open has to say waits for [`chain`].
 pub(crate) fn boot_client_locale() -> benilla_formats::Locale {

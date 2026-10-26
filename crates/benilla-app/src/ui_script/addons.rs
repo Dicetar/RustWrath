@@ -31,6 +31,8 @@ pub(super) enum Source {
     Dir(PathBuf),
     /// The player's patch chain ([`super::reference_ui`]), by full chain path, `/` and `\` alike.
     Chain,
+    /// An archive addon's relative TOC entries, rooted under Interface/AddOns/<name>.
+    ChainAddon,
 }
 
 /// One loadable interface: a name, its parsed manifest, and where its files come from.
@@ -84,13 +86,13 @@ impl Addon {
                     .map(String::into_bytes)
             }
             Source::Dir(root) => read_addon_file(root, req),
-            Source::Chain => super::reference_ui::read(req),
+            Source::Chain | Source::ChainAddon => super::reference_ui::read(req),
         }
     }
 
     /// Whether the files come off the player's patch chain.
     fn is_chain(&self) -> bool {
-        matches!(self.source, Source::Chain)
+        matches!(self.source, Source::Chain | Source::ChainAddon)
     }
 
     /// The base this addon's manifest entries resolve against: `Interface/AddOns/<Folder>` for a
@@ -98,7 +100,7 @@ impl Addon {
     fn prefix(&self) -> String {
         match &self.source {
             Source::Builtin | Source::Chain => String::new(),
-            Source::Dir(_) => format!("{ADDONS_PREFIX}{}", self.name),
+            Source::Dir(_) | Source::ChainAddon => format!("{ADDONS_PREFIX}{}", self.name),
         }
     }
 
@@ -109,7 +111,7 @@ impl Addon {
     fn chunk_name(&self, file: &str, path: &str) -> String {
         match &self.source {
             Source::Builtin => benilla_ui::script::addon_chunk_name(&self.name, file),
-            Source::Dir(_) | Source::Chain => format!("@{}", path.replace('/', "\\")),
+            Source::Dir(_) | Source::Chain | Source::ChainAddon => format!("@{}", path.replace('/', "\\")),
         }
     }
 
@@ -150,7 +152,7 @@ impl Addon {
                 // the package's fault, which the reference skips silently, and an ERROR line fails
                 // `smoke.sh`.
                 match self.source {
-                    Source::Builtin | Source::Chain => error!("ui_script: {e}"),
+                    Source::Builtin | Source::Chain | Source::ChainAddon => error!("ui_script: {e}"),
                     Source::Dir(_) => warn!("ui_script: {e}"),
                 }
                 // Retained for the player: the commonest way an addon fails with nothing on screen.
@@ -209,7 +211,7 @@ impl Addon {
             for m in &report.missing_files {
                 let e = format!("{}/{file}: {m}", self.name);
                 match self.source {
-                    Source::Builtin | Source::Chain => error!("ui_script: {e}"),
+                    Source::Builtin | Source::Chain | Source::ChainAddon => error!("ui_script: {e}"),
                     Source::Dir(_) => warn!("ui_script: {e}"),
                 }
                 script.report_load_failure(&e);
@@ -260,12 +262,16 @@ pub(crate) fn read_addon_file(root: &Path, req: &str) -> Option<Vec<u8>> {
 /// A `Dir` addon's base before its folder name ([`Addon::prefix`]), `/`-separated as `join_ref` is.
 const ADDONS_PREFIX: &str = "Interface/AddOns/";
 
-/// The addon folder, `<benilla-config>/AddOns/`, or `None` (always under `$WOW_CAPTURE`); addon
-/// textures and fonts resolve onto it too. Deviation: the reference reads the install's
-/// `Interface\AddOns\`; benilla reads an install and does not live in one, so its addons live in
-/// its own state folder, and only there.
+/// The selected client's read-only addon source; textures and fonts resolve onto it too.
+/// Wrath uses the data install's Interface/AddOns. Deviation: vanilla uses the client's own
+/// state folder. Capture mode suppresses either loose source; saved-state writes use local_state.
 pub(crate) fn root() -> Option<PathBuf> {
-    root_from(crate::local_state::home())
+    let home = crate::local_state::home()?;
+    if crate::wrath::selected_from_env() {
+        let data = benilla_formats::wow_data()?;
+        return Some(data.parent()?.join("Interface").join(ADDONS_DIR));
+    }
+    root_from(Some(home))
 }
 
 /// [`root`] with its one environment fact passed in, so a test need not set the environment.
@@ -290,9 +296,19 @@ const BLIZZARD_ADDONS: [&str; 12] = [
     "Blizzard_TrainerUI",
 ];
 
-/// The Blizzard addons the chain carries as LoadOnDemand registry rows, for `UIParentLoadAddOn`;
-/// a toc that is not LoadOnDemand is skipped, as the startup walk does not read the chain.
+/// Wrath registry rows come from the selected chain's addon manifests, including ordinary
+/// startup addons. Vanilla retains its twelve known LoadOnDemand archive rows.
 fn chain_addons() -> Vec<Addon> {
+    if crate::wrath::selected_from_env() {
+        return super::reference_ui::addon_manifests().into_iter().filter_map(|(name, path)| {
+            let bytes = super::reference_ui::read(&path)?;
+            Some(Addon {
+                name,
+                toc: Toc::parse(&benilla_ui::source::decode(&bytes)),
+                source: Source::ChainAddon,
+            })
+        }).collect();
+    }
     BLIZZARD_ADDONS
         .iter()
         .filter_map(|name| {
