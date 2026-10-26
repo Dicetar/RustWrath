@@ -1,4 +1,4 @@
-use std::fmt;
+﻿use std::fmt;
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::{SerializeStruct, Serializer};
@@ -7,10 +7,16 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Version of the observation object and the matching Python receiver.
-pub const OBSERVATION_SCHEMA_VERSION: &str = "wm.native.observation.v2.2";
+pub const OBSERVATION_SCHEMA_VERSION: &str = "wm.native.observation.v2.3";
 
 /// Hard bound on the number of visible GUIDs exported in one observation.
 pub const MAX_VISIBLE_GUIDS: usize = 256;
+
+/// Client power pairs on the wire: `UNIT_FIELD_POWER1..7` and `MAXPOWER1..7`.
+pub const POWER_PAIR_COUNT: usize = 7;
+
+/// Hard bound on the number of self aura slots exported in one observation.
+pub const MAX_AURA_SLOTS: usize = 128;
 
 /// Client-space position. Values are source-observed world coordinates; no unit conversion belongs
 /// in this seam.
@@ -285,18 +291,57 @@ pub enum DeathObservation {
     Ghost,
 }
 
-/// Observed health and current power. Each field is independently observed: a missing value is
-/// `None`, never a zero.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+/// Observed health and power. The active pair keeps the flat `power_type`/`power` fields;
+/// all seven client power pairs are exported independently in `powers`/`max_powers`, indexed by
+/// power type 0..=6. Each value is `Some` only when the source delivered that word: `Some(0)` is
+/// an observed zero, `None` is unavailable. The two spellings of the active pair must agree when
+/// both are observed.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceObservation {
     pub health: Option<u32>,
     pub max_health: Option<u32>,
     pub power_type: Option<u8>,
     pub power: Option<u32>,
+    /// `UNIT_FIELD_POWER1..7` current values, indexed by power type.
+    pub powers: Vec<Option<u32>>,
+    /// `UNIT_FIELD_MAXPOWER1..7` values, indexed by power type.
+    pub max_powers: Vec<Option<u32>>,
 }
 
 impl ResourceObservation {
+    /// All-unobserved form: seven absent pairs, no active power word.
+    pub fn all_unobserved() -> Self {
+        Self {
+            health: None,
+            max_health: None,
+            power_type: None,
+            power: None,
+            powers: vec![None; POWER_PAIR_COUNT],
+            max_powers: vec![None; POWER_PAIR_COUNT],
+        }
+    }
+    /// Wraps the seven paired values; never silently resizes.
+    pub fn pairs(
+        health: Option<u32>,
+        max_health: Option<u32>,
+        power_type: Option<u8>,
+        power: Option<u32>,
+        powers: [Option<u32>; POWER_PAIR_COUNT],
+        max_powers: [Option<u32>; POWER_PAIR_COUNT],
+    ) -> Result<Self> {
+        let resources = Self {
+            health,
+            max_health,
+            power_type,
+            power,
+            powers: powers.to_vec(),
+            max_powers: max_powers.to_vec(),
+        };
+        resources.validate()?;
+        Ok(resources)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if let (Some(health), Some(max_health)) = (self.health, self.max_health) {
             if health > max_health {
@@ -306,16 +351,519 @@ impl ResourceObservation {
             }
         }
         if let Some(power_type) = self.power_type {
-            if power_type > 6 {
+            if power_type as usize >= POWER_PAIR_COUNT {
                 return Err(Error::InvalidObservation(
                     "resources.power_type must be 0..=6",
                 ));
+            }
+        }
+        if self.powers.len() != POWER_PAIR_COUNT {
+            return Err(Error::InvalidObservation(
+                "resources.powers must carry exactly 7 power pairs",
+            ));
+        }
+        if self.max_powers.len() != POWER_PAIR_COUNT {
+            return Err(Error::InvalidObservation(
+                "resources.max_powers must carry exactly 7 power pairs",
+            ));
+        }
+        for (word, max_word) in self.powers.iter().zip(self.max_powers.iter()) {
+            if let (Some(word), Some(max_word)) = (word, max_word) {
+                if word > max_word {
+                    return Err(Error::InvalidObservation(
+                        "resources.powers must not exceed resources.max_powers",
+                    ));
+                }
+            }
+        }
+        if let (Some(power_type), Some(power)) = (self.power_type, self.power) {
+            if let Some(active) = self.powers.get(usize::from(power_type)) {
+                if let Some(active) = *active {
+                    if active != power {
+                        return Err(Error::InvalidObservation(
+                            "resources.power must agree with the active powers entry",
+                        ));
+                    }
+                }
             }
         }
         if self.power.is_some() && self.power_type.is_none() {
             return Err(Error::InvalidObservation(
                 "resources.power requires resources.power_type",
             ));
+        }
+        Ok(())
+    }
+}
+
+/// The complete parsed spell target block of one cast attempt.
+///
+/// Every member is independently optional exactly as the wire block carries them; a member the
+/// START block omitted is `None`, not a derived zero.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpellTargetsObservation {
+    pub mask: u32,
+    pub unit: Option<u64>,
+    pub gameobject: Option<u64>,
+    pub item: Option<u64>,
+    pub source: Option<[f32; 3]>,
+    pub source_transport: Option<u64>,
+    pub dest: Option<[f32; 3]>,
+    pub dest_transport: Option<u64>,
+    pub string: Option<String>,
+}
+
+impl SpellTargetsObservation {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(source) = self.source {
+            if source.iter().any(|value| !value.is_finite()) {
+                return Err(Error::InvalidObservation(
+                    "spell targets source must be finite",
+                ));
+            }
+        }
+        if let Some(dest) = self.dest {
+            if dest.iter().any(|value| !value.is_finite()) {
+                return Err(Error::InvalidObservation("spell targets dest must be finite"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Explicit cast-channel-knowledge states shared by the cast/channel blocks: the producer has
+/// not observed the unit, observed no activity, or observes an active attempt. An observed
+/// no-cast is never folded into `Unknown`.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityState {
+    Unknown,
+    None,
+    Active,
+}
+
+/// One observed cancel request is client authority state: a local cancel command was issued and
+/// the authoritative terminal is still awaited. It never implies an outcome.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CastObservation {
+    pub state: ActivityState,
+    /// This model's stable per-attempt handle while the START edge is open.
+    pub attempt_serial: u64,
+    pub spell_id: u32,
+    /// 12340's `m_cast_count`; `None` only where the specific wire edge omits it.
+    pub cast_count: Option<u8>,
+    pub cast_item: Option<u64>,
+    pub targets: Option<SpellTargetsObservation>,
+    pub cast_flags: Option<u32>,
+    pub ammo_display_id: Option<u32>,
+    /// 12340 START `m_timer`: milliseconds left at packet write. `None` when the START omitted it.
+    pub start_remaining_ms: Option<u32>,
+    pub pushback_ms: u32,
+    pub cancel_requested: bool,
+    /// `None` unless the wire established it; consumers use spell metadata for the hard bit.
+    pub interruptible: Option<bool>,
+    /// 12340 GO game-time timestamp, `None` before the launch edge.
+    pub go_server_time_ms: Option<u32>,
+    /// Packet-arrival wall clock of the attempt's START edge (ms since Unix epoch).
+    pub start_observed_at_unix_ms: i64,
+    /// Client `GetTime()` seconds at the START drain; client-process-local domain, not shared
+    /// with the receiver.
+    pub start_ui_now_seconds: Option<f64>,
+    /// Client `GetTime()` seconds of the latest resolved edge; updates on pushback, never the origin.
+    pub last_update_ui_now_seconds: Option<f64>,
+}
+
+impl CastObservation {
+    /// All-unobserved form: no cast knowledge at all, distinct from an observed no-cast.
+    pub fn unknown() -> Self {
+        Self {
+            state: ActivityState::Unknown,
+            attempt_serial: 0,
+            spell_id: 0,
+            cast_count: None,
+            cast_item: None,
+            targets: None,
+            cast_flags: None,
+            ammo_display_id: None,
+            start_remaining_ms: None,
+            pushback_ms: 0,
+            cancel_requested: false,
+            interruptible: None,
+            go_server_time_ms: None,
+            start_observed_at_unix_ms: 0,
+            start_ui_now_seconds: None,
+            last_update_ui_now_seconds: None,
+        }
+    }
+
+    /// An observed no-cast: the source has seen the authoritative terminal edge.
+    pub fn none() -> Self {
+        let mut cast = Self::unknown();
+        cast.state = ActivityState::None;
+        cast
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self.state {
+            ActivityState::Unknown | ActivityState::None => {
+                if self.attempt_serial != 0
+                    || self.spell_id != 0
+                    || self.cast_count.is_some()
+                    || self.cast_item.is_some()
+                    || self.targets.is_some()
+                    || self.cast_flags.is_some()
+                    || self.ammo_display_id.is_some()
+                    || self.start_remaining_ms.is_some()
+                    || self.pushback_ms != 0
+                    || self.cancel_requested
+                    || self.interruptible.is_some()
+                    || self.go_server_time_ms.is_some()
+                    || self.start_ui_now_seconds.is_some()
+                    || self.last_update_ui_now_seconds.is_some()
+                {
+                    return Err(Error::InvalidObservation(
+                        "a non-active cast block must not carry activity fields",
+                    ));
+                }
+                if self.start_observed_at_unix_ms != 0 {
+                    return Err(Error::InvalidObservation(
+                        "a non-active cast block must not carry a start clock",
+                    ));
+                }
+            }
+            ActivityState::Active => {
+                if self.spell_id == 0 {
+                    return Err(Error::InvalidObservation(
+                        "an active cast requires a non-zero spell id",
+                    ));
+                }
+                if self.attempt_serial == 0 {
+                    return Err(Error::InvalidObservation(
+                        "an active cast requires a non-zero attempt_serial",
+                    ));
+                }
+                if self.start_observed_at_unix_ms < 0 {
+                    return Err(Error::InvalidObservation(
+                        "cast start clock must not be negative",
+                    ));
+                }
+                if self.last_update_ui_now_seconds.is_some()
+                    && self.start_ui_now_seconds.is_none()
+                {
+                    return Err(Error::InvalidObservation(
+                        "a cast update clock requires a start clock",
+                    ));
+                }
+                if self
+                    .start_ui_now_seconds
+                    .is_some_and(|clock| !clock.is_finite())
+                    || self
+                        .last_update_ui_now_seconds
+                        .is_some_and(|clock| !clock.is_finite())
+                {
+                    return Err(Error::InvalidObservation(
+                        "cast UI clocks must be finite",
+                    ));
+                }
+                if let Some(targets) = &self.targets {
+                    targets.validate()?;
+                }
+                if let Some(go_server_time_ms) = self.go_server_time_ms {
+                    if go_server_time_ms >= 86_400_000 {
+                        return Err(Error::InvalidObservation(
+                            "cast GO server time exceeds a one-day window",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One active channel as observed: the START anchor survives updates for reload, and update
+/// clocks advance while the channel runs. No channel terminal is exported as state; a completed
+/// channel removes the entry (observed `none`), matching the native read model.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelObservation {
+    pub state: ActivityState,
+    pub spell_id: Option<u32>,
+    pub duration_ms: Option<u32>,
+    pub remaining_ms: Option<u32>,
+    /// Packet-arrival wall clock of the channel's START edge.
+    pub start_observed_at_unix_ms: Option<i64>,
+    /// Packet-arrival wall clock of the latest channel update edge.
+    pub update_observed_at_unix_ms: Option<i64>,
+    /// Client `GetTime()` seconds at the START drain; client-process-local domain.
+    pub start_ui_now_seconds: Option<f64>,
+    pub last_update_ui_now_seconds: Option<f64>,
+}
+
+impl ChannelObservation {
+    /// All-unobserved form.
+    pub fn unknown() -> Self {
+        Self {
+            state: ActivityState::Unknown,
+            spell_id: None,
+            duration_ms: None,
+            remaining_ms: None,
+            start_observed_at_unix_ms: None,
+            update_observed_at_unix_ms: None,
+            start_ui_now_seconds: None,
+            last_update_ui_now_seconds: None,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self.state {
+            ActivityState::Unknown | ActivityState::None => {
+                if self.spell_id.is_some()
+                    || self.duration_ms.is_some()
+                    || self.remaining_ms.is_some()
+                    || self.start_observed_at_unix_ms.is_some()
+                    || self.update_observed_at_unix_ms.is_some()
+                    || self.start_ui_now_seconds.is_some()
+                    || self.last_update_ui_now_seconds.is_some()
+                {
+                    return Err(Error::InvalidObservation(
+                        "a non-active channel block must not carry activity fields",
+                    ));
+                }
+            }
+            ActivityState::Active => {
+                let spell_id = self
+                    .spell_id
+                    .ok_or_else(|| Error::InvalidObservation("an active channel requires a spell id"))?;
+                if spell_id == 0 {
+                    return Err(Error::InvalidObservation(
+                        "an active channel requires a non-zero spell id",
+                    ));
+                }
+                self.duration_ms.ok_or_else(|| {
+                    Error::InvalidObservation("an active channel requires a duration")
+                })?;
+                self.remaining_ms.ok_or_else(|| {
+                    Error::InvalidObservation("an active channel requires a remaining time")
+                })?;
+                self.start_observed_at_unix_ms.ok_or_else(|| {
+                    Error::InvalidObservation("an active channel requires a start clock")
+                })?;
+                self.update_observed_at_unix_ms.ok_or_else(|| {
+                    Error::InvalidObservation("an active channel requires an update clock")
+                })?;
+                if self.last_update_ui_now_seconds.is_some()
+                    && self.start_ui_now_seconds.is_none()
+                {
+                    return Err(Error::InvalidObservation(
+                        "a channel update clock requires a start clock",
+                    ));
+                }
+                if self
+                    .start_ui_now_seconds
+                    .is_some_and(|clock| !clock.is_finite())
+                    || self
+                        .last_update_ui_now_seconds
+                        .is_some_and(|clock| !clock.is_finite())
+                {
+                    return Err(Error::InvalidObservation(
+                        "channel UI clocks must be finite",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Terminal cast outcomes exactly as the wire resolves them. `Scoped` covers a transfer/replacement
+/// or session loss that closed the attempt without a gameplay verdict.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CastOutcome {
+    Launched,
+    Failed,
+    Interrupted,
+    ScopeLost,
+    Unknown,
+}
+
+/// Terminal-edge presence: the producer has not observed a terminal edge, or it retains one.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalState {
+    Unknown,
+    Present,
+}
+
+/// Aura-slot knowledge: not yet observed, or the observed slot set (possibly empty).
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuraKnowledge {
+    Unknown,
+    Known,
+}
+
+/// The last terminal cast edge, retaining the attempt identity after the active entry is gone.
+/// Terminal distinctions are preserved: none of these outcomes is inferred from another.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LastCastEndObservation {
+    pub state: TerminalState,
+    pub outcome: CastOutcome,
+    pub attempt_serial: Option<u64>,
+    pub spell_id: Option<u32>,
+    pub cast_count: Option<u8>,
+    pub cast_item: Option<u64>,
+    pub target: Option<u64>,
+    pub targets: Option<SpellTargetsObservation>,
+    /// Packet-arrival wall clock of the terminal edge.
+    pub ended_observed_at_unix_ms: Option<i64>,
+}
+
+impl LastCastEndObservation {
+    /// All-unobserved form: no terminal edge retained.
+    pub fn unknown() -> Self {
+        Self {
+            state: TerminalState::Unknown,
+            outcome: CastOutcome::Unknown,
+            attempt_serial: None,
+            spell_id: None,
+            cast_count: None,
+            cast_item: None,
+            target: None,
+            targets: None,
+            ended_observed_at_unix_ms: None,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self.state {
+            TerminalState::Unknown => {
+                if !matches!(self.outcome, CastOutcome::Unknown) {
+                    return Err(Error::InvalidObservation(
+                        "a non-present last-cast-end must not carry an outcome",
+                    ));
+                }
+                if self.attempt_serial.is_some()
+                    || self.spell_id.is_some()
+                    || self.cast_count.is_some()
+                    || self.cast_item.is_some()
+                    || self.target.is_some()
+                    || self.targets.is_some()
+                    || self.ended_observed_at_unix_ms.is_some()
+                {
+                    return Err(Error::InvalidObservation(
+                        "a non-present last-cast-end must not carry attempt fields",
+                    ));
+                }
+            }
+            TerminalState::Present => {
+                if matches!(self.outcome, CastOutcome::Unknown) {
+                    return Err(Error::InvalidObservation(
+                        "a terminal cast edge requires an outcome",
+                    ));
+                }
+                let spell_id = self
+                    .spell_id
+                    .ok_or_else(|| Error::InvalidObservation("a terminal cast edge requires a spell id"))?;
+                if spell_id == 0 {
+                    return Err(Error::InvalidObservation(
+                        "a terminal cast edge requires a non-zero spell id",
+                    ));
+                }
+                if let Some(ended) = self.ended_observed_at_unix_ms {
+                    if ended < 0 {
+                        return Err(Error::InvalidObservation(
+                            "terminal cast clock must not be negative",
+                        ));
+                    }
+                }
+                if let Some(targets) = &self.targets {
+                    targets.validate()?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One self aura slot exactly as the aura wire carried it: raw spell/flags/level/charges/caster
+/// and both durations. Helpful/harmful classification does not exist in the payload and is never
+/// inferred here; the caster guid of `0` is the wire's own-aura marker (`AFLAG_CASTER`), not the
+/// player's guid.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuraObservation {
+    pub slot: u8,
+    pub spell_id: u32,
+    pub flags: u8,
+    pub level: u8,
+    pub charges: u8,
+    pub caster_guid: u64,
+    pub max_duration_ms: u32,
+    pub duration_ms: u32,
+}
+
+impl AuraObservation {
+    pub fn validate(&self) -> Result<()> {
+        // A zero spell id is the wire's aura-removal row; it is an observed slot, not unknown.
+        Ok(())
+    }
+}
+
+/// The self unit's observed aura slot set.
+///
+/// `state` separates "not yet observed" from "observed": `known` with an empty slot list is an
+/// observed zero-aura state and must never be presented as unknown. `complete` is false only
+/// when the export bound cut the producer's slot set.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AurasObservation {
+    pub state: AuraKnowledge,
+    pub complete: bool,
+    #[serde(default)]
+    pub slots: Vec<AuraObservation>,
+}
+
+impl AurasObservation {
+    /// All-unobserved form.
+    pub fn unknown() -> Self {
+        Self {
+            state: AuraKnowledge::Unknown,
+            complete: false,
+            slots: Vec::new(),
+        }
+    }
+    pub fn validate(&self) -> Result<()> {
+        if self.slots.len() > MAX_AURA_SLOTS {
+            return Err(Error::InvalidObservation(
+                "aura slots exceed the observation bound; mark the export incomplete and bound it before construction",
+            ));
+        }
+        if self.complete && self.state == AuraKnowledge::Unknown {
+            return Err(Error::InvalidObservation(
+                "an unknown aura state cannot claim completeness",
+            ));
+        }
+        if self.state == AuraKnowledge::Unknown && !self.slots.is_empty() {
+            return Err(Error::InvalidObservation(
+                "an unobserved aura state must not carry slots",
+            ));
+        }
+        let mut previous: Option<u8> = None;
+        for aura in &self.slots {
+            aura.validate()?;
+            if let Some(previous) = previous {
+                if previous >= aura.slot {
+                    return Err(Error::InvalidObservation(
+                        "aura slots must be sorted ascending by slot",
+                    ));
+                }
+            }
+            previous = Some(aura.slot);
         }
         Ok(())
     }
@@ -352,10 +900,19 @@ pub struct Observation {
     pub target: TargetObservation,
     /// The self unit's replicated combat flag; `Unknown` before that field is observed.
     pub combat: CombatObservation,
-    /// Self health and current power, each independently observed.
+    /// Self health and current power, each independently observed. The active pair keeps the
+    /// flat `power` spelling; all seven pairs carry their own observedness.
     pub resources: ResourceObservation,
     /// Self life state (ghost precedence over zero health).
     pub death: DeathObservation,
+    /// The self unit's active cast, unknown before the native feed observes one.
+    pub casting: CastObservation,
+    /// The self unit's active channel.
+    pub channeling: ChannelObservation,
+    /// The self unit's last terminal cast edge with its outcome.
+    pub last_cast_end: LastCastEndObservation,
+    /// The self unit's observed aura slots.
+    pub auras: AurasObservation,
     pub visibility: Visibility,
 }
 
@@ -379,6 +936,10 @@ impl Observation {
         combat: CombatObservation,
         resources: ResourceObservation,
         death: DeathObservation,
+        casting: CastObservation,
+        channeling: ChannelObservation,
+        last_cast_end: LastCastEndObservation,
+        auras: AurasObservation,
         visibility: Visibility,
     ) -> Result<Self> {
         let observation = Self {
@@ -400,6 +961,10 @@ impl Observation {
             combat,
             resources,
             death,
+            casting,
+            channeling,
+            last_cast_end,
+            auras,
             visibility,
         };
         observation.validate()?;
@@ -458,6 +1023,10 @@ impl Observation {
         self.position.validate()?;
         self.target.validate()?;
         self.resources.validate()?;
+        self.casting.validate()?;
+        self.channeling.validate()?;
+        self.last_cast_end.validate()?;
+        self.auras.validate()?;
         self.visibility.validate()?;
         if self
             .visibility
@@ -487,6 +1056,10 @@ impl Observation {
             && self.combat == other.combat
             && self.resources == other.resources
             && self.death == other.death
+            && self.casting == other.casting
+            && self.channeling == other.channeling
+            && self.last_cast_end == other.last_cast_end
+            && self.auras == other.auras
             && self.visibility == other.visibility
     }
 

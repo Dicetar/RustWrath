@@ -5,7 +5,9 @@
 //! struct and a bridge dependency in the pure packet reducer.
 
 use crate::error::Result;
-use crate::observation::{CombatObservation, DeathObservation, Observation, Position, ResourceObservation, TargetObservation, Visibility};
+use crate::observation::{
+    AurasObservation, CastObservation, ChannelObservation, CombatObservation, DeathObservation, LastCastEndObservation, Observation, Position, ResourceObservation, TargetObservation, Visibility,
+};
 
 /// Producer position with bridge-facing orientation naming. GLM's `PositionSnapshot::o` maps here.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -57,6 +59,26 @@ pub trait ProducerSnapshot {
         DeathObservation::Unknown
     }
 
+    /// The self unit's active cast; default Unknown (never an observed no-cast).
+    fn casting(&self) -> CastObservation {
+        CastObservation::unknown()
+    }
+
+    /// The self unit's active channel; default Unknown.
+    fn channeling(&self) -> ChannelObservation {
+        ChannelObservation::unknown()
+    }
+
+    /// The self unit's last terminal cast edge; default Unknown.
+    fn last_cast_end(&self) -> LastCastEndObservation {
+        LastCastEndObservation::unknown()
+    }
+
+    /// The self unit's observed aura slots; default Unknown (distinct from zero auras).
+    fn auras(&self) -> AurasObservation {
+        AurasObservation::unknown()
+    }
+
     fn zone_id(&self) -> Option<u32> {
         None
     }
@@ -98,6 +120,10 @@ where
         source.combat(),
         source.resources(),
         source.death(),
+        source.casting(),
+        source.channeling(),
+        source.last_cast_end(),
+        source.auras(),
         source.visibility()?,
     )
 }

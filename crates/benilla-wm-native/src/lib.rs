@@ -46,8 +46,11 @@ pub use error::{Error, Result};
 pub use frame::{MAX_FRAME_BYTES, PROTOCOL_NAME, PROTOCOL_VERSION};
 pub use health::{SourceHealth, SourceSessionState};
 pub use observation::{
-    CombatObservation, DeathObservation, MAX_VISIBLE_GUIDS, OBSERVATION_SCHEMA_VERSION,
-    Observation, Position, ResourceObservation, TargetObservation, Visibility,
+    ActivityState, AuraKnowledge, AuraObservation, AurasObservation, CastObservation, CastOutcome,
+    ChannelObservation, CombatObservation, DeathObservation, LastCastEndObservation,
+    MAX_AURA_SLOTS, MAX_VISIBLE_GUIDS, OBSERVATION_SCHEMA_VERSION, Observation, Position,
+    POWER_PAIR_COUNT, ResourceObservation, SpellTargetsObservation, TargetObservation,
+    TerminalState, Visibility,
 };
 pub use producer::{observation_from_producer, ProducerPosition, ProducerSnapshot};
 pub use publisher::{

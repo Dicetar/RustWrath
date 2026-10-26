@@ -80,13 +80,19 @@ pub enum SelfCombat {
     InCombat,
 }
 
-/// Self health and power, each field independently observed.
+/// Self health and power, each field independently observed. Beyond the active `power` spelling,
+/// all seven client power pairs and their maxima are carried for the v2.3 observation contract;
+/// each is `Some` only when the wire delivered that word (`Some(0)` is an observed zero).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SelfResources {
     pub health: Option<u32>,
     pub max_health: Option<u32>,
     pub power_type: Option<u8>,
     pub power: Option<u32>,
+    /// `UNIT_FIELD_POWER1..7`, indexed by power type.
+    pub powers: [Option<u32>; 7],
+    /// `UNIT_FIELD_MAXPOWER1..7`, indexed by power type.
+    pub max_powers: [Option<u32>; 7],
 }
 
 /// Self life state; ghost takes precedence over dead.
@@ -679,11 +685,19 @@ impl SessionState {
         let power = power_type.and_then(|power_type| {
             observed(fields::UNIT_FIELD_POWER1 + u16::from(power_type))
         });
+        let mut powers = [None; 7];
+        let mut max_powers = [None; 7];
+        for index in 0..7u16 {
+            powers[usize::from(index)] = observed(fields::UNIT_FIELD_POWER1 + index);
+            max_powers[usize::from(index)] = observed(fields::UNIT_FIELD_MAXPOWER1 + index);
+        }
         let resources = SelfResources {
             health,
             max_health,
             power_type,
             power,
+            powers,
+            max_powers,
         };
         let combat = match observed(fields::UNIT_FIELD_FLAGS) {
             Some(flags) if flags & 0x0008_0000 != 0 => SelfCombat::InCombat,
