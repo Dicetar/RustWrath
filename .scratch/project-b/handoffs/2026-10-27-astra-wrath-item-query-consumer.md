@@ -142,6 +142,32 @@ quality-7 fallback remains Common. No cache-wait, event, template or item-state 
 These commits are source-only, uncompiled and untested. No new cases, renderer/GUI run,
 catalog extraction or other execution was performed. Existing regression results predate them.
 
+### 2026-10-28 race-restriction supersession
+
+8f61e99e supersedes the preceding donor-race-list gap in source. Existing
+ChrRaces::localized_labels supplies the selected-locale male/base names for playable IDs
+1..8, 10 and 11. Goblin (9) is not treated as playable. UI bootstrap reuses an existing
+ChrRaceTable, or loads/inserts the same parsed catalog ahead of startup as the class path does.
+Both production metadata seating and the from-chain fixture entry point seat the projection.
+
+UiScript::set_localized_race_names validates a candidate before replacing a typed VM host-data
+snapshot: current Wrath locale, nonempty labels, unique IDs and all ten playable IDs. No Lua
+global or second catalog is introduced. The existing set_locale owner retires this projection
+when locale changes, alongside class-label retirement. VM destruction drops it normally.
+OC's dirty Model and loader files were not edited.
+
+The tooltip renderer uses the full playable mask 0x6ff and observed names. Blood Elf-only
+(0x200) and Draenei-only (0x400) restrictions can now produce labels; donor mask 0xff no longer
+counts as unrestricted in Wrath. Missing locale-bound labels fail before line emission.
+Vanilla keeps its eight-race mask and existing labels. Race/class permission checks and the
+server's authority are untouched. Exact native gender-label selection remains unproven;
+the projection deliberately uses the catalog's male/base column, with no cross-locale fallback.
+
+Source references are the already parsed 69-column ChrRaces layout and pinned AzerothCore
+SharedDefines.h race IDs (Blood Elf=10, Draenei=11). No extractor, build, test/new case,
+import, graphical/live/socket/WM/server/DB operation was run. In particular, the stricter
+from-chain metadata admission and non-English catalog coverage still need authorized evidence.
+
 ### Spellmaking cooldown query follow-through
 
 74a250ba closes another concrete installed-addon call mismatch: WM_SpellmakingV3.lua:296

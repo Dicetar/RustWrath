@@ -289,4 +289,12 @@ server/item permission owners remain unchanged. Source-only: no compilation, tes
 installed-addon or rendered acceptance. Race restrictions still use the donor list; exact
 target gender selection and broader Wrath line-law behavior remain open in the item handoff.
 
+Race-label supersession at 8f61e99e: existing ChrRaces data now seats a locale-bound UI read
+projection through the production and from-chain metadata paths. Tooltips use the ten playable
+Wrath IDs (mask 0x6ff), including Blood Elf/Draenei, and no longer treat donor mask 0xff as
+unrestricted. Locale changes retire the projection; missing labels remain unavailable.
+Donor mode and server permission checks are unchanged. OC's dirty Model/loader files were
+preserved. Source-only, with no check/test/new case or runtime execution; non-English data,
+exact native gender selection and full item/addon/gameplay acceptance remain unverified.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
