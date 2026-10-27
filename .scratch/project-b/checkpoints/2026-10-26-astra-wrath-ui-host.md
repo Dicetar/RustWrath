@@ -329,3 +329,12 @@ through the existing lent host and Cooldowns owner. Retain book-slot/pet query b
 reusing the original binding body; do not create timers in Lua or infer zero cooldown from
 an absent host/world/catalog. Use the same UiClock projection as the spellbook feed.
 No new tests, builds, runtime checks or speculative race/security mechanism is authorized.
+
+2026-10-28 continuation claim at 85d74015: clean script/class_names.rs,
+script/tooltip_item/render.rs and script/tooltip_item/names.rs. The renderer's CLASS_NAMES
+omits class 6, so a Death Knight-only item prints no class requirement and a donor all-class
+mask hides the Wrath exclusion. Use the existing locale-bound class-label projection for
+the ten playable Wrath IDs (AzerothCore SharedDefines.h CLASSMASK_ALL_PLAYABLE), preserving
+donor labels and masks. Missing required observed labels must remain unavailable, not an
+English fallback. Also select the established heirloom color in the cached tooltip title;
+this does not claim a full Wrath tooltip line-law port. No new state, tests or execution.
