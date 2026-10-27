@@ -343,3 +343,11 @@ Heirloom follow-through claim: clean script/tooltip_item/mod.rs only. Its six In
 producers still use the donor palette before the cached renderer runs. Delegate those colors
 to the already added target-aware helper after their existing Model borrows end; preserve
 the existing name-only white override and cache-wait lifecycle. No new event, state or run.
+
+2026-10-28 race-label continuation claim: clean script/class_names.rs, script/client.rs,
+script/tooltip_item/render.rs and app/chr_classes.rs. ChrRaces::localized_labels already
+retains all nine Wrath locale columns; the renderer still assumes eight donor races and
+omits Blood Elf/Draenei-only restrictions. Seat playable-race labels through the existing
+production/from-chain metadata entry points. A typed VM host-data read projection avoids
+editing OC's dirty Model/module files; the existing set_locale owner retires it on changes.
+No new catalog, protocol owner, English fallback, test case or execution is introduced.
