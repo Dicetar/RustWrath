@@ -8,7 +8,7 @@
 
 use std::borrow::Cow;
 
-use mlua::{Function, Lua, Table, Value};
+use mlua::{Function, Lua, MultiValue, Table, Value};
 
 use super::{Model, ScriptValue, REG_SCRIPTS};
 use crate::script::object::frame_wrapper;
@@ -16,7 +16,26 @@ use crate::script::object::frame_wrapper;
 const REG_SCRIPT_HOOKS: &str = "__benilla_script_hooks";
 
 pub(super) fn install_wrath(lua: &Lua) -> mlua::Result<()> {
-    lua.set_named_registry_value(REG_SCRIPT_HOOKS, lua.create_table()?)
+    lua.set_named_registry_value(REG_SCRIPT_HOOKS, lua.create_table()?)?;
+    // Installed IgnoreMore consumes frame varargs. The independent Wowless events module
+    // confirms this unpacked view; use the host's existing ordered registration owner.
+    lua.globals().set("GetFramesRegisteredForEvent", lua.create_function(
+        |lua, name: String| {
+            let ids: Vec<u32> = {
+                let model = lua.app_data_ref::<Model>().expect("model");
+                model.target.event_key(model.vm, &name)
+                    .and_then(|event| model.event_to_frames.get(event))
+                    .into_iter().flatten()
+                    .filter(|handle| model.arena.frame(**handle).is_some())
+                    .filter_map(|handle| model.frame_to_id.get(handle).copied())
+                    .collect()
+            };
+            // Wrapper lookup can reach Lua globals/metamethods; retain no Model borrow.
+            let frames = ids.into_iter().map(|id| frame_wrapper(lua, id).map(Value::Table))
+                .collect::<mlua::Result<Vec<_>>>()?;
+            Ok(MultiValue::from_vec(frames))
+        },
+    )?)
 }
 
 fn script_hooks(lua: &Lua, id: u32, script: &str) -> mlua::Result<Vec<Function>> {

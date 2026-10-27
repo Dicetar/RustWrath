@@ -189,4 +189,12 @@ VM rather than being silently dropped. Existing donor/glue catalogs are unchange
 listener admission only; event producers, payload contracts and complete addon/native event
 coverage are not established. No test/build/runtime run covered this later source addition.
 
+Installed-addon event-query follow-up: IgnoreMore 1.1.1 and Details source on the selected install
+demonstrates calls to GetFramesRegisteredForEvent and Frame:IsEventRegistered, both previously
+absent. The Wrath host now supplies ordered frame varargs and boolean membership over the
+existing registration owner, preserving cached wrapper identity and unregister behavior.
+See the UI-host checkpoint for exact file hashes and independent behavioral reference.
+No addon was executed or modified; no compile/test run covered this later addition. This closes
+two source-level API omissions, not the installed-addon workflow or full-replacement gate.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.

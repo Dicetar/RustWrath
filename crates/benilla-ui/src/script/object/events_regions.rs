@@ -43,6 +43,19 @@ fn register(model: &mut Model, h: FrameHandle, event: &'static str) {
 /// Populate `m`'s event, script and region-creation methods.
 pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // Events + scripts
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        // Installed Details uses this predicate before registering its chat listener.
+        // Read the same membership store RegisterEvent/UnregisterEvent update; no new state.
+        m.set("IsEventRegistered", lua.create_function(
+            |lua, (this, name): (Table, String)| {
+                let handle = frame_handle_of(lua, &this)?;
+                let model = lua.app_data_ref::<Model>().expect("model");
+                Ok(model.target.event_key(model.vm, &name).is_some_and(|event| {
+                    model.frame_events.get(&handle).is_some_and(|events| events.contains(event))
+                }))
+            },
+        )?)?;
+    }
     m.set(
         "RegisterEvent",
         lua.create_function(|lua, (this, event): (Table, String)| {
