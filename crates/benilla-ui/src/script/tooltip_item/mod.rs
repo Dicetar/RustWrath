@@ -23,8 +23,13 @@ pub(in crate::script) mod names;
 pub(in crate::script) mod render;
 
 use build::{build_item, InFlight, ItemBuild};
-use names::quality_color;
+use names::quality_color_in_target;
 use render::BuilderFlags;
+
+fn quality_color(lua: &Lua, quality: u32) -> [f32; 4] {
+    let target = lua.app_data_ref::<Model>().expect("model app_data").target;
+    quality_color_in_target(target, quality)
+}
 
 /// The cached template; a miss records the ask and waits for its answer (`0x52b716`).
 fn view_of(lua: &Lua, item_id: u32) -> Option<ItemTemplateView> {
@@ -259,7 +264,7 @@ pub(super) fn render_by_id(
 ) -> mlua::Result<()> {
     let h = frame_handle_of(lua, this)?;
     let in_flight = match fb_name {
-        Some(name) => InFlight::Name(name, quality_color(fb_q.unwrap_or(1))),
+        Some(name) => InFlight::Name(name, quality_color(lua, fb_q.unwrap_or(1))),
         None => InFlight::Nothing,
     };
     build_item(
@@ -313,7 +318,7 @@ fn build_block(
     quality: Option<u32>,
 ) -> mlua::Result<bool> {
     let in_flight = match inst.name.clone() {
-        Some(name) => InFlight::Name(name, quality_color(quality.unwrap_or(1))),
+        Some(name) => InFlight::Name(name, quality_color(lua, quality.unwrap_or(1))),
         None => InFlight::Nothing,
     };
     build_item(
@@ -478,7 +483,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 ..Default::default()
             };
             let in_flight = match name {
-                Some(name) => InFlight::Name(name, quality_color(1)),
+                Some(name) => InFlight::Name(name, quality_color(lua, 1)),
                 None => InFlight::Nothing,
             };
             build_item(
@@ -615,7 +620,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 // Template in flight: the header and the slot's own name, as `SetBagItem`'s
                 // miss path.
                 let in_flight = match name {
-                    Some(name) => InFlight::Name(name, quality_color(quality.max(0) as u32)),
+                    Some(name) => InFlight::Name(name, quality_color(lua, quality.max(0) as u32)),
                     None => InFlight::Nothing,
                 };
                 // The merchant prices an object the player holds at slot index 23 or more
@@ -713,7 +718,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             let duration_ms = inst.duration_ms;
             // The template in flight shows the slot's name ([`InFlight`]).
             let in_flight = match link.as_deref().and_then(link_name) {
-                Some(name) => InFlight::Name(name.to_string(), quality_color(quality)),
+                Some(name) => InFlight::Name(name.to_string(), quality_color(lua, quality)),
                 None => InFlight::Nothing,
             };
             let live = build_item(
@@ -805,7 +810,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     return Ok(());
                 };
                 let in_flight = match inst.name.clone() {
-                    Some(name) => InFlight::Name(name, quality_color(quality.unwrap_or(1))),
+                    Some(name) => InFlight::Name(name, quality_color(lua, quality.unwrap_or(1))),
                     None => InFlight::Nothing,
                 };
                 build_item(
