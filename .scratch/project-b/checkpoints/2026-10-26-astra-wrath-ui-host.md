@@ -370,3 +370,13 @@ getters. Unit identity must match the retained GUID rather than silently follow 
 The existing unit renderer also lacks the OnTooltipSetUnit edge used by Questie's hook;
 publish it after content is ready in Wrath mode. No aura-as-spell assumption, native state,
 new registry, test case or execution is authorized. Donor methods/events stay unchanged.
+
+2026-10-28 Bagnon continuation claim at b0a561ea: clean script/container.rs only.
+GetContainerItemInfo currently returns five donor values, while installed Bagnon
+utility/itemSlotInfo.lua:18 and utility/itemEvents.lua:87/118 read the seventh as the
+slot link used for item identity/update messages. Stock 12340 ContainerFrame.lua:684
+also reads that seventh value for a refund link. Append Wrath lootability/link through
+the existing ItemTemplateView cache and ContainerSlot source links; preserve donor
+arity and existing slot/lock/readable/quality semantics. Missing template flags must
+remain unknown and use the existing item_stat_reads owner, not a second cache or a
+guess from UseFork. No native ownership, new tests or execution is authorized.
