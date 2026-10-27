@@ -51,7 +51,9 @@ pub(crate) fn open_51(vm: &mut Vm) {
 
 fn reverse(vm: &mut Vm, nargs: usize) -> R<usize> {
     let string = vm.check_str(nargs, 1)?;
-    let bytes: Vec<_> = vm.heap.str(string).iter().rev().copied().collect();
+    let mut bytes = Vec::new();
+    vm.reserve(&mut bytes, vm.heap.str(string).len())?;
+    bytes.extend(vm.heap.str(string).iter().rev().copied());
     Ok(vm.ret_str(&bytes))
 }
 
@@ -313,19 +315,28 @@ fn format(vm: &mut Vm, nargs: usize) -> R<usize> {
 
 fn format_in(vm: &mut Vm, nargs: usize, [f, out]: &mut [Vec<u8>; 2]) -> R<usize> {
     let fs = vm.check_str(nargs, 1)?;
-    f.extend_from_slice(crate::lex::cstr(vm.heap.str(fs)));
+    let wrath = vm.dialect().is_51();
+    if wrath {
+        // 5.1 str_format uses luaL_checklstring's length, including embedded NULs.
+        vm.reserve(f, vm.heap.str(fs).len())?;
+        f.extend_from_slice(vm.heap.str(fs));
+    } else {
+        f.extend_from_slice(crate::lex::cstr(vm.heap.str(fs)));
+    }
     let f = &f[..];
     let at = |j: usize| f.get(j).copied().unwrap_or(0);
     let mut arg = 1;
     let mut i = 0;
     while i < f.len() {
         if f[i] != b'%' {
+            if wrath { vm.reserve(out, 1)?; }
             out.push(f[i]);
             i += 1;
             continue;
         }
         i += 1;
         if at(i) == b'%' {
+            if wrath { vm.reserve(out, 1)?; }
             out.push(b'%');
             i += 1;
             continue;
@@ -333,7 +344,20 @@ fn format_in(vm: &mut Vm, nargs: usize, [f, out]: &mut [Vec<u8>; 2]) -> R<usize>
         // A number's text is short: the bound on the whole is enough for it.
         vm.check_len(out)?;
         let mut initf = i;
-        if at(i).is_ascii_digit() && at(i + 1) == b'$' {
+        if wrath {
+            // WoW's positional extension, independent Elune scanarg: at most two digits.
+            // Keep the shared CRT conversions rather than replacing them with Rust format!.
+            let mut cursor = i;
+            let mut selected = 0;
+            while cursor < i + 2 && at(cursor).is_ascii_digit() {
+                selected = selected * 10 + usize::from(at(cursor) - b'0');
+                cursor += 1;
+            }
+            if cursor > i && at(cursor) == b'$' {
+                arg = selected;
+                initf = cursor + 1;
+            }
+        } else if at(i).is_ascii_digit() && at(i + 1) == b'$' {
             arg = (at(i) - b'0') as usize;
             initf = i + 2;
         }
@@ -398,6 +422,10 @@ fn format_in(vm: &mut Vm, nargs: usize, [f, out]: &mut [Vec<u8>; 2]) -> R<usize>
                 let n = vm.check_number(nargs, arg)?;
                 cfmt::write_float(out, n, conv, &spec);
             }
+            b'F' if wrath => {
+                let n = vm.check_number(nargs, arg)?;
+                cfmt::write_float(out, n, b'f', &spec);
+            }
             b'q' => {
                 let s = vm.check_str(nargs, arg)?;
                 // `luaI_addquoted` (`0x7fd6d0`), by its table at `0x7fd7b0`: `"`, `\` and a
@@ -408,6 +436,7 @@ fn format_in(vm: &mut Vm, nargs: usize, [f, out]: &mut [Vec<u8>; 2]) -> R<usize>
                 for &c in vm.heap.str(s) {
                     match c {
                         b'"' | b'\\' | b'\n' => out.extend_from_slice(&[b'\\', c]),
+                        b'\r' if wrath => out.extend_from_slice(b"\\r"),
                         0 => out.extend_from_slice(b"\\000"),
                         _ => out.push(c),
                     }
@@ -421,7 +450,8 @@ fn format_in(vm: &mut Vm, nargs: usize, [f, out]: &mut [Vec<u8>; 2]) -> R<usize>
                 vm.reserve(out, len.saturating_add(99))?;
                 let b = vm.heap.str(s);
                 // No precision digits and 100 bytes or more: the string whole (`0x7fd609`).
-                if prec_len == 0 && b.len() >= 100 {
+                let no_precision = if wrath { spec.precision.is_none() } else { prec_len == 0 };
+                if no_precision && b.len() >= 100 {
                     out.extend_from_slice(b);
                 } else {
                     // `sprintf` reads a C string.
