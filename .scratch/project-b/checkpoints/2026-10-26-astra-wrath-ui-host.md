@@ -274,3 +274,12 @@ query to that owner without adding context state, policy, taint propagation or a
 RestrictedFrames.lua:100 gates handle creation on this query and ActionButton.lua gates
 show-grid changes on it. This is an ordinary reachable wrong answer, not hypothetical
 race/security hardening. Existing taint.rs limitations and securecall remain open.
+
+Continuation claim after 19b65b9d: Astra takes script/tooltip_item/mod.rs only for Wrath
+spell hyperlink admission, plus this checkpoint and the existing first-loop inventory.
+File is clean; OC's chat, model, layout, region and bootstrap edits remain excluded.
+Installed WM_MulticlassSpellbook.lua:33 uses GameTooltip:SetHyperlink("spell:"..id), but
+the current handler admits only item/enchant links and silently returns for this path.
+Use the existing tooltip_spell::set_spell_by_id renderer/cache/clear owner. No catalog,
+mock tooltip, new test case or verification execution is introduced. Installed spellbook
+SHA-256: FDD215FF216F05E388BE94D8348CD7BE11026A4B664709A1EAAD62F2AB45381E.
