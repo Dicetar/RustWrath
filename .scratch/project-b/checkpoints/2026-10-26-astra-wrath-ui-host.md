@@ -359,3 +359,14 @@ returns no link for several setters despite available source-view links. Preserv
 from loot/roll/auction/trade and held item views, including cache rebuilds. For an actual
 template-only build, reuse the existing target-aware template formatter. Never synthesize
 missing instance/gem/property fields. No native producer/format migration, tests or runs.
+
+2026-10-28 tooltip subject claim at 7a73dc9c: clean widget/kinds/mod.rs,
+script/tooltip/mod.rs, script/tooltip_spell.rs and script/tooltip_unit.rs. Installed
+Questie-335 Modules/Tooltips/Tooltip.lua:389-391 calls GetUnit/GetItem/GetSpell on every
+tooltip update; TooltipHandler.lua:18 consumes the unit token from GetUnit. GetUnit and
+GetSpell are absent. Retain the spell ID/observed name and unit setter token in the existing
+TooltipState, retire them through the existing content-clear owner, and expose Wrath-only
+getters. Unit identity must match the retained GUID rather than silently follow a retarget.
+The existing unit renderer also lacks the OnTooltipSetUnit edge used by Questie's hook;
+publish it after content is ready in Wrath mode. No aura-as-spell assumption, native state,
+new registry, test case or execution is authorized. Donor methods/events stay unchanged.
