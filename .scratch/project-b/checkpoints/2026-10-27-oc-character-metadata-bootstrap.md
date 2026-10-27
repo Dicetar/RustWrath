@@ -70,8 +70,8 @@ columns:
 - `ChrRaces` selects the 69-field 12340 layout (Flags 1, FactionID 2, displays 4/5, file 11,
   intro 12, the 16-slot names at 14/31/48, tokens 65/66/67, expansion 68); the 29-field 1.12
   path is unchanged.
-- `Locale::wrath_index` (UI index) and `Locale::wrath_dbc_column` (physical DBC slot) are
-  separate; all 12340 loaders map UI index -> DBC slot.
+- `Locale::wrath_index` (UI index) and `Locale::wrath_dbc_column` (the supported physical DBC
+  slot) are the same 0..8 after Astra's correction; every 12340 loader uses that checked slot.
 - Class labels resolve the gendered column's non-empty string, else the same-locale base; the
   app projection refuses an empty catalog, non-12340 tables, unsupported locales, ids past
   `u8`, duplicate ids/Filenames, empty/NUL Filenames and missing labels.
