@@ -10,7 +10,7 @@
 use mlua::{Lua, MultiValue, Value};
 
 use super::binding_abi::{self, number_arg};
-use super::item_stats::item_link;
+use super::item_stats::item_link_for_target;
 use super::Model;
 
 /// One reagent a recipe consumes (`GetCraftReagentInfo`); name and icon are `None` until the item
@@ -574,7 +574,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     model
                         .item_templates
                         .get(&re.item)
-                        .map(|t| item_link(re.item, &t.name, t.quality))
+                        .map(|t| item_link_for_target(model.target, re.item, &t.name, t.quality))
                 });
             Ok(match link {
                 Some(l) => Value::String(lua.create_string(&l)?),

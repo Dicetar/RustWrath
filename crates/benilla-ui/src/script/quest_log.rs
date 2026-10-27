@@ -824,7 +824,7 @@ pub(crate) fn selected_quest_item(
         count,
         quality: template.map_or(1, |t| t.quality as i32),
         item_id,
-        link: template.map(|t| super::item_stats::item_link(item_id, &t.name, t.quality)),
+        link: template.map(|t| super::item_stats::item_link_for_target(model.target, item_id, &t.name, t.quality)),
     })
 }
 

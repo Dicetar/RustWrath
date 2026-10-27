@@ -478,6 +478,14 @@ pub(super) fn item_link(item_id: u32, name: &str, quality: u32) -> String {
     format!("{hex}|Hitem:{item_id}:0:0:0|h[{name}]|h|r")
 }
 
+/// Template-only links have no instance fields, in the selected client's payload layout.
+pub(super) fn item_link_for_target(target: super::UiTarget, item_id: u32, name: &str, quality: u32) -> String {
+    match target {
+        super::UiTarget::Vanilla112 => item_link(item_id, name, quality),
+        super::UiTarget::Wrath335 => wrath::ItemLink::template(item_id).hyperlink(name, quality),
+    }
+}
+
 /// `InventoryType` → `GetItemInfo`'s `itemEquipLoc`, the reference's 30-pointer table at
 /// `0x83ddb0` (`0x48e29b`): slots 0 and 29 are the shared `""` (`0x882748`), not nil, and four
 /// tokens (`AMMO`, `THROWN`, `RANGEDRIGHT`, `QUIVER`) have no `GlobalStrings.lua` entry.

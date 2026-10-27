@@ -20,6 +20,10 @@ pub(in crate::script) struct ItemLink {
 }
 
 impl ItemLink {
+    pub(super) fn template(id: u32) -> Self {
+        Self { id, ..Default::default() }
+    }
+
     pub fn parse(text: &str) -> Option<Self> {
         let payload = text.split_once("|H").map_or(text, |(_, data)| data);
         if !payload.get(..5)?.eq_ignore_ascii_case("item:") {
@@ -39,7 +43,7 @@ impl ItemLink {
         })
     }
 
-    fn hyperlink(&self, name: &str, quality: u32) -> String {
+    pub(super) fn hyperlink(&self, name: &str, quality: u32) -> String {
         let quality = if quality == 7 { 6 } else { quality };
         let color = QUALITY_COLORS.get(quality as usize).unwrap_or(&QUALITY_COLORS[1]).3;
         format!(

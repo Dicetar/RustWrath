@@ -3,7 +3,7 @@
 use mlua::{Lua, MultiValue, Value};
 
 use crate::script::binding_abi::{self, number_arg};
-use crate::script::item_stats::item_link;
+use crate::script::item_stats::item_link_for_target;
 use crate::script::Model;
 
 use super::TradeSkillCall;
@@ -130,7 +130,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                     model
                         .item_templates
                         .get(&r.product_item)
-                        .map(|t| item_link(r.product_item, &t.name, t.quality))
+                        .map(|t| item_link_for_target(model.target, r.product_item, &t.name, t.quality))
                 });
             Ok(match link {
                 Some(l) => MultiValue::from_vec(vec![Value::String(lua.create_string(&l)?)]),
@@ -221,7 +221,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                     model
                         .item_templates
                         .get(&re.item)
-                        .map(|t| item_link(re.item, &t.name, t.quality))
+                        .map(|t| item_link_for_target(model.target, re.item, &t.name, t.quality))
                 });
             Ok(match link {
                 Some(l) => Value::String(lua.create_string(&l)?),
