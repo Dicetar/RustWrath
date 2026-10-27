@@ -215,6 +215,19 @@ pub(super) fn render_view_flagged(
     inst: Option<&ItemInstance>,
 ) -> mlua::Result<Option<bool>> {
     let mut live = false;
+    let target = lua.app_data_ref::<Model>().expect("model app_data").target;
+    let class_mask = if target == crate::script::UiTarget::Wrath335 {
+        crate::script::class_names::playable_class_mask()
+    } else {
+        full_mask(&CLASS_NAMES)
+    };
+    let class_names = if target == crate::script::UiTarget::Wrath335
+        && v.allowable_class > 0 && v.allowable_class & class_mask != class_mask
+    {
+        Some(crate::script::class_names::requirement_names(lua, v.allowable_class)?)
+    } else {
+        None
+    };
     let (req, known_spell, taught_known, set_view, equipped, rank_title) = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         let known =
@@ -296,7 +309,7 @@ pub(super) fn render_view_flagged(
     let name_color = if flags.name_only {
         WHITE
     } else {
-        quality_color(v.quality)
+        quality_color_in_target(target, v.quality)
     };
     // An incremental build's name is `"\n%s"` (`0x52b87b`..`0x52b8ab`).
     let name = match flags.product_depth {
@@ -673,13 +686,14 @@ pub(super) fn render_view_flagged(
         }
     }
     if v.allowable_class > 0
-        && (v.allowable_class & full_mask(&CLASS_NAMES)) != full_mask(&CLASS_NAMES)
+        && (v.allowable_class & class_mask) != class_mask
     {
-        let list: Vec<&str> = CLASS_NAMES
-            .iter()
-            .filter(|&&(id, _)| v.allowable_class & (1 << (id - 1)) != 0)
-            .map(|&(_, n)| n)
-            .collect();
+        let list: Vec<&str> = match &class_names {
+            Some(names) => names.iter().map(String::as_str).collect(),
+            None => CLASS_NAMES.iter()
+                .filter(|&&(id, _)| v.allowable_class & (1 << (id - 1)) != 0)
+                .map(|&(_, name)| name).collect(),
+        };
         if !list.is_empty() {
             let ok = req.class_id > 0 && v.allowable_class & (1 << (req.class_id - 1)) != 0;
             keyed(

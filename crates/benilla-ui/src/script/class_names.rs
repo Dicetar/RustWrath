@@ -26,6 +26,31 @@ pub(crate) struct ClassNameSnapshot {
     pub rows: Arc<[LocalizedClassName]>,
 }
 
+// AzerothCore 12340 SharedDefines.h CLASSMASK_ALL_PLAYABLE includes Death Knight (6).
+const PLAYABLE_CLASSES: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11];
+
+pub(super) fn playable_class_mask() -> i32 {
+    PLAYABLE_CLASSES.iter().fold(0, |mask, &id| mask | (1 << (id - 1)))
+}
+
+/// Item restrictions use the same selected-locale male labels as the seated class list.
+/// Missing labels cannot silently remove a restricted class or substitute donor English.
+pub(super) fn requirement_names(lua: &Lua, allowed: i32) -> mlua::Result<Vec<String>> {
+    let model = lua.app_data_ref::<Model>().expect("model");
+    let snapshot = model.localized_class_names.as_ref()
+        .filter(|snapshot| snapshot.locale == model.locale)
+        .ok_or_else(|| mlua::Error::runtime("Item class requirements: localized catalog unavailable"))?;
+    PLAYABLE_CLASSES.iter().filter(|&&id| allowed & (1 << (id - 1)) != 0)
+        .map(|&id| {
+            snapshot.rows.iter().find(|row| row.id == id)
+                .filter(|row| !row.male.is_empty())
+                .map(|row| row.male.clone())
+                .ok_or_else(|| mlua::Error::runtime(format!(
+                    "Item class requirements: localized class {id} unavailable"
+                )))
+        }).collect()
+}
+
 impl UiScript {
     /// Publish an observed catalog before loading the target Constants.lua in either VM.
     /// Native IDs must be checked-converted by the caller, never truncated. Candidate

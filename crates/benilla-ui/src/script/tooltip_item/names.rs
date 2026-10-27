@@ -160,6 +160,11 @@ pub(super) fn quality_color(q: u32) -> [f32; 4] {
     [c[0], c[1], c[2], 1.0]
 }
 
+pub(super) fn quality_color_in_target(target: crate::script::UiTarget, quality: u32) -> [f32; 4] {
+    // 12340 ItemQualityColors gives heirlooms the same light yellow as Artifact.
+    quality_color(if target == crate::script::UiTarget::Wrath335 && quality == 7 { 6 } else { quality })
+}
+
 pub(super) fn req_color(ok: bool) -> [f32; 4] {
     if ok {
         WHITE
