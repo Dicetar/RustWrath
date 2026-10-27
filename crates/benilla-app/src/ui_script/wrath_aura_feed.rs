@@ -4,13 +4,20 @@
 use std::collections::BTreeMap;
 
 use bevy::prelude::*;
-use benilla_protocol_wrath::reducer::AuraSlot;
+use benilla_protocol_wrath::reducer::{AuraReceipt, AuraSlot};
 use benilla_ui::script::{ScriptValue, UiTarget};
 
 #[derive(Default)]
 pub(crate) struct AuraMemo {
     scope: Option<(u64, u64, u64)>,
-    visible: BTreeMap<u64, (u32, bool, Vec<AuraSlot>)>,
+    visible: BTreeMap<u64, AuraSnapshot>,
+}
+
+struct AuraSnapshot {
+    generation: u32,
+    observed: bool,
+    slots: Vec<AuraSlot>,
+    receipts: BTreeMap<u8, AuraReceipt>,
 }
 
 pub(crate) fn feed(
@@ -45,16 +52,20 @@ pub(crate) fn feed(
                 }
                 continue;
             };
-            let changed = previous.as_ref().is_none_or(|(generation, observed, auras)|
-                *generation != unit.generation || *observed != unit.auras_observed
-                    || auras != &unit.auras);
+            let changed = previous.as_ref().is_none_or(|previous|
+                previous.generation != unit.generation || previous.observed != unit.auras_observed
+                    || previous.slots != unit.auras || previous.receipts != unit.aura_receipts);
             if changed {
                 for token in script.unit_tokens_of(guid) {
                     fires.post("UNIT_AURA", vec![ScriptValue::Str(token)]);
                 }
             }
-            // Move unchanged lists rather than cloning every slot on movement-only frames.
-            let snapshot = if changed { (unit.generation, unit.auras_observed, unit.auras.clone()) }
+            // Move unchanged snapshots rather than cloning on movement-only frames. A receipt
+            // revision still notifies when a refresh leaves every wire slot value identical.
+            let snapshot = if changed { AuraSnapshot {
+                generation: unit.generation, observed: unit.auras_observed,
+                slots: unit.auras.clone(), receipts: unit.aura_receipts.clone(),
+            } }
                 else { previous.expect("unchanged visible unit") };
             retained.insert(guid, snapshot);
         }

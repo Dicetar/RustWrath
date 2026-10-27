@@ -1,6 +1,7 @@
 //! Wrath aura queries over native slots, independent of the lossy 1.12 descriptor projection.
 //! Tuple consumer: the target BuffFrame.lua / AuraButton_Update. Missing policy or expiration
 //! observations are nil; a hidden-duration aura uses the client's numeric zero convention.
+//! Timed entries use the native receipt's presentation anchor, never the query's time.
 
 use mlua::{Lua, MultiValue, Table, Value, Variadic};
 use super::{host, Model};
@@ -134,7 +135,12 @@ pub(super) fn install_tooltip_methods(lua: &Lua, methods: &Table) -> mlua::Resul
             let args = MultiValue::from_vec(args.into_iter().collect());
             let Some((_, aura)) = find(lua, &args, forced)? else { return Ok(()); };
             let key = super::AuraKey { spell_id: aura.spell_id, level: aura.level, stack: aura.count.max(1) };
-            super::tooltip_aura::set_aura(lua, &this, key, Some(aura.name), None)
+            let remaining = aura.expiration.filter(|at| at.is_finite() && *at > 0.0)
+                .map(|at| ((at - super::clock::now(lua)) * 1000.0)
+                    .round().clamp(0.0, f64::from(u32::MAX)) as u32)
+                .and_then(|ms| super::tooltip::duration_text(ms, "SPELL_TIME_REMAINING", true,
+                    &|key| lua.globals().get::<String>(key).ok()));
+            super::tooltip_aura::set_aura(lua, &this, key, Some(aura.name), remaining)
         })?)?;
     }
     Ok(())

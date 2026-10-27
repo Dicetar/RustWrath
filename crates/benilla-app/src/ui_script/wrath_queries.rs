@@ -11,6 +11,7 @@ pub(crate) struct SpellQueries<'w, 's> {
     known: Option<Res<'w, crate::ui_action::PlayerActions>>,
     pet: Option<Res<'w, crate::ui_pet::PetBar>>,
     world: Option<Res<'w, crate::wrath::WrathWorldView>>,
+    aura_anchors: Option<Res<'w, crate::wrath::WrathAuraAnchors>>,
     player: Query<'w, 's, &'static crate::net::ObjectStore, With<crate::net::SelfPlayer>>,
     modifiers: Res<'w, crate::spell::SpellModifiers>,
     lines: Option<Res<'w, crate::ui_spellbook::SkillLines>>,
@@ -24,7 +25,7 @@ impl SpellQueries<'_, '_> {
         // Until the server has delivered an aura packet for this generation the slot set is
         // unavailable, not an observed empty list; the forced empty AURA_UPDATE_ALL is what
         // establishes the observed-empty state.
-        if !world.entities.get(&guid).is_some_and(|unit| unit.auras_observed) { return None; }
+        let unit = world.entities.get(&guid).filter(|unit| unit.auras_observed)?;
         let catalog = &self.spells.as_deref()?.catalog;
         let mut result = Vec::new();
         for aura in world.auras(guid) {
@@ -35,6 +36,18 @@ impl SpellQueries<'_, '_> {
                 (true, false) => Some(true), (false, true) => Some(false), _ => None,
             };
             let timed = aura.flags & benilla_protocol_wrath::reducer::AFLAG_DURATION != 0;
+            // An anchor belongs to one native receipt, not to the query or a movement digest.
+            // Refuse a late/missing anchor instead of borrowing the prior occupant's timer.
+            let expiration = if timed {
+                unit.aura_receipts.get(&aura.slot).and_then(|receipt|
+                    self.aura_anchors.as_ref()?.ui_receipt(guid, aura.slot)
+                        .filter(|(revision, at)| *revision == receipt.revision && at.is_finite() && *at >= 0.0)
+                        .map(|(_, at)| at + f64::from(aura.duration_ms) / 1000.0))
+            } else {
+                // Stock UIParent aura buttons subtract duration from expiration unconditionally.
+                // 0/0 is the UI's no-timer tuple, not a claim that an omitted wire timer is permanent.
+                Some(0.0)
+            };
             result.push(WrathAuraView {
                 slot: aura.slot, spell_id: aura.spell_id, name: spell.name.clone(),
                 rank: spell.rank.clone(), icon: spell.icon.clone(), count: aura.charges, level: aura.level,
@@ -43,9 +56,7 @@ impl SpellQueries<'_, '_> {
                     Some(guid)
                 } else { (aura.caster != 0).then_some(aura.caster) },
                 duration: if timed { f64::from(aura.max_duration_ms) / 1000.0 } else { 0.0 },
-                // There is no per-aura receipt clock in the native contract. Reusing query time
-                // would renew every timer; a world/movement timestamp can also age unrelated auras.
-                expiration: if timed { None } else { Some(0.0) },
+                expiration,
                 cancelable: helpful == Some(true) && spell.attributes & (0x8000_0000 | 0x40) == 0,
                 stealable: None, consolidate: None,
             });
