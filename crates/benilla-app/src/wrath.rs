@@ -1181,11 +1181,13 @@ impl WrathAuraAnchors {
     /// `UnitAura` expiration is this anchor plus the slot's remaining `duration_ms / 1000`;
     /// `None` when the slot is not present in this object generation. A refresh (even an
     /// identical delta) arrives with a new receipt revision and re-anchors the timer.
+    #[allow(dead_code)] // read-only consumer contract; Astra's UI query consumes it after the handoff
     pub fn ui_received_at(&self, guid: u64, slot: u8) -> Option<f64> {
         self.by_guid.get(&guid)?.1.get(&slot).map(|(_, at)| *at)
     }
 
     /// The receipt revision the anchor was stamped for, paired with its GetTime seconds.
+    #[allow(dead_code)] // read-only consumer contract; pairs the anchor with its receipt revision
     pub fn ui_receipt(&self, guid: u64, slot: u8) -> Option<(u64, f64)> {
         self.by_guid.get(&guid)?.1.get(&slot).copied()
     }
