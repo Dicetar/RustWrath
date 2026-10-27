@@ -421,8 +421,19 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     Default::default(),
                 );
             }
-            let Some((id, enchant_id, roll)) = hyperlink_item_fields(&link) else {
-                return Ok(());
+            let (id, enchant_id, roll, gems) = if wrath {
+                let Some(item) = super::item_stats::wrath::ItemLink::parse(&link) else {
+                    return Ok(());
+                };
+                // Negative properties name ItemRandomSuffix and need its scaling catalog.
+                // Preserve the raw source link below; never look up its absolute id as a
+                // positive ItemRandomProperties row or mistake gem slot 1 for a property.
+                (item.id, item.enchant, u32::try_from(item.random_property).unwrap_or(0), item.gems)
+            } else {
+                let Some((id, enchant, roll)) = hyperlink_item_fields(&link) else {
+                    return Ok(());
+                };
+                (id, enchant, roll, [0; 3])
             };
             let h = frame_handle_of(lua, &this)?;
             // The item the shown tooltip holds hides it instead (`0x5320c7`..`0x5320e9`): the
@@ -446,7 +457,21 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             // giver are zeroed (`0x5321ad`, `0x5321b3`), so a link never shows a maker line.
             let name = link_name(&link).map(str::to_string);
             let mut enchants: Vec<_> = block_enchant(lua, 0, enchant_id).into_iter().collect();
-            enchants.extend(roll_enchants(lua, roll));
+            if wrath {
+                // 12340 Item.h: socket enchant slots 2..4; property enchant slots 7..11.
+                for (index, gem) in gems.into_iter().enumerate() {
+                    enchants.extend(i32::try_from(gem).ok().and_then(|gem| {
+                        block_enchant(lua, index as u8 + 2, gem)
+                    }));
+                }
+            }
+            let mut properties = roll_enchants(lua, roll);
+            if wrath {
+                for enchant in &mut properties {
+                    enchant.slot += 5;
+                }
+            }
+            enchants.extend(properties);
             let inst = render::ItemInstance {
                 name: name.clone(),
                 enchants,
