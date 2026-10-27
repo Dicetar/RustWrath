@@ -115,6 +115,33 @@ Installed addon sources were inspected read-only, not copied:
 
 ## Later verification scope, only after an explicit grant
 
+### 2026-10-28 class restrictions and heirloom titles
+
+3bc849ae fixes the renderer's donor-only class list in Wrath mode. CLASSMASK_ALL_PLAYABLE
+in pinned AzerothCore SharedDefines.h includes IDs 1..9 and 11, including Death Knight (6).
+The renderer now uses that mask and the existing locale-bound class-name projection, rather
+than CLASS_NAMES' nine English donor labels. Consequences from source:
+
+- A Death Knight-only mask (0x20) has a requirement label instead of an empty list.
+- The donor all-class mask (0x5df) is correctly a restriction in Wrath, because it excludes DK.
+- The full Wrath playable mask (0x5ff) has no class-restriction line.
+- Missing/stale-locale/empty required labels produce an explicit unavailable error before
+  item lines are emitted; no fallback English or silently omitted allowed class is inserted.
+
+The helper reads the male labels from the already seated projection, then releases Model
+before Lua-facing line rendering. This is not a second catalog. Exact 12340 native gender-label
+selection ABI has not been established by this source change. Race-restriction labels still
+use the donor eight-race list; Blood Elf/Draenei and localized race coverage remain open.
+Item permission checks and server authority are untouched.
+
+The same commit maps Wrath heirloom quality 7 to the established Artifact color for cached
+tooltip titles. f11e74e3 delegates all six pending-template title producers to the same
+target-aware palette. Name-only builds retain their existing white override, and vanilla
+quality-7 fallback remains Common. No cache-wait, event, template or item-state owner changed.
+
+These commits are source-only, uncompiled and untested. No new cases, renderer/GUI run,
+catalog extraction or other execution was performed. Existing regression results predate them.
+
 ### Spellmaking cooldown query follow-through
 
 74a250ba closes another concrete installed-addon call mismatch: WM_SpellmakingV3.lua:296

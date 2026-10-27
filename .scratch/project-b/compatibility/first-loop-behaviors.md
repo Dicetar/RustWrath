@@ -280,4 +280,13 @@ host SystemParam admission, exact target ABI, Spellwright behavior and sweep ren
 unverified/open. The item-query handoff also records the native loot suffix-factor loss that
 blocks a complete loot-link migration; formatting alone cannot repair dropped source data.
 
+2026-10-28 item presentation continuation: 3bc849ae uses the ten playable Wrath class IDs
+and the already seated localized class projection for item class restrictions, including
+Death Knight-only items and donor-full masks that still exclude DK. Required missing labels
+remain unavailable rather than falling back to English. Cached heirloom titles use Artifact's
+color; f11e74e3 applies the same selection to pending-template titles. Donor behavior and
+server/item permission owners remain unchanged. Source-only: no compilation, tests/new cases,
+installed-addon or rendered acceptance. Race restrictions still use the donor list; exact
+target gender selection and broader Wrath line-law behavior remain open in the item handoff.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
