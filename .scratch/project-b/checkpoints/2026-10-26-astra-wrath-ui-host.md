@@ -294,3 +294,10 @@ link from the pinned AC HyperlinkTags.cpp::LinkTags::item::StoreTo: permanent en
 gem enchants, reserved word, signed property, suffix factor, render level. Never read gem 1
 as a donor property. Keep negative-suffix scaling explicitly open; no data owner is invented.
 No builds/tests/new cases or runtime actions are authorized by this source claim.
+
+Follow-through claim: clean script/craft.rs, script/tradeskill/api.rs and script/quest_log.rs,
+plus the already claimed item_stats files. Their template-only link producers still emit
+four-field donor payloads in Wrath mode. Use one target-aware template-link helper so the
+Wrath parser and these producers agree. The app's live-object link producer under ui_items
+is a separate OC integration dependency: it also emits donor fields and needs real socket
+enchant ids from the item owner. Do not reinterpret arbitrary short Lua links to hide that gap.
