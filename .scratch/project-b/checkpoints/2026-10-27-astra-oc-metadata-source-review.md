@@ -57,3 +57,17 @@ No table parsing, gender fallback, app/bootstrap, runtime or dirty owner file is
 The target indices are derived from the loader/active consumer above, not SQL column labels.
 The owner's committed handoff section describing interleaved slots is superseded by this
 counter-evidence and repair record. No new test cases or execution are authorized.
+
+Scope adjustment during the repair: OC resumed a separate dirty edit in chr_races.rs, so
+Astra removed her header-only edit there before staging and leaves the whole race file to
+its owner. Only the clean locale.rs helper/comments and chr_classes.rs header are included
+in Astra's source repair. The identity helper corrects both consumers without changing either
+catalog parser. The race header and owner handoff still need their interleaving prose removed
+by OC; this review explicitly supersedes that prose. All customization/lib/race WIP is preserved.
+
+Source repair delivered: wrath_dbc_column now validates/selects direct slots
+`[0, 1, 2, 3, 4, 5, 6, 7, 8]`, retaining None past nine and leaving wrath_index/tag parsing,
+the vanilla locale table, all name-block offsets and public signatures unchanged. Both catalog
+consumers already call this helper, so the correction applies to class and race labels without
+touching their parsing logic. The P1 source contradiction is addressed; runtime/non-English
+data behavior remains unverified. No build, test/new case or DBC probe was run.

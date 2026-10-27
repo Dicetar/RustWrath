@@ -8,10 +8,11 @@
 //! 21-36 Name_Female, 37 mask, 38-53 Name_Male, 54 mask, 55 Filename, 56 SpellClassSet,
 //! 57 Flags, 58 CinematicSequenceID, 59 Required_Expansion. The column order is the pinned
 //! AzerothCore `chrclasses_dbc.sql` generated from the DBC; `DBCfmt.h` corroborates the
-//! server-read columns. The name blocks are the 3.3.5 DBC's sixteen physical locale slots in the
-//! pinned SQL order (enUS, enGB, koKR, frFR, deDE, enCN, zhCN, enTW, zhTW, esES, esMX, ruRU,
-//! ptPT, ptBR, itIT, Unk); the client's nine-locale UI index maps into them through
-//! [`Locale::wrath_dbc_column`] (enUS→0, koKR→2, frFR→3, ...). 12340's damage-bonus column
+//! server-read columns. The name blocks carry sixteen physical locale slots. The supported
+//! first nine follow LocaleConstant directly (enUS, koKR, frFR, deDE, zhCN, zhTW, esES, esMX,
+//! ruRU), as the binary loader and World::DetectDBCLang's race-name consumer require;
+//! [`Locale::wrath_dbc_column`] validates those indices. Generated SQL column labels are not
+//! a binary locale remap. 12340's damage-bonus column
 //! does not exist, so [`ChrClasses::damage_bonus_stat`]
 //! stays `None` (unavailable) rather than reading DisplayPower. The integer PetNameToken is
 //! accepted only when it is a string-table offset yielding exactly "PET" or "DEMON"; otherwise

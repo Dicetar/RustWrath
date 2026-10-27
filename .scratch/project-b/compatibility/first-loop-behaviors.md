@@ -232,4 +232,12 @@ not prove callback, edge, coercion or error behavior. Astra has not locally veri
 binary or executed these paths. SetShown/SetEnabled remain separately labeled installed-mod
 extensions. See the UI-host checkpoint for the pinned files and reported native addresses.
 
+Metadata locale counter-evidence after OC b543578d: the SQL-label-derived interleaving map
+contradicted the pinned binary loader and World::DetectDBCLang's direct race-name indexing.
+Astra corrected only the clean locale helper to slots 0..8 and the class source comment;
+both class/race consumers use the helper. No app/runtime interface or parser layout changed.
+See ../checkpoints/2026-10-27-astra-oc-metadata-source-review.md for the source chain and
+owner documentation still requiring reconciliation. The source defect is repaired, but no
+compile/test/non-English data or real host acceptance ran after it. Owner WIP is preserved.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
