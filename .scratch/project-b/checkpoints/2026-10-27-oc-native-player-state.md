@@ -45,9 +45,12 @@ or untracked owner files; `.scratch/project-b/verification/**`.
   not established by that writer. benilla keeps merge-with-coverage semantics.
 - **Initial cooldown count**: the pinned writer (`Player::SendInitialSpells`,
   `Player.cpp:2730`) declares `m_spellCooldowns.size()` but skips entries with
-  `needSendToClient == false` or no `SpellInfo`. Complete 16-byte entries present are the
-  intended client-visible set; a larger declaration is logged, never silently equalised, and a
-  partial trailing entry is a protocol error.
+  `needSendToClient == false` or no `SpellInfo`. The flag is persisted per row by
+  `_SaveSpellCooldowns` (`Player.cpp:3612`), so a returning character can load a map with false
+  entries and hit the over-declaration. Complete 16-byte entries present are the intended
+  client-visible set; a larger declaration is logged, never silently equalised, and a partial
+  trailing entry is a protocol error. `SMSG_MODIFY_COOLDOWN` has no caller in the pinned server
+  tree (`Player::ModifySpellCooldown` is unused), so no client path requires it.
 
 ## Delivery (source)
 

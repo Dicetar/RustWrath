@@ -67,11 +67,13 @@ For a slot with `AFLAG_DURATION` set:
   `Player::SendInitialSpells` tail. `category_cd_ms` bit 31 is the held/infinity mark and the low
   bits are the remaining time; a category spell carries `0` in `spell_cd_ms`.
 - `ServerEvent::InitialSpells { spells, cooldowns, declared_cooldowns }`. The writer declares
-  `m_spellCooldowns.size()` but skips entries it marks not client-visible; a larger declaration
-  than entries is logged and the complete entries present are authoritative. A partial tail is
-  a protocol error and the packet is refused. `wrath.rs` translates the entries into the
-  existing `SessionEvent::SpellBook`, so the stock `Cooldowns::seed_initial` owner seeds spell and
-  category legs with receipt-time anchoring; no second timer authority exists.
+  `m_spellCooldowns.size()` but skips entries it marks not client-visible; the flag is persisted
+  per row (`character_spell_cooldown.needSend`), so a returning character can load false entries
+  and hit the over-declaration. A larger declaration than entries is logged and the complete
+  entries present are authoritative; a partial tail is a protocol error and the packet is
+  refused. `wrath.rs` translates the entries into the existing `SessionEvent::SpellBook`, so the
+  stock `Cooldowns::seed_initial` owner seeds spell and category legs with receipt-time
+  anchoring; no second timer authority exists.
 - `messages::SpellCooldown.spell_id` widened from `u16` to `u32` because 3.3.5 ids exceed 65535;
   the 1.12 reader widens its wire id. The two test-only id casts that followed (`spell/
   cooldowns_tests.rs`, your `ui_spellbook` initial-cooldown case) are mechanical.
