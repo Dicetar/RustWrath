@@ -401,6 +401,25 @@ fn type_(vm: &mut Vm, nargs: usize) -> R<usize> {
     Ok(vm.ret_str(v.type_name().as_bytes()))
 }
 
+/// `base.newproxy`, 5.1's full-userdata allocator (`lbaselib.c`), which the 1.12 client's stdlib
+/// drops but the Wrath sandbox and FrameXML's restricted-frames engine need: no argument or
+/// `false` allocates an unmetatabled userdata, `true` allocates one whose metatable is a private
+/// empty table, and a userdata shares its metatable; anything else is the argument error.
+pub fn newproxy(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let meta = if nargs == 0 {
+        None
+    } else {
+        match vm.arg(nargs, 0).unpack() {
+            V::Bool(true) => Some(vm.heap.new_table(0, 0)),
+            V::Bool(false) => None,
+            V::User(u) => vm.heap.user(u).meta.clone(),
+            _ => return Err(vm.arg_error(1, "userdata or boolean expected")),
+        }
+    };
+    let proxy = vm.new_user(0, meta);
+    Ok(vm.ret1(proxy))
+}
+
 /// 1.12's `assert` (`0x7031a0`): one result, the first argument.
 fn assert(vm: &mut Vm, nargs: usize) -> R<usize> {
     let v = vm.check_any(nargs, 1)?;
