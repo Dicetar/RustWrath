@@ -354,13 +354,19 @@ impl UiScript {
     }
 
     /// Seat the install's locale index, which start-up reads from `Wow.ini` once (`0x402562`); an
-    /// index past the table's eight names reads as 0.
+    /// index past the target's locale table reads as 0. Changing locale invalidates the
+    /// localized class projection; the host must reseat metadata before loading FrameXML.
     pub fn set_locale(&mut self, index: usize) {
-        self.model_mut().locale = if index < crate::toc::LOCALES.len() {
+        let mut model = self.model_mut();
+        let locale = if index < model.target.locale_names().len() {
             index
         } else {
             0
         };
+        if model.locale != locale {
+            model.localized_class_names = None;
+        }
+        model.locale = locale;
     }
 
     /// `Wow.ini`'s `Region` as seated, 0 until the host seats the install's.
@@ -383,8 +389,8 @@ impl UiScript {
 
 /// The locale name table `0x8558a4` at the VM's locale index, `GetLocale`'s answer in either state.
 pub(super) fn locale_name(lua: &Lua) -> &'static str {
-    let index = lua.app_data_ref::<Model>().map_or(0, |m| m.locale);
-    crate::toc::LOCALES[index]
+    let model = lua.app_data_ref::<Model>().expect("model");
+    model.target.locale_names().get(model.locale).copied().unwrap_or("enUS")
 }
 
 #[cfg(test)]

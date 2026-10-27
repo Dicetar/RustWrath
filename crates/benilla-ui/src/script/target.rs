@@ -8,6 +8,16 @@ pub enum UiTarget {
 }
 
 impl UiTarget {
+    pub(crate) fn locale_names(self) -> &'static [&'static str] {
+        match self {
+            Self::Vanilla112 => &crate::toc::LOCALES,
+            // AzerothCore 12340 Common.cpp localeNames, including the Wrath-only indices.
+            Self::Wrath335 => &[
+                "enUS", "koKR", "frFR", "deDE", "zhCN", "zhTW", "esES", "esMX", "ruRU",
+            ],
+        }
+    }
+
     pub(crate) fn events(self, vm: super::VmKind) -> impl Iterator<Item = &'static str> {
         let extra: &'static [&'static str] = match (self, vm) {
             (Self::Wrath335, super::VmKind::InGame) => WRATH_INGAME_EVENTS,

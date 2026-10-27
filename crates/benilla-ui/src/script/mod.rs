@@ -72,6 +72,8 @@ pub use wrath_spell::{SpellInfoView, UnitCastView};
 pub use target::UiTarget;
 mod char_name;
 mod client;
+mod class_names;
+pub use class_names::LocalizedClassName;
 pub use client::FrameTimeRing;
 mod clock;
 mod cvar_checks;
@@ -689,6 +691,7 @@ fn open_state_for_target(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
     if target == UiTarget::Wrath335 {
         posthook::install(&lua)?;
         event::install_wrath(&lua)?;
+        class_names::install(&lua)?;
     }
 
     Ok(lua)

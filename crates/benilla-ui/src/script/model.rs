@@ -763,8 +763,11 @@ pub(crate) struct Model {
     /// Button's `SetText` swaps the dots and commas of its numbers (`0x771d9f`, `0x771c50`).
     pub(crate) european_numbers: bool,
     /// The client's locale index, `[0xc0e080]` (0, enUS, until the host seats the install's): the
-    /// name `GetLocale` answers is the table `0x8558a4` at it ([`crate::toc::LOCALES`]).
+    /// name `GetLocale` answers uses the target's table (vanilla: `0x8558a4`,
+    /// [`crate::toc::LOCALES`]; Wrath also admits esMX and ruRU).
     pub(crate) locale: usize,
+    /// Observed Wrath catalog projection, unavailable until seated before FrameXML loads.
+    pub(crate) localized_class_names: Option<super::class_names::ClassNameSnapshot>,
     /// `Wow.ini`'s `Region` as start-up hands it to the name check (`0x402b7f` → `0x6c91b8`,
     /// `[0x86c9e0]`): 0 until the host seats the install's.
     pub(crate) client_region: i32,
@@ -1606,6 +1609,7 @@ impl Model {
             layout_mode: 0,
             european_numbers: false,
             locale: 0,
+            localized_class_names: None,
             client_region: 0,
             name_lists: None,
             slider_drag: None,
