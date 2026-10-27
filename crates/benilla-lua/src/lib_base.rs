@@ -401,19 +401,35 @@ fn type_(vm: &mut Vm, nargs: usize) -> R<usize> {
     Ok(vm.ret_str(v.type_name().as_bytes()))
 }
 
-/// `base.newproxy`, 5.1's full-userdata allocator (`lbaselib.c`), which the 1.12 client's stdlib
-/// drops but the Wrath sandbox and FrameXML's restricted-frames engine need: no argument or
-/// `false` allocates an unmetatabled userdata, `true` allocates one whose metatable is a private
-/// empty table, and a userdata shares its metatable; anything else is the argument error.
-pub fn newproxy(vm: &mut Vm, nargs: usize) -> R<usize> {
-    let meta = if nargs == 0 {
-        None
-    } else {
-        match vm.arg(nargs, 0).unpack() {
-            V::Bool(true) => Some(vm.heap.new_table(0, 0)),
-            V::Bool(false) => None,
-            V::User(u) => vm.heap.user(u).meta.clone(),
-            _ => return Err(vm.arg_error(1, "userdata or boolean expected")),
+/// Install Lua 5.1's `newproxy` with its private weak metatable registry (`lbaselib.c`).
+/// The UI host calls this only for Wrath; the donor base library does not expose it.
+pub fn open_newproxy(vm: &mut Vm) {
+    let allowed = vm.heap.new_table(0, 1);
+    let mode_key = vm.str(b"__mode");
+    let mode = vm.str(b"kv");
+    vm.heap.table_mut(allowed).meta = Some(allowed);
+    vm.heap.table_mut(allowed).set(mode_key, mode).unwrap();
+    let function = vm.new_closure("newproxy", newproxy, vec![Value::Table(allowed)]);
+    vm.set_global("newproxy", function);
+}
+
+fn newproxy(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let V::Table(allowed) = vm.upvalue(0).unpack() else {
+        unreachable!("newproxy's metatable registry")
+    };
+    let arg = vm.arg(nargs, 0);
+    let meta = match arg.unpack() {
+        V::Nil | V::Bool(false) => None,
+        V::Bool(true) => {
+            let meta = vm.heap.new_table(0, 0);
+            vm.heap.table_mut(allowed).set(Value::Table(meta), Value::True).unwrap();
+            Some(meta)
+        }
+        _ => {
+            let meta = vm.heap.metatable(arg).filter(|meta| {
+                vm.heap.table(allowed).get(Value::Table(*meta)).truthy()
+            });
+            Some(meta.ok_or_else(|| vm.arg_error(1, "boolean or proxy expected"))?)
         }
     };
     let proxy = vm.new_user(0, meta);

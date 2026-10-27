@@ -26,7 +26,7 @@ pub use compile::compile;
 pub use compile::compile_with_dialect;
 pub use dialect::Dialect;
 pub use lex::SyntaxError;
-pub use lib_base::{newproxy, object_text, tostring_value};
+pub use lib_base::{object_text, open_newproxy, tostring_value};
 pub use lib_math::{bit_library, math_pow};
 pub use number::fmt_g14;
 pub use value::Value;
