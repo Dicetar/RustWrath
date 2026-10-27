@@ -215,4 +215,14 @@ from this modern library requirement. Its Get/SetMotionScriptsWhileDisabled and 
 requirements remain open. No compile/test/addon/UI run covered these later edits and no secure-
 frame or installed-mod workflow acceptance follows from the setters.
 
+Disabled-button motion source follow-up: the Wrath installed-mod extension now has a real
+per-button flag, getter/setter, inherited XML attribute application and script-only hover
+dispatch. It allows the disabled-control tooltip enter/leave scripts without enabling button
+input or normal visual tails, and uses existing removal/window-exit cleanup. Branch choice is
+captured before Lua callbacks; Wrath enter admission is read after the prior leave handler.
+This addresses the recorded source-level motion dependency, not Questie's broader helper,
+template/mixin, secure-UI or workflow acceptance. Reference semantics are explicitly from an
+independent 4.3.4-derived compatibility implementation. Compilation and new targeted behavior
+cases have not run; the earlier f70be142 verification does not cover these later sources.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.

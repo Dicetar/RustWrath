@@ -1045,6 +1045,9 @@ impl ShownWrites {
 /// (`+0x4c4`) moves only on a transition into a state that has a texture ([`Self::set_state`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ButtonState {
+    /// Installed-mod extension: allow motion scripts while disabled without enabling input
+    /// or normal visuals. Only the Wrath host interprets this flag.
+    pub motion_scripts_while_disabled: bool,
     /// The lock (`+0x32c`) of `SetButtonState(state, locked)`: while set, the hide, press, release
     /// and drag edges skip the button, and an `Enable`/`Disable` that runs (`0x779160`) clears it.
     pub locked: bool,
@@ -1099,6 +1102,7 @@ pub struct ButtonState {
 impl Default for ButtonState {
     fn default() -> Self {
         ButtonState {
+            motion_scripts_while_disabled: false,
             loot_slot: None,
             locked: false,
             checked: false,

@@ -124,6 +124,15 @@ impl Loader<'_> {
         {
             return;
         }
+        if self.model().target == crate::script::UiTarget::Wrath335 {
+            // The installed-mod XML flag follows template levels. Absence must preserve an
+            // inherited value; an explicit false on a later level overrides it.
+            for level in levels {
+                if let Some(enabled) = level.attr_bool_opt("motionScriptsWhileDisabled") {
+                    self.call(wrapper, "SetMotionScriptsWhileDisabled", enabled, dbg);
+                }
+            }
+        }
         // Each state-texture element is a new region from the `<Layers>` texture adder (`0x6f26f0`,
         // `0x778903`): named, laid out, painted and given its implicit all-points as any layer
         // texture is, then handed to the slot store, which destroys the region it displaces. An

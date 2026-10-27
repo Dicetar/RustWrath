@@ -36,21 +36,25 @@ fn leave_class(model: &Model, h: FrameHandle) -> LeaveClass {
 }
 
 /// A frame's leave notify, by its class, around its `OnLeave`; `script` is the id whose `OnLeave`
-/// fires, `None` where the notify skips it (a disabled Button's `0x7794e0`). The walk's motion
+/// fires, `None` where the notify skips it (a disabled Button's `0x7794e0`, unless Wrath's
+/// installed-mod motion flag admits its own script). The walk's motion
 /// leave and the removal tail's leave (`0x764cce`) both come here. The notify's own argument, 0 for
 /// a motion leave and 1 for a removal, only clears the drag arm (`0x76b725`); `OnLeave` runs
 /// through the plain runner (`0x76b753` → `0x702690`), which sets no arg global.
 pub(super) fn leave(lua: &Lua, h: FrameHandle, script: Option<u32>) {
+    // Capture before any Lua callback: enabling the button inside a script must not run
+    // the enabled notify's visual tail as well as this installed-mod script-only branch.
+    let motion_only = super::button::motion_only(&model(lua), h);
     // An enabled Button's leave refreshes its label after the base leave and its `OnLeave`
     // (`0x7794f4` → `0x76b6f0`, then `0x779502`).
     let refresh = |lua: &Lua| {
-        if script.is_some() {
+        if script.is_some() && !motion_only {
             super::button::refresh_label(&mut model(lua), h);
         }
     };
     // A hyperlink button's leave is its text frame's `OnHyperlinkLeave` (`0x7a34e0`), in place of
     // the Button's.
-    if super::hyperlink::hover(lua, h, false) {
+    if !motion_only && super::hyperlink::hover(lua, h, false) {
         refresh(lua);
         return;
     }

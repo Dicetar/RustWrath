@@ -368,14 +368,28 @@ pub(super) fn edge(
     relink_after_change(model, h);
 }
 
-/// Whether a hover edge on `h` reaches the base notify, the HIGHLIGHT layer and the Lua
-/// `<OnEnter>`/`<OnLeave>`: `OnEnter`/`OnLeave` (`0x779490`/`0x7794e0`) skip it on a DISABLED
-/// Button, leaving only the hover sound (`0x7794b0`). Every hover path goes through that pair
+/// Whether a hover edge on `h` admits its motion scripts. The donor's OnEnter/OnLeave
+/// (`0x779490`/`0x7794e0`) skip a DISABLED Button, leaving only its hover sound (`0x7794b0`).
+/// The Wrath installed-mod flag additionally admits the script-only branch (not normal
+/// highlight/label effects). Every hover path goes through the same eligibility predicate
 /// (the hover walk `0x766218`, `SetMouseFocus` `0x764dc0`, the hide tail `0x764cce`), and the
 /// Hyperlink and NamePlate overrides chain back (`0x7cb8a5`). The hover target still moves, so
 /// `GetMouseFocus()` answers a disabled button.
 pub(super) fn hover_notify_runs(model: &Model, h: Option<FrameHandle>) -> bool {
-    h.is_none_or(|h| is_enabled(model, h))
+    h.is_none_or(|h| {
+        if model.target == super::UiTarget::Wrath335 && model.arena.frame(h).is_none() {
+            return false;
+        }
+        is_enabled(model, h) || motion_only(model, h)
+    })
+}
+
+/// A disabled Wrath button's installed-mod motion branch runs only its own scripts. Keep
+/// this separate from is_enabled: click, drag and normal visuals must stay disabled.
+pub(super) fn motion_only(model: &Model, h: FrameHandle) -> bool {
+    model.target == super::UiTarget::Wrath335
+        && matches!(model.arena.frame(h).map(|frame| &frame.kind_state),
+            Some(KindState::Button(button)) if !button.enabled() && button.motion_scripts_while_disabled)
 }
 
 /// Whether `h` is a Button out of the DISABLED state (`+0x328`); any other frame answers true.
@@ -963,6 +977,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         // including CheckButton's state. This does not implement new enable-script semantics.
         m.set("SetEnabled", lua.create_function(|lua, (this, enabled): (Table, bool)| {
             set_enabled(lua, &this, enabled)
+        })?)?;
+        m.set("SetMotionScriptsWhileDisabled", lua.create_function(
+            |lua, (this, enabled): (Table, Option<Value>)| {
+                let enabled = super::binding_abi::bool_or_default(enabled.as_ref(), false);
+                with_button(lua, &this, |button| button.motion_scripts_while_disabled = enabled)
+            },
+        )?)?;
+        m.set("GetMotionScriptsWhileDisabled", lua.create_function(|lua, this: Table| {
+            with_button(lua, &this, |button| button.motion_scripts_while_disabled)
         })?)?;
     }
     // IsEnabled() (`0x7800b0`) → the number 1 or 0 from the state at `+0x328`, never a boolean:
