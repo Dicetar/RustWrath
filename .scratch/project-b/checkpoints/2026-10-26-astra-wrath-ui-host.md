@@ -301,3 +301,14 @@ four-field donor payloads in Wrath mode. Use one target-aware template-link help
 Wrath parser and these producers agree. The app's live-object link producer under ui_items
 is a separate OC integration dependency: it also emits donor fields and needs real socket
 enchant ids from the item owner. Do not reinterpret arbitrary short Lua links to hide that gap.
+
+Live-container continuation claim: Astra takes only clean benilla-app/src/ui_items/mod.rs and
+ui_items/feed.rs for the item-link presentation dependency named in the preceding handoff.
+No native protocol/session/field mapper edit. At f7de0bd8, wrath.rs::push_item_fields copies
+the first 21 enchant dwords intact, including the permanent and socket slots 2..4; property
+and seed are separately mapped to donor accessors. The current container feed has script.target()
+and the observed player level. Adapt links at that presentation boundary using those facts;
+preserve the donor resolve_slot helper/test assertions and all bag state/event ownership.
+This narrows the previous OC handoff's live-bag dependency only; equipment/inspect/trade/loot
+producer migration, negative-suffix scaling and the native owner's dropped enchant slots stay open.
+Source-only, with no new test cases or execution grant inferred.
