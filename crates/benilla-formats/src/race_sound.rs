@@ -7,7 +7,7 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{parse, u32_at};
+use crate::dbc::{parse_with_trailing_fields, u32_at};
 
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
 
@@ -30,7 +30,8 @@ impl ExplorationSoundCatalog {
     }
 }
 
-/// Load the race → exploration-sound map off the patch chain.
+/// Load the race's exploration-sound map off the patch chain. The leading columns keep their
+/// 1.12 positions in 12340; the longer 12340 rows have trailing fields tolerated by the parser.
 pub fn load_exploration_sound_catalog(chain: &mut Chain) -> Result<ExplorationSoundCatalog> {
     let bytes = chain
         .read_file(CHR_RACES)
@@ -43,7 +44,7 @@ pub fn load_exploration_sound_catalog(chain: &mut Chain) -> Result<ExplorationSo
         };
         schema.add_field(SchemaField::new(format!("f{i}"), ty));
     }
-    let rs = parse(&bytes, schema, "ChrRaces")?;
+    let rs = parse_with_trailing_fields(&bytes, schema, "ChrRaces")?;
     let mut by_race = HashMap::new();
     for r in rs.records() {
         let (Some(id), Some(kit)) = (u32_at(r, 0), u32_at(r, 3)) else {

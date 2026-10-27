@@ -9,11 +9,12 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{parse, u32_at};
+use crate::dbc::{parse_with_trailing_fields, u32_at};
 
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
 
 /// Each `ChrRaces.dbc` row's creature type by race id; a race without a row is absent.
+/// The leading columns keep their 1.12 positions in 12340; trailing 12340 fields are tolerated.
 pub fn load_race_creature_types(chain: &mut Chain) -> Result<HashMap<u8, u32>> {
     let bytes = chain
         .read_file(CHR_RACES)
@@ -26,7 +27,7 @@ pub fn load_race_creature_types(chain: &mut Chain) -> Result<HashMap<u8, u32>> {
         };
         schema.add_field(SchemaField::new(format!("f{i}"), ty));
     }
-    let rs = parse(&bytes, schema, "ChrRaces")?;
+    let rs = parse_with_trailing_fields(&bytes, schema, "ChrRaces")?;
     Ok(rs
         .records()
         .iter()
