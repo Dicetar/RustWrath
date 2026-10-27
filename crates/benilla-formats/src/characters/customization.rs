@@ -477,10 +477,12 @@ fn load_races(
         if let (Some(male), Some(female)) = (u32_at(r, 4), u32_at(r, 5)) {
             displays.insert(race, (male, female));
         }
-        if let Some(file) = str_at(&rs, r, file_field) {
+        if let Some(file) = str_at(&rs, r, file_field).filter(|s| !s.is_empty()) {
             files.insert(race, file);
         }
-        if let Some(name) = loc_str_index(&rs, r, name_field, locale_column) {
+        if let Some(name) = loc_str_index(&rs, r, name_field, locale_column)
+            .filter(|s| !s.is_empty())
+        {
             names.insert(race, name);
         }
         if let (Some(fm), Some(ff), Some(hair)) = (

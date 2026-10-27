@@ -93,14 +93,16 @@ was performed for this change and no grant is being claimed.
   `ChrClassTable` resource the pet-book/relic/talent readers use and publishes the projection.
   The VM locale is seated first in `new_vm` (Wrath UI index; vanilla index unchanged).
 
-### 12340 locale column correction
+### 12340 locale column correction (Astra's P1 adopted)
 
-The DBC name blocks are **sixteen physical slots** in the pinned `chrclasses_dbc.sql` /
-`chrraces_dbc.sql` order: enUS, enGB, koKR, frFR, deDE, enCN, zhCN, enTW, zhTW, esES, esMX,
-ruRU, ptPT, ptBR, itIT, Unk. The client's nine-locale UI index maps into them via
-`Locale::wrath_dbc_column`: 0 enUS→0, 1 koKR→2, 2 frFR→3, 3 deDE→4, 4 zhCN→6, 5 zhTW→8,
-6 esES→9, 7 esMX→10, 8 ruRU→11. Do not index DBC columns by `GetLocale`'s 0..8 directly; the
-formats loaders already apply the mapping and expose rows in UI-index order.
+The DBC name blocks carry **sixteen physical slots**, but the supported first nine are the
+client's nine locales in `Locale::wrath_index` order (enUS, koKR, frFR, deDE, zhCN, zhTW,
+esES, esMX, ruRU). AzerothCore's binary loader copies fields in order and
+`World::DetectDBCLang` indexes the first nine by `LocaleConstant`; the generated SQL labels
+interleave enGB/enCN/enTW and are not a physical remap. `Locale::wrath_dbc_column` is the
+identity for indices 0..8 (and validates the index). The earlier interleaving proposal is
+withdrawn; see Astra's `../checkpoints/2026-10-27-astra-oc-metadata-source-review.md` and
+correction `47cf95a5`. The formats loaders expose rows in UI-index order.
 
 ### Existing fixture
 

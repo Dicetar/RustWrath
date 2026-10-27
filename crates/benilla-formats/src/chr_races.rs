@@ -8,11 +8,11 @@
 //! **12340 layout** (69 fields): 0 ID, 1 Flags, 2 FactionID, 4/5 male/female display, 11
 //! ClientFilestring, 12 CinematicSequenceID, 14-29 Name, 31-46 Name_Female, 48-63 Name_Male,
 //! 65/66 FacialHairCustomization, 67 HairCustomization, 68 Required_Expansion. The column order is
-//! the pinned AzerothCore `chrraces_dbc.sql` generated from the DBC. Its name blocks are the DBC's
-//! sixteen physical locale slots (enUS, enGB, koKR, frFR, deDE, enCN, zhCN, enTW, zhTW, esES,
-//! esMX, ruRU, ptPT, ptBR, itIT, Unk); the client's nine-locale UI index maps into them through
-//! [`Locale::wrath_dbc_column`]. The token is still a key, never display text, and is not
-//! localized.
+//! the pinned AzerothCore `chrraces_dbc.sql` generated from the DBC. Its name blocks carry the
+//! DBC's sixteen physical locale slots; the supported first nine follow [`Locale::wrath_index`]
+//! directly (the binary loader copies fields in order and `DetectDBCLang` indexes the first nine
+//! by `LocaleConstant`). Generated SQL labels interleave enGB/enCN/enTW and are not a physical
+//! remap. The token is still a key, never display text, and is not localized.
 
 use std::collections::HashMap;
 
@@ -130,21 +130,14 @@ impl ChrRaces {
             .0
             .iter()
             .map(|(id, row)| {
-                let base = row.names.get(locale_index).cloned().flatten();
+                let non_empty = |value: Option<String>| value.filter(|s| !s.is_empty());
+                let base = non_empty(row.names.get(locale_index).cloned().flatten());
                 LocalizedRaceLabel {
                     id: *id,
                     file: Some(row.file.clone()).filter(|f| !f.is_empty()),
-                    male: row
-                        .male_names
-                        .get(locale_index)
-                        .cloned()
-                        .flatten()
+                    male: non_empty(row.male_names.get(locale_index).cloned().flatten())
                         .or_else(|| base.clone()),
-                    female: row
-                        .female_names
-                        .get(locale_index)
-                        .cloned()
-                        .flatten()
+                    female: non_empty(row.female_names.get(locale_index).cloned().flatten())
                         .or(base),
                 }
             })

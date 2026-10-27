@@ -38,9 +38,12 @@ columns:
 - `ChrRaces` (69 fields): 0 ID, 1 Flags, 2 FactionID, 4/5 male/female display, 6 ClientPrefix,
   11 ClientFilestring, 12 CinematicSequenceID, 14..29 Name, 31..46 Name_Female, 48..63 Name_Male,
   65/66 FacialHairCustomization, 67 HairCustomization, 68 Required_Expansion.
-- Locale columns: the client's nine-locale order (enUS, koKR, frFR, deDE, zhCN, zhTW, esES,
-  esMX, ruRU), matching AzerothCore `Common.cpp` and Astra's Wrath table; the SQL dump's later
-  column labels (enGB/enCN/...) are a generator list and are not trusted beyond column zero.
+- Locale columns: the 3.3.5 blocks have sixteen physical slots, but the supported first nine are
+  direct `LocaleConstant` slots (enUS, koKR, frFR, deDE, zhCN, zhTW, esES, esMX, ruRU). The pinned
+  binary loader copies physical fields in order and `World::DetectDBCLang` indexes the first nine;
+  the generated SQL labels' enGB/enCN/enTW interleaving is a generator artifact, not a physical
+  remap. Adopting Astra's 2026-10-27 P1 review and correction `47cf95a5`; `wrath_dbc_column` is
+  the identity validator for 0..8.
 - `PetNameToken` is an integer column in the 3.3.5 dump; the client token ("PET"/"DEMON") is
   recovered only when the value is a valid string-table offset yielding exactly those keys.
   Otherwise the existing `"PET"` fallback stays (no guessed enum mapping).
