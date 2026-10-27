@@ -12,6 +12,8 @@ use mlua::{Lua, MultiValue, Value};
 use super::binding_abi;
 use super::Model;
 
+pub(super) mod wrath;
+
 /// An item template's tooltip view: the `SMSG_ITEM_QUERY_SINGLE_RESPONSE` fields the tooltip reads,
 /// plus app-resolved display strings.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -597,7 +599,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 "Usage: GetItemQualityColor(index)",
             )?);
             // A 32-bit int (`__ftol`), compared unsigned.
+            let wrath = lua.app_data_ref::<Model>().expect("model app_data").target
+                == super::UiTarget::Wrath335;
             let i = match quality as i32 as u32 {
+                // AzerothCore 12340 SharedDefines.h: heirlooms share Artifact's light yellow.
+                7 if wrath => 6,
                 q if q >= 7 => 1,
                 q => q as usize,
             };
@@ -610,6 +616,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             ]))
         })?,
     )?;
+
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        return wrath::install(lua);
+    }
 
     // GetItemInfo(itemID | "item:id:enchant:randomProperty:suffix") → itemName, itemLink,
     // itemQuality, itemMinLevel, itemType, itemSubType, itemStackCount, itemEquipLoc, itemTexture:
