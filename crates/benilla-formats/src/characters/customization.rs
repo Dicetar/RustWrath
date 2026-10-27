@@ -452,7 +452,7 @@ fn load_races(
             || i == male_facial
             || i == female_facial
             || i == hair_field
-            || (name_field..name_field + if wrath { 16 } else { 8 }).contains(&i)
+            || (name_field..name_field + (if wrath { 16 } else { 8 })).contains(&i)
         {
             FieldType::String
         } else {
@@ -602,7 +602,8 @@ fn load_start_outfits(chain: &mut Chain) -> Result<HashMap<(u8, u8, u8), Vec<Sta
     Ok(map)
 }
 
-/// CharSections → the selectable keys, rows without flag `0x1` (`SECTION_FLAG_UNAVAILABLE`): the
+/// CharSections → the selectable keys: 1.12 drops rows with flag `0x1`
+/// (`SECTION_FLAG_UNAVAILABLE`), while 12340 keeps rows with `0x1` (`SECTION_FLAG_PLAYER`), the
 /// domain vmangos's `GetCharSectionEntry` searches.
 fn load_available_sections(chain: &mut Chain, wrath: bool) -> Result<HashSet<SectionKey>> {
     let bytes = chain
