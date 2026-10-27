@@ -785,6 +785,12 @@ pub struct MinimapState {
     pub rim_arrows: Vec<FrameHandle>,
     /// The player-arrow `Model` (`[Minimap+0x338]`), reached by `SetPlayerFacing` (`0x4eb8e0`).
     pub player_arrow: Option<FrameHandle>,
+    /// The wrath player-texture size (`Minimap:SetPlayerTextureWidth`/`Height`,
+    /// `Minimap.lua:11`): the 3.3.5a minimap draws its player arrow as a texture of this size,
+    /// where the 1.12 minimap draws [`Self::player_arrow`].
+    pub player_texture_width: f32,
+    /// See [`Self::player_texture_width`].
+    pub player_texture_height: f32,
     /// The minimap's level plus 3 (`+0x334`, `0x4ede48`, again at `0x4ee1a3`), the rim arrows'
     /// level base.
     pub level_base: i32,

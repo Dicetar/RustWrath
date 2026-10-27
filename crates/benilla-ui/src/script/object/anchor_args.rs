@@ -92,18 +92,37 @@ pub(crate) fn parse_set_point(
         return Err(usage(who));
     };
 
-    let Some(rel_arg) = args.get(1) else {
-        return Err(usage(who));
+    // The 1.12 reference raises Usage when `relativeTo` is absent, but 3.3.5a's FrameScript runs
+    // the short form `SetPoint(point)` (`FrameXML/MoneyFrame.lua:253` `texture:SetPoint("RIGHT")`),
+    // which anchors to the layout parent at the same point with no offsets.
+    let wrath_absent_rel = {
+        let model = lua.app_data_ref::<Model>().expect("model");
+        model.target == crate::script::UiTarget::Wrath335
     };
-    let target = match rel_arg {
-        Value::String(s) => RelTarget::Named(match s.to_str() {
-            Ok(n) => prefetch_named_target(lua, n.as_ref(), Some(parent_base)),
-            Err(_) => NamedTarget::unreadable(),
-        }),
-        Value::Table(t) => RelTarget::Wrapper(t.clone()),
-        Value::Nil => RelTarget::Screen,
-        Value::Number(_) | Value::Integer(_) => RelTarget::DefaultParent,
-        _ => return Err(usage(who)),
+    let target = match args.get(1) {
+        None => {
+            if !wrath_absent_rel {
+                return Err(usage(who));
+            }
+            let point = point_from_str(&point_str).ok_or_else(|| unknown_point(who))?;
+            return Ok(PointArgs {
+                point,
+                target: RelTarget::DefaultParent,
+                rel_point: point,
+                x: 0.0,
+                y: 0.0,
+            });
+        }
+        Some(rel_arg) => match rel_arg {
+            Value::String(s) => RelTarget::Named(match s.to_str() {
+                Ok(n) => prefetch_named_target(lua, n.as_ref(), Some(parent_base)),
+                Err(_) => NamedTarget::unreadable(),
+            }),
+            Value::Table(t) => RelTarget::Wrapper(t.clone()),
+            Value::Nil => RelTarget::Screen,
+            Value::Number(_) | Value::Integer(_) => RelTarget::DefaultParent,
+            _ => return Err(usage(who)),
+        },
     };
 
     let point = point_from_str(&point_str).ok_or_else(|| unknown_point(who))?;

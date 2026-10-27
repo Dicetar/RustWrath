@@ -88,7 +88,7 @@ impl Loader<'_> {
             "CreateFontString"
         };
         let region_wrapper: Table =
-            match wrapper.call_method(method, (rname, Some(level.to_string()))) {
+            match wrapper.call_method(method, (rname.clone(), Some(level.to_string()))) {
                 Ok(w) => w,
                 Err(e) => {
                     self.report.fault(format!("{dbg}: {method}: {e}"));
@@ -105,6 +105,10 @@ impl Loader<'_> {
                 self.load_fontstring_level(node, &region_wrapper, parent_name, attrs, true, dbg);
             }
         }
+        // A wrath region's own `<Animations>` (stock `AlertFrames.xml`'s textures), named from
+        // the region's name.
+        let animation_base = rname.as_deref().unwrap_or(parent_name);
+        self.apply_animations(raw, &region_wrapper, animation_base, dbg);
         if let Err(e) = crate::script::implicit_creation_anchor_lua(self.lua, &region_wrapper) {
             self.report.fault(format!("{dbg}: implicit anchor: {e}"));
         }

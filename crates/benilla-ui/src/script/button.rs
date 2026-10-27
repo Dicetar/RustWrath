@@ -332,23 +332,42 @@ fn with_button_shown(
 /// (`0x779183`), and never while `LockHighlight` holds (`[frame+0xf8]`).
 fn set_enabled(lua: &Lua, this: &Table, on: bool) -> mlua::Result<()> {
     let h = frame_handle_of(lua, this)?;
-    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-    let frame = model
-        .arena
-        .frame_mut(h)
-        .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
-    let writes = match &mut frame.kind_state {
-        KindState::Button(bs) => bs.set_enabled(on),
-        _ => return Err(mlua::Error::runtime("not a Button")),
+    let (changed, id) = {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let frame = model
+            .arena
+            .frame_mut(h)
+            .ok_or_else(|| mlua::Error::runtime("stale frame handle"))?;
+        let changed = match &frame.kind_state {
+            KindState::Button(bs) => on != bs.enabled(),
+            _ => return Err(mlua::Error::runtime("not a Button")),
+        };
+        let writes = match &mut frame.kind_state {
+            KindState::Button(bs) => bs.set_enabled(on),
+            _ => return Err(mlua::Error::runtime("not a Button")),
+        };
+        let bit = 1u8 << DrawLayer::Highlight.index();
+        if on {
+            frame.disabled_layers &= !bit;
+        } else {
+            frame.disabled_layers |= bit;
+        }
+        super::region::apply_shown_writes(&mut model, writes);
+        relink_after_change(&mut model, h);
+        (changed, model.frame_id(h))
     };
-    let bit = 1u8 << DrawLayer::Highlight.index();
-    if on {
-        frame.disabled_layers &= !bit;
-    } else {
-        frame.disabled_layers |= bit;
+    // 3.3.5a's `OnEnable`/`OnDisable` scripts follow the enable edge
+    // (`MainMenuBarMicroButtons.xml:22`, `:25`, the micro buttons' alpha).
+    if changed
+        && lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335
+    {
+        let script = if on { "OnEnable" } else { "OnDisable" };
+        if let Err(error) = event::fire_widget_handler(lua, id, script, Vec::new()) {
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .record_lua_error(&error);
+        }
     }
-    super::region::apply_shown_writes(&mut model, writes);
-    relink_after_change(&mut model, h);
     Ok(())
 }
 
@@ -987,6 +1006,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         m.set("GetMotionScriptsWhileDisabled", lua.create_function(|lua, this: Table| {
             with_button(lua, &this, |button| button.motion_scripts_while_disabled)
         })?)?;
+        // 3.3.5a names the normal-state font object `SetNormalFontObject`/`GetNormalFontObject`
+        // where 1.12 says `Set{Text,GetText}FontObject`; both write the same normal slot, which
+        // the options-frame template's dropdown setup calls (`OptionsFrameTemplates.lua:76`).
+        m.set(
+            "SetNormalFontObject",
+            lua.create_function(|lua, (this, args): (Table, MultiValue)| {
+                link_state_font(lua, &this, LabelFont::Normal, &args)
+            })?,
+        )?;
+        m.set(
+            "GetNormalFontObject",
+            lua.create_function(|lua, this: Table| {
+                state_font_object(lua, &this, LabelFont::Normal)
+            })?,
+        )?;
     }
     // IsEnabled() (`0x7800b0`) → the number 1 or 0 from the state at `+0x328`, never a boolean:
     // 0 is truthy in Lua, and the stock UI tests `== 0` (`FriendsFrame.lua:404`) and `== 1`

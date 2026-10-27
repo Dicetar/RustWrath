@@ -27,6 +27,7 @@ pub(crate) use layout_methods::{eff_scale, layout_scale};
 pub(in crate::script) use layout_methods::{settle_frame, settle_region};
 pub(crate) mod movable;
 pub(crate) mod toplevel;
+mod worldframe;
 pub(crate) use movable::{cancel_on_hide, pump_move_or_size, FrameMove};
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -471,8 +472,14 @@ pub fn frame_kind_from_tag(s: &str) -> Option<FrameKind> {
 /// record is released once the first one is made (`0x6ee439`), so a second one misses. On a miss
 /// Lua raises and XML logs `Unknown frame type: %s` and skips the node.
 pub(crate) fn registered_frame_kind(lua: &Lua, kind: &str) -> Option<FrameKind> {
-    let t = frame_type(kind)?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
+    // 3.3.5a registers the `Cooldown` widget type (`ActionButtonTemplate.xml:63` instantiates
+    // it). Its sweep rendering is not modeled yet; the stock Lua addresses it through the generic
+    // frame verbs and `CooldownFrame_SetTimer`, so it is a plain frame of the game-layer factory.
+    if model.target == super::UiTarget::Wrath335 && enum_token(kind) == "COOLDOWN" {
+        return (model.vm == VmKind::InGame).then_some(FrameKind::Frame);
+    }
+    let t = frame_type(kind)?;
     let registered = match t.factory {
         Factory::Startup => true,
         Factory::InGame => model.vm == VmKind::InGame,
@@ -969,6 +976,7 @@ fn install_frame_methods(lua: &Lua) -> mlua::Result<()> {
     events_regions::install(lua, &m)?;
     if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
         attributes::install(lua, &m)?;
+        worldframe::install(lua, &m)?;
     }
     movable::install(lua, &m)?;
     toplevel::install(lua, &m)?;

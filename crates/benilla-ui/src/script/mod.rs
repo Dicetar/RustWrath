@@ -15,6 +15,7 @@
 
 mod action;
 mod action_bar_toggles;
+pub(crate) mod animation;
 mod addon_message;
 mod auction;
 mod aura;
@@ -74,6 +75,10 @@ mod char_name;
 mod client;
 mod class_names;
 pub use class_names::LocalizedClassName;
+mod newproxy;
+mod static_constants;
+mod wrath_natives;
+mod wrath_security;
 pub use client::FrameTimeRing;
 mod clock;
 mod cvar_checks;
@@ -692,6 +697,10 @@ fn open_state_for_target(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
         posthook::install(&lua)?;
         event::install_wrath(&lua)?;
         class_names::install(&lua)?;
+        static_constants::install(&lua)?;
+        newproxy::install(&lua)?;
+        wrath_natives::install(&lua)?;
+        wrath_security::install(&lua)?;
     }
 
     Ok(lua)

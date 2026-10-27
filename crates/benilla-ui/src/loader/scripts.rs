@@ -24,8 +24,15 @@ impl Loader<'_> {
                 // function: `SetScript` (`0x7025c0`) tests only NULL and the first byte
                 // (`0x7025f8`), and nothing trims the body (`0x6f29d0`). The stock blanks
                 // (`BuffFrame.xml:101`) are whitespace, so their `GetScript` answers a function.
+                // A wrath `function=""` (`UIPanelTemplates.xml:365`, `:396`, the faux scroll
+                // templates overriding an inherited handler) is the same clear: the real client's
+                // global lookup finds no function and installs nil.
                 let wrath = self.model().target == crate::script::UiTarget::Wrath335;
-                let cleared = handler.body.is_empty() && (!wrath || handler.attr("function").is_none());
+                let cleared = handler.body.is_empty()
+                    && (!wrath
+                        || handler
+                            .attr("function")
+                            .is_none_or(str::is_empty));
                 let func = if cleared {
                     None
                 } else {

@@ -18,6 +18,7 @@ use crate::layout::Len;
 use crate::script::{Outline, UiScript};
 use crate::status;
 
+mod animations;
 mod backdrop;
 mod geometry;
 mod regions;
@@ -936,6 +937,9 @@ impl Loader<'_> {
             self.apply_frame_font(el, wrapper, dbg_name);
             self.apply_text_font_children(el, wrapper, dbg_name);
         }
+        // 5·c · a wrath frame's <Animations> (3.3.5a's child loop arm): the named objects the
+        //       stock Lua addresses directly (`TutorialFrameCallOutPulser`).
+        self.apply_animations(el, wrapper, self_name, dbg_name);
         // 5a' · <TitleRegion>: the drag handle, through the API's own CreateTitleRegion.
         self.apply_title_region(el, wrapper, self_name, dbg_name);
         // 5b · per-kind LoadXML extras (EditBox `0x779fb0`), each gated on the element's own tag,

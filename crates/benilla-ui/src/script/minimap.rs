@@ -526,6 +526,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .ping_position())
         })?,
     )?;
+    if lua.app_data_ref::<Model>().expect("model app_data").target
+        == crate::script::UiTarget::Wrath335
+    {
+        // 3.3.5a draws the player arrow as a texture of this size (`Minimap.lua:11`, the ping
+        // frame's OnLoad sizes it 40×40); the members take the minimap receiver like the art
+        // setters, and the number goes through the same `lua_isnumber` prologue.
+        for (name, usage, field) in [
+            ("SetPlayerTextureWidth", "Usage: SetPlayerTextureWidth(width)", 0u8),
+            ("SetPlayerTextureHeight", "Usage: SetPlayerTextureHeight(height)", 1u8),
+        ] {
+            m.set(
+                name,
+                lua.create_function(move |lua, (this, value): (Value, Value)| {
+                    let h = this_minimap(lua, &this)?;
+                    let value = super::binding_abi::float_arg(lua, value, usage)? as f32;
+                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                    if let Some(KindState::Minimap(state)) = model.arena.frame_mut(h).map(|f| &mut f.kind_state) {
+                        if field == 0 {
+                            state.player_texture_width = value;
+                        } else {
+                            state.player_texture_height = value;
+                        }
+                    }
+                    Ok(())
+                })?,
+            )?;
+        }
+    }
     lua.set_named_registry_value(REG_MINIMAP_METHODS, m)?;
     Ok(())
 }

@@ -499,6 +499,32 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        // 3.3.5a moves the page in the interpreter: `ActionBar_PageUp` passes the next page
+        // (`ActionButton.lua:52`) and the buttons read it back with `GetActionBarPage`
+        // (`ActionButton.lua:138`). The page stays FrameXML's `CURRENT_ACTIONBAR_PAGE`, which the
+        // wrath scripts declare (`ActionButton.lua:1`) and the 1.12 scripts already own.
+        g.set(
+            "ChangeActionBarPage",
+            lua.create_function(|lua, page: Option<i64>| {
+                if let Some(page) = page {
+                    lua.globals().set("CURRENT_ACTIONBAR_PAGE", page)?;
+                }
+                super::tick::fire_event_into(lua, "ACTIONBAR_PAGE_CHANGED", Vec::new());
+                Ok(())
+            })?,
+        )?;
+        g.set(
+            "GetActionBarPage",
+            lua.create_function(|lua, ()| {
+                Ok(lua
+                    .globals()
+                    .get::<Option<i64>>("CURRENT_ACTIONBAR_PAGE")?
+                    .unwrap_or(1))
+            })?,
+        )?;
+    }
+
     // ── Per-action state ──
     // 1/nil booleans and `IsActionInRange`'s nil/0/1, which FrameXML tests with a plain `if`.
 
