@@ -250,4 +250,15 @@ the repair was not rerun. The two other failures are the known timezone expectat
 Evidence and exact scope: ../verification/2026-10-27-astra-ui4/summary.md. No app, real-profile
 bootstrap, installed-addon, graphical/live, WM or full-replacement acceptance changed.
 
+Installed-mod item-query continuation: b4ba2d25 admits Wrath spell hyperlink tooltips through
+the existing spell renderer; 99928786 adds the Wrath GetItemInfo eleven-value projection and
+GetItemIcon over the existing cache, plus heirloom query/link color; 86e2b776 separates real
+Wrath gem/property link positions; 91c381f1 makes quest/craft/trade-skill template link producers
+target-aware. Source only, no check/tests/new cases. This closes concrete source mismatches
+seen in installed WM spellbook/spellmaking and Bagnon consumers, not their runtime acceptance.
+The app's live-object link producer still emits donor payloads, negative suffix scaling and
+Wrath tooltip line-law coverage remain incomplete. Exact consumer/owner dependencies and
+evidence are in ../handoffs/2026-10-27-astra-wrath-item-query-consumer.md. No acceptance row or
+whole-project percentage is advanced from these commits.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
