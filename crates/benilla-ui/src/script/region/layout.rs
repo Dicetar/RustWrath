@@ -86,6 +86,15 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         set_shared(lua, m, Side::Region, "GetSize", |lua, this: Table| {
             Ok((region_size_read(lua, &this, true)?, region_size_read(lua, &this, false)?))
         })?;
+        set_shared(lua, m, Side::Region, "IsMouseOver", |lua, (this, rest): (Table, MultiValue)| {
+            let rh = region_handle_of(lua, &this)?;
+            let offsets = crate::script::region_map::mouse_over_offsets(lua, &rest)?;
+            crate::script::object::settle_region(lua, rh);
+            let model = lua.app_data_ref::<Model>().expect("model");
+            Ok(crate::script::region_map::mouse_over(
+                &model, model.region_rects.get(&rh), owner_scale(&model, rh), offsets,
+            ))
+        })?;
     }
 
     // The frame's `GetWidth`/`GetHeight` (`0x7a1e00`, `0x7a2030`): the region's own size slot

@@ -64,9 +64,40 @@ pub(super) struct Arms(HashMap<(Side, &'static str), Arm>);
 pub(super) fn method_names(lua: &Lua) -> Vec<&'static str> {
     let mut names = REGION_MAP_METHODS.to_vec();
     if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
-        names.extend(["SetSize", "GetSize"]);
+        names.extend(["SetSize", "GetSize", "IsMouseOver"]);
     }
     names
+}
+
+/// The compatibility reference's optional numeric edge offsets, in top/bottom/left/right order.
+/// Non-numeric values take zero; numeric strings use the VM's existing coercion.
+pub(super) fn mouse_over_offsets(lua: &Lua, args: &MultiValue) -> mlua::Result<[f64; 4]> {
+    let mut offsets = [0.0; 4];
+    for (offset, value) in offsets.iter_mut().zip(args.iter()) {
+        *offset = lua.coerce_number(value.clone())?.unwrap_or(0.0);
+    }
+    Ok(offsets)
+}
+
+/// Region geometry query, independent of visibility, mouse enablement and topmost hit testing.
+/// Uses the same rounded edges and cursor projection as the existing layout getters. The
+/// independent ClassicAPI Modern.cpp reference supplies strict edges and offset signs; its
+/// 4.3.4-derived boundary behavior is not exact 12340 ABI evidence.
+pub(super) fn mouse_over(
+    model: &Model,
+    rect: Option<&crate::layout::Rect>,
+    scale: f32,
+    [top, bottom, left, right]: [f64; 4],
+) -> bool {
+    let Some(rect) = rect else { return false; };
+    if scale == 0.0 { return false; }
+    let (x, y) = super::pointer::cursor_position(model);
+    let (x, y) = (x / f64::from(scale), y / f64::from(scale));
+    let units = model.layout_units();
+    x > units.edge(rect.left, scale) + left
+        && x < units.edge(rect.right, scale) + right
+        && y > units.edge(rect.bottom, scale) + bottom
+        && y < units.edge(rect.top, scale) + top
 }
 
 /// Register one of the [`REGION_MAP_METHODS`] into its side's table and record its arm; [`install`]

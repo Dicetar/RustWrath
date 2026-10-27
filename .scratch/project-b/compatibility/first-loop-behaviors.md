@@ -197,4 +197,14 @@ See the UI-host checkpoint for exact file hashes and independent behavioral refe
 No addon was executed or modified; no compile/test run covered this later addition. This closes
 two source-level API omissions, not the installed-addon workflow or full-replacement gate.
 
+Mouse-over source follow-up: target UIParent's MouseIsOver forwards directly to the previously
+missing Region:IsMouseOver. Wrath now supplies both frame/region arms using the existing
+resolved layout, scale and cursor owners, so the same method reaches textures/fontstrings.
+Installed Bagnon/Bartender4/HandyNotes/Questie/Details wrapper call sites motivated this repair.
+No hover-frame substitution, fake geometry or addon execution was added. The strict-edge and
+optional-offset policy uses a documented independent compatibility implementation derived
+from 4.3.4; exact 12340 ABI remains unproven. This later source is outside the f70be142 test
+snapshot and has not been compiled/tested. Stock-map, dropdown, installed-mod and full-release
+acceptance remain open.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.

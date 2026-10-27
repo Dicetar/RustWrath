@@ -187,6 +187,16 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             let h = frame_handle_of(lua, &this)?;
             Ok((size_read(lua, h, true), size_read(lua, h, false)))
         })?;
+        set_shared(lua, m, Side::Frame, "IsMouseOver", |lua, (this, rest): (Table, MultiValue)| {
+            let h = frame_handle_of(lua, &this)?;
+            let offsets = crate::script::region_map::mouse_over_offsets(lua, &rest)?;
+            // Resolving can fire OnSizeChanged: borrow the Model only afterward.
+            settle_frame(lua, h);
+            let model = lua.app_data_ref::<Model>().expect("model");
+            Ok(crate::script::region_map::mouse_over(
+                &model, model.frame_rects.get(&h), layout_scale(&model, h), offsets,
+            ))
+        })?;
     }
     set_shared(lua, m, Side::Frame, "GetWidth", |lua, this: Table| {
         let h = frame_handle_of(lua, &this)?;
