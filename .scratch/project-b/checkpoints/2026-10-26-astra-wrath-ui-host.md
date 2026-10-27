@@ -380,3 +380,13 @@ the existing ItemTemplateView cache and ContainerSlot source links; preserve don
 arity and existing slot/lock/readable/quality semantics. Missing template flags must
 remain unknown and use the existing item_stat_reads owner, not a second cache or a
 guess from UseFork. No native ownership, new tests or execution is authorized.
+
+2026-10-28 bag-space claim at 06d8886c: clean script/container.rs, script/host.rs,
+app/script_calls.rs and app/ui_items/calls.rs. Installed Bagnon itemEvents.lua:179 needs
+GetContainerNumFreeSlots and its family mask. Use the already lent ItemSteps owner to
+read GUID-seat occupancy and Items::template(..., Ask::Read).bag_family. Do not count
+only resolved UI item snapshots or introduce ContainerState fields/new registries.
+Unavailable object/template facts remain unavailable; observed unequipped bags are empty.
+Reuse current inventory capacities and bank admission, explicitly retaining the upstream
+Wrath bank/keyring projection limitations instead of claiming those repaired. Donor API
+registration stays unchanged. No new ECS parameter, test case or execution is authorized.
