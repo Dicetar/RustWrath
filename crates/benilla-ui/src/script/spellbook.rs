@@ -255,6 +255,28 @@ fn slot_index(id: u32) -> Option<usize> {
     usize::try_from(id.checked_sub(1)?).ok()
 }
 
+/// Shared display shaping for the pushed book and the Wrath host's live owner query.
+pub(super) fn cooldown_tuple(cooldown: Option<(i64, u32, bool)>, now: f64) -> (f64, f64, i32) {
+    match cooldown {
+        Some((start_ms, duration_ms, enabled)) => {
+            let (start, duration) = (start_ms as f64 / 1000.0, f64::from(duration_ms) / 1000.0);
+            if start + duration > now || !enabled {
+                (crate::script::clock::held_start(start, enabled, now), duration, i32::from(enabled))
+            } else {
+                (0.0, 0.0, 1)
+            }
+        }
+        None => (0.0, 0.0, 1),
+    }
+}
+
+pub(super) fn book_cooldown(lua: &Lua, (id, book_type): (Value, Value)) -> mlua::Result<(f64, f64, i32)> {
+    let (id, book_type) = spell_slot_args(id, book_type, "GetSpellCooldown")?;
+    let now = crate::script::clock::now(lua);
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    Ok(cooldown_tuple(book_slot(&model, id, &book_type).and_then(|s| s.cooldown), now))
+}
+
 /// The slot a `bookType` binding reads. The reference forks `isPet ? [0xb6f098 + 4*i] :
 /// [0xb700f0 + 4*i]` in each binding (`0x4b3f5d`, `0x4b40e6`, `0x4b3735`, `0x4b3339`) and in
 /// `GameTooltip:SetSpell` (`0x532e1c`/`0x532e2a`), which shares this.
@@ -457,28 +479,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // reference's no-cooldown `(0, 0, 1)`, so a re-feed cannot replay the finish flash.
     g.set(
         "GetSpellCooldown",
-        lua.create_function(|lua, (id, book_type): (Value, Value)| {
-            let (id, book_type) = spell_slot_args(id, book_type, "GetSpellCooldown")?;
-            let now = crate::script::clock::now(lua);
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let cooldown = book_slot(&model, id, &book_type).and_then(|s| s.cooldown);
-            Ok(match cooldown {
-                Some((start_ms, duration_ms, enabled)) => {
-                    let (start, duration) =
-                        (start_ms as f64 / 1000.0, f64::from(duration_ms) / 1000.0);
-                    if start + duration > now || !enabled {
-                        (
-                            crate::script::clock::held_start(start, enabled, now),
-                            duration,
-                            i32::from(enabled),
-                        )
-                    } else {
-                        (0.0, 0.0, 1)
-                    }
-                }
-                None => (0.0, 0.0, 1),
-            })
-        })?,
+        lua.create_function(book_cooldown)?,
     )?;
 
     g.set(

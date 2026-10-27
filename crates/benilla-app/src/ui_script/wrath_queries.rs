@@ -16,9 +16,25 @@ pub(crate) struct SpellQueries<'w, 's> {
     modifiers: Res<'w, crate::spell::SpellModifiers>,
     lines: Option<Res<'w, crate::ui_spellbook::SkillLines>>,
     items: Res<'w, crate::items::Items>,
+    cooldowns: Option<Res<'w, crate::spell::Cooldowns>>,
+    clock: Option<Res<'w, crate::ui_script::UiClock>>,
 }
 
 impl SpellQueries<'_, '_> {
+    pub(crate) fn cooldown(&self, id: u32, pet: bool) -> Option<(i64, u32, bool)> {
+        let world = self.world.as_ref()?;
+        if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) { return None; }
+        let definition = self.spells.as_deref()?.catalog.get(id)?;
+        let clock = self.clock.as_deref()?;
+        let cooldowns = if pet {
+            &self.pet.as_ref().filter(|pet| pet.has_bar())?.cooldowns
+        } else {
+            self.cooldowns.as_deref()?
+        };
+        Some(cooldowns.info(id, 0, Some(definition), clock.anchor)
+            .ui_triple(clock.anchor, clock.ui_now).unwrap_or((0, 0, true)))
+    }
+
     pub(crate) fn unit_auras(&self, guid: u64) -> Option<Vec<WrathAuraView>> {
         let world = self.world.as_ref()?;
         if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) { return None; }

@@ -32,6 +32,12 @@ pub trait CallHost {
         None
     }
 
+    /// Existing cooldown-owner projection: GetTime start in milliseconds, duration, enabled.
+    /// None means unavailable; a known cold read is Some((0, 0, true)).
+    fn spell_cooldown(&mut self, _id: u32, _pet: bool) -> Option<(i64, u32, bool)> {
+        None
+    }
+
     /// Raw protocol units, preserving the distinction from a rounded display value.
     fn unit_power(&mut self, _guid: u64, _kind: u8, _maximum: bool) -> Option<u32> {
         None

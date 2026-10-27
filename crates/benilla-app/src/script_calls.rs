@@ -521,6 +521,10 @@ impl CallHost for ScriptCallHost<'_, '_> {
         self.appliers.spell_queries().known(id, pet)
     }
 
+    fn spell_cooldown(&mut self, id: u32, pet: bool) -> Option<(i64, u32, bool)> {
+        self.appliers.spell_queries().cooldown(id, pet)
+    }
+
     fn unit_power(&mut self, guid: u64, kind: u8, maximum: bool) -> Option<u32> {
         self.appliers.spell_queries().power(guid, kind, maximum)
     }

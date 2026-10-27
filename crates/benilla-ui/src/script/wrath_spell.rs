@@ -31,24 +31,27 @@ pub struct UnitCastView {
     pub not_interruptible: Option<bool>,
 }
 
-fn spell_id(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<u32>> {
+fn spell_reference(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<(u32, bool)>> {
     let input = args.front().cloned().unwrap_or(Value::Nil);
     if let Some(book) = args.get(1).filter(|value| !matches!(value, Value::Nil)) {
         let (slot, book) = spellbook::spell_slot_args(input, book.clone(), "GetSpellInfo")?;
         let model = lua.app_data_ref::<Model>().expect("model");
-        return Ok(spellbook::book_slot(&model, slot, &book).map(|slot| slot.spell_id));
+        return Ok(spellbook::book_slot(&model, slot, &book)
+            .map(|slot| (slot.spell_id, spellbook::is_pet_book(&book))));
     }
     if let Some(number) = lua.coerce_number(input.clone())? {
-        return Ok((number.is_finite() && number >= 1.0 && number <= f64::from(u32::MAX)).then_some(number as u32));
+        return Ok((number.is_finite() && number >= 1.0 && number <= f64::from(u32::MAX))
+            .then_some((number as u32, false)));
     }
     let Value::String(name) = input else { return Ok(None) };
     let name = name.to_str()?;
     let model = lua.app_data_ref::<Model>().expect("model");
-    Ok(spellbook::resolve_spell_in_books(&model.spellbook, &model.pet_book, &name).map(|spell| spell.spell_id))
+    Ok(spellbook::resolve_spell_in_books(&model.spellbook, &model.pet_book, &name)
+        .map(|spell| (spell.spell_id, spell.pet)))
 }
 
 fn query(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<(u32, SpellInfoView)>> {
-    let Some(id) = spell_id(lua, args)? else { return Ok(None) };
+    let Some((id, _)) = spell_reference(lua, args)? else { return Ok(None) };
     Ok(host::with_host(lua, |host| host.spell_info(id)).flatten().map(|view| (id, view)))
 }
 
@@ -82,6 +85,23 @@ fn unit_cast(lua: &Lua, token: Value, channel: bool) -> mlua::Result<MultiValue>
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
+    globals.set("GetSpellCooldown", lua.create_function(|lua, args: MultiValue| {
+        let value = if let Some(book) = args.get(1).filter(|book| !matches!(book, Value::Nil)) {
+            // Preserve the existing pushed-book and pet-book forms, including their errors.
+            spellbook::book_cooldown(lua, (args.front().cloned().unwrap_or(Value::Nil), book.clone()))?
+        } else {
+            let Some((id, pet)) = spell_reference(lua, &args)? else {
+                return Ok(MultiValue::from_vec(vec![Value::Nil]));
+            };
+            let Some(cooldown) = host::with_host(lua, |host| host.spell_cooldown(id, pet)).flatten() else {
+                return Ok(MultiValue::from_vec(vec![Value::Nil]));
+            };
+            spellbook::cooldown_tuple(Some(cooldown), super::clock::now(lua))
+        };
+        Ok(MultiValue::from_vec(vec![
+            Value::Number(value.0), Value::Number(value.1), Value::Integer(i64::from(value.2)),
+        ]))
+    })?)?;
     globals.set("UnitCastingInfo", lua.create_function(|lua, token: Value| unit_cast(lua, token, false))?)?;
     globals.set("UnitChannelInfo", lua.create_function(|lua, token: Value| unit_cast(lua, token, true))?)?;
     globals.set("IsSpellKnown", lua.create_function(|lua, (id, pet): (Value, Option<bool>)| {
