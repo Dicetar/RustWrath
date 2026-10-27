@@ -338,3 +338,8 @@ the ten playable Wrath IDs (AzerothCore SharedDefines.h CLASSMASK_ALL_PLAYABLE),
 donor labels and masks. Missing required observed labels must remain unavailable, not an
 English fallback. Also select the established heirloom color in the cached tooltip title;
 this does not claim a full Wrath tooltip line-law port. No new state, tests or execution.
+
+Heirloom follow-through claim: clean script/tooltip_item/mod.rs only. Its six InFlight::Name
+producers still use the donor palette before the cached renderer runs. Delegate those colors
+to the already added target-aware helper after their existing Model borrows end; preserve
+the existing name-only white override and cache-wait lifecycle. No new event, state or run.
