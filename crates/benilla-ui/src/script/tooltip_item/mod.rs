@@ -291,10 +291,14 @@ pub(super) fn render_owned(
     inst: Option<render::ItemInstance>,
 ) -> mlua::Result<bool> {
     let h = frame_handle_of(lua, this)?;
-    let sell_count = inst.as_ref().filter(|i| i.object).and_then(|i| {
+    let (sell_count, source_link) = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
-        build::container_object(&model, i.guid).map(|s| s.count.max(1))
-    });
+        let held = inst.as_ref().filter(|i| i.object);
+        (
+            held.and_then(|i| build::container_object(&model, i.guid)).map(|s| s.count.max(1)),
+            held.and_then(|i| build::live_object(&model, i.guid)).and_then(|held| held.source_link),
+        )
+    };
     build_item(
         lua,
         this,
@@ -302,6 +306,7 @@ pub(super) fn render_owned(
         ItemBuild {
             inst,
             sell_count,
+            source_link,
             ..ItemBuild::new(item_id)
         },
     )
@@ -316,6 +321,7 @@ fn build_block(
     item_id: u32,
     inst: render::ItemInstance,
     quality: Option<u32>,
+    source_link: Option<String>,
 ) -> mlua::Result<bool> {
     let in_flight = match inst.name.clone() {
         Some(name) => InFlight::Name(name, quality_color(lua, quality.unwrap_or(1))),
@@ -328,6 +334,7 @@ fn build_block(
         ItemBuild {
             inst: Some(inst),
             in_flight,
+            source_link,
             ..ItemBuild::new(item_id)
         },
     )
@@ -360,9 +367,25 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             let h = frame_handle_of(lua, &this)?;
             let model = lua.app_data_ref::<Model>().expect("model");
             let Some(build) = model.item_builds.get(&h) else { return Ok((None::<String>, None::<String>)) };
-            let name = model.item_templates.get(&build.item_id).map(|view| view.name.clone())
-                .or_else(|| build.source_link.as_deref().and_then(link_name).map(str::to_owned));
-            Ok((name, build.source_link.clone()))
+            let view = model.item_templates.get(&build.item_id);
+            let source_link = build.source_link.clone().or_else(|| {
+                build.inst.as_ref().filter(|inst| inst.object)
+                    .and_then(|inst| build::live_object(&model, inst.guid))
+                    .and_then(|held| held.source_link)
+            });
+            let source_link = source_link.or_else(|| {
+                // A template-only build has no instance fields to preserve. Never apply this
+                // fallback to a rolled/block source whose original link is unavailable.
+                build.inst.is_none().then(|| view.map(|view| {
+                    super::item_stats::item_link_for_target(
+                        model.target, build.item_id, &view.name, view.quality,
+                    )
+                })).flatten()
+            });
+            let name = build.inst.as_ref().and_then(|inst| inst.name.clone())
+                .or_else(|| source_link.as_deref().and_then(link_name).map(str::to_owned))
+                .or_else(|| view.map(|view| view.name.clone()));
+            Ok((name, source_link))
         })?)?;
     }
     // GameTooltip:SetQuestItem(type, index) / SetQuestLogItem(type, index) (`0x533610`,
@@ -780,7 +803,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                                     proposed_enchant: proposed,
                                     ..held.inst
                                 };
-                                (held.item_id, held.quality, inst)
+                                (held.item_id, held.quality, inst, held.source_link)
                             }),
                         // The block carries the partner's lock id (`0x534563`), wrapped word
                         // (`0x534559`), gift creator (`0x534574`), creator (`0x53454f`), charges
@@ -802,11 +825,11 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                                     block_durability: item.durability,
                                     ..Default::default()
                                 };
-                                (item.item_id, item.quality, inst)
+                                (item.item_id, item.quality, inst, item.link.or(item.uncached_link))
                             }),
                     }
                 };
-                let Some((item_id, quality, inst)) = source else {
+                let Some((item_id, quality, inst, source_link)) = source else {
                     return Ok(());
                 };
                 let in_flight = match inst.name.clone() {
@@ -820,6 +843,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     ItemBuild {
                         inst: Some(inst),
                         in_flight,
+                        source_link,
                         ..ItemBuild::new(item_id)
                     },
                 )?;
@@ -858,7 +882,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 enchants: roll_enchants(lua, row.random_property_id),
                 ..Default::default()
             };
-            build_block(lua, &this, h, row.item_id, inst, row.quality)?;
+            build_block(lua, &this, h, row.item_id, inst, row.quality, row.link)?;
             Ok(())
         })?,
     )?;
@@ -891,7 +915,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 enchants: roll_enchants(lua, entry.random_property_id),
                 ..Default::default()
             };
-            build_block(lua, &this, h, entry.item_id, inst, entry.quality)?;
+            build_block(lua, &this, h, entry.item_id, inst, entry.quality, entry.link)?;
             Ok(())
         })?,
     )?;
@@ -970,6 +994,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     h,
                     ItemBuild {
                         in_flight,
+                        source_link: row.link,
                         ..ItemBuild::new(row.item_id)
                     },
                 )?;
@@ -1034,7 +1059,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             let index =
                 binding_abi::index_arg(lua, index, r#"Usage: SetAuctionItem("type", index)"#)?;
             let h = frame_handle_of(lua, &this)?;
-            let (item_id, roll, name, charges) = {
+            let (item_id, roll, name, charges, source_link) = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
                 let Some(auction) = &model.auction else {
                     return Ok(Value::Nil);
@@ -1043,8 +1068,8 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     return Ok(Value::Nil);
                 };
                 match auction.lists[list].rows.get(index.saturating_sub(1)) {
-                    Some(r) => (r.item_id, r.random_property_id, r.name.clone(), r.charges),
-                    None => (0, 0, None, -1),
+                    Some(r) => (r.item_id, r.random_property_id, r.name.clone(), r.charges, r.link.clone()),
+                    None => (0, 0, None, -1, None),
                 }
             };
             if item_id == 0 {
@@ -1064,6 +1089,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 h,
                 ItemBuild {
                     inst: Some(inst),
+                    source_link,
                     ..ItemBuild::new(item_id)
                 },
             )?;
@@ -1091,12 +1117,18 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             if item_id == 0 {
                 return Ok(Value::Nil);
             }
+            let source_link = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                inst.as_ref().and_then(|inst| build::live_object(&model, inst.guid))
+                    .and_then(|held| held.source_link)
+            };
             let live = build_item(
                 lua,
                 &this,
                 h,
                 ItemBuild {
                     inst,
+                    source_link,
                     ..ItemBuild::new(item_id)
                 },
             )?;
@@ -1123,12 +1155,18 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
             if item_id == 0 {
                 return Ok(Value::Nil);
             }
+            let source_link = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                inst.as_ref().and_then(|inst| build::live_object(&model, inst.guid))
+                    .and_then(|held| held.source_link)
+            };
             let live = build_item(
                 lua,
                 &this,
                 h,
                 ItemBuild {
                     inst,
+                    source_link,
                     ..ItemBuild::new(item_id)
                 },
             )?;

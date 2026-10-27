@@ -150,6 +150,7 @@ pub(super) struct HeldObject {
     /// `None` while the template is in flight.
     pub(super) quality: Option<u32>,
     pub(super) count: u32,
+    pub(super) source_link: Option<String>,
     /// The object with the fields not valid; a setter that sets them says so.
     pub(super) inst: ItemInstance,
 }
@@ -162,6 +163,7 @@ pub(super) fn live_object(model: &Model, guid: u64) -> Option<HeldObject> {
             item_id: s.item_id,
             quality: s.quality,
             count: s.count.max(1),
+            source_link: s.link.clone().or_else(|| s.uncached_link.clone()),
             inst: super::slot_instance(s, true),
         });
     }
@@ -174,6 +176,7 @@ pub(super) fn live_object(model: &Model, guid: u64) -> Option<HeldObject> {
             item_id: s.item_id,
             quality: u32::try_from(s.quality).ok(),
             count: s.count.max(1),
+            source_link: s.link.clone().or_else(|| s.uncached_link.clone()),
             inst: ItemInstance {
                 openable_source: true,
                 ..super::worn_instance(s, true)
@@ -198,6 +201,7 @@ impl ItemBuild {
         let live = kept.object.then(|| live_object(model, kept.guid)).flatten();
         let mut inst = match live {
             Some(held) => {
+                self.source_link = held.source_link;
                 let inst = ItemInstance {
                     openable_source: kept.openable_source,
                     cooldown_ms: kept.cooldown_ms,
