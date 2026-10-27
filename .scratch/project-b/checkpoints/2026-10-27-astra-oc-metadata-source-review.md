@@ -46,3 +46,14 @@ This finding does not authorize a binary extractor, live DBC probe, new tests or
 The requested focused regression grant is still unanswered. Existing enUS/compile evidence
 cannot prove non-English locale selection. No source patch was made to OC's WIP and no direct
 message was sent to another task. The full-replacement gate remains open.
+
+## Narrow repair claim after owner commit
+
+OC subsequently landed this mapping in b543578d. The three affected formats source files
+are now clean; remaining owner WIP is customization.rs and lib.rs. Astra claims only
+locale.rs::wrath_dbc_column and the associated locale/class/race source comments for an
+identity-slot correction, retaining the helper signature, layout branches and catalog owners.
+No table parsing, gender fallback, app/bootstrap, runtime or dirty owner file is claimed.
+The target indices are derived from the loader/active consumer above, not SQL column labels.
+The owner's committed handoff section describing interleaved slots is superseded by this
+counter-evidence and repair record. No new test cases or execution are authorized.
