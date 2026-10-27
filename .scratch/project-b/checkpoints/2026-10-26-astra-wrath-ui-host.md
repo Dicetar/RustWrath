@@ -266,3 +266,11 @@ and validates a reused metatable against the native closure's weak-table upvalue
 landed implementation rejects nil and accepts unmetatabled/foreign userdata instead.
 Use the existing weak tables and native-closure API, with no new VM state or security model.
 Source-only: all previous check/test grants are consumed. No test cases or runs authorized.
+
+Second narrow claim: benilla-ui/src/script/wrath_security.rs only, clean after 2ff9814e.
+issecure currently answers true under every tagged addon/macro call, while the existing
+taint::current owner already distinguishes these contexts for protected actions. Wire the
+query to that owner without adding context state, policy, taint propagation or a sandbox.
+RestrictedFrames.lua:100 gates handle creation on this query and ActionButton.lua gates
+show-grid changes on it. This is an ordinary reachable wrong answer, not hypothetical
+race/security hardening. Existing taint.rs limitations and securecall remain open.
