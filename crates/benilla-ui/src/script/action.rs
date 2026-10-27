@@ -642,6 +642,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(state_flag(lua, action, |s| s.equipped))
         })?,
     )?;
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        // 3.3.5a's `IsStackableAction(slot)` (`ActionButton.lua:238`): the action's item
+        // template stacks above one (`GetItemInfo`'s `itemStackCount`, the same
+        // [`super::item_stats::ItemTemplateView::stackable`]).
+        g.set(
+            "IsStackableAction",
+            lua.create_function(|lua, action: Value| {
+                let action =
+                    binding_abi::index_arg32(lua, action, "Usage: IsStackableAction(slot)")?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let stackable = model.actions.get(&action).is_some_and(|s| {
+                    s.kind == ACTION_KIND_ITEM
+                        && model
+                            .item_templates
+                            .get(&s.action)
+                            .is_some_and(|t| t.stackable > 1)
+                });
+                Ok(binding_abi::flag(stackable))
+            })?,
+        )?;
+    }
 
     // GetActionCooldown(action) → start, duration, enable, in `GetTime` seconds. The enable starts
     // at 0 (`0x4e6f0d`) and only the cooldown query writes it, to 1 before any leg (`0x6e1406`):
