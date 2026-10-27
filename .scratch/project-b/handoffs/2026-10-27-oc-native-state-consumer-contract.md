@@ -91,7 +91,7 @@ required if WM must consume receipt timing. Both producer adapters read the same
 ## Open reference question (unchanged)
 
 `SMSG_AURA_UPDATE_ALL` replacement vs merge: the pinned server writer
-(`Player::GetAurasForTarget`, `Player.cpp:12052`) enumerates the current visible set and sends a
+(`Player::GetAurasForTarget`, `Player.cpp:12048`) enumerates the current visible set and sends a
 GUID-only packet only in the forced self case; it does not establish how the closed client treats
 slots omitted from an `_ALL` packet. benilla keeps merge-with-coverage semantics and does not
 drop omitted slots. If replacement is approved later, the full set must be validated before

@@ -897,7 +897,7 @@ pub struct SpellTargets {
 }
 
 /// One active cooldown in `SMSG_INITIAL_SPELLS`, exactly as the pinned writer sends it
-/// (`Player::SendInitialSpells`, `Player.cpp:2755-2820`): a `u32` spell id, `u16` cast item
+/// (`Player::SendInitialSpells`, `Player.cpp:2730`): a `u32` spell id, `u16` cast item
 /// entry, `u16` spell category and the two remaining times. The category word's bit 31 is the
 /// held/infinity mark and its low bits are the remaining time, matching the 1.12
 /// `ReadInitialSpells` convention (`0x5e6510`); a category spell carries `0` in `spell_cd_ms`,

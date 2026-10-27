@@ -40,11 +40,11 @@ or untracked owner files; `.scratch/project-b/verification/**`.
   durations; per-slot receipt revisions/clocks are client-internal and are not a required
   receiver fact today. A coordinated v2.4 would be needed if WM later wants them.
 - **AURA_UPDATE_ALL replacement vs merge**: not guessed. The pinned writer
-  (`Player::GetAurasForTarget`, `Player.cpp:12052`) enumerates the current visible set and sends
+  (`Player::GetAurasForTarget`, `Player.cpp:12048`) enumerates the current visible set and sends
   a GUID-only packet only in the forced self case; how the closed client treats omitted slots is
   not established by that writer. benilla keeps merge-with-coverage semantics.
 - **Initial cooldown count**: the pinned writer (`Player::SendInitialSpells`,
-  `Player.cpp:2755-2820`) declares `m_spellCooldowns.size()` but skips entries with
+  `Player.cpp:2730`) declares `m_spellCooldowns.size()` but skips entries with
   `needSendToClient == false` or no `SpellInfo`. Complete 16-byte entries present are the
   intended client-visible set; a larger declaration is logged, never silently equalised, and a
   partial trailing entry is a protocol error.
