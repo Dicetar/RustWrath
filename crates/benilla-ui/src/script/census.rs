@@ -87,8 +87,8 @@ impl Applying {
 
     /// An engine turn called from `at`, counted as `turn@` and its file and line under `src/`.
     pub(crate) fn turn(at: &std::panic::Location) -> Self {
-        let file = at.file();
-        let file = file.rsplit_once("src/").map_or(file, |(_, rest)| rest);
+        let path = at.file().replace('\\', "/");
+        let file = path.rsplit_once("src/").map_or(path.as_str(), |(_, rest)| rest);
         Self::kind(format!("turn@{file}:{}", at.line()))
     }
 
