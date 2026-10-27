@@ -257,3 +257,12 @@ the fixed donor method lists, omitting this extension. Publish that already-exis
 to the two Wrath leaf tables explicitly, leaving the title/vanilla lists unchanged. This is a
 reproduced method-registration omission, not speculative race/security hardening. The failed
 assertion stays intact. No new state or mechanism is needed and no rerun is authorized.
+
+2026-10-27 follow-up ownership: Astra claims only benilla-lua/src/lib_base.rs,
+benilla-lua/src/lib.rs and benilla-ui/src/script/newproxy.rs for the landed OC newproxy
+contract correction. These files are clean at fcbd2481; OC's dirty chat, region, model,
+bootstrap and native-query files are excluded. Lua 5.1 lbaselib.c luaB_newproxy accepts nil
+and validates a reused metatable against the native closure's weak-table upvalue. The
+landed implementation rejects nil and accepts unmetatabled/foreign userdata instead.
+Use the existing weak tables and native-closure API, with no new VM state or security model.
+Source-only: all previous check/test grants are consumed. No test cases or runs authorized.
