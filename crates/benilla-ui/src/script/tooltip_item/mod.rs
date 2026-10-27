@@ -73,7 +73,11 @@ fn fire_add_money(lua: &Lua, h: crate::widget::FrameHandle, copper: i64) {
 }
 
 fn hyperlink_enchant_spell(link: &str) -> Option<u32> {
-    let at = link.find("enchant:")? + 8;
+    hyperlink_spell_id(link, "enchant:")
+}
+
+fn hyperlink_spell_id(link: &str, prefix: &str) -> Option<u32> {
+    let at = link.find(prefix)? + prefix.len();
     let tail = &link[at..];
     let end = tail
         .find(|c: char| !c.is_ascii_digit())
@@ -395,14 +399,20 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     )?;
 
     // GameTooltip:SetHyperlink(link): the chat-link tooltip (`ItemRef.lua:60`). Takes an item
-    // link, escaped or a bare "item:<id>", or an enchant link; any other link does nothing.
+    // link, escaped or a bare "item:<id>", or an enchant link. Wrath also admits spell links
+    // (installed WM_MulticlassSpellbook.lua:33); both use the existing spell renderer.
     m.set(
         "SetHyperlink",
         lua.create_function(|lua, (this, link): (Table, String)| {
             // The only other link it takes, the craft window's `|Henchant:<spellId>|h[name]|h`
             // (`GetCraftItemLink`): the spell's own tooltip, behind its producer's castUI gate
             // (`0x532243`).
-            if let Some(spell) = hyperlink_enchant_spell(&link) {
+            let wrath = lua.app_data_ref::<Model>().expect("model app_data").target
+                == super::UiTarget::Wrath335;
+            let spell = hyperlink_enchant_spell(&link).or_else(|| {
+                wrath.then(|| hyperlink_spell_id(&link, "spell:")).flatten()
+            });
+            if let Some(spell) = spell {
                 return super::tooltip_spell::set_spell_by_id(
                     lua,
                     &this,
