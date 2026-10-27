@@ -1,51 +1,71 @@
-//! Stock UI-host smoke test (R11): load the real 3.3.5a PlayerFrame dependency chain, manually
+//! Stock UI-host smoke test (R11): load the selected 3.3.5a archive profile's real FrameXML
+//! prefix through PlayerFrame.xml in TOC order, manually
 //! fire `UNIT_HEALTH`, query `UnitExists`, and read back a CVar in one VM. It does not prove a
 //! session-driven event, a production player action, cross-host persistence or an installed
-//! addon; those remain issue 22/24 and Phase D acceptance work. The test skips without game data.
-//! `wow_data_or_skip!` pattern. Everything asserted here is real stock-file behavior; no
-//! missing API is stubbed successful.
+//! addon or loose-file overlay; those remain separate acceptance work. Missing profile/data
+//! admission skips through the standard data gate; BENILLA_REQUIRE_DATA=1 makes that a failure.
+//! Acceptance runs must set that flag plus WM_ASSET_MANIFEST/WM_ASSET_PROFILE and retain output.
+//! No shared test-loader stand-ins or replacement Lua APIs are installed by this fixture.
 
-use benilla_ui::script::{ScriptValue, UiScript};
+use benilla_ui::script::{ScriptValue, UiScript, UiTarget};
 
-use super::test_ui::load_ui as load_xml;
+/// A fresh chain avoids the shared loader's cached source and its vanilla fixture stand-ins.
+fn player_frame_script() -> Option<UiScript> {
+    let Some(manifest) = std::env::var_os("WM_ASSET_MANIFEST") else {
+        benilla_formats::skipped("Wrath UI smoke needs an explicit WM_ASSET_MANIFEST", &[]);
+        return None;
+    };
+    let manifest = std::path::PathBuf::from(manifest);
+    let profile = std::env::var("WM_ASSET_PROFILE")
+        .expect("selected Wrath UI smoke manifest requires WM_ASSET_PROFILE");
+    assert!(!profile.trim().is_empty(), "Wrath UI profile must be named");
+    let data = benilla_formats::wow_data_or_skip!(None);
+    let chain = benilla_assets::open_profile_chain(&data, &manifest, &profile)
+        .unwrap_or_else(|error| panic!("Wrath UI profile {profile} / {}: {error:#}", manifest.display()));
+    let toc_bytes = chain.read(super::reference_ui::TOC)
+        .expect("selected Wrath profile must supply FrameXML.toc");
+    let toc = benilla_ui::toc::Toc::parse(&benilla_ui::source::decode(&toc_bytes));
+    assert_eq!(toc.interface_version(), 30300, "selected FrameXML must be the Wrath interface");
+    let last = toc.files.iter().position(|path|
+        path.replace('\\', "/").rsplit('/').next()
+            .is_some_and(|leaf| leaf.eq_ignore_ascii_case("PlayerFrame.xml")))
+        .expect("selected FrameXML.toc must list PlayerFrame.xml");
 
-/// The production load order for the player unit frame, from the stock `PlayerFrame`
-/// dependency chain (the same prefix the trainer test uses, plus the unit-frame files).
-fn player_frame_script() -> UiScript {
-    let mut s = UiScript::new().unwrap();
+    let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+    assert_eq!(s.target(), UiTarget::Wrath335, "explicit Wrath host");
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
     s.set_text_measurer(Box::new(super::FixedWidthFont(7.0)));
-    for f in [
-        "Interface\\FrameXML\\GlobalStrings.lua",
-        "Interface\\FrameXML\\Fonts.xml",
-        "Interface\\FrameXML\\BasicControls.xml",
-        "Interface\\FrameXML\\LocaleProperties.lua",
-        r"Interface\FrameXML\UIParent.xml",
-        r"Interface\FrameXML\MoneyFrame.lua",
-        r"Interface\FrameXML\MoneyFrame.xml",
-        "Interface\\FrameXML\\GameTooltip.xml",
-        r"Interface\FrameXML\UIPanelTemplates.lua",
-        r"Interface\FrameXML\UIPanelTemplates.xml",
-        "Interface\\FrameXML\\TextStatusBar.lua",
-        "Interface\\FrameXML\\TextStatusBar.xml",
-        "Interface\\FrameXML\\UnitFrame.lua",
-        r"Interface\FrameXML\UnitFrame.xml",
-        "Interface\\FrameXML\\PlayerFrame.xml",
-    ] {
-        load_xml(&s, &f);
+    s.register_cvars(crate::cvars::registered_pairs());
+    eprintln!("WRATH_UI_SMOKE_DATA target={:?} interface=30300 profile={profile} manifest={} data={}",
+        s.target(), manifest.display(), data.display());
+    let toc_path = super::reference_ui::TOC.replace('\\', "/");
+    let (directory, _) = toc_path.rsplit_once('/').expect("FrameXML TOC has a directory");
+    for entry in &toc.files[..=last] {
+        let path = benilla_ui::loader::join_ref(directory, entry);
+        let bytes = chain.read(&path).unwrap_or_else(|error| panic!("{path}: {error:#}"));
+        if path.to_ascii_lowercase().ends_with(".lua") {
+            s.run_chunk_named(&bytes, &format!("@{path}"))
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+        } else {
+            let doc = benilla_ui::framexml::parse(&benilla_ui::source::decode(&bytes))
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+            let report = benilla_ui::loader::load_in(&s, &doc, &path, &|request| chain.read(request).ok());
+            assert!(report.errors.is_empty(), "{path}: loader errors: {:?}", report.errors);
+            assert!(report.missing_files.is_empty(), "{path}: missing files: {:?}", report.missing_files);
+            assert!(report.warnings.is_empty(), "{path}: loader warnings: {:?}", report.warnings);
+        }
     }
-    s
+    Some(s)
 }
 
 #[test]
 fn stock_player_frame_host_smoke_test() {
-    benilla_formats::wow_data_or_skip!();
-    let mut s = player_frame_script();
+    let Some(mut s) = player_frame_script() else { return; };
 
     // 1. The frame exists and the stock health bar reads the unit it is anchored to.
     assert!(
-        s.eval::<bool>(r#"return PlayerFrame ~= nil and PlayerHealthBar ~= nil"#)
+        s.eval::<bool>(r#"return PlayerFrame ~= nil and PlayerFrameHealthBar ~= nil"#)
             .unwrap(),
         "the stock PlayerFrame and its health bar loaded"
     );
