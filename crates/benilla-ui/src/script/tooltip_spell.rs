@@ -651,6 +651,7 @@ pub(super) fn set_spell_with_talent(
     }
     match spell_view_of(lua, spell_id, false) {
         Some(v) => {
+            retain_spell_subject(lua, h, spell_id, Some(v.name.clone()));
             render_spell(lua, this, &v, SpellRenderOpts::default(), Some(&talent))?;
         }
         None => {
@@ -717,6 +718,14 @@ fn fill_spell(
 ) -> mlua::Result<bool> {
     let view = spell_view_of(lua, spell_id, opts.alt_caster);
     let resolved = view.is_some();
+    retain_spell_subject(
+        lua,
+        h,
+        spell_id,
+        view.as_ref()
+            .map(|v| v.name.clone())
+            .or_else(|| fallback_name.clone()),
+    );
     let live = match view {
         Some(v) => render_spell(lua, this, &v, opts, None)?,
         None => {
@@ -733,6 +742,15 @@ fn fill_spell(
         super::tooltip::fire_content(lua, h, "OnTooltipSetSpell");
     }
     Ok(live)
+}
+
+fn retain_spell_subject(lua: &Lua, h: FrameHandle, spell_id: u32, name: Option<String>) {
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    if model.target == super::UiTarget::Wrath335 {
+        if let Ok(t) = super::tooltip::tip_mut(&mut model, h) {
+            t.spell_subject = (spell_id != 0).then_some((spell_id, name));
+        }
+    }
 }
 
 /// Register the spell and aura content methods on the GameTooltip method table.
@@ -781,6 +799,21 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
         })?,
     )?;
     if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        m.set(
+            "GetSpell",
+            lua.create_function(|lua, this: Table| {
+                let h = frame_handle_of(lua, &this)?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let subject = match model.arena.frame(h).map(|f| &f.kind_state) {
+                    Some(crate::widget::KindState::Tooltip(t)) => t.spell_subject.clone(),
+                    _ => return Err(mlua::Error::runtime("not a GameTooltip")),
+                };
+                Ok(match subject {
+                    Some((id, name)) => (name, Some(id)),
+                    None => (None, None),
+                })
+            })?,
+        )?;
         m.set("SetSpellBookItem", m.get::<mlua::Function>("SetSpell")?)?;
         m.set("SetSpellByID", lua.create_function(|lua, (this, id): (Table, Value)| {
             let id = lua.coerce_number(id)?.filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))

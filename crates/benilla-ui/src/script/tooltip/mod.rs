@@ -202,6 +202,8 @@ fn clear_content(model: &mut Model, h: FrameHandle) {
         t.min_width = 0.0;
         // Clear drops the subject and unregisters its health watcher (`0x5300ad`, `0x53007c`).
         t.unit_guid = None;
+        t.unit_token = None;
+        t.spell_subject = None;
     }
     // New content replaces a spell render still waiting on its view.
     model.spell_tooltip_waits.remove(&h);

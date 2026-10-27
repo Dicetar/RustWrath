@@ -318,6 +318,10 @@ pub struct TooltipState {
     /// health watcher (`0x467e70`, registered at `0x52a0a8`) drives the bar; a `set_unit` push of
     /// that unit, under any token, re-drives it.
     pub unit_guid: Option<u64>,
+    /// The setter's unit token, for the Wrath tooltip identity query.
+    pub unit_token: Option<String>,
+    /// The displayed spell's ID and observed name; independent of an unresolved render wait.
+    pub spell_subject: Option<(u32, Option<String>)>,
     /// The unit's health as the bar was last driven with it: the watcher's copy of the field
     /// (`0x4667a0`), which a values update compares before calling it (`0x4655bb`).
     pub unit_health: u32,

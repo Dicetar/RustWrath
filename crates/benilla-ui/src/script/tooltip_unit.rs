@@ -255,7 +255,7 @@ fn render_unit(lua: &Lua, this: &Table, token: &str) -> mlua::Result<bool> {
         super::visibility::set_shown(lua, h, false);
         return Ok(false);
     };
-    set_subject(lua, h, Some(u.guid));
+    set_subject(lua, h, Some(u.guid), token);
     if let Some(bar) = seed_bar(lua, h, &u) {
         super::visibility::set_shown(lua, bar, true);
     }
@@ -358,6 +358,7 @@ fn render_unit(lua: &Lua, this: &Table, token: &str) -> mlua::Result<bool> {
         }
     }
     show_or_hide_empty(lua, h);
+    super::tooltip::fire_content(lua, h, "OnTooltipSetUnit");
     Ok(true)
 }
 
@@ -388,11 +389,15 @@ fn keyed_line(lua: &Lua, this: &Table, key: &str, color: [f32; 4]) -> mlua::Resu
 }
 
 /// Remember (or drop) the guid of the unit the tooltip shows, the health watcher's key.
-fn set_subject(lua: &Lua, h: FrameHandle, guid: Option<u64>) {
+fn set_subject(lua: &Lua, h: FrameHandle, guid: Option<u64>, token: &str) {
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    let wrath = model.target == super::UiTarget::Wrath335;
     if let Some(f) = model.arena.frame_mut(h) {
         if let KindState::Tooltip(t) = &mut f.kind_state {
             t.unit_guid = guid;
+            if wrath {
+                t.unit_token = Some(token.to_string());
+            }
         }
     }
 }
@@ -620,6 +625,39 @@ impl super::UiScript {
 
 /// Register the unit content channel into the GameTooltip kind method table.
 pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        m.set(
+            "GetUnit",
+            lua.create_function(|lua, this: Table| {
+                let h = frame_handle_of(lua, &this)?;
+                let subject = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    let frame = model.arena.frame(h)
+                        .ok_or_else(|| mlua::Error::runtime("not a GameTooltip"))?;
+                    let KindState::Tooltip(t) = &frame.kind_state else {
+                        return Err(mlua::Error::runtime("not a GameTooltip"));
+                    };
+                    if frame.shown {
+                        t.unit_guid.zip(t.unit_token.as_ref()).and_then(|(guid, token)| {
+                            model.unit(token)
+                                .filter(|u| u.exists && u.guid == guid)
+                                .map(|u| (u.name.clone(), token.clone()))
+                        })
+                    } else {
+                        None
+                    }
+                };
+                let Some((name, token)) = subject else {
+                    return Ok((None, None));
+                };
+                let name = match name {
+                    Some(name) => name,
+                    None => unknownobject(lua)?.to_str()?.to_string(),
+                };
+                Ok((Some(name), Some(token)))
+            })?,
+        )?;
+    }
     // GameTooltip:SetUnit(token) → 1 or nil, which `UnitFrame_OnEnter` reads to arm its re-poll.
     m.set(
         "SetUnit",
