@@ -267,3 +267,42 @@ implementation, alternate-token selection after retargeting and aura-as-spell id
 have not been recovered. No aura behavior was guessed. No new tests were written and
 no build/test, addon, graphical or live run occurred. This does not establish addon
 initialization or playable-alpha acceptance, and the full replacement gate stays open.
+
+### Bagnon container return shape (03b3e7b6, source only)
+
+GetContainerItemInfo was still donor-only: five returns, despite installed Bagnon
+utility/itemSlotInfo.lua:18, utility/itemEvents.lua:87/118 and the pinned 12340
+ContainerFrame.lua:684 reading the seventh as an item link. Bagnon uses it for
+SetItem/hasItem, cache identity, slot-change comparisons and ITEM_SLOT_* messages.
+The Wrath path now appends the loot flag and the existing ContainerSlot link (cached
+or uncached), preserving its real instance fields and the upstream format as supplied.
+The donor five-value path and empty-slot return count are unchanged.
+
+Lootability reads ItemTemplateView.flags & 0x4, the AzerothCore ItemTemplate.h
+ITEM_FLAG_HAS_LOOT bit. A template miss records only the existing item_stat_reads;
+the app feed services that through Items::template(..., Ask::Read), without a query
+packet. No new cache or inventory simulation was added. Existing first-five tuple
+semantics were retained; exact native 12340 binding recovery and runtime acceptance
+remain open. No claim is made that all upstream link producers are now Wrath-shaped.
+
+Installed Bagnon utility/itemSlotInfo.lua SHA-256:
+7B187BAED73C602B5FDEF0A46A273BF6D6315EE61FE36655D2E2DC204C8E0EEB.
+Primary UI call site:
+https://github.com/wowgaming/3.3.5-interface-files/blob/d0339b17b0221db76e6acd2dc2915d224a5b62ca/ContainerFrame.lua#L684
+
+Remaining concrete inventory dependencies found in the same source trace:
+- Bagnon utility/itemEvents.lua:179 calls GetContainerNumFreeSlots for the bag family;
+  that API is absent and ContainerState currently carries no family projection. Do not
+  invent zero/general-bag classification for every specialist bag.
+- Questie TrackerLinePool.lua:559/628/631 calls GetItemCount(itemId, nil, true) for
+  quest-item charges; no API is registered. The existing donor inventory walk/count
+  helpers have their own scope/whole-item rules, and full Wrath bank replication still
+  narrows upstream. Neither a sum over UI bag snapshots nor action_count alone proves
+  the target include-bank/include-uses contract.
+- Stock 12340 Cooldown.lua calls native SetCooldown. The current factory maps Cooldown
+  to Frame and OC's fallback global only sets Lua fields/show state. The inherited
+  donor M2 cooldown renderer does not establish a native Wrath Cooldown implementation.
+  A faithful widget/render repair requires coordinated edits to OC's active widget/model
+  work; no no-op SetCooldown or replacement of that dirty work was introduced here.
+
+No builds, tests/new cases, generators, addon or graphical/live runs occurred.

@@ -316,4 +316,14 @@ and item/unit/spell replacement. Donor registration remains unchanged. Aura-as-s
 identity and alternate-token selection after retargeting are not claimed. No build,
 test/new case or installed-addon/runtime acceptance was performed.
 
+2026-10-28 Bagnon container continuation: Wrath GetContainerItemInfo now returns the
+seven-value shape read by installed Bagnon utility/itemSlotInfo.lua:18 and
+utility/itemEvents.lua:87/118, including the actual ContainerSlot link at position seven.
+The sixth value reads ITEM_FLAG_HAS_LOOT (0x4) from the existing template cache; absent
+flags stay unknown and use the existing cache-only item_stat_reads path. Source link bytes
+and instance fields are retained rather than rebuilt from an item ID. Donor five-value
+arity, empty-slot behavior and existing lock/readable/quality owners are unchanged.
+No compilation, tests/new cases, Bagnon runtime or rendered acceptance occurred. Full
+bank capacity and remaining producer-link format gaps still belong to native integration.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
