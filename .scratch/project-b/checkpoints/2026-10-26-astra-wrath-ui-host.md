@@ -320,3 +320,12 @@ snapshots using script.target(), observed level, guid and the existing object-li
 The ammo template has no item object; expose the existing UI target-aware template formatter
 through UiScript rather than creating fake object fields. Donor builders/assertions remain
 unchanged. Inspect/trade/loot producers and native item authority are outside this claim.
+
+Next concrete addon claim after 89b1a9fe: script/spellbook.rs, script/wrath_spell.rs,
+script/host.rs, app/script_calls.rs and app/ui_script/wrath_queries.rs, all currently clean.
+Installed WM_SpellmakingV3.lua:296 calls GetSpellCooldown(id) without a book argument; the
+current donor binding rejects it through spell_slot_args. Add the Wrath ID/name query form
+through the existing lent host and Cooldowns owner. Retain book-slot/pet query behavior by
+reusing the original binding body; do not create timers in Lua or infer zero cooldown from
+an absent host/world/catalog. Use the same UiClock projection as the spellbook feed.
+No new tests, builds, runtime checks or speculative race/security mechanism is authorized.
