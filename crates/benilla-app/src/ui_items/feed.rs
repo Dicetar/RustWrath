@@ -1050,6 +1050,42 @@ fn resolve_slot(
     })
 }
 
+/// Keep the shared slot view and its cache/lock/cooldown semantics; only the live link's
+/// presentation changes with the selected UI. The donor helper remains the fixture baseline.
+#[allow(clippy::too_many_arguments)]
+fn resolve_slot_in_target(
+    target: benilla_ui::script::UiTarget,
+    render_level: u32,
+    guid: u64,
+    objects: &Objects,
+    items: &Items,
+    icons: Option<&ItemDisplays>,
+    rolls: crate::items::RollCatalogs,
+    cooldowns: &crate::spell::Cooldowns,
+    spells: Option<&benilla_formats::SpellCatalog>,
+    names: &crate::names::NameCache,
+    petitions: &crate::ui_petition::PetitionRecords,
+    now: std::time::Instant,
+    ui_now: f64,
+    has_relic_slot: bool,
+) -> Option<ContainerSlot> {
+    let mut slot = resolve_slot(
+        guid, objects, items, icons, rolls, cooldowns, spells, names, petitions,
+        now, ui_now, has_relic_slot,
+    )?;
+    if target == benilla_ui::script::UiTarget::Wrath335 && slot.item_id != 0 {
+        let fields = objects.object(guid)?;
+        let template = items.template(slot.item_id, guid, Ask::Read);
+        let link = super::object_link_in_target(target, render_level, fields, template, rolls);
+        if slot.link.is_some() {
+            slot.link = Some(link);
+        } else {
+            slot.uncached_link = Some(link);
+        }
+    }
+    Some(slot)
+}
+
 /// What the reference's item query `0x6e2ed0` hands the getters and tooltip setters, `(start_ms on
 /// the GetTime clock, duration_ms, enabled)`, for the item copy holding `charges_left`
 /// (`ITEM_FIELD_SPELL_CHARGES[0]`): by the entry and its first on-use spell, wherever the copy
@@ -1269,7 +1305,9 @@ pub(crate) fn feed_containers(
             let mut slots = HashMap::new();
             for i in 0..PACK_SLOTS {
                 let guid = store.0.player_pack_slot(i).unwrap_or(0);
-                if let Some(slot) = resolve_slot(
+                if let Some(slot) = resolve_slot_in_target(
+                    script.target(),
+                    store.0.unit_level().unwrap_or(0),
                     guid,
                     &inv.objects,
                     &items,
@@ -1324,7 +1362,9 @@ pub(crate) fn feed_containers(
                     .flatten();
                 let mut slots = HashMap::new();
                 for (j, &guid) in slot_guids.iter().enumerate() {
-                    if let Some(slot) = resolve_slot(
+                    if let Some(slot) = resolve_slot_in_target(
+                        script.target(),
+                        store.0.unit_level().unwrap_or(0),
                         guid,
                         &inv.objects,
                         &items,
@@ -1356,7 +1396,9 @@ pub(crate) fn feed_containers(
             let mut slots = HashMap::new();
             for i in 0..BANK_SLOTS {
                 let guid = store.0.player_bank_slot(i).unwrap_or(0);
-                if let Some(slot) = resolve_slot(
+                if let Some(slot) = resolve_slot_in_target(
+                    script.target(),
+                    store.0.unit_level().unwrap_or(0),
                     guid,
                     &inv.objects,
                     &items,
@@ -1407,7 +1449,9 @@ pub(crate) fn feed_containers(
                     .flatten();
                 let mut slots = HashMap::new();
                 for (j, &guid) in slot_guids.iter().enumerate() {
-                    if let Some(slot) = resolve_slot(
+                    if let Some(slot) = resolve_slot_in_target(
+                        script.target(),
+                        store.0.unit_level().unwrap_or(0),
                         guid,
                         &inv.objects,
                         &items,
@@ -1441,7 +1485,9 @@ pub(crate) fn feed_containers(
             let mut slots = HashMap::new();
             for i in 0..size.min(u32::from(KEYRING_SLOTS)) as u8 {
                 let guid = store.0.player_keyring_slot(i).unwrap_or(0);
-                if let Some(slot) = resolve_slot(
+                if let Some(slot) = resolve_slot_in_target(
+                    script.target(),
+                    store.0.unit_level().unwrap_or(0),
                     guid,
                     &inv.objects,
                     &items,

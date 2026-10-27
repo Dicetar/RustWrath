@@ -876,6 +876,36 @@ pub(crate) fn object_link(
     }
 }
 
+/// Project the existing item object into the selected UI's hyperlink layout. The first
+/// seven enchant slots survive the Wrath field adapter, including socket slots 2..4.
+pub(crate) fn object_link_in_target(
+    target: benilla_ui::script::UiTarget,
+    render_level: u32,
+    fields: &ObjectFields,
+    template: Option<&benilla_protocol::messages::ItemInfo>,
+    rolls: crate::items::RollCatalogs,
+) -> String {
+    if target == benilla_ui::script::UiTarget::Vanilla112 {
+        return object_link(fields, template, rolls);
+    }
+    let entry = fields.object_entry().unwrap_or(0);
+    let (enchant, property, factor) = object_link_numbers(fields, template);
+    let wrapped = fields.item_flags().unwrap_or(0)
+        & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0;
+    let gems: [u32; 3] = std::array::from_fn(|index| {
+        if wrapped { 0 } else { fields.item_enchant(index as u8 + 2).unwrap_or(0) as u32 }
+    });
+    let name = template.map(|template| object_name(fields, template, rolls)).unwrap_or_default();
+    let quality = template.map_or(1, |template| template.quality);
+    // AzerothCore 12340 SharedDefines.h: heirlooms share Artifact's light yellow.
+    let color = quality_color(if quality == 7 { 6 } else { quality });
+    // HyperlinkTags.cpp item::StoreTo: the fourth gem word is reserved; the property is signed.
+    format!(
+        "|c{color}|Hitem:{entry}:{enchant}:{}:{}:{}:0:{}:{factor}:{render_level}|h[{name}]|h|r",
+        gems[0], gems[1], gems[2], property as i32,
+    )
+}
+
 /// [`item_link_full`] with zero enchant, random-property and suffix ids, for a caller with no roll
 /// in hand; a rolled item's link carries the roll and its suffixed name (`0x5d8b00`).
 pub(super) fn item_link(item_id: u32, name: &str, quality: u32) -> String {
