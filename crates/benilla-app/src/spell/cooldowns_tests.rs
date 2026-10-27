@@ -213,7 +213,7 @@ fn an_item_block_of_category_0_records_the_spells_category() {
 }
 
 fn wire(
-    spell_id: u16,
+    spell_id: u32,
     item_id: u16,
     category: u16,
     spell_ms: u32,

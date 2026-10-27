@@ -384,6 +384,10 @@ pub struct WrathEntity {
     /// unavailable, not an observed empty set (the server's forced empty
     /// `SMSG_AURA_UPDATE_ALL` is what establishes the latter).
     pub auras_observed: bool,
+    /// Per-slot receipt identity for `auras`: the world's receipt revision (a refresh advances
+    /// it, identical deltas included) and the packet-arrival wall clock. Presentation stamps a
+    /// GetTime anchor once per revision; nothing here is a UI clock.
+    pub aura_receipts: BTreeMap<u8, benilla_protocol_wrath::reducer::AuraReceipt>,
 }
 
 /// A full-world digest: the replicated world at one `state_revision`.
@@ -1161,6 +1165,67 @@ impl WrathWorldView {
     }
 }
 
+/// Presentation-side `GetTime` anchor for each observed aura application, keyed by object and
+/// slot. The anchor is stamped once when a receipt revision is first seen (from the frame's
+/// `UiClock`, the same GetTime domain `UnitAura` callers use) and is replaced only when a newer
+/// receipt revision arrives. Wall/server clocks never reach the UI here. Consumers read this
+/// read-only owner; the aura slot keeps the wire's remaining duration.
+#[derive(Resource, Default)]
+pub struct WrathAuraAnchors {
+    /// guid -> (object generation, slot -> (receipt revision, GetTime seconds)).
+    by_guid: BTreeMap<u64, (u32, BTreeMap<u8, (u64, f64)>)>,
+}
+
+impl WrathAuraAnchors {
+    /// The `GetTime()` seconds at which `slot`'s current application was first observed. The
+    /// `UnitAura` expiration is this anchor plus the slot's remaining `duration_ms / 1000`;
+    /// `None` when the slot is not present in this object generation. A refresh (even an
+    /// identical delta) arrives with a new receipt revision and re-anchors the timer.
+    pub fn ui_received_at(&self, guid: u64, slot: u8) -> Option<f64> {
+        self.by_guid.get(&guid)?.1.get(&slot).map(|(_, at)| *at)
+    }
+
+    /// The receipt revision the anchor was stamped for, paired with its GetTime seconds.
+    pub fn ui_receipt(&self, guid: u64, slot: u8) -> Option<(u64, f64)> {
+        self.by_guid.get(&guid)?.1.get(&slot).copied()
+    }
+}
+
+/// Stamp one GetTime anchor per new aura receipt revision and prune slots/objects that are no
+/// longer present. Called from the exclusive world-apply owner, after the digest's entities are
+/// adopted; a transfer/epoch reset clears the resource with the same edge.
+fn stamp_aura_anchors(world: &mut World, entities: &BTreeMap<u64, WrathEntity>) {
+    let Some(ui_now) = world
+        .get_resource::<crate::ui_script::UiClock>()
+        .map(|clock| clock.ui_now)
+    else {
+        return;
+    };
+    let Some(mut anchors) = world.get_resource_mut::<WrathAuraAnchors>() else {
+        return;
+    };
+    let mut next = BTreeMap::new();
+    for (guid, entity) in entities {
+        let (generation, mut slots) = anchors
+            .by_guid
+            .remove(guid)
+            .unwrap_or((entity.generation, BTreeMap::new()));
+        if generation != entity.generation {
+            slots.clear();
+        }
+        slots.retain(|slot, _| entity.aura_receipts.contains_key(slot));
+        for (slot, receipt) in &entity.aura_receipts {
+            let at = slots
+                .get(slot)
+                .filter(|(revision, _)| *revision == receipt.revision)
+                .map_or(ui_now, |(_, at)| *at);
+            slots.insert(*slot, (receipt.revision, at));
+        }
+        next.insert(*guid, (entity.generation, slots));
+    }
+    anchors.by_guid = next;
+}
+
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct WrathChanges {    pub created: Vec<u64>,
     pub updated: Vec<u64>,
@@ -1200,6 +1265,7 @@ impl Plugin for WrathNetPlugin {
             wm_actions: None,
         })
         .init_resource::<WrathWorldView>()
+        .init_resource::<WrathAuraAnchors>()
         .add_message::<crate::wrath_native::WrathCastEvent>()
         .add_message::<crate::wrath_native::WrathItemText>();
         if self.config.is_some() {
@@ -2215,10 +2281,34 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             item_caster,
             unit_caster: caster,
         }],
-        WrathGameplayEvent::InitialSpells { spells } => vec![SessionEvent::SpellBook {
-            spell_ids: spells,
-            cooldowns: Vec::new(),
-        }],
+        WrathGameplayEvent::InitialSpells {
+            spells,
+            cooldowns,
+            declared_cooldowns,
+        } => {
+            // The pinned writer declares `m_spellCooldowns.size()` but skips entries it marks
+            // not client-visible, so a larger declaration than entries is the server's filter,
+            // not lost state. Complete entries present are the authoritative initial set.
+            if usize::from(declared_cooldowns) != cooldowns.len() {
+                warn!(
+                    "wrath: SMSG_INITIAL_SPELLS declared {declared_cooldowns} cooldowns but wrote {}; using the entries present",
+                    cooldowns.len()
+                );
+            }
+            vec![SessionEvent::SpellBook {
+                spell_ids: spells,
+                cooldowns: cooldowns
+                    .into_iter()
+                    .map(|cd| benilla_protocol::messages::SpellCooldown {
+                        spell_id: cd.spell_id,
+                        item_id: cd.item_id,
+                        category: cd.category,
+                        spell_cd_ms: cd.spell_cd_ms,
+                        category_cd_ms: cd.category_cd_ms,
+                    })
+                    .collect(),
+            }]
+        }
         WrathGameplayEvent::GameObjectInfo { entry, type_id, display_id, name, data } => {
             vec![SessionEvent::GameObjectInfo { entry, type_id, display_id, name, data }]
         }
@@ -4165,6 +4255,10 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(mut lane) = world.get_resource_mut::<crate::item_lane::ItemLane>() {
             lane.clear();
         }
+        // The retired world's presentation aura anchors die with its entities.
+        if let Some(mut anchors) = world.get_resource_mut::<WrathAuraAnchors>() {
+            anchors.by_guid.clear();
+        }
     }
     *world.resource_mut::<GuidIndex>() = index;
 
@@ -4174,6 +4268,11 @@ fn wrath_apply_world(world: &mut World) {
             Some(Phase::InWorld | Phase::TransferPending | Phase::Loading)
         )
     {
+        if player_guid == 0 {
+            if let Some(mut anchors) = world.get_resource_mut::<WrathAuraAnchors>() {
+                anchors.by_guid.clear();
+            }
+        }
         return;
     }
     let mut index = std::mem::take(&mut *world.resource_mut::<GuidIndex>());
@@ -4469,6 +4568,7 @@ fn wrath_apply_world(world: &mut World) {
     world.resource_mut::<SelfGuid>().0 = Some(player_guid);
     *world.resource_mut::<GuidIndex>() = index;
 
+    stamp_aura_anchors(world, &entities);
     world.insert_resource(CurrentMap(map_id));
     if !entered {
         if let Some(local) = entities.get(&player_guid).and_then(|e| e.position) {
@@ -5572,6 +5672,7 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 .then(|| (0..138).map(|i| entry.field(i).unwrap_or(0)).collect()),
                 auras: entry.auras.clone(),
                 auras_observed: entry.auras_observed,
+                aura_receipts: entry.aura_receipts.clone(),
             },
         );
     }
@@ -5689,6 +5790,7 @@ mod command_tap_tests {
                 item_fields: None,
                 auras: Vec::new(),
                 auras_observed: false,
+                aura_receipts: BTreeMap::new(),
             },
         );
         WrathWorldView {

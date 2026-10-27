@@ -44,6 +44,17 @@ pub struct AuraSlot {
     pub duration_ms: u32,
 }
 
+/// One aura application's receipt identity within an object generation. The revision is the
+/// world's monotonic receipt sequence (a refresh, including an identical delta, advances it);
+/// the clock is the packet-arrival wall time supplied by the session owner (0 = not supplied,
+/// e.g. a clock-less reducer caller). `(generation, slot, revision)` identifies one observed
+/// application/update of a slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuraReceipt {
+    pub revision: u64,
+    pub received_at_unix_ms: i64,
+}
+
 /// `AFLAG_CASTER` (`SpellAuraDefines.h:26-34`): the caster guid is omitted and the aura is the
 /// target's own.
 pub const AFLAG_CASTER: u8 = 0x08;
@@ -68,6 +79,10 @@ pub struct ObjectEntry {
     /// `SMSG_AURA_UPDATE_ALL` with only the target GUID (the server's forced empty snapshot)
     /// sets this `true` while leaving the list empty.
     pub auras_observed: bool,
+    /// Per-slot receipt identity for the current applications, keyed by slot. Cleared with the
+    /// slots on create and dropped with the object on removal; an entry exists only for a slot
+    /// currently held and observed.
+    pub aura_receipts: BTreeMap<u8, AuraReceipt>,
     /// Increments when this GUID is destroyed and created again — identity check for the
     /// despawn/recreate dance visibility does.
     pub generation: u32,
@@ -107,6 +122,9 @@ pub struct WorldState {
     objects: BTreeMap<u64, ObjectEntry>,
     /// Highest generation reached per GUID that is not currently present.
     tombstones: BTreeMap<u64, u32>,
+    /// Monotonic receipt sequence for aura application/update edges. Starts at 1 so a receipt
+    /// revision is never 0 (0 is reserved for "no receipt").
+    aura_receipt_seq: u64,
 }
 
 impl WorldState {
@@ -135,9 +153,30 @@ impl WorldState {
         Ok(self.reduce_changed(opcode, payload)?.0)
     }
 
+    /// Reduce one world packet with the packet-arrival wall clock, returning the change events
+    /// and whether observation-relevant state changed. Acquisition stays in the session owner:
+    /// the reducer receives the timestamp as data, so the reduction is replayable.
+    pub fn reduce_changed_at(
+        &mut self,
+        opcode: u16,
+        payload: &[u8],
+        received_at_unix_ms: i64,
+    ) -> Result<(Vec<ChangeEvent>, bool)> {
+        match opcode {
+            opcode::SMSG_UPDATE_OBJECT => self.reduce_update_object(payload),
+            opcode::SMSG_AURA_UPDATE | opcode::SMSG_AURA_UPDATE_ALL => self.reduce_aura_update(
+                payload,
+                opcode == opcode::SMSG_AURA_UPDATE_ALL,
+                received_at_unix_ms,
+            ),
+            other => self.reduce_changed(other, payload),
+        }
+    }
+
     /// Reduce one world packet, returning the change events and whether
     /// observation-relevant state changed (a movement block that only advanced its wire
-    /// timestamp, or an identical values rewrite, is not a state change).
+    /// timestamp, or an identical values rewrite, is not a state change). Clock-less form for
+    /// callers that do not track aura receipt times; the aura receipt clock is 0.
     pub fn reduce_changed(
         &mut self,
         opcode: u16,
@@ -146,7 +185,7 @@ impl WorldState {
         match opcode {
             opcode::SMSG_UPDATE_OBJECT => self.reduce_update_object(payload),
             opcode::SMSG_AURA_UPDATE | opcode::SMSG_AURA_UPDATE_ALL => {
-                self.reduce_aura_update(payload, opcode == opcode::SMSG_AURA_UPDATE_ALL)
+                self.reduce_aura_update(payload, opcode == opcode::SMSG_AURA_UPDATE_ALL, 0)
             }
             opcode::SMSG_COMPRESSED_UPDATE_OBJECT => {
                 // `WorldSocket.cpp:97-119`: u32 uncompressed size, then zlib of the plain
@@ -234,6 +273,7 @@ impl WorldState {
                     entry.delivered.clear();
                     entry.auras.clear();
                     entry.auras_observed = false;
+                    entry.aura_receipts.clear();
                     entry.movement = Some(snapshot);
                     self.apply_values(guid, &mut r)?;
                     events.push(ChangeEvent::Created { guid });
@@ -265,6 +305,7 @@ impl WorldState {
             movement: None,
             auras: Vec::new(),
             auras_observed: false,
+            aura_receipts: BTreeMap::new(),
             generation: 0,
         })
     }
@@ -273,27 +314,29 @@ impl WorldState {
     /// guid, then one block per slot (`AURA_UPDATE_ALL` concatenates every visible slot). A
     /// block whose spell id is 0 removes the slot.
     ///
-    /// The packet is an observation edge even when no slot moves. `SMSG_AURA_UPDATE_ALL`
+    /// The packet is an observation edge even when no slot value moves. `SMSG_AURA_UPDATE_ALL`
     /// enumerates the target's current visible set, so a GUID-only packet is an observed-empty
     /// set and an identical refresh is still a receipt; a delta is an edge on first receipt or
-    /// a real slot move. The edge advances the session revision so the digest/export carriers
-    /// republish, independently of movement or payload equality. Full-snapshot replacement
-    /// semantics (whether slots omitted from an `_ALL` packet must be dropped) is a separate
-    /// reference-contract question and is not guessed here.
+    /// any applied block. Each applied add/update gets a new receipt revision and arrival
+    /// clock; removals drop the receipt. The edge advances the session revision so the
+    /// digest/export carriers republish, independently of movement or payload equality.
+    /// Full-snapshot replacement semantics (whether slots omitted from an `_ALL` packet must be
+    /// dropped) is a separate reference-contract question and is not guessed here.
     fn reduce_aura_update(
         &mut self,
         payload: &[u8],
         full_snapshot: bool,
+        received_at_unix_ms: i64,
     ) -> Result<(Vec<ChangeEvent>, bool)> {
         let mut r = Reader::new(payload);
         let guid = r.packed_guid()?;
         let first_observation = !self.entry(guid, 0).auras_observed;
-        let mut slots_moved = false;
+        let mut refreshed = false;
         while !r.done() {
-            slots_moved |= self.apply_aura_block(guid, &mut r)?;
+            refreshed |= self.apply_aura_block(guid, &mut r, received_at_unix_ms)?;
         }
         self.entry(guid, 0).auras_observed = true;
-        let edge = slots_moved || first_observation || full_snapshot;
+        let edge = refreshed || first_observation || full_snapshot;
         let mut events = Vec::new();
         if edge {
             events.push(ChangeEvent::Updated { guid });
@@ -301,7 +344,12 @@ impl WorldState {
         Ok((events, edge))
     }
 
-    fn apply_aura_block(&mut self, guid: u64, r: &mut Reader) -> Result<bool> {
+    fn apply_aura_block(
+        &mut self,
+        guid: u64,
+        r: &mut Reader,
+        received_at_unix_ms: i64,
+    ) -> Result<bool> {
         let slot = r.u8()?;
         let spell_id = r.u32()?;
         let aura = if spell_id == 0 {
@@ -331,23 +379,37 @@ impl WorldState {
                 duration_ms,
             })
         };
+        let receipt = match aura {
+            Some(_) => {
+                self.aura_receipt_seq = self.aura_receipt_seq.wrapping_add(1).max(1);
+                Some(AuraReceipt {
+                    revision: self.aura_receipt_seq,
+                    received_at_unix_ms,
+                })
+            }
+            None => None,
+        };
         let entry = self.entry(guid, 0);
         Ok(match aura {
-            Some(aura) => match entry.auras.iter_mut().find(|held| held.slot == slot) {
-                Some(held) if *held == aura => false,
-                Some(held) => {
-                    *held = aura;
-                    true
+            Some(aura) => {
+                // An identical block is a refresh: the application's receipt advances even
+                // when every wire field matches the held value.
+                match entry.auras.iter_mut().find(|held| held.slot == slot) {
+                    Some(held) => *held = aura,
+                    None => {
+                        entry.auras.push(aura);
+                        entry.auras.sort_by_key(|held| held.slot);
+                    }
                 }
-                None => {
-                    entry.auras.push(aura);
-                    entry.auras.sort_by_key(|held| held.slot);
-                    true
+                if let Some(receipt) = receipt {
+                    entry.aura_receipts.insert(slot, receipt);
                 }
-            },
+                true
+            }
             None => {
                 let before = entry.auras.len();
                 entry.auras.retain(|held| held.slot != slot);
+                entry.aura_receipts.remove(&slot);
                 entry.auras.len() != before
             }
         })

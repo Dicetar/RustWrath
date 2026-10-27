@@ -896,10 +896,24 @@ pub struct SpellTargets {
     pub string: Option<String>,
 }
 
+/// One active cooldown in `SMSG_INITIAL_SPELLS`, exactly as the pinned writer sends it
+/// (`Player::SendInitialSpells`, `Player.cpp:2755-2820`): a `u32` spell id, `u16` cast item
+/// entry, `u16` spell category and the two remaining times. The category word's bit 31 is the
+/// held/infinity mark and its low bits are the remaining time, matching the 1.12
+/// `ReadInitialSpells` convention (`0x5e6510`); a category spell carries `0` in `spell_cd_ms`,
+/// a plain spell carries `0` in `category_cd_ms`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InitialSpellCooldown {
+    pub spell_id: u32,
+    pub item_id: u16,
+    pub category: u16,
+    pub spell_cd_ms: u32,
+    pub category_cd_ms: u32,
+}
+
 /// One typed reply this slice understands.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ServerEvent {
-    AttackStart { attacker: u64, victim: u64 },
+pub enum ServerEvent {    AttackStart { attacker: u64, victim: u64 },
     AttackStop { attacker: u64, victim: u64 },
     AttackSwingError(AttackSwingError),
     CastFailed {
@@ -937,6 +951,15 @@ pub enum ServerEvent {
         targets: SpellTargets,
         ammo_display_id: Option<u32>,
         item_caster: Option<u64>,
+    },
+    /// `SMSG_INITIAL_SPELLS`: the learned spell ids and the active cooldown tail as the pinned
+    /// writer sends it. `declared_cooldowns` preserves the writer's declared count, which can
+    /// exceed the entries actually written because it counts map entries it filters as not
+    /// client-visible; `cooldowns` is exactly the complete entries present in the packet.
+    InitialSpells {
+        spells: Vec<u32>,
+        cooldowns: Vec<InitialSpellCooldown>,
+        declared_cooldowns: u16,
     },
     /// `SMSG_SPELL_COOLDOWN`: `(spell_id, cooldown_ms)` pairs after the caster and 12340's flag
     /// byte. 0 ms means the spell's own DBC recovery.
@@ -1020,7 +1043,6 @@ pub enum ServerEvent {
     LogoutResponse { reason: u32, instant: bool },
     LoggedOut,
     LogoutCancelled,
-    InitialSpells { spells: Vec<u32> },
     ItemInfo { entry: u32, info: Option<ItemInfo> },
     PlayerName { guid: u64, name: String, race: u32, gender: u32, class: u32 },
     GameObjectInfo {
@@ -2517,7 +2539,33 @@ fn read_initial_spells(b: &[u8]) -> Result<ServerEvent> {
         spells.push(r.u32()?);
         let _slot = r.u16()?;
     }
-    Ok(ServerEvent::InitialSpells { spells })
+    let declared_cooldowns = r.u16()?;
+    // Each cooldown entry is 16 bytes (spell u32, item u16, category u16, two remainders u32).
+    // The pinned writer declares `m_spellCooldowns.size()` but skips entries with
+    // needSendToClient == false or no SpellInfo, so read every complete entry present, never a
+    // partial one; anything left over after the full entries is a protocol error.
+    let present = (r.remaining() / 16).min(usize::from(declared_cooldowns));
+    let mut cooldowns = Vec::with_capacity(present);
+    for _ in 0..present {
+        cooldowns.push(InitialSpellCooldown {
+            spell_id: r.u32()?,
+            item_id: r.u16()?,
+            category: r.u16()?,
+            spell_cd_ms: r.u32()?,
+            category_cd_ms: r.u32()?,
+        });
+    }
+    if r.remaining() != 0 {
+        anyhow::bail!(
+            "{} bytes after the initial-spells cooldown tail are not a complete entry",
+            r.remaining()
+        );
+    }
+    Ok(ServerEvent::InitialSpells {
+        spells,
+        cooldowns,
+        declared_cooldowns,
+    })
 }
 
 fn read_action_buttons(b: &[u8]) -> Result<ServerEvent> {

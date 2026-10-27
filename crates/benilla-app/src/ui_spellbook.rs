@@ -717,7 +717,7 @@ mod tests {
 
         // Half of Last Stand's minute still to run at login.
         let wire = benilla_protocol::messages::SpellCooldown {
-            spell_id: LAST_STAND as u16,
+            spell_id: LAST_STAND as u32,
             item_id: 0,
             category: 0,
             spell_cd_ms: 30_000,

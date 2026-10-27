@@ -9,7 +9,8 @@ use crate::wire::{capacity_hint, read_u16_le, read_u32_le, read_u64_le, read_u8}
 /// re-armed by the server, is `spell_cd_ms == 1` with the category word's top bit set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpellCooldown {
-    pub spell_id: u16,
+    /// 3.3.5 spell ids exceed u16; the 1.12 reader widens its wire id into this field.
+    pub spell_id: u32,
     pub item_id: u16,
     pub category: u16,
     pub spell_cd_ms: u32,
@@ -31,7 +32,7 @@ pub(super) fn read_initial_spells(r: &mut impl Read) -> io::Result<(Vec<u16>, Ve
     let mut cooldowns = Vec::with_capacity(capacity_hint(m, 1024));
     for _ in 0..m {
         cooldowns.push(SpellCooldown {
-            spell_id: read_u16_le(r)?,
+            spell_id: u32::from(read_u16_le(r)?),
             item_id: read_u16_le(r)?,
             category: read_u16_le(r)?,
             spell_cd_ms: read_u32_le(r)?,

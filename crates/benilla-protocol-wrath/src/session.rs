@@ -354,8 +354,11 @@ impl SessionState {
             opcode::SMSG_AURA_UPDATE | opcode::SMSG_AURA_UPDATE_ALL => {
                 // 12340 sends auras as packets rather than descriptor fields
                 // (`SpellAuras.cpp:187-235`); they ride the same replicated-state revision as
-                // the update stream so the app's digest republishes them.
-                let (evs, ch) = self.world.reduce_changed(op, payload)?;
+                // the update stream so the app's digest republishes them. The arrival clock is
+                // acquired here (the session owner) and handed to the reducer as receipt data.
+                let (evs, ch) = self
+                    .world
+                    .reduce_changed_at(op, payload, observed_at_unix_ms)?;
                 events = evs;
                 changed = ch;
             }

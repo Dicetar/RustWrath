@@ -81,7 +81,7 @@ fn an_initial_item_cooldown_alone_reaches_the_bags() {
 
     // Half of a one-minute recall still to run at login.
     let wire = SpellCooldown {
-        spell_id: RECALL as u16,
+        spell_id: RECALL as u32,
         item_id: HEARTHSTONE as u16,
         category: 0,
         spell_cd_ms: 30_000,
