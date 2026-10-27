@@ -48,6 +48,18 @@ Verification actually obtained:
 - The graphical half of the reproducer (streamed-tile attach in the rendered client) still needs
   the run; a repeat panic disproves the repair and must be re-diagnosed.
 
+## Native aura availability repair (Astra's source counter-evidence)
+
+`adc8a631`. Her review proved the native aura owner could not distinguish unobserved from
+observed-empty: the reducer's slot vector defaults empty, create clears it, and both adapters
+exported Known/empty for any existing entry; an empty full snapshot produced no revision. The
+repair adds per-generation `ObjectEntry.auras_observed` (set by any aura packet, including a
+GUID-only `SMSG_AURA_UPDATE_ALL`), makes a full snapshot always a source-observation edge and a
+delta an edge on first receipt or a real slot move, carries the flag into the digest, exports
+`unknown` until coverage exists, and refuses `UnitAura` answers before the snapshot. Full-snapshot
+replacement semantics and per-aura receipt clocks/expiration remain explicitly open (her contract
+says not to guess the replacement policy). Verified by `cargo check` for the protocol/app/driver
+and the 12 wrath + Wrath UI slice tests.
 ## Workstreams 2–4 — route source state
 
 The route source chain is in place and compiles: parked select screen → Wrath session → digest →
