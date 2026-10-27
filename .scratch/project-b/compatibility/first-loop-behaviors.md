@@ -261,4 +261,13 @@ Wrath tooltip line-law coverage remain incomplete. Exact consumer/owner dependen
 evidence are in ../handoffs/2026-10-27-astra-wrath-item-query-consumer.md. No acceptance row or
 whole-project percentage is advanced from these commits.
 
+Live-item presentation follow-through: 535ac85f emits proper Wrath links in the five production
+container walks; 98e00eed does the same for own equipment/equipped bags/bank-bag items and
+target-aware template-only ammo. The existing projected ObjectFields supply permanent/socket
+enchants, property/seed and identity; the actual UiScript target selects format and the player
+store supplies render level. Donor resolver/tests and event/lock owners are unchanged. No
+compile/test/runtime result is claimed. Native projection still drops four bank slots, one
+bank-bag slot and five item-enchant slots; inspect/trade/loot/auction links and negative-suffix
+scaling remain open. See the updated item-query handoff for exact boundaries and counter-evidence.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.

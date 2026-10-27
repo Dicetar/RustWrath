@@ -28,6 +28,28 @@ rendered connected gameplay acceptance remain open.
 
 ## Exact integration dependency for OC — do not count as complete
 
+### Supersession: live bags and own equipment now source-connected
+
+Astra continued after the original handoff, with exact clean-file claims:
+
+- 535ac85f adds ui_items::object_link_in_target and connects all five production container
+  walks (backpack, carried bags, bank, bank bags, keyring) through resolve_slot_in_target.
+  UiTarget comes from the actual script; render level comes from the current player store.
+  The original donor resolver and its existing tests are unchanged. Cached and uncached
+  links retain their respective fields and follow the existing bag diff/event owner.
+- 98e00eed adapts feed_char's completed own-equipment/equipped-bag/bank-bag snapshots through
+  the same formatter. Template-only ammo uses UiScript::template_item_link, which delegates
+  to the same target-aware template helper as quest/crafting links, with no fake item object.
+
+The formatter reads the authoritative projected item's permanent enchant, socket slots 2..4,
+signed property and seed. Wrapped items retain the existing zero-instance-fields behavior.
+No ambient WOW_WRATH lookup or payload-length heuristic selects the format.
+
+Both commits are source-only and uncompiled. Their scope is presentation, not native item
+authority, negative-suffix scaling or complete bank support. The following original dependency
+paragraph still applies to unmigrated inspect/trade/loot/auction surfaces; its live-bag and
+own-equipment portion is superseded by these commits.
+
 `benilla-app/src/ui_items/mod.rs::item_link_full` still emits four-field 1.12 links.
 `object_link` supplies those links to the live container feed at `ui_items/feed.rs`, and the
 same helper feeds inspect/trade/loot/auction surfaces. The new Lua parser deliberately does
@@ -53,6 +75,23 @@ Other open item behavior:
   names absent from those existing feeds cannot be invented by the adapter.
 - GetItemInfo misses retain the donor's cache-read behavior. App feed_item_stats only serves
   a read when Items already has it. This change does not introduce automatic item-query sends.
+
+### Native projection counter-evidence for OC
+
+Source inspection of wrath.rs at 98e00eed confirms explicit truncation, not speculation:
+
+- push_player_inventory_fields copies 48 dwords from 12340 bank base 402: only 24 of 28 slots.
+- It copies 12 dwords from bank-bag base 458: only six of seven bag slots.
+- push_item_fields copies 21 enchant dwords from base 22: seven of twelve enchant slots.
+  The first permanent/socket slots used by the new link formatter survive, but property
+  enchant slots 7..11 do not. Do not describe the resulting live item view as lossless.
+- The descriptor projection separately preserves the property ID/seed, so links can retain
+  their numeric identity without proving the missing suffix/stat presentation.
+
+The matching UI baseline also has BANK_SLOTS=24, BANK_BAGS=6 and BANK_BAG_SLOT_COUNT=6.
+Simply increasing a UI constant would walk the wrong descriptor band; OC needs a coordinated
+native/view/command mapping change before the extra slots can be presented or acted on.
+None of these native mappings or bank capacities was edited by Astra in this continuation.
 
 ## Primary source basis
 
