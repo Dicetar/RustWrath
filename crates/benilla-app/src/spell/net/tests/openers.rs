@@ -55,6 +55,7 @@ fn book(ids: &[u32], spells: &Spells) -> PlayerActions {
             &crate::spell::SpellModifiers::default(),
             crate::spell::CategoryPad::for_list(false, None),
         ),
+        std::time::Instant::now(),
     );
     actions
 }
@@ -248,6 +249,7 @@ fn stuck_spell_is_the_last_registered_spell_with_the_stuck_effect() {
             &crate::spell::SpellModifiers::default(),
             crate::spell::CategoryPad::for_list(false, None),
         ),
+        std::time::Instant::now(),
     );
     assert_eq!(actions.stuck_spell, None, "the reset zeroes it");
 }

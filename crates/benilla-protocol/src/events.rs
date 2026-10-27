@@ -546,9 +546,12 @@ pub enum SessionEvent {
     /// A unit's anim emote (`SMSG_EMOTE`): an `Emotes.dbc` id, its anim and its `EventSoundID`.
     Emote { guid: u64, emote_id: u32 },
     /// The spell book at login (`SMSG_INITIAL_SPELLS`), ids widened from `u16`, and live cooldowns.
+    /// `observed_at_unix_ms` is the packet-arrival wall clock the producer attached (0 when its
+    /// decoder has no clock); a consumer anchors cooldown remainders at arrival, not delivery.
     SpellBook {
         spell_ids: Vec<u32>,
         cooldowns: Vec<crate::messages::SpellCooldown>,
+        observed_at_unix_ms: i64,
     },
     /// The saved action bar at login (`SMSG_ACTION_BUTTONS`): slots 0..119, 0..11 the main bar.
     ActionButtons { buttons: Vec<ActionButton> },

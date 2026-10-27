@@ -2015,7 +2015,11 @@ fn vanilla_target_mask(mask: u32) -> u16 {
 /// are left empty; nothing is invented from local state. `self_guid` gates the edges the 1.12
 /// seam only ever has for the player (channel timers), because 12340 broadcasts them for every
 /// nearby caster.
-fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionEvent> {
+fn translate_gameplay(
+    event: WrathGameplayEvent,
+    self_guid: u64,
+    observed_at_unix_ms: i64,
+) -> Vec<SessionEvent> {
     match event {
         WrathGameplayEvent::AttackStart { attacker, victim } => {
             vec![SessionEvent::AttackStart { attacker, victim }]
@@ -2299,6 +2303,7 @@ fn translate_gameplay(event: WrathGameplayEvent, self_guid: u64) -> Vec<SessionE
             }
             vec![SessionEvent::SpellBook {
                 spell_ids: spells,
+                observed_at_unix_ms,
                 cooldowns: cooldowns
                     .into_iter()
                     .map(|cd| benilla_protocol::messages::SpellCooldown {
@@ -5329,7 +5334,11 @@ pub fn run_session_with_cancel(
                             });
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
-                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                    for event in translate_gameplay(
+                                        event,
+                                        session.player_guid().unwrap_or(0),
+                                        now_ms(),
+                                    ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
                                     }
@@ -5350,7 +5359,11 @@ pub fn run_session_with_cancel(
                             });
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
-                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                    for event in translate_gameplay(
+                                        event,
+                                        session.player_guid().unwrap_or(0),
+                                        now_ms(),
+                                    ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
                                     }
@@ -5369,7 +5382,11 @@ pub fn run_session_with_cancel(
                             });
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
-                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                    for event in translate_gameplay(
+                                        event,
+                                        session.player_guid().unwrap_or(0),
+                                        now_ms(),
+                                    ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
                                     }
@@ -5403,7 +5420,11 @@ pub fn run_session_with_cancel(
                             );
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
-                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                    for event in translate_gameplay(
+                                        event,
+                                        session.player_guid().unwrap_or(0),
+                                        now_ms(),
+                                    ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
                                     }
@@ -5471,7 +5492,11 @@ pub fn run_session_with_cancel(
                             }
                             if let Some(events_out) = events_out.as_ref() {
                                 if session.player_guid().is_some() {
-                                    for event in translate_gameplay(event, session.player_guid().unwrap_or(0)) {
+                                    for event in translate_gameplay(
+                                        event,
+                                        session.player_guid().unwrap_or(0),
+                                        now_ms(),
+                                    ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
                                     }

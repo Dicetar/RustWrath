@@ -117,6 +117,7 @@ fn on_spell_book(In(ev): In<SessionEvent>, mut l: Lifecycle, sc: Scene) {
     if let SessionEvent::SpellBook {
         spell_ids,
         cooldowns,
+        observed_at_unix_ms,
     } = ev
     {
         let player = active_player(&l.self_guid, &l.index, &sc.stores);
@@ -127,8 +128,28 @@ fn on_spell_book(In(ev): In<SessionEvent>, mut l: Lifecycle, sc: Scene) {
             &mut l.actions,
             &mut l.cooldowns,
             (l.spells.as_deref(), &sc.items, &l.spell_mods, pad),
+            // The reference receives and processes a packet in one step; benilla's queue can
+            // deliver this later, so anchor the remainders at the packet's arrival. A producer
+            // with no arrival clock (the 1.12 decoder) keeps consumption-time behavior.
+            cooldown_instant(observed_at_unix_ms),
         );
     }
+}
+
+/// The cooldown clock at a packet's arrival: now shifted back by the wall-clock time the packet
+/// spent in the queue. Wall time is used only for that delta; the timer itself stays on the
+/// monotonic `Instant` domain. `0` means the producer had no clock.
+fn cooldown_instant(observed_at_unix_ms: i64) -> Instant {
+    let now = Instant::now();
+    if observed_at_unix_ms <= 0 {
+        return now;
+    }
+    let wall_now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let lag_ms = wall_now_ms.saturating_sub(observed_at_unix_ms).max(0) as u64;
+    now.checked_sub(Duration::from_millis(lag_ms)).unwrap_or(now)
 }
 
 /// The active player's object (`0x468460` with type mask `0x10` on `0x468550`'s guid), when
@@ -643,6 +664,7 @@ fn spell_book(
         &crate::spell::SpellModifiers,
         crate::spell::CategoryPad,
     ),
+    now: Instant,
 ) {
     debug!(
         "net: spell book — {} spells, {} active cooldown(s)",
@@ -666,7 +688,6 @@ fn spell_book(
         list_learn(spell_id, actions);
     }
     actions.dirty = true;
-    let now = Instant::now();
     for cd in &initial_cooldowns {
         let spell_id = u32::from(cd.spell_id);
         let spell = spells.and_then(|s| s.catalog.get(spell_id));

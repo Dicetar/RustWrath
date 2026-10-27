@@ -38,6 +38,7 @@ fn the_list_orders_keep_their_learn_order() {
             &crate::spell::SpellModifiers::default(),
             crate::spell::CategoryPad::for_list(false, None),
         ),
+        std::time::Instant::now(),
     );
     assert_eq!(actions.profession_order, [A, B, A]);
     assert_eq!(actions.craft_order, [A, B]);
@@ -72,6 +73,7 @@ fn the_known_spells_keep_their_learn_order() {
             &crate::spell::SpellModifiers::default(),
             crate::spell::CategoryPad::for_list(false, None),
         ),
+        std::time::Instant::now(),
     );
     assert_eq!(actions.profession_order, [A, B, C]);
     let errors = UiErrorKeys::default();
