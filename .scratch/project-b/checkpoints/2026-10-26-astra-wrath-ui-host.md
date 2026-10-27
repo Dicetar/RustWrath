@@ -351,3 +351,11 @@ omits Blood Elf/Draenei-only restrictions. Seat playable-race labels through the
 production/from-chain metadata entry points. A typed VM host-data read projection avoids
 editing OC's dirty Model/module files; the existing set_locale owner retires it on changes.
 No new catalog, protocol owner, English fallback, test case or execution is introduced.
+
+2026-10-28 tooltip identity claim at 2b2abfc1: clean tooltip_item/mod.rs and
+tooltip_item/build.rs. Installed WM_MulticlassHunt.lua:100-101 reads GetItem() from its
+OnTooltipSetItem callback. The getter currently ignores the rolled instance name and
+returns no link for several setters despite available source-view links. Preserve links
+from loot/roll/auction/trade and held item views, including cache rebuilds. For an actual
+template-only build, reuse the existing target-aware template formatter. Never synthesize
+missing instance/gem/property fields. No native producer/format migration, tests or runs.
