@@ -239,3 +239,31 @@ item queries, eleven-value ordering, signed property preservation, gem/property 
 spell-link late-cache rebuild and donor behavior. No cases were created and no grant inferred.
 An app-level test must additionally seat a real Wrath item feed; a synthetic Lua query cannot
 prove the producer migration or the graphical/item-mod behavior.
+
+### Tooltip subject continuation (2c101af6, source only)
+
+Installed Questie-335 Modules/Tooltips/Tooltip.lua:389-391 invokes GetUnit, GetItem and
+GetSpell on every GameTooltip update. GetUnit and GetSpell were not registered; this is
+a direct call failure before its object-tooltip classification can finish. Its
+TooltipHandler.lua:18 also consumes the returned unit token to read UnitGUID, and the
+installed gearscorelite.lua:146 consumes the unit name. Questie's Tooltip.lua:343 hooks
+OnTooltipSetUnit, which the existing unit renderer did not emit.
+
+The Wrath-only getters now read subjects retained in TooltipState, without a second
+registry or changes to OC's Model. A unit query requires the displayed GUID still to
+match the retained token's current snapshot; it does not accidentally identify a new
+target while an old tooltip remains. Its name uses the existing UNKNOWNOBJECT policy
+on an observed unit whose name is absent. A spell query returns its actual ID and
+observed view/fallback name; unresolved names stay nil. The existing spell callback
+sees that identity, including after a delayed view answer. Talent renders seat their
+resolved spell identity too. The existing content clear retires both subjects, so
+SetOwner/hide and content replacement cannot retain an old item/unit/spell subject.
+The unit renderer now emits OnTooltipSetUnit through the existing Wrath-gated dispatcher.
+
+Questie Tooltip.lua SHA-256:
+9741D0C43A9AAB1BF81D55CA51209B9DFB968E6D582208C44F9350489E05D25D.
+Only local addon call sites establish this requirement; the exact native 12340 getter
+implementation, alternate-token selection after retargeting and aura-as-spell identity
+have not been recovered. No aura behavior was guessed. No new tests were written and
+no build/test, addon, graphical or live run occurred. This does not establish addon
+initialization or playable-alpha acceptance, and the full replacement gate stays open.

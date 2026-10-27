@@ -305,4 +305,15 @@ OnTooltipSetItem handler for item 910031. It preserves existing source-link byte
 not restore fields dropped upstream or migrate remaining producer formats. No builds,
 tests/new cases, addon or rendered/live acceptance ran; inbox blocks without links remain open.
 
+Tooltip unit/spell continuation at 2c101af6: Wrath GameTooltip now exposes GetUnit and
+GetSpell, required by installed Questie-335 Modules/Tooltips/Tooltip.lua:389-391. Unit
+content retains the setter token alongside the health-watcher GUID, returns a current
+matching snapshot rather than a different unit after retargeting, and fires the existing
+OnTooltipSetUnit callback after rendering. Spell content retains its real ID and observed
+view/fallback name before existing callbacks, including delayed view answers and talent
+renders. The shared content-clear owner retires both identities, including hide/SetOwner
+and item/unit/spell replacement. Donor registration remains unchanged. Aura-as-spell
+identity and alternate-token selection after retargeting are not claimed. No build,
+test/new case or installed-addon/runtime acceptance was performed.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
