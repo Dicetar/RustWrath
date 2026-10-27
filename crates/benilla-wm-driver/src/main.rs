@@ -201,7 +201,7 @@ impl ProducerSession for ProducerAdapter<'_> {
             Ok(Some(snapshot)) => {
                 let player_guid = snapshot.player_guid;
                 let auras = match self.session.world().get(player_guid) {
-                    Some(entry) => auras_observation(&entry.auras),
+                    Some(entry) => auras_observation(&entry.auras, entry.auras_observed),
                     None => benilla_wm_native::AurasObservation::unknown(),
                 };
                 let owned = SnapshotOwned { snapshot, auras };
@@ -222,7 +222,11 @@ impl ProducerSession for ProducerAdapter<'_> {
 /// `Unknown` (never a fabricated none); the aura set is real replicated state it does own.
 fn auras_observation(
     slots: &[benilla_protocol_wrath::reducer::AuraSlot],
+    observed: bool,
 ) -> benilla_wm_native::AurasObservation {
+    if !observed {
+        return benilla_wm_native::AurasObservation::unknown();
+    }
     let mut by_slot = std::collections::BTreeMap::new();
     for slot in slots {
         by_slot.insert(

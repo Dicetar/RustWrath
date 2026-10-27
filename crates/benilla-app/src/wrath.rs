@@ -380,6 +380,10 @@ pub struct WrathEntity {
     /// The unit's visible aura slots from `SMSG_AURA_UPDATE[_ALL]`. The 1.12 bar is descriptor
     /// data, so the translation synthesizes `UNIT_FIELD_AURA`/`AURAFLAGS` from these.
     pub auras: Vec<benilla_protocol_wrath::reducer::AuraSlot>,
+    /// Whether an aura packet for this generation has been observed. Until then `auras` is
+    /// unavailable, not an observed empty set (the server's forced empty
+    /// `SMSG_AURA_UPDATE_ALL` is what establishes the latter).
+    pub auras_observed: bool,
 }
 
 /// A full-world digest: the replicated world at one `state_revision`.
@@ -4892,7 +4896,10 @@ pub fn run_session_with_cancel(
                 Ok(Some(snapshot)) => {
                     let player_guid = snapshot.player_guid;
                     let auras = match self.session.world().get(player_guid) {
-                        Some(entry) => crate::wrath_native::auras_observation(&entry.auras),
+                        Some(entry) => crate::wrath_native::auras_observation(
+                            &entry.auras,
+                            entry.auras_observed,
+                        ),
                         None => benilla_wm_native::AurasObservation::unknown(),
                     };
                     Ok(Some(SnapshotOwned {
@@ -5564,6 +5571,7 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 )
                 .then(|| (0..138).map(|i| entry.field(i).unwrap_or(0)).collect()),
                 auras: entry.auras.clone(),
+                auras_observed: entry.auras_observed,
             },
         );
     }
@@ -5680,6 +5688,7 @@ mod command_tap_tests {
                 player_fields: None,
                 item_fields: None,
                 auras: Vec::new(),
+                auras_observed: false,
             },
         );
         WrathWorldView {

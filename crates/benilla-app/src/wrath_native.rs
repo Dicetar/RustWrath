@@ -980,9 +980,16 @@ pub(crate) fn last_cast_end_observation(
 
 /// The WM observation block for the self unit's observed aura slots: raw wire values with the
 /// own-aura marker preserved, sorted by slot and explicitly bounded (never silently truncated).
+/// `observed` is the owner's aura-packet coverage for this object generation: until the server
+/// has delivered an aura packet for the unit, the empty slot vector is unknown, not observed
+/// empty (the forced empty `SMSG_AURA_UPDATE_ALL` is what turns it into a known empty set).
 pub(crate) fn auras_observation(
     slots: &[benilla_protocol_wrath::reducer::AuraSlot],
+    observed: bool,
 ) -> benilla_wm_native::AurasObservation {
+    if !observed {
+        return benilla_wm_native::AurasObservation::unknown();
+    }
     let mut by_slot = BTreeMap::new();
     for slot in slots {
         by_slot.insert(
@@ -1290,7 +1297,7 @@ mod tests {
             });
         }
         slots[0].slot = slots[1].slot; // a duplicate slot keeps the last row only
-        let export = auras_observation(&slots);
+        let export = auras_observation(&slots, true);
         assert_eq!(export.state, benilla_wm_native::AuraKnowledge::Known);
         assert!(!export.complete, "the bound cut the set; never silently complete");
         assert_eq!(export.slots.len(), benilla_wm_native::MAX_AURA_SLOTS);
@@ -1300,7 +1307,7 @@ mod tests {
         );
         export.validate().expect("schema-valid");
 
-        let empty = auras_observation(&[]);
+        let empty = auras_observation(&[], true);
         assert_eq!(empty.state, benilla_wm_native::AuraKnowledge::Known);
         assert!(empty.slots.is_empty(), "an observed zero-aura state is not unknown");
         assert!(empty.complete);

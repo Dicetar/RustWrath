@@ -20,8 +20,11 @@ pub(crate) struct SpellQueries<'w, 's> {
 impl SpellQueries<'_, '_> {
     pub(crate) fn unit_auras(&self, guid: u64) -> Option<Vec<WrathAuraView>> {
         let world = self.world.as_ref()?;
-        if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld)
-            || !world.entities.contains_key(&guid) { return None; }
+        if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) { return None; }
+        // Until the server has delivered an aura packet for this generation the slot set is
+        // unavailable, not an observed empty list; the forced empty AURA_UPDATE_ALL is what
+        // establishes the observed-empty state.
+        if !world.entities.get(&guid).is_some_and(|unit| unit.auras_observed) { return None; }
         let catalog = &self.spells.as_deref()?.catalog;
         let mut result = Vec::new();
         for aura in world.auras(guid) {

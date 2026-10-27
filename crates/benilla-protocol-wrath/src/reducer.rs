@@ -63,6 +63,11 @@ pub struct ObjectEntry {
     /// The visible aura slots from `SMSG_AURA_UPDATE[_ALL]`, sorted by slot. 12340 sends auras
     /// as packets rather than descriptor fields.
     pub auras: Vec<AuraSlot>,
+    /// Whether an aura packet for this GUID has been received in this generation. A create
+    /// starts `false`: an empty slot vector then means "not observed", not "observed empty".
+    /// `SMSG_AURA_UPDATE_ALL` with only the target GUID (the server's forced empty snapshot)
+    /// sets this `true` while leaving the list empty.
+    pub auras_observed: bool,
     /// Increments when this GUID is destroyed and created again — identity check for the
     /// despawn/recreate dance visibility does.
     pub generation: u32,
@@ -141,7 +146,7 @@ impl WorldState {
         match opcode {
             opcode::SMSG_UPDATE_OBJECT => self.reduce_update_object(payload),
             opcode::SMSG_AURA_UPDATE | opcode::SMSG_AURA_UPDATE_ALL => {
-                self.reduce_aura_update(payload)
+                self.reduce_aura_update(payload, opcode == opcode::SMSG_AURA_UPDATE_ALL)
             }
             opcode::SMSG_COMPRESSED_UPDATE_OBJECT => {
                 // `WorldSocket.cpp:97-119`: u32 uncompressed size, then zlib of the plain
@@ -228,6 +233,7 @@ impl WorldState {
                     entry.fields.clear();
                     entry.delivered.clear();
                     entry.auras.clear();
+                    entry.auras_observed = false;
                     entry.movement = Some(snapshot);
                     self.apply_values(guid, &mut r)?;
                     events.push(ChangeEvent::Created { guid });
@@ -258,25 +264,41 @@ impl WorldState {
             delivered: Vec::new(),
             movement: None,
             auras: Vec::new(),
+            auras_observed: false,
             generation: 0,
         })
     }
 
     /// `SMSG_AURA_UPDATE` / `SMSG_AURA_UPDATE_ALL` (`SpellAuras.cpp:187-235`): a packed target
     /// guid, then one block per slot (`AURA_UPDATE_ALL` concatenates every visible slot). A
-    /// block whose spell id is 0 removes the slot. Returns whether any slot actually moved.
-    fn reduce_aura_update(&mut self, payload: &[u8]) -> Result<(Vec<ChangeEvent>, bool)> {
+    /// block whose spell id is 0 removes the slot.
+    ///
+    /// The packet is an observation edge even when no slot moves. `SMSG_AURA_UPDATE_ALL`
+    /// enumerates the target's current visible set, so a GUID-only packet is an observed-empty
+    /// set and an identical refresh is still a receipt; a delta is an edge on first receipt or
+    /// a real slot move. The edge advances the session revision so the digest/export carriers
+    /// republish, independently of movement or payload equality. Full-snapshot replacement
+    /// semantics (whether slots omitted from an `_ALL` packet must be dropped) is a separate
+    /// reference-contract question and is not guessed here.
+    fn reduce_aura_update(
+        &mut self,
+        payload: &[u8],
+        full_snapshot: bool,
+    ) -> Result<(Vec<ChangeEvent>, bool)> {
         let mut r = Reader::new(payload);
         let guid = r.packed_guid()?;
-        let mut changed = false;
+        let first_observation = !self.entry(guid, 0).auras_observed;
+        let mut slots_moved = false;
         while !r.done() {
-            changed |= self.apply_aura_block(guid, &mut r)?;
+            slots_moved |= self.apply_aura_block(guid, &mut r)?;
         }
+        self.entry(guid, 0).auras_observed = true;
+        let edge = slots_moved || first_observation || full_snapshot;
         let mut events = Vec::new();
-        if changed {
+        if edge {
             events.push(ChangeEvent::Updated { guid });
         }
-        Ok((events, changed))
+        Ok((events, edge))
     }
 
     fn apply_aura_block(&mut self, guid: u64, r: &mut Reader) -> Result<bool> {
