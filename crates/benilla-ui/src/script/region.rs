@@ -708,6 +708,11 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
             let f: Value = m.get(*name)?;
             leaf.set(*name, f)?;
         }
+        if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+            // The donor lists above deliberately omit this installed-mod extension.
+            // Publish the same region callback to both leaf kinds, not the title map.
+            leaf.set("SetShown", m.get::<Value>("SetShown")?)?;
+        }
         lua.set_named_registry_value(key, leaf)?;
     }
     for (meta_key, methods_key) in [
