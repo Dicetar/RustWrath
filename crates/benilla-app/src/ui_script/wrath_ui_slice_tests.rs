@@ -20,7 +20,7 @@ fn player_frame_script() -> Option<UiScript> {
         .expect("selected Wrath UI smoke manifest requires WM_ASSET_PROFILE");
     assert!(!profile.trim().is_empty(), "Wrath UI profile must be named");
     let data = benilla_formats::wow_data_or_skip!(None);
-    let chain = benilla_assets::open_profile_chain(&data, &manifest, &profile)
+    let mut chain = benilla_assets::open_profile_chain(&data, &manifest, &profile)
         .unwrap_or_else(|error| panic!("Wrath UI profile {profile} / {}: {error:#}", manifest.display()));
     let toc_bytes = chain.read(super::reference_ui::TOC)
         .expect("selected Wrath profile must supply FrameXML.toc");
@@ -36,7 +36,19 @@ fn player_frame_script() -> Option<UiScript> {
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
     s.set_text_measurer(Box::new(super::FixedWidthFont(7.0)));
-    s.register_cvars(crate::cvars::registered_pairs());
+    s.register_cvars(crate::cvars::registered_pairs().chain([
+        // The 3.3.5a audio panels read these at load (`AudioOptionsPanels.lua:132`, `:564`,
+        // `:676`); their stock defaults are the primary DirectSound driver at index 0 and
+        // push-to-talk, with voice chat off.
+        ("Sound_OutputDriverIndex", "0"),
+        ("Sound_VoiceChatInputDriverIndex", "0"),
+        ("Sound_VoiceChatOutputDriverIndex", "0"),
+        ("VoiceChatMode", "0"),
+        // Minimap_UpdateRotationSetting reads it at load (Minimap.lua:366).
+        ("rotateMinimap", "0"),
+    ]));
+    crate::chr_classes::seat_localized_class_names_from_chain(&mut s, &mut chain)
+        .expect("Wrath UI smoke must seat a complete localized class catalog before Constants.lua");
     eprintln!("WRATH_UI_SMOKE_DATA target={:?} interface=30300 profile={profile} manifest={} data={}",
         s.target(), manifest.display(), data.display());
     let toc_path = super::reference_ui::TOC.replace('\\', "/");
@@ -53,7 +65,20 @@ fn player_frame_script() -> Option<UiScript> {
             let report = benilla_ui::loader::load_in(&s, &doc, &path, &|request| chain.read(request).ok());
             assert!(report.errors.is_empty(), "{path}: loader errors: {:?}", report.errors);
             assert!(report.missing_files.is_empty(), "{path}: missing files: {:?}", report.missing_files);
-            assert!(report.warnings.is_empty(), "{path}: loader warnings: {:?}", report.warnings);
+            // The wrath FrameXML text sinks reach for keys the FrameXML locale stream no longer
+            // defines (`OptionsFrameTemplates.xml`'s OPTIONS header, `BattlefieldFrame.xml`'s
+            // BATTLEGROUND_LORETEXT_1); the real client answers a miss with an empty GetText and
+            // shows the raw key, so benilla's key-miss warning is the faithful outcome and the
+            // only notice this run may carry.
+            for warning in &report.warnings {
+                assert!(
+                    warning.ends_with(
+                        "is shaped like a GlobalStrings key but no such string global exists — \
+                         showing the key"
+                    ),
+                    "{path}: loader warnings: {warning:?}"
+                );
+            }
         }
     }
     Some(s)

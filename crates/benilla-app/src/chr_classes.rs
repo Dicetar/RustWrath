@@ -186,6 +186,25 @@ pub(crate) fn seat_localized_class_names(world: &mut World, script: &mut UiScrip
     }
 }
 
+/// The same projection for a host that owns an archive chain but no Bevy store (direct-VM
+/// fixtures, the worldview harness): the caller lets the refusal fail rather than warn.
+pub(crate) fn seat_localized_class_names_from_chain(
+    script: &mut UiScript,
+    chain: &mut benilla_formats::Chain,
+) -> Result<(), String> {
+    if script.target() != UiTarget::Wrath335 {
+        return Ok(());
+    }
+    let locale = script.locale();
+    let classes = benilla_formats::load_chr_classes(chain).map_err(|error| {
+        format!("ChrClasses.dbc failed to load ahead of the UI bootstrap: {error:#}")
+    })?;
+    let rows = localized_class_names(&classes, locale)?;
+    script
+        .set_localized_class_names(locale, rows)
+        .map_err(|error| format!("the localized class catalog was refused: {error}"))
+}
+
 fn load_chr_races(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     let Some(assets) = assets else { return };
     let (loaded, teams) = {
