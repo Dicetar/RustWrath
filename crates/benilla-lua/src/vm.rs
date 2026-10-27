@@ -1503,7 +1503,7 @@ impl Vm {
     /// left in `stack[first]`.
     #[cold]
     #[inline(never)]
-    fn concat(&mut self, first: usize, last: usize) -> Result<(), LuaError> {
+    pub(crate) fn concat(&mut self, first: usize, last: usize) -> Result<(), LuaError> {
         let mut total = last - first + 1;
         let mut last = last;
         while total > 1 {

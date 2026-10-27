@@ -253,6 +253,8 @@ end
 -- client too, or that define the name themselves under their own namespace.
 -- An addon reaching for one of these is reaching for a later client's API, and it should find
 -- what it would find there: nothing.
+-- Explicit Wrath construction adds wipe in install_wrath and the four string helpers in the
+-- VM's Wrath string module; this shared vanilla layer does not install them.
 
 -- `format`, the bare `string.format`.
 format = string.format

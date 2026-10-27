@@ -7,6 +7,8 @@ use crate::cfmt::{self, Spec};
 use crate::value::{Value, V};
 use crate::vm::{LuaError, Vm};
 
+mod wrath;
+
 pub fn open(vm: &mut Vm) {
     // `luaL_openlib` makes a library's table empty, by `lua_newtable` (`0x6f4dff`).
     let t = vm.heap.new_table(0, 0);
@@ -44,6 +46,7 @@ pub(crate) fn open_51(vm: &mut Vm) {
     vm.set_string_metatable(Some(meta));
     let index = vm.str(b"__index");
     vm.heap.table_mut(meta).set(index, Value::Table(table)).expect("string method index");
+    wrath::open(vm);
 }
 
 fn reverse(vm: &mut Vm, nargs: usize) -> R<usize> {
