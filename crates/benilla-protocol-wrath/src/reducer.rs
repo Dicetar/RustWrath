@@ -61,6 +61,47 @@ pub const AFLAG_CASTER: u8 = 0x08;
 /// `AFLAG_DURATION`: `(max, remaining)` follow.
 pub const AFLAG_DURATION: u8 = 0x20;
 
+/// One parsed, not yet applied aura block. Parsing every block before applying any keeps a
+/// malformed tail from leaving a partially applied packet in the authoritative world.
+struct ParsedAuraBlock {
+    slot: u8,
+    /// `None` is the wire's removal row for this slot.
+    aura: Option<AuraSlot>,
+}
+
+fn parse_aura_block(r: &mut Reader) -> Result<ParsedAuraBlock> {
+    let slot = r.u8()?;
+    let spell_id = r.u32()?;
+    let aura = if spell_id == 0 {
+        None
+    } else {
+        let flags = r.u8()?;
+        let level = r.u8()?;
+        let charges = r.u8()?;
+        let caster = if flags & AFLAG_CASTER != 0 {
+            0
+        } else {
+            r.packed_guid()?
+        };
+        let (max_duration_ms, duration_ms) = if flags & AFLAG_DURATION != 0 {
+            (r.u32()?, r.u32()?)
+        } else {
+            (0, 0)
+        };
+        Some(AuraSlot {
+            slot,
+            spell_id,
+            flags,
+            level,
+            charges,
+            caster,
+            max_duration_ms,
+            duration_ms,
+        })
+    };
+    Ok(ParsedAuraBlock { slot, aura })
+}
+
 /// One tracked object: raw u32 update fields plus the last movement snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectEntry {
@@ -330,10 +371,16 @@ impl WorldState {
     ) -> Result<(Vec<ChangeEvent>, bool)> {
         let mut r = Reader::new(payload);
         let guid = r.packed_guid()?;
+        // Parse and validate every block before touching the world. A malformed later block
+        // must not leave earlier blocks applied to the authoritative state.
+        let mut blocks = Vec::new();
+        while !r.done() {
+            blocks.push(parse_aura_block(&mut r)?);
+        }
         let first_observation = !self.entry(guid, 0).auras_observed;
         let mut refreshed = false;
-        while !r.done() {
-            refreshed |= self.apply_aura_block(guid, &mut r, received_at_unix_ms)?;
+        for block in blocks {
+            refreshed |= self.apply_aura_block(guid, block, received_at_unix_ms);
         }
         self.entry(guid, 0).auras_observed = true;
         let edge = refreshed || first_observation || full_snapshot;
@@ -344,53 +391,23 @@ impl WorldState {
         Ok((events, edge))
     }
 
+    /// Apply one pre-validated aura block. `state.aura == None` is the wire's removal row.
     fn apply_aura_block(
         &mut self,
         guid: u64,
-        r: &mut Reader,
+        block: ParsedAuraBlock,
         received_at_unix_ms: i64,
-    ) -> Result<bool> {
-        let slot = r.u8()?;
-        let spell_id = r.u32()?;
-        let aura = if spell_id == 0 {
-            None
-        } else {
-            let flags = r.u8()?;
-            let level = r.u8()?;
-            let charges = r.u8()?;
-            let caster = if flags & AFLAG_CASTER != 0 {
-                0
-            } else {
-                r.packed_guid()?
-            };
-            let (max_duration_ms, duration_ms) = if flags & AFLAG_DURATION != 0 {
-                (r.u32()?, r.u32()?)
-            } else {
-                (0, 0)
-            };
-            Some(AuraSlot {
-                slot,
-                spell_id,
-                flags,
-                level,
-                charges,
-                caster,
-                max_duration_ms,
-                duration_ms,
-            })
-        };
-        let receipt = match aura {
-            Some(_) => {
-                self.aura_receipt_seq = self.aura_receipt_seq.wrapping_add(1).max(1);
-                Some(AuraReceipt {
-                    revision: self.aura_receipt_seq,
-                    received_at_unix_ms,
-                })
+    ) -> bool {
+        let ParsedAuraBlock { slot, aura } = block;
+        let receipt = aura.map(|_| {
+            self.aura_receipt_seq = self.aura_receipt_seq.wrapping_add(1).max(1);
+            AuraReceipt {
+                revision: self.aura_receipt_seq,
+                received_at_unix_ms,
             }
-            None => None,
-        };
+        });
         let entry = self.entry(guid, 0);
-        Ok(match aura {
+        match aura {
             Some(aura) => {
                 // An identical block is a refresh: the application's receipt advances even
                 // when every wire field matches the held value.
@@ -401,9 +418,7 @@ impl WorldState {
                         entry.auras.sort_by_key(|held| held.slot);
                     }
                 }
-                if let Some(receipt) = receipt {
-                    entry.aura_receipts.insert(slot, receipt);
-                }
+                entry.aura_receipts.insert(slot, receipt.expect("add/update carries a receipt"));
                 true
             }
             None => {
@@ -412,7 +427,7 @@ impl WorldState {
                 entry.aura_receipts.remove(&slot);
                 entry.auras.len() != before
             }
-        })
+        }
     }
 
     /// Apply one values block; returns whether observation-relevant state changed. Two kinds
