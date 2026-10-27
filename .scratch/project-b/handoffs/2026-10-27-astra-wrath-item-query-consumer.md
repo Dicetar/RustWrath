@@ -142,12 +142,13 @@ C6BDF814772A8F9EA8EED56DE0AD65CA3942563E885F76D018487D170FAFB35C.
 
 ### Remaining loot projection loss found during continuation
 
-At 74a250ba, wrath.rs maps WrathGameplayEvent::LootResponse into ProtocolLootItem, whose
-donor shape carries no random-suffix factor; its donor documentation assumes the server
-always sends zero. Wrath's source packet shape has a separate suffix field. Migrating only
-ui_loot's hyperlink formatter cannot restore a value the adapter drops. OC must preserve
-that source fact before any complete rolled-loot link/tooltip claim. No loot protocol or
-adapter file was edited in this continuation.
+At 74a250ba, the Wrath loot-response decoder itself reads and discards _random_suffix
+(protocol-wrath/src/gameplay.rs). Its LootItem and the downstream ProtocolLootItem carry no
+factor; the donor shape's documentation assumes the server always sends zero. The wire has
+the separate word, but it is already gone before wrath.rs translates the event. Migrating
+only ui_loot's hyperlink formatter cannot restore it. OC must preserve the word from the
+decoder through both contracts before any complete rolled-loot link/tooltip claim. No loot
+protocol or adapter file was edited in this continuation.
 
 The new source needs a UI crate check and target-specific evidence for numeric/bare/escaped
 item queries, eleven-value ordering, signed property preservation, gem/property separation,
