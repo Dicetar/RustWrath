@@ -4,6 +4,13 @@ Owner: Astra, UI binding only. OC retains formats/catalog/bootstrap. Source-only
 test, new test case, formatter or runtime run was performed for this change. The previous
 focused smoke grant was consumed at 404cea29 and failed before PlayerFrame at Constants.lua:87.
 
+Subsequent verification supersession: the one authorized 2026-10-27 17:04 Moscow pass at
+f70be142 compiled benilla-lua/mlua/ui, and completed inherited suites with the same two known
+UI timezone failures (3,322 UI passed). This establishes compilation of the consumer seam,
+not direct class-list semantics or real catalog bootstrap. See
+../verification/2026-10-27-astra-ui3/summary.md. No real-data app smoke was rerun and no grant
+remains. OC still owns all integration steps below.
+
 ## Delivered seam
 
 `benilla_ui::script::LocalizedClassName { id: u8, file: String, male: String, female: String }`

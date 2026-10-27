@@ -6,7 +6,7 @@ Purpose: refine entry, movement, combat, inventory/quest, death and re-entry int
 
 ## Evidence and acceptance rules
 
-All rows have acceptance **UNKNOWN** in this inventory. No build, test, new test file/case, socket, game, renderer, receiver or WM operation ran. Source support is marked Partial; a static contradiction is Broken; a missing Wrath tap arm is Missing; insufficient inspection is Unknown. Existing or reported tests are identified separately, never counted as accepted connected behavior.
+All rows have acceptance **UNKNOWN** in this inventory. The initial inventory was source-only; later bounded verification is recorded in the dated supersessions below and does not accept connected behavior. Source support is marked Partial; a static contradiction is Broken; a missing Wrath tap arm is Missing; insufficient inspection is Unknown. Existing or reported tests are identified separately, never counted as accepted connected behavior.
 
 Every behavior requires a pinned source/binary/profile, intended account/character and server-side outcome. A UI animation, sent packet, item-push notification, or matching static SQL does not establish authoritative state or persistence. Reconnect/persistence refers to the same declared character, not whatever character happens to be first in an enumeration.
 
@@ -172,5 +172,21 @@ Verification/source supersession: the new explicit one-time pass at 29ff13f9 che
 Existing Wrath host-fixture source correction after e9d61d4d: the same smoke case now chooses Wrath335, requires an explicit profile/manifest, validates the selected TOC interface and loads the real TOC prefix through PlayerFrame.xml without shared-loader stand-ins. It refuses loader warnings/errors/missing files and corrects the target health-bar name. This fixture has not been compiled or run after the edit. Its prior vanilla-mode/possibly skipped result cannot be promoted into a Wrath pass; future acceptance requires BENILLA_REQUIRE_DATA=1 and retained data-admission output. Actual API gaps, including the current CVar-table gap, remain failures to resolve, not stubs to add. No new test case or live acceptance is claimed.
 
 Focused host execution supersession at 404cea29: one explicitly authorized, required-data wm-hd invocation compiled the app test target and ran exactly one smoke case. Wrath335/interface30300/profile admission succeeded, then Constants.lua:87 failed on missing FillLocalizedClassList. No PlayerFrame, manual event or CVar assertion was reached. Result 0 passed / 1 failed / 6601 filtered out, 680.8s total under 20 minutes, no timeout/rerun. Evidence is retained under .scratch/project-b/verification/2026-10-27-astra-wrath-smoke/. E08 remains blocked by actual host initialization; prior source-only statements about fixture/aura-consumer compilation are superseded for this pin, while semantic/native/live/mod/rendered/full-replacement acceptance stays open. No new test case or graphical/socket/WM/server/DB operation was performed.
+
+Class-list/Lua follow-up at f70be142: FillLocalizedClassList is now installed for both Wrath VMs,
+with an explicit real-catalog publication seam, separate gender labels and target locale handling.
+OC's actual catalog/bootstrap publication is still required; no synthetic list or success fallback
+was added. Wrath table boundaries and binary/localized formatting were also repaired. One fresh
+authorized 20-minute-bounded check/existing-test pass consumed 272.2s: check passed; completed
+Lua/mlua suites passed; UI had 3,322 passed, the same two known timezone/date failures and one
+ignored. No new cases/files or reruns. See ../verification/2026-10-27-astra-ui3/summary.md.
+This is compilation/inherited regression evidence, not a passing real-data app smoke or direct
+new-Wrath-branch acceptance. E08 and all connected/rendered/full-replacement gates remain open.
+
+Event-admission follow-up at 2318d773 (outside that verification pin): 47 additional event names
+observed in the pinned target UIParent and unit-frame files now register in the Wrath in-game
+VM rather than being silently dropped. Existing donor/glue catalogs are unchanged. This is
+listener admission only; event producers, payload contracts and complete addon/native event
+coverage are not established. No test/build/runtime run covered this later source addition.
 
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
