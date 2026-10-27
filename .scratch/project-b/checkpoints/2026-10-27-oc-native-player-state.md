@@ -104,6 +104,10 @@ Two correctness gaps from the reviewed handoff, fixed on top of Astra's committe
 - `7f1b73c3` — aura packets are atomic. All blocks parse into a scratch list before any world
   mutation; a malformed tail leaves slots, coverage and receipts untouched and creates no object
   entry. Receipt revisions and edges are assigned in the apply pass.
+- `5b4bcdc3` — the initial-cooldown arrival is now a monotonic `Instant` carried in the
+  in-process `SpellBook` event, read where the packet leaves the socket. This removes the
+  wall-clock delta from `7f9ea050`, so a system clock adjustment during delivery cannot move a
+  cooldown; the 1.12 decoder keeps `None` (consumption-time) behavior.
 
 Evidence: `cargo check` for protocol-wrath/protocol/app-lib/driver; the six reducer tests, the
 three learned-list tests and the initial-cooldown book test pass (four mechanical `spell_book`
@@ -112,7 +116,8 @@ Astra completed is recorded as owner-reported external evidence: check passed, 3
 passed, two known timezone failures remain, later aura integration excluded. That pass is not
 re-run or claimed here.
 
-Still open: AURA_UPDATE_ALL replacement policy; Wrath-host fixture still constructs
-`UiScript::new()` (`wrath_ui_slice_tests.rs:15`) so Wrath-host evidence remains UNKNOWN until the
-handed-off correction is applied; Northshire G/L remains unauthorized; no aura-specific or
-cooldown-tail unit case exists under the current test grant.
+Still open: AURA_UPDATE_ALL replacement policy; the Wrath-host fixture correction was applied by
+Astra in `58969173` (explicit target/profile admission), but its acceptance run still requires
+`BENILLA_REQUIRE_DATA=1` with the selected manifest/profile and was not run here; Northshire G/L
+remains unauthorized; no aura-specific or cooldown-tail unit case exists under the current test
+grant.

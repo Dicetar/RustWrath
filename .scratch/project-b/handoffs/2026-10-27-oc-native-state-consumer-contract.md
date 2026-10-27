@@ -70,10 +70,12 @@ For a slot with `AFLAG_DURATION` set:
   `category u16`, `spell_cd_ms u32`, `category_cd_ms u32`; exactly the pinned
   `Player::SendInitialSpells` tail. `category_cd_ms` bit 31 is the held/infinity mark and the low
   bits are the remaining time; a category spell carries `0` in `spell_cd_ms`.
-- `SessionEvent::SpellBook { spell_ids, cooldowns, observed_at_unix_ms }`: the packet-arrival
-  wall clock (0 = the producer has no clock, the 1.12 decoder). The stock cooldown handler maps
-  it onto the monotonic clock and seeds at arrival, so delivery queueing does not extend a
-  login cooldown. Your consumers see ordinary `GetSpellCooldown` values; nothing to change.
+- `SessionEvent::SpellBook { spell_ids, cooldowns, received_at: Option<Instant> }`: the
+  monotonic instant read where the producer took the packet off the stream (`None` = the 1.12
+  decoder has no clock). The stock cooldown handler seeds the existing owner at that exact
+  instant, so delivery queueing cannot extend a login cooldown and no wall-clock comparison can
+  be perturbed by a clock adjustment. Your consumers see ordinary `GetSpellCooldown` values;
+  nothing to change.
 - `ServerEvent::InitialSpells { spells, cooldowns, declared_cooldowns }`. The writer declares
   `m_spellCooldowns.size()` but skips entries it marks not client-visible; the flag is persisted
   per row (`character_spell_cooldown.needSend`), so a returning character can load false entries
