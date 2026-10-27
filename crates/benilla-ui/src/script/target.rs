@@ -73,8 +73,9 @@ impl UiTarget {
     }
 }
 
-// The target CastingBarFrame/UnitFrame subscriptions plus installed combatlogfix's success event.
-// Producers remain separate; admitting a listener must not invent a cast, identity or timestamp.
+// Observed subscriptions in the pinned 3.3.5 FrameXML (wowgaming/3.3.5-interface-files,
+// d0339b17b0221db76e6acd2dc2915d224a5b62ca), plus installed combatlogfix's success event.
+// This extends listener admission, not native event IDs or producer/payload coverage.
 const WRATH_INGAME_EVENTS: &[&str] = &[
     "UNIT_RUNIC_POWER",
     "UNIT_MAXRUNIC_POWER",
@@ -89,4 +90,53 @@ const WRATH_INGAME_EVENTS: &[&str] = &[
     "UNIT_SPELLCAST_CHANNEL_STOP",
     "UNIT_SPELLCAST_INTERRUPTIBLE",
     "UNIT_SPELLCAST_NOT_INTERRUPTIBLE",
+    // UIParent and Player/Unit/CastingBar/Buff/Rune/Pet/Target/PartyMember/Focus frames.
+    // Names already present in the donor catalog are deliberately not repeated here.
+    "ACHIEVEMENT_EARNED",
+    "ADDON_ACTION_BLOCKED",
+    "ARENA_TEAM_INVITE_REQUEST",
+    "AUCTION_HOUSE_DISABLED",
+    "BARBER_SHOP_CLOSE",
+    "BARBER_SHOP_OPEN",
+    "CANCEL_SUMMON",
+    "CHANNEL_INVITE_REQUEST",
+    "CHANNEL_PASSWORD_REQUEST",
+    "CONFIRM_DISENCHANT_ROLL",
+    "DISABLE_TAXI_BENCHMARK",
+    "ENABLE_TAXI_BENCHMARK",
+    "END_BOUND_TRADEABLE",
+    "END_REFUND",
+    "GOSSIP_CONFIRM",
+    "GOSSIP_CONFIRM_CANCEL",
+    "GUILDBANKFRAME_CLOSED",
+    "GUILDBANKFRAME_OPENED",
+    "INSTANCE_ENCOUNTER_ENGAGE_UNIT",
+    "INSTANCE_LOCK_START",
+    "INSTANCE_LOCK_STOP",
+    "LEVEL_GRANT_PROPOSED",
+    "MACRO_ACTION_BLOCKED",
+    "MUTELIST_UPDATE",
+    "PET_RENAMEABLE",
+    "PLAYER_FOCUS_CHANGED",
+    "PLAYER_ROLES_ASSIGNED",
+    "RAID_INSTANCE_WELCOME",
+    "RAISED_AS_GHOUL",
+    "READY_CHECK_CONFIRM",
+    "READY_CHECK_FINISHED",
+    "RUNE_POWER_UPDATE",
+    "RUNE_TYPE_UPDATE",
+    "SOCKET_INFO_UPDATE",
+    "TALENTS_INVOLUNTARILY_RESET",
+    "UNIT_ENTERED_VEHICLE",
+    "UNIT_ENTERING_VEHICLE",
+    "UNIT_EXITED_VEHICLE",
+    "UNIT_EXITING_VEHICLE",
+    "UNIT_THREAT_SITUATION_UPDATE",
+    "USE_GLYPH",
+    "VOICE_PUSH_TO_TALK_START",
+    "VOICE_PUSH_TO_TALK_STOP",
+    "VOICE_START",
+    "VOICE_STATUS_UPDATE",
+    "VOICE_STOP",
+    "WOW_MOUSE_NOT_FOUND",
 ];
