@@ -630,6 +630,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }
         })?,
     )?;
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        // Read the applied row, as GetCVar does; no default/pending value or second registry.
+        // Behavioral reference: wowless/modules/cvars.lua C_CVar.GetCVarBool (string == "1").
+        lua.globals().set("GetCVarBool", lua.create_function(|lua, args: mlua::MultiValue| {
+            let Some(name) = cvar_arg(args.front()) else {
+                return Err(mlua::Error::runtime("Usage: GetCVarBool(\"cvar\")"));
+            };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.cvars.get(&name.to_ascii_lowercase()).map(|slot| slot.value == "1"))
+        })?)?;
+    }
     // ── The Video options Multisampling dropdown ──────────────────────────────────────────────
     // As `OptionsFrame.lua` drives it: `_OnLoad` seeds the selection from
     // `GetCurrentMultisampleFormat()`, `_Initialize` walks `GetMultisampleFormats()` three values
