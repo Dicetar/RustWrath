@@ -115,6 +115,37 @@ Installed addon sources were inspected read-only, not copied:
 
 ## Later verification scope, only after an explicit grant
 
+### 2026-10-28 tooltip callback identity preservation
+
+fdfd077a repairs the concrete GetItem callback dependency in installed WM_MulticlassHunt.lua
+lines 100-101: OnTooltipSetItem reads the link to recognize item 910031. The source views
+already had links, but several tooltip setters dropped them. GetItem also preferred the base
+template name over the instance's suffixed name.
+
+The existing ItemBuild now retains source-view links from loot/roll blocks, trade sides,
+auction listings, merchant/buyback rows, owned action items, auction-sell items and outgoing
+mail items. HeldObject carries the same link from its container/equipment view, including
+the existing uncached-link case. Cache rebuilds update it alongside the held instance rather
+than keeping an older link while replacing the item's other fields.
+
+Wrath GetItem returns the instance/source name before the base template name. A real
+template-only build may use the existing target-aware template link formatter. A block or
+instance with no source link does not receive a fabricated zero-enchant/zero-property link.
+The getter can use an existing held-object link when the build had not retained one.
+
+This preserves the source-view bytes as supplied; it does not upgrade the legacy formats
+still emitted by unmigrated native/app producers. Inbox block sources without a source link
+remain incomplete. Callback timing, clear/hide behavior, server permissions and the native
+item authority were not changed. OnTooltipSetItem still fires through its existing owner
+after the item build is retained.
+
+Installed WM_MulticlassHunt.lua SHA-256:
+56E15F9AB6C4375C6E4CC4DDC493B8998F1277342F415406B2E31606CD9DE0CD.
+
+No tests/new cases, build, linter, import, game/addon execution or runtime check was performed.
+Rust partial-move/type correctness, rebuild behavior and Hunt's actual tooltip decoration
+require later authorized evidence; source connection is not addon acceptance.
+
 ### 2026-10-28 class restrictions and heirloom titles
 
 3bc849ae fixes the renderer's donor-only class list in Wrath mode. CLASSMASK_ALL_PLAYABLE

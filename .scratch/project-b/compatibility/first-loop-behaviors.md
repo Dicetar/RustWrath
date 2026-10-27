@@ -297,4 +297,12 @@ Donor mode and server permission checks are unchanged. OC's dirty Model/loader f
 preserved. Source-only, with no check/test/new case or runtime execution; non-English data,
 exact native gender selection and full item/addon/gameplay acceptance remain unverified.
 
+Tooltip callback identity at fdfd077a: existing loot/roll/trade/auction/merchant/held-item links
+now survive into ItemBuild and held-item rebuilds. Wrath GetItem prefers the instance/source
+name over the unsuffixed template name, with template-link synthesis confined to genuine
+template-only builds. This addresses the source dependency in WM_MulticlassHunt's
+OnTooltipSetItem handler for item 910031. It preserves existing source-link bytes and does
+not restore fields dropped upstream or migrate remaining producer formats. No builds,
+tests/new cases, addon or rendered/live acceptance ran; inbox blocks without links remain open.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
