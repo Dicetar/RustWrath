@@ -228,6 +228,18 @@ pub(super) fn render_view_flagged(
     } else {
         None
     };
+    let race_mask = if target == crate::script::UiTarget::Wrath335 {
+        crate::script::class_names::playable_race_mask()
+    } else {
+        full_mask(&RACE_NAMES)
+    };
+    let race_names = if target == crate::script::UiTarget::Wrath335
+        && v.allowable_race > 0 && v.allowable_race & race_mask != race_mask
+    {
+        Some(crate::script::class_names::race_requirement_names(lua, v.allowable_race)?)
+    } else {
+        None
+    };
     let (req, known_spell, taught_known, set_view, equipped, rank_title) = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         let known =
@@ -704,13 +716,14 @@ pub(super) fn render_view_flagged(
             )?;
         }
     }
-    if v.allowable_race > 0 && (v.allowable_race & full_mask(&RACE_NAMES)) != full_mask(&RACE_NAMES)
+    if v.allowable_race > 0 && (v.allowable_race & race_mask) != race_mask
     {
-        let list: Vec<&str> = RACE_NAMES
-            .iter()
-            .filter(|&&(id, _)| v.allowable_race & (1 << (id - 1)) != 0)
-            .map(|&(_, n)| n)
-            .collect();
+        let list: Vec<&str> = match &race_names {
+            Some(names) => names.iter().map(String::as_str).collect(),
+            None => RACE_NAMES.iter()
+                .filter(|&&(id, _)| v.allowable_race & (1 << (id - 1)) != 0)
+                .map(|&(_, name)| name).collect(),
+        };
         if !list.is_empty() {
             let ok = req.race_id > 0 && v.allowable_race & (1 << (req.race_id - 1)) != 0;
             keyed(

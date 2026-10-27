@@ -28,6 +28,28 @@ pub(crate) struct ClassNameSnapshot {
 
 // AzerothCore 12340 SharedDefines.h CLASSMASK_ALL_PLAYABLE includes Death Knight (6).
 const PLAYABLE_CLASSES: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11];
+// 12340 playable races exclude Goblin (9); Blood Elf and Draenei are 10 and 11.
+const PLAYABLE_RACES: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11];
+
+struct RaceNameSnapshot {
+    locale: usize,
+    rows: std::collections::HashMap<u8, String>,
+}
+
+pub(super) fn playable_race_mask() -> i32 {
+    PLAYABLE_RACES.iter().fold(0, |mask, &id| mask | (1 << (id - 1)))
+}
+
+pub(super) fn race_requirement_names(lua: &Lua, allowed: i32) -> mlua::Result<Vec<String>> {
+    let locale = lua.app_data_ref::<Model>().expect("model").locale;
+    let snapshot = lua.app_data_ref::<RaceNameSnapshot>()
+        .filter(|snapshot| snapshot.locale == locale)
+        .ok_or_else(|| mlua::Error::runtime("Item race requirements: localized catalog unavailable"))?;
+    PLAYABLE_RACES.iter().filter(|&&id| allowed & (1 << (id - 1)) != 0)
+        .map(|id| snapshot.rows.get(id).cloned().ok_or_else(|| mlua::Error::runtime(format!(
+            "Item race requirements: localized race {id} unavailable"
+        )))).collect()
+}
 
 pub(super) fn playable_class_mask() -> i32 {
     PLAYABLE_CLASSES.iter().fold(0, |mask, &id| mask | (1 << (id - 1)))
@@ -52,6 +74,33 @@ pub(super) fn requirement_names(lua: &Lua, allowed: i32) -> mlua::Result<Vec<Str
 }
 
 impl UiScript {
+    /// Seat selected-locale race labels from the existing ChrRaces owner, without Lua tables.
+    /// Candidate validation precedes replacement, as for the class-label projection.
+    pub fn set_localized_race_names(&mut self, locale: usize, rows: Vec<(u8, String)>) -> mlua::Result<()> {
+        let model = self.model_ref();
+        if model.target != UiTarget::Wrath335 || locale != model.locale {
+            return Err(mlua::Error::runtime("Localized race projection requires the current Wrath locale"));
+        }
+        let mut names = std::collections::HashMap::new();
+        for (id, name) in rows {
+            if name.is_empty() || names.insert(id, name).is_some() {
+                return Err(mlua::Error::runtime("Localized race projection has missing labels or duplicate IDs"));
+            }
+        }
+        for id in PLAYABLE_RACES {
+            if !names.contains_key(&id) {
+                return Err(mlua::Error::runtime(format!("Localized race projection lacks playable race {id}")));
+            }
+        }
+        drop(model);
+        self.lua.set_app_data(RaceNameSnapshot { locale, rows: names });
+        Ok(())
+    }
+
+    pub fn clear_localized_race_names(&mut self) {
+        self.lua.remove_app_data::<RaceNameSnapshot>();
+    }
+
     /// Publish an observed catalog before loading the target Constants.lua in either VM.
     /// Native IDs must be checked-converted by the caller, never truncated. Candidate
     /// validation precedes replacement; an invalid candidate preserves the previous view.

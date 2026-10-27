@@ -355,7 +355,7 @@ impl UiScript {
 
     /// Seat the install's locale index, which start-up reads from `Wow.ini` once (`0x402562`); an
     /// index past the target's locale table reads as 0. Changing locale invalidates the
-    /// localized class projection; the host must reseat metadata before loading FrameXML.
+    /// localized class/race projections; the host must reseat metadata before loading FrameXML.
     pub fn set_locale(&mut self, index: usize) {
         let mut model = self.model_mut();
         let locale = if index < model.target.locale_names().len() {
@@ -363,10 +363,15 @@ impl UiScript {
         } else {
             0
         };
-        if model.locale != locale {
+        let changed = model.locale != locale;
+        if changed {
             model.localized_class_names = None;
         }
         model.locale = locale;
+        drop(model);
+        if changed {
+            self.clear_localized_race_names();
+        }
     }
 
     /// `Wow.ini`'s `Region` as seated, 0 until the host seats the install's.

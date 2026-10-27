@@ -164,7 +164,50 @@ fn classes_for_ui(world: &mut World) -> Option<ChrClasses> {
     }
 }
 
-/// Seat the target VM's localized class projection, before GlueXML/FrameXML execute the stock
+fn localized_race_names(races: &ChrRaces, locale: usize) -> Result<Vec<(u8, String)>, String> {
+    let rows = races.localized_labels(locale).ok_or_else(|| {
+        format!("ChrRaces.dbc has no 12340 labels at locale {locale}")
+    })?;
+    rows.into_iter().filter(|row| matches!(row.id, 1..=8 | 10 | 11))
+        .map(|row| {
+            let id = u8::try_from(row.id).map_err(|_| format!("race {} exceeds the UI ID range", row.id))?;
+            let name = row.male.ok_or_else(|| format!(
+                "ChrRaces.dbc race {id} has no male/base label at locale {locale}"
+            ))?;
+            Ok((id, name))
+        }).collect()
+}
+
+fn seat_localized_race_names(world: &mut World, script: &mut UiScript) {
+    let table = if let Some(table) = world.get_resource::<ChrRaceTable>() {
+        table.0.clone()
+    } else {
+        let loaded = world.get_resource::<WorldAssets>().map(|assets| {
+            benilla_formats::load_chr_races(&mut assets.chain.lock_recover())
+        });
+        match loaded {
+            Some(Ok(table)) => {
+                world.insert_resource(ChrRaceTable(table.clone()));
+                table
+            }
+            Some(Err(error)) => {
+                warn!("ui_script: race catalog unavailable before metadata seating: {error:#}");
+                return;
+            }
+            None => return,
+        }
+    };
+    match localized_race_names(&table, script.locale()) {
+        Ok(rows) => {
+            if let Err(error) = script.set_localized_race_names(script.locale(), rows) {
+                error!("ui_script: localized race projection refused: {error}");
+            }
+        }
+        Err(error) => warn!("ui_script: localized race projection unavailable: {error}"),
+    }
+}
+
+/// Seat the target VM's localized class/race projections, before GlueXML/FrameXML execute the stock
 /// `Constants.lua`. A 1.12 VM is untouched; a 12340 VM without a complete catalog logs and
 /// leaves `FillLocalizedClassList` unavailable rather than inventing labels.
 pub(crate) fn seat_localized_class_names(world: &mut World, script: &mut UiScript) {
@@ -184,6 +227,7 @@ pub(crate) fn seat_localized_class_names(world: &mut World, script: &mut UiScrip
         }
         Err(error) => warn!("ui_script: FillLocalizedClassList catalog unavailable: {error}"),
     }
+    seat_localized_race_names(world, script);
 }
 
 /// The same projection for a host that owns an archive chain but no Bevy store (direct-VM
@@ -202,7 +246,12 @@ pub(crate) fn seat_localized_class_names_from_chain(
     let rows = localized_class_names(&classes, locale)?;
     script
         .set_localized_class_names(locale, rows)
-        .map_err(|error| format!("the localized class catalog was refused: {error}"))
+        .map_err(|error| format!("the localized class catalog was refused: {error}"))?;
+    let races = benilla_formats::load_chr_races(chain)
+        .map_err(|error| format!("ChrRaces.dbc failed to load ahead of the UI bootstrap: {error:#}"))?;
+    let rows = localized_race_names(&races, locale)?;
+    script.set_localized_race_names(locale, rows)
+        .map_err(|error| format!("the localized race catalog was refused: {error}"))
 }
 
 fn load_chr_races(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
