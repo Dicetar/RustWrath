@@ -283,3 +283,14 @@ the current handler admits only item/enchant links and silently returns for this
 Use the existing tooltip_spell::set_spell_by_id renderer/cache/clear owner. No catalog,
 mock tooltip, new test case or verification execution is introduced. Installed spellbook
 SHA-256: FDD215FF216F05E388BE94D8348CD7BE11026A4B664709A1EAAD62F2AB45381E.
+
+Item-query continuation claim: script/item_stats.rs, new production child item_stats/wrath.rs,
+and the already claimed tooltip_item/mod.rs. Current files are clean at b4ba2d25. The installed
+WM_SpellmakingAdvanced.lua:518 reads icon at GetItemInfo result 10; Bagnon's
+LibItemSearch-1.0.lua:203 reads item level at 4. The shared binding still returns donor 9
+values and rejects escaped item links. Add a Wrath adapter using the same item_templates and
+item_stat_reads owners, preserving donor registration/tuples. Decode the nine-field 12340
+link from the pinned AC HyperlinkTags.cpp::LinkTags::item::StoreTo: permanent enchant, three
+gem enchants, reserved word, signed property, suffix factor, render level. Never read gem 1
+as a donor property. Keep negative-suffix scaling explicitly open; no data owner is invented.
+No builds/tests/new cases or runtime actions are authorized by this source claim.
