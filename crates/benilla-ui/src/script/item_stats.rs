@@ -486,6 +486,13 @@ pub(super) fn item_link_for_target(target: super::UiTarget, item_id: u32, name: 
     }
 }
 
+impl super::UiScript {
+    /// Format a template-only link in this VM's client layout, without instance fields.
+    pub fn template_item_link(&self, item_id: u32, name: &str, quality: u32) -> String {
+        item_link_for_target(self.model_ref().target, item_id, name, quality)
+    }
+}
+
 /// `InventoryType` → `GetItemInfo`'s `itemEquipLoc`, the reference's 30-pointer table at
 /// `0x83ddb0` (`0x48e29b`): slots 0 and 29 are the shared `""` (`0x882748`), not nil, and four
 /// tokens (`AMMO`, `THROWN`, `RANGEDRIGHT`, `QUIVER`) have no `GlobalStrings.lua` entry.

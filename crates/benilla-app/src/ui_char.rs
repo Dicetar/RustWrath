@@ -775,7 +775,7 @@ pub(crate) fn feed_char(
             memo.last_stats = Some(stats);
         }
 
-        let inv = inventory_slots(
+        let mut inv = inventory_slots(
             store,
             objects,
             &items,
@@ -788,7 +788,7 @@ pub(crate) fn feed_char(
             sub_classes.as_deref(),
             classes.as_deref().map(|t| &t.0),
         );
-        let bank_bags = bank_bag_slots(
+        let mut bank_bags = bank_bag_slots(
             store,
             objects,
             &items,
@@ -800,6 +800,31 @@ pub(crate) fn feed_char(
             &names,
             sub_classes.as_deref(),
         );
+        if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+            let rolls = crate::items::RollCatalogs {
+                enchants: enchants.as_deref(),
+                props: props.as_deref(),
+            };
+            let render_level = store.0.unit_level().unwrap_or(0);
+            for slot in inv.iter_mut().chain(bank_bags.iter_mut()).flatten() {
+                if let Some(fields) = objects.object(slot.guid).filter(|_| slot.guid != 0) {
+                    let template = items.template(slot.item_id, slot.guid, Ask::Read);
+                    let link = crate::ui_items::object_link_in_target(
+                        script.target(), render_level, fields, template, rolls,
+                    );
+                    if slot.link.is_some() {
+                        slot.link = Some(link);
+                    } else {
+                        slot.uncached_link = Some(link);
+                    }
+                } else if slot.guid == 0 && slot.link.is_some() {
+                    // Ammo is a template-only view; no instance/socket fields are available.
+                    slot.link = Some(script.template_item_link(
+                        slot.item_id, slot.name.as_deref().unwrap_or(""), slot.quality as u32,
+                    ));
+                }
+            }
+        }
         // The doll's `UNIT_INVENTORY_CHANGED` is its producers' alone, the visible-item bridge, the
         // ammunition watch and the item paths ([`crate::field_watch`], [`crate::item_watch`]),
         // fired after this push; a view change raises none, a repair's durability included, which
