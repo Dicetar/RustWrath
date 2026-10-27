@@ -240,4 +240,14 @@ See ../checkpoints/2026-10-27-astra-oc-metadata-source-review.md for the source 
 owner documentation still requiring reconciliation. The source defect is repaired, but no
 compile/test/non-English data or real host acceptance ran after it. Owner WIP is preserved.
 
+Authorized regression supersession at b52ad4d3: exactly eight new cases in the existing UI
+target source file, then one check and one UI library test invocation in a clean pinned
+checkout. Check passed; UI: 3,329 passed, three failed, one ignored. Seven new cases passed
+(class projection, Lua boundaries, event queries, geometry, disabled motion, inherited XML,
+re-entrant enter lifecycle). The eighth exposed SetShown missing from texture/fontstring leaf
+tables; 67511a2a repairs only that publication in source. The failing test remains intact and
+the repair was not rerun. The two other failures are the known timezone expectations.
+Evidence and exact scope: ../verification/2026-10-27-astra-ui4/summary.md. No app, real-profile
+bootstrap, installed-addon, graphical/live, WM or full-replacement acceptance changed.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
