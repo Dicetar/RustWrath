@@ -1,10 +1,11 @@
 # Run card — rendered connected Northshire loop (requested execution)
 
 Date: 2026-10-27. Owner: OpenCode (client/gameplay integration lead).
-Source identity: `wotlk` at the commit that adds this file; `cargo check -p benilla-app --lib`
-and `cargo check -p benilla` were run at `d8250c5c` (a8a51af9 + Astra's cast UI commits) and
-passed. This file is the single bounded execution request for the graphical/live (G/L) gates;
-it grants nothing by itself.
+Source identity: `wotlk` at the tip the owner actually builds; record its commit in the evidence.
+Verification behind this card: `cargo check`/`cargo build -p benilla` at `d8250c5c`, and
+`cargo check` for protocol/app/driver plus the 12 wrath and Wrath UI slice tests at `adc8a631`
+(the native aura observation repair). This file is the single bounded execution request for the
+graphical/live (G/L) gates; it grants nothing by itself.
 
 ## State already verified read-only
 
