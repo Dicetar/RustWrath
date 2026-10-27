@@ -66,8 +66,8 @@ fn getn_(vm: &mut Vm, nargs: usize) -> R<usize> {
 
 /// `luaB_setn` (`0x7fb670`).
 fn setn_(vm: &mut Vm, nargs: usize) -> R<usize> {
-    if vm.dialect().is_51() { return Err(vm.error_at(1, "'setn' is obsolete")); }
     let t = vm.check_table(nargs, 1)?;
+    if vm.dialect().is_51() { return Err(vm.error_at(1, "'setn' is obsolete")); }
     let n = vm.check_int(nargs, 2)?;
     setn(vm, t, n);
     Ok(0)
@@ -136,6 +136,11 @@ fn foreach(vm: &mut Vm, nargs: usize) -> R<usize> {
 fn insert(vm: &mut Vm, nargs: usize) -> R<usize> {
     let t = vm.check_table(nargs, 1)?;
     let mut n = getn(vm, t) as i64 + 1;
+    // Lua 5.1 ltablib.c::tinsert switches on exactly two or three arguments. The
+    // inherited 5.0 path deliberately accepts every other arity as the position form.
+    if vm.dialect().is_51() && !matches!(nargs, 2 | 3) {
+        return Err(vm.error_at(1, "wrong number of arguments to 'insert'"));
+    }
     let (pos, v) = if nargs == 2 {
         (n, vm.arg(nargs, 1))
     } else {
@@ -165,6 +170,11 @@ fn remove(vm: &mut Vm, nargs: usize) -> R<usize> {
     let t = vm.check_table(nargs, 1)?;
     let n = getn(vm, t) as i64;
     let mut pos = vm.opt_int(nargs, 2, n as i32)? as i64;
+    // 5.1 refuses an out-of-range position before any write. The vanilla path below
+    // can remove the final element even when the requested position is past the end.
+    if vm.dialect().is_51() && !(1..=n).contains(&pos) {
+        return Ok(0);
+    }
     if n <= 0 {
         return Ok(0);
     }
@@ -186,6 +196,7 @@ fn remove(vm: &mut Vm, nargs: usize) -> R<usize> {
 /// or a number. Its arguments are read 2, 3, 4, then the table (`0x7fb84c`..`0x7fb88e`); a `j`
 /// of 0, its default, is `getn` (`0x7fb893`).
 fn concat(vm: &mut Vm, nargs: usize) -> R<usize> {
+    if vm.dialect().is_51() { return concat_51(vm, nargs); }
     let sep = vm.opt_str(nargs, 2, b"")?;
     let first = vm.opt_int(nargs, 3, 1)?;
     let mut last = vm.opt_int(nargs, 4, 0)?;
@@ -209,6 +220,40 @@ fn concat(vm: &mut Vm, nargs: usize) -> R<usize> {
         if i != i64::from(last) {
             vm.reserve(&mut out, sep.len())?;
             out.extend_from_slice(&sep);
+        }
+    }
+    Ok(vm.ret_str(&out))
+}
+
+/// Lua 5.1.5 ltablib.c::tconcat/addfield. In particular, an explicit end index of
+/// zero is an empty interval, not the 5.0 sentinel for the default table length.
+fn concat_51(vm: &mut Vm, nargs: usize) -> R<usize> {
+    let separator = vm.opt_str(nargs, 2, b"")?;
+    let table = vm.check_table(nargs, 1)?;
+    let first = vm.opt_int(nargs, 3, 1)?;
+    let default_last = getn(vm, table) as i32;
+    let last = vm.opt_int(nargs, 4, default_last)?;
+    // Retain binary separator bytes across element conversions without an unchecked clone.
+    let mut separator_bytes = Vec::new();
+    vm.reserve(&mut separator_bytes, vm.heap.str(separator).len())?;
+    separator_bytes.extend_from_slice(vm.heap.str(separator));
+    let mut out = Vec::new();
+    for index in i64::from(first)..=i64::from(last) {
+        let value = rawgeti(vm, table, index);
+        let Some(string) = matches!(value.unpack(), V::Str(_) | V::Num(_))
+            .then(|| vm.tostr(value))
+            .flatten()
+        else {
+            return Err(vm.rt_error(&format!(
+                "invalid value ({}) at index {index} in table for 'concat'",
+                value.type_name(),
+            )));
+        };
+        vm.reserve(&mut out, vm.heap.str(string).len())?;
+        out.extend_from_slice(vm.heap.str(string));
+        if index != i64::from(last) {
+            vm.reserve(&mut out, separator_bytes.len())?;
+            out.extend_from_slice(&separator_bytes);
         }
     }
     Ok(vm.ret_str(&out))
