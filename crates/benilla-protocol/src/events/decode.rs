@@ -82,7 +82,7 @@ pub fn decode(packet: ServerPacket) -> Vec<SessionEvent> {
             cooldowns,
             // The 1.12 stream decodes without attaching a clock; the consumer keeps its
             // consumption-time behavior for this producer.
-            observed_at_unix_ms: 0,
+            received_at: None,
         }],
         ServerPacket::ActionButtons { buttons } => vec![SessionEvent::ActionButtons { buttons }],
         ServerPacket::LearnedSpell { spell_id } => vec![SessionEvent::SpellLearned {

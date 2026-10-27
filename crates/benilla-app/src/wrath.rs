@@ -2018,7 +2018,7 @@ fn vanilla_target_mask(mask: u32) -> u16 {
 fn translate_gameplay(
     event: WrathGameplayEvent,
     self_guid: u64,
-    observed_at_unix_ms: i64,
+    received_at: Instant,
 ) -> Vec<SessionEvent> {
     match event {
         WrathGameplayEvent::AttackStart { attacker, victim } => {
@@ -2303,7 +2303,7 @@ fn translate_gameplay(
             }
             vec![SessionEvent::SpellBook {
                 spell_ids: spells,
-                observed_at_unix_ms,
+                received_at: Some(received_at),
                 cooldowns: cooldowns
                     .into_iter()
                     .map(|cd| benilla_protocol::messages::SpellCooldown {
@@ -5321,7 +5321,8 @@ pub fn run_session_with_cancel(
         }
         match world.recv() {
             Ok(p) => {
-                last_server_response = std::time::Instant::now();
+                let received_at = Instant::now();
+                last_server_response = received_at;
                 session.reduce(p.opcode, &p.payload, now_ms())?;
                 if let Some(parsed) = gameplay::parse(p.opcode, &p.payload) {
                     match parsed {
@@ -5337,7 +5338,7 @@ pub fn run_session_with_cancel(
                                     for event in translate_gameplay(
                                         event,
                                         session.player_guid().unwrap_or(0),
-                                        now_ms(),
+                                        received_at,
                                     ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
@@ -5362,7 +5363,7 @@ pub fn run_session_with_cancel(
                                     for event in translate_gameplay(
                                         event,
                                         session.player_guid().unwrap_or(0),
-                                        now_ms(),
+                                        received_at,
                                     ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
@@ -5385,7 +5386,7 @@ pub fn run_session_with_cancel(
                                     for event in translate_gameplay(
                                         event,
                                         session.player_guid().unwrap_or(0),
-                                        now_ms(),
+                                        received_at,
                                     ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
@@ -5423,7 +5424,7 @@ pub fn run_session_with_cancel(
                                     for event in translate_gameplay(
                                         event,
                                         session.player_guid().unwrap_or(0),
-                                        now_ms(),
+                                        received_at,
                                     ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
@@ -5495,7 +5496,7 @@ pub fn run_session_with_cancel(
                                     for event in translate_gameplay(
                                         event,
                                         session.player_guid().unwrap_or(0),
-                                        now_ms(),
+                                        received_at,
                                     ) {
                                         let _ = events_out
                                             .send(WrathSessionEvent::scoped(&session, event));
