@@ -4,7 +4,7 @@
 //! https://github.com/wowless/wowless/blob/main/elune/liblua/lstrlib.c
 
 use crate::api::R;
-use crate::value::{StrRef, Value};
+use crate::value::StrRef;
 use crate::vm::Vm;
 
 pub(super) fn open(vm: &mut Vm) {
@@ -24,10 +24,14 @@ fn charset(bytes: &[u8]) -> [bool; 256] {
     set
 }
 
-fn push_slice(vm: &mut Vm, string: StrRef, first: usize, end: usize) {
-    let result = vm.heap.intern_with(|heap, bytes|
-        bytes.extend_from_slice(&heap.str(string)[first..end]));
-    vm.push(Value::Str(result));
+fn push_slice(vm: &mut Vm, string: StrRef, first: usize, end: usize, bytes: &mut Vec<u8>) -> R<()> {
+    bytes.clear();
+    vm.reserve(bytes, end - first)?;
+    bytes.extend_from_slice(&vm.heap.str(string)[first..end]);
+    let result = vm.str(bytes);
+    if vm.heap.oom { return Err(vm.memory_error()); }
+    vm.push(result);
+    Ok(())
 }
 
 fn split(vm: &mut Vm, nargs: usize) -> R<usize> {
@@ -41,6 +45,7 @@ fn split(vm: &mut Vm, nargs: usize) -> R<usize> {
     vm.top = vm.native_base() + 2;
     let mut first = 0;
     let mut count = 0;
+    let mut bytes = Vec::new();
     loop {
         if !vm.check_stack(1) {
             return Err(vm.error_at(1, "stack overflow (strsplit())"));
@@ -51,7 +56,7 @@ fn split(vm: &mut Vm, nargs: usize) -> R<usize> {
                 .position(|&byte| delimiters[usize::from(byte)])
                 .map_or(length, |offset| first + offset)
         };
-        push_slice(vm, string, first, end);
+        push_slice(vm, string, first, end, &mut bytes)?;
         count += 1;
         if end == length { return Ok(count); }
         first = end + 1;
@@ -69,7 +74,7 @@ fn trim(vm: &mut Vm, nargs: usize) -> R<usize> {
     let mut end = bytes.len();
     while first < end && delimiters[usize::from(bytes[first])] { first += 1; }
     while end > first && delimiters[usize::from(bytes[end - 1])] { end -= 1; }
-    push_slice(vm, string, first, end);
+    push_slice(vm, string, first, end, &mut Vec::new())?;
     Ok(1)
 }
 
