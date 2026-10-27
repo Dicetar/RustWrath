@@ -358,7 +358,7 @@ fn load_vanilla(bytes: &[u8], locale: Locale) -> Result<ChrClasses> {
 fn pet_name_token_wrath(rs: &RecordSet, r: &Record) -> Option<String> {
     let offset = u32_at(r, WRATH_PET_NAME_TOKEN_FIELD)?;
     let token = rs.get_string(StringRef(offset)).ok()?;
-    matches!(token, "PET" | "DEMON").then(|| token.to_string())
+    matches!(token.as_ref(), "PET" | "DEMON").then(|| token.to_string())
 }
 
 fn load_wrath(bytes: &[u8], locale_index: usize) -> Result<ChrClasses> {
