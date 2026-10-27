@@ -1045,18 +1045,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 // The resolver failed (`0x4f990d`): nothing is pushed (`0x4f9810`).
                 return Ok(mlua::MultiValue::new());
             };
-            let (info, locked) = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let (info, locked, wrath, lootable) = {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                 let info = model.bag_slot(bag, slot).cloned();
                 let locked = info
                     .as_ref()
                     .is_some_and(|s| cursor::item_locked(&model, s.guid));
-                (info, locked)
+                let wrath = model.target == super::UiTarget::Wrath335;
+                let lootable = if wrath {
+                    info.as_ref().and_then(|s| {
+                        if let Some(template) = model.item_templates.get(&s.item_id) {
+                            // AzerothCore ItemTemplate.h: ITEM_FLAG_HAS_LOOT = 0x4.
+                            Some(template.flags & 0x4 != 0)
+                        } else {
+                            if s.item_id != 0 {
+                                model.item_stat_reads.insert(s.item_id);
+                            }
+                            None
+                        }
+                    })
+                } else {
+                    None
+                };
+                (info, locked, wrath, lootable)
             };
             let Some(s) = info else {
                 return Ok(mlua::MultiValue::new());
             };
-            Ok(mlua::MultiValue::from_vec(vec![
+            let mut values = vec![
                 // A string on every path: the question mark while the template is unknown
                 // (`0x5d8af0`).
                 Value::String(
@@ -1076,7 +1092,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     s.inventory_type,
                 )),
                 flag(s.readable),
-            ]))
+            ];
+            if wrath {
+                // Bagnon itemSlotInfo.lua and 12340 ContainerFrame.lua's refund path read
+                // the seventh return as the original item link, including its instance fields.
+                values.push(lootable.map_or(Value::Nil, flag));
+                values.push(match s.link.as_deref().or(s.uncached_link.as_deref()) {
+                    Some(link) => Value::String(lua.create_string(link)?),
+                    None => Value::Nil,
+                });
+            }
+            Ok(mlua::MultiValue::from_vec(values))
         })?,
     )?;
 
