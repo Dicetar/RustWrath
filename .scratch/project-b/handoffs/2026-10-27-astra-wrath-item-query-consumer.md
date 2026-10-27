@@ -115,6 +115,40 @@ Installed addon sources were inspected read-only, not copied:
 
 ## Later verification scope, only after an explicit grant
 
+### Spellmaking cooldown query follow-through
+
+74a250ba closes another concrete installed-addon call mismatch: WM_SpellmakingV3.lua:296
+queries GetSpellCooldown(id), while the donor binding required (bookSlot, bookType).
+The Wrath installer now accepts the raw ID/name forms. Name lookup uses the existing book
+resolver and retains player/pet identity. Numeric IDs query the existing spell catalog and
+player Cooldowns owner directly, including spells not present as a visible book rank.
+
+Call chain: wrath_spell -> lent CallHost::spell_cooldown -> ScriptCallHost -> SpellQueries ->
+the existing player/pet cooldown list's info/ui_triple, projected with the same UiClock pair
+as feed_spellbook. A missing host, catalog row, active world or required resource returns nil,
+not an invented ready tuple. A resolved cold read returns (0, 0, 1). Held reads retain the
+existing query-time start and disabled flag; active/expired shaping shares cooldown_tuple
+with the original book binding. Explicit book-slot/pet-book calls retain that original path.
+
+No cast, query packet, timer, retry state, new cooldown list or resource owner was added.
+No test cases/assertions were changed. This source is uncompiled and untested. The added
+read-only SystemParam access still needs a granted host/app check; source inspection alone
+does not prove Bevy admission or live query timing. Initial-cooldown coverage, server facts,
+Wrath cooldown widget rendering and complete Spellwright/native extension acceptance remain
+separate requirements.
+
+Installed WM_Multiclass/WM_SpellmakingV3.lua SHA-256:
+C6BDF814772A8F9EA8EED56DE0AD65CA3942563E885F76D018487D170FAFB35C.
+
+### Remaining loot projection loss found during continuation
+
+At 74a250ba, wrath.rs maps WrathGameplayEvent::LootResponse into ProtocolLootItem, whose
+donor shape carries no random-suffix factor; its donor documentation assumes the server
+always sends zero. Wrath's source packet shape has a separate suffix field. Migrating only
+ui_loot's hyperlink formatter cannot restore a value the adapter drops. OC must preserve
+that source fact before any complete rolled-loot link/tooltip claim. No loot protocol or
+adapter file was edited in this continuation.
+
 The new source needs a UI crate check and target-specific evidence for numeric/bare/escaped
 item queries, eleven-value ordering, signed property preservation, gem/property separation,
 spell-link late-cache rebuild and donor behavior. No cases were created and no grant inferred.

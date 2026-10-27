@@ -270,4 +270,14 @@ compile/test/runtime result is claimed. Native projection still drops four bank 
 bank-bag slot and five item-enchant slots; inspect/trade/loot/auction links and negative-suffix
 scaling remain open. See the updated item-query handoff for exact boundaries and counter-evidence.
 
+Spellmaking source continuation at 74a250ba: GetSpellCooldown(spellID/name) in Wrath mode now
+reads the existing cooldown owner through the lent host and shared UiClock projection. The
+installed WM_SpellmakingV3.lua:296 call no longer goes through a mandatory donor book-slot
+marshaller. Missing query context remains nil; a resolved cold owner read is (0,0,1).
+Explicit book-slot/pet-book calls retain their existing path and shared held/expiry shaping.
+No new timer state, protocol command or test case was added. No check/test/runtime run occurred;
+host SystemParam admission, exact target ABI, Spellwright behavior and sweep rendering remain
+unverified/open. The item-query handoff also records the native loot suffix-factor loss that
+blocks a complete loot-link migration; formatting alone cannot repair dropped source data.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
