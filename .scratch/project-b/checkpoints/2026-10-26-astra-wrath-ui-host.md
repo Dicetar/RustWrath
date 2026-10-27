@@ -242,3 +242,18 @@ the tables from a ChromieCraft 3.3.5a executable; Astra did not extract or execu
 Pinned reference URLs:
 https://github.com/brues-code/ClassicAPI/blob/317539dbd8aa9e9cd7a23441c0e355bb85c7e2ab/docs/raw_wotlk_methods.txt
 https://github.com/brues-code/ClassicAPI/blob/317539dbd8aa9e9cd7a23441c0e355bb85c7e2ab/docs/raw_wotlk_globals.txt
+
+Fresh explicit grant: up to eight regression cases in existing UI source files, one cargo check
+and one benilla-ui library test invocation within 30 minutes, no reruns or app/runtime runs.
+Astra added exactly eight cases in script/target.rs at b52ad4d3. The pinned isolated pass
+compiled successfully and ran 3,333 existing/new UI cases: 3,329 passed, three failed, one
+ignored. Seven new Wrath cases passed; installed_mod_setters_reuse_visibility_and_button_state
+failed at its first texture SetShown call. The other two failures are the retained timezone
+expectations. No test was weakened, skipped or rerun. Logs: ../verification/2026-10-27-astra-ui4/.
+
+Concrete failure repair claim: script/region.rs leaf-method publication only. The SetShown
+callback exists in the full region table, but the Texture/FontString installers copy only
+the fixed donor method lists, omitting this extension. Publish that already-existing callback
+to the two Wrath leaf tables explicitly, leaving the title/vanilla lists unchanged. This is a
+reproduced method-registration omission, not speculative race/security hardening. The failed
+assertion stays intact. No new state or mechanism is needed and no rerun is authorized.
