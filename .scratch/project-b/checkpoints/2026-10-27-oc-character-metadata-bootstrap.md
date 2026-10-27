@@ -83,3 +83,14 @@ columns:
   filter. Wrath appearance guards are structural (no 12340 rows are vendored).
 - Explicit gaps: 12340 relic slot is unavailable (false, documented); Death-Knight-only
   CharSections children are not folded into the regular dials; live smoke still required.
+
+## Commit trail and next verification
+
+- `be8f68d4` claim; `b543578d` catalogs/projection/bootstrap/creation; `8910bcd0` Astra's
+  identity locale correction, label exports and empty fallback; `449644f6` remaining ChrRaces
+  readers; `b132f3ed` CharSections flag/name-width clarification; `50651467`/`78052a87` docs.
+- No build, test, DBC probe or smoke was run in this slice; the prior smoke grant is consumed.
+- Next honest checkpoint: a granted Wrath run with this catalog seated should pass
+  `Constants.lua:87` and reach the next FileXML stage; an enUS-only run proves slot 0 only.
+- Remaining gaps are explicit: 12340 relic flag/PetNameToken/damage bonus, the frozen
+  race-creature-type fallback for races 10/11, and live creation appearance data.
