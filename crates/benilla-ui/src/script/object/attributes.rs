@@ -31,8 +31,11 @@ pub(super) fn install(lua: &Lua, methods: &Table) -> mlua::Result<()> {
                 per
             }
         };
-        let previous: Value = per.raw_get(name.as_str())?;
-        if previous == value { return Ok(()); }
+        // Every set notifies, a same-value one included: the stock dropdown re-sets
+        // `createframes` to `true` on each button add to make
+        // `UIDropDownMenuDelegate_OnAttributeChanged` grow the list
+        // (`UIDropDownMenu.lua:223`-`225`), so a value-diff guard would stall its menus at the
+        // eight template buttons.
         per.raw_set(name.as_str(), value.clone())?;
         let args = vec![Value::String(lua.create_string(name)?), value];
         if let Err(error) = event::fire_widget_handler(lua, id, "OnAttributeChanged", args) {

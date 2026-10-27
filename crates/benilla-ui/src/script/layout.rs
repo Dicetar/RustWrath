@@ -100,6 +100,9 @@ impl InputFingerprint {
         self.feed(i.height.bits());
         self.f32(i.scale);
         self.feed(u64::from(i.clamp));
+        for inset in i.clamp_insets {
+            self.feed(inset.bits());
+        }
         self.f32(i.extent_x);
         self.f32(i.extent_y);
     }
@@ -1762,10 +1765,10 @@ impl UiScript {
         // run.
         ids.sort_unstable_by_key(|&(_, id)| id);
         for &(h, id) in &ids {
-            let (scale, clamp) = arena
+            let (scale, clamp, insets) = arena
                 .frame(h)
-                .map(|f| (f.effective_scale, f.clamped_to_screen))
-                .unwrap_or((1.0, false));
+                .map(|f| (f.effective_scale, f.clamped_to_screen, f.clamp_rect_insets))
+                .unwrap_or((1.0, false, [crate::layout::Len::Script(0.0); 4]));
             let input = layout_inputs.entry(h).or_default();
             // A moved effective scale clears the resolved bit (`0x768360` from `0x76acd5`).
             if input.scale.to_bits() != scale.to_bits() {
@@ -1775,6 +1778,7 @@ impl UiScript {
             // Clamp-to-screen is a frame property (geometry flags `0x10`), so every placement path
             // clamps alike, against the root's layout extent ([`LayoutInput::stored`]).
             input.clamp = clamp;
+            input.clamp_insets = insets;
         }
         pre.ids = pre.lap();
 
@@ -1947,14 +1951,17 @@ impl UiScript {
                     scope.targets = targets;
                     return false;
                 }
-                // The derivation's sync of the arena's scale and clamp into the layout input.
+                // The derivation's sync of the arena's scale, clamp and clamp insets into the
+                // layout input.
                 let (scale, clamp) = (frame.effective_scale, frame.clamped_to_screen);
+                let insets = frame.clamp_rect_insets;
                 let input = layout_inputs.entry(h).or_default();
                 if input.scale.to_bits() != scale.to_bits() {
                     layout_force.push(id);
                 }
                 input.scale = scale;
                 input.clamp = clamp;
+                input.clamp_insets = insets;
                 targets.clear();
                 targets.extend(input.anchors.iter().map(|a| a.relative_to));
                 let hash = frame_node_hash(input);

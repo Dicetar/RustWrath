@@ -712,6 +712,10 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
             // The donor lists above deliberately omit this installed-mod extension.
             // Publish the same region callback to both leaf kinds, not the title map.
             leaf.set("SetShown", m.get::<Value>("SetShown")?)?;
+            if key == REG_FONTSTRING_METHODS {
+                // 3.3.5a's FontString carries `SetFormattedText`; the 1.12 leaf does not.
+                leaf.set("SetFormattedText", m.get::<Value>("SetFormattedText")?)?;
+            }
         }
         lua.set_named_registry_value(key, leaf)?;
     }

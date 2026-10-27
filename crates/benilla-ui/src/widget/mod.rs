@@ -218,6 +218,8 @@ pub struct Frame {
     /// `SetHitRectInsets` or `<HitRectInsets>`: the mouse rect's `[left, right, top, bottom]`
     /// inset. Only the hit test reads it; drawing, anchoring and `GetLeft`/`GetWidth` do not.
     pub hit_rect_insets: [crate::layout::Len; 4],
+    /// `SetClampRectInsets`: the screen clamp rect's `[left, right, top, bottom]` inset, in script pixels. The wrath resolver reads it when a `SetClampedToScreen` frame is shifted back on screen; the 1.12 resolver has no such concept.
+    pub clamp_rect_insets: [crate::layout::Len; 4],
     /// `SetMovable`: only a guard, as `StartMoving` errors without it.
     pub movable: bool,
     /// `SetResizable`: the guard `StartSizing` checks.
@@ -586,6 +588,7 @@ impl WidgetArena {
             wheel_stamp: kb_stamp,
             clamped_to_screen: matches!(kind, FrameKind::GameTooltip),
             hit_rect_insets: [crate::layout::Len::Script(0.0); 4],
+            clamp_rect_insets: [crate::layout::Len::Script(0.0); 4],
             movable: false,
             resizable: false,
             min_resize: (

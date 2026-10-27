@@ -92,6 +92,26 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(crate::script::binding_abi::flag(owner == Some(fh)))
         })?,
     )?;
+    if lua.app_data_ref::<Model>().expect("model app_data").target
+        == crate::script::UiTarget::Wrath335
+    {
+        // 3.3.5a's `GameTooltip:GetOwner()` (`ActionButton.lua:265`, the tooltip refresh gate):
+        // the frame the last `SetOwner` named, or nil after a hide's un-own.
+        m.set(
+            "GetOwner",
+            lua.create_function(|lua, this: Table| {
+                let owner = with_tip(lua, &this, |t| t.owner)?;
+                let Some(h) = owner else {
+                    return Ok(Value::Nil);
+                };
+                let id = lua
+                    .app_data_mut::<Model>()
+                    .expect("model app_data")
+                    .frame_id(h);
+                Ok(Value::Table(crate::script::object::frame_wrapper(lua, id)?))
+            })?,
+        )?;
+    }
 
     // SetText(text, r, g, b, alpha, wrap) (`0x531b90`): alpha has its own number gate, default 1,
     // and a text that is neither string nor number raises the binding's usage error. It clears,

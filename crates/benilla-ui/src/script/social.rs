@@ -157,13 +157,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
     // ── The friend list ──
-    // GetNumFriends(): `0x5ad000` over CountFriends `0x5ae490`.
+    // GetNumFriends(): `0x5ad000` over CountFriends `0x5ae490`, one number. 3.3.5a adds the
+    // online count as a second value (`FloatingChatFrame.xml`'s friends micro button takes it),
+    // so the Wrath host answers the pair; the 1.12 host keeps the single value.
     g.set(
         "GetNumFriends",
         lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let slots = model.social.friends.iter().take(FRIEND_SLOTS);
-            Ok(slots.take_while(|f| f.listed).count() as i64)
+            let (total, online) = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let (mut total, mut online) = (0i64, 0i64);
+                for friend in model.social.friends.iter().take(FRIEND_SLOTS) {
+                    if !friend.listed {
+                        break;
+                    }
+                    total += 1;
+                    online += i64::from(friend.online);
+                }
+                (total, online)
+            };
+            if lua.app_data_ref::<Model>().expect("model app_data").target
+                == super::UiTarget::Wrath335
+            {
+                Ok(mlua::MultiValue::from_vec(vec![
+                    Value::Integer(total),
+                    Value::Integer(online),
+                ]))
+            } else {
+                Ok(mlua::MultiValue::from_vec(vec![Value::Integer(total)]))
+            }
         })?,
     )?;
 

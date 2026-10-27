@@ -64,7 +64,21 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         })?,
     )?;
 
-    // No `SetFormattedText`: not a 1.12 verb; 1.12 writes `SetText(format(fmt, ...))`.
+    // No `SetFormattedText` in the 1.12 leaf: not a 1.12 verb; 1.12 writes
+    // `SetText(format(fmt, ...))`. 3.3.5a carries the verb, formatting through Lua's own
+    // `string.format` (`FloatingChatFrame.xml:863` sizes the dock's tab count with it).
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        use mlua::ObjectLike;
+        m.set(
+            "SetFormattedText",
+            lua.create_function(|lua, (this, args): (Table, MultiValue)| {
+                let string: Table = lua.globals().get("string")?;
+                let format: mlua::Function = string.get("format")?;
+                let text: Value = format.call(args)?;
+                this.call_method::<()>("SetText", text)
+            })?,
+        )?;
+    }
 
     // GetText answers nil for "" (`0x79d690`, its first-byte test at `0x79d73b`), though `SetText`
     // (`0x771d80`) keeps a non-NULL empty buffer (`0x771e7e`). The rule is per binding, not per

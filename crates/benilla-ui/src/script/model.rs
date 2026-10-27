@@ -494,7 +494,7 @@ pub(crate) struct Model {
     /// The charter price and open petition, names resolved from caches as the reference does.
     pub(crate) petition: petition::PetitionState,
     /// Per chat window from `ChatFrame1`, the tint, alpha and font size its tab menu can change.
-    pub(crate) chat_window_looks: [chat_window::ChatWindowLook; chat_window::NUM_CHAT_WINDOWS],
+    pub(crate) chat_window_looks: Vec<chat_window::ChatWindowLook>,
     /// 0-based windows whose look Lua changed, the persist cue.
     pub(crate) chat_window_changes: HashSet<usize>,
     /// Chat-type colours (`0xb4e518`): 94 fixed and 10 `CHANNELn`, overlaid by `chat-cache.txt`.
@@ -1501,7 +1501,9 @@ impl Model {
             guild_cells: guild::GuildCells::default(),
             petition: petition::PetitionState::default(),
             // Per window, as the stock dock differs: 1 and 2 are the dock, the rest undocked.
-            chat_window_looks: std::array::from_fn(chat_window::ChatWindowLook::stock),
+            chat_window_looks: (0..chat_window::NUM_CHAT_WINDOWS)
+                .map(chat_window::ChatWindowLook::stock)
+                .collect(),
             chat_window_changes: HashSet::new(),
             chat_colors: super::chat_types::seed(),
             chat_colors_changed: false,

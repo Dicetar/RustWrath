@@ -679,6 +679,16 @@ fn open_state_for_target(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
     let mut model = Model::new();
     model.vm = vm;
     model.target = target;
+    if target == UiTarget::Wrath335 {
+        // The 3.3.5a FrameXML builds `ChatFrame1`..`ChatFrame10` where 1.12's builds seven
+        // (`ChatFrame.lua:5`); the reference keeps ten records either way. The Combat Log
+        // (window 2) is the second docked tab there, not the first as 1.12's boot record has it:
+        // a 3.3.5a chat cache carries `WINDOW 2 … DOCKED 2`.
+        model.chat_window_looks = (0..chat_window::ENGINE_CHAT_WINDOW_SLOTS)
+            .map(chat_window::ChatWindowLook::stock)
+            .collect();
+        model.chat_window_looks[1].docked = Some(2);
+    }
     lua.set_app_data(model);
     // Before anything can fire a handler: every VM carries the profiler's slot and the call
     // host's.

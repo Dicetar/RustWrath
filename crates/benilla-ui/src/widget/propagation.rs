@@ -542,6 +542,20 @@ impl WidgetArena {
         self.frame(h).map(|f| f.clamped_to_screen).unwrap_or(false)
     }
 
+    /// `SetClampRectInsets`, `[left, right, top, bottom]`.
+    pub fn set_clamp_rect_insets(&mut self, h: FrameHandle, insets: [crate::layout::Len; 4]) {
+        if let Some(f) = self.frame_mut(h) {
+            f.clamp_rect_insets = insets;
+        }
+    }
+
+    /// `GetClampRectInsets`, `[left, right, top, bottom]`.
+    pub fn clamp_rect_insets(&self, h: FrameHandle) -> [crate::layout::Len; 4] {
+        self.frame(h)
+            .map(|f| f.clamp_rect_insets)
+            .unwrap_or([crate::layout::Len::Script(0.0); 4])
+    }
+
     /// `SetHitRectInsets`, `[left, right, top, bottom]`.
     pub fn set_hit_rect_insets(&mut self, h: FrameHandle, insets: [crate::layout::Len; 4]) {
         if let Some(f) = self.frame_mut(h) {

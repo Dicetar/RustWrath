@@ -728,6 +728,40 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             },
         )?,
     )?;
+    // 3.3.5a's `SetClampRectInsets(left, right, top, bottom)`: the screen clamp rect's inset
+    // (`FloatingChatFrame.lua:63` sets the chat frames' overhang), read by the wrath resolver
+    // through [`crate::layout::assemble_rect_with_insets`]. The 1.12 surface has no such verb.
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        m.set(
+            "SetClampRectInsets",
+            lua.create_function(
+                |lua, (this, left, right, top, bottom): (Table, Value, Value, Value, Value)| {
+                    let h = frame_handle_of(lua, &this)?;
+                    let line = "SetClampRectInsets(left, right, top, bottom)";
+                    let mut insets = [0.0f32; 4];
+                    for (slot, v) in insets.iter_mut().zip([left, right, top, bottom]) {
+                        *slot = binding_abi::method_number(lua, &this, v, line)? as f32;
+                    }
+                    let [left, right, top, bottom] = insets;
+                    lua.app_data_mut::<Model>()
+                        .expect("model")
+                        .arena
+                        .set_clamp_rect_insets(h, [left, right, top, bottom].map(Len::Script));
+                    Ok(())
+                },
+            )?,
+        )?;
+        m.set(
+            "GetClampRectInsets",
+            lua.create_function(|lua, this: Table| {
+                let h = frame_handle_of(lua, &this)?;
+                let model = lua.app_data_ref::<Model>().expect("model");
+                let i = model.arena.clamp_rect_insets(h);
+                let u = model.layout_units();
+                Ok((i[0].get(u), i[1].get(u), i[2].get(u), i[3].get(u)))
+            })?,
+        )?;
+    }
     m.set(
         "GetHitRectInsets",
         lua.create_function(|lua, this: Table| {

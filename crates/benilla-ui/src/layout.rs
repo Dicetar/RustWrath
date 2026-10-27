@@ -354,6 +354,9 @@ pub struct LayoutInput {
     pub scale: f32,
     /// Clamp the rect into `[0, extent]` on each axis.
     pub clamp: bool,
+    /// The clamp rect's `[left, right, top, bottom]` inset, in stored units: the wrath
+    /// `SetClampRectInsets` bounds, `[left, extentX - right]` by `[bottom, extentY - top]`.
+    pub clamp_insets: [Len; 4],
     /// The clamp's X extent; the client's default is `0.8` (`0x41ae60`).
     pub extent_x: f32,
     /// The clamp's Y extent; the client's default is `0.6` (`0x41ae70`).
@@ -368,6 +371,7 @@ impl Default for LayoutInput {
             height: Len::Script(0.0),
             scale: 1.0,
             clamp: false,
+            clamp_insets: [Len::Script(0.0); 4],
             extent_x: 0.8,
             extent_y: 0.6,
         }
@@ -387,6 +391,7 @@ impl LayoutInput {
             height: Len::Layout(self.height.layout(units)),
             scale: self.scale,
             clamp: self.clamp,
+            clamp_insets: self.clamp_insets.map(|i| Len::Layout(i.layout(units))),
             extent_x,
             extent_y,
         }
@@ -522,6 +527,19 @@ pub struct AssembleRect {
 /// the rect into `[0, extent]` on each axis, low edge first, keeping its size.
 #[allow(clippy::float_cmp)]
 pub fn assemble_rect(edges: [f32; 4], clamp: bool, extent_x: f32, extent_y: f32) -> AssembleRect {
+    assemble_rect_with_insets(edges, clamp, extent_x, extent_y, [0.0; 4])
+}
+
+/// [`assemble_rect`] with the wrath `SetClampRectInsets` bounds: the clamp rect is
+/// `[left_inset, extent_x - right_inset]` by `[bottom_inset, extent_y - top_inset]`.
+#[allow(clippy::float_cmp)]
+pub fn assemble_rect_with_insets(
+    edges: [f32; 4],
+    clamp: bool,
+    extent_x: f32,
+    extent_y: f32,
+    insets: [f32; 4],
+) -> AssembleRect {
     let [mut bottom, mut left, mut top, mut right] = edges;
     let inf = f32::INFINITY;
     if bottom == inf || left == inf || top == inf || right == inf {
@@ -531,23 +549,28 @@ pub fn assemble_rect(edges: [f32; 4], clamp: bool, extent_x: f32, extent_y: f32)
         };
     }
     if clamp {
-        if (left as f64) < 0.0 {
-            right = (f64::from(right) - f64::from(left)) as f32;
-            left = 0.0;
+        let [inset_l, inset_r, inset_t, inset_b] = insets;
+        let low_x = f64::from(inset_l);
+        let low_y = f64::from(inset_b);
+        let high_x = f64::from(extent_x) - f64::from(inset_r);
+        let high_y = f64::from(extent_y) - f64::from(inset_t);
+        if (left as f64) < low_x {
+            right = (f64::from(right) - (low_x - f64::from(left))) as f32;
+            left = low_x as f32;
         }
-        if (bottom as f64) < 0.0 {
-            top = (f64::from(top) - f64::from(bottom)) as f32;
-            bottom = 0.0;
+        if (bottom as f64) < low_y {
+            top = (f64::from(top) - (low_y - f64::from(bottom))) as f32;
+            bottom = low_y as f32;
         }
-        if (right as f64) > (extent_x as f64) {
-            let over = f64::from(right) - f64::from(extent_x);
+        if (right as f64) > high_x {
+            let over = f64::from(right) - high_x;
             left = (f64::from(left) - over) as f32;
-            right = extent_x;
+            right = high_x as f32;
         }
-        if (top as f64) > (extent_y as f64) {
-            let over = f64::from(top) - f64::from(extent_y);
+        if (top as f64) > high_y {
+            let over = f64::from(top) - high_y;
             bottom = (f64::from(bottom) - over) as f32;
-            top = extent_y;
+            top = high_y as f32;
         }
     }
     AssembleRect {
@@ -597,6 +620,7 @@ struct EdgeInput {
     height: f64,
     scale: f32,
     clamp: bool,
+    clamp_insets: [f32; 4],
     extent_x: f32,
     extent_y: f32,
     /// The point ids whose anchor a scan read, a bit each: the anchors whose `ResolveX` or
@@ -797,7 +821,7 @@ fn resolve_edges(f: &EdgeInput) -> ResolveOutcome {
         return ResolveOutcome::Unresolvable;
     }
     let edges = [bottom as f32, left as f32, top as f32, right as f32];
-    let a = assemble_rect(edges, f.clamp, f.extent_x, f.extent_y);
+    let a = assemble_rect_with_insets(edges, f.clamp, f.extent_x, f.extent_y, f.clamp_insets);
     ResolveOutcome::Resolved(Rect::from_array(a.rect))
 }
 
@@ -849,6 +873,7 @@ fn build_edge_input(
         height,
         scale: frame.scale,
         clamp: frame.clamp,
+        clamp_insets: frame.clamp_insets.map(Len::raw),
         extent_x: frame.extent_x,
         extent_y: frame.extent_y,
         reads: std::cell::Cell::new(0),
