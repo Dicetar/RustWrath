@@ -59,7 +59,10 @@ columns:
   test-only stand-ins.
 
 ## Implemented (source, no execution)
-
+- Sibling `ChrRaces` readers: the faction/PvP and language loaders already tolerate trailing 12340
+  columns; the creature-type (field 9) and exploration-sound (field 3) readers now do too. The
+  app's `creature_type` still freezes races 1..9 as Humanoid, so Blood Elf/Draenei resolve 0 until
+  that consumer reads the catalog.
 - `ChrClasses` selects the 60-field 12340 layout from the header, reads DisplayPower (2),
   PetNameToken (3, accepted only when it resolves to the literal PET/DEMON), the three 16-slot
   name blocks (4/21/38, mapped from the nine UI locales), Filename 55, SpellClassSet 56, Flags

@@ -121,6 +121,9 @@ For `classes`, use the same `ChrClassTable` resource or
 added.
 
 ### Remaining explicit gaps
+- The app's race-creature-type fallback is still frozen to races 1..9 (Humanoid), so Blood Elf and
+  Draenei resolve 0 there; the catalog loader now accepts 12340, but this consumer does not yet
+  read it.
 
 - 12340 `ChrClasses` has no 1.12 damage-bonus column; `damage_bonus_stat` stays `None` and
   `DisplayPower` is exposed separately.
