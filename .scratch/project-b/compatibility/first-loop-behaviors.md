@@ -225,4 +225,11 @@ template/mixin, secure-UI or workflow acceptance. Reference semantics are explic
 independent 4.3.4-derived compatibility implementation. Compilation and new targeted behavior
 cases have not run; the earlier f70be142 verification does not cover these later sources.
 
+Reference refinement: the pinned independent ClassicAPI raw 3.3.5 registration dumps report
+IsMouseOver, IsEventRegistered, GetFramesRegisteredForEvent and both motion-script methods as
+target APIs. This supports presence separately from their installed-mod call sites; it does
+not prove callback, edge, coercion or error behavior. Astra has not locally verified the dump's
+binary or executed these paths. SetShown/SetEnabled remain separately labeled installed-mod
+extensions. See the UI-host checkpoint for the pinned files and reported native addresses.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
