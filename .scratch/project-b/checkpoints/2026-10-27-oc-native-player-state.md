@@ -92,3 +92,27 @@ or untracked owner files; `.scratch/project-b/verification/**`.
 - Northshire run card: unchanged, ungranted. The lab server was up at claim time; credentials are
   owner-held.
 - WM v2.3 wire unchanged; receipt clocks are client-internal by decision.
+## Correction milestone after the review (2026-10-27)
+
+Two correctness gaps from the reviewed handoff, fixed on top of Astra's committed consumer
+`c002a798`:
+
+- `7f9ea050` — initial cooldowns now anchor at packet arrival. `SessionEvent::SpellBook` carries
+  the arrival wall clock from the Wrath net loop; the stock handler maps it onto the monotonic
+  clock and calls the existing `Cooldowns::seed_initial` there, so queued delivery no longer
+  extends a login cooldown. The 1.12 decoder passes 0 and keeps consumption-time behavior.
+- `7f1b73c3` — aura packets are atomic. All blocks parse into a scratch list before any world
+  mutation; a malformed tail leaves slots, coverage and receipts untouched and creates no object
+  entry. Receipt revisions and edges are assigned in the apply pass.
+
+Evidence: `cargo check` for protocol-wrath/protocol/app-lib/driver; the six reducer tests, the
+three learned-list tests and the initial-cooldown book test pass (four mechanical `spell_book`
+call-site updates in two existing test helpers; no new test case). The authorized Lua/UI pass
+Astra completed is recorded as owner-reported external evidence: check passed, 3,322 UI tests
+passed, two known timezone failures remain, later aura integration excluded. That pass is not
+re-run or claimed here.
+
+Still open: AURA_UPDATE_ALL replacement policy; Wrath-host fixture still constructs
+`UiScript::new()` (`wrath_ui_slice_tests.rs:15`) so Wrath-host evidence remains UNKNOWN until the
+handed-off correction is applied; Northshire G/L remains unauthorized; no aura-specific or
+cooldown-tail unit case exists under the current test grant.

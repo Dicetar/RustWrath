@@ -19,6 +19,10 @@ the consumer edits below are yours to make. Source references are symbols; line 
   always an observation edge; a GUID-only full snapshot is observed-empty.
 - `WorldState` derives `PartialEq`; receipts participate. Object create clears slots, coverage
   and receipts. World transfer replaces the world; session end and reconnect create a new one.
+- Aura packets are atomic: every block is parsed into a scratch list before any world mutation,
+  so a malformed tail leaves the authoritative slots, coverage and receipts untouched (and does
+  not create an object entry). The observation edge is computed in the apply pass. A rejected
+  packet is a parser error; it is not a partial observation.
 - `WorldState::reduce_changed_at(op, payload, received_at_unix_ms)` is the clock-carrying form
   the session uses; `reduce_changed` remains the clock-less form (receipt clock 0). Reduction
   stays replayable; no parser or reducer reads a system clock.
@@ -66,6 +70,10 @@ For a slot with `AFLAG_DURATION` set:
   `category u16`, `spell_cd_ms u32`, `category_cd_ms u32`; exactly the pinned
   `Player::SendInitialSpells` tail. `category_cd_ms` bit 31 is the held/infinity mark and the low
   bits are the remaining time; a category spell carries `0` in `spell_cd_ms`.
+- `SessionEvent::SpellBook { spell_ids, cooldowns, observed_at_unix_ms }`: the packet-arrival
+  wall clock (0 = the producer has no clock, the 1.12 decoder). The stock cooldown handler maps
+  it onto the monotonic clock and seeds at arrival, so delivery queueing does not extend a
+  login cooldown. Your consumers see ordinary `GetSpellCooldown` values; nothing to change.
 - `ServerEvent::InitialSpells { spells, cooldowns, declared_cooldowns }`. The writer declares
   `m_spellCooldowns.size()` but skips entries it marks not client-visible; the flag is persisted
   per row (`character_spell_cooldown.needSend`), so a returning character can load false entries
