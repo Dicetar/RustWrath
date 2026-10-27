@@ -48,3 +48,44 @@ or untracked owner files; `.scratch/project-b/verification/**`.
   `needSendToClient == false` or no `SpellInfo`. Complete 16-byte entries present are the
   intended client-visible set; a larger declaration is logged, never silently equalised, and a
   partial trailing entry is a protocol error.
+
+## Delivery (source)
+
+`6feb5d4d` — aura receipt authority and initial cooldown ingestion:
+- `AuraReceipt` per slot (`revision` world-monotonic, `received_at_unix_ms` from the session's
+  packet arrival); every add/update block is a receipt (identical deltas included), removals
+  drop it, full snapshots always mark an edge; `auras_observed` still separates unknown from
+  observed-empty. `reduce_changed_at` keeps the reducer clock-free and replayable. Digest carries
+  `aura_receipts`; `WrathAuraAnchors` stamps one GetTime anchor per receipt revision and prunes on
+  generation/transfer/session end. Position provenance is untouched by aura edges.
+- `SMSG_INITIAL_SPELLS` cooldown tail decoded from the pinned writer (u32 spell, u16 item, u16
+  category, spell/category remainders; category bit 31 held). Over-declared counts are the
+  server's `needSendToClient` filter (logged, entries used as written); partial tails are refused.
+  Entries seed the existing `Cooldowns` owner through `SpellBook`; session end clears and the next
+  login reseeds. `SpellCooldown.spell_id` widened to u32.
+- Consumer contract: `.scratch/project-b/handoffs/2026-10-27-oc-native-state-consumer-contract.md`
+  (anchors, expiration formula, cooldown semantics, AURA_UPDATE_ALL decision, Wrath-host fixture
+  correction). One test-only id cast in Astra's `ui_spellbook` case followed the widened field;
+  no UI behavior was written.
+
+## Evidence actually obtained
+
+- `cargo check` for `benilla-protocol-wrath`, `benilla-protocol`, `benilla-app --lib`,
+  `benilla-wm-driver` (combined worktree, including Astra's uncommitted UI WIP; her files were
+  not staged).
+- `cargo test -p benilla-app --lib cooldown` 71 passed; `wrath` 12 passed; `ui_spellbook`
+  6 passed. Existing tests only; no new test file or case.
+- The aura receipt parser/edges, the initial-cooldown tail and the anchor stamping have **no
+  dedicated test**; they are source+compile evidence. A G/L run and a coordinated test grant
+  remain the gates.
+
+## Remaining reference/permission gates
+
+- AURA_UPDATE_ALL replacement vs merge: still open; pinned writer evidence recorded in the
+  claim; do not guess.
+- Wrath-host fixture: exact correction handed to Astra; not executed (no test-edit grant, her
+  file). A Wrath-host pass remains UNKNOWN until it uses `with_target(Wrath335)` and explicit
+  data admission.
+- Northshire run card: unchanged, ungranted. The lab server was up at claim time; credentials are
+  owner-held.
+- WM v2.3 wire unchanged; receipt clocks are client-internal by decision.
