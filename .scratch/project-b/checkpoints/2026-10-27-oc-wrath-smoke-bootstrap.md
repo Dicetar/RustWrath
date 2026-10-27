@@ -3,67 +3,54 @@
 Evidence run: `cargo test -p benilla-app --lib ui_script::wrath_ui_slice_tests::stock_player_frame_host_smoke_test`
 with `WM_ASSET_MANIFEST=docs/profiles/wm-hd.mpqlist`, `WM_ASSET_PROFILE=wm-hd`,
 `WOW_DATA` = the local 3.3.5a HD install, `BENILLA_REQUIRE_DATA=1`.
-Logs: `.scratch/project-b/verification/2026-10-27-oc-wrath-smoke/run9.log`..`run33.log`.
+Logs: `.scratch/project-b/verification/2026-10-27-oc-wrath-smoke/run9.log`..`run59.log`.
 
-The fixture loads the selected profile's TOC prefix through `PlayerFrame.xml`
-(`FrameXML.toc` entries 1..75). At checkpoint time the load reaches entry 72,
-`FloatingChatFrame.xml`; the previous frontier was `Constants.lua` line 469.
+**State: passing (`run59.log`).** The fixture loads the selected profile's whole TOC prefix
+through `PlayerFrame.xml` (all 75 entries, `VoiceChat.xml` skipped by decision), fires
+`UNIT_HEALTH`, reads `UnitHealth`, `UnitExists` and a CVar, and asserts every stock handler and
+file evaluated without a recorded error. The frontier at the previous checkpoint was
+`Constants.lua` line 469.
 
 ## Failure progression (runtime-verified, one log per run)
 
 | run | first failure |
 | --- | --- |
 | 9 | `Constants.lua:469 RegisterStaticConstants` |
-| 10 | `WorldFrame.lua:28 IgnoreDepth` |
-| 11 | `GameTooltip` `OnTooltipSetUnit` unsupported |
-| 12 | `RestrictedFrames.lua:67 newproxy` |
-| 13 | `GameTooltip.OnTooltipSetUnit` handler (extra script list) |
-| 14–23 | `StaticPopup`/`MoneyFrame` `SetPoint("RIGHT")`, `RegisterStaticConstants`, `newproxy`, nested security loaders |
-| 24 | `MainMenuBar.lua:185 GetActionBarPage`, `VehicleExit` handler |
-| 25–26 | `Minimap.xml` (driver queries, ping texture setters, LFG), `GameTime.lua:247 CalendarGetDate` |
-| 27–30 | `GameTime`..`ActionBarFrame.xml` (`Unknown frame type: Cooldown`) |
-| 31–33 | `BNConversations.lua:3 BNGetMaxPlayersInConversation`; now `FloatingChatFrame.xml` |
+| 10–12 | `WorldFrame.lua:28 IgnoreDepth`; `GameTooltip` `OnTooltipSetUnit`; `RestrictedFrames.lua:67 newproxy` |
+| 13–27 | options/action-bar/audio/minimap/chat sections: `SetPoint("RIGHT")`, `RegisterStaticConstants`, `newproxy`, `GetModifiedClick`, sound-driver queries, `GetActionBarPage`, `VehicleExit`, `CanHearthAndResurrectFromArea`, `CalendarGetDate`, `Cooldown` type |
+| 28–36 | `FloatingChatFrame.xml`: `SetFormattedText`, 10 chat windows, `chatStyle`, saved window geometry, `BNGetNumFriends`, `SetClampRectInsets`, `GetOwner` |
+| 37–51 | `PlayerFrame.xml`: `GetDungeonDifficulty`, `GetRaidDifficulty`, `GetOptOutOfLoot`, `UnitThreatSituation`, `IsThreatWarningEnabled`, `GetInstanceInfo`, `GetSummonFriendCooldown`, `UnitHasVehicleUI`, `IsStackableAction` |
+| 52–59 | fixture seeding + assertion repairs; green |
 
 ## What landed (paths are in this diff)
 
-- `benilla-lua`: 5.1 `newproxy` (`lib_base::newproxy`, re-exported), full-userdata semantics —
-  no argument/`false` unmetatabled, `true` private empty metatable, a userdata shares its
-  metatable. Installed only in the Wrath sandbox (`script/newproxy.rs`).
-- `benilla-ui` wrath sandbox globals (`script/wrath_security.rs`, `script/wrath_natives.rs`,
-  `script/static_constants.rs`): `issecure`, `securecall`, `RegisterStaticConstants`,
-  `IsStereoVideoAvailable`, the `Sound_GameSystem_*`/`Sound_ChatSystem_*` driver queries,
-  `GetModifiedClick` (3.3.5a `Bindings.xml` defaults), `BNFeaturesEnabled(AndConnected)`,
-  `GetExistingLocales`, `VehicleExit`, tracking/LFG/world-PvP queries, `CalendarGetDate`,
-  `BNGetMaxPlayersInConversation`, `CooldownFrame_SetTimer`.
-- Loader/objects: `<Animations>` graph (`loader/animations.rs`, `script/animation.rs`) with named
-  and parent-keyed `AnimationGroup`/animation objects and `Play`/`Stop` state; `function=""`
-  handler clears (`UIPanelTemplates.xml:365`); wrath `SetPoint(point)` short form
-  (`MoneyFrame.lua:253`); `WorldFrame:IgnoreDepth`; `OnEnable`/`OnDisable` script slots and their
-  enable-edge firing; `SetNormalFontObject`/`GetNormalFontObject` aliases; `GetActionBarPage`/
-  `ChangeActionBarPage(page)`; `Minimap:SetPlayerTextureWidth/Height`; wrath `Cooldown` type
-  admitted as a plain game-layer frame.
-- Fixture: seats the localized class catalog, registers the wrath audio/minimap CVars, and
-  narrows the warning gate to the stock GlobalStrings key-miss notices (OPTIONS,
-  BATTLEGROUND_LORETEXT_1) that the real client shows as raw keys.
+- Sandbox (`benilla-ui` script): `newproxy` engine verb (previous commit), `issecure`,
+  `securecall`, `RegisterStaticConstants`, sound-driver and chat-driver queries,
+  `GetModifiedClick`, `BNFeaturesEnabled(AndConnected)`, `GetExistingLocales`, `VehicleExit`,
+  LFG/world-PvP/tracking queries, `CalendarGetDate`, `BNGetMaxPlayersInConversation`,
+  `CooldownFrame_SetTimer`, chat window APIs, threat/difficulty/instance/vehicle queries,
+  `IsStackableAction`, `GameTooltip:GetOwner`, the voice-chat absent-set, `SetClampedToScreen`
+  clamp insets (`SetClampRectInsets`, `GetClampRectInsets` + layout clamp), `SetFormattedText`,
+  ten chat windows on the Wrath host (`ChatFrame1`..`ChatFrame10`, Combat Log docked at 2),
+  `GetNumFriends`' two-value Wrath form.
+- Loader: `<Animations>` object graph (named, parent-keyed, `Play`/`Stop` state), `function=""`
+  clears a named handler, wrath `SetPoint(point)` short form.
+- Attributes: `SetAttribute` notifies `OnAttributeChanged` on every set — the stock dropdown
+  re-sets `createframes=true` to grow its button list, which a value-diff guard stalled.
+- Host: `VoiceChat.xml` is skipped forever (maintainer's decision,
+  `reference_ui::WRATH_SKIPPED_FILES`); the fixture allows the one template notice that the skip
+  causes, and the stock GlobalStrings key-miss notices, which the real client shows as raw keys.
 
 ## Known incomplete, named so they are not silent
 
 - Animation objects carry XML parameters and play state; the timeline that interpolates them and
   fires `OnPlay`/`OnStop`/`OnFinished` is not built.
-- `Cooldown` is a plain frame: no sweep rendering, and `CooldownFrame_SetTimer` writes the 1.12
+- `Cooldown` is a plain frame: no sweep rendering; `CooldownFrame_SetTimer` writes the 1.12
   `start`/`duration` fields.
-- `GetNumTrackingTypes` is empty: the host does not push the known tracking spells' aura masks.
-- `BNGetMaxPlayersInConversation` answers 10; the live service's cap is not in the shipped data,
-  and its only consumer is the unreachable conversation dialog.
-- `CalendarGetDate` answers zeros until a calendar date is pushed (pre-login state).
+- `GetNumTrackingTypes` is empty (the host pushes no tracking-spell masks), `CalendarGetDate` is
+  zero before a calendar push, `GetInstanceInfo`/difficulty/threat/vehicle answers are the
+  open-world defaults, and the `BNGetMaxPlayersInConversation` cap is not recoverable from the
+  shipped data.
+- Chat-window geometry is not persisted (the 1.12 cache has no position/dimension keys).
 - Gates unavailable on this machine: no `cargo fmt`/`clippy` component installed; `cargo check`
   is green for `benilla-lua`, `benilla-ui`, `benilla-app`.
-
-## Next frontier (`FloatingChatFrame.xml`)
-
-- `SetFormattedText` on regions (the stock GeneralDockManager OnLoad calls it).
-- Wrath has ten chat windows; `script/chat_window.rs` exposes seven (1.12 `NUM_CHAT_WINDOWS`).
-- `chatStyle` CVar is not registered by the host.
-- `GetChatWindowSavedDimensions`/`GetChatWindowSavedPosition` (wrath window geometry APIs).
-- `BNGetNumFriends` (the friends micro button's inline OnLoad).
-After that: `VoiceChat.xml`, `ReadyCheck.xml`, then `PlayerFrame.xml` itself.

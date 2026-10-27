@@ -7,7 +7,7 @@
 //! Acceptance runs must set that flag plus WM_ASSET_MANIFEST/WM_ASSET_PROFILE and retain output.
 //! No shared test-loader stand-ins or replacement Lua APIs are installed by this fixture.
 
-use benilla_ui::script::{ScriptValue, UiScript, UiTarget};
+use benilla_ui::script::{ScriptValue, UiScript, UiTarget, UnitGuids, UnitState};
 
 /// A fresh chain avoids the shared loader's cached source and its vanilla fixture stand-ins.
 fn player_frame_script() -> Option<UiScript> {
@@ -46,14 +46,42 @@ fn player_frame_script() -> Option<UiScript> {
         ("VoiceChatMode", "0"),
         // Minimap_UpdateRotationSetting reads it at load (Minimap.lua:366).
         ("rotateMinimap", "0"),
+        // The 3.3.5a chat window reads its style at load (FloatingChatFrame.lua).
+        ("chatStyle", "im"),
+        // `TextStatusBar.lua:71` reads the player bar's status-text switch; the stock client
+        // shows no numbers on the unit frames until the option is turned on.
+        ("playerStatusText", "0"),
     ]));
     crate::chr_classes::seat_localized_class_names_from_chain(&mut s, &mut chain)
         .expect("Wrath UI smoke must seat a complete localized class catalog before Constants.lua");
+    // The played character the smoke reads back: the host's own unit state, pushed the way the
+    // app pushes it at login, so the stock unit verbs answer what a session would.
+    s.set_unit_guids(&UnitGuids {
+        player: 0x10,
+        ..Default::default()
+    });
+    s.set_unit(
+        "player",
+        Some(UnitState {
+            exists: true,
+            has_object: true,
+            guid: 0x10,
+            name: Some("Smoke".to_owned()),
+            health: 900,
+            max_health: 1000,
+            level: 60,
+            ..Default::default()
+        }),
+    );
     eprintln!("WRATH_UI_SMOKE_DATA target={:?} interface=30300 profile={profile} manifest={} data={}",
         s.target(), manifest.display(), data.display());
     let toc_path = super::reference_ui::TOC.replace('\\', "/");
     let (directory, _) = toc_path.rsplit_once('/').expect("FrameXML TOC has a directory");
     for entry in &toc.files[..=last] {
+        // The host's permanent skip: benilla has no voice chat (`reference_ui::WRATH_SKIPPED_FILES`).
+        if super::reference_ui::wrath_skipped(entry) {
+            continue;
+        }
         let path = benilla_ui::loader::join_ref(directory, entry);
         let bytes = chain.read(&path).unwrap_or_else(|error| panic!("{path}: {error:#}"));
         if path.to_ascii_lowercase().ends_with(".lua") {
@@ -68,14 +96,18 @@ fn player_frame_script() -> Option<UiScript> {
             // The wrath FrameXML text sinks reach for keys the FrameXML locale stream no longer
             // defines (`OptionsFrameTemplates.xml`'s OPTIONS header, `BattlefieldFrame.xml`'s
             // BATTLEGROUND_LORETEXT_1); the real client answers a miss with an empty GetText and
-            // shows the raw key, so benilla's key-miss warning is the faithful outcome and the
-            // only notice this run may carry.
+            // shows the raw key, so benilla's key-miss warning is the faithful outcome. The one
+            // other expected notice is the template the permanently skipped voice chat owned
+            // (`PlayerFrame.xml` inherits `VoiceChatSpeakerTemplate` from `VoiceChat.xml`); the
+            // speaker stays a plain hidden frame, as a voice-disabled client's UI shows nothing.
             for warning in &report.warnings {
                 assert!(
                     warning.ends_with(
                         "is shaped like a GlobalStrings key but no such string global exists — \
                          showing the key"
-                    ),
+                    ) || warning
+                        == "unknown template 'VoiceChatSpeakerTemplate' referenced by inherits; \
+                            skipping",
                     "{path}: loader warnings: {warning:?}"
                 );
             }
@@ -136,8 +168,10 @@ fn stock_player_frame_host_smoke_test() {
     );
 
     // 4. Same-VM CVar readback only. Cross-host persistence/reload is not asserted.
-    s.run("SetCVar('floatingCombatTextCombatDamage', '0')").unwrap();
-    let persisted: String = s.eval("return GetCVar('floatingCombatTextCombatDamage')").unwrap();
+    //    `CombatDamage` is the 1.12 host's registered master row (the wrath-era name
+    //    `floatingCombatTextCombatDamage` is not a 1.12 registration).
+    s.run("SetCVar('CombatDamage', '0')").unwrap();
+    let persisted: String = s.eval("return GetCVar('CombatDamage')").unwrap();
     assert_eq!(persisted, "0", "the cvar write is observable");
 
     // 5. Compatibility ledger note (issue 18): assert honestly what is NOT claimed. The

@@ -34,6 +34,20 @@ pub(super) const TOC: &str = r"Interface\FrameXML\FrameXML.toc";
 /// The stock key-binding commands, which `UI_Init` loads after the [`TOC`] walk (`0x490018`).
 pub(super) const BINDINGS: &str = r"Interface\FrameXML\Bindings.xml";
 
+/// Stock files the Wrath host never loads. Voice chat is Steam's voice client, which benilla
+/// neither ships nor connects: the maintainer's call, so the whole 3.3.5a voice UI
+/// (`VoiceChat.xml` and the frames and Lua it brings) is dropped from the Wrath core. The 1.12
+/// host keeps its full list. Names are basenames, matched as the platform's loader matches them.
+pub(super) const WRATH_SKIPPED_FILES: [&str; 1] = ["VoiceChat.xml"];
+
+/// Whether [`WRATH_SKIPPED_FILES`] drops `file`, by basename, ASCII case folded.
+pub(super) fn wrath_skipped(file: &str) -> bool {
+    let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    WRATH_SKIPPED_FILES
+        .iter()
+        .any(|skip| name.eq_ignore_ascii_case(skip))
+}
+
 /// The default key set, which `UI_Init` reads through `0x4b62b0` (`0x4900c7`).
 pub(super) const DEFAULT_BINDINGS: &str = r"WTF\DefaultBindings.wtf";
 

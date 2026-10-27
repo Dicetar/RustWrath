@@ -37,6 +37,9 @@ pub(crate) fn digest() -> String {
         .map(|core| core.toc.files)
         .unwrap_or_default()
     {
+        if crate::wrath::selected_from_env() && super::reference_ui::wrath_skipped(&name) {
+            continue;
+        }
         eat(name.as_bytes());
     }
     if super::manifest::layer_enabled() {

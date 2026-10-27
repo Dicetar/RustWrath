@@ -182,7 +182,18 @@ pub(super) fn load_core(script: &UiScript) -> Vec<String> {
         return failures;
     };
     let mut toc = benilla_ui::status::Status::default();
-    let mut failures = core.load_files_into(script, &core.toc.files, &mut toc);
+    // The Wrath host drops the stock voice chat (see [`reference_ui::WRATH_SKIPPED_FILES`]).
+    let files: Vec<String> = if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+        core.toc
+            .files
+            .iter()
+            .filter(|file| !reference_ui::wrath_skipped(file))
+            .cloned()
+            .collect()
+    } else {
+        core.toc.files.clone()
+    };
+    let mut failures = core.load_files_into(script, &files, &mut toc);
     let mut log = benilla_ui::status::Status::default();
     let banner = benilla_ui::status::toc_banner(reference_ui::TOC);
     toc.close_into(&mut log, script.framexml_debug(), banner);
