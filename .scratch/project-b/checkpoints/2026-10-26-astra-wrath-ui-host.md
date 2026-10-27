@@ -312,3 +312,11 @@ preserve the donor resolve_slot helper/test assertions and all bag state/event o
 This narrows the previous OC handoff's live-bag dependency only; equipment/inspect/trade/loot
 producer migration, negative-suffix scaling and the native owner's dropped enchant slots stay open.
 Source-only, with no new test cases or execution grant inferred.
+
+Own-equipment continuation claim: clean benilla-app/src/ui_char.rs and the already claimed
+benilla-ui/src/script/item_stats.rs. feed_char currently supplies donor object links for all
+own equipment, equipped bag items and bank-bag items. Adapt only the completed presentation
+snapshots using script.target(), observed level, guid and the existing object-link formatter.
+The ammo template has no item object; expose the existing UI target-aware template formatter
+through UiScript rather than creating fake object fields. Donor builders/assertions remain
+unchanged. Inspect/trade/loot producers and native item authority are outside this claim.
