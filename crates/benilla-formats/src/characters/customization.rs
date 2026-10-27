@@ -9,7 +9,9 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, str_at, u32_at};
+use crate::dbc::{
+    field_count, loc_str_index, parse_with_trailing_fields, str_at, u32_at,
+};
 use crate::Chain;
 
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
@@ -254,7 +256,7 @@ impl CharCreateCatalog {
 
     /// [`Self::load`] over NameGen's own load result.
     fn load_with(chain: &mut Chain, name_gen: Result<Vec<NameGenRow>>) -> Result<Self> {
-        let (race_rows, displays, files, names, custom_tokens) = load_races(chain)?;
+        let (race_rows, displays, files, names, custom_tokens, wrath) = load_races(chain)?;
         let base_info = load_base_info(chain)?;
         let combos: HashSet<(u8, u8)> = base_info.iter().copied().collect();
         // NameGen feeds the random name alone, so its loss costs that and nothing else.
@@ -263,12 +265,13 @@ impl CharCreateCatalog {
             Err(e) => (Vec::new(), Some(format!("{e:#}"))),
         };
         let start_outfits = load_start_outfits(chain)?;
-        let avail = load_available_sections(chain)?;
+        let avail = load_available_sections(chain, wrath)?;
         let facial = load_facial_hair_styles(chain)?;
 
+        let playable = playable_races(&race_rows, wrath);
         let mut ranges = HashMap::new();
         let mut hair_colors = HashMap::new();
-        for race in PLAYABLE_RACES {
+        for &race in &playable {
             for sex in [0u8, 1] {
                 ranges.insert((race, sex), derive_ranges(race, sex, &avail, &facial));
                 hair_colors.insert((race, sex), hair_colors_by_style(race, sex, &avail));
@@ -289,14 +292,17 @@ impl CharCreateCatalog {
             ranges,
             start_outfits,
         };
-        catalog.self_check()?;
+        catalog.self_check(wrath, &playable)?;
         for combo in UNUSED_COMBOS {
             catalog.combos.remove(&combo);
         }
         Ok(catalog)
     }
 
-    fn self_check(&self) -> Result<()> {
+    fn self_check(&self, wrath: bool, playable: &[u8]) -> Result<()> {
+        if wrath {
+            return self.self_check_wrath(playable);
+        }
         shipped_combos_present(&self.combos)?;
         for (race, file) in KNOWN_FILES {
             if self.race_file(race) != Some(file) {
@@ -352,11 +358,68 @@ impl CharCreateCatalog {
         }
         Ok(())
     }
+
+    /// 12340 has no shipped row values vendored here, so this guards structure rather than the
+    /// exact 1.12 catalog: at least one playable race (ChrRaces Flags bit `0x1` clear), each with
+    /// its body displays, file token, name and appearance ranges, and at least one parsed
+    /// starting outfit and CharBaseInfo combo.
+    fn self_check_wrath(&self, playable: &[u8]) -> Result<()> {
+        if self.race_rows.is_empty() || playable.is_empty() {
+            bail!(
+                "ChrRaces: no playable 12340 race (Flags bit 0x1 clear) in {} rows",
+                self.race_rows.len()
+            );
+        }
+        if self.combos.is_empty() {
+            bail!("CharBaseInfo: no race/class rows in 12340");
+        }
+        if self.start_outfits.is_empty() {
+            bail!("CharStartOutfit: no 12340 outfit rows parsed");
+        }
+        for &race in playable {
+            for sex in [0u8, 1] {
+                if self.body_display(race, sex).unwrap_or(0) == 0 {
+                    bail!("ChrRaces: race {race} sex {sex} has no body displayId");
+                }
+                if self.ranges(race, sex).is_none() {
+                    bail!("customization ranges: race {race} sex {sex} is missing");
+                }
+            }
+            if self.race_file(race).map_or(true, str::is_empty) {
+                bail!("ChrRaces: playable race {race} has no fileString");
+            }
+            if self.race_name(race).map_or(true, str::is_empty) {
+                bail!("ChrRaces: playable race {race} has no name");
+            }
+            if self.class_list(race).is_empty() {
+                bail!("CharBaseInfo: playable race {race} has no class rows");
+            }
+        }
+        // The outfits' race/class keys are not cross-checked against CharBaseInfo here: the
+        // 12340 dead-combo policy belongs to the create screen, not this structural guard.
+        Ok(())
+    }
 }
 
-/// ChrRaces (29 fields, 116-byte records) → the rows in order, and per race: displayIds (cols
-/// 4/5), fileString (15), facial-hair (26/27) and hair (28) tokens; other string columns are read
-/// as ignored `u32`s.
+/// The races the create screen derives dial ranges for: the 1.12 literal eight, or 12340's rows
+/// with the not-playable flag clear. Goblin (9) is flagged not-playable in both layouts.
+fn playable_races(race_rows: &[ChrRaceRow], wrath: bool) -> Vec<u8> {
+    if wrath {
+        race_rows
+            .iter()
+            .filter(|row| row.id != 0 && row.flags & 0x1 == 0)
+            .map(|row| row.id)
+            .collect()
+    } else {
+        PLAYABLE_RACES.to_vec()
+    }
+}
+
+/// ChrRaces → the rows in order, and per race: displayIds (cols 4/5), fileString, the base
+/// locale name, facial-hair/hair customization tokens, and whether this is the 12340 layout.
+/// **1.12** (29 fields, 116-byte records): file 15, name cols 17-24, tokens 26-28. **12340** (69
+/// fields): file 11, the sixteen-slot name block at cols 14-29, tokens 65-67. The other string
+/// columns are read as ignored `u32`s.
 #[allow(clippy::type_complexity)] // one pass over one DBC → the catalog's race-keyed maps
 fn load_races(
     chain: &mut Chain,
@@ -366,20 +429,38 @@ fn load_races(
     HashMap<u8, String>,
     HashMap<u8, String>,
     HashMap<u8, ([String; 2], String)>,
+    bool,
 )> {
     let bytes = chain
         .read_file(CHR_RACES)
         .with_context(|| format!("reading {CHR_RACES}"))?;
+    let fields = field_count(&bytes).context("ChrRaces.dbc header field count")?;
+    if fields < 29 {
+        bail!("ChrRaces.dbc has {fields} fields; the 1.12 layout needs at least 29");
+    }
+    let wrath = fields >= 69;
+    let locale = chain.locale();
+    let (file_field, name_field, male_facial, female_facial, hair_field, locale_column) = if wrath {
+        let column = crate::Locale::wrath_dbc_column(locale.wrath_index()).unwrap_or(0);
+        (11, 14, 65, 66, 67, column)
+    } else {
+        (15, 17, 26, 27, 28, locale.index())
+    };
     let mut schema = Schema::new("ChrRaces");
-    for i in 0..29 {
-        let ty = match i {
-            15 | 17..=24 | 26 | 27 | 28 => FieldType::String,
-            _ => FieldType::UInt32,
+    for i in 0..fields {
+        let ty = if i == file_field
+            || i == male_facial
+            || i == female_facial
+            || i == hair_field
+            || (name_field..name_field + if wrath { 16 } else { 8 }).contains(&i)
+        {
+            FieldType::String
+        } else {
+            FieldType::UInt32
         };
         schema.add_field(SchemaField::new(format!("f{i}"), ty));
     }
-    let rs = parse(&bytes, schema, "ChrRaces")?;
-    let locale = chain.locale();
+    let rs = parse_with_trailing_fields(&bytes, schema, "ChrRaces")?;
     let mut rows = Vec::new();
     let mut displays = HashMap::new();
     let mut files = HashMap::new();
@@ -396,19 +477,21 @@ fn load_races(
         if let (Some(male), Some(female)) = (u32_at(r, 4), u32_at(r, 5)) {
             displays.insert(race, (male, female));
         }
-        if let Some(file) = str_at(&rs, r, 15) {
+        if let Some(file) = str_at(&rs, r, file_field) {
             files.insert(race, file);
         }
-        if let Some(name) = loc_str(&rs, r, 17, locale) {
+        if let Some(name) = loc_str_index(&rs, r, name_field, locale_column) {
             names.insert(race, name);
         }
-        if let (Some(fm), Some(ff), Some(hair)) =
-            (str_at(&rs, r, 26), str_at(&rs, r, 27), str_at(&rs, r, 28))
-        {
+        if let (Some(fm), Some(ff), Some(hair)) = (
+            str_at(&rs, r, male_facial),
+            str_at(&rs, r, female_facial),
+            str_at(&rs, r, hair_field),
+        ) {
             tokens.insert(race, ([fm, ff], hair));
         }
     }
-    Ok((rows, displays, files, names, tokens))
+    Ok((rows, displays, files, names, tokens, wrath))
 }
 
 /// CharBaseInfo → its (race, class) rows in file order: two one-byte fields, parsed by hand off the
@@ -452,7 +535,7 @@ fn load_name_gen(chain: &mut Chain) -> Result<Vec<NameGenRow>> {
     ] {
         schema.add_field(SchemaField::new(name, ty));
     }
-    let rs = parse(&bytes, schema, "NameGen")?;
+    let rs = parse_with_trailing_fields(&bytes, schema, "NameGen")?;
     Ok(rs
         .records()
         .iter()
@@ -466,9 +549,13 @@ fn load_name_gen(chain: &mut Chain) -> Result<Vec<NameGenRow>> {
         .collect())
 }
 
-/// CharStartOutfit → (race, class, sex) → worn items, parsed by hand (41 fields, 152 bytes): `ID`
-/// u32 @0, race/class/gender u8 @4/5/6, `ItemId[12]` @8, `DisplayId[12]` @56, `InventoryType[12]`
-/// @104. A slot is kept when both are ≥ 1, dropping the `-1` tail and the InventoryType-0 bags.
+/// CharStartOutfit → (race, class, sex) → worn items, parsed by hand.
+/// **1.12** (41 fields, 152 bytes): `ID` u32 @0, race/class/gender u8 @4/5/6, `ItemId[12]` @8,
+/// `DisplayId[12]` @56, `InventoryType[12]` @104.
+/// **12340** (77 fields, 296 bytes; pinned `CharStartOutfitEntryfmt` `dbbbX` + 24 `i` + 48 `x`):
+/// race/class/gender/outfit u8 @4/5/6/7, `ItemID[24]` @8, `DisplayItemID[24]` @104,
+/// `InventoryType[24]` @200. A slot is kept when display and InventoryType are ≥ 1, dropping the
+/// `-1` tail and the InventoryType-0 bags.
 fn load_start_outfits(chain: &mut Chain) -> Result<HashMap<(u8, u8, u8), Vec<StartOutfitItem>>> {
     let bytes = chain
         .read_file(CHAR_START_OUTFIT)
@@ -477,14 +564,16 @@ fn load_start_outfits(chain: &mut Chain) -> Result<HashMap<(u8, u8, u8), Vec<Sta
         bail!("CharStartOutfit: not a WDBC file");
     }
     let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let fields = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
     let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-    if field_count != 41 || record_size != 152 {
-        bail!(
-            "CharStartOutfit: unexpected layout (fields {field_count}, record size {record_size}; \
-             expected 41/152)"
-        );
-    }
+    let (display_base, inv_base, slots) = match (fields, record_size) {
+        (41, 152) => (56usize, 104usize, 12usize),
+        (77, 296) => (104, 200, 24),
+        _ => bail!(
+            "CharStartOutfit: unexpected layout (fields {fields}, record size {record_size}; \
+             expected 41/152 or 77/296)"
+        ),
+    };
     let data = &bytes[20..];
     let i32_at = |rec: &[u8], off: usize| i32::from_le_bytes(rec[off..off + 4].try_into().unwrap());
     let mut map: HashMap<(u8, u8, u8), Vec<StartOutfitItem>> = HashMap::new();
@@ -496,9 +585,9 @@ fn load_start_outfits(chain: &mut Chain) -> Result<HashMap<(u8, u8, u8), Vec<Sta
         let rec = &data[off..off + record_size];
         let (race, class, sex) = (rec[4], rec[5], rec[6]);
         let mut items = Vec::new();
-        for slot in 0..12 {
-            let display = i32_at(rec, 56 + slot * 4);
-            let inv = i32_at(rec, 104 + slot * 4);
+        for slot in 0..slots {
+            let display = i32_at(rec, display_base + slot * 4);
+            let inv = i32_at(rec, inv_base + slot * 4);
             if display >= 1 && inv >= 1 {
                 items.push(StartOutfitItem {
                     display_id: display as u32,
@@ -513,12 +602,12 @@ fn load_start_outfits(chain: &mut Chain) -> Result<HashMap<(u8, u8, u8), Vec<Sta
 
 /// CharSections → the selectable keys, rows without flag `0x1` (`SECTION_FLAG_UNAVAILABLE`): the
 /// domain vmangos's `GetCharSectionEntry` searches.
-fn load_available_sections(chain: &mut Chain) -> Result<HashSet<SectionKey>> {
+fn load_available_sections(chain: &mut Chain, wrath: bool) -> Result<HashSet<SectionKey>> {
     let bytes = chain
         .read_file(CHAR_SECTIONS)
         .with_context(|| format!("reading {CHAR_SECTIONS}"))?;
     // 10 fields (ID, Race, Sex, SectionType, Variation, Color, Tex0-2, Flags); we read the ints.
-    let rs = parse(&bytes, all_u32_schema("CharSections", 10), "CharSections")?;
+    let rs = parse_with_trailing_fields(&bytes, all_u32_schema("CharSections", 10), "CharSections")?;
     let mut avail = HashSet::new();
     for r in rs.records() {
         if let (Some(race), Some(sex), Some(ty), Some(var), Some(color), Some(flags)) = (
@@ -529,7 +618,15 @@ fn load_available_sections(chain: &mut Chain) -> Result<HashSet<SectionKey>> {
             u32_at(r, 5),
             u32_at(r, 9),
         ) {
-            if flags & 0x1 == 0 {
+            // 1.12 marks unavailable sections with 0x1; 12340's flag is PLAYER (pinned
+            // `CharSectionFlags`), so the 12340 create domain is the player-flagged rows.
+            // Death-Knight-only sections (0x4 without 0x1) are outside the regular dials.
+            let available = if wrath {
+                flags & 0x1 != 0
+            } else {
+                flags & 0x1 == 0
+            };
+            if available {
                 avail.insert((race as u8, sex as u8, ty as u8, var as u8, color as u8));
             }
         }
@@ -542,7 +639,7 @@ fn load_facial_hair_styles(chain: &mut Chain) -> Result<HashMap<(u8, u8), HashSe
     let bytes = chain
         .read_file(CHAR_FACIAL_HAIR_STYLES)
         .with_context(|| format!("reading {CHAR_FACIAL_HAIR_STYLES}"))?;
-    let rs = parse(
+    let rs = parse_with_trailing_fields(
         &bytes,
         all_u32_schema("CharacterFacialHairStyles", 9),
         "CharacterFacialHairStyles",
@@ -876,7 +973,7 @@ mod tests {
         );
 
         // Every tuple in the dial ranges passes ValidateAppearance.
-        let avail = load_available_sections(&mut chain).expect("sections");
+        let avail = load_available_sections(&mut chain, false).expect("sections");
         let facial = load_facial_hair_styles(&mut chain).expect("facial hair");
         for race in PLAYABLE_RACES {
             for sex in [0u8, 1] {

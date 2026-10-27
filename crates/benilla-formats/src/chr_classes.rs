@@ -1,45 +1,45 @@
-//! `ChrClasses.dbc`, the per-class table, narrowed to the four columns the reference reads off
-//! its class-indexed record table (`0xc0def4`, max id `0xc0def8`, loader `0x542360`).
+//! `ChrClasses.dbc`, the per-class table.
 //!
-//! Field 2, the damage bonus stat: `GetDamageBonusStat` (`0x48b520`) reads it at `rec + 8` for the
-//! active player's class byte and answers it plus one, a 1-based `UnitStat` index. Strength (0)
-//! for every row but the Hunter's and the Rogue's Agility (1).
+//! **1.12 layout** (17 fields): field 2 damage bonus stat (`GetDamageBonusStat`, `0x48b520`),
+//! field 4 pet name token, fields 5-12 `Name_Lang`, field 14 class file string, field 15 class
+//! spell family, field 16 relic-slot flag. The reader below preserves every existing accessor.
 //!
-//! Field 4, the pet name token: the second return of `HasPetSpells` (`0x4b4410`), `"PET"` on every
-//! row but the Warlock's `"DEMON"`. FrameXML resolves it with `getglobal("PET_TYPE_"..token)`
-//! (`SpellBookFrame.lua:173`), so the token is a key, never display text, and is not localized.
+//! **12340 layout** (60 fields): 0 ID, 2 DisplayPower, 3 PetNameToken, 4-19 Name, 20 mask,
+//! 21-36 Name_Female, 37 mask, 38-53 Name_Male, 54 mask, 55 Filename, 56 SpellClassSet,
+//! 57 Flags, 58 CinematicSequenceID, 59 Required_Expansion. The column order is the pinned
+//! AzerothCore `chrclasses_dbc.sql` generated from the DBC; `DBCfmt.h` corroborates the
+//! server-read columns. The name blocks are the 3.3.5 DBC's sixteen physical locale slots in the
+//! pinned SQL order (enUS, enGB, koKR, frFR, deDE, enCN, zhCN, enTW, zhTW, esES, esMX, ruRU,
+//! ptPT, ptBR, itIT, Unk); the client's nine-locale UI index maps into them through
+//! [`Locale::wrath_dbc_column`] (enUS→0, koKR→2, frFR→3, ...). 12340's damage-bonus column
+//! does not exist, so [`ChrClasses::damage_bonus_stat`]
+//! stays `None` (unavailable) rather than reading DisplayPower. The integer PetNameToken is
+//! accepted only when it is a string-table offset yielding exactly "PET" or "DEMON"; otherwise
+//! the existing "PET" fallback remains (no guessed enum mapping).
 //!
-//! Field 5, the class name: the `Name_Lang` block (`+0x14`, eight locale columns), which
-//! `GetCharacterInfo` (`0x4732a0`) returns as the class (`0x473368`).
-//!
-//! Field 14, the class file string (`+0x38`, `"WARRIOR"`), which the create screen's
-//! `GetClassesForRace` (`0x471594`) and `GetSelectedClass` (`0x47171d`) return after the name.
-//!
-//! Field 15, the class spell family: a talent modifier applies to a spell only when its
-//! `SpellFamilyName` (`Spell.dbc` column 160) equals the local player's (`GetSpellModifiers`,
-//! `0x6e6b30`), cached in `[0xcecaac]` by its one non-zeroing writer, `0x6e6ca0` (called from
-//! `0x5debcc`). The shipped values are vmangos `SpellFamilyNames`.
-//!
-//! Field 16, the relic-slot flag, read at the row's `+0x40` by `UnitHasRelicSlot` (`0x519ebb`),
-//! the slot check (`0x5ea7c8`) and the sheathe toggle and setter (`0x5eb639`, `0x611d41`): no
-//! class id is compared, the table is the data. It is set for Paladin, Shaman and Druid, and
-//! `IsValidForSlot` (`0x5da1d0`), which the slot check calls, enforces it: INVSLOT 17 takes a relic
-//! (`InventoryType` 28) for those three and a ranged weapon for everyone else.
+//! Gender labels: the gendered column for the selected locale when it carries one, else the
+//! row's base `Name` column in the same locale (the DBC's own default), never another language
+//! or the other gender.
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
-use benilla_dbc::{FieldType, Schema, SchemaField};
+use anyhow::{bail, Context, Result};
+use benilla_dbc::{FieldType, Record, RecordSet, Schema, SchemaField, StringRef};
 
 use crate::chain::Chain;
-use crate::dbc::{loc_str, parse_with_trailing_fields, str_at, u32_at};
+use crate::dbc::{field_count, loc_str, loc_str_index, parse_with_trailing_fields, str_at, u32_at};
+use crate::Locale;
 
 const CHR_CLASSES: &str = "DBFilesClient\\ChrClasses.dbc";
 
-/// The patch copy's column count, which `benilla-dbc` enforces as the reference loader does
-/// (`0x54240e`, `0x542446`): the base archive's 16-column copy lacks the relic flag and is refused,
-/// never read one column short.
+/// The 1.12 patch copy's column count.
 const CHR_CLASSES_FIELDS: usize = 17;
+
+/// The 12340 column count (pinned `chrclasses_dbc.sql`).
+const WRATH_CHR_CLASSES_FIELDS: usize = 60;
+
+/// The client's nine supported 12340 locale columns.
+const WRATH_LOCALES: usize = 9;
 
 /// Field 2, read at `rec + 8` by `GetDamageBonusStat` (`0x48b569`).
 const DAMAGE_BONUS_STAT_FIELD: usize = 0x8 / 4;
@@ -59,18 +59,88 @@ const FILE_FIELD: usize = 0x38 / 4;
 /// Field 15, read at `+0x3c` by `0x6e6ca0`.
 const SPELL_FAMILY_FIELD: usize = 0x3c / 4;
 
+/// 12340: display power type (`Powers`).
+const WRATH_DISPLAY_POWER_FIELD: usize = 2;
+/// 12340: PetNameToken (`int` column in the pinned dump).
+const WRATH_PET_NAME_TOKEN_FIELD: usize = 3;
+/// 12340: first base-name column.
+const WRATH_NAME_FIELD: usize = 4;
+/// 12340: first female-name column.
+const WRATH_FEMALE_NAME_FIELD: usize = 21;
+/// 12340: first male-name column.
+const WRATH_MALE_NAME_FIELD: usize = 38;
+/// 12340: Filename.
+const WRATH_FILE_FIELD: usize = 55;
+/// 12340: SpellClassSet (the 1.12 class spell family).
+const WRATH_SPELL_FAMILY_FIELD: usize = 56;
+/// 12340: Flags.
+const WRATH_FLAGS_FIELD: usize = 57;
+/// 12340: CinematicSequenceID.
+const WRATH_CINEMATIC_FIELD: usize = 58;
+/// 12340: Required_Expansion.
+const WRATH_EXPANSION_FIELD: usize = 59;
+
 /// The literal the reference pushes when the player does not resolve (`0x846a40`). Every class but
 /// the Warlock carries it too, so an unloaded table degrades invisibly.
 pub const PET_NAME_TOKEN_FALLBACK: &str = "PET";
 
+/// One class-label row for the Wrath UI projection: native id, stable file token and the labels at
+/// the requested locale. A `None` label means neither the gendered column nor the same-locale base
+/// carried a non-empty string; resolved rows therefore always carry labels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalizedClassLabel {
+    pub id: u32,
+    pub file: Option<String>,
+    pub male: Option<String>,
+    pub female: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct ChrClass {
-    damage_bonus_stat: u32,
+    /// 1.12 `GetDamageBonusStat`; `None` on a 12340 row (the column does not exist).
+    damage_bonus_stat: Option<u32>,
+    /// 12340 DisplayPower; `None` on a 1.12 row.
+    display_power: Option<u32>,
     pet_name_token: Option<String>,
+    /// The base class name at the loader's locale, for the existing accessor.
     name: Option<String>,
     file: Option<String>,
     has_relic_slot: bool,
     spell_family: u32,
+    flags: Option<u32>,
+    cinematic: Option<u32>,
+    expansion: Option<u32>,
+    /// Per-locale base/female/male names (12340 only; empty on 1.12).
+    names: Vec<Option<String>>,
+    female_names: Vec<Option<String>>,
+    male_names: Vec<Option<String>>,
+}
+
+impl ChrClass {
+    fn from_vanilla(
+        damage_bonus_stat: u32,
+        pet_name_token: Option<String>,
+        name: Option<String>,
+        file: Option<String>,
+        has_relic_slot: bool,
+        spell_family: u32,
+    ) -> Self {
+        Self {
+            damage_bonus_stat: Some(damage_bonus_stat),
+            display_power: None,
+            pet_name_token,
+            name,
+            file,
+            has_relic_slot,
+            spell_family,
+            flags: None,
+            cinematic: None,
+            expansion: None,
+            names: Vec::new(),
+            female_names: Vec::new(),
+            male_names: Vec::new(),
+        }
+    }
 }
 
 /// `ChrClasses.dbc`'s read columns by class id.
@@ -83,14 +153,14 @@ impl ChrClasses {
         Self(
             rows.into_iter()
                 .map(|(id, name, file)| {
-                    let row = ChrClass {
-                        damage_bonus_stat: 0,
-                        pet_name_token: None,
-                        name: Some(name.to_string()).filter(|n| !n.is_empty()),
-                        file: Some(file.to_string()).filter(|f| !f.is_empty()),
-                        has_relic_slot: false,
-                        spell_family: 0,
-                    };
+                    let row = ChrClass::from_vanilla(
+                        0,
+                        None,
+                        Some(name.to_string()).filter(|n| !n.is_empty()),
+                        Some(file.to_string()).filter(|f| !f.is_empty()),
+                        false,
+                        0,
+                    );
                     (id, row)
                 })
                 .collect(),
@@ -106,8 +176,9 @@ impl ChrClasses {
             .unwrap_or(PET_NAME_TOKEN_FALLBACK)
     }
 
-    /// The class's `Name_Lang` name, `GetCharacterInfo`'s third return; `None` for a class with no
-    /// row or no name, which that binding answers with the empty string (`0x47336e`).
+    /// The class's `Name_Lang` name at the loader's locale, `GetCharacterInfo`'s third return;
+    /// `None` for a class with no row or no name, which that binding answers with the empty string
+    /// (`0x47336e`).
     pub fn name(&self, class: u32) -> Option<&str> {
         self.0.get(&class)?.name.as_deref()
     }
@@ -131,14 +202,36 @@ impl ChrClasses {
         self.0.contains_key(&class)
     }
 
-    /// The class's damage bonus stat, 0-based (Strength 0, Agility 1); `None` for a class with
-    /// no row, where `GetDamageBonusStat` answers 0 (`0x48b58a`).
+    /// The 1.12 class's damage bonus stat, 0-based (Strength 0, Agility 1); `None` for a class
+    /// with no row (where `GetDamageBonusStat` answers 0), and for every 12340 row because that
+    /// layout carries no such column (DisplayPower is not it).
     pub fn damage_bonus_stat(&self, class: u32) -> Option<u32> {
-        self.0.get(&class).map(|c| c.damage_bonus_stat)
+        self.0.get(&class)?.damage_bonus_stat
+    }
+
+    /// The 12340 class's display power type; `None` on a 1.12 row.
+    pub fn display_power(&self, class: u32) -> Option<u32> {
+        self.0.get(&class)?.display_power
+    }
+
+    /// The 12340 class Flags word; `None` on a 1.12 row (no equivalent column).
+    pub fn flags(&self, class: u32) -> Option<u32> {
+        self.0.get(&class)?.flags
+    }
+
+    /// The 12340 CinematicSequenceID; `None` on a 1.12 row.
+    pub fn cinematic_sequence(&self, class: u32) -> Option<u32> {
+        self.0.get(&class)?.cinematic
+    }
+
+    /// The 12340 Required_Expansion; `None` on a 1.12 row.
+    pub fn required_expansion(&self, class: u32) -> Option<u32> {
+        self.0.get(&class)?.expansion
     }
 
     /// Whether the class's INVSLOT 17 is a relic slot, `UnitHasRelicSlot` whole. A class with no
     /// row answers false, as the reference's bound check against `0xc0def8` falls to its nil leg.
+    /// The 12340 layout has no evidence-backed equivalent, so every 12340 row answers false.
     pub fn has_relic_slot(&self, class: u32) -> bool {
         self.0.get(&class).is_some_and(|c| c.has_relic_slot)
     }
@@ -162,9 +255,38 @@ impl ChrClasses {
     /// The class spell family, which the reference caches in `[0xcecaac]` and matches against a
     /// spell's `SpellFamilyName` before a talent modifier applies. A class with no row answers 0,
     /// the global's value from world-enter (`0x6e7150`) until the player resolves, which the
-    /// gate's `SpellFamilyName != 0` conjunct makes match nothing.
+    /// gate's `SpellFamilyName != 0` conjunct makes match nothing. 12340 stores it as
+    /// `SpellClassSet`.
     pub fn spell_family(&self, class: u32) -> u32 {
         self.0.get(&class).map_or(0, |c| c.spell_family)
+    }
+
+    /// The 12340 class labels for the client's nine-locale table, sorted by native id. `None`
+    /// when the table is the 1.12 layout (no per-locale row data) or the index is unsupported.
+    /// Male/female use the gendered column when the locale carries one, else the base name in the
+    /// same locale. A row with no Filename keeps `file: None` so the UI projection can refuse it.
+    pub fn localized_labels(&self, locale_index: usize) -> Option<Vec<LocalizedClassLabel>> {
+        if locale_index >= WRATH_LOCALES || self.0.values().any(|c| c.names.is_empty()) {
+            return None;
+        }
+        let mut rows: Vec<LocalizedClassLabel> = self
+            .0
+            .iter()
+            .map(|(id, row)| {
+                let non_empty = |value: Option<String>| value.filter(|s| !s.is_empty());
+                let base = non_empty(row.names.get(locale_index).cloned().flatten());
+                LocalizedClassLabel {
+                    id: *id,
+                    file: row.file.clone(),
+                    male: non_empty(row.male_names.get(locale_index).cloned().flatten())
+                        .or_else(|| base.clone()),
+                    female: non_empty(row.female_names.get(locale_index).cloned().flatten())
+                        .or(base),
+                }
+            })
+            .collect();
+        rows.sort_by_key(|row| row.id);
+        Some(rows)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -172,10 +294,9 @@ impl ChrClasses {
     }
 }
 
-fn schema() -> Schema {
+fn vanilla_schema() -> Schema {
     let mut s = Schema::new("ChrClasses");
     for i in 0..CHR_CLASSES_FIELDS {
-        // The token, the file string and the eight name columns are strings; the rest stay opaque dwords.
         let ty = if i == PET_NAME_TOKEN_FIELD
             || i == FILE_FIELD
             || (NAME_FIELD..NAME_FIELD + 8).contains(&i)
@@ -189,29 +310,122 @@ fn schema() -> Schema {
     s
 }
 
-/// Load `ChrClasses.dbc`'s read columns from the patch chain.
-pub fn load_chr_classes(chain: &mut Chain) -> Result<ChrClasses> {
-    let bytes = chain
-        .read_file(CHR_CLASSES)
-        .with_context(|| format!("reading {CHR_CLASSES}"))?;
-    let rs = parse_with_trailing_fields(&bytes, schema(), "ChrClasses.dbc")?;
-    let locale = chain.locale();
+fn wrath_schema() -> Schema {
+    // The DBC's sixteen physical locale slots, not the nine the client exposes.
+    const DBC_LOCALE_SLOTS: usize = 16;
+    let string = |i: usize| {
+        (WRATH_NAME_FIELD..WRATH_NAME_FIELD + DBC_LOCALE_SLOTS).contains(&i)
+            || (WRATH_FEMALE_NAME_FIELD..WRATH_FEMALE_NAME_FIELD + DBC_LOCALE_SLOTS).contains(&i)
+            || (WRATH_MALE_NAME_FIELD..WRATH_MALE_NAME_FIELD + DBC_LOCALE_SLOTS).contains(&i)
+            || i == WRATH_FILE_FIELD
+    };
+    let mut s = Schema::new("ChrClasses");
+    for i in 0..WRATH_CHR_CLASSES_FIELDS {
+        let ty = if string(i) {
+            FieldType::String
+        } else {
+            FieldType::UInt32
+        };
+        s.add_field(SchemaField::new(format!("F{i}"), ty));
+    }
+    s
+}
+
+fn load_vanilla(bytes: &[u8], locale: Locale) -> Result<ChrClasses> {
+    let rs = parse_with_trailing_fields(bytes, vanilla_schema(), "ChrClasses.dbc")?;
     let mut by_id = HashMap::new();
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         by_id.insert(
             id,
+            ChrClass::from_vanilla(
+                u32_at(r, DAMAGE_BONUS_STAT_FIELD).unwrap_or(0),
+                str_at(&rs, r, PET_NAME_TOKEN_FIELD),
+                loc_str(&rs, r, NAME_FIELD, locale),
+                str_at(&rs, r, FILE_FIELD),
+                u32_at(r, RELIC_SLOT_FIELD).is_some_and(|v| v != 0),
+                u32_at(r, SPELL_FAMILY_FIELD).unwrap_or(0),
+            ),
+        );
+    }
+    Ok(ChrClasses(by_id))
+}
+
+/// The 12340 `PetNameToken` is an integer column in the pinned dump; accept it only when the
+/// value is a string-table offset yielding one of the two non-localized keys the client knows.
+/// Anything else leaves the token unavailable and the existing "PET" fallback applies.
+fn pet_name_token_wrath(rs: &RecordSet, r: &Record) -> Option<String> {
+    let offset = u32_at(r, WRATH_PET_NAME_TOKEN_FIELD)?;
+    let token = rs.get_string(StringRef(offset)).ok()?;
+    matches!(token, "PET" | "DEMON").then(|| token.to_string())
+}
+
+fn load_wrath(bytes: &[u8], locale_index: usize) -> Result<ChrClasses> {
+    let rs = parse_with_trailing_fields(bytes, wrath_schema(), "ChrClasses.dbc")?;
+    let mut by_id = HashMap::new();
+    for r in rs.records() {
+        let Some(id) = u32_at(r, 0) else { continue };
+        let columns = (0..WRATH_LOCALES)
+            .map(|ui| Locale::wrath_dbc_column(ui).unwrap_or(0))
+            .collect::<Vec<_>>();
+        let names = columns
+            .iter()
+            .map(|&column| {
+                loc_str_index(&rs, r, WRATH_NAME_FIELD, column).filter(|s| !s.is_empty())
+            })
+            .collect::<Vec<_>>();
+        let female_names = columns
+            .iter()
+            .map(|&column| {
+                loc_str_index(&rs, r, WRATH_FEMALE_NAME_FIELD, column).filter(|s| !s.is_empty())
+            })
+            .collect::<Vec<_>>();
+        let male_names = columns
+            .iter()
+            .map(|&column| {
+                loc_str_index(&rs, r, WRATH_MALE_NAME_FIELD, column).filter(|s| !s.is_empty())
+            })
+            .collect::<Vec<_>>();
+        by_id.insert(
+            id,
             ChrClass {
-                damage_bonus_stat: u32_at(r, DAMAGE_BONUS_STAT_FIELD).unwrap_or(0),
-                pet_name_token: str_at(&rs, r, PET_NAME_TOKEN_FIELD),
-                name: loc_str(&rs, r, NAME_FIELD, locale),
-                file: str_at(&rs, r, FILE_FIELD),
-                has_relic_slot: u32_at(r, RELIC_SLOT_FIELD).is_some_and(|v| v != 0),
-                spell_family: u32_at(r, SPELL_FAMILY_FIELD).unwrap_or(0),
+                damage_bonus_stat: None,
+                display_power: u32_at(r, WRATH_DISPLAY_POWER_FIELD),
+                pet_name_token: pet_name_token_wrath(&rs, r),
+                name: names.get(locale_index).cloned().flatten(),
+                file: str_at(&rs, r, WRATH_FILE_FIELD),
+                has_relic_slot: false,
+                spell_family: u32_at(r, WRATH_SPELL_FAMILY_FIELD).unwrap_or(0),
+                flags: u32_at(r, WRATH_FLAGS_FIELD),
+                cinematic: u32_at(r, WRATH_CINEMATIC_FIELD),
+                expansion: u32_at(r, WRATH_EXPANSION_FIELD),
+                names,
+                female_names,
+                male_names,
             },
         );
     }
     Ok(ChrClasses(by_id))
+}
+
+/// Load `ChrClasses.dbc`'s read columns from the patch chain, selecting the 1.12 or 12340 layout
+/// from the file header. A file shorter than the 1.12 layout, or a 1.12 patch's trailing columns,
+/// keep their existing behavior.
+pub fn load_chr_classes(chain: &mut Chain) -> Result<ChrClasses> {
+    let bytes = chain
+        .read_file(CHR_CLASSES)
+        .with_context(|| format!("reading {CHR_CLASSES}"))?;
+    let fields = field_count(&bytes).context("ChrClasses.dbc header field count")?;
+    if fields < CHR_CLASSES_FIELDS {
+        bail!(
+            "ChrClasses.dbc has {fields} fields; the 1.12 layout needs at least {CHR_CLASSES_FIELDS}"
+        );
+    }
+    if fields >= WRATH_CHR_CLASSES_FIELDS {
+        load_wrath(&bytes, chain.locale().wrath_index())
+    } else {
+        load_vanilla(&bytes, chain.locale())
+    }
 }
 
 #[cfg(test)]

@@ -54,3 +54,26 @@ columns:
   Filename is an explicit refusal/diagnostic; never a fabricated complete table.
 - The fixture and production use the same `benilla_formats` catalog + app projection helper; no
   test-only stand-ins.
+
+## Implemented (source, no execution)
+
+- `ChrClasses` selects the 60-field 12340 layout from the header, reads DisplayPower (2),
+  PetNameToken (3, accepted only when it resolves to the literal PET/DEMON), the three 16-slot
+  name blocks (4/21/38, mapped from the nine UI locales), Filename 55, SpellClassSet 56, Flags
+  57, CinematicSequenceID 58 and Required_Expansion 59; the 17-field 1.12 path is unchanged.
+- `ChrRaces` selects the 69-field 12340 layout (Flags 1, FactionID 2, displays 4/5, file 11,
+  intro 12, the 16-slot names at 14/31/48, tokens 65/66/67, expansion 68); the 29-field 1.12
+  path is unchanged.
+- `Locale::wrath_index` (UI index) and `Locale::wrath_dbc_column` (physical DBC slot) are
+  separate; all 12340 loaders map UI index -> DBC slot.
+- Class labels resolve the gendered column's non-empty string, else the same-locale base; the
+  app projection refuses an empty catalog, non-12340 tables, unsupported locales, ids past
+  `u8`, duplicate ids/Filenames, empty/NUL Filenames and missing labels.
+- `ui_script::lifecycle` seats the projection after `set_locale`/VM construction and before
+  `load_glue` and before the FrameXML load.
+- Creation catalog: Wrath playable races derive from `ChrRaces` Flags bit 0x1; 12340
+  `CharStartOutfit` uses the 77-field/296-byte `dbbbX` + 24 items + 24 displays + 24 inventory
+  types layout; `CharSections` uses 0x1 = PLAYER on 12340 versus the 1.12 0x1 = unavailable
+  filter. Wrath appearance guards are structural (no 12340 rows are vendored).
+- Explicit gaps: 12340 relic slot is unavailable (false, documented); Death-Knight-only
+  CharSections children are not folded into the regular dials; live smoke still required.

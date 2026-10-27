@@ -9,6 +9,7 @@ use bevy::prelude::*;
 
 use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 use benilla_formats::{ChrClasses, ChrRaces};
+use benilla_ui::script::{LocalizedClassName, UiScript, UiTarget};
 
 /// The parsed table; [`benilla_formats::ChrClasses`] documents the columns.
 #[derive(Resource)]
@@ -84,6 +85,104 @@ fn load_chr_classes(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
              as having a relic slot, and no talent spell modifier can apply (the gate has no \
              class family to match): {e:#}"
         ),
+    }
+}
+
+/// The 12340 class-label rows for the UI's nine-locale table, projected from the one parsed
+/// catalog. Every row must carry a native id that fits the binding's `u8`, a non-empty Filename,
+/// and male/female labels at the locale: a short row is an explicit refusal, never a fabricated
+/// table, and the binding remains unavailable until the catalog is complete.
+pub(crate) fn localized_class_names(
+    classes: &ChrClasses,
+    locale_index: usize,
+) -> Result<Vec<LocalizedClassName>, String> {
+    let rows = classes.localized_labels(locale_index).ok_or_else(|| {
+        format!(
+            "ChrClasses.dbc is not the 12340 layout, or locale {locale_index} is outside the \
+             client's nine-locale table"
+        )
+    })?;
+    if rows.is_empty() {
+        return Err("ChrClasses.dbc has no class rows; refusing an empty UI catalog".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut files = std::collections::HashSet::new();
+    let mut projected = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = u8::try_from(row.id)
+            .map_err(|_| format!("class id {} does not fit the UI binding's u8", row.id))?;
+        if !ids.insert(id) {
+            return Err(format!("ChrClasses.dbc has duplicate class id {id}"));
+        }
+        let file = row
+            .file
+            .filter(|file| !file.is_empty() && !file.contains('\0'))
+            .ok_or_else(|| format!("ChrClasses.dbc class {id} has no usable Filename"))?;
+        if !files.insert(file.clone()) {
+            return Err(format!("ChrClasses.dbc has duplicate class Filename {file:?}"));
+        }
+        let male = row.male.ok_or_else(|| {
+            format!("ChrClasses.dbc class {id} has no male label at locale {locale_index}")
+        })?;
+        let female = row.female.ok_or_else(|| {
+            format!("ChrClasses.dbc class {id} has no female label at locale {locale_index}")
+        })?;
+        projected.push(LocalizedClassName {
+            id,
+            file,
+            male,
+            female,
+        });
+    }
+    Ok(projected)
+}
+
+/// The class table for a load that can run before [`ChrClassesPlugin`]'s startup loader (the
+/// glue VM is built at startup, before registration-order ties break the other way). The
+/// instance is inserted so the pet book, relic and talent readers share it; an install with no
+/// chain yet leaves the projection unavailable.
+fn classes_for_ui(world: &mut World) -> Option<ChrClasses> {
+    if let Some(table) = world.get_resource::<ChrClassTable>() {
+        return Some(table.0.clone());
+    }
+    let loaded = {
+        let assets = world.get_resource::<WorldAssets>()?;
+        let mut chain = assets.chain.lock_recover();
+        benilla_formats::load_chr_classes(&mut chain)
+    };
+    match loaded {
+        Ok(table) => {
+            world.insert_resource(ChrClassTable(table.clone()));
+            Some(table)
+        }
+        Err(error) => {
+            warn!(
+                "chr_classes: ChrClasses.dbc failed to load ahead of the UI bootstrap: {error:#}"
+            );
+            None
+        }
+    }
+}
+
+/// Seat the target VM's localized class projection, before GlueXML/FrameXML execute the stock
+/// `Constants.lua`. A 1.12 VM is untouched; a 12340 VM without a complete catalog logs and
+/// leaves `FillLocalizedClassList` unavailable rather than inventing labels.
+pub(crate) fn seat_localized_class_names(world: &mut World, script: &mut UiScript) {
+    if script.target() != UiTarget::Wrath335 {
+        return;
+    }
+    let locale = script.locale();
+    let Some(classes) = classes_for_ui(world) else {
+        warn!("ui_script: Wrath is active but ChrClasses.dbc is unavailable; FillLocalizedClassList will refuse");
+        return;
+    };
+    match localized_class_names(&classes, locale) {
+        Ok(rows) => {
+            if let Err(error) = script.set_localized_class_names(locale, rows) {
+                error!("ui_script: the localized class catalog was refused: {error}");
+            }
+        }
+        Err(error) => warn!("ui_script: FillLocalizedClassList catalog unavailable: {error}"),
     }
 }
 

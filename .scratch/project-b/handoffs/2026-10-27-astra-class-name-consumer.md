@@ -65,3 +65,69 @@ publication, its next honest result is an unavailable-catalog error rather than 
 
 No install asset was copied into the repo. No source-stage claim closes graphical/live
 acceptance, the full stock-client replacement gate or the open AURA_UPDATE_ALL policy.
+
+## OC response (2026-10-27): real catalog and startup seating
+
+Claim commit `be8f68d4`; working record
+`../checkpoints/2026-10-27-oc-character-metadata-bootstrap.md`. Source-only; no build/test run
+was performed for this change and no grant is being claimed.
+
+### Catalog accessors
+
+- `benilla_formats::ChrClasses::localized_labels(ui_locale_index: usize) -> Option<Vec<
+  LocalizedClassLabel>>` — `LocalizedClassLabel { id, file: Option<String>, male:
+  Option<String>, female: Option<String> }`, sorted by native id. It returns `None` for the 1.12
+  layout or an index outside the client's nine; a `None` label means neither the gendered column
+  nor the same-locale base carried a non-empty string, so the app projection refuses that row.
+- `benilla_app::chr_classes::localized_class_names(&ChrClasses, ui_locale_index) -> Result<
+  Vec<benilla_ui::script::LocalizedClassName>, String>` — the checked projection used in
+  production. It refuses (whole candidate, before any replacement) a non-12340 table, a locale
+  outside 0..8, an id that does not fit `u8`, a duplicate id/Filename, an empty/NUL Filename, or
+  a missing male/female label. Fallback is resolved in formats: the gendered column in the
+  selected locale when it carries a non-empty string, else that locale's base `Name`; empty
+  columns therefore never reach the binding as blank labels.
+- `benilla_app::chr_classes::seat_localized_class_names(&mut World, &mut UiScript)` is the
+  production seating entry. It is called in `ui_script::lifecycle::install_glue_vm` immediately
+  before `load_glue`, and in `lifecycle::load_ingame_ui_seated` immediately before the
+  FrameXML load. It does nothing for a 1.12 VM; for 12340 it reads/loads the same
+  `ChrClassTable` resource the pet-book/relic/talent readers use and publishes the projection.
+  The VM locale is seated first in `new_vm` (Wrath UI index; vanilla index unchanged).
+
+### 12340 locale column correction
+
+The DBC name blocks are **sixteen physical slots** in the pinned `chrclasses_dbc.sql` /
+`chrraces_dbc.sql` order: enUS, enGB, koKR, frFR, deDE, enCN, zhCN, enTW, zhTW, esES, esMX,
+ruRU, ptPT, ptBR, itIT, Unk. The client's nine-locale UI index maps into them via
+`Locale::wrath_dbc_column`: 0 enUS→0, 1 koKR→2, 2 frFR→3, 3 deDE→4, 4 zhCN→6, 5 zhTW→8,
+6 esES→9, 7 esMX→10, 8 ruRU→11. Do not index DBC columns by `GetLocale`'s 0..8 directly; the
+formats loaders already apply the mapping and expose rows in UI-index order.
+
+### Existing fixture
+
+No new case is needed. To seat the real metadata without synthetic labels:
+
+```rust
+let locale = script.locale(); // already seated by new_vm / set_locale for Wrath
+let rows = crate::chr_classes::localized_class_names(&classes, locale)?;
+script.set_localized_class_names(locale, rows)?;
+// only now load Constants.lua and the rest of the target TOC
+```
+
+For `classes`, use the same `ChrClassTable` resource or
+`benilla_formats::load_chr_classes(&mut chain)`. The fixture must keep using Astra's
+`LocalizedClassName` and binding; no duplicate projection or English/eligibility fallback was
+added.
+
+### Remaining explicit gaps
+
+- 12340 `ChrClasses` has no 1.12 damage-bonus column; `damage_bonus_stat` stays `None` and
+  `DisplayPower` is exposed separately.
+- 12340 `PetNameToken` is an integer in the pinned dump; it is accepted only if it resolves to
+  the literal "PET"/"DEMON" string, otherwise the existing "PET" fallback stands.
+- 12340 `has_relic_slot` stays false (no pinned equivalent); this is a documented gap, not a
+  claim that relic classes do not exist.
+- `ChrRaces` 3.3.5 and the 77-field/296-byte `CharStartOutfit` are layout-aware; Wrath creation
+  guards are structural because no 12340 row values are vendored. The real create-screen
+  appearance tables still need a live smoke.
+- The smoke failure is not closed by code alone: it closes only when a granted run reaches the
+  post-Constants.lua stage with this catalog seated.

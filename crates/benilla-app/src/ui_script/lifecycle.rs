@@ -80,6 +80,8 @@ fn install_glue_vm(world: &mut World, screen: &str) -> bool {
         cvars.seed_vm(&mut script);
     }
     seed_agreements(world, &mut script);
+    // Before the stock `Constants.lua` runs, as the client has its class labels before the UI.
+    crate::chr_classes::seat_localized_class_names(world, &mut script);
     let start = std::time::Instant::now();
     let failures = super::glue::load_glue(&mut script);
     super::glue::finish_glue_load_log(&mut script);
@@ -165,7 +167,14 @@ fn new_vm<E: std::fmt::Display>(
     };
     script.set_european_numbers(european_numbers);
     // `[0xc0e080]`, which start-up sets once from `Wow.ini`, so every VM answers `GetLocale` alike.
-    script.set_locale(super::client_locale().index());
+    // The 12340 client's nine-locale table includes esMX and ruRU, so it uses the Wrath index; the
+    // vanilla table keeps its eight.
+    let locale = super::client_locale();
+    script.set_locale(if script.target() == UiTarget::Wrath335 {
+        locale.wrath_index()
+    } else {
+        locale.index()
+    });
     // `[0x882730]`, `Wow.ini`'s `Region`, read once alike and handed to the name check.
     script.set_client_region(super::client_region());
     // The name checks' word lists, client globals start-up compiles once (`0x402b7f` → `0x6c91a0`).
@@ -578,6 +587,9 @@ fn load_ingame_ui_seated(world: &mut World, seat: LoadSeat) {
     // seats either, and the load measures text (the stock tab template's `OnLoad` sizes from its
     // text width, `UIPanelTemplates.xml:370-373`), which answers 0 with no measurer.
     seat_raster_seam_for_load(world, &mut script);
+    // Before FrameXML's `Constants.lua`: the same catalog the startup loader owns, seated on this
+    // VM's target locale (the glue load above covers the other VM).
+    crate::chr_classes::seat_localized_class_names(world, &mut script);
     // Read out of the world first, for the phases below.
     let ui_scale = world
         .get_resource::<super::UiScaleCvar>()

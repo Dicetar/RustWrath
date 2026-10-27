@@ -1,23 +1,30 @@
-//! `ChrRaces.dbc`, the per-race table, narrowed to the two strings the unit getters push. The
-//! reference loads it into a race-indexed record table (`0xc0dee0`, max id `0xc0dee4`).
+//! `ChrRaces.dbc`, the per-race table, narrowed to the strings the unit getters push and the
+//! intro sequence. The reference loads it into a race-indexed record table (`0xc0dee0`, max id
+//! `0xc0dee4`).
 //!
-//! `UnitRace` (`0x5182e0`) takes the race byte's row and pushes two strings: the display name from
-//! the `Name_Lang` block (`+0x44`, field 17, eight locale columns, read at `[0xc0e080]`,
-//! `0x518301`), then the race token from field 15 (`+0x3c`, `0x51830c`), `"NightElf"` or
-//! `"Scourge"`, the file string. A race with no row pushes two nils. The token is a key, never
-//! display text, and is not localized.
+//! **1.12 layout** (29 fields): name block at field 17 (`+0x44`, eight locale columns), token at
+//! field 15 (`+0x3c`), `CinematicSequenceID` at field 16 (`+0x40`).
+//!
+//! **12340 layout** (69 fields): 0 ID, 1 Flags, 2 FactionID, 4/5 male/female display, 11
+//! ClientFilestring, 12 CinematicSequenceID, 14-29 Name, 31-46 Name_Female, 48-63 Name_Male,
+//! 65/66 FacialHairCustomization, 67 HairCustomization, 68 Required_Expansion. The column order is
+//! the pinned AzerothCore `chrraces_dbc.sql` generated from the DBC. Its name blocks are the DBC's
+//! sixteen physical locale slots (enUS, enGB, koKR, frFR, deDE, enCN, zhCN, enTW, zhTW, esES,
+//! esMX, ruRU, ptPT, ptBR, itIT, Unk); the client's nine-locale UI index maps into them through
+//! [`Locale::wrath_dbc_column`]. The token is still a key, never display text, and is not
+//! localized.
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse_with_trailing_fields, str_at, u32_at};
+use crate::dbc::{field_count, loc_str, loc_str_index, parse_with_trailing_fields, str_at, u32_at};
 use crate::{Chain, Locale};
 
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
 
-/// The shipped copy's column count, which `benilla-dbc` enforces as the reference loader does.
+/// The 1.12 shipped copy's column count, which `benilla-dbc` enforces as the reference loader does.
 const CHR_RACES_FIELDS: usize = 29;
 
 /// Field 15, the file string (`+0x3c`).
@@ -29,13 +36,44 @@ const INTRO_FIELD: usize = 0x40 / 4;
 /// Field 17, the first of the eight `Name_Lang` columns (`+0x44`).
 const NAME_FIELD: usize = 0x44 / 4;
 
-/// One race's row: its name at the locale and its token.
+/// The 12340 column count (pinned `chrraces_dbc.sql`).
+const WRATH_RACES_FIELDS: usize = 69;
+
+/// 12340: ClientFilestring.
+const WRATH_FILE_FIELD: usize = 11;
+/// 12340: CinematicSequenceID.
+const WRATH_INTRO_FIELD: usize = 12;
+/// 12340: first base-name column.
+const WRATH_NAME_FIELD: usize = 14;
+/// 12340: first female-name column.
+const WRATH_FEMALE_NAME_FIELD: usize = 31;
+/// 12340: first male-name column.
+const WRATH_MALE_NAME_FIELD: usize = 48;
+/// The client's nine supported 12340 locale columns.
+const WRATH_LOCALES: usize = 9;
+
+/// One race's row: its name at the loader's locale, its token, and (12340 only) the gendered
+/// per-locale names.
 #[derive(Debug, Clone, Default)]
 struct Row {
     name: String,
     file: String,
-    /// `CinematicSequenceID` (`+0x40`).
+    /// `CinematicSequenceID`.
     intro: u32,
+    names: Vec<Option<String>>,
+    female_names: Vec<Option<String>>,
+    male_names: Vec<Option<String>>,
+}
+
+/// One race-label row for the Wrath UI projection, the class-label shape with race ids and the
+/// client file token. No consumer requires it yet; it keeps the 12340 gender columns available
+/// rather than dropping them at the loader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalizedRaceLabel {
+    pub id: u32,
+    pub file: Option<String>,
+    pub male: Option<String>,
+    pub female: Option<String>,
 }
 
 /// `ChrRaces.dbc`'s read columns by race id.
@@ -49,8 +87,14 @@ impl ChrRaces {
             rows.into_iter()
                 .map(|(id, name, file)| {
                     let (name, file) = (name.to_string(), file.to_string());
-                    let intro = 0;
-                    (id, Row { name, file, intro })
+                    (
+                        id,
+                        Row {
+                            name,
+                            file,
+                            ..Row::default()
+                        },
+                    )
                 })
                 .collect(),
         )
@@ -69,10 +113,44 @@ impl ChrRaces {
         self.0.iter().map(|(id, r)| (*id, r.name.as_str()))
     }
 
-    /// The race row's `CinematicSequenceID` (`+0x40`), the intro cinematic the first-login camera
-    /// looks up (`0x46c2f8`); a race with no row has none.
+    /// The race row's `CinematicSequenceID`, the intro cinematic the first-login camera looks up
+    /// (`0x46c2f8`); a race with no row has none.
     pub fn intro_sequence(&self, race: u32) -> Option<u32> {
         self.0.get(&race).map(|r| r.intro)
+    }
+
+    /// The 12340 labels for the client's nine-locale table, sorted by native id. `None` when the
+    /// table is the 1.12 layout or the index is unsupported. Male/female use the gendered column
+    /// when the locale carries one, else the base name in the same locale.
+    pub fn localized_labels(&self, locale_index: usize) -> Option<Vec<LocalizedRaceLabel>> {
+        if locale_index >= WRATH_LOCALES || self.0.values().any(|r| r.names.is_empty()) {
+            return None;
+        }
+        let mut rows: Vec<LocalizedRaceLabel> = self
+            .0
+            .iter()
+            .map(|(id, row)| {
+                let base = row.names.get(locale_index).cloned().flatten();
+                LocalizedRaceLabel {
+                    id: *id,
+                    file: Some(row.file.clone()).filter(|f| !f.is_empty()),
+                    male: row
+                        .male_names
+                        .get(locale_index)
+                        .cloned()
+                        .flatten()
+                        .or_else(|| base.clone()),
+                    female: row
+                        .female_names
+                        .get(locale_index)
+                        .cloned()
+                        .flatten()
+                        .or(base),
+                }
+            })
+            .collect();
+        rows.sort_by_key(|row| row.id);
+        Some(rows)
     }
 
     /// A table for tests of what reads the intro column: `race` holds `sequence`.
@@ -87,7 +165,7 @@ impl ChrRaces {
     }
 }
 
-fn schema() -> Schema {
+fn vanilla_schema() -> Schema {
     let mut s = Schema::new("ChrRaces");
     for i in 0..CHR_RACES_FIELDS {
         let ty = if i == FILE_FIELD
@@ -103,7 +181,27 @@ fn schema() -> Schema {
     s
 }
 
-/// Load `ChrRaces.dbc`'s read columns from the patch chain, names at the chain's locale.
+fn wrath_schema() -> Schema {
+    // The DBC's sixteen physical locale slots, not the nine the client exposes.
+    const DBC_LOCALE_SLOTS: usize = 16;
+    let mut s = Schema::new("ChrRaces");
+    for i in 0..WRATH_RACES_FIELDS {
+        let ty = if i == WRATH_FILE_FIELD
+            || (WRATH_NAME_FIELD..WRATH_NAME_FIELD + DBC_LOCALE_SLOTS).contains(&i)
+            || (WRATH_FEMALE_NAME_FIELD..WRATH_FEMALE_NAME_FIELD + DBC_LOCALE_SLOTS).contains(&i)
+            || (WRATH_MALE_NAME_FIELD..WRATH_MALE_NAME_FIELD + DBC_LOCALE_SLOTS).contains(&i)
+        {
+            FieldType::String
+        } else {
+            FieldType::UInt32
+        };
+        s.add_field(SchemaField::new(format!("F{i}"), ty));
+    }
+    s
+}
+
+/// Load `ChrRaces.dbc`'s read columns from the patch chain, names at the chain's locale and
+/// layout selected from the file header.
 pub fn load_chr_races(chain: &mut Chain) -> Result<ChrRaces> {
     let bytes = chain
         .read_file(CHR_RACES)
@@ -113,7 +211,21 @@ pub fn load_chr_races(chain: &mut Chain) -> Result<ChrRaces> {
 
 /// The table a `ChrRaces.dbc` holds, its names read at `locale`.
 fn table_from_bytes(bytes: &[u8], locale: Locale) -> Result<ChrRaces> {
-    let rs = parse_with_trailing_fields(bytes, schema(), "ChrRaces.dbc")?;
+    let fields = field_count(bytes).context("ChrRaces.dbc header field count")?;
+    if fields < CHR_RACES_FIELDS {
+        bail!(
+            "ChrRaces.dbc has {fields} fields; the 1.12 layout needs at least {CHR_RACES_FIELDS}"
+        );
+    }
+    if fields >= WRATH_RACES_FIELDS {
+        table_from_wrath(bytes, locale.wrath_index())
+    } else {
+        table_from_vanilla(bytes, locale)
+    }
+}
+
+fn table_from_vanilla(bytes: &[u8], locale: Locale) -> Result<ChrRaces> {
+    let rs = parse_with_trailing_fields(bytes, vanilla_schema(), "ChrRaces.dbc")?;
     let mut rows = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
@@ -123,6 +235,42 @@ fn table_from_bytes(bytes: &[u8], locale: Locale) -> Result<ChrRaces> {
                 name: loc_str(&rs, r, NAME_FIELD, locale).unwrap_or_default(),
                 file: str_at(&rs, r, FILE_FIELD).unwrap_or_default(),
                 intro: u32_at(r, INTRO_FIELD).unwrap_or(0),
+                ..Row::default()
+            },
+        );
+    }
+    Ok(ChrRaces(rows))
+}
+
+fn table_from_wrath(bytes: &[u8], locale_index: usize) -> Result<ChrRaces> {
+    let rs = parse_with_trailing_fields(bytes, wrath_schema(), "ChrRaces.dbc")?;
+    let columns = (0..WRATH_LOCALES)
+        .map(|ui| Locale::wrath_dbc_column(ui).unwrap_or(0))
+        .collect::<Vec<_>>();
+    let mut rows = HashMap::with_capacity(rs.records().len());
+    for r in rs.records() {
+        let Some(id) = u32_at(r, 0) else { continue };
+        let names = columns
+            .iter()
+            .map(|&column| loc_str_index(&rs, r, WRATH_NAME_FIELD, column))
+            .collect::<Vec<_>>();
+        let female_names = columns
+            .iter()
+            .map(|&column| loc_str_index(&rs, r, WRATH_FEMALE_NAME_FIELD, column))
+            .collect::<Vec<_>>();
+        let male_names = columns
+            .iter()
+            .map(|&column| loc_str_index(&rs, r, WRATH_MALE_NAME_FIELD, column))
+            .collect::<Vec<_>>();
+        rows.insert(
+            id,
+            Row {
+                name: names.get(locale_index).cloned().flatten().unwrap_or_default(),
+                file: str_at(&rs, r, WRATH_FILE_FIELD).unwrap_or_default(),
+                intro: u32_at(r, WRATH_INTRO_FIELD).unwrap_or(0),
+                names,
+                female_names,
+                male_names,
             },
         );
     }

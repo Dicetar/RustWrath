@@ -60,6 +60,34 @@ impl Locale {
     pub fn tag(self) -> u32 {
         self.tag
     }
+
+    /// The 12340 client's nine-locale UI index for the configured tag (enUS, koKR, frFR, deDE,
+    /// zhCN, zhTW, esES, esMX, ruRU), the index `GetLocale` answers and the Lua tables use.
+    /// `enGB` and any name the client does not support read enUS's index, matching the
+    /// non-Wrath fallback. Vanilla [`Self::index`] and its eight-name table are unchanged.
+    ///
+    /// This is **not** the physical DBC string-block column: the 3.3.5 DBC carries sixteen
+    /// locale slots in the order enUS, enGB, koKR, frFR, deDE, enCN, zhCN, enTW, zhTW, esES,
+    /// esMX, ruRU, ptPT, ptBR, itIT, Unk (the pinned `*_dbc.sql` column order), so use
+    /// [`Self::wrath_dbc_column`] to index it.
+    pub fn wrath_index(self) -> usize {
+        const WRATH: [&[u8; 4]; 9] = [
+            b"enUS", b"koKR", b"frFR", b"deDE", b"zhCN", b"zhTW", b"esES", b"esMX", b"ruRU",
+        ];
+        WRATH
+            .iter()
+            .position(|name| u32::from_be_bytes(**name) == self.tag)
+            .unwrap_or(0)
+    }
+
+    /// The 3.3.5 DBC string-block column offset for a nine-locale UI index: the sixteen-slot
+    /// order above maps enUS to 0, koKR to 2, frFR to 3, deDE to 4, zhCN to 6, zhTW to 8, esES to
+    /// 9, esMX to 10, ruRU to 11 (enGB/enCN/enTW and the other regional slots interleave). `None`
+    /// past the client's nine.
+    pub fn wrath_dbc_column(index: usize) -> Option<usize> {
+        const COLUMNS: [usize; 9] = [0, 2, 3, 4, 6, 8, 9, 10, 11];
+        COLUMNS.get(index).copied()
+    }
 }
 
 #[cfg(test)]

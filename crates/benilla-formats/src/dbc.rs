@@ -93,6 +93,23 @@ pub(crate) fn loc_str(rs: &RecordSet, r: &Record, first: usize, locale: Locale) 
     loc_str_raw(rs, r, first, locale).filter(|s| !s.is_empty())
 }
 
+/// A localized string column by raw locale index, for a layout with more columns than the
+/// vanilla eight-name table (the 12340 nine-locale block). The same offset semantics as
+/// [`loc_str_raw`].
+pub(crate) fn loc_str_index(
+    rs: &RecordSet,
+    r: &Record,
+    first: usize,
+    index: usize,
+) -> Option<String> {
+    let off = match r.get_value(first + index)? {
+        Value::StringRef(StringRef(off)) | Value::UInt32(off) => *off,
+        Value::Int32(off) => *off as u32,
+        Value::Float32(f) => f.to_bits(),
+    };
+    rs.get_string(StringRef(off)).ok().map(|s| s.to_string())
+}
+
 /// [`loc_str`] for a reader that tells an empty name from no column: `Some("")` is a name the
 /// file leaves blank, `None` a column or offset that cannot be read.
 pub(crate) fn loc_str_raw(
