@@ -10,7 +10,7 @@ use benilla_ui::script::{ScriptValue, UiTarget};
 #[derive(Default)]
 pub(crate) struct AuraMemo {
     scope: Option<(u64, u64, u64)>,
-    visible: BTreeMap<u64, (u32, Vec<AuraSlot>)>,
+    visible: BTreeMap<u64, (u32, bool, Vec<AuraSlot>)>,
 }
 
 pub(crate) fn feed(
@@ -45,15 +45,16 @@ pub(crate) fn feed(
                 }
                 continue;
             };
-            let changed = previous.as_ref().is_none_or(|(generation, auras)|
-                *generation != unit.generation || auras != &unit.auras);
+            let changed = previous.as_ref().is_none_or(|(generation, observed, auras)|
+                *generation != unit.generation || *observed != unit.auras_observed
+                    || auras != &unit.auras);
             if changed {
                 for token in script.unit_tokens_of(guid) {
                     fires.post("UNIT_AURA", vec![ScriptValue::Str(token)]);
                 }
             }
             // Move unchanged lists rather than cloning every slot on movement-only frames.
-            let snapshot = if changed { (unit.generation, unit.auras.clone()) }
+            let snapshot = if changed { (unit.generation, unit.auras_observed, unit.auras.clone()) }
                 else { previous.expect("unchanged visible unit") };
             retained.insert(guid, snapshot);
         }
