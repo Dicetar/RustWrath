@@ -958,6 +958,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "Disable",
         lua.create_function(|lua, this: Table| set_enabled(lua, &this, false))?,
     )?;
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        // Installed Questie dropdown support: the same state/visual owner as Enable/Disable,
+        // including CheckButton's state. This does not implement new enable-script semantics.
+        m.set("SetEnabled", lua.create_function(|lua, (this, enabled): (Table, bool)| {
+            set_enabled(lua, &this, enabled)
+        })?)?;
+    }
     // IsEnabled() (`0x7800b0`) → the number 1 or 0 from the state at `+0x328`, never a boolean:
     // 0 is truthy in Lua, and the stock UI tests `== 0` (`FriendsFrame.lua:404`) and `== 1`
     // (`StaticPopup.lua:713`).

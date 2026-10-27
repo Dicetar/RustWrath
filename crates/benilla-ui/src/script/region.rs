@@ -636,6 +636,16 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        // Installed-mod SetShown extension: textures/font strings keep their existing
+        // Show/Hide state owner and receiver gate, separate from the frame implementation.
+        m.set("SetShown", lua.create_function(|lua, (this, shown): (Table, bool)| {
+            let rh = region_handle_of(lua, &this)?;
+            lua.app_data_mut::<Model>().expect("model").set_region_hidden(rh, !shown);
+            Ok(())
+        })?)?;
+    }
+
     m.set(
         "IsShown",
         lua.create_function(|lua, this: Table| {

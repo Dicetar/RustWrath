@@ -207,4 +207,12 @@ from 4.3.4; exact 12340 ABI remains unproven. This later source is outside the f
 snapshot and has not been compiled/tested. Stock-map, dropdown, installed-mod and full-release
 acceptance remain open.
 
+Installed Questie setter follow-up: the selected LibUIDropDownMenu copy calls SetShown and
+SetEnabled without supplying a shim. The Wrath fork now exposes these installed-mod extensions
+through existing frame/region visibility and Button/CheckButton enable owners, preserving
+Lua truthiness and vanilla's method tables. No stock 12340 method-presence claim is inferred
+from this modern library requirement. Its Get/SetMotionScriptsWhileDisabled and broader helper
+requirements remain open. No compile/test/addon/UI run covered these later edits and no secure-
+frame or installed-mod workflow acceptance follows from the setters.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.

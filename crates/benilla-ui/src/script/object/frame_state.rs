@@ -15,7 +15,8 @@ use super::{decode_id, draw_layer_from_str, frame_handle_of, frame_wrapper, stra
 
 /// Populate `m`'s visibility, hierarchy, strata, backdrop and input methods.
 pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
-    // Show / Hide / visibility. No `SetShown`: no 1.12 method table registers it.
+    // Show / Hide / visibility. SetShown is a Wrath installed-mod extension below;
+    // no 1.12 method table registers it.
     m.set(
         "Show",
         lua.create_function(|lua, this: Table| set_shown(lua, &this, true))?,
@@ -24,6 +25,13 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         "Hide",
         lua.create_function(|lua, this: Table| set_shown(lua, &this, false))?,
     )?;
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        // The installed Questie dropdown library calls this without a Lua shim. Preserve
+        // the same visibility lifecycle as Show/Hide and use ordinary Lua truthiness.
+        m.set("SetShown", lua.create_function(|lua, (this, shown): (Table, bool)| {
+            set_shown(lua, &this, shown)
+        })?)?;
+    }
     m.set(
         "IsShown",
         lua.create_function(|lua, this: Table| {
