@@ -653,3 +653,25 @@ and corresponding connected-run logs. No process remained. Memory root cause,
 map window/API, model identity, freeze and actual route remain unproven. OC's
 pre-run binary was preserved in the same untracked evidence folder as
 `oc-pre-astra-benilla.exe`; OC's dirty source/checkpoint remain untouched.
+
+2026-10-29 memory diagnosis claim: `crates/benilla-app/src/perf/journal.rs`
+for temporary, opt-in image-residency instrumentation, this checkpoint for the
+evidence. Owner authorized execution. Preserve OC's dirty files. Remove temporary
+instrumentation after diagnosis; retain logs, and do not claim images cause private
+memory growth without a measurement that distinguishes them.
+
+The 5 GiB bounded FPS-journal run `astra-profile-20261029-010306-773` stopped at
+5.5 GiB private; last journal sample had 1,520 entities, 315 images and 112 M2s.
+The `astra-churn-20261029-010357-187` comparison stopped at 5.01 GiB; the optional
+asset-churn switch emitted no churn rows in that build. A temporary opt-in journal
+probe built into the client measured registered image GPU descriptor sizes:
+`astra-imagebytes-20261029-010701-496` recorded 90.5 MiB then 151.2 MiB, with
+321 images and 112 M2s at the last journal sample. Private memory later crossed
+5 GiB and was stopped at 5.75 GiB. The main-side image data is often moved to the
+render world; these sizes do not measure transient decode, driver, M2, Lua or all
+process allocations. They rule out only the registered image descriptor total as
+an adequate explanation. Temporary source probe removed after capture; binary
+still contains it, inert without WOW_MEMORY_ASSET_TRACE. The same run did not
+emit either old WorldMapArea or WorldMapContinent DBC mismatch before termination;
+the complete map window remains unaccepted. The memory cause, player model,
+UI behavior and A0/A1 remain unresolved. No client process remained.
