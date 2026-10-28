@@ -392,6 +392,12 @@ to that validator. Preserve the actual wire field through OC's protocol/loot own
 do not substitute a guessed factor. Server configuration and live rejection remain
 unverified.
 
+Installed `aux-addon/util/info.lua` `parse_link` independently reads the property
+after the enchant and four gem/reserved words, then reads the next word as its
+unique/suffix value. `container_item` uses those values for the addon item key and
+auctionability flow. Thus vanilla-shaped rolled links also mislead this installed
+consumer locally, independent of server validation. The actual addon flow has not run.
+
 `2ca39ead` additionally selects the active target for group-loot snapshot links.
 That owner retains the property but not the suffix factor, which remains zero.
 Group-loot announcements are a separate localized format-string path and remain
