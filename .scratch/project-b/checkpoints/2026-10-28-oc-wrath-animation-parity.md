@@ -72,7 +72,8 @@ Out / known limits (recorded, not hidden):
 
 ## WP1 claim (2026-10-28, Questie timer; source-only)
 
-Claim: `crates/benilla-ui/src/script/animation.rs` and this checkpoint only. Astra's live lane
+Committed as `2ffe7f61`. Claim: `crates/benilla-ui/src/script/animation.rs` and this checkpoint
+only. Astra's live lane
 still owns `object/events_regions.rs`, so this slice does not touch
 `CreateAnimationGroup`'s publication.
 
@@ -84,7 +85,9 @@ Contracted edits:
   `Compat/Compat.lua:166` calls `anim:CreateAnimation()` with no type.
 - `Animation:GetParent()` returns the stored `ANIMATION_PARENT` (a child animation's group), or
   `ANIMATION_OWNER` for a top-level group (the owning frame/region). Questie-335
-  `Compat/Compat.lua:136` calls `timer:GetParent():Stop()`.
+  `Compat/Compat.lua:136` calls `timer:GetParent():Stop()`; the shipped Details AceTimer copy
+  uses the same child-to-group `GetParent():Stop()` contract at
+  `Details/Libs/AceTimer-3.0/AceTimer-3.0.lua:241`.
 
 Proposed regression case (documented, **not added or run**: this session has no test-case grant):
 
