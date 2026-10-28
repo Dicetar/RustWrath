@@ -477,7 +477,11 @@ ui_merchant/mod.rs and calls.rs; ui_trade/mod.rs and calls.rs; ui_action/drain.r
 feed.rs and recount.rs. Pass the current UI target into merchant destination and
 trade placement/re-signal mapping; action lookup/count/recount must use the same
 32-seat keyring span. Preserve donor helper entry points and all existing non-keyring
-scope/charge/whole-item rules. One existing trade test helper call needs only the
-new target argument; no case/assertion is added or executed. Native/protocol/recovery
+scope/charge/whole-item rules. The trade-open held-item sender is also a production
+caller with a current script target; no test helper/case/assertion needs editing.
+Native/protocol/recovery
 source stays untouched. Other gameplay/reagent helpers without a UI target remain
 separate migration work. No tests, checks or runtime operation is authorized.
+
+Trade dispatch follow-through: claim clean app/script_calls.rs as well; TradeSteps::apply
+receives no UiScript, so the existing host must pass its current target explicitly.
