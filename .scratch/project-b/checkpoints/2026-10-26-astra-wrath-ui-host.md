@@ -576,6 +576,13 @@ GetContainerItemDurability for auctionability. Expose the existing observed bag-
 durability pair through a Wrath-only binding; no object or protocol changes, test
 cases or execution are authorized.
 
+2026-10-28 bare tooltip roll-name claim at aaf29660: clean
+`crates/benilla-ui/src/script/tooltip_item/build.rs` and `item_stats/wrath.rs`.
+Installed aux passes bare `item:` strings to SetHyperlink; the existing builder uses
+the base template name when no display name is embedded. Resolve the observed Wrath
+property via the existing item-name owner at build/rebuild time. No guessed scaled
+enchant formatting, protocol changes, test cases or execution are authorized.
+
 2026-10-28 group-loot factor claim at d1dc10d6: clean
 `crates/benilla-app/src/ui_loot_roll.rs`. The existing `LootStartRoll` carries a
 suffix factor that `ActiveRoll` discards. Retain it and place it in Wrath snapshot
