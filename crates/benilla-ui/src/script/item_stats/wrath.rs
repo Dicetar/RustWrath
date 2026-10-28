@@ -89,6 +89,17 @@ fn item_name(lua: &Lua, base: &str, property: i32) -> Option<String> {
 }
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+    lua.globals().set("GetItemSpell", lua.create_function(|lua, arg: Value| {
+        let Some((link, _)) = query(lua, arg)? else { return Ok((None, None)) };
+        let spell = super::super::host::with_host(lua, |host| host.item_spell(link.id)).flatten();
+        Ok(match spell {
+            Some((name, id)) => (Some(name), Some(id)),
+            None => (None, None),
+        })
+    })?)?;
+    lua.globals().set("IsEquippableItem", lua.create_function(|lua, arg: Value| {
+        Ok(query(lua, arg)?.map(|(_, item)| item.inventory_type != 0))
+    })?)?;
     lua.globals().set("GetItemCooldown", lua.create_function(|lua, id: Value| {
         let id = lua.coerce_number(id)?
             .filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))

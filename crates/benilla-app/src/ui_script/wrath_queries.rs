@@ -21,6 +21,13 @@ pub(crate) struct SpellQueries<'w, 's> {
 }
 
 impl SpellQueries<'_, '_> {
+    pub(crate) fn item_spell(&self, id: u32) -> Option<(String, u32)> {
+        let item = self.items.template(id, 0, crate::query_cache::Ask::Read)?;
+        let spell_id = item.use_spell?.spell_id;
+        let spell = self.spells.as_deref()?.catalog.get(spell_id)?;
+        Some((spell.name.clone(), spell_id))
+    }
+
     pub(crate) fn item_cooldown(&self, id: u32) -> Option<(i64, u32, bool)> {
         let world = self.world.as_ref()?;
         if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) {

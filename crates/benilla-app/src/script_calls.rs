@@ -513,6 +513,10 @@ impl ScriptCallHost<'_, '_> {
 }
 
 impl CallHost for ScriptCallHost<'_, '_> {
+    fn item_spell(&mut self, id: u32) -> Option<(String, u32)> {
+        self.appliers.spell_queries().item_spell(id)
+    }
+
     fn item_cooldown(&mut self, id: u32) -> Option<(i64, u32, bool)> {
         self.appliers.spell_queries().item_cooldown(id)
     }

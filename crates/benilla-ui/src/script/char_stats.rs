@@ -1101,6 +1101,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         Ok((token, i64::from(slot0) + 1))
     }
 
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        g.set("GetInventoryItemID", lua.create_function(|lua, (unit, slot): (Value, Value)| {
+            let (token, slot) = inventory_item_args(
+                lua,
+                (unit, slot),
+                "Usage: GetInventoryItemID(unit, slot)",
+                "Invalid inventory slot in GetInventoryItemID",
+            )?;
+            Ok(player_inv_slot(lua, &token, slot)
+                .map(|view| view.item_id)
+                .filter(|&id| id != 0))
+        })?)?;
+    }
+
     // GetInventoryItemTexture(unit, slot) → icon path, or nil until the item's template arrives.
     g.set(
         "GetInventoryItemTexture",

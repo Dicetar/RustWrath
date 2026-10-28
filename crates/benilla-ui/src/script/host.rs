@@ -22,6 +22,11 @@ use super::{ScriptCall, UiScript};
 
 /// The engine half of the script calls: what applies a call to the state outside the VM.
 pub trait CallHost {
+    /// The cached item's on-use spell, named by the existing spell catalog.
+    fn item_spell(&mut self, _id: u32) -> Option<(String, u32)> {
+        None
+    }
+
     /// Item-ID query over the existing recovery owner, already projected to GetTime ms.
     fn item_cooldown(&mut self, _id: u32) -> Option<(i64, u32, bool)> {
         None
