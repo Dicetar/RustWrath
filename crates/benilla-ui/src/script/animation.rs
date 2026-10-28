@@ -39,6 +39,7 @@ const ANIMATION_FROM_X: &str = "__benilla_animation_from_x";
 const ANIMATION_FROM_Y: &str = "__benilla_animation_from_y";
 const ANIMATION_FROM_ANGLE: &str = "__benilla_animation_from_angle";
 const ANIMATION_DIRECTION: &str = "__benilla_animation_direction";
+const ANIMATION_TO_FINAL: &str = "__benilla_animation_to_final_alpha";
 
 /// Create the tick's registry. Wrath only.
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
@@ -76,6 +77,7 @@ pub(crate) fn build(
     object.set(ANIMATION_FROM_Y, 0.0)?;
     object.set(ANIMATION_FROM_ANGLE, 0.0)?;
     object.set(ANIMATION_DIRECTION, 1.0f64)?;
+    object.set(ANIMATION_TO_FINAL, false)?;
     let params = lua.create_table()?;
     for (key, value) in attrs {
         params.set(key.clone(), value.clone())?;
@@ -184,6 +186,35 @@ pub(crate) fn build(
             let seconds = super::binding_abi::coerced_number(lua, Some(value));
             let params: Table = this.get(ANIMATION_PARAMS)?;
             params.set("startDelay", seconds.to_string())?;
+            Ok(())
+        })?,
+    )?;
+    object.set(
+        "GetDuration",
+        lua.create_function(|_, this: Table| Ok(param_number(&this, "duration", 0.0)))?,
+    )?;
+    object.set(
+        "GetElapsed",
+        lua.create_function(|lua, this: Table| Ok(elapsed(lua, &this)))?,
+    )?;
+    object.set(
+        "GetProgress",
+        lua.create_function(|lua, this: Table| {
+            let duration = param_number(&this, "duration", 0.0);
+            Ok(if duration > 0.0 {
+                (elapsed(lua, &this) / duration).clamp(0.0, 1.0)
+            } else {
+                0.0
+            })
+        })?,
+    )?;
+    // `SetToFinalAlpha(bool)`: a run stopped while this is set applies its final Alpha, so a
+    // fade-out does not leave the owner half-faded.
+    object.set(
+        "SetToFinalAlpha",
+        lua.create_function(|_, (this, value): (Table, Value)| {
+            let on = super::binding_abi::flag_or_default(Some(&value), 0) != 0;
+            this.set(ANIMATION_TO_FINAL, on)?;
             Ok(())
         })?,
     )?;
@@ -362,7 +393,31 @@ fn stop(lua: &Lua, this: &Table, signal: bool) -> mlua::Result<()> {
     } else if signal && !this.get::<bool>(ANIMATION_FINISHED)? {
         fire(lua, this, "OnStop")?;
     }
+    if this.get::<bool>(ANIMATION_TO_FINAL).unwrap_or(false)
+        && !this.get::<bool>(ANIMATION_FINISHED)?
+    {
+        let kind: String = this.get(ANIMATION_KIND)?;
+        if kind.eq_ignore_ascii_case("Alpha") {
+            apply_alpha(lua, this, 1.0);
+        }
+    }
     Ok(())
+}
+
+/// The run's elapsed seconds on the frame clock: zero before the start, frozen while paused, the
+/// full duration once finished. A group owns no run of its own and reads zero.
+fn elapsed(lua: &Lua, this: &Table) -> f64 {
+    if this.get::<bool>(ANIMATION_FINISHED).unwrap_or(false) {
+        return param_number(this, "duration", 0.0).max(0.0);
+    }
+    let now = lua.app_data_ref::<Model>().expect("model app_data").now;
+    let start: f64 = this.get(ANIMATION_START).unwrap_or(0.0);
+    let at = if this.get::<bool>(ANIMATION_PAUSED).unwrap_or(false) {
+        this.get::<f64>(ANIMATION_PAUSED_AT).unwrap_or(now)
+    } else {
+        now
+    };
+    (at - start).clamp(0.0, param_number(this, "duration", 0.0).max(0.0))
 }
 
 /// The tick's animation step: advance every playing animation on `Model::now`.
@@ -951,6 +1006,38 @@ mod tests {
         );
         s.tick(0.1);
         assert!(rotation(&mut s).abs() < 1e-3, "the reverse leg landed");
+    }
+
+    #[test]
+    fn the_animation_getters_report_a_run_and_final_alpha_lands() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_screen_size(100.0, 100.0);
+        s.run(
+            r#"
+            f = CreateFrame("Frame")
+            f:SetSize(10, 10)
+            f:SetPoint("CENTER", 0, 0)
+            f:SetAlpha(1)
+            g = f:CreateAnimationGroup()
+            a = g:CreateAnimation("Alpha")
+            a:SetDuration(0.2)
+            a:SetChange(-1)
+        "#,
+        )
+        .unwrap();
+        s.run("g:Play()").unwrap();
+        s.tick(0.05);
+        assert!((s.eval::<f64>("return a:GetDuration()").unwrap() - 0.2).abs() < 1e-6);
+        let elapsed = s.eval::<f64>("return a:GetElapsed()").unwrap();
+        assert!((elapsed - 0.05).abs() < 1e-6, "elapsed {elapsed}");
+        let progress = s.eval::<f64>("return a:GetProgress()").unwrap();
+        assert!((progress - 0.25).abs() < 1e-3, "progress {progress}");
+        s.run("a:SetToFinalAlpha(1) g:Stop()").unwrap();
+        assert_eq!(
+            s.eval::<f64>("return f:GetAlpha()").unwrap(),
+            0.0,
+            "a stopped to-final alpha lands on its final value"
+        );
     }
 
     fn frame_rect(s: &UiScript, h: crate::widget::FrameHandle) -> crate::layout::Rect {
