@@ -62,6 +62,37 @@ mod acceptance, rendered Northshire and WM production consumption are all still 
 `project-b-client` also has a `main` branch at `359eff41` (upstream/main). The work branch is
 `wotlk`; do not switch/merge/reset.
 
+Observed dirty paths in the other worktrees (re-check before touching; these are not the client
+handoff's changes):
+
+- `project-b-opencode`: modified `crates/benilla-profile/src/lib.rs`, `docs/METHOD.md`; untracked
+  `.opencode/`, `crates/benilla-combat-core/`, `crates/benilla-wm-native/`, `docs/opencode/`,
+  `integrations/`, `opencode.json`.
+- `project-b-opencode-assets`: modified `Cargo.lock`; `crates/benilla-adt/src/lib.rs`;
+  `crates/benilla-assets/{Cargo.toml,src/lib.rs,src/m2.rs}`;
+  `crates/benilla-formats/{src/lib.rs,src/liquid.rs,src/models/anim.rs,src/models/bounds.rs,
+  src/models/m2_batches.rs,src/terrain.rs}`; `crates/benilla-m2/{src/error.rs,src/lib.rs,
+  src/skin.rs}`; `crates/benilla-profile/src/lib.rs`; untracked
+  `crates/benilla-assets/src/profile_source.rs`.
+- `D:/WOW/wm-project` tracked modifications: `bootstrap/sources.lock.json`,
+  `control/runtime/spell_shell_bank.json`, `data/specs/custom_id_registry.json`,
+  `docs/README_OPERATIONS_INDEX.md`, `docs/WM_PLATFORM_HANDOFF.md`,
+  `native_modules/mod-wm-bridge/src/wm_bridge_bone_lure_item.cpp`,
+  `native_modules/mod-wm-spells/src/wm_spell_runtime.cpp`, `scripts/bridge_lab/
+  Configure-BridgeLabRuntime.ps1`, `scripts/bridge_lab/Start-BridgeLabAll.ps1`,
+  `scripts/bridge_lab/Start-BridgeLabMySql.ps1`, `src/wm/autoplay/service.py`,
+  `src/wm/autoplay/world_context.py`, `src/wm/content/release.py`, `src/wm/context/pack.py`,
+  `src/wm/spells/client_patch.py`, `src/wm/spells/server_dbc.py`, `start-bridge-lab-all.bat`.
+  Untracked: `client_extensions/`, `control/content_releases/`,
+  `control/runtime/{custom_item_icons.json,spellmaking.json,spellmaking_advanced.json,
+  spellmaking_v3.json}`, `core_patches/`, `docs/plans/multiclass-2026-10-02/`,
+  `docs/plans/spellwright-v2.md`, `docs/plans/spellwright-v3.md`, `native_modules/mod-multiclass/`,
+  the `scripts/bridge_lab/Apply-BridgeLab*.ps1`/`Compact-BridgeLabResourceIncludes.ps1`/
+  `Deploy-BridgeLab*.ps1`/`Install-BridgeLabSpellmaking.py`/`Show-BridgeLabConsole.ps1` family,
+  `scripts/client/Install-CustomItemIcons.py`, `src/wm/spells/item_icons.py`,
+  `src/wm/spells/spellmaking.py`, `src/wm/spells/spellmaking_advanced.py`,
+  `src/wm/spells/spellmaking_v3.py`, `state/`.
+
 ### 2.2 Current uncommitted paths in the client
 
 - Staged: none.
