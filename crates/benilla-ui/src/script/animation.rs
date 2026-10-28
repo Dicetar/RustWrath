@@ -5,9 +5,10 @@
 //!
 //! Stock XML declares no triggers; stock Lua calls `group:Play()` (often from `OnShow`). A group's
 //! `Play` sequences its children by `order` (parallel within one order) and the tick advances
-//! them on the frame-script clock. This tracer applies `Alpha` to a frame owner; the timeline,
-//! `OnPlay`/`OnStop`/`OnFinished`, parenting and ordering are common to every kind, and the other
-//! kinds (`Translation`, `Rotation`, ...) are recorded as the next slice.
+//! them on the frame-script clock. `Alpha` writes the owner's alpha (frame or region) and
+//! `Translation` shifts the owner's rect through the model's animation-offset maps; the timeline,
+//! signals, parenting and ordering are common to every kind, and the remaining kinds
+//! (`Rotation`, `Scale`, `Color`, `TextureCoord`) are recorded as the next slice.
 
 use mlua::{Function, Lua, Table, Value};
 
@@ -263,6 +264,8 @@ fn advance_one(lua: &Lua, this: &Table, now: f64) -> mlua::Result<()> {
     let kind: String = this.get(ANIMATION_KIND)?;
     if kind.eq_ignore_ascii_case("Alpha") {
         apply_alpha(lua, this, t);
+    } else if kind.eq_ignore_ascii_case("Translation") {
+        apply_translation(lua, this, t);
     }
     if t >= 1.0 {
         finish(lua, this)?;
@@ -283,6 +286,25 @@ fn apply_alpha(lua: &Lua, this: &Table, t: f64) {
         Owner::Frame(h) => model.arena.set_alpha(h, alpha),
         Owner::Region(rh) => {
             model.region_data.entry(rh).or_default().alpha = Some(alpha);
+        }
+    }
+}
+
+/// `<Translation>`: the owner's rect moves by `offsetX/offsetY × t` from its un-animated place.
+/// The offset lands in the `Model` maps the rect readers add, so draw and hit tests move together.
+fn apply_translation(lua: &Lua, this: &Table, t: f64) {
+    let dx = param_number(this, "offsetX", 0.0) as f32 * t as f32;
+    let dy = param_number(this, "offsetY", 0.0) as f32 * t as f32;
+    let Some(owner) = owner_kind(lua, this) else {
+        return;
+    };
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    match owner {
+        Owner::Frame(h) => {
+            model.animation_frame_offsets.insert(h, (dx, dy));
+        }
+        Owner::Region(rh) => {
+            model.animation_region_offsets.insert(rh, (dx, dy));
         }
     }
 }

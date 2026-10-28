@@ -104,9 +104,16 @@ Alpha applies to both owners: a frame through `WidgetArena::set_alpha`, a region
 `RegionData::alpha` (the same slot `Region:SetAlpha` writes), so texture- and font-string-owned
 groups such as `AlertFrames.xml`'s texture animations work.
 
-Known limits of this tracer: `Translation`/`Rotation`/`Scale`/`Color`/`TextureCoord` run their
-timeline and signals but apply no visual change; easing (`smoothing`) is linear; the group's
-static batch schedule assumes durations do not change mid-run.
+`Translation` moves the owner (frame or region) through `Model::animation_frame_offsets` /
+`animation_region_offsets`, which `frame_rect`, `region_rect` and `region_kept_rect` add at read
+time (a frame's chain includes its ancestors, so the subtree rides together; draw and hit tests
+share the readers).
+
+Known limits of this tracer: the translation is added in root units after the space transform,
+so a frame scaled away from 1 moves by an unscaled offset; frames anchored to a translated frame
+(the layout, not the subtree) do not follow it; `Rotation`/`Scale`/`Color`/`TextureCoord` run
+their timeline and signals but apply no visual change; easing (`smoothing`) is linear; the
+group's static batch schedule assumes durations do not change mid-run.
 
 ## First tracer (next commit)
 

@@ -479,6 +479,11 @@ pub(crate) struct Model {
     /// fresh client. The reference also sends it to the server, a producer that does not exist
     /// here yet.
     pub(crate) opt_out_of_loot: bool,
+    /// `<Translation>` offsets in root UI units, keyed by the frame it moves. A frame's rect adds
+    /// its own and every ancestor's offset at read time, so the whole subtree rides together.
+    pub(crate) animation_frame_offsets: std::collections::HashMap<FrameHandle, (f32, f32)>,
+    /// `<Translation>` offsets for a region, added after its owner frame's chain.
+    pub(crate) animation_region_offsets: std::collections::HashMap<RegionHandle, (f32, f32)>,
     /// `CanShowResetInstances()`, the reference's four-term predicate (`0x495c90`), app-computed.
     pub(crate) can_reset_instances: bool,
     /// Friends, ignores and the last `/who`, display-resolved as the reference resolves them.
@@ -1499,6 +1504,8 @@ impl Model {
             instance_type: None,
             instance_info: None,
             opt_out_of_loot: false,
+            animation_frame_offsets: HashMap::new(),
+            animation_region_offsets: HashMap::new(),
             can_reset_instances: false,
             social: social::SocialState::default(),
             who_to_ui: false,
@@ -2506,26 +2513,71 @@ impl Model {
     /// [`crate::layout::LayoutSpace::rect_to_root`].
     #[inline]
     pub(crate) fn frame_rect(&self, h: FrameHandle) -> Option<Rect> {
+        let (dx, dy) = self.animation_frame_offset(h);
         self.frame_rects
             .get(&h)
-            .map(|&r| self.space.rect_to_root(r))
+            .map(|&r| Self::translate_rect(self.space.rect_to_root(r), dx, dy))
     }
 
-    /// [`Self::frame_rect`] for region `rh`.
+    /// [`Self::frame_rect`] for region `rh`: its owner's `<Translation>` chain first, then the
+    /// region's own.
     #[inline]
     pub(crate) fn region_rect(&self, rh: RegionHandle) -> Option<Rect> {
+        let (dx, dy) = self.region_animation_offset(rh);
         self.region_rects
             .get(&rh)
-            .map(|&r| self.space.rect_to_root(r))
+            .map(|&r| Self::translate_rect(self.space.rect_to_root(r), dx, dy))
+    }
+
+    /// The accumulated `<Translation>` offset of frame `h` and its ancestors, in root units.
+    fn animation_frame_offset(&self, h: FrameHandle) -> (f32, f32) {
+        let (mut dx, mut dy) = (0.0, 0.0);
+        let mut current = Some(h);
+        while let Some(fh) = current {
+            if let Some(&(ox, oy)) = self.animation_frame_offsets.get(&fh) {
+                dx += ox;
+                dy += oy;
+            }
+            current = self.arena.frame(fh).and_then(|f| f.parent);
+        }
+        (dx, dy)
+    }
+
+    fn region_animation_offset(&self, rh: RegionHandle) -> (f32, f32) {
+        let Some(owner) = self.arena.region(rh).map(|r| r.owner) else {
+            return self
+                .animation_region_offsets
+                .get(&rh)
+                .copied()
+                .unwrap_or((0.0, 0.0));
+        };
+        let (dx, dy) = self.animation_frame_offset(owner);
+        let (ox, oy) = self
+            .animation_region_offsets
+            .get(&rh)
+            .copied()
+            .unwrap_or((0.0, 0.0));
+        (dx + ox, dy + oy)
+    }
+
+    /// Shift a root-space rect by an animation translation (UI units, y-up).
+    fn translate_rect(rect: Rect, dx: f32, dy: f32) -> Rect {
+        Rect::new(
+            rect.bottom + dy,
+            rect.left + dx,
+            rect.top + dy,
+            rect.right + dx,
+        )
     }
 
     /// The rect a Texture whose resolve failed keeps drawing at ([`Self::region_kept_rects`]), in
     /// the root's units.
     #[inline]
     pub(crate) fn region_kept_rect(&self, rh: RegionHandle) -> Option<Rect> {
+        let (dx, dy) = self.region_animation_offset(rh);
         self.region_kept_rects
             .get(&rh)
-            .map(|&r| self.space.rect_to_root(r))
+            .map(|&r| Self::translate_rect(self.space.rect_to_root(r), dx, dy))
     }
 
     /// Whether frame `h` holds a state its inputs would not resolve to now: a write moved them
