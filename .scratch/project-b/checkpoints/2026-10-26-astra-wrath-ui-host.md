@@ -517,3 +517,8 @@ alter protocol-owned loot data. No builds, tests or new cases are authorized.
 Convert the group-loot snapshot and announcement links using the shared target-aware
 formatter and the active script target, retaining only values the existing owner holds.
 No protocol, tests or runtime execution are in scope.
+
+2026-10-28 trade-link claim at 217913b3: clean `crates/benilla-app/src/ui_trade/mod.rs`.
+Carry the active script target through both trade snapshots and item-watch refreshes,
+using the existing target-aware link formatter for cached and uncached rows. Existing
+trade data, ownership and protocol remain unchanged; no tests or execution authorized.
