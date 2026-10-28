@@ -35,6 +35,10 @@ const ANIMATION_PAUSED: &str = "__benilla_animation_paused";
 const ANIMATION_PAUSED_AT: &str = "__benilla_animation_paused_at";
 const ANIMATION_START: &str = "__benilla_animation_start";
 const ANIMATION_FROM: &str = "__benilla_animation_from";
+const ANIMATION_FROM_X: &str = "__benilla_animation_from_x";
+const ANIMATION_FROM_Y: &str = "__benilla_animation_from_y";
+const ANIMATION_FROM_ANGLE: &str = "__benilla_animation_from_angle";
+const ANIMATION_DIRECTION: &str = "__benilla_animation_direction";
 
 /// Create the tick's registry. Wrath only.
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
@@ -68,6 +72,10 @@ pub(crate) fn build(
     object.set(ANIMATION_PAUSED_AT, 0.0)?;
     object.set(ANIMATION_START, 0.0)?;
     object.set(ANIMATION_FROM, 1.0)?;
+    object.set(ANIMATION_FROM_X, 0.0)?;
+    object.set(ANIMATION_FROM_Y, 0.0)?;
+    object.set(ANIMATION_FROM_ANGLE, 0.0)?;
+    object.set(ANIMATION_DIRECTION, 1.0f64)?;
     let params = lua.create_table()?;
     for (key, value) in attrs {
         params.set(key.clone(), value.clone())?;
@@ -288,17 +296,20 @@ fn resume(lua: &Lua, this: &Table) -> mlua::Result<()> {
 fn play(lua: &Lua, this: &Table) -> mlua::Result<()> {
     let now = lua.app_data_ref::<Model>().expect("model app_data").now;
     if is_group(this)? {
-        start_group(lua, this, now)?;
+        start_group(lua, this, now, 1.0)?;
         fire(lua, this, "OnPlay")
     } else {
+        this.set(ANIMATION_DIRECTION, 1.0f64)?;
         start_one(this, now)
     }
 }
 
 /// Start a group's children: one `order` batch after the previous, parallel within a batch.
-fn start_group(_lua: &Lua, group: &Table, now: f64) -> mlua::Result<()> {
+/// `direction` is `1` for a fresh run and `-1` on a bounce's reverse leg.
+fn start_group(_lua: &Lua, group: &Table, now: f64, direction: f64) -> mlua::Result<()> {
     group.set(ANIMATION_PLAYING, true)?;
     group.set(ANIMATION_FINISHED, false)?;
+    group.set(ANIMATION_DIRECTION, direction)?;
     let Some(children) = group.get::<Option<Table>>(ANIMATION_CHILDREN)? else {
         return Ok(());
     };
@@ -317,6 +328,7 @@ fn start_group(_lua: &Lua, group: &Table, now: f64) -> mlua::Result<()> {
         let mut batch_span: f64 = 0.0;
         for child in &list {
             let delay = param_number(child, "startDelay", 0.0).max(0.0);
+            child.set(ANIMATION_DIRECTION, direction)?;
             start_one(child, batch_start + delay)?;
             batch_span = batch_span.max(delay + param_number(child, "duration", 0.0).max(0.0));
         }
@@ -400,7 +412,12 @@ pub(super) fn update(lua: &Lua) {
                 .flatten()
                 .unwrap_or_default();
             if looping.eq_ignore_ascii_case("REPEAT") || looping.eq_ignore_ascii_case("BOUNCE") {
-                if let Err(error) = start_group(lua, &group, now) {
+                let direction = if looping.eq_ignore_ascii_case("BOUNCE") {
+                    -group.get::<f64>(ANIMATION_DIRECTION).unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                if let Err(error) = start_group(lua, &group, now, direction) {
                     record(lua, &error);
                 }
             } else if let Err(error) = finish(lua, &group) {
@@ -417,9 +434,31 @@ fn advance_one(lua: &Lua, this: &Table, now: f64) -> mlua::Result<()> {
     if elapsed < 0.0 {
         return Ok(());
     }
+    let kind: String = this.get(ANIMATION_KIND)?;
     if !this.get::<bool>(ANIMATION_PLAYED)? {
-        let from = owner_alpha(lua, this).unwrap_or(1.0);
-        this.set(ANIMATION_FROM, from)?;
+        // Each leg captures what it starts from, so a bounce's reverse leg returns to the
+        // value the forward leg began at.
+        if kind.eq_ignore_ascii_case("Alpha") {
+            let from = owner_alpha(lua, this).unwrap_or(1.0);
+            this.set(ANIMATION_FROM, from)?;
+        } else if kind.eq_ignore_ascii_case("Translation") {
+            // A reverse leg starts where the forward one ended; a fresh/repeat leg starts at
+            // the owner's un-animated place.
+            let (x, y) = if this.get::<f64>(ANIMATION_DIRECTION).unwrap_or(1.0) < 0.0 {
+                current_translation(lua, this)
+            } else {
+                (0.0, 0.0)
+            };
+            this.set(ANIMATION_FROM_X, x)?;
+            this.set(ANIMATION_FROM_Y, y)?;
+        } else if kind.eq_ignore_ascii_case("Rotation") {
+            let angle = if this.get::<f64>(ANIMATION_DIRECTION).unwrap_or(1.0) < 0.0 {
+                current_rotation(lua, this)
+            } else {
+                0.0
+            };
+            this.set(ANIMATION_FROM_ANGLE, angle)?;
+        }
         this.set(ANIMATION_PLAYED, true)?;
         fire(lua, this, "OnPlay")?;
     }
@@ -429,7 +468,6 @@ fn advance_one(lua: &Lua, this: &Table, now: f64) -> mlua::Result<()> {
     } else {
         1.0
     };
-    let kind: String = this.get(ANIMATION_KIND)?;
     if kind.eq_ignore_ascii_case("Alpha") {
         apply_alpha(lua, this, t);
     } else if kind.eq_ignore_ascii_case("Translation") {
@@ -447,7 +485,8 @@ fn advance_one(lua: &Lua, this: &Table, now: f64) -> mlua::Result<()> {
 fn apply_alpha(lua: &Lua, this: &Table, t: f64) {
     let change = param_number(this, "change", 0.0);
     let from: f64 = this.get(ANIMATION_FROM).unwrap_or(1.0);
-    let alpha = frame_alpha_byte(from + change * t);
+    let direction: f64 = this.get(ANIMATION_DIRECTION).unwrap_or(1.0);
+    let alpha = frame_alpha_byte(from + change * direction * t);
     let Some(owner) = owner_kind(lua, this) else {
         return;
     };
@@ -463,8 +502,11 @@ fn apply_alpha(lua: &Lua, this: &Table, t: f64) {
 /// `<Translation>`: the owner's rect moves by `offsetX/offsetY × t` from its un-animated place.
 /// The offset lands in the `Model` maps the rect readers add, so draw and hit tests move together.
 fn apply_translation(lua: &Lua, this: &Table, t: f64) {
-    let dx = param_number(this, "offsetX", 0.0) as f32 * t as f32;
-    let dy = param_number(this, "offsetY", 0.0) as f32 * t as f32;
+    let direction: f64 = this.get(ANIMATION_DIRECTION).unwrap_or(1.0);
+    let from_x: f32 = this.get(ANIMATION_FROM_X).unwrap_or(0.0);
+    let from_y: f32 = this.get(ANIMATION_FROM_Y).unwrap_or(0.0);
+    let dx = from_x + param_number(this, "offsetX", 0.0) as f32 * direction as f32 * t as f32;
+    let dy = from_y + param_number(this, "offsetY", 0.0) as f32 * direction as f32 * t as f32;
     let Some(owner) = owner_kind(lua, this) else {
         return;
     };
@@ -484,7 +526,9 @@ fn apply_translation(lua: &Lua, this: &Table, t: f64) {
 /// spinners, which rotate a frame holding their texture).
 fn apply_rotation(lua: &Lua, this: &Table, t: f64) {
     let degrees = param_number(this, "degrees", 0.0);
-    let angle = (degrees as f32).to_radians() * t as f32;
+    let direction: f64 = this.get(ANIMATION_DIRECTION).unwrap_or(1.0);
+    let from_angle: f32 = this.get(ANIMATION_FROM_ANGLE).unwrap_or(0.0);
+    let angle = from_angle + (degrees as f32).to_radians() * direction as f32 * t as f32;
     let Some(Owner::Frame(h)) = owner_kind(lua, this) else {
         return;
     };
@@ -492,6 +536,39 @@ fn apply_rotation(lua: &Lua, this: &Table, t: f64) {
         .expect("model app_data")
         .animation_frame_rotations
         .insert(h, angle);
+}
+
+/// The owner's current translation offset, the base a bounce leg starts from.
+fn current_translation(lua: &Lua, this: &Table) -> (f32, f32) {
+    let Some(owner) = owner_kind(lua, this) else {
+        return (0.0, 0.0);
+    };
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    match owner {
+        Owner::Frame(h) => model
+            .animation_frame_offsets
+            .get(&h)
+            .copied()
+            .unwrap_or((0.0, 0.0)),
+        Owner::Region(rh) => model
+            .animation_region_offsets
+            .get(&rh)
+            .copied()
+            .unwrap_or((0.0, 0.0)),
+    }
+}
+
+/// The owner frame's current rotation angle, the base a bounce leg starts from.
+fn current_rotation(lua: &Lua, this: &Table) -> f32 {
+    let Some(Owner::Frame(h)) = owner_kind(lua, this) else {
+        return 0.0;
+    };
+    lua.app_data_ref::<Model>()
+        .expect("model app_data")
+        .animation_frame_rotations
+        .get(&h)
+        .copied()
+        .unwrap_or(0.0)
 }
 
 /// The table's owner: a frame or a region, the same `GetRegionParent` answer stock scripts use.
@@ -833,6 +910,47 @@ mod tests {
             quad.rotation
         );
         assert!(s.eval::<bool>("return r:IsPlaying()").unwrap());
+    }
+
+    #[test]
+    fn a_bouncing_group_reverses_its_rotation() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_screen_size(100.0, 100.0);
+        s.run(
+            r#"
+            f = CreateFrame("Frame")
+            f:SetSize(20, 20)
+            f:SetPoint("CENTER", 0, 0)
+            t = f:CreateTexture()
+            t:SetSize(4, 4)
+            t:SetPoint("CENTER", f, "CENTER", 8, 0)
+            g = f:CreateAnimationGroup()
+            r = g:CreateAnimation("Rotation")
+            r:SetDegrees(90)
+            r:SetDuration(0.2)
+            g:SetLooping("bounce")
+        "#,
+        )
+        .unwrap();
+        let tex: Table = s.lua().globals().get("t").unwrap();
+        let rh = crate::script::region::region_handle_of(s.lua(), &tex).unwrap();
+        let rotation = |s: &mut UiScript| {
+            s.extract()
+                .into_iter()
+                .find(|quad| quad.target == ZTarget::Region(rh))
+                .and_then(|quad| quad.rect.map(|_| quad.rotation))
+                .expect("texture quad")
+        };
+        s.run("g:Play()").unwrap();
+        s.tick(0.25);
+        assert!((rotation(&mut s) - std::f32::consts::FRAC_PI_2).abs() < 1e-3);
+        s.tick(0.1);
+        assert!(
+            (rotation(&mut s) - std::f32::consts::FRAC_PI_4).abs() < 1e-3,
+            "the reverse leg is halfway home"
+        );
+        s.tick(0.1);
+        assert!(rotation(&mut s).abs() < 1e-3, "the reverse leg landed");
     }
 
     fn frame_rect(s: &UiScript, h: crate::widget::FrameHandle) -> crate::layout::Rect {

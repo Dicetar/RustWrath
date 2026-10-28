@@ -22,12 +22,13 @@ In:
   (outermost first) and carry the summed angle; text and region quads included.
 - `SetDegrees` and `SetLooping("REPEAT"|"BOUNCE"|"NONE")`, with the XML `looping` attribute read at
   build.
-- `REPEAT` restarts a finished group's schedule.
-- Tests for the orbit and the repeat restart.
+- `REPEAT` restarts a finished group's schedule; `BOUNCE` alternates the leg direction, each leg
+  capturing the value it starts from (offset-based kinds reset to the un-animated place on a
+  fresh forward leg).
+- Tests for the orbit, the repeat restart and the bounce reverse leg.
 
 Out / known limits (recorded, not hidden):
-- `BOUNCE` repeats like `REPEAT` until the reverse-leg semantics land; stock Lua plays the pulser
-  child directly, so stock does not exercise it.
+- Stock Lua plays the pulser child directly, so stock does not exercise the group loop.
 - Region-owned `Rotation` is not applied (no installed usage).
 - Hit tests still use the unrotated rects; only draw quads rotate.
 - Repeating `Alpha` groups drift because each run captures the owner's alpha as its base.
@@ -44,15 +45,17 @@ Out / known limits (recorded, not hidden):
 
 ## Verification (2026-10-28)
 
-- `cargo test -p benilla-ui --lib 'animation::tests'`: 5 passed, including
+- `cargo test -p benilla-ui --lib 'animation::tests'`: 6 passed, including
   `a_frame_rotation_orbits_its_region_quad` (center (58,50) → (55.657,55.657) at 45°, quad angle
-  45° CCW) and `a_repeating_group_restarts_its_rotation` (360° loop reaches a quarter turn after
-  restart and stays playing).
+  45° CCW), `a_repeating_group_restarts_its_rotation` (360° loop reaches a quarter turn after
+  restart and stays playing) and `a_bouncing_group_reverses_its_rotation` (forward leg 90°, reverse
+  leg half home at 45°, then 0°).
 - `cargo check -p benilla-app --lib` clean.
-- Wrath stock smoke (real wm-hd): passes, including the stock `TutorialFrameCallOutPulser` step.
+- Wrath stock smoke (real wm-hd): passes, including the stock `TutorialFrameCallOutPulser` step,
+  before and after the bounce work.
 - Full UI suite not rerun after this slice; the earlier two host-timezone stdlib failures are
   unrelated.
 
 ## Next
 
-`BOUNCE` reverse legs, rotation-aware hit tests, region-owned rotation.
+Rotation-aware hit tests, region-owned rotation, then the (unused) Scale/Color/TextureCoord kinds.
