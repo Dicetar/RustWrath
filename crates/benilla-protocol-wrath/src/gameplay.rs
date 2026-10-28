@@ -1118,7 +1118,7 @@ pub enum ServerEvent {    AttackStart { attacker: u64, victim: u64 },
     LootRemoved { slot: u8 },
     LootMoney { amount: u32 },
     LootClearMoney,
-    /// `SMSG_LOOT_START_ROLL` (`Group.cpp::SendLootStartRoll`, `:861-871`): the roll's allocated
+    /// `SMSG_LOOT_START_ROLL` (`Group.cpp::SendLootStartRoll`, `:860-881`): the roll's allocated
     /// item guid, 3.3.3's map id, slot, item, suffix factor, property, stack count, countdown and
     /// the per-player vote mask.
     LootStartRoll {
@@ -1132,7 +1132,7 @@ pub enum ServerEvent {    AttackStart { attacker: u64, victim: u64 },
         countdown_ms: u32,
         vote_mask: u8,
     },
-    /// `SMSG_LOOT_ROLL` (`Group.cpp::SendLootRoll`, `:908-930`): a vote or dice result, plus
+    /// `SMSG_LOOT_ROLL` (`Group.cpp::SendLootRoll`, `:906-928`): a vote or dice result, plus
     /// 12340's automatic-pass byte.
     LootRoll {
         guid: u64,
@@ -1145,7 +1145,7 @@ pub enum ServerEvent {    AttackStart { attacker: u64, victim: u64 },
         roll_type: u8,
         auto_pass: bool,
     },
-    /// `SMSG_LOOT_ROLL_WON` (`Group.cpp::SendLootRollWon`, `:933-951`): the winner and roll,
+    /// `SMSG_LOOT_ROLL_WON` (`Group.cpp::SendLootRollWon`, `:930-951`): the winner and roll,
     /// with the item fields ahead of the winner guid.
     LootRollWon {
         guid: u64,
@@ -1157,7 +1157,7 @@ pub enum ServerEvent {    AttackStart { attacker: u64, victim: u64 },
         roll_number: u8,
         roll_type: u8,
     },
-    /// `SMSG_LOOT_ALL_PASSED` (`Group.cpp::SendLootAllPassed`, `:954-961`): property before
+    /// `SMSG_LOOT_ALL_PASSED` (`Group.cpp::SendLootAllPassed`, `:953-959`): property before
     /// suffix, the reverse of the other three packets.
     LootAllPassed {
         guid: u64,

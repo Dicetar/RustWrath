@@ -43,8 +43,8 @@ Opcodes, `Server/Protocol/Opcodes.h:700-704`:
 | `SMSG_LOOT_START_ROLL` | `0x2A1` |
 | `SMSG_LOOT_ROLL` | `0x2A2` |
 
-`SMSG_LOOT_START_ROLL` (`Groups/Group.cpp::SendLootStartRoll`, `:861-871`; per-player
-`SendLootStartRollToPlayer`, `:886-901`), in order:
+`SMSG_LOOT_START_ROLL` (`Groups/Group.cpp::SendLootStartRoll`, `:860-881`; per-player
+`SendLootStartRollToPlayer`, `:884-904`), in order:
 
 1. `u64 itemGUID` — the roll's allocated item guid, the identity `CMSG_LOOT_ROLL` sends back
 2. `u32 mapId` — 3.3.3-only field
@@ -57,9 +57,9 @@ Opcodes, `Server/Protocol/Opcodes.h:700-704`:
 9. `u8 rollVoteMask`
 
 The per-player form clears `ROLL_FLAG_TYPE_NEED` (`0x02`) when the player cannot need. Masks
-(`Loot/LootMgr.h:42-49`): pass `0x01`, need `0x02`, greed `0x04`, disenchant `0x08`.
+(`Loot/LootMgr.h:41-49`): pass `0x01`, need `0x02`, greed `0x04`, disenchant `0x08`.
 
-`SMSG_LOOT_ROLL` (`Group::SendLootRoll`, `:908-930`), in order:
+`SMSG_LOOT_ROLL` (`Group::SendLootRoll`, `:906-928`), in order:
 
 1. `u64 itemGUID`
 2. `u32 itemSlot`
@@ -71,7 +71,7 @@ The per-player form clears `ROLL_FLAG_TYPE_NEED` (`0x02`) when the player cannot
 8. `u8 rollType` (`0` pass, `1` need, `2` greed; `3` disenchant)
 9. `u8 autoPass` — 1 when the client should print the automatic-pass line
 
-`SMSG_LOOT_ROLL_WON` (`Group::SendLootRollWon`, `:933-951`), in order:
+`SMSG_LOOT_ROLL_WON` (`Group::SendLootRollWon`, `:930-951`), in order:
 
 1. `u64 itemGUID`
 2. `u32 itemSlot`
@@ -85,7 +85,7 @@ The per-player form clears `ROLL_FLAG_TYPE_NEED` (`0x02`) when the player cannot
 There are no vote pairs in the packet body; the server sends this same body once per voter
 (`:947-951`). The handoff's "vote pairs" phrasing is a loop, not a wire unit.
 
-`SMSG_LOOT_ALL_PASSED` (`Group::SendLootAllPassed`, `:954-961`), in order:
+`SMSG_LOOT_ALL_PASSED` (`Group::SendLootAllPassed`, `:953-959`), in order:
 
 1. `u64 itemGUID`
 2. `u32 itemSlot`
