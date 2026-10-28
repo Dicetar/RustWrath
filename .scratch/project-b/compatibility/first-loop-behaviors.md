@@ -372,4 +372,12 @@ implementation was added, and donor registration is unchanged. Exact target raw-
 ABI and Questie behavior remain unverified; there was no check/test/new case or runtime
 run. This source path does not establish OC's native cooldown sweep/render acceptance.
 
+50654b1c adds source presentation for retained Wrath secondary/rating item stats using
+AC's actual ItemModType IDs and the target localized ITEM_MOD_* templates. It handles
+stock numeric formats and installed zzzmopitemtooltips sign/value overrides through
+the existing strict formatter. Donor/primary/resistance behavior is unchanged. Exact
+native block ordering, addon behavior, scaled heirloom/suffix stats and rendered
+acceptance remain open. No tests/new cases/builds or runtime run occurred; one bounded
+verification pass is requested but still requires an explicit human answer.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.

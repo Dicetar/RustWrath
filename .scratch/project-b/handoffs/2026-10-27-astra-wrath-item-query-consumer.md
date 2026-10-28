@@ -476,3 +476,36 @@ modify OC's active widget/recovery source. Donor registration is unchanged.
 Installed QuestieCompat.lua SHA-256:
 D40F086185C11B681438AC7311DE56F029B70A7DEAF5E9094251F6A5939F7F9D.
 No builds/tests/new cases, imports/probes, generator or graphical/live runtime ran.
+
+### Wrath secondary-stat presentation (50654b1c, source only)
+
+The app template view already retains ItemInfo.stats verbatim, but the donor renderer
+visits only 0/1/3..7 and silently drops every target rating/secondary value. The new
+Wrath-only equip-stat block maps AC ItemTemplate.h ItemModType 12..39 and 41..48 to
+their actual 12340 GlobalStrings.lua keys: defense/avoidance/hit/crit/haste ratings,
+resilience/expertise, attack power, regeneration, penetration, spell power and block
+value, including the target's deprecated healing/damage IDs. ID 40 is explicitly not
+in 3.3 per the AC enum; no modern mastery/PvP-power ID was invented from addon strings.
+
+The block consumes existing wire amounts, retains source order, and uses the existing
+green on-equip/wrapped presentation adjacent to spell equip lines. It does not compute
+rating percentages, scale heirlooms, apply gameplay bonuses or reconstruct negative
+suffix stats. Primary-stat, resistance and donor paths were left unchanged. Exact
+native ordering/color/combining rules and complete target line law remain unverified.
+
+Installed zzzmopitemtooltips/core.lua rewrites many ITEM_MOD_* globals from a numeric
+sentence to %c%d plus the SHORT label. The new helper uses existing fill_exact with
+sign/absolute-value arguments or the stock numeric argument, so a %d hole cannot
+accidentally print the sign string. The strict formatter retains positional/escaped
+specifier behavior; an unsupported format remains unavailable rather than guessing.
+The addon retains a separate spell-power path for scaled heirlooms; that behavior is
+not implemented or accepted by this change.
+
+Primary string source read:
+https://github.com/wowgaming/3.3.5-interface-files/blob/d0339b17b0221db76e6acd2dc2915d224a5b62ca/GlobalStrings.lua
+Installed zzzmopitemtooltips/core.lua SHA-256:
+218579C6A110284CCF736D8839B01375B16A4E9A87FF114FBD84060626A84ABB.
+No install code or string values were copied into the repo; only identifier mappings
+and formatting logic were implemented. No builds/tests/new cases or runtime checks
+occurred. One bounded check/existing-UI-test pass has been requested explicitly; a
+pending request is not authorization and no execution starts without the human answer.
