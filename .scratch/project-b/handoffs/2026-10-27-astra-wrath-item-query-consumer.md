@@ -394,6 +394,11 @@ item-watch refreshes, including uncached own items. The existing trade row suppl
 the property and factor but no gem fields; the formatter emits zero gems. The change
 has not been built or tested, and does not establish trade or tooltip acceptance.
 
+`8d4a746b` selects the target for visible-item links in both the inspect feed and
+fresh-hover path. It does not add missing descriptor fields: the existing visible
+property projection, zero factor and zero gems remain limitations. Source-only;
+no build, test or inspection runtime was run.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
