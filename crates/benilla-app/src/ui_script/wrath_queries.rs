@@ -21,6 +21,27 @@ pub(crate) struct SpellQueries<'w, 's> {
 }
 
 impl SpellQueries<'_, '_> {
+    pub(crate) fn item_cooldown(&self, id: u32) -> Option<(i64, u32, bool)> {
+        let world = self.world.as_ref()?;
+        if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) {
+            return None;
+        }
+        let template = self.items.template(id, 0, crate::query_cache::Ask::Read)?;
+        let Some(usage) = template.use_spell else {
+            // Like the existing container query: a known non-use item has no cooldown leg.
+            return Some((0, 0, false));
+        };
+        let definition = self.spells.as_deref()?.catalog.get(usage.spell_id)?;
+        let clock = self.clock.as_deref()?;
+        let cooldowns = self.cooldowns.as_deref()?;
+        Some(
+            cooldowns
+                .info_item(usage.spell_id, id, usage.category, Some(definition), clock.anchor)
+                .ui_triple(clock.anchor, clock.ui_now)
+                .unwrap_or((0, 0, true)),
+        )
+    }
+
     pub(crate) fn cooldown(&self, id: u32, pet: bool) -> Option<(i64, u32, bool)> {
         let world = self.world.as_ref()?;
         if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld) { return None; }

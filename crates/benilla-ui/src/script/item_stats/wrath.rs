@@ -89,6 +89,21 @@ fn item_name(lua: &Lua, base: &str, property: i32) -> Option<String> {
 }
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+    lua.globals().set("GetItemCooldown", lua.create_function(|lua, id: Value| {
+        let id = lua.coerce_number(id)?
+            .filter(|id| id.is_finite() && *id >= 1.0 && *id <= f64::from(u32::MAX))
+            .ok_or_else(|| mlua::Error::runtime("Usage: GetItemCooldown(itemID)"))? as u32;
+        let Some((start, duration, enabled)) =
+            super::super::host::with_host(lua, |host| host.item_cooldown(id)).flatten()
+        else {
+            return Ok(MultiValue::from_vec(vec![Value::Nil]));
+        };
+        Ok(MultiValue::from_vec(vec![
+            Value::Number(start as f64 / 1000.0),
+            Value::Number(f64::from(duration) / 1000.0),
+            Value::Integer(i64::from(enabled)),
+        ]))
+    })?)?;
     lua.globals().set("GetItemCount", lua.create_function(|lua, args: MultiValue| {
         let input = args.front().cloned().unwrap_or(Value::Nil);
         let id = if let Some(number) = lua.coerce_number(input.clone())? {

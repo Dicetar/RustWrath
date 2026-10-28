@@ -22,6 +22,11 @@ use super::{ScriptCall, UiScript};
 
 /// The engine half of the script calls: what applies a call to the state outside the VM.
 pub trait CallHost {
+    /// Item-ID query over the existing recovery owner, already projected to GetTime ms.
+    fn item_cooldown(&mut self, _id: u32) -> Option<(i64, u32, bool)> {
+        None
+    }
+
     /// Selected-locale suffix name from the existing signed item-roll catalog.
     fn item_suffix_name(&mut self, _property: i32) -> Option<String> {
         None
