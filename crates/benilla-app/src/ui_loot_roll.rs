@@ -80,6 +80,8 @@ struct ActiveRoll {
     /// The drop's random-suffix roll: the reference's `SetLootRollItem` (`0x5364a0`) copies it
     /// into the tooltip's `+0x424` with no item object, so it is the hover's only enchant source.
     random_property_id: u32,
+    /// Suffix factor supplied with the roll start, retained for Wrath item links.
+    suffix_factor: u32,
     /// The wire's `countdownTime`, kept whole: `START_LOOT_ROLL`'s `arg2` and the bar's maximum.
     countdown_ms: u32,
     /// Milliseconds left, saturating at 0; the server's resolution closes the roll, not the tick.
@@ -140,6 +142,7 @@ impl LootRolls {
             item_slot: p.item_slot,
             item_id: p.item_id,
             random_property_id: p.random_property_id,
+            suffix_factor: p.suffix_factor,
             countdown_ms: p.countdown_ms,
             remaining_ms: p.countdown_ms,
             held_ms: 0,
@@ -579,7 +582,11 @@ fn snapshot(
                         r.item_id,
                         0,
                         r.random_property_id,
-                        0,
+                        if target == benilla_ui::script::UiTarget::Wrath335 {
+                            r.suffix_factor
+                        } else {
+                            0
+                        },
                         &catalogs.name(&t.name, r.random_property_id),
                         t.quality,
                     )
