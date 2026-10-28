@@ -326,4 +326,15 @@ arity, empty-slot behavior and existing lock/readable/quality owners are unchang
 No compilation, tests/new cases, Bagnon runtime or rendered acceptance occurred. Full
 bank capacity and remaining producer-link format gaps still belong to native integration.
 
+2026-10-28 item-count continuation at 0d2029f7: Wrath GetItemCount now has a source
+path through the existing lent item host and inventory traversal, supplying the API
+called by Questie's quest-item charge display and Skillet's bank-inclusive item counts.
+Numeric/link and uniquely cached-name resolution, optional bank scope and template/
+instance charge weighting are implemented. The possession query includes broken items;
+existing donor action/reagent counters retain their original whole-item predicate.
+No second cache, inventory owner or packet was added. Missing required facts remain
+unavailable. Exact target charge/name behavior, unavailable-state addon handling and
+the native bank/keyring capacity gaps remain open. No builds/tests/new cases or runtime
+acceptance occurred; the earlier OC stock-UI smoke does not cover this new path.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.

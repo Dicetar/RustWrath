@@ -323,3 +323,38 @@ level-sized keyring remain the available native view. The seventh Wrath bank bag
 full bank/keyring capacity need the native owner's lossless projection before complete
 bank compatibility can be accepted. No compilation/tests/new cases or runtime acceptance
 ran; the OC smoke reported in the next handoff predates this change.
+
+### Item-count integration (0d2029f7, source only)
+
+Installed Questie TrackerLinePool.lua:559/628/631 requires GetItemCount(itemId,nil,true)
+for quest-item uses. Installed Skillet ShoppingList.lua:137 and SkilletStitch-1.1.lua:
+177/179 require link queries and optional bank counts. No GetItemCount global existed.
+The Wrath item installer now resolves numeric IDs, item links and uniquely cached exact
+names, then delegates through CallHost/ScriptCallHost to ItemSteps and the existing
+inventory GUID traversal. It adds no inventory owner, cache, mutation or query packet.
+
+The shared traversal now accepts a predicate. Existing donor callers still select
+item_is_whole, preserving action/reagent/quest behavior. The new possession query does
+not discard broken items: AC PlayerStorage.cpp Player::GetItemCount at the existing
+5e741c37 source baseline counts owned entries without a durability/whole-item gate.
+That is server-side evidence for possession, not recovery of the native Lua binding.
+Bank inclusion walks the already retained arrays even when the banker is closed;
+it does not claim to restore the four bank seats/seventh bank bag lost upstream.
+
+Uses are stack count times the absolute first-instance charge count when the existing
+ItemInfo::has_finite_charges says the template is charged, otherwise stack count.
+This reuses the donor action query's template/instance facts, with stack multiplication
+matching the published ClassicAPI backport's includeUses description. The exact 12340
+native positive-charge/depleted/stacked-charge behavior is not yet independently
+recovered or accepted. Missing required item objects/templates/fields or a missing
+lent host returns unavailable, rather than asserting a known zero. Ambiguous/uncached
+names remain unavailable. Numeric IDs with an observed empty inventory can return zero.
+
+The existing donor helpers and assertions were not changed; the shared traversal body
+was retained with its original predicate selected by the old entry point. No test case,
+build/test, generator, addon or runtime run occurred. The OC PlayerFrame smoke predates
+this commit and does not exercise this query. Questie/Skillet behavior remains unproven;
+in particular their expectations during unavailable host/data periods need acceptance.
+
+Reference consulted for the backport's stated contract (not exact 12340 evidence):
+https://octowow.st/git/brues/ClassicAPI/src/commit/f119f448ed45e6b09240ce46f725f3b092cbfbf9/docs/API.md
