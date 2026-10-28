@@ -7,6 +7,10 @@ Goal: make the 3.3.5a stock UI animate on the reference's timeline, so `<Animati
 screen instead of sitting static, and every stock animation script (`OnPlay`/`OnStop`/
 `OnFinished`) runs when the reference runs it.
 
+**Status: complete (2026-10-28).** All three success criteria are verified below; the only
+built-kind gap left is `Rotation` (two installed-addon constructor uses, no stock use), which
+needs a transform seam and is out of this goal's stock-UI scope.
+
 ## Why this goal
 
 The load slice, the `Cooldown` widget and the bootstrap false-answer removal are done. The
