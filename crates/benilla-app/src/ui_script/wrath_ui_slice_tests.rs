@@ -182,4 +182,32 @@ fn stock_player_frame_host_smoke_test() {
         errors.is_empty(),
         "stock file evaluation must be error-free, got: {errors:?}"
     );
+
+    // 6. Stock animation engine: the TutorialFrame call-out's named Alpha, built by the XML
+    //    loader from the real prefix, plays on the host clock, moves its owner's alpha, and
+    //    fires OnFinished once. This runs after the load-error assertion because a tick also
+    //    runs stock OnUpdate handlers whose later TOC files this prefix deliberately omits.
+    s.run(r#"
+        assert(TutorialFrameCallOutPulser, "the stock pulser animation is built")
+        ANIM_FINISHED = 0
+        TutorialFrameCallOutPulser:SetDuration(0.01)
+        TutorialFrameCallOutPulser:SetScript("OnFinished", function()
+            ANIM_FINISHED = ANIM_FINISHED + 1
+        end)
+        TutorialFrameCallOutPulser:Play()
+        assert(TutorialFrameCallOutPulser:IsPlaying(), "the stock pulser reports playing")
+    "#).expect("the stock pulser animation exists and plays");
+    s.tick(0.02);
+    assert_eq!(
+        s.eval::<i64>("return ANIM_FINISHED").unwrap(),
+        1,
+        "the stock Alpha fired OnFinished once"
+    );
+    let callout_alpha: f64 = s
+        .eval("return TutorialFrameCallOutPulser:GetRegionParent():GetAlpha()")
+        .unwrap();
+    assert!(
+        callout_alpha < 1.0 && callout_alpha > 0.2,
+        "the stock Alpha moved its owner's alpha: {callout_alpha}"
+    );
 }

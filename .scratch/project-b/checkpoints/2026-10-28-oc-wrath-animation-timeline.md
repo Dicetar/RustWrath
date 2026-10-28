@@ -54,8 +54,9 @@ Out:
 
 - A scripted stock-style animation (`Play` → Alpha/Translation, as the stock Lua drives them)
   advances deterministically on `Model::now` and `OnFinished` fires exactly once.
-- `UIParent`'s fade and an ActionButton flash load and run in the stock smoke with no animation
-  faults.
+- A stock named animation built by the XML loader from the real prefix
+  (`TutorialFrameCallOutPulser`) plays in the smoke, moves its owner's alpha, and fires
+  `OnFinished` exactly once.
 - No stock XML reports an unknown animation node or a missing script handler.
 
 ## Evidence plan
@@ -92,7 +93,11 @@ Coordinating: Astra's item/container/addon lane is untouched; her commits below 
   (environmental, untouched by this work).
 - Wrath stock smoke (real wm-hd data): **passes** with an absolute `WM_ASSET_MANIFEST`; the
   relative `docs/profiles/wm-hd.mpqlist` fails to open from the test process, so acceptance runs
-  should pass the absolute path.
+  should pass the absolute path. The smoke now also plays the stock
+  `TutorialFrameCallOutPulser` (loaded from the real prefix by the XML loader), asserts it
+  reports playing, ticks the host clock, and checks its owner's alpha fell to 0.3 and
+  `OnFinished` fired once. That step runs after the load-error assertion because a tick also
+  runs stock `OnUpdate` handlers whose later TOC files the truncated prefix omits.
 - `ui_trade` tests: 45 passed after restoring the stale `snapshot`/`resolve_slot` call shapes that
   blocked every app-lib test build (test-only fix, no behaviour change).
 
