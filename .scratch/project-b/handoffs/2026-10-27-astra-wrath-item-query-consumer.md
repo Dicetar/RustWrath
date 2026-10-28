@@ -489,6 +489,16 @@ GetContainerItemInfo by querying GetItemInfo for the link. Its bag classifier us
 `bit.band`; the scripting source registers that bit library. These are source-level
 compatibility observations, not a successful addon or VM execution.
 
+Questie timing trace: its installed Compat.lua implements NewTicker/After through
+frame CreateAnimationGroup, group CreateAnimation, SetDuration, SetLooping(REPEAT),
+Play/Stop and each animation's OnFinished callback. Current script/animation.rs only
+builds static XML tables with a playing flag; it has no timeline or callback dispatch,
+and the frame API search found no CreateAnimationGroup. This is a functional addon
+dependency, not merely cosmetic animation. OC's current claim includes shared object
+and tick owners, so coordinate a complete animation lifecycle there before changing
+them. Details provides its own separate C_Timer implementation; do not assume it
+repairs Questie's local Compat timer. No addon execution was performed.
+
 `823d7c6a` adds Wrath GetContainerItemDurability from the existing bag-slot pair,
 used by aux-addon/util/info.lua when assessing auctionability. Empty, unavailable,
 and zero-max slots return nil values under the existing snapshot contract. The exact
