@@ -11,7 +11,7 @@ use benilla_ui::script::{ContainerUse, UiScript, UseArm, UseFork, EQUIPMENT_BAG}
 use crate::items::Items;
 use crate::net::{ClientCommand, NetCommands, ObjectStore, Objects, SelfPlayer};
 
-use super::{slot_guid, wire_pos, ITEM_CLASS_PROJECTILE};
+use super::{slot_guid, wire_pos_in_target, ITEM_CLASS_PROJECTILE};
 use crate::query_cache::Ask;
 
 /// The one auto-equip sender (`AutoEquipCursorItem`, `0x5e1480`, past its question). A
@@ -175,7 +175,7 @@ impl ScriptItemUse<'_, '_> {
                 .and_then(|store| slot_guid(&store.0, bag, s0, &ladder.objects))
                 == Some(item_guid)
         }) && ladder.objects.object(item_guid).is_some();
-        let pos = wire_pos(bag, slot);
+        let pos = wire_pos_in_target(script.target(), bag, slot);
         let (Some((bag_index, wire_slot)), true) = (pos, still_there) else {
             debug!("ui_items: UseContainerItem({bag}, {slot}) no longer holds {item_guid:#x}");
             if arm_locked(arm) {
@@ -478,10 +478,14 @@ pub(crate) fn dispatch_fork(
 /// stack is `CMSG_SWAP_INV_ITEM` when both ends are in the player's own array, else
 /// `CMSG_SWAP_ITEM` (destination first, `Server/Packets/Item.cpp:30-36`); a split is
 /// `CMSG_SPLIT_ITEM`.
-pub(crate) fn send_container_move(commands: &NetCommands, mv: benilla_ui::script::ContainerMove) {
+pub(crate) fn send_container_move(
+    target: benilla_ui::script::UiTarget,
+    commands: &NetCommands,
+    mv: benilla_ui::script::ContainerMove,
+) {
     let (Some(src), Some(dst)) = (
-        wire_pos(mv.src_bag, mv.src_slot),
-        wire_pos(mv.dst_bag, mv.dst_slot),
+        wire_pos_in_target(target, mv.src_bag, mv.src_slot),
+        wire_pos_in_target(target, mv.dst_bag, mv.dst_slot),
     ) else {
         debug!("ui_items: container move {mv:?} out of range — ignored");
         return;

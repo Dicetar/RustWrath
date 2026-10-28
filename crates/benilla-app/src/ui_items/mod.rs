@@ -11,7 +11,7 @@
 
 use benilla_protocol::messages::{BAG_PLAYER_INVENTORY, SLOT_BAG_FIRST, SLOT_PACK_FIRST};
 use benilla_protocol::ObjectFields;
-use benilla_ui::script::EQUIPMENT_BAG;
+use benilla_ui::script::{UiTarget, EQUIPMENT_BAG};
 use bevy::prelude::*;
 
 use crate::items::Items;
@@ -69,6 +69,8 @@ pub(super) const KEYRING_SLOT_FIRST: u8 = 81;
 /// Addressable keyring positions, 81..96 (vmangos `KEYRING_SLOT_END` 97): the descriptor array is
 /// 32 wide, but the server uses 16. The usable count is [`keyring_size`].
 pub(super) const KEYRING_SLOTS: u8 = 16;
+/// AzerothCore Player.h: KEYRING_SLOT_START 86 through END 118, independent of level.
+pub(super) const WRATH_KEYRING_SLOTS: u8 = 32;
 /// `BAG_FAMILY_KEYS`: what the server routes into the keyring (`Player::_CanStoreItem`) and the
 /// reference's `HasKey` searches for.
 pub(super) const BAG_FAMILY_KEYS: u32 = 9;
@@ -85,6 +87,13 @@ pub(crate) fn keyring_size(level: u32) -> u32 {
     }
 }
 
+pub(crate) fn keyring_size_in_target(target: UiTarget, level: u32) -> u32 {
+    match target {
+        UiTarget::Wrath335 => u32::from(WRATH_KEYRING_SLOTS),
+        UiTarget::Vanilla112 => keyring_size(level),
+    }
+}
+
 /// Lua `(bag, 1-based slot)` to the wire `(bag_index, slot)`, the one mapping every drain shares.
 /// The backpack, the bank's generic slots, the keyring and the doll ([`EQUIPMENT_BAG`]: live id
 /// minus one, 1..=23 and the bank-bag buttons 64..=69) all land on [`BAG_PLAYER_INVENTORY`], so a
@@ -92,6 +101,14 @@ pub(crate) fn keyring_size(level: u32) -> u32 {
 /// player-array slot, with a 0-based inner slot. The keyring spans the wire's 16 positions, not
 /// [`keyring_size`]: a click past the unlocked count is the server's to refuse.
 pub(crate) fn wire_pos(bag: i64, slot1: u32) -> Option<(u8, u8)> {
+    wire_pos_in_target(UiTarget::Vanilla112, bag, slot1)
+}
+
+pub(crate) fn wire_pos_in_target(target: UiTarget, bag: i64, slot1: u32) -> Option<(u8, u8)> {
+    let keyring_slots = match target {
+        UiTarget::Wrath335 => WRATH_KEYRING_SLOTS,
+        UiTarget::Vanilla112 => KEYRING_SLOTS,
+    };
     let slot0 = u8::try_from(slot1.checked_sub(1)?).ok()?;
     match bag {
         0 if slot0 < PACK_SLOTS => Some((BAG_PLAYER_INVENTORY, SLOT_PACK_FIRST + slot0)),
@@ -102,7 +119,7 @@ pub(crate) fn wire_pos(bag: i64, slot1: u32) -> Option<(u8, u8)> {
         5..=10 if slot0 < 36 => {
             Some((BANK_BAG_SLOT_FIRST + (bag - BANK_BAG_ID_FIRST) as u8, slot0))
         }
-        KEYRING_CONTAINER if slot0 < KEYRING_SLOTS => {
+        KEYRING_CONTAINER if slot0 < keyring_slots => {
             Some((BAG_PLAYER_INVENTORY, KEYRING_SLOT_FIRST + slot0))
         }
         EQUIPMENT_BAG if (1..=23).contains(&slot1) || (64..=69).contains(&slot1) => {
@@ -238,13 +255,14 @@ fn walk_inventory<T>(
     scope: InventoryScope,
     raw: impl FnMut(u8, u8, u64) -> Option<T>,
 ) -> Option<T> {
-    walk_inventory_filtered(store, objects, scope, item_is_whole, raw)
+    walk_inventory_filtered(store, objects, scope, KEYRING_SLOTS, item_is_whole, raw)
 }
 
 fn walk_inventory_filtered<T>(
     store: &ObjectFields,
     objects: &Objects,
     scope: InventoryScope,
+    keyring_slots: u8,
     keep: impl Fn(&ObjectFields) -> bool,
     mut raw: impl FnMut(u8, u8, u64) -> Option<T>,
 ) -> Option<T> {
@@ -336,8 +354,7 @@ fn walk_inventory_filtered<T>(
         }
     }
     if scope.keyring {
-        // The addressable 16; the reference walks all 32, but the rest are always empty.
-        for i in 0..KEYRING_SLOTS {
+        for i in 0..keyring_slots {
             let guid = store.player_keyring_slot(i).unwrap_or(0);
             if guid != 0 {
                 if let Some(hit) = visit(BAG_PLAYER_INVENTORY, KEYRING_SLOT_FIRST + i, guid) {
@@ -365,7 +382,7 @@ fn possession_count(
     };
     let mut total = 0u32;
     let mut available = true;
-    walk_inventory_filtered::<()>(store, objects, scope, |_| true, |_, _, guid| {
+    walk_inventory_filtered::<()>(store, objects, scope, WRATH_KEYRING_SLOTS, |_| true, |_, _, guid| {
         let amount = (|| {
             let fields = objects.object(guid)?;
             if fields.object_entry()? != entry {
@@ -535,7 +552,17 @@ pub(crate) fn collect_inventory(
 /// walker (`0x6223a0` → `0x622420`) with predicate `0x6223d0`, `BagFamily == 9` (`template+0x1d0`),
 /// at mode `0x4f`, so a key in the bank counts. A slot whose template is still in flight reads as
 /// no key until the answer lands.
+#[cfg(test)]
 pub(crate) fn has_key(store: &ObjectFields, objects: &Objects, items: &Items) -> bool {
+    has_key_in_target(UiTarget::Vanilla112, store, objects, items)
+}
+
+pub(crate) fn has_key_in_target(
+    target: UiTarget,
+    store: &ObjectFields,
+    objects: &Objects,
+    items: &Items,
+) -> bool {
     // Every guid mode `0x4f` reaches, in the walker's order: each bag's contents follow its slot.
     fn contents(bag_guid: u64, objects: &Objects, out: &mut Vec<u64>) {
         let Some(f) = objects.object(bag_guid) else {
@@ -564,7 +591,11 @@ pub(crate) fn has_key(store: &ObjectFields, objects: &Objects, items: &Items) ->
         guids.push(bag_guid);
         contents(bag_guid, objects, &mut guids);
     }
-    for i in 0..KEYRING_SLOTS {
+    let keyring_slots = match target {
+        UiTarget::Wrath335 => WRATH_KEYRING_SLOTS,
+        UiTarget::Vanilla112 => KEYRING_SLOTS,
+    };
+    for i in 0..keyring_slots {
         guids.push(store.player_keyring_slot(i).unwrap_or(0));
     }
     guids.into_iter().any(|guid| {
@@ -577,7 +608,10 @@ pub(crate) fn has_key(store: &ObjectFields, objects: &Objects, items: &Items) ->
         // The bag family getter only reads (`0x5da08d`).
         items
             .template(entry, guid, Ask::Read)
-            .is_some_and(|t| t.bag_family == BAG_FAMILY_KEYS)
+            .is_some_and(|t| match target {
+                UiTarget::Wrath335 => t.bag_family & 0x100 != 0,
+                UiTarget::Vanilla112 => t.bag_family == BAG_FAMILY_KEYS,
+            })
     })
 }
 /// A test's object index: a world to seed with items, and the [`Objects`] lookup over it. Seed

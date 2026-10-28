@@ -13,7 +13,7 @@ use crate::net::{ClientCommand, NetCommands, ObjectStore, Objects, SelfPlayer};
 use crate::query_cache::Ask;
 
 use super::drain::{send_auto_equip, send_container_move};
-use super::{slot_guid, wire_pos};
+use super::{slot_guid, wire_pos_in_target};
 
 /// What the item calls read and send through. The bind-on-use accept's re-issued use is
 /// [`super::ScriptItemUse::confirm_bind_on_use`], which holds the cast ladder.
@@ -60,7 +60,7 @@ impl ItemSteps<'_, '_> {
                 0,
             )),
             super::KEYRING_CONTAINER => Some((
-                free_seats(super::keyring_size(store.unit_level()?), |i| {
+                free_seats(u32::from(super::WRATH_KEYRING_SLOTS), |i| {
                     store.player_keyring_slot(i)
                 })?,
                 0x100, // AzerothCore ItemTemplate.h: BAG_FAMILY_MASK_KEYS.
@@ -87,6 +87,8 @@ impl ItemSteps<'_, '_> {
 
     /// Apply one item call.
     pub(crate) fn apply(&mut self, script: &mut UiScript, call: ItemCall) {
+        let target = script.target();
+        let wire_pos = |bag, slot| wire_pos_in_target(target, bag, slot);
         let Self {
             net,
             self_q,
@@ -100,7 +102,7 @@ impl ItemSteps<'_, '_> {
         } = self;
         let store = self_q.iter().next();
         match call {
-            ItemCall::Move(mv) => send_container_move(net, mv),
+            ItemCall::Move(mv) => send_container_move(target, net, mv),
             // `SwapItem`'s question (`0x5e0ee4`), its dialog up inside the call.
             ItemCall::SwapAsk(mv) => {
                 gate.defer_equip(
@@ -311,7 +313,7 @@ fn answer_pending_equip(
                 count: None,
             };
             if let benilla_ui::script::Swap::Sent(mv) = script.swap_items(mv, true) {
-                send_container_move(net, mv);
+                send_container_move(script.target(), net, mv);
             }
         }
         // The accept re-issues the pick-up and auto-equip from the slot as it stands (`0x5e1c23`
@@ -324,7 +326,7 @@ fn answer_pending_equip(
             else {
                 return;
             };
-            let Some((bag_index, wire_slot)) = wire_pos(bag, slot) else {
+            let Some((bag_index, wire_slot)) = wire_pos_in_target(script.target(), bag, slot) else {
                 return;
             };
             send_auto_equip(

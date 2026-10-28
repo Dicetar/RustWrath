@@ -15,8 +15,8 @@ use crate::query_cache::Ask;
 use crate::ui_script::gate;
 
 use super::{
-    find_equip_slot, has_key, keyring_size, BAGS, BAG_SLOT_FIRST, BANK_BAGS, BANK_BAG_ID_FIRST,
-    BANK_CONTAINER, BANK_SLOTS, KEYRING_CONTAINER, KEYRING_SLOTS, PACK_SLOTS,
+    find_equip_slot, has_key_in_target, keyring_size_in_target, BAGS, BAG_SLOT_FIRST, BANK_BAGS,
+    BANK_BAG_ID_FIRST, BANK_CONTAINER, BANK_SLOTS, KEYRING_CONTAINER, PACK_SLOTS,
 };
 
 /// The doll's equipment slots, 0-based descriptor slots 0..=18 (live-API ids 1..=19).
@@ -1478,12 +1478,11 @@ pub(crate) fn feed_containers(
                 );
             }
 
-            // The keyring, container -2: player slots 81.., sized by the level ladder that stock
-            // `GetKeyRingSize` (`ContainerFrame.lua:773`) reads off `UnitLevel` and the server
-            // shares. Slots past the size, which the server refuses, are not fed.
-            let size = keyring_size(store.0.unit_level().unwrap_or(1));
+            // Wrath projects all 32 retained GUIDs; its stock GetKeyRingSize sizes the visible
+            // rows from GetContainerNumSlots(-2). Donor mode keeps its level ladder.
+            let size = keyring_size_in_target(script.target(), store.0.unit_level().unwrap_or(1));
             let mut slots = HashMap::new();
-            for i in 0..size.min(u32::from(KEYRING_SLOTS)) as u8 {
+            for i in 0..size as u8 {
                 let guid = store.0.player_keyring_slot(i).unwrap_or(0);
                 if let Some(slot) = resolve_slot_in_target(
                     script.target(),
@@ -1515,7 +1514,7 @@ pub(crate) fn feed_containers(
 
             // `HasKey()`, which decides whether the keyring shows at all, pushed with the
             // containers so it is fresh on every `BAG_UPDATE` frame.
-            let key = has_key(&store.0, &inv.objects, &items);
+            let key = has_key_in_target(script.target(), &store.0, &inv.objects, &items);
             key_pair = Some((memory.had_key, key));
             if key != memory.had_key {
                 gate.audit("feed_containers", "the HasKey() flip");

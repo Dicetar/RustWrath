@@ -962,12 +962,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 bag,
                 "Usage: GetContainerNumSlots(index)",
             )?);
-            // The backpack, the bank and bags 1-10 only; the keyring and anything else answer 0
-            // (`0x4f95c4`, `0x4f95de`, `0x4f95fb`).
-            if !(-1..=10).contains(&bag) {
+            // Donor: the backpack, bank and bags 1-10; the keyring reads zero (`0x4f95fb`).
+            // Wrath's stock GetKeyRingSize reads the keyring capacity through this binding.
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let first = if model.target == super::UiTarget::Wrath335 { -2 } else { -1 };
+            if !(first..=10).contains(&bag) {
                 return Ok(0);
             }
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(model.bag(bag).map_or(0, |c| c.num_slots))
         })?,
     )?;
