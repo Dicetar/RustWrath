@@ -399,6 +399,11 @@ fresh-hover path. It does not add missing descriptor fields: the existing visibl
 property projection, zero factor and zero gems remain limitations. Source-only;
 no build, test or inspection runtime was run.
 
+`e769a4fa` carries the active UI target through auction list refreshes, page
+admission and list re-resolution. The link uses the existing row's property and
+factor; no unavailable gems are invented. Auction protocol and runtime behavior
+remain outside this source-only change. No build or test was run.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
