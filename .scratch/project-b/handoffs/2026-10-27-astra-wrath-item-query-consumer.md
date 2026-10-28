@@ -444,6 +444,10 @@ feeding it from the existing buyback item object and random-property catalogs. A
 missing object or template yields nil. Exact API edge behavior, item replication,
 system-parameter admission and addon use remain unverified; no build/test/runtime ran.
 
+`1b6cc7a3` makes the Wrath buyback row use the same rolled object name as its link;
+the donor row remains unchanged. This does not resolve missing suffix catalogs or
+prove tooltip correctness. No build, test or vendor run was performed.
+
 Installed addon trace: `aux-addon/core/tooltip.lua` calls `GetInboxItemLink` and
 `GetSendMailItemLink`; Postal's open/select modules enumerate attachment indices.
 The current UI mail owner exposes the donor single-attachment `GetInboxItem` and
