@@ -589,6 +589,16 @@ accepts IDs and links while the existing GetItemCount path also accepts uniquely
 cached exact names. Reuse that same rule for item queries without inventing an ID
 for ambiguous or uncached names. No new cache, tests or execution authorized.
 
+2026-10-28 bounded verification follow-up claim at 3e97bc4d: documentation only:
+this checkpoint, `../handoffs/2026-10-28-astra-session-handoff.md`,
+`../handoffs/2026-10-27-astra-wrath-item-query-consumer.md`,
+`../compatibility/first-loop-behaviors.md`, and
+`../verification/2026-10-28-astra-bounded/summary.md`. No source files claimed.
+Tracked worktree/index were clean before and after the pinned pass; OC's animation,
+protocol/native lanes and all other worktrees remain untouched. Existing untracked
+logs and procgen helper preserved. Record the consumed grant and exact results;
+no rerun or new test is authorized by this claim.
+
 2026-10-28 group-loot factor claim at d1dc10d6: clean
 `crates/benilla-app/src/ui_loot_roll.rs`. The existing `LootStartRoll` carries a
 suffix factor that `ActiveRoll` discards. Retain it and place it in Wrath snapshot

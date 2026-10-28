@@ -1,5 +1,17 @@
 # Wrath item queries and spell-link tooltip consumer handoff
 
+## Latest verification supersession — 2026-10-28
+
+The historical source-only and pending-grant statements below are superseded only
+for compilation/existing-suite evidence by the one authorized pass at
+`3e97bc4d17a76309f47a3e94a3511e6611243741`: UI/app-lib check passed; UI library
+tests reported 3337 passed, 2 failed, 1 ignored. The clamp repair passed its existing
+case; failures remain the two recorded stdlib timezone cases. See the
+[exact commands, timing and logs](../verification/2026-10-28-astra-bounded/summary.md).
+The grant is consumed, with no rerun. No source changes were made during or after
+this pass. OC's work is preserved. This is not direct acceptance of the newer
+Wrath item APIs, real catalogs, installed addons or rendered/connected gameplay.
+
 Source delivery only. No compilation, new test cases, test runs or runtime operations were
 performed. OC's in-flight chat/layout/bootstrap files are preserved. Full replacement and
 rendered connected gameplay acceptance remain open.

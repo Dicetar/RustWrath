@@ -1,5 +1,17 @@
 # Project B — Astra session handoff, 2026-10-28
 
+## Current supersession — bounded grant consumed
+
+The historical UNUSED wording and bootstrap prompt below are superseded. On
+2026-10-28 at 17:17 Europe/Moscow, Astra used the grant once at
+`3e97bc4d17a76309f47a3e94a3511e6611243741`, with clean tracked source/index before
+and after. Check passed (exit 0); existing UI lib suite returned exit 101 with
+3337 passed, 2 known timezone failures, 1 ignored. The low-edge clamp test passed.
+Total 21.8 seconds within the shared 30-minute limit. No source edit or rerun.
+Exact commands, times, failures and logs: [bounded-pass summary](../verification/2026-10-28-astra-bounded/summary.md).
+Do not execute the historical grant again. OC's source and other worktrees remain
+preserved; installed-addon, live/rendered and full replacement acceptance remain open.
+
 This is the restart document for Astra. Read current source before accepting any worker's completion claim. Preparation performed only source/Git reads and document edits; no verification grant was consumed preparing it.
 
 ## Mission and rules

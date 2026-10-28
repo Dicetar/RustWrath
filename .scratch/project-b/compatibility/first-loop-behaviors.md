@@ -6,6 +6,15 @@ Purpose: refine entry, movement, combat, inventory/quest, death and re-entry int
 
 ## Evidence and acceptance rules
 
+2026-10-28 verification supersession: the previously unused Astra bounded grant
+was consumed at `3e97bc4d17a76309f47a3e94a3511e6611243741`. UI/app-lib check passed;
+existing UI suite: 3337 passed, 2 known stdlib timezone failures, 1 ignored. The
+low-edge clamp case passed. Source stayed pinned and clean; no OC source changed,
+new tests or reruns occurred. The 21.8-second pass and exact logs are indexed in
+[the verification summary](../verification/2026-10-28-astra-bounded/summary.md).
+All connected-behavior acceptance rows remain UNKNOWN. Compilation and suite
+results do not establish installed-addon, real-data, rendered or server acceptance.
+
 All rows have acceptance **UNKNOWN** in this inventory. The initial inventory was source-only; later bounded verification is recorded in the dated supersessions below and does not accept connected behavior. Source support is marked Partial; a static contradiction is Broken; a missing Wrath tap arm is Missing; insufficient inspection is Unknown. Existing or reported tests are identified separately, never counted as accepted connected behavior.
 
 Every behavior requires a pinned source/binary/profile, intended account/character and server-side outcome. A UI animation, sent packet, item-push notification, or matching static SQL does not establish authoritative state or persistence. Reconnect/persistence refers to the same declared character, not whatever character happens to be first in an enumeration.
