@@ -630,6 +630,7 @@ fn owned_with_bid(list: usize, entry: &AuctionListEntry, self_guid: Option<u64>)
 fn resolve_row(
     list: usize,
     entry: &AuctionListEntry,
+    target: benilla_ui::script::UiTarget,
     arrived_ms: u32,
     self_guid: Option<u64>,
     items: &Items,
@@ -646,7 +647,8 @@ fn resolve_row(
     let level = template.map_or(0, |t| t.required_level);
     let texture = crate::ui_items::item_icon(icons, template.map_or(0, |t| t.display_info_id));
     let link = name.as_ref().map(|n| {
-        crate::ui_items::item_link_full(
+        crate::ui_items::item_link_full_in_target(
+            target,
             entry.item_entry,
             entry.perm_enchant,
             roll,
@@ -689,6 +691,7 @@ fn resolve_row(
 /// What a list's rows read beside the house: the player, the item and name caches, the icons and
 /// the random suffixes.
 pub(crate) struct ListReads<'a> {
+    pub(crate) target: benilla_ui::script::UiTarget,
     pub(crate) self_guid: Option<u64>,
     pub(crate) items: &'a Items,
     pub(crate) icons: Option<&'a ItemDisplays>,
@@ -714,6 +717,7 @@ impl AuctionOpen {
                 resolve_row(
                     list,
                     e,
+                    reads.target,
                     slot.arrived_ms.unwrap_or(tick),
                     reads.self_guid,
                     reads.items,
@@ -930,6 +934,7 @@ fn feed_auction(
         let lists = [LIST, BIDDER, OWNER].map(|i| {
             let ask = Ask::at(shown || auction.list_result_landed[i], &commands);
             let reads = ListReads {
+                target: script.target(),
                 self_guid,
                 items: &items,
                 icons: icons.as_deref(),

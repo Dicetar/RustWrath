@@ -292,6 +292,7 @@ fn land_page(vm: &mut HouseVm, list: usize) {
         let tick = script.auction_tick_ms();
         let tail = h.auction.land_page(list, tick, items);
         let reads = super::ListReads {
+            target: script.target(),
             self_guid: h.self_q.iter().next().map(|g| g.0),
             items,
             icons: h.icons.as_deref(),
@@ -381,6 +382,7 @@ fn resolve_list(vm: &mut HouseVm, list: usize) {
         };
         let tick = script.auction_tick_ms();
         let reads = super::ListReads {
+            target: script.target(),
             self_guid: h.self_q.iter().next().map(|g| g.0),
             items,
             icons: h.icons.as_deref(),
