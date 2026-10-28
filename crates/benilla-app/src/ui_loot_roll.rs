@@ -553,6 +553,7 @@ fn snapshot(
     items: &Items,
     icons: Option<&ItemDisplays>,
     catalogs: crate::items::RollCatalogs,
+    target: benilla_ui::script::UiTarget,
 ) -> LootRollsState {
     let entries = rolls
         .active
@@ -573,7 +574,8 @@ fn snapshot(
                 random_property_id: r.random_property_id,
                 // `GetLootRollItemLink`, the chat lines' link; `None` until the template answers.
                 link: t.map(|t| {
-                    crate::ui_items::item_link_full(
+                    crate::ui_items::item_link_full_in_target(
+                        target,
                         r.item_id,
                         0,
                         r.random_property_id,
@@ -636,7 +638,7 @@ fn feed_loot_rolls(
         }
         // The snapshot goes in before the events: a `GroupLootFrame`'s `OnShow` reads its item from
         // it.
-        let fresh = snapshot(&rolls, &items, icons.as_deref(), catalogs);
+        let fresh = snapshot(&rolls, &items, icons.as_deref(), catalogs, script.target());
         if fresh != *last {
             script.set_loot_rolls(fresh.clone());
             *last = fresh;
