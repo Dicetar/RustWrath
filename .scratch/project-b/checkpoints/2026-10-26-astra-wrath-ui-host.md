@@ -499,3 +499,10 @@ inventory slot entry, cached item inventory type and on-use spell catalog name/I
 Preserve donor bindings, missing-data behavior and existing owners; no new cache,
 packet, gameplay authority, tests or execution. Host query and target ABI remain
 unverified pending a fresh grant.
+
+2026-10-28 partial catalog admission claim at faf89e39: clean
+`crates/benilla-formats/src/item_random_properties.rs` and
+`crates/benilla-app/src/entities.rs`. A failure in the separate Wrath suffix DBC
+currently discards successfully loaded positive properties. Retain the positive
+rows and expose the suffix load error through the existing startup warning; unavailable
+negative suffixes remain unavailable. No tests or execution are authorized.
