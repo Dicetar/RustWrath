@@ -99,7 +99,7 @@ fn feed_quest_lines(
         lines.0.retain(|&line| {
             let ask = Ask::at(read >= fed, &commands);
             read += 1;
-            match resolve(line, &quest_log, &items, ask, &get) {
+            match resolve(line, &quest_log, &items, ask, &get, script.target()) {
                 Resolved::Show(msg) => {
                     if let Some(text) = ui_error_text(&msg, &get) {
                         shown.push(Shown::keyed(msg.key, text));
@@ -131,6 +131,7 @@ fn resolve(
     items: &Items,
     ask: Ask<'_>,
     get: &dyn Fn(&str) -> Option<String>,
+    target: benilla_ui::script::UiTarget,
 ) -> Resolved {
     match line {
         QuestLine::Accepted(id) => match quest(id, quest_log, ask) {
@@ -160,7 +161,7 @@ fn resolve(
         QuestLine::Item(entry) => match items.template(entry, 0, ask) {
             Some(t) => Resolved::Show(UiError::s(
                 "ERR_QUEST_REWARD_ITEM_S",
-                crate::ui_items::item_link(entry, &t.name, t.quality),
+                crate::ui_items::item_link_full_in_target(target, entry, 0, 0, 0, &t.name, t.quality),
             )),
             None if items.template_answered_unknown(entry) => Resolved::Drop,
             None => Resolved::Wait,
