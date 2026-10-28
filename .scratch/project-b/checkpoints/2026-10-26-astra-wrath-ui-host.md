@@ -563,6 +563,13 @@ object's rolled name while the row still uses its base template name. Reuse the
 existing object name formatter for the Wrath row; retain vanilla behavior. No
 tests or execution authorized.
 
+2026-10-28 Bagnon bag-family claim at 6ae6fb10: clean
+`crates/benilla-ui/src/script/item_stats/wrath.rs`, `script/host.rs`,
+`crates/benilla-app/src/script_calls.rs` and `ui_items/calls.rs`. Installed Bagnon
+bagSlotInfo.lua calls missing GetItemFamily(link) for specialized bag classification.
+Expose the existing cached template's 12340 bag-family mask through the current
+host seam. Missing templates remain unavailable; no new cache, tests or execution.
+
 2026-10-28 group-loot factor claim at d1dc10d6: clean
 `crates/benilla-app/src/ui_loot_roll.rs`. The existing `LootStartRoll` carries a
 suffix factor that `ActiveRoll` discards. Retain it and place it in Wrath snapshot
