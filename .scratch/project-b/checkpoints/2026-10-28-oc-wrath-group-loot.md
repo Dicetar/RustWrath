@@ -147,5 +147,24 @@ is a fixint, not packed.
 ## Verification plan (not run; needs an explicit grant)
 
 - `cargo check --locked --offline -p benilla-protocol-wrath -p benilla-app --lib`
-- focused decoder/translation cases only after a test-add + run grant.
 - live group roll + vote round-trip only after a server/game grant.
+
+Proposed focused cases (documented only; adding or running them needs a separate grant):
+
+1. Start decode: a 37-byte body with item guid `0xA1`, map `571`, slot `3`, item `40000`,
+   suffix `1234`, property `0xFFFF_FFED`, count `5`, countdown `60000`, mask `0x07` must decode to
+   those exact fields.
+2. Roll decode: a 35-byte body with roller `0xB2`, roll number `57`, type `2`, auto-pass `1`
+   must decode with `auto_pass == true`.
+3. Won/all-passed order: use distinct property/suffix words; won must read suffix before
+   property and all-passed property before suffix.
+4. Outbound: `CMSG_LOOT_ROLL` for `0xA1`, slot `3`, greed must be 13 bytes
+   `a1… 03000000 02`.
+5. Translation: the start/roll/won/all-passed events must reach the existing
+   `SessionEvent` variants with `looted_target == guid`, both property words distinct and the
+   countdown intact.
+6. WP3: a Wrath loot response row with suffix `1234` and property `0xFFFF_FFED` must reach the
+   shared `LootItem` with both values unchanged; the 1.12 response with a zero suffix word must
+   stay zero.
+7. Consumer acceptance (after Astra's extension): a rolled Wrath loot row's link carries the
+   factor and AC's `HyperlinkTags.cpp:184-185` validator accepts it.
