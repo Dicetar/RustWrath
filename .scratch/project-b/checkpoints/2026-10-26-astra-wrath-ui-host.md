@@ -544,3 +544,8 @@ fixtures. Quest state, reward commands, protocol and tests remain outside this c
 `crates/benilla-app/src/ui_quest/lines.rs`. Pass the active UI target to the existing
 reward line resolver so its item link uses the shared target-aware formatter. No quest
 state, protocol, test case or runtime execution is included.
+
+2026-10-28 merchant-link claim at cb2e1ae7: clean
+`crates/benilla-app/src/ui_merchant/mod.rs`. Carry the script target to vendor-list
+item link construction, retaining existing vanilla fixtures. Buyback and protocol
+behavior are separate; no tests or execution authorized.
