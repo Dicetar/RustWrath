@@ -34,6 +34,7 @@ fn a_trade_row_carries_the_templates_quality_and_inventory_type() {
 
     let row = resolve_slot(
         &wire_item(1234),
+        benilla_ui::script::UiTarget::Vanilla112,
         &items,
         None,
         &NameCache::default(),
@@ -49,6 +50,7 @@ fn a_trade_row_carries_the_templates_quality_and_inventory_type() {
     assert_eq!(
         resolve_slot(
             &wire_item(1236),
+            benilla_ui::script::UiTarget::Vanilla112,
             &items,
             None,
             &NameCache::default(),
@@ -59,6 +61,7 @@ fn a_trade_row_carries_the_templates_quality_and_inventory_type() {
     );
     let row = resolve_slot(
         &wire_item(1235),
+        benilla_ui::script::UiTarget::Vanilla112,
         &items,
         None,
         &NameCache::default(),
@@ -67,6 +70,7 @@ fn a_trade_row_carries_the_templates_quality_and_inventory_type() {
     assert_eq!((row.quality, row.inventory_type), (Some(1), 0));
     let row = resolve_slot(
         &wire_item(1236),
+        benilla_ui::script::UiTarget::Vanilla112,
         &items,
         None,
         &NameCache::default(),
@@ -106,7 +110,14 @@ fn a_partner_slot_links_with_the_wires_enchant_roll_and_suffix() {
         props: Some(&props),
         enchants: None,
     };
-    let row = resolve_slot(&item, &items, None, &NameCache::default(), rolls);
+    let row = resolve_slot(
+        &item,
+        benilla_ui::script::UiTarget::Vanilla112,
+        &items,
+        None,
+        &NameCache::default(),
+        rolls,
+    );
     // The name joins the suffix as `GetTradeTargetItemInfo` names it (`0x4c01b8`).
     assert_eq!(row.name.as_deref(), Some("Bloodrazor of the Monkey"));
     assert_eq!(
@@ -138,6 +149,7 @@ fn an_own_slot_links_from_the_item_object() {
         .expect("the item streams");
     let row = resolve_slot(
         &item,
+        benilla_ui::script::UiTarget::Vanilla112,
         world.resource::<Items>(),
         None,
         &NameCache::default(),
@@ -171,6 +183,7 @@ fn an_own_slot_with_no_record_links_white_and_nameless() {
         .expect("the item streams");
     let row = resolve_own_slot(
         &item,
+        benilla_ui::script::UiTarget::Vanilla112,
         world.resource::<Items>(),
         None,
         &NameCache::default(),
@@ -208,6 +221,7 @@ fn a_wrapped_gifts_giver_reaches_both_columns() {
     s.their.slots[1] = Some(gift(false, 0x7));
     let state = snapshot(
         &s,
+        benilla_ui::script::UiTarget::Vanilla112,
         &items,
         None,
         None,
@@ -257,6 +271,7 @@ fn a_crafted_items_maker_reaches_both_columns() {
     s.their.slots[2] = Some(made(0x8));
     let state = snapshot(
         &s,
+        benilla_ui::script::UiTarget::Vanilla112,
         &items,
         None,
         None,
