@@ -512,3 +512,8 @@ and `crates/benilla-app/src/ui_loot/mod.rs`. The Wrath loot window and item-rece
 chat currently emit vanilla-shaped links that misplace the roll in the Wrath parser.
 Use the existing script target and observed fields; retain vanilla output and do not
 alter protocol-owned loot data. No builds, tests or new cases are authorized.
+
+2026-10-28 group-loot link claim at 74e4aa29: clean `crates/benilla-app/src/ui_loot_roll.rs`.
+Convert the group-loot snapshot and announcement links using the shared target-aware
+formatter and the active script target, retaining only values the existing owner holds.
+No protocol, tests or runtime execution are in scope.
