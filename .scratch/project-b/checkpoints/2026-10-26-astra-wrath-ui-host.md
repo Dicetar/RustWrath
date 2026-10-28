@@ -419,3 +419,12 @@ name mask 30, visual 31, flags 32, five requirement/source tail words. AC Item.c
 uses the field-32 bit 1 for soulbinding. Select the exact known schema and offsets;
 retain the donor parser and catalog interface. No render, native ownership, new
 catalog, suffix scaling, tests or execution is included.
+
+2026-10-28 negative-suffix catalog claim at b7b11b21: clean formats/src/
+item_random_properties.rs and app/items.rs only. Retain the exact 29-field
+ItemRandomSuffix table in the existing RandomPropertyCatalog when the loaded
+positive-property table selects 12340. Keep positive get()/iter()/fixture behavior;
+expose signed-name resolution and seed-scaled enchant amounts using AC's allocation
+formula. Route the shared item-name formatter through that observed name. No new
+resource/cache, parser fallback, guessed tooltip-token expansion, native field repair,
+test case or execution. Negative suffix stat rendering/raw-link Lua queries remain open.
