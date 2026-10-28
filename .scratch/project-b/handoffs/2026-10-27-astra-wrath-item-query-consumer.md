@@ -389,6 +389,11 @@ That owner retains the property but not the suffix factor, which remains zero.
 Group-loot announcements are a separate localized format-string path and remain
 unchanged pending evidence of the Wrath format contract. No build or test ran.
 
+Follow-up `8fd90bea`: the existing `LootStartRoll` carries a suffix factor, and
+`ActiveRoll` now retains it for Wrath snapshot links. This supersedes the factor
+loss described immediately above. Wrath network delivery of a roll start and the
+resulting UI behavior remain unverified; vanilla link output is unchanged.
+
 `2b9bcff7` applies target-aware links to both sides of the trade snapshot and to
 item-watch refreshes, including uncached own items. The existing trade row supplies
 the property and factor but no gem fields; the formatter emits zero gems. The change
