@@ -42,6 +42,11 @@ pub trait CallHost {
         None
     }
 
+    /// The cached item's target bag-family mask, if its template is available.
+    fn item_family(&mut self, _id: u32) -> Option<u32> {
+        None
+    }
+
     /// Existing inventory-owner projection: free GUID seats and the observed bag-family mask.
     fn container_space(&mut self, _bag: i64) -> Option<(u32, u32)> {
         None

@@ -89,6 +89,10 @@ fn item_name(lua: &Lua, base: &str, property: i32) -> Option<String> {
 }
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+    lua.globals().set("GetItemFamily", lua.create_function(|lua, arg: Value| {
+        let Some((link, _)) = query(lua, arg)? else { return Ok(None) };
+        Ok(super::super::host::with_host(lua, |host| host.item_family(link.id)).flatten())
+    })?)?;
     lua.globals().set("GetItemSpell", lua.create_function(|lua, arg: Value| {
         let Some((link, _)) = query(lua, arg)? else { return Ok((None, None)) };
         let spell = super::super::host::with_host(lua, |host| host.item_spell(link.id)).flatten();

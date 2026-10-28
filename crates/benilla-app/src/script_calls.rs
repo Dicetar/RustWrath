@@ -529,6 +529,10 @@ impl CallHost for ScriptCallHost<'_, '_> {
         self.appliers.items().item_count(id, bank, uses)
     }
 
+    fn item_family(&mut self, id: u32) -> Option<u32> {
+        self.appliers.items().item_family(id)
+    }
+
     fn container_space(&mut self, bag: i64) -> Option<(u32, u32)> {
         self.appliers.items().container_space(bag)
     }

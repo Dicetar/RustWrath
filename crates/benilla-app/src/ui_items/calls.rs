@@ -41,6 +41,10 @@ impl ItemSteps<'_, '_> {
         super::possession_count(store, &self.objects, &self.items, id, bank, uses)
     }
 
+    pub(crate) fn item_family(&self, id: u32) -> Option<u32> {
+        self.items.template(id, 0, Ask::Read).map(|item| item.bag_family)
+    }
+
     /// Count raw GUID seats, so an occupied item whose object is still loading stays occupied.
     pub(crate) fn container_space(&self, bag: i64) -> Option<(u32, u32)> {
         fn free_seats(n: u32, seat: impl Fn(u8) -> Option<u64>) -> Option<u32> {
