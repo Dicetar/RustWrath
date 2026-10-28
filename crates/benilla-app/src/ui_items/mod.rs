@@ -930,6 +930,24 @@ pub(super) fn item_link_full(
     )
 }
 
+/// Link for an item without an item object, using the active UI's payload layout.
+pub(crate) fn item_link_full_in_target(
+    target: benilla_ui::script::UiTarget,
+    item_id: u32,
+    enchant_id: u32,
+    random_property_id: u32,
+    suffix_factor: u32,
+    name: &str,
+    quality: u32,
+) -> String {
+    if target == benilla_ui::script::UiTarget::Vanilla112 {
+        return item_link_full(item_id, enchant_id, random_property_id, suffix_factor, name, quality);
+    }
+    let color = quality_color(if quality == 7 { 6 } else { quality });
+    let property = random_property_id as i32;
+    format!("|c{color}|Hitem:{item_id}:{enchant_id}:0:0:0:0:{property}:{suffix_factor}:0|h[{name}]|h|r")
+}
+
 /// `CGItem_C::GetFullName` (`0x5d8bc0`): the item's name with its random property's suffix
 /// (`0x5d8b00`), or with none when `ITEM_FIELD_FLAGS` has the wrapped bit `0x8`.
 pub(crate) fn object_name(

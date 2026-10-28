@@ -981,7 +981,19 @@ impl Candidates<'_> {
 /// (`0x491c04`-`0x491c1b`); another member's (`0x491dbc`, read at `0x491dd5` and `0x491e2e`)
 /// takes `CREATED_ITEM` or `LOOT_ITEM`, with `owner_name`, their `GetUnitName`, first
 /// (`0x491dfe`, `0x491e5b`).
+#[cfg(test)]
 fn receive_line(
+    r: &PendingReceive,
+    name: &str,
+    quality: u32,
+    owner_name: Option<&str>,
+    get: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    receive_line_in_target(benilla_ui::script::UiTarget::Vanilla112, r, name, quality, owner_name, get)
+}
+
+fn receive_line_in_target(
+    target: benilla_ui::script::UiTarget,
     r: &PendingReceive,
     name: &str,
     quality: u32,
@@ -1002,7 +1014,8 @@ fn receive_line(
         (true, false, _, false) => "LOOT_ITEM",
         (true, false, _, true) => "LOOT_ITEM_MULTIPLE",
     };
-    let link = crate::ui_items::item_link_full(
+    let link = crate::ui_items::item_link_full_in_target(
+        target,
         r.entry,
         0,
         r.random_property_id,
@@ -1049,7 +1062,8 @@ fn drain_receives(
                 };
                 let owner = owner.unwrap_or_else(|| script.unknown_object_text());
                 let line = r.in_chat.then(|| {
-                    receive_line(
+                    receive_line_in_target(
+                        script.target(),
                         &r,
                         &rolls.name(&name, r.random_property_id),
                         quality,
@@ -1081,7 +1095,8 @@ fn drain_receives(
                     );
                 }
                 let line = r.in_chat.then(|| {
-                    receive_line(
+                    receive_line_in_target(
+                        script.target(),
                         &r,
                         &rolls.name(&name, r.random_property_id),
                         quality,
@@ -1160,7 +1175,7 @@ impl LootReads<'_, '_> {
     }
 
     /// `w` as the VM shows it.
-    fn view(&self, w: &Window, ask: Ask<'_>) -> Option<LootSnapshot> {
+    fn view(&self, w: &Window, ask: Ask<'_>, target: benilla_ui::script::UiTarget) -> Option<LootSnapshot> {
         let who = Candidates {
             group: &self.group,
             names: &self.names,
@@ -1175,6 +1190,15 @@ impl LootReads<'_, '_> {
         )
         .map(|mut snap| {
             snap.source_unit = w.source.is_some_and(|g| self.objects.is_unit(g));
+            if target == benilla_ui::script::UiTarget::Wrath335 {
+                for row in snap.rows.iter_mut().flatten().filter(|row| !row.is_coin) {
+                    if let (Some(name), Some(quality)) = (&row.name, row.quality) {
+                        row.link = Some(crate::ui_items::item_link_full_in_target(
+                            target, row.item_id, 0, row.random_property_id, 0, name, quality,
+                        ));
+                    }
+                }
+            }
             snap
         })
     }
@@ -1250,7 +1274,8 @@ fn fire_step(vm: &mut LootVm, reads: &LootReads, step: Step) {
                 .then(|| swap_in_cells(vm, w.clone()));
             vm.turn(|script, _| {
                 if let Some(script) = script {
-                    show(script, reads.view(&w, Ask::Read));
+                    let snap = reads.view(&w, Ask::Read, script.target());
+                    show(script, snap);
                 }
             });
             if let Some(live) = live {
@@ -1295,7 +1320,7 @@ fn fire_step(vm: &mut LootVm, reads: &LootReads, step: Step) {
                 // Then the type cell (`0x4c1dd6`), the window, and each row's record asked
                 // for (`0x4c1e77`).
                 script.set_loot_type(w.loot_type);
-                let snap = reads.view(&w, Ask::Event(&reads.commands));
+                let snap = reads.view(&w, Ask::Event(&reads.commands), script.target());
                 // A window no handler asked for decides here, on the session as it stands.
                 let ends = ends.unwrap_or_else(|| {
                     let ends = steps.loot.copier_due && !reads.waits(&snap);
@@ -1366,7 +1391,8 @@ fn feed_loot(mut vm: VmWith<(LootSteps<'static, 'static>, ())>, reads: LootReads
             return;
         }
         script.set_loot_type(loot.window.loot_type);
-        show(script, reads.view(&loot.window, Ask::Read));
+        let snap = reads.view(&loot.window, Ask::Read, script.target());
+        show(script, snap);
     });
 }
 
