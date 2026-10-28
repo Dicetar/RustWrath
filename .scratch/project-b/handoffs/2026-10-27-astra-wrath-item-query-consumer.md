@@ -429,6 +429,11 @@ also differs from the start packet. Protocol ownership belongs to OC; check the
 complete inbound and vote-command contract before implementing it. This is a source
 finding, not runtime proof, and no test or socket operation ran.
 
+The same source search found no Wrath `CMSG_LOOT_ROLL` tap/codec, although the
+existing group-loot UI emits that command. AzerothCore Group.cpp also appends an
+auto-pass byte to SMSG_LOOT_ROLL. The future protocol repair must cover both vote
+submission and these target-only incoming fields, rather than just opening the UI.
+
 `2b9bcff7` applies target-aware links to both sides of the trade snapshot and to
 item-watch refreshes, including uncached own items. The existing trade row supplies
 the property and factor but no gem fields; the formatter emits zero gems. The change
