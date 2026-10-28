@@ -219,7 +219,7 @@ pub(crate) fn receiver_in(lua: &Lua, this: &Value, table: &'static str) -> mlua:
 
 /// Every frame kind, so [`guard_receivers`] reaches every kind's method tables. The match makes
 /// a new kind a compile error until it is listed here.
-fn every_frame_kind() -> [FrameKind; 20] {
+fn every_frame_kind() -> [FrameKind; 21] {
     let kinds = [
         FrameKind::Frame,
         FrameKind::WorldFrame,
@@ -241,6 +241,7 @@ fn every_frame_kind() -> [FrameKind; 20] {
         FrameKind::MovieFrame,
         FrameKind::GameTooltip,
         FrameKind::Minimap,
+        FrameKind::Cooldown,
     ];
     for kind in kinds {
         match kind {
@@ -263,7 +264,8 @@ fn every_frame_kind() -> [FrameKind; 20] {
             | FrameKind::SimpleHtml
             | FrameKind::MovieFrame
             | FrameKind::GameTooltip
-            | FrameKind::Minimap => {}
+            | FrameKind::Minimap
+            | FrameKind::Cooldown => {}
         }
     }
     kinds
@@ -474,10 +476,11 @@ pub fn frame_kind_from_tag(s: &str) -> Option<FrameKind> {
 pub(crate) fn registered_frame_kind(lua: &Lua, kind: &str) -> Option<FrameKind> {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     // 3.3.5a registers the `Cooldown` widget type (`ActionButtonTemplate.xml:63` instantiates
-    // it). Its sweep rendering is not modeled yet; the stock Lua addresses it through the generic
-    // frame verbs and `CooldownFrame_SetTimer`, so it is a plain frame of the game-layer factory.
+    // it). The stock Lua addresses it through the generic frame verbs and
+    // `CooldownFrame_SetTimer`; its timer state and sweep are the `Cooldown` kind's
+    // (`script/cooldown.rs`, `widget::CooldownState`).
     if model.target == super::UiTarget::Wrath335 && enum_token(kind) == "COOLDOWN" {
-        return (model.vm == VmKind::InGame).then_some(FrameKind::Frame);
+        return (model.vm == VmKind::InGame).then_some(FrameKind::Cooldown);
     }
     let t = frame_type(kind)?;
     let registered = match t.factory {
@@ -611,6 +614,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     install_frame_methods(lua)?;
     super::region::install(lua)?;
     super::statusbar::install(lua)?;
+    super::cooldown::install(lua)?;
     super::button::install(lua)?;
     super::editbox::install(lua)?;
     // After every table above exists: each of the 19 Region-map names gets one shared
@@ -783,6 +787,7 @@ fn kind_method_registries(kind: Option<FrameKind>) -> &'static [&'static str] {
         ],
         Some(FrameKind::Minimap) => &[super::minimap::REG_MINIMAP_METHODS],
         Some(FrameKind::GameTooltip) => &[super::tooltip::REG_TOOLTIP_METHODS],
+        Some(FrameKind::Cooldown) => &[super::cooldown::REG_COOLDOWN_METHODS],
         _ => &[],
     }
 }

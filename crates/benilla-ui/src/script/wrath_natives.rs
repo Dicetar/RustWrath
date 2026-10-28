@@ -304,21 +304,5 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::MultiValue::new()))?,
     )?;
 
-    // `CooldownFrame_SetTimer(cooldown, start, duration, enable)` (`ActionButton.lua:348`): the
-    // 1.12-compatible verb the wrath FrameXML still calls, with the 1.12 `Cooldown.lua` behaviour —
-    // the start and duration land on the object and an active cooldown shows it.
-    lua.globals().set(
-        "CooldownFrame_SetTimer",
-        lua.create_function(|_, (this, start, duration, enable): (mlua::Table, f64, f64, f64)| {
-            this.set("start", start)?;
-            this.set("duration", duration)?;
-            if start > 0.0 && duration > 0.0 && enable > 0.0 {
-                this.call_method::<()>("Show", ())?;
-            } else {
-                this.call_method::<()>("Hide", ())?;
-            }
-            Ok(())
-        })?,
-    )?;
     Ok(())
 }

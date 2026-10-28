@@ -174,6 +174,7 @@ pub(super) fn emit(
                 rotation: 0.0,
                 mask: None,
                 corners: None,
+                sweep: false,
             });
         }
     }
@@ -370,6 +371,7 @@ pub(super) fn emit(
                 rotation: 0.0,
                 mask: None,
                 corners: None,
+                sweep: false,
             });
         }
     }

@@ -97,6 +97,11 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 // The mask's stage modulates colour as well as alpha (combine preset 1, the outdoor minimap tile's
 // stage 1, `0x4eae83`): the colour is times the mask texel's bytes.
 @group(2) @binding(12) var<uniform> mask_rgb: u32;
+// A `Cooldown` widget's swipe (`UiQuad::sweep`): the vertex colours carry `(u, v, fraction,
+// signed alpha)` instead of a tint, and the fragment draws the remaining-time sector. The w sign
+// is the reverse flag, its magnitude the frame alpha. One uniform for the whole mode, so a sweep
+// run's colours stay exact and its material never churns per frame.
+@group(2) @binding(13) var<uniform> sweep_mode: u32;
 
 // BT.601 luma, `Desaturate.bls`'s `c[0]` as f32 words `0x3E991687`, `0x3F1645A2`, `0x3DE978D5`.
 // Do not normalise: they sum just above 1.0 and white relies on the output clamp.
@@ -123,6 +128,24 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+#ifdef VERTEX_COLORS
+    if sweep_mode != 0u {
+        // `(u, v)` runs across the quad's local space, y down; the angle is clockwise from the
+        // top, a negative w mirroring it. The revealed sector is `[0, fraction * TAU)`; the rest
+        // keeps the wipe. The fill is the widget family's black at 0.8 of the frame's alpha,
+        // premultiplied in gamma like the BLEND arm below.
+        let d = vec2<f32>(in.color.x - 0.5, 0.5 - in.color.y);
+        var angle = atan2(d.x, d.y);
+        if in.color.w < 0.0 {
+            angle = -angle;
+        }
+        let a = select(angle + 6.28318530718, angle, angle >= 0.0);
+        if a < clamp(in.color.z, 0.0, 1.0) * 6.28318530718 {
+            discard;
+        }
+        return vec4<f32>(vec3<f32>(0.0), 0.8 * abs(in.color.w));
+    }
+#endif
     // Branchless, for implicit derivatives. Sorted because `select` evaluates both arms and a
     // disabled axis must still hand `clamp` an ordered range.
     let lo = min(uv_clamp.xy, uv_clamp.zw);

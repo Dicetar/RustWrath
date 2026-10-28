@@ -100,7 +100,8 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
     //
     // Each class's chain is a fixed list in the reference, so a table here. `ScrollingMessageFrame`
     // derives from `Frame`, not `MessageFrame` (`0x787940`); `SimpleHTML` keeps its capitals,
-    // unlike the `SimpleHtml` variant; there is no `Cooldown` type (the reference's is a `Model`).
+    // unlike the `SimpleHtml` variant; the 1.12 reference has no `Cooldown` type (its cooldown art
+    // is a `Model`), so the kind exists only for the Wrath target.
     fn type_chain(kind: FrameKind) -> &'static [&'static str] {
         match kind {
             FrameKind::Frame => &["Frame", "Region"],
@@ -124,6 +125,7 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             FrameKind::MovieFrame => &["MovieFrame", "Frame", "Region"],
             FrameKind::GameTooltip => &["GameTooltip", "Frame", "Region"],
             FrameKind::Minimap => &["Minimap", "Frame", "Region"],
+            FrameKind::Cooldown => &["Cooldown", "Frame", "Region"],
         }
     }
     fn chain_of(lua: &Lua, this: &Table) -> mlua::Result<&'static [&'static str]> {

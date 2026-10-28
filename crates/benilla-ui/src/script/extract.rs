@@ -113,6 +113,18 @@ impl UiScript {
                             fog: m.scene_fog(),
                             ffx: m.ffx,
                         },
+                        // A running `Cooldown` widget paints the remaining-time wipe over its
+                        // rect; an unset timer and a finished one paint nothing (the stock
+                        // wrapper hides the frame rather than clearing the timer).
+                        Some(crate::widget::KindState::Cooldown(cd)) => {
+                            match cd.progress(model.now) {
+                                Some(p) if p < 1.0 => QuadContent::Cooldown {
+                                    progress: p,
+                                    reverse: cd.reverse,
+                                },
+                                _ => QuadContent::Frame,
+                            }
+                        }
                         _ => QuadContent::Frame,
                     };
                     (model.frame_rect(fh), alpha, content, clip, scale)
@@ -390,6 +402,10 @@ impl UiScript {
                     rank,
                 });
             }
+            let sweep = match &content {
+                QuadContent::Cooldown { progress, reverse } => Some((*progress, *reverse)),
+                _ => None,
+            };
             out.push(ExtractedQuad {
                 target,
                 z,
@@ -414,6 +430,90 @@ impl UiScript {
                     clip,
                     &mut out,
                 );
+            }
+            // A running `Cooldown` widget's gold hand (`drawEdge`) and star spark, above its own
+            // wipe: the 12340 widget's two default textures, `interface\cooldown\edge.blp` (a
+            // one-pixel gold radius from the top edge to the centre of a 16x16 square) and
+            // `interface\cooldown\star4.blp` (a grey four-point spark on black, so an ADD blend;
+            // its alpha is opaque everywhere). Both draw at the frame's size: the hand's square is
+            // rotated to the sweep boundary, the spark's square centred on the boundary rim.
+            if let (ZTarget::Frame(fh), Some(fr), Some((progress, reverse))) =
+                (target, rect, sweep)
+            {
+                if let Some(crate::widget::KindState::Cooldown(cd)) =
+                    model.arena.frame(fh).map(|f| &f.kind_state)
+                {
+                    use crate::script::BlendMode;
+                    let turn = std::f32::consts::TAU;
+                    let angle = if reverse {
+                        -(progress * turn)
+                    } else {
+                        progress * turn
+                    };
+                    let (cx, cy) = ((fr.left + fr.right) * 0.5, (fr.bottom + fr.top) * 0.5);
+                    let (w, h) = (fr.width(), fr.height());
+                    // The sector's angle is measured in the quad's normalized space; on a
+                    // non-square frame the screen boundary is the rect's own angle of it.
+                    let face = (angle.sin() * w).atan2(angle.cos() * h);
+                    if cd.draw_edge {
+                        // `UiQuad::rotation` is clockwise-positive and the app negates a
+                        // `Texture` entry's `rotation` (its `SetRotation` is
+                        // counter-clockwise-positive), so the clockwise boundary angle below
+                        // reaches the pass as itself.
+                        out.push(ExtractedQuad {
+                            target,
+                            z,
+                            rect: Some(fr),
+                            alpha,
+                            content: QuadContent::Texture {
+                                path: Some(COOLDOWN_EDGE.to_string()),
+                                color: None,
+                                gradient: None,
+                                blend: BlendMode::Blend,
+                                tex_coords: None,
+                                wrap: false,
+                                circular: false,
+                                portrait_unit: None,
+                                rotation: -face,
+                                desaturated: false,
+                            },
+                            clip,
+                            scale,
+                        });
+                    }
+                    // Screen clockwise from the top is `(sin, -cos)` y-down; the layout rect is
+                    // y-up, so its centre offset is `(sin, cos)` scaled by the rect's half sizes,
+                    // which puts the spark on the quad's rim at the sector angle.
+                    let (sx, sy) = (
+                        cx + angle.sin() * w * 0.5,
+                        cy + angle.cos() * h * 0.5,
+                    );
+                    out.push(ExtractedQuad {
+                        target,
+                        z,
+                        rect: Some(Rect::new(
+                            sy - h * 0.5,
+                            sx - w * 0.5,
+                            sy + h * 0.5,
+                            sx + w * 0.5,
+                        )),
+                        alpha,
+                        content: QuadContent::Texture {
+                            path: Some(COOLDOWN_SPARK.to_string()),
+                            color: None,
+                            gradient: None,
+                            blend: BlendMode::Add,
+                            tex_coords: None,
+                            wrap: false,
+                            circular: false,
+                            portrait_unit: None,
+                            rotation: 0.0,
+                            desaturated: false,
+                        },
+                        clip,
+                        scale,
+                    });
+                }
             }
         }
         // Each layer batch's End sorts its quads by texture (`0x7731a0`).
@@ -468,6 +568,11 @@ fn texture_color(fill: Option<[f32; 4]>, vertex: Option<[f32; 4]>) -> Option<[f3
         (None, None) => None,
     }
 }
+
+/// The 12340 `Cooldown` widget's default art, from the client binary's own strings; the shapes
+/// are read from the shipped BLPs (`16x16` and `128x128`).
+const COOLDOWN_EDGE: &str = "interface\\cooldown\\edge.blp";
+const COOLDOWN_SPARK: &str = "interface\\cooldown\\star4.blp";
 
 /// A texture's rect under `SetTexCoordModifiesRect` (`+0x124`), as `0x770570` derives it at every
 /// layout (`0x7706ad`) and coordinate change (`0x770498`): from the bottom-left, the width times

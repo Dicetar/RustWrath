@@ -574,6 +574,24 @@ impl Loader<'_> {
         }
     }
 
+    /// `Cooldown`'s LoadXML attributes, `reverse` and `drawEdge`: the 12340 widget's only two
+    /// (`Cooldown.xml:4` carries neither, `TargetFrame.xml` and `RuneFrame.xml` set them), read as
+    /// booleans per level through the widget's own setters, the instance's level last. The
+    /// template's `setAllPoints`, `hidden`, strata and anchors are the generic frame attributes
+    /// every LoadXML reads ([`Loader::apply_geometry`]).
+    pub(super) fn apply_cooldown(&mut self, el: &Element, levels: &Levels, wrapper: &Table, dbg: &str) {
+        if !el.tag.eq_ignore_ascii_case("Cooldown") {
+            return;
+        }
+        for level in levels {
+            for (attr, setter) in [("reverse", "SetReverse"), ("drawEdge", "SetDrawEdge")] {
+                if let Some(on) = level.attr_bool_opt(attr) {
+                    self.call(wrapper, setter, on, dbg);
+                }
+            }
+        }
+    }
+
     /// `<ColorSelect>`'s four textures (`0x78b580`, `0x78b850`, `0x78b8a0`, `0x78ba90`): the hue
     /// wheel, the value strip and a thumb for each. The client generates the wheel and the strip,
     /// so a file-less element still creates its region, for layout, hit tests and paint.

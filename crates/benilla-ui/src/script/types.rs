@@ -186,6 +186,15 @@ pub enum QuadContent {
         /// links are only text.
         link_owner: Option<crate::widget::FrameHandle>,
     },
+    /// A `Cooldown` widget's running timer (`Cooldown:SetCooldown`): the renderer draws the
+    /// remaining-time wipe over the frame's rect. The widget's gold hand and spark are the
+    /// separate `Texture` entries the extract adds beside this one.
+    Cooldown {
+        /// The elapsed fraction, `0..1` (`GetTime` minus the start over the duration).
+        progress: f32,
+        /// XML `reverse=` / `SetReverse`: the wipe runs counter-clockwise.
+        reverse: bool,
+    },
 }
 
 /// A `FontString`'s horizontal justification (`justifyH`, `SetJustifyH`); CENTER by default.

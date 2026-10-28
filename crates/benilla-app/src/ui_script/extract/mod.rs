@@ -5,7 +5,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use benilla_ui::script::{QuadContent, TexCoords, UiScript};
+use benilla_ui::script::{BlendMode, QuadContent, TexCoords, UiScript};
 
 use crate::ui_pass::{UiQuad, UiQuads, UvRect};
 use crate::ui_text::UiFontAtlas;
@@ -96,6 +96,7 @@ fn content_kind(c: &QuadContent) -> &'static str {
         QuadContent::ModelPane { .. } => "modelpane",
         QuadContent::Texture { .. } => "texture",
         QuadContent::ColorWheel => "colorwheel",
+        QuadContent::Cooldown { .. } => "cooldown",
         QuadContent::ColorValue { .. } => "colorvalue",
         QuadContent::Text { .. } => "text",
     }
@@ -1466,6 +1467,32 @@ fn convert_entry(
                 // `SetRotation` is counter-clockwise-positive, `UiQuad::rotation` clockwise.
                 rotation: -rotation,
                 desaturated,
+                ..default()
+            });
+        }
+        // A `Cooldown` widget's running wipe: one texture-less quad whose four corner colours
+        // encode the local `(u, v)`, the timer and the frame alpha, which `ui_quad.wgsl`'s sweep
+        // mode reads. The w channel is the alpha, negated when the wipe runs counter-clockwise:
+        // the shader takes the sign for `reverse` and the magnitude for the wipe's opacity (a
+        // hidden frame's zero draws nothing either way). The normal branch multiplies vertex
+        // colours, so such a quad never shares a run with them (`UiQuad::sweep` splits the run
+        // and the material key).
+        QuadContent::Cooldown { progress, reverse } => {
+            let w = if reverse { -eq.alpha } else { eq.alpha };
+            let encode = |u: f32, v: f32| [u, v, progress, w];
+            out.push(UiQuad {
+                rect,
+                z_key: eq.z,
+                texture: None,
+                corner_colors: Some([
+                    encode(0.0, 0.0),
+                    encode(1.0, 0.0),
+                    encode(1.0, 1.0),
+                    encode(0.0, 1.0),
+                ]),
+                sweep: true,
+                blend: BlendMode::Blend,
+                clip,
                 ..default()
             });
         }

@@ -187,6 +187,7 @@ mod skills;
 mod slash;
 mod slider;
 mod social;
+mod cooldown;
 mod sound;
 mod spellbook;
 mod stable;
@@ -1648,6 +1649,7 @@ impl UiScript {
                 crate::widget::FrameKind::MovieFrame => "MovieFrame",
                 crate::widget::FrameKind::GameTooltip => "GameTooltip",
                 crate::widget::FrameKind::Minimap => "Minimap",
+                crate::widget::FrameKind::Cooldown => "Cooldown",
             });
         }
         // Region leaves publish into their own name table, not the arena's.

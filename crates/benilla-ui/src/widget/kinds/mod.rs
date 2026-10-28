@@ -50,6 +50,10 @@ pub enum FrameKind {
     GameTooltip,
     /// The `<Minimap>` widget, a game-layer factory (`0x495940`) the app draws the map into.
     Minimap,
+    /// `CCooldownFrame`, the 3.3.5a radial cooldown overlay: `Cooldown.xml`'s
+    /// `CooldownFrameTemplate` and every stock action/aura/container/target instance. The timer is
+    /// this state on the frame-script `GetTime` clock; the sweep pixels are the extract's.
+    Cooldown,
 }
 
 /// A kind's own per-frame update: the `vtable+0x38` override the update walk calls in the frame's
@@ -103,6 +107,36 @@ impl FrameKind {
     }
 }
 
+/// A `Cooldown` widget's presentation state (12340 `CCooldownFrame`: `SetCooldown(start,
+/// duration)`, `SetReverse`, `SetDrawEdge`; art defaults `interface\cooldown\edge.blp` and
+/// `interface\cooldown\star4.blp`). The start is on the frame-script `GetTime` clock every
+/// producer stamps, so the sweep never owns a clock of its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CooldownState {
+    /// `SetCooldown`'s `start` in `GetTime` seconds. Stock `Cooldown.lua` only calls the setter
+    /// with `start > 0`; `start == 0.0` is "no timer".
+    pub start: f64,
+    /// `SetCooldown`'s `duration` in seconds; `<= 0` draws nothing.
+    pub duration: f64,
+    /// XML `reverse=` / `SetReverse`: the sweep runs counter-clockwise.
+    pub reverse: bool,
+    /// XML `drawEdge=` / `SetDrawEdge`: draw the gold hand at the sweep boundary.
+    pub draw_edge: bool,
+}
+
+impl CooldownState {
+    /// The elapsed fraction at `now` (`GetTime` seconds): `None` with no timer set (the stock
+    /// wrapper hides the frame instead of setting one), else `0.0..=1.0`; a start still in the
+    /// future reads 0 (fully covered), a finished timer 1 (the caller draws nothing).
+    pub fn progress(&self, now: f64) -> Option<f32> {
+        if self.start <= 0.0 || self.duration <= 0.0 {
+            return None;
+        }
+        let elapsed = (now - self.start) / self.duration;
+        Some(elapsed.clamp(0.0, 1.0) as f32)
+    }
+}
+
 /// The kind of a [`Region`] leaf, the client's `CScriptRegion`-derived non-frame objects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RegionKind {
@@ -142,6 +176,9 @@ pub enum KindState {
     Model(ModelState),
     /// The `<Minimap>` widget's zoom, mask and player arrow; the tiles and blips are the app's.
     Minimap(MinimapState),
+    /// A `Cooldown` widget's timer and style (`SetCooldown`, `SetReverse`, `SetDrawEdge`); the
+    /// sweep is computed at extract from the frame-script clock.
+    Cooldown(CooldownState),
     /// The `GameTooltip` line stack, owner and fade.
     Tooltip(TooltipState),
 }

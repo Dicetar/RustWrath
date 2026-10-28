@@ -131,7 +131,7 @@ pub(crate) use kinds::ButtonFonts;
 pub use kinds::{
     minimap_radius_yd, model_key, pane_clock_step_ms, slider_fraction, slider_grab,
     slider_set_value, ArmedSequence, ButtonState, ButtonVisualState, CharacterPane,
-    ColorSelectState, CopyCamera, EditAction, EditBoxState, EditOutcome, EditUnit, FrameKind,
+    ColorSelectState, CooldownState, CopyCamera, EditAction, EditBoxState, EditOutcome, EditUnit, FrameKind,
     InsertMode, InstalledCamera, KindState, KindUpdate, MessageFrameState, MessageLine, MinimapArt,
     MinimapArtSlot, MinimapState, MinimapStatics, ModelFileFacts, ModelFog, ModelLight,
     ModelPlayHead, ModelState, PaneArm, PaneCopy, RegionKind, ScrollFrameState,
@@ -633,6 +633,7 @@ impl WidgetArena {
                 }
                 k if k.is_model() => KindState::Model(kinds::ModelState::default()),
                 FrameKind::Minimap => KindState::Minimap(kinds::MinimapState::default()),
+                FrameKind::Cooldown => KindState::Cooldown(kinds::CooldownState::default()),
                 FrameKind::GameTooltip => KindState::Tooltip(kinds::TooltipState::default()),
                 _ => KindState::None,
             },

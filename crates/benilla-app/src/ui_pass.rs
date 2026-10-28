@@ -115,9 +115,14 @@ pub(crate) struct UiQuad {
     /// A screen-anchored alpha mask (the minimap's `MinimapMask.blp` circle), so a tile panning
     /// under the fixed circle masks correctly; outside [`UiQuadMask::rect`] the fragment drops.
     pub mask: Option<UiQuadMask>,
-    /// Explicit screen corners (y-down px) drawn as the fan `(0,1,2)(0,2,3)` (the cooldown pie's
-    /// wedge), bypassing `rotation`, `clip` and `rect`, which should still bound them.
+    /// Explicit screen corners (y-down px) drawn as the fan `(0,1,2)(0,2,3)`, bypassing
+    /// `rotation`, `clip` and `rect`, which should still bound them.
     pub corners: Option<[Vec2; 4]>,
+    /// A `Cooldown` widget's swipe: the four vertex colours carry the local `(u, v)`, the elapsed
+    /// fraction and the signed frame alpha (its sign the reverse flag), and `ui_quad.wgsl`'s sweep
+    /// mode draws the remaining-time sector from them instead of tinting a texel. Its own run and
+    /// material: the normal branch would multiply those colours as a tint.
+    pub sweep: bool,
 }
 
 /// A screen-anchored alpha mask over a [`UiQuad`].
@@ -152,6 +157,7 @@ impl Default for UiQuad {
             rotation: 0.0,
             mask: None,
             corners: None,
+            sweep: false,
         }
     }
 }
@@ -240,6 +246,9 @@ pub(crate) struct UiQuadMaterial {
     /// `(u_min, v_min, u_max, v_max)`; `min > max` on an axis disables that axis.
     #[uniform(11)]
     uv_clamp: Vec4,
+    /// A cooldown sweep run ([`UiQuad::sweep`]): the vertex colours are the encoding, not a tint.
+    #[uniform(13)]
+    sweep: u32,
 }
 
 /// The pipeline axis of [`UiQuadMaterial`]: `MOD` alone needs a blend state of its own, since the
@@ -291,6 +300,7 @@ impl UiQuadMaterial {
             mask_rgb: 0,
             mask: None,
             uv_clamp: UV_CLAMP_OFF,
+            sweep: 0,
         }
     }
 }
@@ -534,6 +544,8 @@ struct Run {
     alpha_test: Option<f32>,
     mask: Option<UiQuadMask>,
     uv_clamp: Option<[f32; 4]>,
+    /// A cooldown sweep run; its vertex colours are the encoding, not a tint.
+    sweep: bool,
     positions: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     colors: Vec<[f32; 4]>,
@@ -553,6 +565,7 @@ impl Run {
             alpha_test: q.alpha_test,
             mask: q.mask.clone(),
             uv_clamp: q.uv_clamp,
+            sweep: q.sweep,
             positions: Vec::new(),
             uvs: Vec::new(),
             colors: Vec::new(),
@@ -739,6 +752,7 @@ type MatKey = (
     Option<AssetId<Image>>,
     [u32; 4],
     [u32; 4],
+    bool,
     bool,
 );
 
@@ -968,6 +982,7 @@ fn rebuild_ui_mesh(
                 && r.alpha_test == q.alpha_test
                 && r.mask == q.mask
                 && r.uv_clamp == q.uv_clamp
+                && r.sweep == q.sweep
         });
         if !same_run {
             runs.push(Run::new(texture, q));
@@ -1044,6 +1059,7 @@ fn rebuild_ui_mesh(
             mask_rect.to_array().map(f32::to_bits),
             uv_clamp.to_array().map(f32::to_bits),
             mask_rgb,
+            run.sweep,
         );
         // The per-slot skip gate: a rebuild covers the whole stream, but a slot whose run matches
         // its pooled mesh in full is not rewritten. A one-colour run stores white vertices and
@@ -1086,6 +1102,7 @@ fn rebuild_ui_mesh(
                     mask: mask.clone(),
                     mask_rgb: u32::from(mask_rgb),
                     uv_clamp,
+                    sweep: u32::from(run.sweep),
                 })
             })
             .clone();
