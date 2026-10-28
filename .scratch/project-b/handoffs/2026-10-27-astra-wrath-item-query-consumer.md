@@ -389,6 +389,11 @@ That owner retains the property but not the suffix factor, which remains zero.
 Group-loot announcements are a separate localized format-string path and remain
 unchanged pending evidence of the Wrath format contract. No build or test ran.
 
+`2b9bcff7` applies target-aware links to both sides of the trade snapshot and to
+item-watch refreshes, including uncached own items. The existing trade row supplies
+the property and factor but no gem fields; the formatter emits zero gems. The change
+has not been built or tested, and does not establish trade or tooltip acceptance.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
