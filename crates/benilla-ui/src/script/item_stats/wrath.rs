@@ -76,6 +76,18 @@ fn query(lua: &Lua, value: Value) -> mlua::Result<Option<(ItemLink, ItemTemplate
     Ok(view.map(|view| (link, view)))
 }
 
+fn item_name(lua: &Lua, base: &str, property: i32) -> Option<String> {
+    if property >= 0 {
+        return Some(suffixed_name(lua, base, property));
+    }
+    let suffix = super::super::host::with_host(lua, |host| host.item_suffix_name(property)).flatten()?;
+    let template = super::super::glue_core::global_text(lua, "ITEM_SUFFIX_TEMPLATE");
+    Some(crate::strings::fill(
+        &template,
+        &[crate::strings::Arg::S(base), crate::strings::Arg::S(&suffix)],
+    ))
+}
+
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("GetItemCount", lua.create_function(|lua, args: MultiValue| {
         let input = args.front().cloned().unwrap_or(Value::Nil);
@@ -101,7 +113,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     })?)?;
     lua.globals().set("GetItemInfo", lua.create_function(|lua, arg: Value| {
         let Some((link, view)) = query(lua, arg)? else { return Ok(MultiValue::new()) };
-        let name = suffixed_name(lua, &view.name, link.random_property);
+        let Some(name) = item_name(lua, &view.name, link.random_property) else {
+            return Ok(MultiValue::new());
+        };
         Ok(MultiValue::from_vec(vec![
             Value::String(lua.create_string(&name)?),
             Value::String(lua.create_string(link.hyperlink(&name, view.quality))?),

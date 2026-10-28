@@ -22,6 +22,11 @@ use super::{ScriptCall, UiScript};
 
 /// The engine half of the script calls: what applies a call to the state outside the VM.
 pub trait CallHost {
+    /// Selected-locale suffix name from the existing signed item-roll catalog.
+    fn item_suffix_name(&mut self, _property: i32) -> Option<String> {
+        None
+    }
+
     /// Existing inventory-owner count, optionally including bank copies and remaining uses.
     fn item_count(&mut self, _id: u32, _bank: bool, _uses: bool) -> Option<u32> {
         None

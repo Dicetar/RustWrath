@@ -23,6 +23,7 @@ pub(crate) struct ItemSteps<'w, 's> {
     self_q: Query<'w, 's, &'static ObjectStore, With<SelfPlayer>>,
     objects: Objects<'w, 's>,
     items: Res<'w, Items>,
+    rolls: Option<Res<'w, crate::items::RandomProperties>>,
     gate: crate::ui_bind_confirm::BindGate<'w>,
     equip_sound: MessageWriter<'w, crate::sound::AutoEquipSound>,
     /// Absent in a world with no merchant window, whose repair clicks are dropped.
@@ -31,6 +32,10 @@ pub(crate) struct ItemSteps<'w, 's> {
 }
 
 impl ItemSteps<'_, '_> {
+    pub(crate) fn item_suffix_name(&self, property: i32) -> Option<String> {
+        self.rolls.as_ref()?.catalog.suffix_name(property).map(str::to_owned)
+    }
+
     pub(crate) fn item_count(&self, id: u32, bank: bool, uses: bool) -> Option<u32> {
         let store = &self.self_q.iter().next()?.0;
         super::possession_count(store, &self.objects, &self.items, id, bank, uses)
@@ -91,6 +96,7 @@ impl ItemSteps<'_, '_> {
             equip_sound,
             merchant,
             purse,
+            ..
         } = self;
         let store = self_q.iter().next();
         match call {

@@ -513,6 +513,10 @@ impl ScriptCallHost<'_, '_> {
 }
 
 impl CallHost for ScriptCallHost<'_, '_> {
+    fn item_suffix_name(&mut self, property: i32) -> Option<String> {
+        self.appliers.items().item_suffix_name(property)
+    }
+
     fn item_count(&mut self, id: u32, bank: bool, uses: bool) -> Option<u32> {
         self.appliers.items().item_count(id, bank, uses)
     }
