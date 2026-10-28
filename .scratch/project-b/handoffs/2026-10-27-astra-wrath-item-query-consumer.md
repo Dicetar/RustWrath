@@ -449,3 +449,30 @@ operations occurred. The next concrete Questie dependency found is its compatibi
 wrapper's call to the absent global GetItemCooldown(itemID), independently of the
 GetContainerItemCooldown and GetSpellCooldown APIs already present. Coordinate that
 item query with OC's active cooldown campaign before changing its presentation owners.
+
+### Raw item cooldown query (cd071ceb, source only)
+
+Installed QuestieCompat.lua:201-205 calls the absent global GetItemCooldown(itemID),
+and TrackerLinePool.lua:619 consumes its GetTime start/duration/enable triple. The
+Wrath item installer now registers that binding and delegates through the lent host
+to existing SpellQueries. That owner already carries Items, Cooldowns, Spells, UiClock
+and the adopted Wrath phase; no resource parameter or recovery state was added.
+
+The query requires an active adopted world and a cached template. For an on-use item
+it resolves the template's actual use spell/category, reads Cooldowns::info_item with
+the item entry and category override, then projects through its existing ui_triple.
+The binding converts ms to seconds and enable to the legacy numeric flag. Known
+expired/cold recovery yields (0,0,1); a known template with no use spell yields the
+existing container query's no-leg (0,0,0). A missing host/world/template/spell definition/
+clock/recovery resource stays unavailable. It sends no query packet and does not infer
+permission or ownership of a physical copy from an entry query.
+
+Held/on-event enable facts come from the existing owner; no local clock, countdown or
+retry mechanism was created. Exact 12340 raw non-use-item/invalid-ID/held-start ABI and
+unavailable-data behavior still need acceptance, as do category/GCD/initial cooldown
+cases. This query does not implement SetCooldown or sweep rendering, and does not
+modify OC's active widget/recovery source. Donor registration is unchanged.
+
+Installed QuestieCompat.lua SHA-256:
+D40F086185C11B681438AC7311DE56F029B70A7DEAF5E9094251F6A5939F7F9D.
+No builds/tests/new cases, imports/probes, generator or graphical/live runtime ran.
