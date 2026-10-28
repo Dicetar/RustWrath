@@ -462,6 +462,12 @@ used by installed Bagnon bagSlotInfo.lua. It accepts the existing numeric/link
 query path and returns unavailable for missing data. Name-input and exact API edge
 semantics, host admission and addon behavior remain unverified; no build or test ran.
 
+Source cross-check: AzerothCore `ItemTemplate.h` assigns soul shards mask `0x4`,
+`Item.cpp` uses that bit for soul-bag acceptance, and the base item-template row
+for Soul Pouch (21340) carries that family value. Installed Bagnon tests `0x4` for
+its shard-bag classification. This supports the mapping for that example only; it
+does not prove the complete GetItemFamily ABI or addon runtime behavior.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
