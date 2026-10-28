@@ -52,8 +52,8 @@ Out:
 
 ## Success criteria
 
-- A scripted stock-style animation (`OnLoad` → Translation, and `OnShow` → Alpha) advances
-  deterministically on `Model::now` and `OnFinished` fires exactly once.
+- A scripted stock-style animation (`Play` → Alpha/Translation, as the stock Lua drives them)
+  advances deterministically on `Model::now` and `OnFinished` fires exactly once.
 - `UIParent`'s fade and an ActionButton flash load and run in the stock smoke with no animation
   faults.
 - No stock XML reports an unknown animation node or a missing script handler.
@@ -89,7 +89,11 @@ first tracer is `OnLoad → Translation` on a Texture with rect movement asserte
 
 1. Give every animation object a stable id and mirror its parameters into a `Model`-owned
    registry at build time (the Lua table keeps the script surface).
-2. Advance playing/triggered animations in the tick from `Model::now`; apply Translation to the
-   owner's offset and Alpha to its alpha.
+2. Advance playing animations in the tick from `Model::now`; apply Translation to the owner's
+   offset and Alpha to its alpha.
 3. Fire `OnPlay` when a run starts and `OnFinished` once when it ends; `Stop` fires `OnStop`.
-4. Trigger `OnLoad` at frame load and `OnShow`/`OnHide` from the visibility walk.
+
+Verified while scoping: the stock 12340 XML declares no `trigger=` attributes and no
+`OnLoad`-triggered groups; stock Lua calls `group:Play()` (often from its frame's `OnShow`).
+So the engine's trigger input is the existing `Play`/`Stop` verbs, not an XML trigger parser.
+A group's `Play` must cascade to its child animations in `order`, honouring `startDelay`.
