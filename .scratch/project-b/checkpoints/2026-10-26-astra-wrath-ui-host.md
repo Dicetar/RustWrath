@@ -570,6 +570,12 @@ bagSlotInfo.lua calls missing GetItemFamily(link) for specialized bag classifica
 Expose the existing cached template's 12340 bag-family mask through the current
 host seam. Missing templates remain unavailable; no new cache, tests or execution.
 
+2026-10-28 aux durability claim at d7db8c75: clean
+`crates/benilla-ui/src/script/container.rs`. Installed aux-addon/util/info.lua calls
+GetContainerItemDurability for auctionability. Expose the existing observed bag-slot
+durability pair through a Wrath-only binding; no object or protocol changes, test
+cases or execution are authorized.
+
 2026-10-28 group-loot factor claim at d1dc10d6: clean
 `crates/benilla-app/src/ui_loot_roll.rs`. The existing `LootStartRoll` carries a
 suffix factor that `ActiveRoll` discards. Retain it and place it in Wrath snapshot
