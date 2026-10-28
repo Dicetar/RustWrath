@@ -528,3 +528,9 @@ and `crates/benilla-app/src/ui_tooltip/mod.rs`. Pass the active script target th
 the inspect feed and fresh-hover paths to format visible-item links. Only the existing
 visible-item fields are available; no descriptor or protocol changes are claimed.
 No test cases or execution authorized.
+
+2026-10-28 auction-link claim at 87e879cc: clean `crates/benilla-app/src/ui_auction/mod.rs`
+and `crates/benilla-app/src/ui_auction/net.rs`. Pass the active UI target through
+the existing list readers for normal refreshes and lane page updates; use the existing
+target-aware link formatter with the auction row's property and factor. No wire decoder,
+test case or execution changes are authorized.
