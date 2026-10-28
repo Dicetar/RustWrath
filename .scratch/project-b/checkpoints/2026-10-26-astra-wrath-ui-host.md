@@ -539,3 +539,8 @@ test case or execution changes are authorized.
 Select the target layout for quest-panel required and reward item links using the
 existing script target and template; preserve the vanilla snapshot used by existing
 fixtures. Quest state, reward commands, protocol and tests remain outside this claim.
+
+2026-10-28 quest reward chat claim at f4ea0621: clean
+`crates/benilla-app/src/ui_quest/lines.rs`. Pass the active UI target to the existing
+reward line resolver so its item link uses the shared target-aware formatter. No quest
+state, protocol, test case or runtime execution is included.
