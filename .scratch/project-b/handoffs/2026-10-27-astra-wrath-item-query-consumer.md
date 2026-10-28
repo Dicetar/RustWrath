@@ -361,6 +361,12 @@ https://octowow.st/git/brues/ClassicAPI/src/commit/f119f448ed45e6b09240ce46f725f
 
 ### Property/enchant catalog admission repairs (82999308, fd5d7479)
 
+Follow-up `49de390e`: failure to load the separate Wrath ItemRandomSuffix table no
+longer discards successfully loaded positive ItemRandomProperties rows. The existing
+startup owner warns with the suffix load error; negative suffix lookups remain
+unavailable. Failure of the positive table still prevents catalog admission. This is
+source-inspected only; no table load, build or test was run for this change.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
