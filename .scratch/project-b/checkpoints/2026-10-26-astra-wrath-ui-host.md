@@ -557,6 +557,12 @@ Expose the existing streamed buyback object's target-shaped link through the mer
 row and a Wrath-only Lua binding. Existing catalog and object owners supply facts;
 vanilla behavior remains unchanged. No runtime, test or protocol work authorized.
 
+2026-10-28 buyback name follow-through at bc61a31f: clean
+`crates/benilla-app/src/ui_merchant/mod.rs`. The Wrath buyback link uses the
+object's rolled name while the row still uses its base template name. Reuse the
+existing object name formatter for the Wrath row; retain vanilla behavior. No
+tests or execution authorized.
+
 2026-10-28 group-loot factor claim at d1dc10d6: clean
 `crates/benilla-app/src/ui_loot_roll.rs`. The existing `LootStartRoll` carries a
 suffix factor that `ActiveRoll` discards. Retain it and place it in Wrath snapshot
