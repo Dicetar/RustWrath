@@ -1035,6 +1035,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        lua.globals().set(
+            "GetContainerItemDurability",
+            lua.create_function(|lua, (bag, slot): (Value, Value)| {
+                let key = container_key(lua, bag, slot, "Usage: GetContainerItemDurability(index, slot)")?;
+                let pair = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    key.and_then(|(bag, slot)| model.bag_slot(bag, slot)?.durability)
+                };
+                Ok(match pair {
+                    Some((current, maximum)) => (Some(current), Some(maximum)),
+                    None => (None, None),
+                })
+            })?,
+        )?;
+    }
+
     lua.globals().set(
         "GetContainerItemLink",
         lua.create_function(|lua, (bag, slot): (Value, Value)| {
