@@ -268,7 +268,14 @@ fn resolve_buyback(
     let entry = obj.and_then(|o| o.object_entry()).unwrap_or(0);
     let quantity = obj.and_then(|o| o.item_stack_count()).unwrap_or(1).max(1);
     let template = items.template(entry, guid, ask);
-    let name = template.map(|t| t.name.clone());
+    let name = template.map(|t| {
+        if target == benilla_ui::script::UiTarget::Wrath335 {
+            obj.map(|fields| crate::ui_items::object_name(fields, t, rolls))
+                .unwrap_or_else(|| t.name.clone())
+        } else {
+            t.name.clone()
+        }
+    });
     let stats = template.map(|t| ItemStatsHead {
         quality: t.quality,
         inventory_type: t.inventory_type,
