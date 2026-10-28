@@ -504,6 +504,13 @@ and tick owners, so coordinate a complete animation lifecycle there before chang
 them. Details provides its own separate C_Timer implementation; do not assume it
 repairs Questie's local Compat timer. No addon execution was performed.
 
+Load-order qualification: the installed 30300 Questie TOC includes
+`Compat/embeds.xml`, which loads its older Compat AceTimer implementation using an
+OnUpdate frame; the newer `Libs/AceTimer-3.0` copy's global C_Timer dependency does
+not establish a blocker for this selected TOC. QuestieCompat's own animation-based
+NewTicker/After remains a separate dependency. Actual addon load order and execution
+are unverified.
+
 `823d7c6a` adds Wrath GetContainerItemDurability from the existing bag-slot pair,
 used by aux-addon/util/info.lua when assessing auctionability. Empty, unavailable,
 and zero-max slots return nil values under the existing snapshot contract. The exact
