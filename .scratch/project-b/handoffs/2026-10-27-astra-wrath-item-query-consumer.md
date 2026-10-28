@@ -444,6 +444,15 @@ feeding it from the existing buyback item object and random-property catalogs. A
 missing object or template yields nil. Exact API edge behavior, item replication,
 system-parameter admission and addon use remain unverified; no build/test/runtime ran.
 
+Installed addon trace: `aux-addon/core/tooltip.lua` calls `GetInboxItemLink` and
+`GetSendMailItemLink`; Postal's open/select modules enumerate attachment indices.
+The current UI mail owner exposes the donor single-attachment `GetInboxItem` and
+`GetSendMailItem` interfaces, and the Wrath gameplay source has no mail-list decoder
+or event mapping found in this trace. These addons therefore need a real Wrath mail
+attachment/command contract across OC's protocol and app owners before a multi-slot
+Lua binding can honestly expose their data. No synthetic attachment list or successful
+mail behavior is claimed; no mail, socket, DB, build or test operation was run.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
