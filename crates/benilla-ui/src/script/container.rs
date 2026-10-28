@@ -857,6 +857,31 @@ fn container_key(
 /// Register the container verbs as bare globals, as `reference/lua_globals.tsv` lists them;
 /// `C_Container` is a later client's namespace, and an addon that finds it assumes that client.
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        lua.globals().set(
+            "GetContainerNumFreeSlots",
+            lua.create_function(|lua, bag: Value| {
+                let bag = i64::from(binding_abi::number_arg(
+                    lua,
+                    bag,
+                    "Usage: GetContainerNumFreeSlots(index)",
+                )?);
+                let bank_closed = {
+                    let model = lua.app_data_ref::<Model>().expect("model");
+                    model.vault_shut(bag) || model.bank_bag_shut(bag)
+                };
+                let space = if bank_closed {
+                    None
+                } else {
+                    super::host::with_host(lua, |host| host.container_space(bag)).flatten()
+                };
+                Ok(match space {
+                    Some((free, family)) => (Some(free), Some(family)),
+                    None => (None, None),
+                })
+            })?,
+        )?;
+    }
     // ContainerIDToInventoryID(containerID) (`0x4f94e0`): `id - 1`, then +20 below 4 else +60, so
     // the keyring -2 → 17, the backpack 0 → 19, bags 1-4 → 20-23 and bank bags 5-10 → 64-69, with
     // no special case and no range check.

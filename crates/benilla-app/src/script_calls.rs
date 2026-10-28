@@ -513,6 +513,10 @@ impl ScriptCallHost<'_, '_> {
 }
 
 impl CallHost for ScriptCallHost<'_, '_> {
+    fn container_space(&mut self, bag: i64) -> Option<(u32, u32)> {
+        self.appliers.items().container_space(bag)
+    }
+
     fn spell_info(&mut self, id: u32) -> Option<benilla_ui::script::SpellInfoView> {
         self.appliers.spell_queries().info(id)
     }

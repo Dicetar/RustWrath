@@ -31,6 +31,50 @@ pub(crate) struct ItemSteps<'w, 's> {
 }
 
 impl ItemSteps<'_, '_> {
+    /// Count raw GUID seats, so an occupied item whose object is still loading stays occupied.
+    pub(crate) fn container_space(&self, bag: i64) -> Option<(u32, u32)> {
+        fn free_seats(n: u32, seat: impl Fn(u8) -> Option<u64>) -> Option<u32> {
+            (0..n).try_fold(0, |free, i| {
+                Some(free + u32::from(seat(u8::try_from(i).ok()?)? == 0))
+            })
+        }
+
+        let store = &self.self_q.iter().next()?.0;
+        match bag {
+            0 => Some((
+                free_seats(u32::from(super::PACK_SLOTS), |i| store.player_pack_slot(i))?,
+                0,
+            )),
+            super::BANK_CONTAINER => Some((
+                free_seats(u32::from(super::BANK_SLOTS), |i| store.player_bank_slot(i))?,
+                0,
+            )),
+            super::KEYRING_CONTAINER => Some((
+                free_seats(super::keyring_size(store.unit_level()?), |i| {
+                    store.player_keyring_slot(i)
+                })?,
+                0x100, // AzerothCore ItemTemplate.h: BAG_FAMILY_MASK_KEYS.
+            )),
+            1..=10 => {
+                let guid = if bag <= i64::from(super::BAGS) {
+                    store.player_inv_slot(super::BAG_SLOT_FIRST + bag as u8 - 1)?
+                } else {
+                    store.player_bank_bag_slot((bag - super::BANK_BAG_ID_FIRST) as u8)?
+                };
+                if guid == 0 {
+                    return Some((0, 0));
+                }
+                let fields = self.objects.object(guid)?;
+                let template = self.items.template(fields.object_entry()?, guid, Ask::Read)?;
+                Some((
+                    free_seats(fields.container_num_slots()?, |i| fields.container_slot(i))?,
+                    template.bag_family,
+                ))
+            }
+            _ => None,
+        }
+    }
+
     /// Apply one item call.
     pub(crate) fn apply(&mut self, script: &mut UiScript, call: ItemCall) {
         let Self {

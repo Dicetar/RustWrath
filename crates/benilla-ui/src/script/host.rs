@@ -22,6 +22,11 @@ use super::{ScriptCall, UiScript};
 
 /// The engine half of the script calls: what applies a call to the state outside the VM.
 pub trait CallHost {
+    /// Existing inventory-owner projection: free GUID seats and the observed bag-family mask.
+    fn container_space(&mut self, _bag: i64) -> Option<(u32, u32)> {
+        None
+    }
+
     /// Synchronous client-catalog projection. Absent when this host has no spell owner; a query
     /// must not send a cast or create a second catalog in the scripting engine.
     fn spell_info(&mut self, _id: u32) -> Option<super::SpellInfoView> {
