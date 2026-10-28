@@ -402,3 +402,12 @@ charge facts for includeUses, with no timer, mutation, new cache or inventory ow
 Expose numeric/link and uniquely cached-name resolution; absent host/template facts
 remain unavailable. Exact target charge-tail/name ABI and native bank/keyring capacity
 remain explicitly unverified. No tests/new cases, checks or runtime execution authorized.
+
+2026-10-28 random-property loader claim at 76d69b6a: clean formats/src/
+item_random_properties.rs only. The existing loader requires the donor 16-column
+layout, but the pinned AC DBCStructure.h ItemRandomPropertiesEntry / DBCfmt.h
+ItemRandomPropertiesfmt define 24 columns for 12340: ID, internal name, five enchants,
+sixteen localized names and a mask. entities.rs logs a load failure and omits the
+resource on mismatch. Select this exact known layout by field count and the existing
+Wrath locale-column owner, retaining strict parsing and the donor layout. No generic
+trailing-field guess, new catalog/owner, negative-suffix scaling, tests or execution.
