@@ -483,6 +483,10 @@ used by installed Bagnon bagSlotInfo.lua. It accepts the existing numeric/link
 query path and returns unavailable for missing data. Name-input and exact API edge
 semantics, host admission and addon behavior remain unverified; no build or test ran.
 
+`ed4e3702` lets the shared Wrath item query accept uniquely cached exact names using
+the existing GetItemCount name rule. Ambiguous and uncached names remain unavailable;
+target case-folding and exact native behavior are not established. No build or test ran.
+
 Source cross-check: AzerothCore `ItemTemplate.h` assigns soul shards mask `0x4`,
 `Item.cpp` uses that bit for soul-bag acceptance, and the base item-template row
 for Soul Pouch (21340) carries that family value. Installed Bagnon tests `0x4` for
