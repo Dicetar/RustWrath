@@ -392,3 +392,32 @@ five enchant IDs and allocation percentages; a seed-scaled amount/name implement
 still needs a complete supported contract and the native descriptor/link losses already
 recorded above. The positive-property repair must not be reported as negative-suffix
 support, complete stat projection or full item-system acceptance.
+
+### Negative-suffix retained data and shared names (ae6b8953, source only)
+
+The existing RandomPropertyCatalog now retains a separate private ItemRandomSuffix row
+set when the positive-property table selects the known 12340 layout. Its strict 29-field
+schema follows AC DBCStructure.h / DBCfmt.h: ID, sixteen localized names, mask/internal
+name, five enchant IDs and five allocation percentages. Rows retain enchant/allocation
+data even when the selected locale has no name. No cross-language name fallback is added.
+The selected Wrath catalog now requires both tables; a missing or malformed suffix table
+returns an error through the existing startup diagnostic rather than silently declaring
+an empty suffix catalog. Donor tables and from_rows fixtures retain an empty suffix set.
+
+suffix_name(signed_id) resolves positive IDs only in the property table and negative IDs
+only in the suffix table. The existing get/iter/len/is_empty contract still describes the
+positive table. scaled_suffix(negative_id, factor) returns five (enchant_id, amount) pairs
+with the AC u32 AllocationPct * factor / 10000 arithmetic, including explicit zero slots.
+It does not infer an item seed, apply stats or format enchant text. The public operation
+needs the caller's real retained factor; raw-link/loot factor-loss repairs remain open.
+
+The app's existing item_display_name now asks suffix_name, so all callers of this shared
+formatter can join an observed negative suffix using their existing ITEM_SUFFIX_TEMPLATE.
+The donor constructor's negative-ID/plain-name behavior remains unchanged because its
+suffix set is empty. There is no new resource, cache, allocation owner or native mutation.
+
+Still not connected: pushing negative suffix names/amounts into Lua's raw GetItemInfo
+path; substituting scaled amounts into localized enchant text; restoring property slots
+7..11 in native item descriptors; preserving the suffix factor in loot replication.
+Do not report this as complete negative-suffix tooltips, item stats or server behavior.
+No build/test/new case, table read/probe, generator or runtime execution occurred.

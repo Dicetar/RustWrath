@@ -346,4 +346,13 @@ No actual table load, checks/tests/new cases or runtime run occurred. Positive i
 names/enchant lines/glows remain unaccepted, and negative ItemRandomSuffix allocation/
 seed scaling plus the native item-field/link gaps remain explicitly open.
 
+Negative-suffix data supersession at ae6b8953: the existing roll catalog now strictly
+loads ItemRandomSuffix's 29-field 12340 layout, retains localized names/enchant IDs/
+allocation percentages and exposes AC seed-scaled amounts. The shared app item-name
+formatter resolves signed IDs through their actual separate tables. Donor get/iter and
+fixtures retain their original positive-property behavior. Raw-link Lua name queries,
+localized scaled enchant text and native descriptor/loot-factor losses remain open;
+the scaled data accessor is not yet a rendered stat consumer. No checks/tests/new cases,
+real catalog load or runtime acceptance occurred.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
