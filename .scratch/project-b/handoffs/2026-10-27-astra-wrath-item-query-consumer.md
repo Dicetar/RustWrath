@@ -384,6 +384,14 @@ and receipt factor in their target positions; vanilla output is preserved. Windo
 rows still have no retained suffix factor and emit zero. Loot rolls, inspect, trade
 and auction remain separate producer work. Source-only: no build or test has run.
 
+Server-side consequence: AzerothCore `HyperlinkTags.cpp` item::StoreTo rejects a
+negative random-suffix ID with zero factor and a nonzero factor without a suffix.
+The current Wrath loot-response decoder discards the wire suffix word, so formatting
+the loot-window link correctly cannot by itself make such rolled links acceptable
+to that validator. Preserve the actual wire field through OC's protocol/loot owners;
+do not substitute a guessed factor. Server configuration and live rejection remain
+unverified.
+
 `2ca39ead` additionally selects the active target for group-loot snapshot links.
 That owner retains the property but not the suffix factor, which remains zero.
 Group-loot announcements are a separate localized format-string path and remain
