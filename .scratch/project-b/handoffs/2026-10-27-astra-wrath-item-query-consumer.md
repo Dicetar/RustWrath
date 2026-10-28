@@ -367,6 +367,17 @@ startup owner warns with the suffix load error; negative suffix lookups remain
 unavailable. Failure of the positive table still prevents catalog admission. This is
 source-inspected only; no table load, build or test was run for this change.
 
+Further source trace at `cf4a7794`: `ui_loot::resolve_item` and `receive_line`,
+`ui_loot_roll::snapshot`, and the inspect, trade and auction row builders still call
+the four-field vanilla `item_link_full`. Wrath's `ItemLink::parse` instead reads
+three gem words and a reserved word before the signed property and factor, matching
+the checked AzerothCore `HyperlinkTags.cpp` item tokenizer. Consequently a nonzero
+roll in one of these vanilla-shaped links is read as a gem, and the real property is
+lost. Carry the actual `UiScript` target through these producer owners and render a
+target-shaped link; preserve observed factors rather than inventing missing ones.
+The complete set of producer paths and live behavior remain unverified. OC owns
+protocol/world replication, so do not repair dropped wire fields in this UI slice.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
