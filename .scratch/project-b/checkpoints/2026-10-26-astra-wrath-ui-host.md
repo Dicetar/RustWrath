@@ -447,3 +447,15 @@ resource/parameter, timer, query packet or change to OC's widget/recovery owners
 Keep item category overrides and held states; missing world/template/spell/clock facts
 stay unavailable. Preserve donor registration and avoid any modern C_Container alias.
 No new tests/cases, checks, imports or runtime execution are authorized.
+
+2026-10-28 Wrath secondary-stat claim at 3acd2703: clean UI
+script/tooltip_item/names.rs and render.rs. ItemTemplateView retains the wire stats,
+but the renderer visits only donor IDs 0/1/3..7, dropping target IDs 12..39 and 41..48.
+Use AC ItemTemplate.h ItemModType and pinned 12340 GlobalStrings.lua keys for those
+values; do not invent type 40 or newer expansion stats. Emit the equip-stat block
+through existing localized templates and green on-equip line presentation. Installed
+zzzmopitemtooltips/core.lua replaces many numeric formats with %c%d; use the existing
+strict formatter to support both forms without mistaking the sign for a numeric value.
+Preserve donor/primary/resistance behavior, actual wire amounts and source order.
+Exact native block ordering and complete addon/render fidelity remain unverified.
+No new stat owner/rating calculations, tests, generators or execution authorized.
