@@ -2,7 +2,7 @@
 //! has no verb for. Each answer is the real client's on a machine without the optional hardware
 //! the query asks about, or with the single output device benilla mixes through.
 
-use mlua::{Lua, ObjectLike};
+use mlua::Lua;
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `IsStereoVideoAvailable` (`VideoOptionsPanels.lua:571`): the stereo-3D path needs glasses

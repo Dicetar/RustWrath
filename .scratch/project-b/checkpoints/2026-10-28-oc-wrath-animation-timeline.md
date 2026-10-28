@@ -79,10 +79,25 @@ Editing:
 
 Coordinating: Astra's item/container/addon lane is untouched; her commits below `b89af3a2` stay.
 
-## Execution status
+## Execution status (verified 2026-10-28, execution authorized)
 
-Source-only under the campaign's standing restriction: no build, test, lint, generator, or
-graphical run yet. Success criteria above are unverified until execution is authorized.
+- `cargo check --locked --offline -p benilla-ui` clean (only the pre-existing deprecated
+  `Atomic::fetch_update` warnings).
+- `cargo test --locked --offline -p benilla-ui --lib 'animation::tests'`: both new tests pass.
+  `alpha_groups_sequence_and_fire_finished_once` proves the ordered fade-out/fade-in, the
+  per-animation and group `OnFinished` firing exactly once, and no refire. The translation test
+  proves the frame rect half-moves and lands through `frame_rect`/extract.
+- Full `benilla-ui` lib suite: 3332 passed, 2 failed — `script::tests::stdlib` date/time zone
+  tests, which the 2026-10-26 Astra verification log already records failing on this host
+  (environmental, untouched by this work).
+- Wrath stock smoke (real wm-hd data): **passes** with an absolute `WM_ASSET_MANIFEST`; the
+  relative `docs/profiles/wm-hd.mpqlist` fails to open from the test process, so acceptance runs
+  should pass the absolute path.
+- `ui_trade` tests: 45 passed after restoring the stale `snapshot`/`resolve_slot` call shapes that
+  blocked every app-lib test build (test-only fix, no behaviour change).
+
+The smoke loads the stock UI to PlayerFrame.xml; it does not itself play a stock animation. The
+engine's proof is the two focused tests above.
 
 ## Implemented (Alpha tracer, uncommitted at the time of writing)
 

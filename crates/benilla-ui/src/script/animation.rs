@@ -139,7 +139,7 @@ fn play(lua: &Lua, this: &Table) -> mlua::Result<()> {
 }
 
 /// Start a group's children: one `order` batch after the previous, parallel within a batch.
-fn start_group(lua: &Lua, group: &Table, now: f64) -> mlua::Result<()> {
+fn start_group(_lua: &Lua, group: &Table, now: f64) -> mlua::Result<()> {
     group.set(ANIMATION_PLAYING, true)?;
     group.set(ANIMATION_FINISHED, false)?;
     let Some(children) = group.get::<Option<Table>>(ANIMATION_CHILDREN)? else {
@@ -336,7 +336,7 @@ fn finish(lua: &Lua, this: &Table) -> mlua::Result<()> {
 }
 
 /// Run one stored handler with the animation as its `self`.
-fn fire(lua: &Lua, this: &Table, name: &str) -> mlua::Result<()> {
+fn fire(_lua: &Lua, this: &Table, name: &str) -> mlua::Result<()> {
     let scripts: Table = this.get(ANIMATION_SCRIPTS)?;
     let Some(func) = scripts.get::<Option<Function>>(name)? else {
         return Ok(());
@@ -382,4 +382,169 @@ fn record(lua: &Lua, error: &mlua::Error) {
     lua.app_data_mut::<Model>()
         .expect("model app_data")
         .record_lua_error(error);
+}
+
+#[cfg(test)]
+mod tests {
+    use mlua::{Function, ObjectLike, Table};
+
+    use crate::order::ZTarget;
+    use crate::script::{QuadContent, UiScript, UiTarget};
+
+    fn attrs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    fn owner(s: &UiScript) -> Table {
+        s.lua().globals().get("f").unwrap()
+    }
+
+    fn counter(lua: &mlua::Lua) -> Function {
+        lua.load("return function() HITS = (HITS or 0) + 1 end")
+            .eval::<Function>()
+            .unwrap()
+    }
+
+    #[test]
+    fn alpha_groups_sequence_and_fire_finished_once() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_screen_size(100.0, 100.0);
+        s.run(
+            r#"
+            f = CreateFrame("Frame")
+            f:SetSize(20, 20)
+            f:SetPoint("CENTER", 0, 0)
+            f:SetAlpha(1)
+        "#,
+        )
+        .unwrap();
+        let owner = owner(&s);
+        let lua = s.lua();
+        let group = super::build(lua, "AnimationGroup", None, &[], &owner, None).unwrap();
+        let fade_out = super::build(
+            lua,
+            "Alpha",
+            None,
+            &attrs(&[("change", "-1"), ("duration", "0"), ("order", "1")]),
+            &owner,
+            Some(&group),
+        )
+        .unwrap();
+        let fade_in = super::build(
+            lua,
+            "Alpha",
+            None,
+            &attrs(&[("change", "1"), ("duration", "0.2"), ("order", "2")]),
+            &owner,
+            Some(&group),
+        )
+        .unwrap();
+        let children = lua.create_table().unwrap();
+        children.raw_set(1, fade_out.clone()).unwrap();
+        children.raw_set(2, fade_in.clone()).unwrap();
+        super::link_children(&group, children).unwrap();
+        let handler = counter(lua);
+        fade_out
+            .call_method::<()>("SetScript", ("OnFinished", Some(handler.clone())))
+            .unwrap();
+        fade_in
+            .call_method::<()>("SetScript", ("OnFinished", Some(handler.clone())))
+            .unwrap();
+        group
+            .call_method::<()>("SetScript", ("OnFinished", Some(handler)))
+            .unwrap();
+
+        group.call_method::<()>("Play", ()).unwrap();
+        assert_eq!(
+            s.eval::<i64>("return HITS or 0").unwrap(),
+            0,
+            "nothing fires before a tick"
+        );
+        s.tick(0.01);
+        assert_eq!(
+            s.eval::<i64>("return HITS").unwrap(),
+            1,
+            "the instant fade-out finished"
+        );
+        let mid = s.eval::<f64>("return f:GetAlpha()").unwrap();
+        assert!(mid > 0.0 && mid < 0.1, "the fade-in barely started: {mid}");
+        s.tick(0.25);
+        assert_eq!(
+            s.eval::<i64>("return HITS").unwrap(),
+            3,
+            "the fade-in and the group each finished once"
+        );
+        assert_eq!(s.eval::<f64>("return f:GetAlpha()").unwrap(), 1.0);
+        s.tick(0.5);
+        assert_eq!(
+            s.eval::<i64>("return HITS").unwrap(),
+            3,
+            "finished animations do not refire"
+        );
+    }
+
+    #[test]
+    fn a_translation_moves_the_frame_rect_between_readers() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_screen_size(100.0, 100.0);
+        s.run(
+            r#"
+            f = CreateFrame("Frame")
+            f:SetSize(20, 20)
+            f:SetPoint("CENTER", 0, 0)
+        "#,
+        )
+        .unwrap();
+        let owner = owner(&s);
+        let lua = s.lua();
+        let h = crate::script::object::frame_handle_of(lua, &owner).unwrap();
+        let group = super::build(lua, "AnimationGroup", None, &[], &owner, None).unwrap();
+        let shift = super::build(
+            lua,
+            "Translation",
+            None,
+            &attrs(&[("offsetX", "10"), ("offsetY", "4"), ("duration", "0.2")]),
+            &owner,
+            Some(&group),
+        )
+        .unwrap();
+        let children = lua.create_table().unwrap();
+        children.raw_set(1, shift).unwrap();
+        super::link_children(&group, children).unwrap();
+        group.call_method::<()>("Play", ()).unwrap();
+
+        s.tick(0.1);
+        let rect = frame_rect(&s, h);
+        assert!((rect.left - 45.0).abs() < 0.01, "x half-moved: {}", rect.left);
+        assert!(
+            (rect.bottom - 42.0).abs() < 0.01,
+            "y half-moved: {}",
+            rect.bottom
+        );
+        s.tick(0.15);
+        let rect = frame_rect(&s, h);
+        assert!((rect.left - 50.0).abs() < 0.01, "x landed: {}", rect.left);
+        assert!(
+            (rect.bottom - 44.0).abs() < 0.01,
+            "y landed: {}",
+            rect.bottom
+        );
+    }
+
+    fn frame_rect(s: &UiScript, h: crate::widget::FrameHandle) -> crate::layout::Rect {
+        s.extract()
+            .into_iter()
+            .find_map(|quad| match quad.target {
+                ZTarget::Frame(fh)
+                    if fh == h && matches!(quad.content, QuadContent::Frame) =>
+                {
+                    quad.rect
+                }
+                _ => None,
+            })
+            .expect("the frame's own quad")
+    }
 }
