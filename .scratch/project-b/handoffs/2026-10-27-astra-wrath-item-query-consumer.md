@@ -384,6 +384,11 @@ and receipt factor in their target positions; vanilla output is preserved. Windo
 rows still have no retained suffix factor and emit zero. Loot rolls, inspect, trade
 and auction remain separate producer work. Source-only: no build or test has run.
 
+`2ca39ead` additionally selects the active target for group-loot snapshot links.
+That owner retains the property but not the suffix factor, which remains zero.
+Group-loot announcements are a separate localized format-string path and remain
+unchanged pending evidence of the Wrath format contract. No build or test ran.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
