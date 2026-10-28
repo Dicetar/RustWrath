@@ -549,3 +549,10 @@ state, protocol, test case or runtime execution is included.
 `crates/benilla-app/src/ui_merchant/mod.rs`. Carry the script target to vendor-list
 item link construction, retaining existing vanilla fixtures. Buyback and protocol
 behavior are separate; no tests or execution authorized.
+
+2026-10-28 buyback link claim at 9bf22656: clean
+`crates/benilla-app/src/ui_merchant/mod.rs` and `crates/benilla-ui/src/script/merchant.rs`.
+Installed aux-addon/core/tooltip.lua:295 calls missing GetBuybackItemLink(slot).
+Expose the existing streamed buyback object's target-shaped link through the merchant
+row and a Wrath-only Lua binding. Existing catalog and object owners supply facts;
+vanilla behavior remains unchanged. No runtime, test or protocol work authorized.
