@@ -259,6 +259,9 @@ fn resolve_buyback(
     items: &Items,
     icons: Option<&ItemDisplays>,
     ask: Ask<'_>,
+    target: benilla_ui::script::UiTarget,
+    render_level: u32,
+    rolls: crate::items::RollCatalogs,
 ) -> MerchantItem {
     let guid = store.player_buyback_slot(idx).unwrap_or(0);
     let obj = objects.object(guid);
@@ -291,9 +294,17 @@ fn resolve_buyback(
         num_available: 0,
         item_id: entry,
         stats,
-        // No link: 1.12 has no `GetBuybackItemLink`, and the buyback click is a bare
-        // `BuybackItem(this:GetID())` (`MerchantFrame.lua:358-361`).
-        link: None,
+        // Wrath's buyback link comes from the held item object, including its roll.
+        // Vanilla does not expose this API.
+        link: if target == benilla_ui::script::UiTarget::Wrath335 {
+            obj.zip(template).map(|(fields, template)| {
+                crate::ui_items::object_link_in_target(
+                    target, render_level, fields, Some(template), rolls,
+                )
+            })
+        } else {
+            None
+        },
         // No max stack: `GetMerchantItemMaxStack` indexes the merchant list, and a buyback row
         // is bought whole.
         max_stack: None,
@@ -598,13 +609,17 @@ fn snapshot(
     player: Option<&benilla_protocol::ObjectFields>,
     vendor_npc_flags: u32,
     target: benilla_ui::script::UiTarget,
+    rolls: crate::items::RollCatalogs,
 ) -> Option<MerchantState> {
     open.vendor?;
     let buyback = player
         .map(|store| {
             buyback_order(store)
                 .into_iter()
-                .map(|idx| resolve_buyback(idx, store, objects, items, icons, ask))
+                .map(|idx| resolve_buyback(
+                    idx, store, objects, items, icons, ask, target,
+                    store.unit_level().unwrap_or(0), rolls,
+                ))
                 .collect()
         })
         .unwrap_or_default();
@@ -626,6 +641,7 @@ fn feed_merchant(
     objects: Objects,
     items: Res<Items>,
     icons: Option<Res<ItemDisplays>>,
+    rolls: crate::items::Rolls,
     commands: Res<NetCommands>,
     self_q: Query<&ObjectStore, With<SelfPlayer>>,
     units: Query<(&Guid, &ObjectStore), Without<SelfPlayer>>,
@@ -685,6 +701,7 @@ fn feed_merchant(
             player,
             vendor_npc_flags(&open, &units),
             script.target(),
+            rolls.get(),
         );
         // The stock window titles with `UnitName("NPC")` (`MerchantFrame.lua:67`), which looks
         // the name up with a callback (`0x5171b8`) at its events; its landing fires nothing.

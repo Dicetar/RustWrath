@@ -32,8 +32,7 @@ pub struct MerchantItem {
     pub item_id: u32,
     /// The hover tooltip's stat head; `None` while the template is in flight.
     pub stats: Option<ItemStatsHead>,
-    /// `GetMerchantItemLink`'s answer; `None` while in flight and on a buyback row, as 1.12 has no
-    /// `GetBuybackItemLink` and the buyback click takes no modifier (`MerchantFrame.lua:358-361`).
+    /// Merchant or Wrath buyback item link; `None` when its source is unavailable.
     pub link: Option<String>,
     /// The template's `stackable`, `GetMerchantItemMaxStack`'s answer for a row sold singly;
     /// `None` while in flight and on a buyback row.
@@ -349,6 +348,22 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }
         })?,
     )?;
+
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        g.set("GetBuybackItemLink", lua.create_function(|lua, index: Value| {
+            let index = binding_abi::index_arg(lua, index, "Usage: GetBuybackItemLink(index)")?;
+            let link = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                model.merchant.as_ref()
+                    .and_then(|m| index.checked_sub(1).and_then(|n| m.buyback.get(n)))
+                    .and_then(|item| item.link.clone())
+            };
+            match link {
+                Some(link) => Ok(Value::String(lua.create_string(&link)?)),
+                None => Ok(Value::Nil),
+            }
+        })?)?;
+    }
 
     // GetMerchantItemMaxStack(index) (`0x4fb670`): the template's stack size, or 1 for a row sold
     // in bundles (`[row+0x18] > 1`) and for every miss: out of range, no vendor, a template in
