@@ -468,6 +468,14 @@ for Soul Pouch (21340) carries that family value. Installed Bagnon tests `0x4` f
 its shard-bag classification. This supports the mapping for that example only; it
 does not prove the complete GetItemFamily ABI or addon runtime behavior.
 
+Further bank trace at `dd01e3fe`: AzerothCore Player.h defines bank bag slots
+67..73 (seven). Current `script/bank.rs` reports full at six, and
+`ui_bank::BankSteps::purchase` refuses once six are bought. The existing Wrath
+projection also loses the seventh bag GUID, as documented above. These are one
+connected compatibility gap: change the count, purchase gate, slot mapping and
+native projection together rather than allowing a purchase the client cannot show.
+No bank or server operation was run.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
