@@ -404,6 +404,10 @@ admission and list re-resolution. The link uses the existing row's property and
 factor; no unavailable gems are invented. Auction protocol and runtime behavior
 remain outside this source-only change. No build or test was run.
 
+`40796c7f` selects target-shaped item links for quest-panel required, choice and
+reward rows. Quest reward chat lines remain a separate producer. This source change
+has not been built or tested and does not demonstrate the Northshire quest route.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
