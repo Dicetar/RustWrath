@@ -7,6 +7,10 @@
 //! `0x479700` skips a visual or effect id that is negative, past the table's max id or a null
 //! row, and an empty model path; ItemVisuals row 28 ships two garbage effect ids. The catalog
 //! applies the same skips at load.
+//!
+//! 12340's SpellItemEnchantment has 38 fields (AzerothCore DBCStructure.h / DBCfmt.h):
+//! charges at 1, sixteen localized names at 14..29, visual at 31 and flags at 32.
+//! The exact known layout is selected separately from the donor's 24-field table.
 
 use std::collections::HashMap;
 
@@ -14,7 +18,7 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, str_at, u32_at};
+use crate::dbc::{field_count, loc_str, loc_str_index, parse, str_at, u32_at};
 
 const ITEM_VISUALS: &str = "DBFilesClient\\ItemVisuals.dbc";
 const ITEM_VISUAL_EFFECTS: &str = "DBFilesClient\\ItemVisualEffects.dbc";
@@ -167,19 +171,34 @@ pub(crate) fn item_visual_effects_schema() -> Schema {
 /// `+0x34 + 4·locale` (field 13, `0x4960d0`), the visual at `+0x58` (field 22, `0x5d9be1`) and `Flags` at
 /// `+0x5c` (field 23).
 pub(crate) fn spell_item_enchantment_schema() -> Schema {
+    enchantment_schema(false)
+}
+
+fn enchantment_schema(wrath: bool) -> Schema {
     let mut s = Schema::new("SpellItemEnchantment");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
+    if wrath {
+        s.add_field(SchemaField::new("Charges", FieldType::UInt32));
+    }
     for group in ["Effect", "EffectPointsMin", "EffectPointsMax", "EffectArg"] {
         for i in 0..3 {
             s.add_field(SchemaField::new(format!("{group}{i}"), FieldType::UInt32));
         }
     }
-    for i in 0..8 {
+    let locales = if wrath { 16 } else { 8 };
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
     s.add_field(SchemaField::new("ItemVisual", FieldType::UInt32));
     s.add_field(SchemaField::new("Flags", FieldType::UInt32));
+    if wrath {
+        for field in [
+            "GemID", "Condition", "RequiredSkill", "RequiredSkillRank", "RequiredLevel",
+        ] {
+            s.add_field(SchemaField::new(field, FieldType::UInt32));
+        }
+    }
     s
 }
 
@@ -221,11 +240,13 @@ pub fn load_enchant_catalog(chain: &mut Chain) -> Result<EnchantCatalog> {
     let bytes = chain
         .read_file(SPELL_ITEM_ENCHANTMENT)
         .with_context(|| format!("reading {SPELL_ITEM_ENCHANTMENT}"))?;
-    let rs = parse(
-        &bytes,
-        spell_item_enchantment_schema(),
-        "SpellItemEnchantment",
-    )?;
+    let wrath = field_count(&bytes) == Some(38);
+    let schema = if wrath {
+        enchantment_schema(true)
+    } else {
+        spell_item_enchantment_schema()
+    };
+    let rs = parse(&bytes, schema, "SpellItemEnchantment")?;
     let locale = chain.locale();
     let mut visuals = HashMap::new();
     let mut names = HashMap::new();
@@ -233,13 +254,19 @@ pub fn load_enchant_catalog(chain: &mut Chain) -> Result<EnchantCatalog> {
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         // Every row, `Flags == 0` included: the keys are the row set.
-        flags.insert(id, u32_at(r, 23).unwrap_or(0));
-        let visual = u32_at(r, 22).unwrap_or(0) as i32;
+        flags.insert(id, u32_at(r, if wrath { 32 } else { 23 }).unwrap_or(0));
+        let visual = u32_at(r, if wrath { 31 } else { 22 }).unwrap_or(0) as i32;
         if visual != 0 {
             visuals.insert(id, visual);
         }
-        // `loc_str` drops an empty name.
-        if let Some(name) = loc_str(&rs, r, 13, locale) {
+        let name = if wrath {
+            crate::Locale::wrath_dbc_column(locale.wrath_index())
+                .and_then(|column| loc_str_index(&rs, r, 14, column))
+                .filter(|name| !name.is_empty())
+        } else {
+            loc_str(&rs, r, 13, locale)
+        };
+        if let Some(name) = name {
             names.insert(id, name);
         }
     }
