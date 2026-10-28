@@ -98,10 +98,13 @@ graphical run yet. Success criteria above are unverified until execution is auth
 - The loader now passes the declaring frame/region as a child's owner (previously the group, so
   `GetRegionParent` was wrong) and links a group's children in document order.
 
-Known limits of this tracer: only frame owners get the visual alpha (region alpha needs the
-region-state seam); `Translation`/`Rotation`/`Scale`/`Color`/`TextureCoord` run their timeline
-and signals but apply no visual change; easing (`smoothing`) is linear; the group's static batch
-schedule assumes durations do not change mid-run.
+Alpha applies to both owners: a frame through `WidgetArena::set_alpha`, a region through
+`RegionData::alpha` (the same slot `Region:SetAlpha` writes), so texture- and font-string-owned
+groups such as `AlertFrames.xml`'s texture animations work.
+
+Known limits of this tracer: `Translation`/`Rotation`/`Scale`/`Color`/`TextureCoord` run their
+timeline and signals but apply no visual change; easing (`smoothing`) is linear; the group's
+static batch schedule assumes durations do not change mid-run.
 
 ## First tracer (next commit)
 

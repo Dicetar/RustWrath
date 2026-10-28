@@ -12,6 +12,8 @@
 use mlua::{Function, Lua, Table, Value};
 
 use super::Model;
+use crate::color::{alpha_f64, frame_alpha_byte};
+use crate::widget::{FrameHandle, RegionHandle};
 
 /// The registry of every built animation table, indexed for the tick. A named registry value, so
 /// it dies with the VM and never leaks a global.
@@ -257,22 +259,37 @@ fn advance_one(lua: &Lua, this: &Table, now: f64) -> mlua::Result<()> {
     Ok(())
 }
 
-/// Set the owner frame's alpha to `from + change * t`; a region owner is skipped until the
-/// region alpha seam lands (the timeline and signals still run).
+/// Set the owner's alpha (frame or region) to `from + change * t`.
 fn apply_alpha(lua: &Lua, this: &Table, t: f64) {
     let change = param_number(this, "change", 0.0);
     let from: f64 = this.get(ANIMATION_FROM).unwrap_or(1.0);
-    let alpha = ((from + change * t).clamp(0.0, 1.0) * 255.0).round() as u8;
-    let Ok(owner) = this.get::<Table>(ANIMATION_OWNER) else {
+    let alpha = frame_alpha_byte(from + change * t);
+    let Some(owner) = owner_kind(lua, this) else {
         return;
     };
-    let Ok(h) = super::object::frame_handle_of(lua, &owner) else {
-        return;
-    };
-    lua.app_data_mut::<Model>()
-        .expect("model app_data")
-        .arena
-        .set_alpha(h, alpha);
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    match owner {
+        Owner::Frame(h) => model.arena.set_alpha(h, alpha),
+        Owner::Region(rh) => {
+            model.region_data.entry(rh).or_default().alpha = Some(alpha);
+        }
+    }
+}
+
+/// The table's owner: a frame or a region, the same `GetRegionParent` answer stock scripts use.
+enum Owner {
+    Frame(FrameHandle),
+    Region(RegionHandle),
+}
+
+fn owner_kind(lua: &Lua, this: &Table) -> Option<Owner> {
+    let owner = this.get::<Table>(ANIMATION_OWNER).ok()?;
+    if let Ok(h) = super::object::frame_handle_of(lua, &owner) {
+        return Some(Owner::Frame(h));
+    }
+    super::region::region_handle_of(lua, &owner)
+        .ok()
+        .map(Owner::Region)
 }
 
 /// Mark an animation finished and fire `OnFinished` once.
@@ -294,13 +311,20 @@ fn fire(lua: &Lua, this: &Table, name: &str) -> mlua::Result<()> {
     func.call::<()>(this.clone())
 }
 
-/// The owner frame's current alpha as a fraction; `None` for a region or bad owner.
+/// The owner's current alpha as a fraction (frame or region); `None` for a bad owner.
 fn owner_alpha(lua: &Lua, this: &Table) -> Option<f64> {
-    let owner = this.get::<Table>(ANIMATION_OWNER).ok()?;
-    let h = super::object::frame_handle_of(lua, &owner).ok()?;
+    let owner = owner_kind(lua, this)?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
-    let alpha = model.arena.frame(h)?.alpha;
-    Some(f64::from(alpha) / 255.0)
+    match owner {
+        Owner::Frame(h) => model.arena.frame(h).map(|f| alpha_f64(f.alpha)),
+        Owner::Region(rh) => Some(
+            model
+                .region_data
+                .get(&rh)
+                .and_then(|d| d.alpha)
+                .map_or(1.0, alpha_f64),
+        ),
+    }
 }
 
 fn is_group(this: &Table) -> mlua::Result<bool> {
