@@ -506,3 +506,9 @@ unverified pending a fresh grant.
 currently discards successfully loaded positive properties. Retain the positive
 rows and expose the suffix load error through the existing startup warning; unavailable
 negative suffixes remain unavailable. No tests or execution are authorized.
+
+2026-10-28 loot link claim at 348d1074: clean `crates/benilla-app/src/ui_items/mod.rs`
+and `crates/benilla-app/src/ui_loot/mod.rs`. The Wrath loot window and item-receipt
+chat currently emit vanilla-shaped links that misplace the roll in the Wrath parser.
+Use the existing script target and observed fields; retain vanilla output and do not
+alter protocol-owned loot data. No builds, tests or new cases are authorized.
