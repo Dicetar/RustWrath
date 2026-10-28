@@ -583,6 +583,12 @@ the base template name when no display name is embedded. Resolve the observed Wr
 property via the existing item-name owner at build/rebuild time. No guessed scaled
 enchant formatting, protocol changes, test cases or execution are authorized.
 
+2026-10-28 cached item-name claim at c8075c08: clean
+`crates/benilla-ui/src/script/item_stats/wrath.rs`. The shared Wrath item query
+accepts IDs and links while the existing GetItemCount path also accepts uniquely
+cached exact names. Reuse that same rule for item queries without inventing an ID
+for ambiguous or uncached names. No new cache, tests or execution authorized.
+
 2026-10-28 group-loot factor claim at d1dc10d6: clean
 `crates/benilla-app/src/ui_loot_roll.rs`. The existing `LootStartRoll` carries a
 suffix factor that `ActiveRoll` discards. Retain it and place it in Wrath snapshot
