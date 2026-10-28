@@ -54,6 +54,14 @@ impl ItemLink {
     }
 }
 
+fn cached_name_id(lua: &Lua, name: &str) -> Option<u32> {
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    let mut matches = model.item_templates.iter()
+        .filter(|(_, item)| item.name == name).map(|(&id, _)| id);
+    let id = matches.next()?;
+    matches.next().is_none().then_some(id)
+}
+
 fn argument(lua: &Lua, value: Value) -> mlua::Result<Option<ItemLink>> {
     if let Some(number) = lua.coerce_number(value.clone())? {
         return Ok((number.is_finite() && number >= 1.0 && number <= f64::from(u32::MAX))
@@ -62,7 +70,8 @@ fn argument(lua: &Lua, value: Value) -> mlua::Result<Option<ItemLink>> {
     let Value::String(text) = value else {
         return Err(mlua::Error::runtime("Usage: GetItemInfo(itemID|\"itemlink\")"));
     };
-    Ok(ItemLink::parse(&text.to_str()?))
+    let text = text.to_str()?;
+    Ok(ItemLink::parse(&text).or_else(|| cached_name_id(lua, &text).map(ItemLink::template)))
 }
 
 fn query(lua: &Lua, value: Value) -> mlua::Result<Option<(ItemLink, ItemTemplateView)>> {
@@ -126,13 +135,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .then_some(number as u32)
         } else if let Value::String(text) = input {
             let text = text.to_str()?;
-            ItemLink::parse(&text).map(|link| link.id).or_else(|| {
-                let model = lua.app_data_ref::<Model>().expect("model");
-                let mut matches = model.item_templates.iter()
-                    .filter(|(_, item)| item.name.as_str() == &*text).map(|(&id, _)| id);
-                let id = matches.next()?;
-                matches.next().is_none().then_some(id)
-            })
+            ItemLink::parse(&text).map(|link| link.id).or_else(|| cached_name_id(lua, &text))
         } else {
             return Err(mlua::Error::runtime("Usage: GetItemCount(item [, includeBank [, includeUses]])"));
         };
