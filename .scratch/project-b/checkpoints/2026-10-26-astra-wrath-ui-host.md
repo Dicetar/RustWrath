@@ -623,3 +623,33 @@ a detailed design/architecture/reuse plan and confirmed private Windows alpha,
 existing local AzerothCore, stock UI first, installed addons staged afterward.
 Source/document reads and public primary-source research only; no implementation,
 subagents, new runtime verification or changes to existing issue acceptance/ADR status.
+
+2026-10-29 map schema claim at 785fa7a8: `crates/benilla-formats/src/world_map_area.rs`
+and this checkpoint. Owner authorized necessary checks, tests and bounded diagnostics.
+OC's dirty UiClock extract and alpha checkpoint remain untouched. Establish the
+observed 11-column schema failure with an existing-module fixture, preserve the
+8-column donor format, and retain unknown-column refusal.
+The bounded real-profile run passed WorldMapArea admission and exposed a second
+14-column WorldMapContinent mismatch. Also claim
+`crates/benilla-formats/src/world_map_continent.rs` for its exact 12340 layout and
+focused regression; preserve its existing 13-column donor layout.
+
+2026-10-29 follow-up evidence: synthetic 11-column WorldMapArea failed before the
+repair and passes afterward; selected real-profile client then progressed beyond
+that error to a 14-column WorldMapContinent mismatch. The 12340 WorldMapContinent
+definition in WoWDBDefs identifies a trailing WorldMapID; explicit 14-column
+admission now passes its focused fixture while unknown shapes remain refused.
+`cargo test --locked --offline -p benilla-formats --lib world_map_` reports five
+passed, including two synthetic cases; real-data donor cases may skip without the
+vanilla data gate. `cargo check --locked --offline -p benilla-app --lib` passed
+with OC's dirty UiClock work present. A full client build passed after the area
+change but before the continent change; the newer continent code has not been
+built into the client or run with the real profile.
+
+The one 90-second maximum real-profile run with a 12 GiB sampled private-memory
+threshold terminated at 14.4 GiB after rapid growth across the sampling interval.
+Evidence: `../verification/2026-10-28-oc-alpha/astra-bounded-20261029-005649-312.memory.log`
+and corresponding connected-run logs. No process remained. Memory root cause,
+map window/API, model identity, freeze and actual route remain unproven. OC's
+pre-run binary was preserved in the same untracked evidence folder as
+`oc-pre-astra-benilla.exe`; OC's dirty source/checkpoint remain untouched.

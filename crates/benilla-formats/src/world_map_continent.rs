@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, parse, u32_at};
+use crate::dbc::{f32_at, field_count, parse, u32_at};
 use crate::Chain;
 
 const WORLD_MAP_CONTINENT: &str = "DBFilesClient\\WorldMapContinent.dbc";
@@ -60,7 +60,7 @@ impl WorldMapContinentCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(wrath: bool) -> Schema {
     let mut s = Schema::new("WorldMapContinent");
     for name in [
         "ID",
@@ -77,6 +77,10 @@ fn schema() -> Schema {
     ] {
         s.add_field(SchemaField::new(name, FieldType::Float32));
     }
+    if wrath {
+        // 12340 appends WorldMapID; see WoWDBDefs WorldMapContinent.
+        s.add_field(SchemaField::new("WorldMapID", FieldType::UInt32));
+    }
     s
 }
 
@@ -85,7 +89,7 @@ pub fn load_world_map_continent_catalog(chain: &mut Chain) -> Result<WorldMapCon
     let bytes = chain
         .read_file(WORLD_MAP_CONTINENT)
         .context("reading WorldMapContinent.dbc")?;
-    let rs = parse(&bytes, schema(), "WorldMapContinent")?;
+    let rs = parse(&bytes, schema(field_count(&bytes) == Some(14)), "WorldMapContinent")?;
     let mut by_map_id = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(map_id) = u32_at(r, 1) else { continue };
@@ -139,6 +143,18 @@ pub fn load_world_map_continent_catalog(chain: &mut Chain) -> Result<WorldMapCon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrath_continent_schema_accepts_only_its_known_extra_column() {
+        let mut bytes = b"WDBC".to_vec();
+        for value in [0u32, 14, 56, 1] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.push(0);
+        assert!(parse(&bytes, schema(field_count(&bytes) == Some(14)), "WorldMapContinent").is_ok());
+        bytes[8..12].copy_from_slice(&15u32.to_le_bytes());
+        assert!(parse(&bytes, schema(field_count(&bytes) == Some(14)), "WorldMapContinent").is_err());
+    }
 
     #[test]
     fn real_world_map_continent_has_azeroth_and_kalimdor() {

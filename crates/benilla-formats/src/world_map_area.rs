@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, parse, str_at, u32_at};
+use crate::dbc::{f32_at, field_count, parse, str_at, u32_at};
 use crate::Chain;
 
 const WORLD_MAP_AREA: &str = "DBFilesClient\\WorldMapArea.dbc";
@@ -68,7 +68,7 @@ impl WorldMapAreaCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(wrath: bool) -> Schema {
     let mut s = Schema::new("WorldMapArea");
     for name in ["ID", "MapID", "AreaID"] {
         s.add_field(SchemaField::new(name, FieldType::UInt32));
@@ -76,6 +76,12 @@ fn schema() -> Schema {
     s.add_field(SchemaField::new("AreaName", FieldType::String));
     for name in ["LocLeft", "LocRight", "LocTop", "LocBottom"] {
         s.add_field(SchemaField::new(name, FieldType::Float32));
+    }
+    if wrath {
+        // AzerothCore DBCStructure.h WorldMapAreaEntry columns 8..10.
+        s.add_field(SchemaField::new("VirtualMapID", FieldType::Int32));
+        s.add_field(SchemaField::new("DungeonMapID", FieldType::Int32));
+        s.add_field(SchemaField::new("ParentMapID", FieldType::UInt32));
     }
     s
 }
@@ -85,7 +91,11 @@ pub fn load_world_map_area_catalog(chain: &mut Chain) -> Result<WorldMapAreaCata
     let bytes = chain
         .read_file(WORLD_MAP_AREA)
         .context("reading WorldMapArea.dbc")?;
-    let rs = parse(&bytes, schema(), "WorldMapArea")?;
+    parse_catalog(&bytes)
+}
+
+fn parse_catalog(bytes: &[u8]) -> Result<WorldMapAreaCatalog> {
+    let rs = parse(bytes, schema(field_count(bytes) == Some(11)), "WorldMapArea")?;
     let mut by_id = HashMap::with_capacity(rs.records().len());
     let mut file_order = Vec::with_capacity(rs.records().len());
     for r in rs.records() {
@@ -130,6 +140,32 @@ pub fn load_world_map_area_catalog(chain: &mut Chain) -> Result<WorldMapAreaCata
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrath_world_map_area_schema_accepts_eleven_columns() {
+        let mut bytes = b"WDBC".to_vec();
+        for value in [1u32, 11, 44, 9] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [7u32, 530, 3518, 1, 10f32.to_bits(), 20f32.to_bits(),
+            30f32.to_bits(), 40f32.to_bits(), u32::MAX, 0, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(b"\0Nagrand\0");
+        let cat = parse_catalog(&bytes).unwrap();
+        let area = cat.get(7).unwrap();
+        assert_eq!((area.map_id, area.area_id, area.name.as_str()), (530, 3518, "Nagrand"));
+        assert_eq!((area.loc_left, area.loc_right, area.loc_top, area.loc_bottom), (10.0, 20.0, 30.0, 40.0));
+        let mut vanilla = bytes.clone();
+        vanilla[8..12].copy_from_slice(&8u32.to_le_bytes());
+        vanilla[12..16].copy_from_slice(&32u32.to_le_bytes());
+        vanilla.drain(52..64);
+        let donor = parse_catalog(&vanilla).unwrap();
+        assert_eq!(donor.get(7).unwrap().name, "Nagrand");
+        let mut unknown = bytes;
+        unknown[8..12].copy_from_slice(&10u32.to_le_bytes());
+        assert!(parse_catalog(&unknown).is_err());
+    }
 
     /// The 5875 table: both continents, Durotar's rect, and `AreaName` naming a real art folder.
     #[test]
