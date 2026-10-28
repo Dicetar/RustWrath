@@ -306,3 +306,20 @@ Remaining concrete inventory dependencies found in the same source trace:
   work; no no-op SetCooldown or replacement of that dirty work was introduced here.
 
 No builds, tests/new cases, generators, addon or graphical/live runs occurred.
+
+### Bag-space owner integration (8e919cec, source only)
+
+Wrath GetContainerNumFreeSlots now delegates through the already lent CallHost and
+ScriptCallHost to ItemSteps. That owner reads actual GUID seats from ObjectStore/Objects
+and the real bag_family mask from Items::template(..., Ask::Read). An occupied GUID whose
+item object has not arrived still counts occupied; a missing bag object, template, seat
+field or host remains unavailable rather than becoming an empty ordinary bag. A known
+unequipped bag returns (0,0). Bank access follows the existing UI bank gate. No new ECS
+parameter, UI snapshot field, cache, registry or mutation/query packet was added.
+
+This supplies Bagnon's itemEvents.lua:179 dependency using existing ownership. It does
+not repair the upstream donor projection: 24 bank seats, six bank bags and the current
+level-sized keyring remain the available native view. The seventh Wrath bank bag and
+full bank/keyring capacity need the native owner's lossless projection before complete
+bank compatibility can be accepted. No compilation/tests/new cases or runtime acceptance
+ran; the OC smoke reported in the next handoff predates this change.

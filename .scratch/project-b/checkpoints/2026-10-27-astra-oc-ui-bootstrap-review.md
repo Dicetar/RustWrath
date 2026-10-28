@@ -95,3 +95,50 @@ Northshire rendered/live gate remain open. Procgen remains outside the priority 
   https://github.com/wowgaming/3.3.5-interface-files/blob/d0339b17b0221db76e6acd2dc2915d224a5b62ca/GameTime.lua
 
 Read external reference files only; no install code was copied into the repository.
+
+## 2026-10-28 committed smoke supersession
+
+Reviewed OC commits b1eef5a9, cdd4a7ca and 04563c9e against current source and the
+retained run59.log. The earlier run35 FAIL above is superseded for this fixture:
+run59 contains the Wrath335/interface30300/wm-hd manifest/data banner and one passing
+stock_player_frame_host_smoke_test (0 failures, 0 ignored, 6601 filtered). The human
+also reports a committed-tree repeat passing in 0.48 s. The retained run59 itself has
+no Git revision or manifest hash in its admission banner; the committed-tree repeat
+is owner-reported rather than independently pinned evidence. No check was re-run here.
+
+The source genuinely uses with_target(Wrath335), required data admission, the real
+profile chain, localized catalogs, TOC-order loading through PlayerFrame.xml, no shared
+test-loader stand-ins, loader error/missing-file checks and recorded Lua-error checks.
+Its assertions prove frame existence, a manually fired UNIT_HEALTH reaching a custom
+registered observer, a positive seeded UnitHealth, an absent target and same-VM CVar
+readback. They do not assert the rendered health-bar value or session-produced events.
+
+VoiceChat.xml is now excluded by the shared production-loader decision as well as the
+fixture, with one missing VoiceChatSpeakerTemplate warning explicitly allowed. The human
+handoff confirms the permanent voice-disabled product decision; do not call this an
+unmodified complete stock TOC load. The prefix spans the reported 75 TOC positions with
+the voice entry excluded. Installed addons, later TOC entries and their runtime calls,
+native cooldowns, animation timelines, persistence/reload and graphical/live acceptance
+are outside this result. The broad test comment that any API gap fails must be read
+with these boundaries and the native defaults below, not as a fidelity guarantee.
+
+Actionable remaining fidelity findings, present in committed source:
+- cdd4a7ca's GetDungeonDifficulty/GetRaidDifficulty always return 1; GetOptOutOfLoot
+  always returns false; UnitThreatSituation always returns nil; GetInstanceInfo always
+  describes an open world; UnitInBattleground returns no values. These are unconditional
+  bootstrap answers, not observations of server/session facts. They can show incorrect
+  UI when the character's real context differs. Keep their semantic coverage open until
+  existing owners supply the actual facts; a successful PlayerFrame load does not close it.
+- Cooldown remains a Frame and the fallback global only stores Lua fields/show state.
+  Once stock Cooldown.lua overrides that global, an active timer calls missing SetCooldown.
+  The seeded smoke does not establish an active cooldown or visible sweep. A real widget,
+  lifecycle and rendering path is needed; do not add a no-op native to satisfy a call.
+- Animation play state, empty tracking, zero calendar data and missing chat geometry
+  persistence remain explicitly incomplete in OC's checkpoint. The Steam voice-provider
+  attribution in reference_ui.rs is unsupported by this source review; the actual product
+  decision is simply that this host supplies no voice service.
+
+Astra's subsequent 8e919cec bag-space query was committed after this smoke and has no
+build/test evidence. The current worktree is clean after explicit-path source commits.
+No test cases, builds/tests, generators, game/socket/WM/server/DB or graphical runs were
+performed by Astra in this continuation. Full stock-client replacement stays the gate.
