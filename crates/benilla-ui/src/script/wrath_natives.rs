@@ -175,66 +175,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         )?;
     }
 
-    // `UnitInBattleground` (`UnitPopup.lua:479`, the unit-popup branch): whether the unit is in a
-    // battleground. The Wrath unit view carries no battleground membership yet, and a player
-    // outside one is the state this host has, so the answer is the empty one.
-    lua.globals().set(
-        "UnitInBattleground",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
-    )?;
-
-    // `GetDungeonDifficulty`/`GetRaidDifficulty` (`UnitPopup.lua:700`, `:703`): the session's
-    // dungeon and raid difficulty ids. The host carries no difficulty selection yet, so both
-    // answer the default normal tier the 3.3.5a client boots at, `1`.
-    lua.globals().set(
-        "GetDungeonDifficulty",
-        lua.create_function(|_, ()| Ok(1i64))?,
-    )?;
-    lua.globals().set(
-        "GetRaidDifficulty",
-        lua.create_function(|_, ()| Ok(1i64))?,
-    )?;
-
     // `IsVoiceChatEnabled` (`UnitPopup.lua:706`, the mute row): voice chat is permanently absent
     // (`VoiceChat.xml` is skipped forever), so the answer is the disabled client's.
     lua.globals().set(
         "IsVoiceChatEnabled",
         lua.create_function(|_, ()| Ok(false))?,
-    )?;
-
-    // `GetOptOutOfLoot` (`UnitPopup.lua:238`, the loot-roll opt-out row): whether the player
-    // turned off automatic greed rolls. The host carries no opt-out setting, so the row shows
-    // unchecked — a fresh client's state.
-    lua.globals().set(
-        "GetOptOutOfLoot",
-        lua.create_function(|_, ()| Ok(false))?,
-    )?;
-
-    // `UnitThreatSituation` (`UnitFrame.lua:434`, the target frame's threat colour): 1..3 by
-    // threat state, nil with none. No threat state reaches the unit view yet, so the answer is
-    // the nil a client outside any threat context reads.
-    lua.globals().set(
-        "UnitThreatSituation",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::Value::Nil))?,
-    )?;
-
-    // `GetInstanceInfo` (`UnitPopup.lua:245`, `Minimap.lua:486`): name, type, difficulty id,
-    // difficulty name, max players, player difficulty, dynamic flag, instance id. The
-    // bootstrap host is in the open world, which the stock client answers with type `"none"`.
-    lua.globals().set(
-        "GetInstanceInfo",
-        lua.create_function(|lua, ()| {
-            Ok(mlua::MultiValue::from_vec(vec![
-                mlua::Value::Nil,
-                mlua::Value::String(lua.create_string("none")?),
-                mlua::Value::Nil,
-                mlua::Value::Nil,
-                mlua::Value::Integer(0),
-                mlua::Value::Nil,
-                mlua::Value::Boolean(false),
-                mlua::Value::Integer(0),
-            ]))
-        })?,
     )?;
 
     // `GetSummonFriendCooldown` (`UnitPopup.lua:263`): the recruit-a-friend summon's `(start,

@@ -21,6 +21,7 @@ Editing:
 - `crates/benilla-ui/src/loader/mod.rs`
 - `crates/benilla-ui/src/script/wrath_natives.rs` (bootstrap answers leave it)
 - `crates/benilla-ui/src/script/wrath_world.rs` (new; owner-backed unit/world queries)
+- `crates/benilla-ui/src/script/model.rs` (instance type, opt-out preference)
 - `crates/benilla-app/src/ui_script/extract/mod.rs`
 - `crates/benilla-app/src/ui_pass.rs`
 - `crates/benilla-app/src/shaders/ui_quad.wgsl`
@@ -127,10 +128,25 @@ Known deviations / gaps to verify:
   sign. A rotated (frame-level `SetRotation`) cooldown would misplace the hand/spark.
 - No timer countdown text is drawn: the 12340 binary registers no such setter, and this campaign
   found no stock caller drawing a text overlay on a `Cooldown` frame.
-- Step 4 is not implemented yet: the bootstrap `wrath_natives.rs` answers for
-  `GetDungeonDifficulty`, `GetRaidDifficulty`, `GetOptOutOfLoot`, `UnitThreatSituation`,
-  `GetInstanceInfo` and `UnitInBattleground` still stand. The plan is `wrath_world.rs` over
-  `Model::instance_type` (+ a map view pushed by `ui_instance.rs`), the `dungeonDifficulty`/
-  `playerDifficulty` CVar rows (nil when absent), a per-VM opt-out flag with a
-  `CMSG_OPT_OUT_OF_LOOT` (0x409) send, `nil` threat until an `SMSG_THREAT_UPDATE` producer exists,
-  and nil difficulty-name/player-difficulty until a `MapDifficulty`/difficulty producer exists.
+## Step 4: false gameplay-state answers removed
+
+`wrath_world.rs` (installed only for the Wrath target, after `wrath_natives`) replaces the six
+bootstrap answers:
+
+- `GetInstanceInfo`: type from the pushed `Model::instance_type` (`IsInInstance`'s owner), a
+  party instance's cap of 5, and nil for the name/difficulty/player-difficulty slots that have no
+  producer — no repeated open-world `"none"` inside an instance.
+- `UnitInBattleground`: type 3 (battleground) plus an existing unit (every visible unit shares
+  the client's instance).
+- `GetDungeonDifficulty`/`GetRaidDifficulty`: the `dungeonDifficulty`/`playerDifficulty` CVar
+  rows, nil when the host never registered them (no fabricated normal tier).
+- `SetDungeonDifficulty`/`SetRaidDifficulty`: engine CVar writes (client selection); the server
+  `MSG_SET_DUNGEON_DIFFICULTY` echo is still a missing producer.
+- `GetOptOutOfLoot`/`SetOptOutOfLoot`: a per-VM `Model::opt_out_of_loot`, false by default;
+  `CMSG_OPT_OUT_OF_LOOT` (0x409) is still a missing producer, recorded, not simulated.
+- `UnitThreatSituation`: nil for every unit until an `SMSG_THREAT_UPDATE`-family producer
+  exists (was already nil; now owned with the reason documented).
+
+Not yet done for step 4: the app-side map-name/max-players feed (name and non-party caps stay
+nil/0), difficulty IDs/names from `MapDifficulty`, the difficulty CMSG and its server echo, the
+opt-out CMSG, and the threat update producer.

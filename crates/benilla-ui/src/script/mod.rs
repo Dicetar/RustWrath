@@ -79,6 +79,7 @@ mod newproxy;
 mod static_constants;
 mod wrath_natives;
 mod wrath_security;
+mod wrath_world;
 pub use client::FrameTimeRing;
 mod clock;
 mod cvar_checks;
@@ -711,6 +712,7 @@ fn open_state_for_target(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
         static_constants::install(&lua)?;
         newproxy::install(&lua)?;
         wrath_natives::install(&lua)?;
+        wrath_world::install(&lua)?;
         wrath_security::install(&lua)?;
     }
 

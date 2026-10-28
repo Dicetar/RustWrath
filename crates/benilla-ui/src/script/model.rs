@@ -472,6 +472,10 @@ pub(crate) struct Model {
     pub(crate) player_faction_masks: Option<(u32, u32)>,
     /// The current map's `Map.dbc` `InstanceType`, all `IsInInstance()` reads; `None` for no row.
     pub(crate) instance_type: Option<u32>,
+    /// `GetOptOutOfLoot`/`SetOptOutOfLoot`: the player's own loot-roll preference, false on a
+    /// fresh client. The reference also sends it to the server, a producer that does not exist
+    /// here yet.
+    pub(crate) opt_out_of_loot: bool,
     /// `CanShowResetInstances()`, the reference's four-term predicate (`0x495c90`), app-computed.
     pub(crate) can_reset_instances: bool,
     /// Friends, ignores and the last `/who`, display-resolved as the reference resolves them.
@@ -1490,6 +1494,7 @@ impl Model {
             realm_pvp: false,
             player_faction_masks: None,
             instance_type: None,
+            opt_out_of_loot: false,
             can_reset_instances: false,
             social: social::SocialState::default(),
             who_to_ui: false,
