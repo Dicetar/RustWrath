@@ -398,6 +398,11 @@ unique/suffix value. `container_item` uses those values for the addon item key a
 auctionability flow. Thus vanilla-shaped rolled links also mislead this installed
 consumer locally, independent of server validation. The actual addon flow has not run.
 
+`52d45983` resolves a bare Wrath item-string tooltip's random-property name through
+the existing item-name owner when the template is available, including cache rebuilds.
+It does not implement negative-suffix amount text, and unavailable suffix data still
+leaves the renderer's existing base-name fallback. No build/test/addon run occurred.
+
 `2ca39ead` additionally selects the active target for group-loot snapshot links.
 That owner retains the property but not the suffix factor, which remains zero.
 Group-loot announcements are a separate localized format-string path and remain
