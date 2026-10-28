@@ -381,6 +381,9 @@ impl super::UiScript {
         self.resolve();
         self.update_walk(elapsed);
         self.resolve();
+        // `<Animations>` advance after the frame walk, so a `Play`/`Stop` a handler made this
+        // tick starts from the alpha the walk settled, on the same `GetTime` clock.
+        super::animation::update(&self.lua);
         // A frame hid or showed under a still cursor: re-run the hover walk at the saved position,
         // as the reference's pump tail does (`0x765650` → `0x7660d0`). The hidden frame's OnLeave
         // already fired, so only the new winner's `OnEnter` fires.

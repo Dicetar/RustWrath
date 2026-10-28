@@ -82,8 +82,26 @@ Coordinating: Astra's item/container/addon lane is untouched; her commits below 
 ## Execution status
 
 Source-only under the campaign's standing restriction: no build, test, lint, generator, or
-graphical run yet. Success criteria above are unverified until execution is authorized. The
-first tracer is `OnLoad → Translation` on a Texture with rect movement asserted over time.
+graphical run yet. Success criteria above are unverified until execution is authorized.
+
+## Implemented (Alpha tracer, uncommitted at the time of writing)
+
+- `script/animation.rs`: a named-registry timeline. `Play` on a group schedules its children in
+  `order` batches (parallel within an order, `startDelay` honoured, later batches starting when
+  the previous batch's longest run ends); a lone animation starts at `now + startDelay`.
+- The tick (`script/tick.rs`, after the frame walk) advances every playing animation on
+  `Model::now`: an `Alpha` run captures the owner frame's alpha at its own start and writes
+  `from + change * t` through `WidgetArena::set_alpha`, so ordered fades chain correctly.
+- `OnPlay` fires when a run actually starts, `OnFinished` once at the end, `OnStop` on `Stop`;
+  a group completes when every child has finished. Handlers get the animation table as `self`,
+  so `self:GetRegionParent()` is the frame/region that declared the block.
+- The loader now passes the declaring frame/region as a child's owner (previously the group, so
+  `GetRegionParent` was wrong) and links a group's children in document order.
+
+Known limits of this tracer: only frame owners get the visual alpha (region alpha needs the
+region-state seam); `Translation`/`Rotation`/`Scale`/`Color`/`TextureCoord` run their timeline
+and signals but apply no visual change; easing (`smoothing`) is linear; the group's static batch
+schedule assumes durations do not change mid-run.
 
 ## First tracer (next commit)
 

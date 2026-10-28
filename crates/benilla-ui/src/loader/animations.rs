@@ -26,7 +26,7 @@ impl Loader<'_> {
         }
         for animations in children_named(el, "Animations") {
             for child in &animations.children {
-                self.build_animation(child, owner, owner_name, dbg);
+                self.build_animation(child, owner, owner_name, None, dbg);
             }
         }
     }
@@ -38,6 +38,7 @@ impl Loader<'_> {
         el: &Element,
         owner: &Table,
         owner_name: &str,
+        parent: Option<&Table>,
         dbg: &str,
     ) -> Option<Table> {
         let name = el
@@ -49,6 +50,7 @@ impl Loader<'_> {
             name.as_deref(),
             el.attrs(),
             owner,
+            parent,
         ) {
             Ok(animation) => animation,
             Err(error) => {
@@ -88,17 +90,39 @@ impl Loader<'_> {
             }
         }
         // A group's children are its animations; `$parent` names the group when it is named, else
-        // the declaring object, as the XML walker expands it.
-        for child in &el.children {
-            if child.tag.eq_ignore_ascii_case("Scripts") {
-                continue;
+        // the declaring object, as the XML walker expands it. The children keep the frame or
+        // region as their owner (`GetRegionParent`), with the group only their sequence parent.
+        if el.tag.eq_ignore_ascii_case("AnimationGroup") {
+            let children = match self.lua().create_table() {
+                Ok(children) => children,
+                Err(error) => {
+                    self.report.raise(format!("{dbg}: animation children: {error}"), &error);
+                    return Some(animation);
+                }
+            };
+            let mut count = 0;
+            for child in &el.children {
+                if child.tag.eq_ignore_ascii_case("Scripts") {
+                    continue;
+                }
+                if let Some(built) = self.build_animation(
+                    child,
+                    owner,
+                    name.as_deref().unwrap_or(owner_name),
+                    Some(&animation),
+                    dbg,
+                ) {
+                    count += 1;
+                    if let Err(error) = children.raw_set(count, built) {
+                        self.report
+                            .raise(format!("{dbg}: animation child {count}: {error}"), &error);
+                    }
+                }
             }
-            self.build_animation(
-                child,
-                &animation.clone(),
-                name.as_deref().unwrap_or(owner_name),
-                dbg,
-            );
+            if let Err(error) = crate::script::animation::link_children(&animation, children) {
+                self.report
+                    .raise(format!("{dbg}: animation group children: {error}"), &error);
+            }
         }
         Some(animation)
     }

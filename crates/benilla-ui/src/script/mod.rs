@@ -712,6 +712,7 @@ fn open_state_for_target(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
         static_constants::install(&lua)?;
         newproxy::install(&lua)?;
         wrath_natives::install(&lua)?;
+        animation::install(&lua)?;
         wrath_world::install(&lua)?;
         wrath_security::install(&lua)?;
     }
