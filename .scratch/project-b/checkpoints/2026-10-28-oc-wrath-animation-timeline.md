@@ -83,7 +83,7 @@ Coordinating: Astra's item/container/addon lane is untouched; her commits below 
 
 - `cargo check --locked --offline -p benilla-ui` clean (only the pre-existing deprecated
   `Atomic::fetch_update` warnings).
-- `cargo test --locked --offline -p benilla-ui --lib 'animation::tests'`: both new tests pass.
+- `cargo test --locked --offline -p benilla-ui --lib 'animation::tests'`: all three tests pass.
   `alpha_groups_sequence_and_fire_finished_once` proves the ordered fade-out/fade-in, the
   per-animation and group `OnFinished` firing exactly once, and no refire. The translation test
   proves the frame rect half-moves and lands through `frame_rect`/extract.
@@ -114,6 +114,11 @@ engine's proof is the two focused tests above.
   `GetRegionParent` was wrong) and links a group's children in document order.
 - `SetStartDelay(seconds)` writes the run's `startDelay` parameter, which is what stock
   `AlertFrames` Lua calls on its `animOut` child before `Play` (five call sites).
+- The programmatic constructor API installed addons use: `frame:CreateAnimationGroup([name])`
+  and `group:CreateAnimation(type[, name])`, plus `SetDuration`/`SetOrder`/`SetChange`/
+  `SetOffset(x, y)` and `Pause`/`Resume` (a paused run keeps its elapsed time across the tick).
+  Evidence from the installed AddOns: `CreateAnimationGroup` 13, `CreateAnimation` 82,
+  `SetDuration` 20, `SetOrder` 14, `SetOffset` 11, `SetChange` 8.
 
 Alpha applies to both owners: a frame through `WidgetArena::set_alpha`, a region through
 `RegionData::alpha` (the same slot `Region:SetAlpha` writes), so texture- and font-string-owned

@@ -177,6 +177,17 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
+    // `CreateAnimationGroup([name])` (3.3.5 only): the programmatic animation constructor the
+    // installed addons use; the returned group's `CreateAnimation(type[, name])` adds its children.
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        m.set(
+            "CreateAnimationGroup",
+            lua.create_function(|lua, (this, name): (Table, Value)| {
+                let name = optional_string(lua, &name);
+                crate::script::animation::create_group(lua, &this, name.as_deref())
+            })?,
+        )?;
+    }
     // Regions
     // `CreateTexture(name, layer, inherits)` (`0x773a20`).
     m.set(

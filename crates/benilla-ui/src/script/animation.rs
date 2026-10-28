@@ -30,6 +30,8 @@ const ANIMATION_SCRIPTS: &str = "__benilla_animation_scripts";
 const ANIMATION_PLAYING: &str = "__benilla_animation_playing";
 const ANIMATION_FINISHED: &str = "__benilla_animation_finished";
 const ANIMATION_PLAYED: &str = "__benilla_animation_played";
+const ANIMATION_PAUSED: &str = "__benilla_animation_paused";
+const ANIMATION_PAUSED_AT: &str = "__benilla_animation_paused_at";
 const ANIMATION_START: &str = "__benilla_animation_start";
 const ANIMATION_FROM: &str = "__benilla_animation_from";
 
@@ -61,6 +63,8 @@ pub(crate) fn build(
     object.set(ANIMATION_PLAYING, false)?;
     object.set(ANIMATION_FINISHED, false)?;
     object.set(ANIMATION_PLAYED, false)?;
+    object.set(ANIMATION_PAUSED, false)?;
+    object.set(ANIMATION_PAUSED_AT, 0.0)?;
     object.set(ANIMATION_START, 0.0)?;
     object.set(ANIMATION_FROM, 1.0)?;
     let params = lua.create_table()?;
@@ -77,6 +81,53 @@ pub(crate) fn build(
     object.set(
         "Stop",
         lua.create_function(|lua, this: Table| stop(lua, &this, true))?,
+    )?;
+    object.set(
+        "Pause",
+        lua.create_function(|lua, this: Table| pause(lua, &this))?,
+    )?;
+    object.set(
+        "Resume",
+        lua.create_function(|lua, this: Table| resume(lua, &this))?,
+    )?;
+    object.set(
+        "SetDuration",
+        lua.create_function(|lua, (this, value): (Table, Value)| {
+            set_param(lua, &this, "duration", value)
+        })?,
+    )?;
+    object.set(
+        "SetOrder",
+        lua.create_function(|lua, (this, value): (Table, Value)| {
+            set_param(lua, &this, "order", value)
+        })?,
+    )?;
+    object.set(
+        "SetChange",
+        lua.create_function(|lua, (this, value): (Table, Value)| {
+            set_param(lua, &this, "change", value)
+        })?,
+    )?;
+    object.set(
+        "SetOffset",
+        lua.create_function(|lua, (this, x, y): (Table, Value, Value)| {
+            set_param(lua, &this, "offsetX", x)?;
+            set_param(lua, &this, "offsetY", y)
+        })?,
+    )?;
+    // `group:CreateAnimation(type[, name])`: the programmatic child constructor. Stock XML never
+    // calls it; installed addons do (bartender4 and friends), and children it makes run through
+    // the same timeline as XML ones.
+    object.set(
+        "CreateAnimation",
+        lua.create_function(|lua, (this, kind, name): (Table, Value, Value)| {
+            if !is_group(&this)? {
+                return Err(mlua::Error::runtime("CreateAnimation on a non-group"));
+            }
+            let kind = super::binding_abi::string_arg(lua, kind, "CreateAnimation(type)")?;
+            let name = super::binding_abi::optional_string(lua, &name);
+            create_child(lua, &this, &kind, name.as_deref())
+        })?,
     )?;
     object.set(
         "IsPlaying",
@@ -127,6 +178,85 @@ pub(crate) fn link_children(group: &Table, children: Table) -> mlua::Result<()> 
     group.set(ANIMATION_CHILDREN, children)
 }
 
+/// `frame:CreateAnimationGroup([name])`: a programmatic group owned by `owner`. A name publishes
+/// it in the global namespace, as a named XML group does.
+pub(crate) fn create_group(lua: &Lua, owner: &Table, name: Option<&str>) -> mlua::Result<Table> {
+    let group = build(lua, "AnimationGroup", name, &[], owner, None)?;
+    link_children(&group, lua.create_table()?)?;
+    if let Some(name) = name {
+        lua.globals().set(name, group.clone())?;
+    }
+    Ok(group)
+}
+
+/// `group:CreateAnimation(type[, name])`: append a child owned by the group's owner.
+fn create_child(
+    lua: &Lua,
+    group: &Table,
+    kind: &str,
+    name: Option<&str>,
+) -> mlua::Result<Table> {
+    let owner: Table = group.get(ANIMATION_OWNER)?;
+    let child = build(lua, kind, name, &[], &owner, Some(group))?;
+    let children = match group.get::<Option<Table>>(ANIMATION_CHILDREN)? {
+        Some(children) => children,
+        None => {
+            let children = lua.create_table()?;
+            group.set(ANIMATION_CHILDREN, children.clone())?;
+            children
+        }
+    };
+    children.raw_set(children.raw_len() + 1, child.clone())?;
+    Ok(child)
+}
+
+/// `animation:SetDuration(seconds)` and friends: the numeric XML parameter of the same name.
+fn set_param(lua: &Lua, this: &Table, key: &str, value: Value) -> mlua::Result<()> {
+    let number = super::binding_abi::coerced_number(lua, Some(value));
+    let params: Table = this.get(ANIMATION_PARAMS)?;
+    params.set(key, number.to_string())
+}
+
+/// `Pause`: freeze the run where it is; a group freezes its children.
+fn pause(lua: &Lua, this: &Table) -> mlua::Result<()> {
+    if !this.get::<bool>(ANIMATION_PLAYING)? || this.get::<bool>(ANIMATION_PAUSED)? {
+        return Ok(());
+    }
+    let now = lua.app_data_ref::<Model>().expect("model app_data").now;
+    this.set(ANIMATION_PAUSED, true)?;
+    this.set(ANIMATION_PAUSED_AT, now)?;
+    if is_group(this)? {
+        if let Some(children) = this.get::<Option<Table>>(ANIMATION_CHILDREN)? {
+            for child in children.sequence_values::<Table>() {
+                pause(lua, &child?)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `Resume`: carry the frozen elapsed time into the start clock.
+fn resume(lua: &Lua, this: &Table) -> mlua::Result<()> {
+    if !this.get::<bool>(ANIMATION_PAUSED)? {
+        return Ok(());
+    }
+    let now = lua.app_data_ref::<Model>().expect("model app_data").now;
+    let paused_at: f64 = this.get(ANIMATION_PAUSED_AT)?;
+    if !is_group(this)? {
+        let start: f64 = this.get(ANIMATION_START)?;
+        this.set(ANIMATION_START, start + (now - paused_at))?;
+    }
+    this.set(ANIMATION_PAUSED, false)?;
+    if is_group(this)? {
+        if let Some(children) = this.get::<Option<Table>>(ANIMATION_CHILDREN)? {
+            for child in children.sequence_values::<Table>() {
+                resume(lua, &child?)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `Play`: start this animation (and, for a group, its children by `order`).
 fn play(lua: &Lua, this: &Table) -> mlua::Result<()> {
     let now = lua.app_data_ref::<Model>().expect("model app_data").now;
@@ -175,12 +305,14 @@ fn start_one(this: &Table, at: f64) -> mlua::Result<()> {
     this.set(ANIMATION_PLAYING, true)?;
     this.set(ANIMATION_FINISHED, false)?;
     this.set(ANIMATION_PLAYED, false)?;
+    this.set(ANIMATION_PAUSED, false)?;
     Ok(())
 }
 
 /// `Stop`: end a run and fire `OnStop` (the reference's stop signal), recursively for a group.
 fn stop(lua: &Lua, this: &Table, signal: bool) -> mlua::Result<()> {
     this.set(ANIMATION_PLAYING, false)?;
+    this.set(ANIMATION_PAUSED, false)?;
     if is_group(this)? {
         let Some(children) = this.get::<Option<Table>>(ANIMATION_CHILDREN)? else {
             return Ok(());
@@ -205,7 +337,7 @@ pub(super) fn update(lua: &Lua) {
     for entry in registry.sequence_values::<Table>() {
         let Ok(this) = entry else { continue };
         let playing = this.get::<bool>(ANIMATION_PLAYING).unwrap_or(false);
-        if !playing {
+        if !playing || this.get::<bool>(ANIMATION_PAUSED).unwrap_or(false) {
             continue;
         }
         if is_group(&this).unwrap_or(false) {
@@ -532,6 +664,42 @@ mod tests {
             "y landed: {}",
             rect.bottom
         );
+    }
+
+    #[test]
+    fn the_programmatic_constructors_and_setters_drive_a_run() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_screen_size(100.0, 100.0);
+        s.run(
+            r#"
+            f = CreateFrame("Frame")
+            f:SetSize(10, 10)
+            f:SetPoint("CENTER", 0, 0)
+            f:SetAlpha(1)
+            g = f:CreateAnimationGroup()
+            a = g:CreateAnimation("Alpha")
+            a:SetDuration(0.2)
+            a:SetChange(-1)
+            HITS = 0
+            a:SetScript("OnFinished", function() HITS = HITS + 1 end)
+        "#,
+        )
+        .unwrap();
+        s.run("g:Play()").unwrap();
+        s.tick(0.1);
+        s.run("g:Pause()").unwrap();
+        let frozen = s.eval::<f64>("return f:GetAlpha()").unwrap();
+        assert!(frozen > 0.4 && frozen < 0.6, "half faded: {frozen}");
+        s.tick(0.5);
+        assert_eq!(
+            s.eval::<f64>("return f:GetAlpha()").unwrap(),
+            frozen,
+            "paused runs do not advance"
+        );
+        s.run("g:Resume()").unwrap();
+        s.tick(0.15);
+        assert_eq!(s.eval::<f64>("return f:GetAlpha()").unwrap(), 0.0);
+        assert_eq!(s.eval::<i64>("return HITS").unwrap(), 1);
     }
 
     fn frame_rect(s: &UiScript, h: crate::widget::FrameHandle) -> crate::layout::Rect {
