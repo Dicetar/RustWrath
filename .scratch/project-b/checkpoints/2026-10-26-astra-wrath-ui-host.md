@@ -616,3 +616,10 @@ Mechanical constructor follow-through also claims the existing LootRow literal i
 `crates/benilla-ui/src/script/tests/tooltip_item/mechanics.rs`; no assertion changes.
 The same mechanical field propagation claims existing LootRow literals in
 `crates/benilla-app/src/ui_script/{loot_tests,game_menu_tests,escape_tests}.rs`.
+
+2026-10-28 delivery-planning claim at 2cefd8a5: this checkpoint and new
+`../work-packages/2026-10-28-private-alpha-delivery-plan.md` only. User requested
+a detailed design/architecture/reuse plan and confirmed private Windows alpha,
+existing local AzerothCore, stock UI first, installed addons staged afterward.
+Source/document reads and public primary-source research only; no implementation,
+subagents, new runtime verification or changes to existing issue acceptance/ADR status.
