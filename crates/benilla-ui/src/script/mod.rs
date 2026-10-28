@@ -332,7 +332,7 @@ pub use worldmap_arrow::ARROW_MODEL;
 pub(crate) use button::{refresh_label_lua, state_font_lua, LabelFont};
 pub(crate) use font_block::{face_loads, own_font_lua, SAME_FONT_HEIGHT};
 pub use inspect::{InspectCall, UnitReach};
-pub use instance::InstanceCall;
+pub use instance::{InstanceCall, InstanceInfo};
 pub use item_stats::{
     item_usable, ItemRecipe, ItemSetView, ItemSpellLine, ItemTemplateView, PlayerReqState,
     TaughtSpell,

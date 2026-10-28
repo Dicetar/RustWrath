@@ -17,7 +17,33 @@ pub fn instance_type_name(instance_type: u32) -> &'static str {
     }
 }
 
+/// The current map's `Map.dbc` facts the Wrath `GetInstanceInfo` answers, pushed by the app at
+/// world entry: the instance's name, its `InstanceType` and the player cap the DBC states.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InstanceInfo {
+    /// `MapName_Lang` (`Map.dbc` field 4); nil outside an instance.
+    pub name: Option<String>,
+    /// `Map.dbc` field 2: 0 none, 1 party, 2 raid, 3 battleground.
+    pub instance_type: u32,
+    /// The instance's player cap; 0 where the map/DBC does not state one (raid and battleground
+    /// caps come from difficulty tables that have no producer yet).
+    pub max_players: u32,
+}
+
 impl super::UiScript {
+    /// Push the current map's `Map.dbc` facts. Sets [`Model::instance_type`] too, so
+    /// `IsInInstance` and `GetInstanceInfo` share one source.
+    pub fn set_instance_info(&mut self, info: Option<InstanceInfo>) {
+        let mut model = self.model_mut();
+        let instance_type = info.as_ref().map(|i| i.instance_type);
+        if model.instance_type != instance_type {
+            model.instance_type = instance_type;
+        }
+        if model.instance_info != info {
+            model.instance_info = info;
+        }
+    }
+
     /// Push the current map's `Map.dbc` `InstanceType`, `None` for a map with no row. Deviation:
     /// `IsInInstance()` then answers `nil, "none"`, because the reference returns two results
     /// without pushing either (`0x48a7a9`), a stack bug.

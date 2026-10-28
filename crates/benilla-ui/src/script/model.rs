@@ -472,6 +472,9 @@ pub(crate) struct Model {
     pub(crate) player_faction_masks: Option<(u32, u32)>,
     /// The current map's `Map.dbc` `InstanceType`, all `IsInInstance()` reads; `None` for no row.
     pub(crate) instance_type: Option<u32>,
+    /// The current map's `Map.dbc` name and player cap, the `GetInstanceInfo` slots the type row
+    /// alone does not carry. `None` before a world entry.
+    pub(crate) instance_info: Option<super::instance::InstanceInfo>,
     /// `GetOptOutOfLoot`/`SetOptOutOfLoot`: the player's own loot-roll preference, false on a
     /// fresh client. The reference also sends it to the server, a producer that does not exist
     /// here yet.
@@ -1494,6 +1497,7 @@ impl Model {
             realm_pvp: false,
             player_faction_masks: None,
             instance_type: None,
+            instance_info: None,
             opt_out_of_loot: false,
             can_reset_instances: false,
             social: social::SocialState::default(),

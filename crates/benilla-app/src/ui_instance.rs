@@ -418,8 +418,22 @@ fn feed_instance(
             }
         }
 
-        script
-            .set_instance_type(here.and_then(|m| maps.as_ref().and_then(|c| c.0.instance_type(m))));
+        let info = here.and_then(|m| {
+            let catalog = maps.as_ref()?;
+            let instance_type = catalog.0.instance_type(m)?;
+            Some(benilla_ui::script::InstanceInfo {
+                name: catalog
+                    .0
+                    .name(m)
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_string),
+                instance_type,
+                // The group contract's cap; raid and battleground caps come from difficulty
+                // tables that have no producer here yet.
+                max_players: if instance_type == 1 { 5 } else { 0 },
+            })
+        });
+        script.set_instance_info(info);
         let party_dungeon = |m: u32| maps.as_ref().is_some_and(|c| c.0.is_party_dungeon(m));
         script.set_can_reset_instances(state.can_reset(here, &party_dungeon, now));
     })

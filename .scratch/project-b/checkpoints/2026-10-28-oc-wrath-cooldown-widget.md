@@ -23,6 +23,7 @@ Editing:
 - `crates/benilla-ui/src/script/wrath_world.rs` (new; owner-backed unit/world queries)
 - `crates/benilla-ui/src/script/model.rs` (instance type, opt-out preference)
 - `crates/benilla-app/src/ui_script/extract/mod.rs`
+- `crates/benilla-app/src/ui_instance.rs` (instance name/cap feed)
 - `crates/benilla-app/src/ui_pass.rs`
 - `crates/benilla-app/src/shaders/ui_quad.wgsl`
 - `crates/benilla-app/src/ui_script/wrath_ui_slice_tests.rs` (fixture rows only)
@@ -133,9 +134,10 @@ Known deviations / gaps to verify:
 `wrath_world.rs` (installed only for the Wrath target, after `wrath_natives`) replaces the six
 bootstrap answers:
 
-- `GetInstanceInfo`: type from the pushed `Model::instance_type` (`IsInInstance`'s owner), a
-  party instance's cap of 5, and nil for the name/difficulty/player-difficulty slots that have no
-  producer — no repeated open-world `"none"` inside an instance.
+- `GetInstanceInfo`: type from the pushed `Model::instance_type` (`IsInInstance`'s owner); the
+  app's `ui_instance.rs` now also pushes the `Map.dbc` name and a party cap of 5 through
+  `InstanceInfo` (outside an instance the name stays nil). Difficulty ID/name and player
+  difficulty remain nil — no producer — instead of repeating the open-world `"none"`.
 - `UnitInBattleground`: type 3 (battleground) plus an existing unit (every visible unit shares
   the client's instance).
 - `GetDungeonDifficulty`/`GetRaidDifficulty`: the `dungeonDifficulty`/`playerDifficulty` CVar
@@ -147,6 +149,6 @@ bootstrap answers:
 - `UnitThreatSituation`: nil for every unit until an `SMSG_THREAT_UPDATE`-family producer
   exists (was already nil; now owned with the reason documented).
 
-Not yet done for step 4: the app-side map-name/max-players feed (name and non-party caps stay
-nil/0), difficulty IDs/names from `MapDifficulty`, the difficulty CMSG and its server echo, the
-opt-out CMSG, and the threat update producer.
+Not yet done for step 4: difficulty IDs/names from `MapDifficulty` and raid/battleground caps
+(0 for now), the difficulty CMSG and its server echo, the opt-out CMSG, and the threat update
+producer.

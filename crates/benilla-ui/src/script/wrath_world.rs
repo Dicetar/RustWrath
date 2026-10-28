@@ -16,22 +16,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     // `GetInstanceInfo()` (`UnitPopup.lua:245`, `Minimap.lua:486`): `(name, instanceType,
     // difficultyID, difficultyName, maxPlayers, playerDifficultyID, isDynamicDifficulty,
-    // instanceID)`. The type is the pushed `Map.dbc` row; the open world's is `"none"`. The name
-    // and max-players columns are not pushed yet, and no difficulty producer exists, so those
-    // slots stay nil above type 0 rather than repeating the open-world answers inside an
-    // instance. A party instance's cap is the group contract's five.
+    // instanceID)`. The pushed `Map.dbc` row supplies the type, name and player cap (a party
+    // instance's five); no difficulty producer exists, so those slots stay nil. Outside an
+    // instance the name is nil, the open world's answer, even though its map row has a name.
     g.set(
         "GetInstanceInfo",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let instance_type = model.instance_type.unwrap_or(0);
-            let max_players = if instance_type == 1 { 5 } else { 0 };
+            let info = model.instance_info.as_ref();
+            let name = match info {
+                Some(i) if instance_type != 0 => match i.name.as_deref() {
+                    Some(n) => Value::String(lua.create_string(n)?),
+                    None => Value::Nil,
+                },
+                _ => Value::Nil,
+            };
+            let max_players = info
+                .filter(|_| instance_type != 0)
+                .map_or(0, |i| i.max_players);
             Ok(mlua::MultiValue::from_vec(vec![
-                Value::Nil,
+                name,
                 Value::String(lua.create_string(instance_type_name(instance_type))?),
                 Value::Nil,
                 Value::Nil,
-                Value::Integer(max_players),
+                Value::Integer(i64::from(max_players)),
                 Value::Nil,
                 Value::Boolean(false),
                 Value::Integer(0),
