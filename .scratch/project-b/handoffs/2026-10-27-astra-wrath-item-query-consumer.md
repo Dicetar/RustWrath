@@ -421,3 +421,31 @@ path; substituting scaled amounts into localized enchant text; restoring propert
 7..11 in native item descriptors; preserving the suffix factor in loot replication.
 Do not report this as complete negative-suffix tooltips, item stats or server behavior.
 No build/test/new case, table read/probe, generator or runtime execution occurred.
+
+### Raw-link Lua suffix names (719d1b6d, source only)
+
+Wrath GetItemInfo now resolves a negative random-property ID through the existing
+lent CallHost -> ScriptCallHost -> ItemSteps -> RandomProperties catalog. ItemSteps
+adds one optional read-only access to that existing resource. No second suffix cache
+or all-table VM push is introduced. The catalog's actual selected-locale suffix joins
+the cached base item name through the existing VM ITEM_SUFFIX_TEMPLATE, and the link
+formatter retains the signed property, factor, gems and render level supplied by
+the query. Positive properties and donor mode retain their existing paths.
+
+When the host/catalog/localized suffix is unavailable, the negative-property query
+returns no GetItemInfo result, rather than presenting the base name as a completed
+rolled name. GetItemIcon still reads the cached icon independently. No amount, seed
+or stat is inferred from the suffix label. New SystemParam admission, exact query
+ABI, cached/uncached addon behavior and multilingual output remain unverified.
+
+The local AC spellitemenchantment_dbc.sql and itemrandomsuffix_dbc.sql contain schema
+definitions but no row content establishing client text-token substitution. The
+server allocation arithmetic establishes numeric amounts, not how native 12340
+renders its localized enchant strings. No guessed token-replacement renderer was
+added. Native property-slot and loot-factor loss still block complete item projection.
+
+No builds/tests/new cases, imports/extractors, table loads, generators or runtime
+operations occurred. The next concrete Questie dependency found is its compatibility
+wrapper's call to the absent global GetItemCooldown(itemID), independently of the
+GetContainerItemCooldown and GetSpellCooldown APIs already present. Coordinate that
+item query with OC's active cooldown campaign before changing its presentation owners.

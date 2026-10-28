@@ -355,4 +355,13 @@ localized scaled enchant text and native descriptor/loot-factor losses remain op
 the scaled data accessor is not yet a rendered stat consumer. No checks/tests/new cases,
 real catalog load or runtime acceptance occurred.
 
+719d1b6d connects negative-suffix raw GetItemInfo names to the existing catalog via
+the lent item host, without duplicating suffix data in the VM. It uses the observed
+localized suffix plus ITEM_SUFFIX_TEMPLATE and retains all supplied link fields;
+missing host/catalog/name data remains unavailable. Positive/donor behavior and the
+independent icon query remain unchanged. Source-only: the optional resource access
+and all query/addon behavior are uncompiled/untested. Numeric allocation data still
+has no established localized tooltip-token renderer, and native descriptor/loot losses
+remain open. Questie's global GetItemCooldown(itemID) dependency is separately absent.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
