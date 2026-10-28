@@ -2,6 +2,34 @@
 
 ## Latest verification supersession — 2026-10-28
 
+### Later WP3 source follow-through (base 7fe6f5e4; not covered by that pass)
+
+OC's 05090606 retained the real loot-response suffix factor through the Wrath
+decoder and shared LootItem. Astra now retains it in LootRow and uses it in
+LootReads::view's existing target-aware link projection. All three production view
+calls (event, read and refresh) pass the actual script target. Delayed-template
+resolution rebuilds from the retained window item, so it no longer inserts zero
+into a negative-suffix Wrath loot link. Coin rows have factor zero. The donor
+snapshot formatter is unchanged. SetLootItem already passes row.link to build_block,
+so its existing source-link retention receives the same payload.
+
+Only the two production files and mechanical zero additions to existing LootRow
+fixtures changed. No new tests/assertions, build, test, linter, addon or runtime
+execution occurred. This repairs the source data path, not server validation or
+scaled suffix-stat text. OC's animation/protocol/adapter source is untouched.
+
+WP2 remains incomplete. Current wrath.rs drops map_id/item_count/vote_mask and
+auto_pass when translating into the donor shared roll events; ui_loot_roll and
+GetLootRollItemInfo still have the donor contract. A further source dependency is
+confirmed in the local stock FrameXML at
+`F:/AI/tmp/opencode/full/Interface/FrameXML/LootFrame.lua:341-387`: disabled buttons
+concatenate reasonNeed/reasonGreed/reasonDisenchant into localized keys; Disenchant
+also formats deSkillRequired. Mask-only booleans with nil reason/skill placeholders
+would raise in stock Lua. The wire start carries no reason or skill fields, so
+recover their client/catalog derivation before claiming a complete twelve-value
+binding. No synthetic reason or skill value was introduced. OC's nil/default
+animation and parent changes are present but remain outside Astra's earlier pin.
+
 The historical source-only and pending-grant statements below are superseded only
 for compilation/existing-suite evidence by the one authorized pass at
 `3e97bc4d17a76309f47a3e94a3511e6611243741`: UI/app-lib check passed; UI library

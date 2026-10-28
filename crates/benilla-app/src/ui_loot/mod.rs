@@ -841,7 +841,8 @@ fn coin_icon(copper: u32) -> &'static str {
 }
 
 /// One wire row for the Lua: the icon from the wire display id, the rest from the item template.
-/// The link's suffix factor is 0, as the wire's `randomSuffix` always is (`LootMgr.cpp:842`).
+/// The initial link uses the donor layout; `LootReads::view` projects the retained
+/// property and suffix factor into the active Wrath layout.
 fn resolve_item(
     item: &LootItem,
     items: &Items,
@@ -882,6 +883,7 @@ fn resolve_item(
         link,
         // The raw id, as the client's loot record keeps it; the tooltip resolves it (`0x52b7bf`).
         random_property_id: item.random_property_id,
+        suffix_factor: item.suffix_factor,
     }
 }
 
@@ -923,6 +925,7 @@ fn snapshot(
             // No item behind it: a modified click finds nil.
             link: None,
             random_property_id: 0,
+            suffix_factor: 0,
         }));
     }
     for it in &window.items {
@@ -1194,7 +1197,8 @@ impl LootReads<'_, '_> {
                 for row in snap.rows.iter_mut().flatten().filter(|row| !row.is_coin) {
                     if let (Some(name), Some(quality)) = (&row.name, row.quality) {
                         row.link = Some(crate::ui_items::item_link_full_in_target(
-                            target, row.item_id, 0, row.random_property_id, 0, name, quality,
+                            target, row.item_id, 0, row.random_property_id, row.suffix_factor,
+                            name, quality,
                         ));
                     }
                 }

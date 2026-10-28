@@ -604,3 +604,15 @@ no rerun or new test is authorized by this claim.
 suffix factor that `ActiveRoll` discards. Retain it and place it in Wrath snapshot
 links; preserve the vanilla link behavior. The Wrath packet path and tests remain
 outside this claim, and no execution is authorized.
+
+2026-10-28 WP3 consumer claim at 7fe6f5e4: clean
+`crates/benilla-app/src/ui_loot/mod.rs` and
+`crates/benilla-ui/src/script/loot.rs`, plus this checkpoint and the existing item
+consumer handoff. OC's shared LootItem now retains the factor. Carry it into LootRow
+and the existing Wrath link projection, including delayed-template snapshots. Keep
+the donor formatter behavior and coin rows unchanged. Existing literal additions
+only; no new tests, execution, protocol/adapter edits or OC animation changes.
+Mechanical constructor follow-through also claims the existing LootRow literal in
+`crates/benilla-ui/src/script/tests/tooltip_item/mechanics.rs`; no assertion changes.
+The same mechanical field propagation claims existing LootRow literals in
+`crates/benilla-app/src/ui_script/{loot_tests,game_menu_tests,escape_tests}.rs`.

@@ -80,6 +80,7 @@ fn coin_and_two_items() -> LootState {
                 money: 12_345,
                 link: None,
                 random_property_id: 0,
+                suffix_factor: 0,
             }),
             Some(LootRow {
                 item_id: 0,
@@ -91,6 +92,7 @@ fn coin_and_two_items() -> LootState {
                 money: 0,
                 link: None,
                 random_property_id: 0,
+                suffix_factor: 0,
             }),
             Some(LootRow {
                 item_id: 0,
@@ -102,6 +104,7 @@ fn coin_and_two_items() -> LootState {
                 money: 0,
                 link: None,
                 random_property_id: 0,
+                suffix_factor: 0,
             }),
         ],
     }
@@ -406,6 +409,7 @@ fn shipped_loot_frame_pages_five_items() {
                 money: 0,
                 link: None,
                 random_property_id: 0,
+                suffix_factor: 0,
             })
         })
         .collect();
@@ -632,6 +636,7 @@ fn ctrl_and_shift_on_a_loot_row_preview_and_post_without_looting() {
                 money: 12_345,
                 link: None, // synthesized row, no item behind it
                 random_property_id: 0,
+                suffix_factor: 0,
             }),
             Some(LootRow {
                 item_id: 2589,
@@ -643,6 +648,7 @@ fn ctrl_and_shift_on_a_loot_row_preview_and_post_without_looting() {
                 money: 0,
                 link: Some(WOOL_LINK.into()),
                 random_property_id: 0,
+                suffix_factor: 0,
             }),
         ],
     }));
@@ -753,6 +759,7 @@ fn shipped_loot_frame_hands_a_master_row_to_a_candidate() {
             money: 0,
             link: None,
             random_property_id: 0,
+            suffix_factor: 0,
         })
     };
     s.set_loot(Some(LootState {
@@ -907,6 +914,7 @@ fn the_master_loot_menu_groups_raid_candidates_by_subgroup() {
             money: 0,
             link: None,
             random_property_id: 0,
+            suffix_factor: 0,
         })],
     }));
     s.fire_event("LOOT_OPENED", vec![]);
@@ -1092,6 +1100,7 @@ fn loot_row_awaiting_its_template_opens_clean() {
             money: 0,
             link: None,
             random_property_id: 0,
+            suffix_factor: 0,
         })],
     }));
     s.fire_event("LOOT_OPENED", vec![]);
@@ -1154,6 +1163,7 @@ fn loot_row_awaiting_its_template_opens_clean() {
             money: 0,
             link: None,
             random_property_id: 0,
+            suffix_factor: 0,
         })],
     }));
     s.fire_event("LOOT_OPENED", vec![]);
