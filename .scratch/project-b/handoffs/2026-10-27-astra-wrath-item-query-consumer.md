@@ -394,6 +394,17 @@ Follow-up `8fd90bea`: the existing `LootStartRoll` carries a suffix factor, and
 loss described immediately above. Wrath network delivery of a roll start and the
 resulting UI behavior remain unverified; vanilla link output is unchanged.
 
+Source trace at `2eb9c1f2`: the current Wrath gameplay decoder and adapter have
+ordinary loot response/removal/release handling but no group-roll event variants or
+dispatch for `SMSG_LOOT_START_ROLL`, `SMSG_LOOT_ROLL`, `SMSG_LOOT_ROLL_WON` or
+`SMSG_LOOT_ALL_PASSED`. The existing UI consumes the corresponding SessionEvents,
+so the UI factor change alone cannot establish a Wrath group-roll path. AzerothCore
+`src/server/game/Groups/Group.cpp` writes the start packet with map ID, item count
+and vote mask in addition to the donor fields; its all-passed property/suffix order
+also differs from the start packet. Protocol ownership belongs to OC; check the
+complete inbound and vote-command contract before implementing it. This is a source
+finding, not runtime proof, and no test or socket operation ran.
+
 `2b9bcff7` applies target-aware links to both sides of the trade snapshot and to
 item-watch refreshes, including uncached own items. The existing trade row supplies
 the property and factor but no gem fields; the formatter emits zero gems. The change
