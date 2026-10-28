@@ -403,6 +403,11 @@ the existing item-name owner when the template is available, including cache reb
 It does not implement negative-suffix amount text, and unavailable suffix data still
 leaves the renderer's existing base-name fallback. No build/test/addon run occurred.
 
+Source trace: the normal app tick uses `HostedVm::run`, lending the call host around
+`UiScript::tick`, which invokes item-cache tooltip rebuilds. This supports the lookup
+on that path when the host is available; harnesses or calls without a host still take
+the existing unavailable-name fallback. No rebuild or host admission was executed.
+
 `2ca39ead` additionally selects the active target for group-loot snapshot links.
 That owner retains the property but not the suffix factor, which remains zero.
 Group-loot announcements are a separate localized format-string path and remain
