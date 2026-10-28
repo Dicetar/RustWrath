@@ -2,7 +2,7 @@
 
 Date: 2026-10-28
 Owner: OpenCode (client/gameplay integration lead)
-Base HEAD: `b89af3a2` (difficulty send path; Astra's keyring/merchant/trade commits below it)
+Base HEAD: `4a7d5a2f` (Astra's tooltip commits on top of this campaign's `b89af3a2`)
 Goal: make the 3.3.5a stock UI animate on the reference's timeline, so `<Animations>` reach the
 screen instead of sitting static, and every stock animation script (`OnPlay`/`OnStop`/
 `OnFinished`) runs when the reference runs it.
