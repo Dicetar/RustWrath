@@ -155,6 +155,13 @@ impl<R: Read + Seek> WdtReader<R> {
         let mut wmo_path: Option<String> = None;
         let mut modf: Option<Vec<u8>> = None;
         loop {
+            // `Azeroth.wdt` ends its chunk list with a zero-length `MWMO` stub and three padding
+            // bytes. After a complete `MAIN`, fewer than a whole header is end-of-file, never a
+            // chunk to walk; before it, the existing truncation error still applies.
+            let remaining = stream_end.saturating_sub(self.reader.stream_position()?);
+            if has_adt.is_some() && remaining < 8 {
+                break;
+            }
             let mut hdr = [0u8; 8];
             if !read_full(&mut self.reader, &mut hdr)? {
                 break; // clean EOF
@@ -359,6 +366,16 @@ mod tests {
         assert!(unflagged.global_wmo().is_none());
         assert!(!unflagged.is_one_object());
         assert!(!wdt.is_one_object());
+    }
+
+    /// The selected `Azeroth.wdt` ends with a zero-length `MWMO` stub and three padding bytes;
+    /// a partial trailing header is end-of-file, not a truncated chunk.
+    #[test]
+    fn a_trailing_partial_chunk_header_is_ignored() {
+        let mut bytes = synth_wdt(&[(30, 30)], false);
+        bytes.extend_from_slice(&[0, 0, 0]);
+        let wdt = parse(bytes).expect("trailing padding is EOF");
+        assert!(wdt.get_tile(30, 30).expect("in range").has_adt);
     }
 
     #[test]
