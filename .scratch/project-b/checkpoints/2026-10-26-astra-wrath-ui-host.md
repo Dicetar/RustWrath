@@ -411,3 +411,11 @@ sixteen localized names and a mask. entities.rs logs a load failure and omits th
 resource on mismatch. Select this exact known layout by field count and the existing
 Wrath locale-column owner, retaining strict parsing and the donor layout. No generic
 trailing-field guess, new catalog/owner, negative-suffix scaling, tests or execution.
+
+Dependent enchant claim at 82999308: clean formats/src/item_visuals.rs only.
+SpellItemEnchantment loader likewise requires 24 donor fields, while pinned AC
+DBCStructure.h/DBCfmt.h define 38 for 12340: charges at 1, names 14..29,
+name mask 30, visual 31, flags 32, five requirement/source tail words. AC Item.cpp
+uses the field-32 bit 1 for soulbinding. Select the exact known schema and offsets;
+retain the donor parser and catalog interface. No render, native ownership, new
+catalog, suffix scaling, tests or execution is included.
