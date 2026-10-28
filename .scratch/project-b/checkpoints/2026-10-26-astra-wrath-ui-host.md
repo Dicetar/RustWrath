@@ -490,3 +490,12 @@ receives no UiScript, so the existing host must pass its current target explicit
 be001728 failed assemble_clamp_low_edge: the inset change subtracts the positive
 low-edge displacement from the opposite edge, shrinking the frame. Correct both axes
 to add that displacement. No test edits or rerun are authorized by the consumed pass.
+
+2026-10-28 Questie item-query claim at 960e78fd: clean UI script/char_stats.rs,
+script/item_stats/wrath.rs, script/host.rs and app/script_calls.rs,
+ui_script/wrath_queries.rs. Questie TrackerLinePool.lua:529 and TrackerUtils.lua:351
+call missing GetInventoryItemID, GetItemSpell and IsEquippableItem. Project existing
+inventory slot entry, cached item inventory type and on-use spell catalog name/ID.
+Preserve donor bindings, missing-data behavior and existing owners; no new cache,
+packet, gameplay authority, tests or execution. Host query and target ABI remain
+unverified pending a fresh grant.
