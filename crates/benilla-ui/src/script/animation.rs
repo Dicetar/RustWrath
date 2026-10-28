@@ -89,6 +89,17 @@ pub(crate) fn build(
         "GetRegionParent",
         lua.create_function(|_, this: Table| this.get::<Option<Table>>(ANIMATION_OWNER))?,
     )?;
+    // `SetStartDelay(seconds)`: AlertFrames' alert Lua re-arms its fade-out animation this way
+    // before `Play`; the value is read when the animation or its group starts.
+    object.set(
+        "SetStartDelay",
+        lua.create_function(|lua, (this, value): (Table, Value)| {
+            let seconds = super::binding_abi::coerced_number(lua, Some(value));
+            let params: Table = this.get(ANIMATION_PARAMS)?;
+            params.set("startDelay", seconds.to_string())?;
+            Ok(())
+        })?,
+    )?;
     object.set(
         "SetScript",
         lua.create_function(|_, (this, name, func): (Table, String, Option<Value>)| {

@@ -97,6 +97,8 @@ graphical run yet. Success criteria above are unverified until execution is auth
   so `self:GetRegionParent()` is the frame/region that declared the block.
 - The loader now passes the declaring frame/region as a child's owner (previously the group, so
   `GetRegionParent` was wrong) and links a group's children in document order.
+- `SetStartDelay(seconds)` writes the run's `startDelay` parameter, which is what stock
+  `AlertFrames` Lua calls on its `animOut` child before `Play` (five call sites).
 
 Alpha applies to both owners: a frame through `WidgetArena::set_alpha`, a region through
 `RegionData::alpha` (the same slot `Region:SetAlpha` writes), so texture- and font-string-owned
