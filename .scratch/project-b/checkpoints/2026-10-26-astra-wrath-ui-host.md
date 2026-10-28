@@ -556,3 +556,9 @@ Installed aux-addon/core/tooltip.lua:295 calls missing GetBuybackItemLink(slot).
 Expose the existing streamed buyback object's target-shaped link through the merchant
 row and a Wrath-only Lua binding. Existing catalog and object owners supply facts;
 vanilla behavior remains unchanged. No runtime, test or protocol work authorized.
+
+2026-10-28 group-loot factor claim at d1dc10d6: clean
+`crates/benilla-app/src/ui_loot_roll.rs`. The existing `LootStartRoll` carries a
+suffix factor that `ActiveRoll` discards. Retain it and place it in Wrath snapshot
+links; preserve the vanilla link behavior. The Wrath packet path and tests remain
+outside this claim, and no execution is authorized.
