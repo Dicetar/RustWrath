@@ -94,6 +94,13 @@ pub(crate) fn keyring_size_in_target(target: UiTarget, level: u32) -> u32 {
     }
 }
 
+fn keyring_span(target: UiTarget) -> u8 {
+    match target {
+        UiTarget::Wrath335 => WRATH_KEYRING_SLOTS,
+        UiTarget::Vanilla112 => KEYRING_SLOTS,
+    }
+}
+
 /// Lua `(bag, 1-based slot)` to the wire `(bag_index, slot)`, the one mapping every drain shares.
 /// The backpack, the bank's generic slots, the keyring and the doll ([`EQUIPMENT_BAG`]: live id
 /// minus one, 1..=23 and the bank-bag buttons 64..=69) all land on [`BAG_PLAYER_INVENTORY`], so a
@@ -105,10 +112,7 @@ pub(crate) fn wire_pos(bag: i64, slot1: u32) -> Option<(u8, u8)> {
 }
 
 pub(crate) fn wire_pos_in_target(target: UiTarget, bag: i64, slot1: u32) -> Option<(u8, u8)> {
-    let keyring_slots = match target {
-        UiTarget::Wrath335 => WRATH_KEYRING_SLOTS,
-        UiTarget::Vanilla112 => KEYRING_SLOTS,
-    };
+    let keyring_slots = keyring_span(target);
     let slot0 = u8::try_from(slot1.checked_sub(1)?).ok()?;
     match bag {
         0 if slot0 < PACK_SLOTS => Some((BAG_PLAYER_INVENTORY, SLOT_PACK_FIRST + slot0)),
@@ -440,8 +444,19 @@ fn sum_of(
     scope: InventoryScope,
     weight: impl Fn(&ObjectFields) -> u32,
 ) -> u32 {
+    sum_of_in_target(UiTarget::Vanilla112, store, objects, entry, scope, weight)
+}
+
+fn sum_of_in_target(
+    target: UiTarget,
+    store: &ObjectFields,
+    objects: &Objects,
+    entry: u32,
+    scope: InventoryScope,
+    weight: impl Fn(&ObjectFields) -> u32,
+) -> u32 {
     let mut total = 0u32;
-    walk_inventory::<()>(store, objects, scope, |_, _, guid| {
+    walk_inventory_filtered::<()>(store, objects, scope, keyring_span(target), item_is_whole, |_, _, guid| {
         if let Some(fields) = objects.object(guid) {
             if fields.object_entry() == Some(entry) {
                 total = total.wrapping_add(weight(fields));
@@ -464,13 +479,24 @@ pub(crate) fn action_count(
     entry: u32,
     template: Option<&benilla_protocol::ItemInfo>,
 ) -> u32 {
-    if template.is_some_and(benilla_protocol::ItemInfo::has_finite_charges) {
-        sum_of(store, objects, entry, InventoryScope::DEFAULT, |fields| {
+    action_count_in_target(UiTarget::Vanilla112, store, objects, entry, template)
+}
+
+pub(crate) fn action_count_in_target(
+    target: UiTarget,
+    store: &ObjectFields,
+    objects: &Objects,
+    entry: u32,
+    template: Option<&benilla_protocol::ItemInfo>,
+) -> u32 {
+    let charged = template.is_some_and(benilla_protocol::ItemInfo::has_finite_charges);
+    sum_of_in_target(target, store, objects, entry, InventoryScope::DEFAULT, |fields| {
+        if charged {
             fields.item_spell_charges(0).unwrap_or(0).unsigned_abs()
-        })
-    } else {
-        count_of(store, objects, entry, InventoryScope::DEFAULT)
-    }
+        } else {
+            fields.item_stack_count().unwrap_or(1)
+        }
+    })
 }
 
 /// Every entry's stack count in one walk at mask 0 ([`InventoryScope::DEFAULT`]): [`count_of`] for
@@ -512,12 +538,22 @@ pub(crate) fn find_item(
     entry: u32,
     search: ItemSearch,
 ) -> Option<(u8, u8, u64)> {
+    find_item_in_target(UiTarget::Vanilla112, store, objects, entry, search)
+}
+
+pub(crate) fn find_item_in_target(
+    target: UiTarget,
+    store: &ObjectFields,
+    objects: &Objects,
+    entry: u32,
+    search: ItemSearch,
+) -> Option<(u8, u8, u64)> {
     let scope = if search.equipment_only {
         InventoryScope::EQUIPMENT_ONLY
     } else {
         InventoryScope::DEFAULT
     };
-    walk_inventory(store, objects, scope, |bag, slot, guid| {
+    walk_inventory_filtered(store, objects, scope, keyring_span(target), item_is_whole, |bag, slot, guid| {
         let f = objects.object(guid)?;
         if f.object_entry() != Some(entry) {
             return None;
@@ -591,10 +627,7 @@ pub(crate) fn has_key_in_target(
         guids.push(bag_guid);
         contents(bag_guid, objects, &mut guids);
     }
-    let keyring_slots = match target {
-        UiTarget::Wrath335 => WRATH_KEYRING_SLOTS,
-        UiTarget::Vanilla112 => KEYRING_SLOTS,
-    };
+    let keyring_slots = keyring_span(target);
     for i in 0..keyring_slots {
         guids.push(store.player_keyring_slot(i).unwrap_or(0));
     }

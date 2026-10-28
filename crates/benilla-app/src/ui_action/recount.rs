@@ -15,7 +15,7 @@ use benilla_ui::script::{ScriptValue, UiScript};
 use crate::items::Items;
 use crate::net::{NetCommands, ObjectStore, Objects, SelfPlayer, WorldEnterCascadeMessage};
 use crate::query_cache::Ask;
-use crate::ui_items::action_count;
+use crate::ui_items::action_count_in_target;
 
 /// The bar's 120 slots, as Lua action ids.
 const ACTION_SLOTS: std::ops::RangeInclusive<u32> = 1..=120;
@@ -62,7 +62,7 @@ fn arrival_counts(script: &mut UiScript, counter: &Counter) {
         };
         slot.count = *counts
             .entry(slot.action)
-            .or_insert_with(|| counter.count(slot.action));
+            .or_insert_with(|| counter.count(script.target(), slot.action));
         script.set_action(action, Some(slot));
     }
     script.fire_event("ACTIONBAR_SLOT_CHANGED", vec![ScriptValue::Int(0)]);
@@ -77,12 +77,12 @@ pub(crate) struct Counter<'a> {
 }
 
 impl Counter<'_> {
-    /// `0x4e6d20(entry)`: 0 without an active player, else [`action_count`] over the entry's
+    /// `0x4e6d20(entry)`: 0 without an active player, else [`action_count_in_target`] over the entry's
     /// template, requested here as the reference does (`0x4e6d78`).
-    fn count(&self, entry: u32) -> u32 {
+    fn count(&self, target: benilla_ui::script::UiTarget, entry: u32) -> u32 {
         self.store.map_or(0, |s| {
             let template = self.items.template(entry, 0, Ask::Event(self.commands));
-            action_count(&s.0, self.objects, entry, template)
+            action_count_in_target(target, &s.0, self.objects, entry, template)
         })
     }
 }
@@ -90,7 +90,7 @@ impl Counter<'_> {
 /// `0x4e5c70(entry)`: no active player counts 0 (`0x4e6d20`). Each slot is read as the VM holds it
 /// when its turn comes, so a handler that rewrites a later slot is seen.
 pub(crate) fn recount(script: &mut UiScript, counter: &Counter, entry: u32) {
-    let count = counter.count(entry);
+    let count = counter.count(script.target(), entry);
     for action in ACTION_SLOTS {
         let Some(mut slot) = script
             .action_slot(action)

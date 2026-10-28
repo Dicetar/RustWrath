@@ -5,7 +5,7 @@
 //! (`GetBonusBarOffset`: the form's `SpellShapeshiftForm.dbc` BonusActionBar column, `0x4e4fc0`).
 
 use crate::query_cache::Ask;
-use crate::ui_items::action_count;
+use crate::ui_items::action_count_in_target;
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -230,7 +230,7 @@ pub(super) fn feed_actions(
                             })
                             .unwrap_or_else(|| MISSING_ITEM_ICON.to_string());
                         let count = store
-                            .map(|s| action_count(&s.0, &objects, button.action, template.as_ref()))
+                            .map(|s| action_count_in_target(script.target(), &s.0, &objects, button.action, template.as_ref()))
                             .unwrap_or(0);
                         // The Count gate (`0x4e5250`, [`ItemInfo::is_consumable`]) reads the icon's
                         // template, so it rides the same push.

@@ -693,7 +693,7 @@ impl CallHost for ScriptCallHost<'_, '_> {
                 appliers.cursor().trade_enchant(script, partner, check);
             }
             ScriptCall::Trade(TradeCall::Close) => self.close_trade(script, &mut at.mark),
-            ScriptCall::Trade(call) => tail = appliers.trade().apply(call),
+            ScriptCall::Trade(call) => tail = appliers.trade().apply(script.target(), call),
             ScriptCall::Trainer(TrainerCall::Buy { trainer, spell_id }) => {
                 appliers.trainer().buy(trainer, spell_id);
             }

@@ -14,7 +14,7 @@ use crate::items::Items;
 use crate::names::NameCache;
 use crate::net::{Guid, NetCommands, ObjectStore, Objects, SelfPlayer};
 use crate::query_cache::Ask;
-use crate::ui_items::{item_link, wire_pos};
+use crate::ui_items::item_link;
 use crate::ui_script::{gate, SweepApp, SweepLeg, UiFeed};
 use crate::ui_session::{CoreCloses, LatchApp, LatchedWindow, NpcWindow};
 

@@ -265,6 +265,7 @@ impl TradeSession {
     #[allow(clippy::too_many_arguments)] // the sender's own arguments
     pub(crate) fn send_placement(
         &mut self,
+        target: benilla_ui::script::UiTarget,
         commands: &NetCommands,
         objects: &Objects,
         items: &Items,
@@ -275,7 +276,7 @@ impl TradeSession {
     ) -> bool {
         let fields = objects.player().and(objects.object(guid));
         let (Some(fields), Some((wire_bag, wire_slot))) =
-            (fields, crate::ui_items::wire_pos(bag, bag_slot))
+            (fields, crate::ui_items::wire_pos_in_target(target, bag, bag_slot))
         else {
             info!(target: "trade", "set item: slot {} <- bag {bag}/{bag_slot} not sent", slot + 1);
             return false;
@@ -1057,7 +1058,7 @@ pub(crate) fn touch_trade(
             let (Some(_), Some(item), Some((wire_bag, wire_slot))) = (
                 objects.player(),
                 own_item(guid, count, objects, items),
-                crate::ui_items::wire_pos(bag, bag_slot),
+                crate::ui_items::wire_pos_in_target(script.target(), bag, bag_slot),
             ) else {
                 return;
             };
@@ -1286,6 +1287,7 @@ fn feed_trade(
                     // An item (`0x4bf652`-`0x4bf6fa`): its send's answer is not read (`0x4bf6be`),
                     // then the cursor clears and the slot is stored (`0x4bf6ca`-`0x4bf6fa`).
                     let _ = trade.send_placement(
+                        script.target(),
                         &commands,
                         &objects,
                         &rows.items,

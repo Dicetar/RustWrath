@@ -358,7 +358,7 @@ pub(crate) fn use_action(
                 return UseOutcome::Done;
             };
             let route = item_action_route(&template, |s| {
-                crate::ui_items::find_item(&store.0, &ladder.objects, b.action, s)
+                crate::ui_items::find_item_in_target(script.target(), &store.0, &ladder.objects, b.action, s)
             });
             let ((bag_index, slot0, guid), equip) = match route {
                 ItemRoute::Use(pos) => (pos, false),
@@ -383,7 +383,7 @@ pub(crate) fn use_action(
                     // The item sent is the cursor's: the bar's own, or with no control (the set
                     // refused) whatever was held (`0x5e18c9`).
                     benilla_ui::script::AutoEquip::Sent { bag, slot, guid } => {
-                        if let Some((bag_index, wire_slot)) = crate::ui_items::wire_pos(bag, slot) {
+                        if let Some((bag_index, wire_slot)) = crate::ui_items::wire_pos_in_target(script.target(), bag, slot) {
                             crate::ui_items::send_auto_equip(
                                 script,
                                 &ladder.objects,

@@ -10,7 +10,7 @@ use bevy::prelude::*;
 
 use benilla_protocol::messages::BAG_PLAYER_INVENTORY;
 
-use super::{buyback_order, wire_pos, MerchantOpen, RepairPurse, BUYBACK_SLOT_FIRST};
+use super::{buyback_order, MerchantOpen, RepairPurse, BUYBACK_SLOT_FIRST};
 use crate::net::{ClientCommand, Guid, NetCommands, ObjectStore, SelfPlayer};
 
 /// The open vendor, the player, and what the verbs send through.
@@ -136,7 +136,7 @@ impl MerchantSteps<'_, '_> {
                 let (Some(vendor), Some((store, guid))) = (open.vendor, me_pair) else {
                     return;
                 };
-                let Some((bag_index, bag_slot)) = wire_pos(bag, slot) else {
+                let Some((bag_index, bag_slot)) = crate::ui_items::wire_pos_in_target(script.target(), bag, slot) else {
                     debug!(
                         "ui_merchant: slot buy to an unaddressable slot ({bag}, {slot}) — ignored"
                     );
