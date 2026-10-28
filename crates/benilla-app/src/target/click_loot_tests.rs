@@ -326,6 +326,7 @@ fn linen(slot: u8) -> LootItem {
         count: 1,
         display_info_id: 0,
         random_property_id: 0,
+        suffix_factor: 0,
         slot_type: slot_type::ALLOW_LOOT,
     }
 }

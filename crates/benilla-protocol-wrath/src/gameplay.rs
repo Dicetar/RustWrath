@@ -202,6 +202,16 @@ pub fn loot_release(guid: u64) -> Vec<u8> {
     guid.to_le_bytes().to_vec()
 }
 
+/// `CMSG_LOOT_ROLL` (`GroupHandler.cpp:494-499`): the roll's raw `u64` item guid, the item slot
+/// word and the vote byte (`0` pass, `1` need, `2` greed, `3` disenchant).
+pub fn loot_roll(guid: u64, item_slot: u32, roll_type: u8) -> Vec<u8> {
+    let mut p = Vec::with_capacity(13);
+    p.extend_from_slice(&guid.to_le_bytes());
+    p.extend_from_slice(&item_slot.to_le_bytes());
+    p.push(roll_type);
+    p
+}
+
 /// `CMSG_LIST_INVENTORY` (`ItemHandler.cpp:844`): the vendor guid.
 pub fn list_inventory(vendor: u64) -> Vec<u8> {
     vendor.to_le_bytes().to_vec()
@@ -816,6 +826,9 @@ pub struct LootItem {
     pub count: u32,
     pub display_info_id: u32,
     pub random_property_id: u32,
+    /// `randomSuffix`, the rolled suffix factor. 12340's loot response carries the real value;
+    /// item links must preserve it separately from [`Self::random_property_id`].
+    pub suffix_factor: u32,
     pub slot_type: u8,
 }
 
@@ -1105,6 +1118,54 @@ pub enum ServerEvent {    AttackStart { attacker: u64, victim: u64 },
     LootRemoved { slot: u8 },
     LootMoney { amount: u32 },
     LootClearMoney,
+    /// `SMSG_LOOT_START_ROLL` (`Group.cpp::SendLootStartRoll`, `:861-871`): the roll's allocated
+    /// item guid, 3.3.3's map id, slot, item, suffix factor, property, stack count, countdown and
+    /// the per-player vote mask.
+    LootStartRoll {
+        guid: u64,
+        map_id: u32,
+        item_slot: u32,
+        item_id: u32,
+        suffix_factor: u32,
+        random_property_id: u32,
+        item_count: u32,
+        countdown_ms: u32,
+        vote_mask: u8,
+    },
+    /// `SMSG_LOOT_ROLL` (`Group.cpp::SendLootRoll`, `:908-930`): a vote or dice result, plus
+    /// 12340's automatic-pass byte.
+    LootRoll {
+        guid: u64,
+        item_slot: u32,
+        roller: u64,
+        item_id: u32,
+        suffix_factor: u32,
+        random_property_id: u32,
+        roll_number: u8,
+        roll_type: u8,
+        auto_pass: bool,
+    },
+    /// `SMSG_LOOT_ROLL_WON` (`Group.cpp::SendLootRollWon`, `:933-951`): the winner and roll,
+    /// with the item fields ahead of the winner guid.
+    LootRollWon {
+        guid: u64,
+        item_slot: u32,
+        item_id: u32,
+        suffix_factor: u32,
+        random_property_id: u32,
+        winner: u64,
+        roll_number: u8,
+        roll_type: u8,
+    },
+    /// `SMSG_LOOT_ALL_PASSED` (`Group.cpp::SendLootAllPassed`, `:954-961`): property before
+    /// suffix, the reverse of the other three packets.
+    LootAllPassed {
+        guid: u64,
+        item_slot: u32,
+        item_id: u32,
+        random_property_id: u32,
+        suffix_factor: u32,
+    },
     ItemPush(ItemPush),
     VendorInventory {
         vendor: u64,
@@ -1327,6 +1388,10 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_LOOT_REMOVED => body.first().copied().ok_or_else(|| anyhow::anyhow!("payload cut short")).map(|slot| ServerEvent::LootRemoved { slot }),
         SMSG_LOOT_MONEY_NOTIFY => u32_body(body).map(|amount| ServerEvent::LootMoney { amount }),
         SMSG_LOOT_CLEAR_MONEY => Ok(ServerEvent::LootClearMoney),
+        SMSG_LOOT_START_ROLL => read_loot_start_roll(body),
+        SMSG_LOOT_ROLL => read_loot_roll(body),
+        SMSG_LOOT_ROLL_WON => read_loot_roll_won(body),
+        SMSG_LOOT_ALL_PASSED => read_loot_all_passed(body),
         SMSG_ITEM_PUSH_RESULT => read_item_push(body),
         SMSG_LIST_INVENTORY => read_list_inventory(body),
         SMSG_BUY_ITEM => read_buy_item(body),
@@ -2907,10 +2972,8 @@ fn read_loot_response(b: &[u8]) -> Result<ServerEvent> {
             item_id: r.u32()?,
             count: r.u32()?,
             display_info_id: r.u32()?,
-            random_property_id: {
-                let _random_suffix = r.u32()?;
-                r.u32()?
-            },
+            suffix_factor: r.u32()?,
+            random_property_id: r.u32()?,
             slot_type: r.u8()?,
         });
     }
@@ -2920,6 +2983,61 @@ fn read_loot_response(b: &[u8]) -> Result<ServerEvent> {
 fn read_loot_release(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     Ok(ServerEvent::LootReleaseResponse { guid: r.u64()?, result: r.u8()? })
+}
+
+fn read_loot_start_roll(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::LootStartRoll {
+        guid: r.u64()?,
+        map_id: r.u32()?,
+        item_slot: r.u32()?,
+        item_id: r.u32()?,
+        suffix_factor: r.u32()?,
+        random_property_id: r.u32()?,
+        item_count: r.u32()?,
+        countdown_ms: r.u32()?,
+        vote_mask: r.u8()?,
+    })
+}
+
+fn read_loot_roll(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::LootRoll {
+        guid: r.u64()?,
+        item_slot: r.u32()?,
+        roller: r.u64()?,
+        item_id: r.u32()?,
+        suffix_factor: r.u32()?,
+        random_property_id: r.u32()?,
+        roll_number: r.u8()?,
+        roll_type: r.u8()?,
+        auto_pass: r.u8()? != 0,
+    })
+}
+
+fn read_loot_roll_won(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::LootRollWon {
+        guid: r.u64()?,
+        item_slot: r.u32()?,
+        item_id: r.u32()?,
+        suffix_factor: r.u32()?,
+        random_property_id: r.u32()?,
+        winner: r.u64()?,
+        roll_number: r.u8()?,
+        roll_type: r.u8()?,
+    })
+}
+
+fn read_loot_all_passed(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::LootAllPassed {
+        guid: r.u64()?,
+        item_slot: r.u32()?,
+        item_id: r.u32()?,
+        random_property_id: r.u32()?,
+        suffix_factor: r.u32()?,
+    })
 }
 
 fn read_item_push(b: &[u8]) -> Result<ServerEvent> {
@@ -3268,6 +3386,7 @@ mod tests {
                     count: 2,
                     display_info_id: 1117,
                     random_property_id: 0,
+                    suffix_factor: 0,
                     slot_type: 0,
                 }],
             }

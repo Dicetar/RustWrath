@@ -2483,6 +2483,7 @@ mod tests {
             count,
             display_info_id: 1000 + entry,
             random_property_id: 0,
+            suffix_factor: 0,
             slot_type: 0,
         }
     }
@@ -3511,6 +3512,7 @@ mod tests {
             count: 1,
             display_info_id: 0,
             random_property_id: 0,
+            suffix_factor: 0,
             slot_type: slot_type::ALLOW_LOOT,
         };
         let open = |app: &mut App| {

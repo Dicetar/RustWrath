@@ -155,6 +155,7 @@ pub(super) fn row(slot: u8, entry: u32) -> LootItem {
         count: 1,
         display_info_id: CLOTH_DISPLAY,
         random_property_id: 0,
+        suffix_factor: 0,
         slot_type: slot_type::ALLOW_LOOT,
     }
 }

@@ -185,6 +185,13 @@ pub const SMSG_ITEM_QUERY_SINGLE_RESPONSE: u16 = 0x058;
 pub const CMSG_LOOT: u32 = 0x15D;
 pub const CMSG_LOOT_MONEY: u32 = 0x15E;
 pub const CMSG_LOOT_RELEASE: u32 = 0x15F;
+/// Group-loot roll family (`Opcodes.h:700-704`). The roll guid is the server's allocated item
+/// guid, not the looted creature, and every guid in this family is a raw `u64`.
+pub const SMSG_LOOT_ALL_PASSED: u16 = 0x29E;
+pub const SMSG_LOOT_ROLL_WON: u16 = 0x29F;
+pub const CMSG_LOOT_ROLL: u32 = 0x2A0;
+pub const SMSG_LOOT_START_ROLL: u16 = 0x2A1;
+pub const SMSG_LOOT_ROLL: u16 = 0x2A2;
 /// The player's pass-on-loot preference: one u32 flag (`GroupHandler.cpp:1082`).
 pub const CMSG_OPT_OUT_OF_LOOT: u32 = 0x409;
 /// The client's dungeon-difficulty selection: one u32 mode (`MiscHandler.cpp:1264`,

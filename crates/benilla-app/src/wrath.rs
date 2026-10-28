@@ -67,7 +67,9 @@ use benilla_protocol::messages::{
     ActionButton, AttackSwingError, AttackerState as ProtocolAttackerState,
     GossipOption as ProtocolGossipOption, ItemDamage as ProtocolItemDamage, ItemInfo,
     ItemPushResult, ItemSpellEntry as ProtocolItemSpell,
-    ItemUseSpell as ProtocolItemUseSpell, LootItem as ProtocolLootItem,
+    ItemUseSpell as ProtocolItemUseSpell, LootAllPassed as ProtocolLootAllPassed,
+    LootItem as ProtocolLootItem, LootRoll as ProtocolLootRoll,
+    LootRollWon as ProtocolLootRollWon, LootStartRoll as ProtocolLootStartRoll,
     NpcTextBlock as ProtocolNpcTextBlock, PeriodicAuraLog as ProtocolPeriodicAuraLog,
     PeriodicTick as ProtocolPeriodicTick, QuestComplete, QuestDetails, QuestGiverList,
     QuestListEntry, QuestObjective, QuestOfferReward, QuestRequestItems, QuestRewardItem,
@@ -2834,6 +2836,7 @@ fn translate_gameplay(
                     count: i.count,
                     display_info_id: i.display_info_id,
                     random_property_id: i.random_property_id,
+                    suffix_factor: i.suffix_factor,
                     slot_type: i.slot_type,
                 })
                 .collect(),
@@ -2849,6 +2852,81 @@ fn translate_gameplay(
             vec![SessionEvent::LootMoneyNotify { amount }]
         }
         WrathGameplayEvent::LootClearMoney => vec![SessionEvent::LootClearMoney],
+        // 12340's map id, stack count and vote mask have no donor field. They stay on the
+        // protocol event for the owner extension recorded in the group-loot checkpoint; the
+        // donor roll owner consumes the identity, item, countdown and both property words.
+        WrathGameplayEvent::LootStartRoll {
+            guid,
+            map_id: _,
+            item_slot,
+            item_id,
+            suffix_factor,
+            random_property_id,
+            item_count: _,
+            countdown_ms,
+            vote_mask: _,
+        } => vec![SessionEvent::LootStartRoll(ProtocolLootStartRoll {
+            looted_target: guid,
+            item_slot,
+            item_id,
+            random_property_id,
+            suffix_factor,
+            countdown_ms,
+        })],
+        // `auto_pass` has no donor field; it is retained on the protocol event for the chat-line
+        // extension recorded in the checkpoint.
+        WrathGameplayEvent::LootRoll {
+            guid,
+            item_slot,
+            roller,
+            item_id,
+            suffix_factor,
+            random_property_id,
+            roll_number,
+            roll_type,
+            auto_pass: _,
+        } => vec![SessionEvent::LootRoll(ProtocolLootRoll {
+            looted_target: guid,
+            item_slot,
+            roller,
+            item_id,
+            random_property_id,
+            suffix_factor,
+            roll_number,
+            roll_type,
+        })],
+        WrathGameplayEvent::LootRollWon {
+            guid,
+            item_slot,
+            item_id,
+            suffix_factor,
+            random_property_id,
+            winner,
+            roll_number,
+            roll_type,
+        } => vec![SessionEvent::LootRollWon(ProtocolLootRollWon {
+            looted_target: guid,
+            item_slot,
+            item_id,
+            random_property_id,
+            suffix_factor,
+            winner,
+            roll_number,
+            roll_type,
+        })],
+        WrathGameplayEvent::LootAllPassed {
+            guid,
+            item_slot,
+            item_id,
+            random_property_id,
+            suffix_factor,
+        } => vec![SessionEvent::LootAllPassed(ProtocolLootAllPassed {
+            looted_target: guid,
+            item_slot,
+            item_id,
+            random_property_id,
+            suffix_factor,
+        })],
         WrathGameplayEvent::ItemPush(p) => vec![SessionEvent::ItemPushResult(ItemPushResult {
             player_guid: p.player,
             from_npc: p.from_npc,
@@ -3002,6 +3080,14 @@ fn wrath_tap_commands(
             ClientCommand::LootRelease { guid } => Some((
                 benilla_protocol_wrath::opcode::CMSG_LOOT_RELEASE,
                 gameplay::loot_release(guid),
+            )),
+            ClientCommand::LootRoll {
+                looted_target,
+                item_slot,
+                roll_type,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_LOOT_ROLL,
+                gameplay::loot_roll(looted_target, item_slot, roll_type),
             )),
             ClientCommand::OptOutOfLoot { pass } => Some((
                 benilla_protocol_wrath::opcode::CMSG_OPT_OUT_OF_LOOT,

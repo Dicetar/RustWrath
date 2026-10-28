@@ -775,6 +775,7 @@ pub(super) fn seed_ui_fixture(
                             count: 1,
                             display_info_id: DISP_STONE,
                             random_property_id: 0,
+                            suffix_factor: 0,
                             slot_type: 0,
                         },
                         benilla_protocol::messages::LootItem {
@@ -783,6 +784,7 @@ pub(super) fn seed_ui_fixture(
                             count: 3,
                             display_info_id: DISP_FOOD,
                             random_property_id: 0,
+                            suffix_factor: 0,
                             slot_type: 0,
                         },
                     ],

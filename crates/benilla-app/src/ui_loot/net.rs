@@ -973,6 +973,7 @@ mod tests {
                 count: 1,
                 display_info_id: 1117,
                 random_property_id: 0,
+                suffix_factor: 0,
                 slot_type: 0,
             }],
         );
@@ -1651,6 +1652,7 @@ mod tests {
                         count: 1,
                         display_info_id: 1117,
                         random_property_id: 0,
+                        suffix_factor: 0,
                         slot_type: 0,
                     }],
                 },
@@ -1710,6 +1712,7 @@ mod tests {
                         count: 1,
                         display_info_id: 1,
                         random_property_id: 0,
+                        suffix_factor: 0,
                         slot_type: 0,
                     }],
                 },

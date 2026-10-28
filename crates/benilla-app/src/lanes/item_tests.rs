@@ -255,6 +255,7 @@ fn fished(rows: &[(u8, u32)]) -> SessionEvent {
                 count: 1,
                 display_info_id: 0,
                 random_property_id: 0,
+                suffix_factor: 0,
                 slot_type: benilla_protocol::messages::slot_type::ALLOW_LOOT,
             })
             .collect(),
