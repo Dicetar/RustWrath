@@ -3003,6 +3003,10 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_LOOT_RELEASE,
                 gameplay::loot_release(guid),
             )),
+            ClientCommand::OptOutOfLoot { pass } => Some((
+                benilla_protocol_wrath::opcode::CMSG_OPT_OUT_OF_LOOT,
+                u32::from(pass).to_le_bytes().to_vec(),
+            )),
             ClientCommand::Logout => Some((
                 benilla_protocol_wrath::opcode::CMSG_LOGOUT_REQUEST,
                 gameplay::logout_request(),

@@ -98,6 +98,7 @@ impl LootSteps<'_, '_> {
             LootCall::Close { failed } => self.end_window(script, failed),
             LootCall::GiveMaster { slot, candidate } => self.give_master(slot, candidate),
             LootCall::SetAutoLoot(byte) => self.set_auto_loot(script, byte),
+            LootCall::OptOut { pass } => self.opt_out_of_loot(pass),
             LootCall::Resume { depth: owed } => {
                 depth = owed;
                 if self.loot.then.len() > depth {
@@ -123,6 +124,12 @@ impl LootSteps<'_, '_> {
         if byte && self.latch.0.is_some() {
             self.sweep(script, false);
         }
+    }
+
+    /// `SetOptOutOfLoot`: the client's pass-on-loot preference goes out as
+    /// `CMSG_OPT_OUT_OF_LOOT` (0x409, `GroupHandler.cpp:1082`: one u32 flag).
+    fn opt_out_of_loot(&mut self, pass: bool) {
+        let _ = self.net.0.send(ClientCommand::OptOutOfLoot { pass });
     }
 
     /// `OpenItem 0x5edc80` from its `SetAutoLoot` (`0x5edcb6`) on, the call having chosen the

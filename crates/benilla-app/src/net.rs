@@ -1580,6 +1580,9 @@ pub(crate) enum ClientCommand {
         item_slot: u32,
         roll_type: u8,
     },
+    /// `CMSG_OPT_OUT_OF_LOOT`: the player's pass-on-loot preference (`SetOptOutOfLoot`), one u32
+    /// flag. No 1.12 opcode, so the vanilla writer drops it and the wrath tap sends it.
+    OptOutOfLoot { pass: bool },
     /// `CMSG_LOOT_MASTER_GIVE`: `slot` is the wire slot. Success is `SMSG_LOOT_REMOVED`, a refusal
     /// a `MASTER_*` loot error.
     LootMasterGive {

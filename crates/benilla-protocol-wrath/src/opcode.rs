@@ -185,6 +185,8 @@ pub const SMSG_ITEM_QUERY_SINGLE_RESPONSE: u16 = 0x058;
 pub const CMSG_LOOT: u32 = 0x15D;
 pub const CMSG_LOOT_MONEY: u32 = 0x15E;
 pub const CMSG_LOOT_RELEASE: u32 = 0x15F;
+/// The player's pass-on-loot preference: one u32 flag (`GroupHandler.cpp:1082`).
+pub const CMSG_OPT_OUT_OF_LOOT: u32 = 0x409;
 pub const SMSG_LOOT_RESPONSE: u16 = 0x160;
 pub const SMSG_LOOT_RELEASE_RESPONSE: u16 = 0x161;
 pub const SMSG_LOOT_REMOVED: u16 = 0x162;

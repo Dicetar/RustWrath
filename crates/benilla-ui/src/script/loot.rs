@@ -26,6 +26,9 @@ pub enum LootCall {
     GiveMaster { slot: u32, candidate: u32 },
     /// `SetAutoLoot(byte)` (`0x5df460`), which the engine's interactions make, never a verb.
     SetAutoLoot(bool),
+    /// `SetOptOutOfLoot(value)` (`UnitPopup.lua:1305`, `:1308`): the player's pass-on-loot
+    /// preference, sent as `CMSG_OPT_OUT_OF_LOOT` (0x409; `GroupHandler.cpp:1082` reads a u32).
+    OptOut { pass: bool },
     /// The rest of a loot call once the handlers its signal ran have returned, as the
     /// reference's function goes on after `SignalEvent` runs them in place: the bind stash after
     /// `LOOT_BIND_CONFIRM` (`0x4c2917` after `0x4c290f`), the coin click's close after

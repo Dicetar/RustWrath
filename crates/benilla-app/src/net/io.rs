@@ -1612,6 +1612,9 @@ pub(super) fn writer_loop(
                         item_slot,
                         roll_type,
                     } => w.loot_roll(looted_target, item_slot, roll_type),
+                    // No 1.12 opcode: `CMSG_OPT_OUT_OF_LOOT` belongs to the 3.3.5 wire and the
+                    // wrath tap sends it there.
+                    ClientCommand::OptOutOfLoot { .. } => Ok(()),
                     ClientCommand::QuestgiverQuery { npc, quest } => {
                         w.questgiver_query_quest(npc, quest)
                     }

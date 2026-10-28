@@ -86,9 +86,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // `GetOptOutOfLoot()` / `SetOptOutOfLoot(value)` (`UnitPopup.lua:238`, `:1305`, `:1308`):
-    // the player's own preference, false on a fresh client. The reference sends
-    // `CMSG_OPT_OUT_OF_LOOT` (0x409); that producer is not wired here yet, so the preference is
-    // stored client-side and the gap is recorded rather than papered over.
+    // the player's own preference, false on a fresh client. A set also submits the send
+    // (`CMSG_OPT_OUT_OF_LOOT`, 0x409), which the app's loot steps put on the wrath wire.
     g.set(
         "GetOptOutOfLoot",
         lua.create_function(|lua, ()| {
@@ -99,11 +98,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "SetOptOutOfLoot",
         lua.create_function(|lua, value: Option<Value>| {
-            let on = flag_or_default(value.as_ref(), 0) != 0;
+            let pass = flag_or_default(value.as_ref(), 0) != 0;
             lua.app_data_mut::<Model>()
                 .expect("model app_data")
-                .opt_out_of_loot = on;
-            Ok(())
+                .opt_out_of_loot = pass;
+            super::calls::submit(
+                lua,
+                super::ScriptCall::Loot(super::LootCall::OptOut { pass }),
+            )
         })?,
     )?;
 
