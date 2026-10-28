@@ -437,3 +437,13 @@ must use that observed localized name and existing ITEM_SUFFIX_TEMPLATE, or rema
 unavailable, rather than returning a known unsuffixed name. Keep positive/donor paths
 and raw link instance fields unchanged. No new catalog/cache, packet, stat formatter,
 tests or execution. New SystemParam admission remains unverified until granted.
+
+2026-10-28 raw item-cooldown query claim at 3e6535c6: clean UI script/host.rs,
+script/item_stats/wrath.rs and app/script_calls.rs, ui_script/wrath_queries.rs.
+QuestieCompat.lua:201-205 delegates to missing GetItemCooldown(itemID), and its tracker
+expects GetTime start/duration/enable. Read cached ItemInfo::use_spell and the existing
+Cooldowns::info_item/ui_triple with UiClock through the existing query host. No new
+resource/parameter, timer, query packet or change to OC's widget/recovery owners.
+Keep item category overrides and held states; missing world/template/spell/clock facts
+stay unavailable. Preserve donor registration and avoid any modern C_Container alias.
+No new tests/cases, checks, imports or runtime execution are authorized.
