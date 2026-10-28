@@ -366,12 +366,14 @@ impl RandomProperties {
 /// suffixed row, else the plain name (`0x5d8ba5`). The template is the VM's
 /// ([`RandomProperties::suffix_template`]); before a VM has been read, the stock `"%s %s"`. Every
 /// surface that shows an item name goes through here.
+/// A loaded 12340 catalog also resolves negative IDs through ItemRandomSuffix's own name table.
 pub(crate) fn item_display_name(
     base: &str,
     random_property_id: i32,
     props: Option<&RandomProperties>,
 ) -> String {
-    let Some((props, row)) = props.and_then(|p| Some((p, p.catalog.get(random_property_id)?)))
+    let Some((props, suffix)) =
+        props.and_then(|p| Some((p, p.catalog.suffix_name(random_property_id)?)))
     else {
         return base.to_string();
     };
@@ -380,7 +382,7 @@ pub(crate) fn item_display_name(
         template,
         &[
             benilla_ui::strings::Arg::S(base),
-            benilla_ui::strings::Arg::S(&row.suffix),
+            benilla_ui::strings::Arg::S(suffix),
         ],
     )
 }
