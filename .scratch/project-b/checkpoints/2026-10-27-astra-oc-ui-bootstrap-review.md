@@ -142,3 +142,30 @@ Astra's subsequent 8e919cec bag-space query was committed after this smoke and h
 build/test evidence. The current worktree is clean after explicit-path source commits.
 No test cases, builds/tests, generators, game/socket/WM/server/DB or graphical runs were
 performed by Astra in this continuation. Full stock-client replacement stays the gate.
+
+## 2026-10-28 OC world-query follow-up
+
+Current source at e8298b54 includes OC c3c27a6f, 2b04b6de, 03ed4d1f and b89af3a2.
+The former unconditional world/difficulty stubs were moved into wrath_world.rs; map
+name/cap now has an app feed, and loot/difficulty requests have source paths to the
+Wrath command tap. The checkpoint explicitly leaves difficulty response parsing,
+instance difficulty and threat producers open. These commits have not been built or
+exercised by Astra's be001728 pass, whose pinned tree precedes them.
+
+Source-review findings for OC:
+- GetInstanceInfo uses instance_type.unwrap_or(0) and emits the open-world type,
+  maxPlayers=0, dynamic=false and instanceID=0 even when those facts are unavailable.
+  The current code therefore still makes positive open-world/zero assertions before
+  a map feed or for missing instance details. Distinguish unavailable from observed
+  open world using the existing source/target contract; do not count it as complete.
+- UnitInBattleground considers model.unit(token).is_some() enough to conclude the unit
+  shares the current battleground. The unit resolver may return group/name snapshots
+  without a visible object. A remote group member does not necessarily share this
+  player's instance; the map type alone cannot establish that unit's membership.
+  Keep unsupported membership unknown until the unit/session owner supplies it.
+- GetDungeonDifficulty/GetRaidDifficulty read registered CVars while server echoes
+  remain unparsed. They are locally retained selections, not proof of the server's
+  confirmed difficulty. GetInstanceInfo's difficulty and raid/BG caps remain open.
+
+The voice-disabled decision is retained. No test, build, network/game/WM/server/DB or
+graphical operation was run during this review; findings are source observations.
