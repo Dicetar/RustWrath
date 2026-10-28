@@ -7,6 +7,11 @@
 //! `<Random enchantment>`. An item object carries its own enchants (`ITEM_FIELD_ENCHANTMENT`
 //! 2..6) and reads the table only for the name, off `ITEM_FIELD_RANDOM_PROPERTIES_ID`. The
 //! localized suffix is columns 7..14, read at `0x1c + 4*locale`.
+//!
+//! 12340 keeps ID/internal-name/enchant columns in the same positions, but its name block
+//! has sixteen strings (7..22) and the mask is 23: AzerothCore DBCStructure.h
+//! `ItemRandomPropertiesEntry` / DBCfmt.h `ItemRandomPropertiesfmt`. This is still the
+//! positive-property table; negative IDs belong to the separate `ItemRandomSuffix` table.
 
 use std::collections::HashMap;
 
@@ -14,7 +19,7 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{field_count, loc_str, loc_str_index, parse, u32_at};
 
 const ITEM_RANDOM_PROPERTIES: &str = "DBFilesClient\\ItemRandomProperties.dbc";
 
@@ -67,6 +72,10 @@ impl RandomPropertyCatalog {
 }
 
 pub(crate) fn item_random_properties_schema() -> Schema {
+    schema_with_locales(8)
+}
+
+fn schema_with_locales(locales: usize) -> Schema {
     let mut s = Schema::new("ItemRandomProperties");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
     s.add_field(SchemaField::new("Name", FieldType::String));
@@ -76,7 +85,7 @@ pub(crate) fn item_random_properties_schema() -> Schema {
             FieldType::UInt32,
         ));
     }
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Suffix{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("SuffixFlags", FieldType::UInt32));
@@ -89,17 +98,26 @@ pub fn load_random_property_catalog(chain: &mut Chain) -> Result<RandomPropertyC
     let bytes = chain
         .read_file(ITEM_RANDOM_PROPERTIES)
         .with_context(|| format!("reading {ITEM_RANDOM_PROPERTIES}"))?;
-    let rs = parse(
-        &bytes,
-        item_random_properties_schema(),
-        "ItemRandomProperties",
-    )?;
+    let wrath = field_count(&bytes) == Some(24);
+    let schema = if wrath {
+        schema_with_locales(16)
+    } else {
+        item_random_properties_schema()
+    };
+    let rs = parse(&bytes, schema, "ItemRandomProperties")?;
     let locale = chain.locale();
     let mut rows = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         // The suffix block at field 7, `0x1c + 4·locale`, the string the name formatter reads.
-        let Some(suffix) = loc_str(&rs, r, 7, locale) else {
+        let suffix = if wrath {
+            crate::Locale::wrath_dbc_column(locale.wrath_index())
+                .and_then(|column| loc_str_index(&rs, r, 7, column))
+                .filter(|name| !name.is_empty())
+        } else {
+            loc_str(&rs, r, 7, locale)
+        };
+        let Some(suffix) = suffix else {
             continue;
         };
         let mut enchants = [0u32; RANDOM_PROPERTY_SLOTS];
