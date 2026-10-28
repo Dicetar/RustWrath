@@ -468,6 +468,11 @@ for Soul Pouch (21340) carries that family value. Installed Bagnon tests `0x4` f
 its shard-bag classification. This supports the mapping for that example only; it
 does not prove the complete GetItemFamily ABI or addon runtime behavior.
 
+`823d7c6a` adds Wrath GetContainerItemDurability from the existing bag-slot pair,
+used by aux-addon/util/info.lua when assessing auctionability. Empty, unavailable,
+and zero-max slots return nil values under the existing snapshot contract. The exact
+12340 API edge behavior and addon decision remain unverified; no test/build ran.
+
 Further bank trace at `dd01e3fe`: AzerothCore Player.h defines bank bag slots
 67..73 (seven). Current `script/bank.rs` reports full at six, and
 `ui_bank::BankSteps::purchase` refuses once six are bought. The existing Wrath
