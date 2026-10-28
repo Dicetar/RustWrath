@@ -457,6 +457,11 @@ attachment/command contract across OC's protocol and app owners before a multi-s
 Lua binding can honestly expose their data. No synthetic attachment list or successful
 mail behavior is claimed; no mail, socket, DB, build or test operation was run.
 
+`89d6e6dc` exposes the cached template's bag-family mask as Wrath GetItemFamily,
+used by installed Bagnon bagSlotInfo.lua. It accepts the existing numeric/link
+query path and returns unavailable for missing data. Name-input and exact API edge
+semantics, host admission and addon behavior remain unverified; no build or test ran.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
