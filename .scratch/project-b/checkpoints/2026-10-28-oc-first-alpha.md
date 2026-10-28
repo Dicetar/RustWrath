@@ -45,6 +45,36 @@ No Astra-claimed UI file is edited.
   `A424BAB2FE8B49C4B439E5189B0FBA3D9407FAAC0808B9ACFD0C0CC5A8A69712`; the launch still
   stops at the missing-identity error.
 
+## Revalidation after the checkpoint
+
+At `2026-10-28T19:27:32+03:00`, HEAD is still
+`3a064904fd26ce8743627f0aeafe9a7319e05dd2`; `git diff 40b698fa..HEAD -- crates` is
+empty, so the built binary is still relevant. `target/debug/benilla.exe` is unchanged at
+SHA-256 `A424BAB2FE8B49C4B439E5189B0FBA3D9407FAAC0808B9ACFD0C0CC5A8A69712`.
+Tracked tree and index are clean; only the preserved untracked logs and procgen helper remain.
+
+The lab server is reachable: `authserver` owns `0.0.0.0:3724` and `worldserver` owns
+`0.0.0.0:8095` (same processes as the run card: 25176 and 27100). No server/DB command was run.
+
+### Identity handoff (no secret recorded)
+
+The Wrath launcher reads `WOW_USER` and `WOW_PASS` from its process environment. The owner can
+supply them in their own PowerShell session, using a masked prompt, and launch the existing
+binary from that same session; the environment is inherited and nothing is written to the repo
+or this log:
+
+```powershell
+$env:WOW_USER = Read-Host 'WOW account'
+$sec = Read-Host -AsSecureString 'WOW password'
+$env:WOW_PASS = [System.Net.NetworkCredential]::new('', $sec).Password
+Remove-Variable sec
+# set WOW_WRATH / WOW_WRATH_AUTH / WOW_WRATH_WORLD / WOW_DATA / WM_ASSET_MANIFEST / WM_ASSET_PROFILE
+& 'D:\Projects\project-b-client\target\debug\benilla.exe' *> 'D:\Projects\project-b-client\.scratch\project-b\verification\2026-10-28-oc-alpha\connected-run.log'
+```
+
+`.probe-identity` is gitignored but the Wrath config does not read it; using that file with a
+small shell wrapper is also possible, but no wrapper or new credential path is added here.
+
 ## Acceptance ledger
 
 | Step | Result |
