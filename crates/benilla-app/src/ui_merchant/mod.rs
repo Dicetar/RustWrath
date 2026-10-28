@@ -14,7 +14,6 @@ use crate::items::Items;
 use crate::names::NameCache;
 use crate::net::{Guid, NetCommands, ObjectStore, Objects, SelfPlayer};
 use crate::query_cache::Ask;
-use crate::ui_items::item_link;
 use crate::ui_script::{gate, SweepApp, SweepLeg, UiFeed};
 use crate::ui_session::{CoreCloses, LatchApp, LatchedWindow, NpcWindow};
 
@@ -177,11 +176,22 @@ fn sell_error_key(reason: u8) -> Option<&'static str> {
 /// One wire row as a Lua row: the icon from the wire `display_id` at once, the name and stats once
 /// the item template answers. Read as `ask` says: `GetMerchantItemInfo` looks it up with a
 /// callback (`0x4faf1a`, callback `0x4fada0`).
+#[cfg(test)]
 fn resolve_item(
     item: &VendorItem,
     items: &Items,
     icons: Option<&ItemDisplays>,
     ask: Ask<'_>,
+) -> MerchantItem {
+    resolve_item_in_target(item, items, icons, ask, benilla_ui::script::UiTarget::Vanilla112)
+}
+
+fn resolve_item_in_target(
+    item: &VendorItem,
+    items: &Items,
+    icons: Option<&ItemDisplays>,
+    ask: Ask<'_>,
+    target: benilla_ui::script::UiTarget,
 ) -> MerchantItem {
     let template = items.template(item.entry, 0, ask);
     let name = template.map(|t| t.name.clone());
@@ -208,7 +218,9 @@ fn resolve_item(
     };
     // `GetMerchantItemLink`'s link, built as the reference's `0x52adb0` builds it; a vendor row
     // has no enchant or random property.
-    let link = template.map(|t| item_link(item.entry, &t.name, t.quality));
+    let link = template.map(|t| {
+        crate::ui_items::item_link_full_in_target(target, item.entry, 0, 0, 0, &t.name, t.quality)
+    });
     MerchantItem {
         name,
         texture,
@@ -585,6 +597,7 @@ fn snapshot(
     ask: Ask<'_>,
     player: Option<&benilla_protocol::ObjectFields>,
     vendor_npc_flags: u32,
+    target: benilla_ui::script::UiTarget,
 ) -> Option<MerchantState> {
     open.vendor?;
     let buyback = player
@@ -599,7 +612,7 @@ fn snapshot(
         items: open
             .items
             .iter()
-            .map(|it| resolve_item(it, items, icons, ask))
+            .map(|it| resolve_item_in_target(it, items, icons, ask, target))
             .collect(),
         buyback,
         can_repair: vendor_npc_flags & NPC_FLAG_REPAIR != 0,
@@ -671,6 +684,7 @@ fn feed_merchant(
             ask,
             player,
             vendor_npc_flags(&open, &units),
+            script.target(),
         );
         // The stock window titles with `UnitName("NPC")` (`MerchantFrame.lua:67`), which looks
         // the name up with a callback (`0x5171b8`) at its events; its landing fires nothing.
