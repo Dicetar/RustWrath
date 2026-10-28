@@ -473,6 +473,12 @@ used by aux-addon/util/info.lua when assessing auctionability. Empty, unavailabl
 and zero-max slots return nil values under the existing snapshot contract. The exact
 12340 API edge behavior and addon decision remain unverified; no test/build ran.
 
+Bagnon `components/item.lua` feature-detects GetContainerItemQuestInfo; when it is
+absent, it falls back to item search. If present, it uses all three results including
+quest ID and active state. Do not add a partial binding from `start_quest` alone:
+that would select the richer branch without establishing the quest-active contract.
+This fallback and its visual behavior are source-observed, not runtime-verified.
+
 Further bank trace at `dd01e3fe`: AzerothCore Player.h defines bank bag slots
 67..73 (seven). Current `script/bank.rs` reports full at six, and
 `ui_bank::BankSteps::purchase` refuses once six are bought. The existing Wrath
