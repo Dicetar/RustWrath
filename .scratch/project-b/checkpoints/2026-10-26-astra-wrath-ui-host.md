@@ -522,3 +522,9 @@ No protocol, tests or runtime execution are in scope.
 Carry the active script target through both trade snapshots and item-watch refreshes,
 using the existing target-aware link formatter for cached and uncached rows. Existing
 trade data, ownership and protocol remain unchanged; no tests or execution authorized.
+
+2026-10-28 inspect-link claim at f406db32: clean `crates/benilla-app/src/ui_inspect.rs`
+and `crates/benilla-app/src/ui_tooltip/mod.rs`. Pass the active script target through
+the inspect feed and fresh-hover paths to format visible-item links. Only the existing
+visible-item fields are available; no descriptor or protocol changes are claimed.
+No test cases or execution authorized.
