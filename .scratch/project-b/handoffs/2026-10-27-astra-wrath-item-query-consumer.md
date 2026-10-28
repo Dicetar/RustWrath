@@ -509,3 +509,38 @@ No install code or string values were copied into the repo; only identifier mapp
 and formatting logic were implemented. No builds/tests/new cases or runtime checks
 occurred. One bounded check/existing-UI-test pass has been requested explicitly; a
 pending request is not authorization and no execution starts without the human answer.
+
+### Keyring loss attribution corrected and UI/direct paths repaired (c095756b)
+
+The prior bank/keyring limitation wording grouped two different facts. Current source
+proves Wrath push_player_inventory_fields already retains all 32 keyring GUIDs via
+64 dwords (raw 496 -> donor 648), and wrath_item_pos translates all donor wire slots
+81..112 to 86..117. AC Player.h declares keyring 86..118 exclusive and a fixed capacity
+of 32. The native keyring data was not lost. Bank still drops four seats and one bag.
+
+The actual keyring limits were in UI/item consumers: the donor level ladder capped
+the feed at <=16; GetContainerNumSlots rejected container -2; wire_pos rejected seats
+17..32; HasKey compared donor BagFamily 9, whereas AC uses BAG_FAMILY_MASK_KEYS 0x100.
+Stock 12340 ContainerFrame.lua:GetKeyRingSize reads GetContainerNumSlots(-2), inspects
+the occupied seats, then sizes its visible rows. It must run against a true capacity,
+not be replaced by a hard-coded visible-window size.
+
+c095756b adds target-aware size/position/key-family helpers. Wrath feed and raw free-
+seat/item-count queries retain all 32 positions. GetContainerNumSlots admits -2 only
+for Wrath and reads the actual container snapshot. Direct item move/split/autostore/
+use/repair/destroy/equip paths and their bind-answer replay pass the current UI target
+to position mapping; seat 32 maps to donor 112, then the existing native adapter maps
+it to server 117. The helper does not map invalid seat 33 onto another inventory band.
+No native/protocol source or server action was edited or executed.
+
+Donor level sizes, wire_pos entry point and old counters retain their original limits
+and existing cases; no new assertions/cases were added. HasKey's donor helper remains
+as the existing test entry point; production now calls the target-aware helper.
+
+Remaining callers intentionally not claimed as migrated: legacy merchant/trade/action
+owners still call the donor wire_pos, and their existing count/find-item walkers still
+use donor keyring limits. Those need coordinated target-aware integration for late-seat
+selling/trading/action lookup; the direct item repair is not whole-keyring acceptance.
+Scaled suffix/tooltip, full bank and other recorded item gaps remain open. No compilation,
+tests/new cases, generators, table loads or runtime runs occurred. The bounded verification
+request is still pending; source progress does not constitute authorization.

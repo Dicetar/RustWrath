@@ -380,4 +380,11 @@ native block ordering, addon behavior, scaled heirloom/suffix stats and rendered
 acceptance remain open. No tests/new cases/builds or runtime run occurred; one bounded
 verification pass is requested but still requires an explicit human answer.
 
+Keyring supersession at c095756b: native Wrath source already preserves/translates all
+32 keyring seats. Target-aware UI feed, GetContainerNumSlots(-2), raw free/item counts,
+key-family mask and direct item/bind-replay addressing now retain them. Donor helpers
+keep their original behavior. Bank loss remains native; late-keyring merchant/trade/
+action consumers still using donor helpers remain open. No check/test/new case or live
+action occurred, and neither full keyring acceptance nor full replacement is claimed.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
