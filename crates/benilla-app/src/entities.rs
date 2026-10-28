@@ -987,7 +987,10 @@ fn setup_entities(
     // `ItemRandomProperties`: a random suffix's name and its enchant slots 2..6.
     match benilla_formats::load_random_property_catalog(&mut chain) {
         Ok(props) => {
-            info!("random-property catalog: {} suffix rows", props.len());
+            info!("random-property catalog: {} positive-property rows", props.len());
+            if let Some(error) = props.suffix_load_error() {
+                warn!("random suffixes unavailable; positive properties remain available: {error}");
+            }
             commands.insert_resource(crate::items::RandomProperties::new(props));
         }
         Err(e) => {

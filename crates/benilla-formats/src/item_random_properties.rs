@@ -47,6 +47,7 @@ pub struct RandomProperty {
 pub struct RandomPropertyCatalog {
     rows: HashMap<u32, RandomProperty>,
     suffix_rows: HashMap<u32, RandomSuffix>,
+    suffix_load_error: Option<String>,
 }
 
 struct RandomSuffix {
@@ -56,6 +57,12 @@ struct RandomSuffix {
 }
 
 impl RandomPropertyCatalog {
+    /// The separate Wrath suffix table's load failure, if positive properties loaded
+    /// successfully but negative suffixes could not be loaded.
+    pub fn suffix_load_error(&self) -> Option<&str> {
+        self.suffix_load_error.as_deref()
+    }
+
     /// The selected locale's suffix, keeping positive properties and negative suffix IDs
     /// in their separate tables. An absent/empty localized name remains unavailable.
     pub fn suffix_name(&self, id: i32) -> Option<&str> {
@@ -95,6 +102,7 @@ impl RandomPropertyCatalog {
         RandomPropertyCatalog {
             rows,
             suffix_rows: HashMap::new(),
+            suffix_load_error: None,
         }
     }
 
@@ -196,12 +204,15 @@ pub fn load_random_property_catalog(chain: &mut Chain) -> Result<RandomPropertyC
         }
         rows.insert(id, RandomProperty { suffix, enchants });
     }
-    let suffix_rows = if wrath {
-        load_suffix_rows(chain)?
+    let (suffix_rows, suffix_load_error) = if wrath {
+        match load_suffix_rows(chain) {
+            Ok(rows) => (rows, None),
+            Err(error) => (HashMap::new(), Some(format!("{error:#}"))),
+        }
     } else {
-        HashMap::new()
+        (HashMap::new(), None)
     };
-    Ok(RandomPropertyCatalog { rows, suffix_rows })
+    Ok(RandomPropertyCatalog { rows, suffix_rows, suffix_load_error })
 }
 
 #[cfg(test)]
