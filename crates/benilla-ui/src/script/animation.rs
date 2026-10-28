@@ -139,8 +139,7 @@ pub(crate) fn build(
         })?,
     )?;
     // `group:SetLooping("REPEAT"|"BOUNCE"|"NONE")`: the group's XML `looping` attribute, set
-    // after construction. `REPEAT` restarts the schedule; `BOUNCE` currently repeats too (the
-    // reverse-leg semantics are recorded as the next slice).
+    // after construction. `REPEAT` restarts the schedule; `BOUNCE` alternates the leg direction.
     object.set(
         "SetLooping",
         lua.create_function(|_, (this, value): (Table, Value)| {
@@ -152,7 +151,8 @@ pub(crate) fn build(
             Ok(())
         })?,
     )?;
-    // `group:CreateAnimation(type[, name])`: the programmatic child constructor. Stock XML never
+    // `group:CreateAnimation([type[, name]])`: the programmatic child constructor; an omitted or
+    // nil type is the reference's default `Alpha` (Questie-335 `Compat.lua:166`). Stock XML never
     // calls it; installed addons do (bartender4 and friends), and children it makes run through
     // the same timeline as XML ones.
     object.set(
@@ -161,7 +161,10 @@ pub(crate) fn build(
             if !is_group(&this)? {
                 return Err(mlua::Error::runtime("CreateAnimation on a non-group"));
             }
-            let kind = super::binding_abi::string_arg(lua, kind, "CreateAnimation(type)")?;
+            let kind = match kind {
+                Value::Nil => "Alpha".to_string(),
+                kind => super::binding_abi::string_arg(lua, kind, "CreateAnimation(type)")?,
+            };
             let name = super::binding_abi::optional_string(lua, &name);
             create_child(lua, &this, &kind, name.as_deref())
         })?,
@@ -177,6 +180,17 @@ pub(crate) fn build(
     object.set(
         "GetRegionParent",
         lua.create_function(|_, this: Table| this.get::<Option<Table>>(ANIMATION_OWNER))?,
+    )?;
+    // `Animation:GetParent()`: a child animation's group, or a top-level group's owning
+    // frame/region. Questie's timer cancels through `timer:GetParent():Stop()`.
+    object.set(
+        "GetParent",
+        lua.create_function(|_, this: Table| {
+            if let Some(parent) = this.get::<Option<Table>>(ANIMATION_PARENT)? {
+                return Ok(Some(parent));
+            }
+            this.get::<Option<Table>>(ANIMATION_OWNER)
+        })?,
     )?;
     // `SetStartDelay(seconds)`: AlertFrames' alert Lua re-arms its fade-out animation this way
     // before `Play`; the value is read when the animation or its group starts.

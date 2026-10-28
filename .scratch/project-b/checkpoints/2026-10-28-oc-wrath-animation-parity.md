@@ -69,3 +69,46 @@ Out / known limits (recorded, not hidden):
 - `Scale`/`Color`/`TextureCoord`/`VertexColor` kinds (neither stock nor installed addons
   construct them).
 - `BOUNCE` on non-Angle visual proof in a live run (unit-tested only).
+
+## WP1 claim (2026-10-28, Questie timer; source-only)
+
+Claim: `crates/benilla-ui/src/script/animation.rs` and this checkpoint only. Astra's live lane
+still owns `object/events_regions.rs`, so this slice does not touch
+`CreateAnimationGroup`'s publication.
+
+Contracted edits:
+
+- `AnimationGroup:CreateAnimation([type[, name]])` treats an omitted or explicit nil `type` as
+  the reference's default animation kind, `"Alpha"`; a supplied string/number keeps the existing
+  coercion and a bad value keeps the existing usage error. Questie-335
+  `Compat/Compat.lua:166` calls `anim:CreateAnimation()` with no type.
+- `Animation:GetParent()` returns the stored `ANIMATION_PARENT` (a child animation's group), or
+  `ANIMATION_OWNER` for a top-level group (the owning frame/region). Questie-335
+  `Compat/Compat.lua:136` calls `timer:GetParent():Stop()`.
+
+Proposed regression case (documented, **not added or run**: this session has no test-case grant):
+
+```lua
+f = CreateFrame("Frame")
+g = f:CreateAnimationGroup()
+a = g:CreateAnimation()                 -- omitted type
+a:SetDuration(0.05)
+HITS = 0
+a:SetScript("OnFinished", function() HITS = HITS + 1 end)
+p = a:GetParent()
+assert(p == g)
+assert(g:GetParent() == f)
+g:SetLooping("REPEAT")
+g:Play()
+-- after one duration: HITS == 1
+-- after another: HITS == 2
+g:Stop()
+-- after another duration: HITS still 2
+```
+
+Timer-lifecycle review against current source: creation reuse stores the child in
+`inactiveTimers`; `Stop` halts the group and its children so the repeat branch does not restart;
+a cached child's `SetDuration`/callback/id fields are overwritten on reuse; `Play` resets every
+child's run state. The cancellation-from-`OnFinished` ordering is safe because `update` checks the
+group's `playing` flag after the child callback. No further source gap was found in the engine for
+Questie's timer usage. Installed-addon load acceptance remains open (no grant).
