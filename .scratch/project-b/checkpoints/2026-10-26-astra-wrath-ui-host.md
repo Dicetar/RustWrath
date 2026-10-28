@@ -690,3 +690,13 @@ bone and event-track arrays are bounded likewise. Afterward the 10 existing
 Wrath cases passed, including preservation of a valid key and refusal of a
 truncated timestamp array. This establishes a parser defect and a source repair,
 not that it caused the observed memory spike. No post-fix live run yet.
+
+Post-fix supersession: `cargo build --locked --offline -p benilla` passed with
+the existing dirty UiClock repair included; `astra-track-probe-20261029-011210-711`
+reran the same profile with the 5 GiB sampled private-memory cap. It reached
+5.69 GiB and was stopped (sampling overshoot), so the parser repair did not
+resolve the observed spike. Last FPS row: 1,256 entities, 301 images, 116 M2s.
+No area/continent DBC error or Rust panic was logged before termination; this
+short run does not accept world entry or the map. No client process remained.
+Evidence and the bounded probe script are retained in the existing untracked
+verification folder. Next: allocation-level attribution, not another identical run.
