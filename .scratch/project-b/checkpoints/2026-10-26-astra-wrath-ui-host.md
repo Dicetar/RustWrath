@@ -485,3 +485,8 @@ separate migration work. No tests, checks or runtime operation is authorized.
 
 Trade dispatch follow-through: claim clean app/script_calls.rs as well; TradeSteps::apply
 receives no UiScript, so the existing host must pass its current target explicitly.
+
+2026-10-28 clamp regression claim: clean UI src/layout.rs. The authorized UI suite at
+be001728 failed assemble_clamp_low_edge: the inset change subtracts the positive
+low-edge displacement from the opposite edge, shrinking the frame. Correct both axes
+to add that displacement. No test edits or rerun are authorized by the consumed pass.
