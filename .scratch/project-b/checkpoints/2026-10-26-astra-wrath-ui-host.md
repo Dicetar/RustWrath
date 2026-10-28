@@ -459,3 +459,15 @@ strict formatter to support both forms without mistaking the sign for a numeric 
 Preserve donor/primary/resistance behavior, actual wire amounts and source order.
 Exact native block ordering and complete addon/render fidelity remain unverified.
 No new stat owner/rating calculations, tests, generators or execution authorized.
+
+2026-10-28 keyring continuation claim at 18096c15: clean app/ui_items/mod.rs,
+feed.rs, calls.rs, drain.rs and UI script/container.rs. Current wrath.rs copies all
+32 keyring GUIDs (496 -> 648, 64 dwords) and wrath_item_pos translates donor slots
+81..112 to server 86..117, matching AC Player.h's fixed 32-seat keyring. The loss is
+in UI/item consumers: level-sized <=16 feed, GetContainerNumSlots rejects -2,
+wire_pos rejects seats 17..32, and HasKey compares donor family 9 instead of Wrath
+mask 0x100. Add target-aware helpers for these paths, raw free/count queries and
+direct item actions, retaining existing donor entry points/tests and bank limits.
+Stock 12340 GetKeyRingSize itself reads GetContainerNumSlots(-2) and sizes its view;
+do not replace that Lua function. Native/protocol files stay untouched. No new test
+cases, checks, generator or runtime execution; pending verification is not a grant.
