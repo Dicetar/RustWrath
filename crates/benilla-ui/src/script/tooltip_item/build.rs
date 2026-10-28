@@ -268,7 +268,23 @@ pub(in crate::script) fn build_item(
     let view = view_of(lua, build.item_id);
     let live = match &view {
         Some(v) => {
-            match render::render_view_flagged(lua, this, v, build.flags, build.inst.as_ref())? {
+            let mut inst = build.inst.clone();
+            let wrath = lua.app_data_ref::<Model>().expect("model app_data").target
+                == crate::script::UiTarget::Wrath335;
+            if wrath {
+                if let (Some(instance), Some(source)) = (inst.as_mut(), build.source_link.as_deref()) {
+                    if instance.name.is_none() && !source.contains("|h[") {
+                        if let Some(item) = crate::script::item_stats::wrath::ItemLink::parse(source) {
+                            if item.random_property != 0 {
+                                instance.name = crate::script::item_stats::wrath::item_name(
+                                    lua, &v.name, item.random_property,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            match render::render_view_flagged(lua, this, v, build.flags, inst.as_ref())? {
                 Some(live) => live,
                 // A petition miss returns before the sell price and the show (`0x52b94e`); the
                 // build is kept for the answer's rebuild.

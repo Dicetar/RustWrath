@@ -76,7 +76,7 @@ fn query(lua: &Lua, value: Value) -> mlua::Result<Option<(ItemLink, ItemTemplate
     Ok(view.map(|view| (link, view)))
 }
 
-fn item_name(lua: &Lua, base: &str, property: i32) -> Option<String> {
+pub(in crate::script) fn item_name(lua: &Lua, base: &str, property: i32) -> Option<String> {
     if property >= 0 {
         return Some(suffixed_name(lua, base, property));
     }
