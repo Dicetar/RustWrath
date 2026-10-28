@@ -787,6 +787,7 @@ impl UiScript {
                     link_owner: reverse.then_some(fh),
                 },
                 scale: paint.scale,
+                rotation: 0.0,
             });
         }
         if reverse {

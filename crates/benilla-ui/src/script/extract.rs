@@ -414,6 +414,7 @@ impl UiScript {
                 content,
                 clip,
                 scale,
+                rotation: 0.0,
             });
             // A ScrollingMessageFrame adds one Text quad per visible ring line, stacked bottom-up
             // with each line's fade alpha; the ring lives in its kind state, not in FontStrings.
@@ -479,6 +480,7 @@ impl UiScript {
                             },
                             clip,
                             scale,
+                            rotation: 0.0,
                         });
                     }
                     // Screen clockwise from the top is `(sin, -cos)` y-down; the layout rect is
@@ -512,14 +514,89 @@ impl UiScript {
                         },
                         clip,
                         scale,
+                        rotation: 0.0,
                     });
                 }
             }
         }
+        // `<Rotation>` acts on every quad in the rotated frame's subtree: its regions, its text
+        // and its child frames' quads all ride the same transform.
+        apply_animation_rotations(&model, &mut out);
         // Each layer batch's End sorts its quads by texture (`0x7731a0`).
         layer_batch::sort_batches(&mut out, &batch_quads);
         out
     }
+}
+
+/// The frame whose subtree a quad draws in: its own frame, or the region's owner.
+fn quad_owner_frame(model: &crate::script::Model, target: ZTarget) -> Option<FrameHandle> {
+    match target {
+        ZTarget::Frame(h) => Some(h),
+        ZTarget::Region(rh) => model.arena.region(rh).map(|r| r.owner),
+    }
+}
+
+/// Orbit each quad about the rotated frames over its owner, outermost first, and carry their
+/// summed UI-space angle onto the quad.
+fn apply_animation_rotations(model: &crate::script::Model, out: &mut [ExtractedQuad]) {
+    for quad in out {
+        let Some(owner) = quad_owner_frame(model, quad.target) else {
+            continue;
+        };
+        let mut chain: Vec<(FrameHandle, f32)> = Vec::new();
+        let mut current = Some(owner);
+        while let Some(h) = current {
+            if let Some(&angle) = model.animation_frame_rotations.get(&h) {
+                if angle != 0.0 {
+                    chain.push((h, angle));
+                }
+            }
+            current = model.arena.frame(h).and_then(|f| f.parent);
+        }
+        let Some(rect) = quad.rect else { continue };
+        if chain.is_empty() {
+            continue;
+        }
+        let (cx, cy) = (
+            (rect.left + rect.right) * 0.5,
+            (rect.bottom + rect.top) * 0.5,
+        );
+        let mut pivots: Vec<(f32, f32, f32)> = Vec::new();
+        for (h, angle) in chain.iter().rev() {
+            let Some(fr) = model.frame_rect(*h) else {
+                continue;
+            };
+            let (mut px, mut py) = ((fr.left + fr.right) * 0.5, (fr.bottom + fr.top) * 0.5);
+            for (ox, oy, outer) in &pivots {
+                let (x, y) = orbit(px, py, *ox, *oy, *outer);
+                px = x;
+                py = y;
+            }
+            pivots.push((px, py, *angle));
+        }
+        let (mut nx, mut ny, mut total) = (cx, cy, 0.0f32);
+        for (px, py, angle) in &pivots {
+            let (x, y) = orbit(nx, ny, *px, *py, *angle);
+            nx = x;
+            ny = y;
+            total += angle;
+        }
+        let (dx, dy) = (nx - cx, ny - cy);
+        quad.rect = Some(Rect::new(
+            rect.bottom + dy,
+            rect.left + dx,
+            rect.top + dy,
+            rect.right + dx,
+        ));
+        quad.rotation = total;
+    }
+}
+
+/// Rotate `(x, y)` about `(px, py)` counter-clockwise by `angle` radians.
+fn orbit(x: f32, y: f32, px: f32, py: f32, angle: f32) -> (f32, f32) {
+    let (sin, cos) = angle.sin_cos();
+    let (dx, dy) = (x - px, y - py);
+    (px + dx * cos - dy * sin, py + dx * sin + dy * cos)
 }
 
 /// The blend a texture's record draws with (`0x76fb00`): a record with a colour array and a mode

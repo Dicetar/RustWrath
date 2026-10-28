@@ -27,6 +27,7 @@ const ANIMATION_PARENT: &str = "__benilla_animation_parent";
 const ANIMATION_CHILDREN: &str = "__benilla_animation_children";
 const ANIMATION_PARAMS: &str = "__benilla_animation_params";
 const ANIMATION_SCRIPTS: &str = "__benilla_animation_scripts";
+const ANIMATION_LOOPING: &str = "__benilla_animation_looping";
 const ANIMATION_PLAYING: &str = "__benilla_animation_playing";
 const ANIMATION_FINISHED: &str = "__benilla_animation_finished";
 const ANIMATION_PLAYED: &str = "__benilla_animation_played";
@@ -73,6 +74,12 @@ pub(crate) fn build(
     }
     object.set(ANIMATION_PARAMS, params)?;
     object.set(ANIMATION_SCRIPTS, lua.create_table()?)?;
+    let looping = attrs
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("looping"))
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default();
+    object.set(ANIMATION_LOOPING, looping)?;
 
     object.set(
         "Play",
@@ -113,6 +120,26 @@ pub(crate) fn build(
         lua.create_function(|lua, (this, x, y): (Table, Value, Value)| {
             set_param(lua, &this, "offsetX", x)?;
             set_param(lua, &this, "offsetY", y)
+        })?,
+    )?;
+    object.set(
+        "SetDegrees",
+        lua.create_function(|lua, (this, value): (Table, Value)| {
+            set_param(lua, &this, "degrees", value)
+        })?,
+    )?;
+    // `group:SetLooping("REPEAT"|"BOUNCE"|"NONE")`: the group's XML `looping` attribute, set
+    // after construction. `REPEAT` restarts the schedule; `BOUNCE` currently repeats too (the
+    // reverse-leg semantics are recorded as the next slice).
+    object.set(
+        "SetLooping",
+        lua.create_function(|_, (this, value): (Table, Value)| {
+            let looping = match value {
+                Value::String(s) => s.to_string_lossy(),
+                _ => String::new(),
+            };
+            this.set(ANIMATION_LOOPING, looping)?;
+            Ok(())
         })?,
     )?;
     // `group:CreateAnimation(type[, name])`: the programmatic child constructor. Stock XML never
@@ -367,7 +394,16 @@ pub(super) fn update(lua: &Lua) {
             }
         }
         if all_finished {
-            if let Err(error) = finish(lua, &group) {
+            let looping: String = group
+                .get::<Option<String>>(ANIMATION_LOOPING)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            if looping.eq_ignore_ascii_case("REPEAT") || looping.eq_ignore_ascii_case("BOUNCE") {
+                if let Err(error) = start_group(lua, &group, now) {
+                    record(lua, &error);
+                }
+            } else if let Err(error) = finish(lua, &group) {
                 record(lua, &error);
             }
         }
@@ -398,6 +434,8 @@ fn advance_one(lua: &Lua, this: &Table, now: f64) -> mlua::Result<()> {
         apply_alpha(lua, this, t);
     } else if kind.eq_ignore_ascii_case("Translation") {
         apply_translation(lua, this, t);
+    } else if kind.eq_ignore_ascii_case("Rotation") {
+        apply_rotation(lua, this, t);
     }
     if t >= 1.0 {
         finish(lua, this)?;
@@ -439,6 +477,21 @@ fn apply_translation(lua: &Lua, this: &Table, t: f64) {
             model.animation_region_offsets.insert(rh, (dx, dy));
         }
     }
+}
+
+/// `<Rotation>`: the owner frame turns by `degrees × t`, counter-clockwise in UI space. Region
+/// owners are skipped until the region-rotation seam lands (frame rotation covers the addon
+/// spinners, which rotate a frame holding their texture).
+fn apply_rotation(lua: &Lua, this: &Table, t: f64) {
+    let degrees = param_number(this, "degrees", 0.0);
+    let angle = (degrees as f32).to_radians() * t as f32;
+    let Some(Owner::Frame(h)) = owner_kind(lua, this) else {
+        return;
+    };
+    lua.app_data_mut::<Model>()
+        .expect("model app_data")
+        .animation_frame_rotations
+        .insert(h, angle);
 }
 
 /// The table's owner: a frame or a region, the same `GetRegionParent` answer stock scripts use.
@@ -700,6 +753,86 @@ mod tests {
         s.tick(0.15);
         assert_eq!(s.eval::<f64>("return f:GetAlpha()").unwrap(), 0.0);
         assert_eq!(s.eval::<i64>("return HITS").unwrap(), 1);
+    }
+
+    #[test]
+    fn a_frame_rotation_orbits_its_region_quad() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_screen_size(100.0, 100.0);
+        s.run(
+            r#"
+            f = CreateFrame("Frame")
+            f:SetSize(20, 20)
+            f:SetPoint("CENTER", 0, 0)
+            t = f:CreateTexture()
+            t:SetSize(4, 4)
+            t:SetPoint("CENTER", f, "CENTER", 8, 0)
+            g = f:CreateAnimationGroup()
+            r = g:CreateAnimation("Rotation")
+            r:SetDegrees(90)
+            r:SetDuration(0.2)
+        "#,
+        )
+        .unwrap();
+        let tex: Table = s.lua().globals().get("t").unwrap();
+        let rh = crate::script::region::region_handle_of(s.lua(), &tex).unwrap();
+        s.run("g:Play()").unwrap();
+        s.tick(0.1);
+        let quad = s
+            .extract()
+            .into_iter()
+            .find(|quad| quad.target == ZTarget::Region(rh))
+            .expect("texture quad");
+        let rect = quad.rect.expect("resolved rect");
+        let (cx, cy) = (
+            (rect.left + rect.right) * 0.5,
+            (rect.bottom + rect.top) * 0.5,
+        );
+        assert!((cx - 55.657).abs() < 0.01, "x orbited: {cx}");
+        assert!((cy - 55.657).abs() < 0.01, "y orbited: {cy}");
+        assert!(
+            (quad.rotation - std::f32::consts::FRAC_PI_4).abs() < 1e-4,
+            "45 degrees counter-clockwise: {}",
+            quad.rotation
+        );
+    }
+
+    #[test]
+    fn a_repeating_group_restarts_its_rotation() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_screen_size(100.0, 100.0);
+        s.run(
+            r#"
+            f = CreateFrame("Frame")
+            f:SetSize(20, 20)
+            f:SetPoint("CENTER", 0, 0)
+            t = f:CreateTexture()
+            t:SetSize(4, 4)
+            t:SetPoint("CENTER", f, "CENTER", 8, 0)
+            g = f:CreateAnimationGroup()
+            r = g:CreateAnimation("Rotation")
+            r:SetDegrees(360)
+            r:SetDuration(0.2)
+            g:SetLooping("repeat")
+        "#,
+        )
+        .unwrap();
+        let tex: Table = s.lua().globals().get("t").unwrap();
+        let rh = crate::script::region::region_handle_of(s.lua(), &tex).unwrap();
+        s.run("g:Play()").unwrap();
+        s.tick(0.25);
+        s.tick(0.05);
+        let quad = s
+            .extract()
+            .into_iter()
+            .find(|quad| quad.target == ZTarget::Region(rh))
+            .expect("texture quad");
+        assert!(
+            (quad.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "a quarter turn after the restart: {}",
+            quad.rotation
+        );
+        assert!(s.eval::<bool>("return r:IsPlaying()").unwrap());
     }
 
     fn frame_rect(s: &UiScript, h: crate::widget::FrameHandle) -> crate::layout::Rect {

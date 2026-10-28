@@ -389,6 +389,10 @@ pub struct ExtractedQuad {
     /// The owner's `effective_scale` (`0x76ac90`), already in `rect`; a `Text` quad's font and
     /// shadow offset must be scaled by it too.
     pub scale: f32,
+    /// `<Rotation>`'s angle over the owner's frame chain, in UI-space radians,
+    /// counter-clockwise-positive. The renderer's `UiQuad::rotation` is clockwise-positive in
+    /// screen space, so it negates this.
+    pub rotation: f32,
 }
 
 /// A two-stop gradient (`SetGradientAlpha`/`SetGradient`, XML `<Gradient>`): the four-colour form

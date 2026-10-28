@@ -484,6 +484,9 @@ pub(crate) struct Model {
     pub(crate) animation_frame_offsets: std::collections::HashMap<FrameHandle, (f32, f32)>,
     /// `<Translation>` offsets for a region, added after its owner frame's chain.
     pub(crate) animation_region_offsets: std::collections::HashMap<RegionHandle, (f32, f32)>,
+    /// `<Rotation>` angles by frame, in UI-space radians counter-clockwise. The extract orbits a
+    /// frame's quads about its center and carries the angle onto the quad.
+    pub(crate) animation_frame_rotations: std::collections::HashMap<FrameHandle, f32>,
     /// `CanShowResetInstances()`, the reference's four-term predicate (`0x495c90`), app-computed.
     pub(crate) can_reset_instances: bool,
     /// Friends, ignores and the last `/who`, display-resolved as the reference resolves them.
@@ -1506,6 +1509,7 @@ impl Model {
             opt_out_of_loot: false,
             animation_frame_offsets: HashMap::new(),
             animation_region_offsets: HashMap::new(),
+            animation_frame_rotations: HashMap::new(),
             can_reset_instances: false,
             social: social::SocialState::default(),
             who_to_ui: false,

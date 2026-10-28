@@ -1172,6 +1172,7 @@ fn convert_entry(
     let clip = eq
         .clip
         .map(|c| Rect::new(c.left * s, h - c.top * s, c.right * s, h - c.bottom * s));
+    let pushed = out.len();
     match eq.content {
         // A frame draws nothing itself; its regions carry the visuals.
         QuadContent::Frame => {}
@@ -1590,6 +1591,11 @@ fn convert_entry(
                 link_spans,
             );
         }
+    }
+    // `<Rotation>` turns every quad this entry emitted (glyph quads included); the UI angle is
+    // counter-clockwise, while `UiQuad::rotation` is clockwise-positive.
+    for quad in &mut out[pushed..] {
+        quad.rotation -= eq.rotation;
     }
 }
 
