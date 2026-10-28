@@ -125,6 +125,59 @@ pub(in crate::script) fn stat_key(t: u32) -> Option<&'static str> {
     })
 }
 
+/// 12340 secondary ItemModType values (AzerothCore ItemTemplate.h), whose localized
+/// templates are declared in target GlobalStrings.lua rather than the donor jump table.
+pub(super) fn wrath_equip_stat_key(t: u32) -> Option<&'static str> {
+    Some(match t {
+        12 => "ITEM_MOD_DEFENSE_SKILL_RATING",
+        13 => "ITEM_MOD_DODGE_RATING",
+        14 => "ITEM_MOD_PARRY_RATING",
+        15 => "ITEM_MOD_BLOCK_RATING",
+        16 => "ITEM_MOD_HIT_MELEE_RATING",
+        17 => "ITEM_MOD_HIT_RANGED_RATING",
+        18 => "ITEM_MOD_HIT_SPELL_RATING",
+        19 => "ITEM_MOD_CRIT_MELEE_RATING",
+        20 => "ITEM_MOD_CRIT_RANGED_RATING",
+        21 => "ITEM_MOD_CRIT_SPELL_RATING",
+        22 => "ITEM_MOD_HIT_TAKEN_MELEE_RATING",
+        23 => "ITEM_MOD_HIT_TAKEN_RANGED_RATING",
+        24 => "ITEM_MOD_HIT_TAKEN_SPELL_RATING",
+        25 => "ITEM_MOD_CRIT_TAKEN_MELEE_RATING",
+        26 => "ITEM_MOD_CRIT_TAKEN_RANGED_RATING",
+        27 => "ITEM_MOD_CRIT_TAKEN_SPELL_RATING",
+        28 => "ITEM_MOD_HASTE_MELEE_RATING",
+        29 => "ITEM_MOD_HASTE_RANGED_RATING",
+        30 => "ITEM_MOD_HASTE_SPELL_RATING",
+        31 => "ITEM_MOD_HIT_RATING",
+        32 => "ITEM_MOD_CRIT_RATING",
+        33 => "ITEM_MOD_HIT_TAKEN_RATING",
+        34 => "ITEM_MOD_CRIT_TAKEN_RATING",
+        35 => "ITEM_MOD_RESILIENCE_RATING",
+        36 => "ITEM_MOD_HASTE_RATING",
+        37 => "ITEM_MOD_EXPERTISE_RATING",
+        38 => "ITEM_MOD_ATTACK_POWER",
+        39 => "ITEM_MOD_RANGED_ATTACK_POWER",
+        41 => "ITEM_MOD_SPELL_HEALING_DONE",
+        42 => "ITEM_MOD_SPELL_DAMAGE_DONE",
+        43 => "ITEM_MOD_MANA_REGENERATION",
+        44 => "ITEM_MOD_ARMOR_PENETRATION_RATING",
+        45 => "ITEM_MOD_SPELL_POWER",
+        46 => "ITEM_MOD_HEALTH_REGEN",
+        47 => "ITEM_MOD_SPELL_PENETRATION",
+        48 => "ITEM_MOD_BLOCK_VALUE",
+        _ => return None,
+    })
+}
+
+/// Stock secondary templates take a number; installed zzzmopitemtooltips can replace
+/// them with sign/value templates. Reuse the strict formatter's type/arity checks.
+pub(super) fn wrath_stat_text(template: &str, value: i32) -> Option<String> {
+    use crate::strings::{fill_exact, Arg};
+    let sign = if value < 0 { "-" } else { "+" };
+    fill_exact(template, &[Arg::S(sign), Arg::D(i64::from(value).abs())])
+        .or_else(|| fill_exact(template, &[Arg::D(i64::from(value))]))
+}
+
 /// The playable class ids and names the `ITEM_CLASSES_ALLOWED` list prints.
 pub(in crate::script) const CLASS_NAMES: [(u32, &str); 9] = [
     (1, "Warrior"),

@@ -798,6 +798,19 @@ pub(super) fn render_view_flagged(
             req_color(u32::from(rank) >= v.required_rep_rank),
         ))?;
     }
+    if target == crate::script::UiTarget::Wrath335 {
+        // These template stats are already authoritative wire amounts. Their localized
+        // descriptions use the same on-equip presentation as the following spell block.
+        for &(kind, value) in &v.stats {
+            if value == 0 {
+                continue;
+            }
+            let Some(template) = wrath_equip_stat_key(kind).and_then(&get) else { continue };
+            let Some(text) = wrath_stat_text(&template, value) else { continue };
+            let prefix = get("ITEM_SPELL_TRIGGER_ONEQUIP").unwrap_or_default();
+            addw((format!("{prefix} {text}"), GREEN))?;
+        }
+    }
     // Each spell block (`0x52d992`..`0x52dd4d`): a wrapped trigger line, triggers 0 to 2 joining
     // their prefix key and the text by the literal `"%s %s"` (`0x82ef08`, `0x52da37`..`0x52dae2`),
     // a missing key reading as the empty string, any other trigger the text alone
