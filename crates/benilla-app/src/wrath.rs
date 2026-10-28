@@ -3007,6 +3007,14 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_OPT_OUT_OF_LOOT,
                 u32::from(pass).to_le_bytes().to_vec(),
             )),
+            ClientCommand::SetDungeonDifficulty { mode } => Some((
+                benilla_protocol_wrath::opcode::MSG_SET_DUNGEON_DIFFICULTY,
+                mode.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::SetRaidDifficulty { mode } => Some((
+                benilla_protocol_wrath::opcode::MSG_SET_RAID_DIFFICULTY,
+                mode.to_le_bytes().to_vec(),
+            )),
             ClientCommand::Logout => Some((
                 benilla_protocol_wrath::opcode::CMSG_LOGOUT_REQUEST,
                 gameplay::logout_request(),

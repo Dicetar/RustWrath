@@ -2026,6 +2026,11 @@ pub(crate) enum ClientCommand {
     RequestRaidInfo,
     /// `CMSG_RESET_INSTANCES`; answered per instance, `SMSG_INSTANCE_RESET` or `_FAILED`.
     ResetInstances,
+    /// `MSG_SET_DUNGEON_DIFFICULTY` (3.3.5 only): the dungeon difficulty selection, one u32 mode.
+    /// The server echoes the same opcode; the CVar write waits for that echo.
+    SetDungeonDifficulty { mode: u32 },
+    /// `MSG_SET_RAID_DIFFICULTY` (3.3.5 only): the raid difficulty selection, one u32 mode.
+    SetRaidDifficulty { mode: u32 },
     // ── Duel ── (a challenge is a `CastSpell` of the duel spell)
     /// `CMSG_DUEL_ACCEPTED`, also the challenger's own auto-accept.
     DuelAccepted {

@@ -1818,6 +1818,10 @@ pub(super) fn writer_loop(
                     ClientCommand::ReadyCheckAnswer { status } => w.ready_check_answer(status),
                     ClientCommand::RequestRaidInfo => w.request_raid_info(),
                     ClientCommand::ResetInstances => w.reset_instances(),
+                    // No 1.12 opcodes: the difficulty selections are the 3.3.5 wire's, sent by the
+                    // wrath tap.
+                    ClientCommand::SetDungeonDifficulty { .. }
+                    | ClientCommand::SetRaidDifficulty { .. } => Ok(()),
                     ClientCommand::DuelAccepted { arbiter } => w.duel_accepted(arbiter),
                     ClientCommand::DuelCancelled { arbiter } => w.duel_cancelled(arbiter),
                     ClientCommand::TogglePvp => w.toggle_pvp(),

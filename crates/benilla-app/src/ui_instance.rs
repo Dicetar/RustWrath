@@ -450,6 +450,17 @@ impl InstanceSteps<'_> {
     pub(crate) fn reset(&self) {
         let _ = self.net.0.send(ClientCommand::ResetInstances);
     }
+
+    /// `SetDungeonDifficulty(mode)`: `MSG_SET_DUNGEON_DIFFICULTY` (`0x329`), one u32; the
+    /// server's echo of the same opcode is the confirmation, not parsed here yet.
+    pub(crate) fn set_dungeon_difficulty(&self, mode: u32) {
+        let _ = self.net.0.send(ClientCommand::SetDungeonDifficulty { mode });
+    }
+
+    /// `SetRaidDifficulty(mode)`: `MSG_SET_RAID_DIFFICULTY` (`0x4EB`), one u32.
+    pub(crate) fn set_raid_difficulty(&self, mode: u32) {
+        let _ = self.net.0.send(ClientCommand::SetRaidDifficulty { mode });
+    }
 }
 
 /// Drop the witness at logout, as the next login may be another character. The three globals stay,

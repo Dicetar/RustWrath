@@ -26,8 +26,9 @@ Editing:
 - `crates/benilla-app/src/ui_instance.rs` (instance name/cap feed)
 - `crates/benilla-ui/src/script/loot.rs`, `crates/benilla-app/src/ui_loot/calls.rs`,
   `crates/benilla-app/src/net.rs`, `crates/benilla-app/src/net/io.rs`,
-  `crates/benilla-app/src/wrath.rs`, `crates/benilla-protocol-wrath/src/opcode.rs`
-  (`CMSG_OPT_OUT_OF_LOOT` 0x409)
+  `crates/benilla-app/src/wrath.rs`, `crates/benilla-app/src/script_calls.rs`,
+  `crates/benilla-protocol-wrath/src/opcode.rs` (`CMSG_OPT_OUT_OF_LOOT` 0x409,
+  `MSG_SET_DUNGEON_DIFFICULTY` 0x329, `MSG_SET_RAID_DIFFICULTY` 0x4EB)
 - `crates/benilla-app/src/ui_pass.rs`
 - `crates/benilla-app/src/shaders/ui_quad.wgsl`
 - `crates/benilla-app/src/ui_script/wrath_ui_slice_tests.rs` (fixture rows only)
@@ -146,8 +147,10 @@ bootstrap answers:
   the client's instance).
 - `GetDungeonDifficulty`/`GetRaidDifficulty`: the `dungeonDifficulty`/`playerDifficulty` CVar
   rows, nil when the host never registered them (no fabricated normal tier).
-- `SetDungeonDifficulty`/`SetRaidDifficulty`: engine CVar writes (client selection); the server
-  `MSG_SET_DUNGEON_DIFFICULTY` echo is still a missing producer.
+- `SetDungeonDifficulty`/`SetRaidDifficulty`: submit `InstanceCall`s; the app sends
+  `MSG_SET_DUNGEON_DIFFICULTY` (0x329) / `MSG_SET_RAID_DIFFICULTY` (0x4EB), one u32 mode
+  (`D:\WOW\ACRB` `MiscHandler.cpp:1264`, `InstancePackets.h`). The getters keep the last
+  confirmed CVar value until the server's echo of the same opcode is parsed (still missing).
 - `GetOptOutOfLoot`/`SetOptOutOfLoot`: a per-VM `Model::opt_out_of_loot`, false by default; a
   set submits `LootCall::OptOut`, which the app's loot steps send as `CMSG_OPT_OUT_OF_LOOT`
   (0x409, one u32; `GroupHandler.cpp:1082`) through the wrath tap. The 1.12 writer ignores it
@@ -155,5 +158,8 @@ bootstrap answers:
 - `UnitThreatSituation`: nil for every unit until an `SMSG_THREAT_UPDATE`-family producer
   exists (was already nil; now owned with the reason documented).
 
-Not yet done for step 4: difficulty IDs/names from `MapDifficulty` and raid/battleground caps
-(0 for now), the difficulty CMSG and its server echo, and the threat update producer.
+Not yet done for step 4: the server echo of `MSG_SET_DUNGEON/RAID_DIFFICULTY` (which should
+write the `dungeonDifficulty`/`playerDifficulty` rows; same opcodes, three u32s:
+difficulty, `unk = 1`, in-group), difficulty IDs/names from `MapDifficulty` and
+raid/battleground caps (0 for now), `SMSG_INSTANCE_DIFFICULTY` (0x33B) on entry, and the
+`SMSG_THREAT_*` producer (0x482-0x485).

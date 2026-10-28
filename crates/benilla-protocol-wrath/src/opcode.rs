@@ -187,6 +187,11 @@ pub const CMSG_LOOT_MONEY: u32 = 0x15E;
 pub const CMSG_LOOT_RELEASE: u32 = 0x15F;
 /// The player's pass-on-loot preference: one u32 flag (`GroupHandler.cpp:1082`).
 pub const CMSG_OPT_OUT_OF_LOOT: u32 = 0x409;
+/// The client's dungeon-difficulty selection: one u32 mode (`MiscHandler.cpp:1264`,
+/// `SetDungeonDifficultyClient::Read`). The server echoes the same opcode with the accepted mode.
+pub const MSG_SET_DUNGEON_DIFFICULTY: u32 = 0x329;
+/// The raid selection: one u32 mode (`MSG_SET_RAID_DIFFICULTY`), echoed the same way.
+pub const MSG_SET_RAID_DIFFICULTY: u32 = 0x4EB;
 pub const SMSG_LOOT_RESPONSE: u16 = 0x160;
 pub const SMSG_LOOT_RELEASE_RESPONSE: u16 = 0x161;
 pub const SMSG_LOOT_REMOVED: u16 = 0x162;

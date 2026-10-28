@@ -74,6 +74,11 @@ impl super::UiScript {
 pub enum InstanceCall {
     /// `ResetInstances()` (`0x48a6b0`): `CMSG_RESET_INSTANCES` (`0x48a6e6`).
     Reset,
+    /// `SetDungeonDifficulty(mode)`: `MSG_SET_DUNGEON_DIFFICULTY` (3.3.5), one u32 mode; the
+    /// server echoes the same opcode with the accepted one.
+    SetDungeonDifficulty(u32),
+    /// `SetRaidDifficulty(mode)`: `MSG_SET_RAID_DIFFICULTY` (3.3.5), one u32 mode.
+    SetRaidDifficulty(u32),
 }
 
 /// Register the three lockout globals.

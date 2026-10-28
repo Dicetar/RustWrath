@@ -756,6 +756,12 @@ impl CallHost for ScriptCallHost<'_, '_> {
                 appliers.meeting_stone().cancel(script);
             }
             ScriptCall::Instance(InstanceCall::Reset) => appliers.instance().reset(),
+            ScriptCall::Instance(InstanceCall::SetDungeonDifficulty(mode)) => {
+                appliers.instance().set_dungeon_difficulty(mode);
+            }
+            ScriptCall::Instance(InstanceCall::SetRaidDifficulty(mode)) => {
+                appliers.instance().set_raid_difficulty(mode);
+            }
             ScriptCall::Pvp(PvpCall::Toggle) => appliers.pvp().toggle(),
             ScriptCall::WornDisplay(which) => appliers.worn().flip(which),
             ScriptCall::ActionBar(call) => appliers.action_bar().apply(call),

@@ -73,16 +73,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetRaidDifficulty",
         lua.create_function(|lua, ()| cvar_int(lua, "playerdifficulty"))?,
     )?;
-    // The setters are the client's own selection (the reference's popup calls them); the server
-    // send that must follow is named above. An unregistered row is a silent no-op, like every
-    // engine CVar write.
+    // The setters are a request, not a local write: the mode goes out as
+    // `MSG_SET_DUNGEON_DIFFICULTY` / `MSG_SET_RAID_DIFFICULTY` (one u32), and the getters keep
+    // the last confirmed value until the server's echo of the same opcode lands. That echo is a
+    // producer this host does not parse yet, so a selection shows only after it is wired.
     g.set(
         "SetDungeonDifficulty",
-        lua.create_function(|lua, value: Value| set_cvar_int(lua, "dungeondifficulty", value))?,
+        lua.create_function(|lua, value: Value| {
+            let mode = super::binding_abi::coerced_number(lua, Some(value)) as u32;
+            super::calls::submit(
+                lua,
+                super::ScriptCall::Instance(super::InstanceCall::SetDungeonDifficulty(mode)),
+            )
+        })?,
     )?;
     g.set(
         "SetRaidDifficulty",
-        lua.create_function(|lua, value: Value| set_cvar_int(lua, "playerdifficulty", value))?,
+        lua.create_function(|lua, value: Value| {
+            let mode = super::binding_abi::coerced_number(lua, Some(value)) as u32;
+            super::calls::submit(
+                lua,
+                super::ScriptCall::Instance(super::InstanceCall::SetRaidDifficulty(mode)),
+            )
+        })?,
     )?;
 
     // `GetOptOutOfLoot()` / `SetOptOutOfLoot(value)` (`UnitPopup.lua:238`, `:1305`, `:1308`):
@@ -131,17 +144,4 @@ fn cvar_int(lua: &Lua, name: &str) -> mlua::Result<Value> {
         .map_or(Value::Nil, Value::Integer))
 }
 
-/// Write an integer into a CVar row through the one store every write uses (checks and the host
-/// change queue included). A nil argument stores nothing.
-fn set_cvar_int(lua: &Lua, name: &str, value: Value) -> mlua::Result<()> {
-    if value.is_nil() {
-        return Ok(());
-    }
-    let n = super::binding_abi::coerced_number(lua, Some(value)) as i64;
-    super::cvars::set_from_engine(
-        &mut lua.app_data_mut::<Model>().expect("model app_data"),
-        name,
-        n.to_string(),
-    );
-    Ok(())
-}
+
