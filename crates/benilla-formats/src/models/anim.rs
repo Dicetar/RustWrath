@@ -728,6 +728,8 @@ fn read_wrath_track<T: Clone>(
         le_u32(b, track + 16) as usize,
     );
     let read_keys = |n: usize, ts: usize, vs: usize| -> Vec<(u32, T)> {
+        let n = capped(n, 4, b.len().saturating_sub(ts));
+        let n = capped(n, stride, b.len().saturating_sub(vs));
         (0..n)
             .map_while(|k| {
                 let t = le_u32(b, ts + k * 4);
@@ -742,8 +744,10 @@ fn read_wrath_track<T: Clone>(
             global: read_keys(n, to, vo),
         };
     }
-    let mut sequences = Vec::with_capacity(tc.min(vc));
-    for s in 0..tc.min(vc) {
+    let count = capped(tc.min(vc), 8, b.len().saturating_sub(to));
+    let count = capped(count, 8, b.len().saturating_sub(vo));
+    let mut sequences = Vec::with_capacity(count);
+    for s in 0..count {
         let ent = to + s * 8;
         let val = vo + s * 8;
         let (n, ts) = (le_u32(b, ent) as usize, le_u32(b, ent + 4) as usize);
@@ -786,6 +790,7 @@ fn parse_m2_animations_wrath(b: &[u8]) -> Vec<ModelAnimation> {
         WrathTrack<[f32; 4]>,
         WrathTrack<[f32; 3]>,
     );
+    let bone_count = capped(bone_count, 88, b.len().saturating_sub(bone_ofs));
     let bone_tracks: Vec<WrathBone> = (0..bone_count)
         .map(|i| {
             let rec = bone_ofs + i * 88;
@@ -813,8 +818,9 @@ fn parse_m2_animations_wrath(b: &[u8]) -> Vec<ModelAnimation> {
         }
         let ident: [u8; 4] = b[rec..rec + 4].try_into().unwrap_or(*b"????");
         let (tc, to) = (le_u32(b, rec + 28) as usize, le_u32(b, rec + 32) as usize);
-        let mut times = Vec::with_capacity(tc);
-        for s in 0..tc {
+        let count = capped(tc, 8, b.len().saturating_sub(to));
+        let mut times = Vec::with_capacity(count);
+        for s in 0..count {
             let ent = to + s * 8;
             if ent + 8 > b.len() {
                 break;
@@ -1033,6 +1039,35 @@ pub fn parse_m2_global_sequence_bones(b: &[u8]) -> Vec<GlobalSeqBone> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrath_track_rejects_sequence_headers_outside_the_file() {
+        let mut b = [0u8; 20];
+        b[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
+        b[4..8].copy_from_slice(&1u32.to_le_bytes());
+        b[8..12].copy_from_slice(&20u32.to_le_bytes());
+        b[12..16].copy_from_slice(&1u32.to_le_bytes());
+        b[16..20].copy_from_slice(&20u32.to_le_bytes());
+        let track = read_wrath_track(&b, 0, 4, |bytes, off| bytes.get(off).copied());
+        assert!(track.sequences.is_empty());
+    }
+
+    #[test]
+    fn wrath_track_keeps_valid_keys_and_bounds_truncated_timestamp_arrays() {
+        let mut b = [0u8; 44];
+        b[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
+        for (offset, value) in [(4, 1u32), (8, 20), (12, 1), (16, 28),
+            (20, 1), (24, 36), (28, 1), (32, 40), (36, 123), (40, 42)] {
+            b[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let read = |bytes: &[u8], off| bytes.get(off..off + 4).map(|s|
+            u32::from_le_bytes(s.try_into().unwrap()));
+        let track = read_wrath_track(&b, 0, 4, read);
+        assert_eq!(track.sequences, vec![vec![(123, 42)]]);
+        b[24..28].copy_from_slice(&44u32.to_le_bytes());
+        let track = read_wrath_track(&b, 0, 4, read);
+        assert_eq!(track.sequences, vec![Vec::<(u32, u32)>::new()]);
+    }
 
     #[test]
     fn hostile_event_and_key_counts_reserve_only_what_the_file_holds() {

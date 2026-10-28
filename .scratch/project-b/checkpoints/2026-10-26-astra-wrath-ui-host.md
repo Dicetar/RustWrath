@@ -675,3 +675,18 @@ still contains it, inert without WOW_MEMORY_ASSET_TRACE. The same run did not
 emit either old WorldMapArea or WorldMapContinent DBC mismatch before termination;
 the complete map window remains unaccepted. The memory cause, player model,
 UI behavior and A0/A1 remain unresolved. No client process remained.
+
+2026-10-29 M2 track investigation claim: `crates/benilla-formats/src/models/anim.rs`
+and this checkpoint. The Wrath animation reader reserves/reads per-sequence track
+headers from raw counts without checking both tables fit the file; reproduce and
+fix that concrete parser issue with focused cases. This is a possible memory lead,
+not evidence that the current live model triggered it. Do not touch OC's dirty files.
+
+Focused `wrath_track_rejects_sequence_headers_outside_the_file` reproduced an
+index-out-of-bounds panic before repair. The reader now bounds sequence headers,
+timestamps and values by the source bytes before reserving or reading; the Wrath
+bone and event-track arrays are bounded likewise. Afterward the 10 existing
+`models::anim::tests` passed (some real-data cases may skip), and both focused
+Wrath cases passed, including preservation of a valid key and refusal of a
+truncated timestamp array. This establishes a parser defect and a source repair,
+not that it caused the observed memory spike. No post-fix live run yet.
