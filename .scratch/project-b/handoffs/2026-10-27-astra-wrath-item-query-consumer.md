@@ -411,6 +411,10 @@ has not been built or tested and does not demonstrate the Northshire quest route
 `4cad087e` also selects the UI target when composing the quest reward chat item
 link. This remains source-only; no quest interaction or build/test was run.
 
+`7fd26774` selects the UI target for vendor-list item links. The existing buyback
+view still supplies no link; it is not repaired by this change. No build, test or
+vendor runtime execution was performed.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
