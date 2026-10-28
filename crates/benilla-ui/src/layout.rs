@@ -555,11 +555,11 @@ pub fn assemble_rect_with_insets(
         let high_x = f64::from(extent_x) - f64::from(inset_r);
         let high_y = f64::from(extent_y) - f64::from(inset_t);
         if (left as f64) < low_x {
-            right = (f64::from(right) - (low_x - f64::from(left))) as f32;
+            right = (f64::from(right) + (low_x - f64::from(left))) as f32;
             left = low_x as f32;
         }
         if (bottom as f64) < low_y {
-            top = (f64::from(top) - (low_y - f64::from(bottom))) as f32;
+            top = (f64::from(top) + (low_y - f64::from(bottom))) as f32;
             bottom = low_y as f32;
         }
         if (right as f64) > high_x {
