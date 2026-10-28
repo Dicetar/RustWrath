@@ -22,6 +22,11 @@ use super::{ScriptCall, UiScript};
 
 /// The engine half of the script calls: what applies a call to the state outside the VM.
 pub trait CallHost {
+    /// Existing inventory-owner count, optionally including bank copies and remaining uses.
+    fn item_count(&mut self, _id: u32, _bank: bool, _uses: bool) -> Option<u32> {
+        None
+    }
+
     /// Existing inventory-owner projection: free GUID seats and the observed bag-family mask.
     fn container_space(&mut self, _bag: i64) -> Option<(u32, u32)> {
         None

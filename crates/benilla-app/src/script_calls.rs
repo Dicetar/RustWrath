@@ -513,6 +513,10 @@ impl ScriptCallHost<'_, '_> {
 }
 
 impl CallHost for ScriptCallHost<'_, '_> {
+    fn item_count(&mut self, id: u32, bank: bool, uses: bool) -> Option<u32> {
+        self.appliers.items().item_count(id, bank, uses)
+    }
+
     fn container_space(&mut self, bag: i64) -> Option<(u32, u32)> {
         self.appliers.items().container_space(bag)
     }

@@ -236,15 +236,25 @@ fn walk_inventory<T>(
     store: &ObjectFields,
     objects: &Objects,
     scope: InventoryScope,
+    raw: impl FnMut(u8, u8, u64) -> Option<T>,
+) -> Option<T> {
+    walk_inventory_filtered(store, objects, scope, item_is_whole, raw)
+}
+
+fn walk_inventory_filtered<T>(
+    store: &ObjectFields,
+    objects: &Objects,
+    scope: InventoryScope,
+    keep: impl Fn(&ObjectFields) -> bool,
     mut raw: impl FnMut(u8, u8, u64) -> Option<T>,
 ) -> Option<T> {
-    // The walker passes an item to its callback only when it is whole (`0x6224f4`-`0x622513`):
+    // Donor callers select the whole-item predicate (`0x6224f4`-`0x622513`):
     // an unwrapped item with durability 0 of a nonzero maximum is broken and skipped, and so is
     // one with flags bit `0x10`. Skipped, a container is not entered either (`0x622576`). The
     // reference also skips a released object (`0x6224e1`, `0x614ea0`); a released item is no
     // object here, so the lookups below already find none. An item whose object is not held is
     // still visited, for the callers that judge it themselves.
-    let whole = |guid: u64| objects.object(guid).is_none_or(item_is_whole);
+    let whole = |guid: u64| objects.object(guid).is_none_or(&keep);
     let mut visit = |bag: u8, slot: u8, guid: u64| {
         if whole(guid) {
             raw(bag, slot, guid)
@@ -337,6 +347,55 @@ fn walk_inventory<T>(
         }
     }
     None
+}
+
+/// The Wrath possession query includes broken items; donor action/reagent walks keep their
+/// whole-item gate. Charge reads use the same template and instance facts as action_count.
+fn possession_count(
+    store: &ObjectFields,
+    objects: &Objects,
+    items: &Items,
+    entry: u32,
+    include_bank: bool,
+    include_uses: bool,
+) -> Option<u32> {
+    let scope = InventoryScope {
+        bank: include_bank,
+        ..InventoryScope::DEFAULT
+    };
+    let mut total = 0u32;
+    let mut available = true;
+    walk_inventory_filtered::<()>(store, objects, scope, |_| true, |_, _, guid| {
+        let amount = (|| {
+            let fields = objects.object(guid)?;
+            if fields.object_entry()? != entry {
+                return Some(0);
+            }
+            let stack = fields.item_stack_count()?;
+            let uses = if include_uses {
+                let template = items.template(entry, guid, Ask::Read)?;
+                if template.has_finite_charges() {
+                    fields.item_spell_charges(0)?.unsigned_abs()
+                } else {
+                    1
+                }
+            } else {
+                1
+            };
+            Some(stack.wrapping_mul(uses))
+        })();
+        match amount {
+            Some(amount) => {
+                total = total.wrapping_add(amount);
+                None
+            }
+            None => {
+                available = false;
+                Some(())
+            }
+        }
+    });
+    available.then_some(total)
 }
 
 /// How many of `entry` the player holds within `scope`, summing each copy's

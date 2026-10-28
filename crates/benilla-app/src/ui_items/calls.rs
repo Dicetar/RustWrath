@@ -31,6 +31,11 @@ pub(crate) struct ItemSteps<'w, 's> {
 }
 
 impl ItemSteps<'_, '_> {
+    pub(crate) fn item_count(&self, id: u32, bank: bool, uses: bool) -> Option<u32> {
+        let store = &self.self_q.iter().next()?.0;
+        super::possession_count(store, &self.objects, &self.items, id, bank, uses)
+    }
+
     /// Count raw GUID seats, so an occupied item whose object is still loading stays occupied.
     pub(crate) fn container_space(&self, bag: i64) -> Option<(u32, u32)> {
         fn free_seats(n: u32, seat: impl Fn(u8) -> Option<u64>) -> Option<u32> {

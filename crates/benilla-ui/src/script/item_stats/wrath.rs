@@ -77,6 +77,28 @@ fn query(lua: &Lua, value: Value) -> mlua::Result<Option<(ItemLink, ItemTemplate
 }
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
+    lua.globals().set("GetItemCount", lua.create_function(|lua, args: MultiValue| {
+        let input = args.front().cloned().unwrap_or(Value::Nil);
+        let id = if let Some(number) = lua.coerce_number(input.clone())? {
+            (number.is_finite() && number >= 1.0 && number <= f64::from(u32::MAX))
+                .then_some(number as u32)
+        } else if let Value::String(text) = input {
+            let text = text.to_str()?;
+            ItemLink::parse(&text).map(|link| link.id).or_else(|| {
+                let model = lua.app_data_ref::<Model>().expect("model");
+                let mut matches = model.item_templates.iter()
+                    .filter(|(_, item)| item.name.as_str() == &*text).map(|(&id, _)| id);
+                let id = matches.next()?;
+                matches.next().is_none().then_some(id)
+            })
+        } else {
+            return Err(mlua::Error::runtime("Usage: GetItemCount(item [, includeBank [, includeUses]])"));
+        };
+        let Some(id) = id else { return Ok(None) };
+        let bank = super::super::binding_abi::bool_or_default(args.get(1), false);
+        let uses = super::super::binding_abi::bool_or_default(args.get(2), false);
+        Ok(super::super::host::with_host(lua, |host| host.item_count(id, bank, uses)).flatten())
+    })?)?;
     lua.globals().set("GetItemInfo", lua.create_function(|lua, arg: Value| {
         let Some((link, view)) = query(lua, arg)? else { return Ok(MultiValue::new()) };
         let name = suffixed_name(lua, &view.name, link.random_property);
