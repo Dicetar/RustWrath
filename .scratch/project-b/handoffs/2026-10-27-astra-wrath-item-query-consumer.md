@@ -393,11 +393,9 @@ startup calls and UI feed. No actual DBC read, import/probe/extractor, build/tes
 case, generator or runtime execution occurred. Real wm-hd catalog admission, localized
 names, linked/held-item tooltips and enchant glows remain unverified.
 
-Negative ItemRandomSuffix is still absent: its separate 29-field table carries
-five enchant IDs and allocation percentages; a seed-scaled amount/name implementation
-still needs a complete supported contract and the native descriptor/link losses already
-recorded above. The positive-property repair must not be reported as negative-suffix
-support, complete stat projection or full item-system acceptance.
+At this checkpoint negative ItemRandomSuffix was still absent. The later catalog and
+name work below adds partial support; native descriptor/link losses and complete stat
+projection remain open. Neither checkpoint establishes full item-system acceptance.
 
 ### Negative-suffix retained data and shared names (ae6b8953, source only)
 
@@ -406,9 +404,10 @@ set when the positive-property table selects the known 12340 layout. Its strict 
 schema follows AC DBCStructure.h / DBCfmt.h: ID, sixteen localized names, mask/internal
 name, five enchant IDs and five allocation percentages. Rows retain enchant/allocation
 data even when the selected locale has no name. No cross-language name fallback is added.
-The selected Wrath catalog now requires both tables; a missing or malformed suffix table
-returns an error through the existing startup diagnostic rather than silently declaring
-an empty suffix catalog. Donor tables and from_rows fixtures retain an empty suffix set.
+Originally the selected Wrath catalog required both tables. Follow-up 49de390e retains
+positive properties if the suffix table fails and reports the failure at startup; negative
+suffix lookups remain unavailable. Donor tables and from_rows fixtures retain an empty
+suffix set.
 
 suffix_name(signed_id) resolves positive IDs only in the property table and negative IDs
 only in the suffix table. The existing get/iter/len/is_empty contract still describes the
@@ -422,8 +421,8 @@ formatter can join an observed negative suffix using their existing ITEM_SUFFIX_
 The donor constructor's negative-ID/plain-name behavior remains unchanged because its
 suffix set is empty. There is no new resource, cache, allocation owner or native mutation.
 
-Still not connected: pushing negative suffix names/amounts into Lua's raw GetItemInfo
-path; substituting scaled amounts into localized enchant text; restoring property slots
+At this checkpoint still not connected: negative suffix names in Lua's raw GetItemInfo
+path (subsequently connected below); substituting scaled amounts into localized enchant text; restoring property slots
 7..11 in native item descriptors; preserving the suffix factor in loot replication.
 Do not report this as complete negative-suffix tooltips, item stats or server behavior.
 No build/test/new case, table read/probe, generator or runtime execution occurred.
