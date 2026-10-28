@@ -358,3 +358,37 @@ in particular their expectations during unavailable host/data periods need accep
 
 Reference consulted for the backport's stated contract (not exact 12340 evidence):
 https://octowow.st/git/brues/ClassicAPI/src/commit/f119f448ed45e6b09240ce46f725f3b092cbfbf9/docs/API.md
+
+### Property/enchant catalog admission repairs (82999308, fd5d7479)
+
+Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
+the random-property loader accepted only 16 donor fields; the enchant loader accepted
+only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
+respectively for 12340. The strict shared parser rejects mismatched field counts.
+entities.rs:988 logs a property-load failure and does not insert RandomProperties;
+its enchant branch similarly omits Enchants on failure. feed_random_properties requires
+both before pushing the table, so repairing only the property loader is insufficient.
+
+82999308 selects the exact 24-field ItemRandomProperties layout: unchanged ID/internal
+name/five-enchant positions, sixteen localized names at 7..22 and mask at 23. The
+existing selected-locale mapping chooses the 12340 locale slot. The donor schema and
+eight-locale path remain intact; other counts still fail strict schema admission.
+
+fd5d7479 selects the exact 38-field SpellItemEnchantment layout: charges at 1,
+effect groups at 2..13, sixteen names at 14..29, name mask 30, visual 31, flags 32,
+then GemID, condition and three requirement words. It reads names/visual/flags at
+these target offsets rather than donor offsets 13/22/23. AC Item.cpp uses the
+field-32 ENCHANTMENT_CAN_SOULBOUND bit 1. Existing catalog interfaces and consumers
+are unchanged; no app loader, native descriptor or renderer was edited. Target
+interpretation of other enchant-flag bits is not independently established here.
+
+Source evidence is the pinned AC structures/formats plus the current strict parser,
+startup calls and UI feed. No actual DBC read, import/probe/extractor, build/test/new
+case, generator or runtime execution occurred. Real wm-hd catalog admission, localized
+names, linked/held-item tooltips and enchant glows remain unverified.
+
+Negative ItemRandomSuffix is still absent: its separate 29-field table carries
+five enchant IDs and allocation percentages; a seed-scaled amount/name implementation
+still needs a complete supported contract and the native descriptor/link losses already
+recorded above. The positive-property repair must not be reported as negative-suffix
+support, complete stat projection or full item-system acceptance.

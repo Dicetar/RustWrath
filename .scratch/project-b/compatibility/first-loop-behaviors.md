@@ -337,4 +337,13 @@ unavailable. Exact target charge/name behavior, unavailable-state addon handling
 the native bank/keyring capacity gaps remain open. No builds/tests/new cases or runtime
 acceptance occurred; the earlier OC stock-UI smoke does not cover this new path.
 
+2026-10-28 catalog admission repairs: 82999308 adds the exact 24-column 12340
+ItemRandomProperties layout; fd5d7479 adds the 38-column SpellItemEnchantment layout
+and its actual localized-name/visual/flag offsets. The donor layouts remain selected
+for their existing shapes. This removes source-observed schema mismatches in the
+existing startup-to-UI property/enchant path, without a new catalog owner or renderer.
+No actual table load, checks/tests/new cases or runtime run occurred. Positive item
+names/enchant lines/glows remain unaccepted, and negative ItemRandomSuffix allocation/
+seed scaling plus the native item-field/link gaps remain explicitly open.
+
 O5 follow-up at `920273d5`: route checkpoint adds static tile/model/icon/visual pins, but changes no parser/application source. The alleged WMO +8 header shift mixes whole-chunk and payload offsets; the current Rust reads agree with the cited extractor when both strip the eight-byte prefix. See [Astra's O5 counter-evidence](../checkpoints/2026-10-26-astra-o5-source-review.md). Do not shift the header or treat it as an unresolved version decision on this evidence. E07/M07 remain source-partial with exact WMO/doodad/kit-texture pins and rendered acceptance open; M03/M04/M10/R07 retain their observed movement/admission blockers. O5 preparation does not accept any behavior row.
