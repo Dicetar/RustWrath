@@ -390,3 +390,15 @@ Unavailable object/template facts remain unavailable; observed unequipped bags a
 Reuse current inventory capacities and bank admission, explicitly retaining the upstream
 Wrath bank/keyring projection limitations instead of claiming those repaired. Donor API
 registration stays unchanged. No new ECS parameter, test case or execution is authorized.
+
+2026-10-28 item-count claim at 7ec2be19: clean UI script/item_stats/wrath.rs and
+script/host.rs; app/script_calls.rs, ui_items/calls.rs and ui_items/mod.rs. Questie
+TrackerLinePool.lua:559/628/631 requires GetItemCount(id,nil,true); installed Skillet
+also uses item links and includeBank. Add the query through the existing ItemSteps host
+and shared GUID traversal. Preserve donor count/action/quest callers' whole-item filter;
+the new possession query must not exclude broken equipment (AC PlayerStorage.cpp's
+GetItemCount counts owned copies without that gate). Use existing template/instance
+charge facts for includeUses, with no timer, mutation, new cache or inventory owner.
+Expose numeric/link and uniquely cached-name resolution; absent host/template facts
+remain unavailable. Exact target charge-tail/name ABI and native bank/keyring capacity
+remain explicitly unverified. No tests/new cases, checks or runtime execution authorized.
