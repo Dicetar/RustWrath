@@ -744,6 +744,7 @@ fn answer_trade_request(
 /// carry what `0x52ae00` reads off the object ([`own_item`]).
 fn resolve_slot(
     item: &TradeItem,
+    target: benilla_ui::script::UiTarget,
     items: &Items,
     icons: Option<&ItemDisplays>,
     names: &NameCache,
@@ -764,7 +765,8 @@ fn resolve_slot(
     });
     // Nil until the template answers: the link embeds the name and the quality colour.
     let link = match (name.as_deref(), quality) {
-        (Some(n), Some(q)) => Some(crate::ui_items::item_link_full(
+        (Some(n), Some(q)) => Some(crate::ui_items::item_link_full_in_target(
+            target,
             item.entry,
             item.perm_enchant,
             item.random_prop_id,
@@ -813,16 +815,18 @@ fn resolve_slot(
 /// (`0x5d8b40`) without one.
 fn resolve_own_slot(
     item: &TradeItem,
+    target: benilla_ui::script::UiTarget,
     items: &Items,
     icons: Option<&ItemDisplays>,
     names: &NameCache,
     rolls: crate::items::RollCatalogs,
 ) -> TradeSlotItem {
-    let row = resolve_slot(item, items, icons, names, rolls);
+    let row = resolve_slot(item, target, items, icons, names, rolls);
     let uncached = items.template(item.entry, 0, Ask::Read).is_none();
     TradeSlotItem {
         uncached_link: uncached.then(|| {
-            crate::ui_items::item_link_full(
+            crate::ui_items::item_link_full_in_target(
+                target,
                 item.entry,
                 item.perm_enchant,
                 item.random_prop_id,
@@ -876,6 +880,7 @@ const ENCHANT_SLOT: usize = TRADE_SLOT_COUNT - 1;
 fn resolve_side(
     offer: &TradeOffer,
     own: bool,
+    target: benilla_ui::script::UiTarget,
     enchant: Option<&str>,
     items: &Items,
     icons: Option<&ItemDisplays>,
@@ -886,8 +891,8 @@ fn resolve_side(
     for (i, s) in offer.slots.iter().enumerate() {
         slots[i] = s.map(|it| {
             let mut row = match own {
-                true => resolve_own_slot(&it, items, icons, names, rolls),
-                false => resolve_slot(&it, items, icons, names, rolls),
+                true => resolve_own_slot(&it, target, items, icons, names, rolls),
+                false => resolve_slot(&it, target, items, icons, names, rolls),
             };
             if i == ENCHANT_SLOT {
                 row.enchantment = enchant.map(str::to_string);
@@ -903,6 +908,7 @@ fn resolve_side(
 
 fn snapshot(
     trade: &TradeSession,
+    target: benilla_ui::script::UiTarget,
     items: &Items,
     icons: Option<&ItemDisplays>,
     spells: Option<&crate::ui_action::Spells>,
@@ -924,6 +930,7 @@ fn snapshot(
         player: resolve_side(
             &trade.our,
             true,
+            target,
             name(trade.their.enchant_spell_id),
             items,
             icons,
@@ -934,6 +941,7 @@ fn snapshot(
         target: resolve_side(
             &trade.their,
             false,
+            target,
             name(trade.our.enchant_spell_id),
             items,
             icons,
@@ -955,9 +963,10 @@ struct TradeRows<'w> {
 
 impl TradeRows<'_> {
     /// [`snapshot`] over these.
-    fn snapshot(&self, trade: &TradeSession, names: &NameCache) -> Option<TradeState> {
+    fn snapshot(&self, trade: &TradeSession, names: &NameCache, target: benilla_ui::script::UiTarget) -> Option<TradeState> {
         snapshot(
             trade,
+            target,
             &self.items,
             self.icons.as_deref(),
             self.spells.as_deref(),
@@ -1072,7 +1081,7 @@ pub(crate) fn touch_trade(
                     slot: wire_slot,
                 },
             );
-            let row = resolve_own_slot(&item, items, icons.as_deref(), names, rolls.get());
+            let row = resolve_own_slot(&item, script.target(), items, icons.as_deref(), names, rolls.get());
             script.replace_trade_slot(slot, row);
         }
     }
@@ -1145,7 +1154,7 @@ fn feed_trade(
             *last_open = false;
         }
 
-        let fresh = rows.snapshot(&trade, &names);
+        let fresh = rows.snapshot(&trade, &names, script.target());
         // A close is the core's, which shut the VM's window and left both offers in place; a
         // disconnect's clear tells it nothing.
         let opened = !*last_open && trade.is_open();
