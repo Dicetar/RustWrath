@@ -471,3 +471,13 @@ direct item actions, retaining existing donor entry points/tests and bank limits
 Stock 12340 GetKeyRingSize itself reads GetContainerNumSlots(-2) and sizes its view;
 do not replace that Lua function. Native/protocol files stay untouched. No new test
 cases, checks, generator or runtime execution; pending verification is not a grant.
+
+2026-10-28 late-keyring consumer claim at 3104740a: clean app/ui_items/mod.rs;
+ui_merchant/mod.rs and calls.rs; ui_trade/mod.rs and calls.rs; ui_action/drain.rs,
+feed.rs and recount.rs. Pass the current UI target into merchant destination and
+trade placement/re-signal mapping; action lookup/count/recount must use the same
+32-seat keyring span. Preserve donor helper entry points and all existing non-keyring
+scope/charge/whole-item rules. One existing trade test helper call needs only the
+new target argument; no case/assertion is added or executed. Native/protocol/recovery
+source stays untouched. Other gameplay/reagent helpers without a UI target remain
+separate migration work. No tests, checks or runtime operation is authorized.
