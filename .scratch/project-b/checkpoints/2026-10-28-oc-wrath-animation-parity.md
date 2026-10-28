@@ -6,6 +6,9 @@ Base HEAD: `7727a591` (closed stock-UI animation goal)
 Goal: cover the animation kinds and run controls the installed addons actually use, starting with
 the frame spinners, so animation parity extends past the stock UI without regressing it.
 
+**Status: complete (2026-10-28).** Every animation verb or kind with stock or installed-addon
+evidence is implemented and covered; the remaining items have no caller and are listed below.
+
 ## Evidence
 
 - Installed AddOns construct only `Alpha` (6), `Rotation` (2) and `Translation` (1); no `Scale`,
@@ -59,6 +62,10 @@ Out / known limits (recorded, not hidden):
 - Full UI suite not rerun after this slice; the earlier two host-timezone stdlib failures are
   unrelated.
 
-## Next
+## Next (no evidence yet; not started)
 
-Rotation-aware hit tests, region-owned rotation, then the (unused) Scale/Color/TextureCoord kinds.
+- Rotation-aware hit tests (only draw quads rotate today).
+- Region-owned rotation (installed addons rotate frames).
+- `Scale`/`Color`/`TextureCoord`/`VertexColor` kinds (neither stock nor installed addons
+  construct them).
+- `BOUNCE` on non-Angle visual proof in a live run (unit-tested only).
