@@ -534,3 +534,8 @@ and `crates/benilla-app/src/ui_auction/net.rs`. Pass the active UI target throug
 the existing list readers for normal refreshes and lane page updates; use the existing
 target-aware link formatter with the auction row's property and factor. No wire decoder,
 test case or execution changes are authorized.
+
+2026-10-28 quest-panel link claim at 59413efe: clean `crates/benilla-app/src/ui_quest/mod.rs`.
+Select the target layout for quest-panel required and reward item links using the
+existing script target and template; preserve the vanilla snapshot used by existing
+fixtures. Quest state, reward commands, protocol and tests remain outside this claim.
