@@ -230,7 +230,8 @@ fn seat_fresh_hover(
     if store.0.object_type() == Some(benilla_protocol::messages::ObjectType::Player)
         && me != Some(guid)
     {
-        script.set_visible_equipment(guid, Some(visible.slots(store)));
+        let slots = visible.slots_in_target(store, script.target());
+        script.set_visible_equipment(guid, Some(slots));
     }
 }
 

@@ -106,6 +106,7 @@ impl Plugin for InspectUiPlugin {
 /// getters' lookup passes no callback (`0x4c8420` → `0x5f0d60` → `0x62eb40`).
 fn inspect_slot_view(
     store: &ObjectStore,
+    target: benilla_ui::script::UiTarget,
     items: &Items,
     icons: Option<&ItemDisplays>,
     rolls: crate::items::RollCatalogs,
@@ -137,7 +138,9 @@ fn inspect_slot_view(
     let perm = store.0.player_visible_item_enchant(slot0, 0).unwrap_or(0);
     let link = name
         .as_ref()
-        .map(|n| crate::ui_items::item_link_full(entry, perm, roll, 0, n, quality));
+        .map(|n| {
+            crate::ui_items::item_link_full_in_target(target, entry, perm, roll, 0, n, quality)
+        });
     Some(InvSlotView {
         item_id: entry,
         icon: icons
@@ -180,7 +183,16 @@ pub(crate) struct VisibleItemTables<'w> {
 
 impl VisibleItemTables<'_> {
     /// A player's 19 slots by slot id.
+    #[cfg(test)]
     pub(crate) fn slots(&self, store: &ObjectStore) -> InventorySlots {
+        self.slots_in_target(store, benilla_ui::script::UiTarget::Vanilla112)
+    }
+
+    pub(crate) fn slots_in_target(
+        &self,
+        store: &ObjectStore,
+        target: benilla_ui::script::UiTarget,
+    ) -> InventorySlots {
         let rolls = crate::items::RollCatalogs {
             enchants: self.enchants.as_deref(),
             props: self.props.as_deref(),
@@ -189,6 +201,7 @@ impl VisibleItemTables<'_> {
         for slot in 1..=19u8 {
             slots[usize::from(slot)] = inspect_slot_view(
                 store,
+                target,
                 &self.items,
                 self.icons.as_deref(),
                 rolls,
@@ -308,7 +321,7 @@ pub(crate) fn feed_inspect(
             if !tables_moved && last.is_some_and(|p| p.block == block) {
                 continue;
             }
-            let slots = tables.slots(&store);
+            let slots = tables.slots_in_target(&store, script.target());
             memo.builds += 1;
             if last.map(|p| &p.slots) != Some(&slots) {
                 script.set_visible_equipment(guid, Some(slots.clone()));
