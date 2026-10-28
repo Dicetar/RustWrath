@@ -359,6 +359,7 @@ pub(crate) fn row_is_one_click(icon: u32) -> bool {
 /// (`0x5017de`).
 fn resolve_item(
     it: &QuestRewardItem,
+    target: benilla_ui::script::UiTarget,
     items: &Items,
     icons: Option<&ItemDisplays>,
     ask: Ask<'_>,
@@ -378,7 +379,9 @@ fn resolve_item(
         .and_then(|i| i.catalog.get(it.display_id))
         .and_then(|d| d.icon.clone());
     // `GetQuestItemLink`'s payload; `None` until the template gives the name and quality.
-    let link = template.map(|t| crate::ui_items::item_link(it.item_id, &t.name, t.quality));
+    let link = template.map(|t| {
+        crate::ui_items::item_link_full_in_target(target, it.item_id, 0, 0, 0, &t.name, t.quality)
+    });
     QuestItemView {
         name,
         texture,
@@ -391,12 +394,13 @@ fn resolve_item(
 
 fn resolve_items(
     src: &[QuestRewardItem],
+    target: benilla_ui::script::UiTarget,
     items: &Items,
     icons: Option<&ItemDisplays>,
     ask: Ask<'_>,
 ) -> Vec<QuestItemView> {
     src.iter()
-        .map(|it| resolve_item(it, items, icons, ask))
+        .map(|it| resolve_item(it, target, items, icons, ask))
         .collect()
 }
 
@@ -419,6 +423,7 @@ pub(crate) fn reward_spell_view(
     })
 }
 
+#[cfg(test)]
 fn snapshot(
     giver: &QuestGiver,
     items: &Items,
@@ -426,6 +431,20 @@ fn snapshot(
     ask: Ask<'_>,
     macros: &crate::npc_text::MacroContext,
     spells: Option<&Spells>,
+) -> Option<QuestState> {
+    snapshot_in_target(
+        giver, items, icons, ask, macros, spells, benilla_ui::script::UiTarget::Vanilla112,
+    )
+}
+
+fn snapshot_in_target(
+    giver: &QuestGiver,
+    items: &Items,
+    icons: Option<&ItemDisplays>,
+    ask: Ask<'_>,
+    macros: &crate::npc_text::MacroContext,
+    spells: Option<&Spells>,
+    target: benilla_ui::script::UiTarget,
 ) -> Option<QuestState> {
     // The wire sends quest text unexpanded; the client substitutes `$N`, `$B` and `$G`.
     let sub = |t: &str| crate::npc_text::substitute(t, macros);
@@ -461,8 +480,8 @@ fn snapshot(
             title: sub(&d.title),
             body: sub(&d.details),
             objectives: sub(&d.objectives),
-            choices: resolve_items(&d.choices, items, icons, ask),
-            rewards: resolve_items(&d.rewards, items, icons, ask),
+            choices: resolve_items(&d.choices, target, items, icons, ask),
+            rewards: resolve_items(&d.rewards, target, items, icons, ask),
             reward_money: d.money.max(0) as u32,
             reward_spell: reward_spell_view(d.reward_spell, spells),
             ..Default::default()
@@ -471,7 +490,7 @@ fn snapshot(
             panel: QuestPanel::Progress,
             title: sub(&p.title),
             body: sub(&p.request_text),
-            required: resolve_items(&p.required_items, items, icons, ask),
+            required: resolve_items(&p.required_items, target, items, icons, ask),
             required_money: p.required_money,
             completable: p.is_complete,
             ..Default::default()
@@ -480,8 +499,8 @@ fn snapshot(
             panel: QuestPanel::Reward,
             title: sub(&o.title),
             body: sub(&o.offer_text),
-            choices: resolve_items(&o.choices, items, icons, ask),
-            rewards: resolve_items(&o.rewards, items, icons, ask),
+            choices: resolve_items(&o.choices, target, items, icons, ask),
+            rewards: resolve_items(&o.rewards, target, items, icons, ask),
             reward_money: o.money.max(0) as u32,
             reward_spell: reward_spell_view(o.reward_spell, spells),
             ..Default::default()
@@ -548,7 +567,7 @@ pub(crate) fn feed_quest(
         let waits = script.take_quest_item_waits();
         giver.item_waits.extend(waits);
         let item_updates = giver.item_answers(&items);
-        let fresh = snapshot(
+        let fresh = snapshot_in_target(
             &giver,
             &items,
             icons.as_deref(),
@@ -558,6 +577,7 @@ pub(crate) fn feed_quest(
                 states: &states,
             },
             spells.as_deref(),
+            script.target(),
         );
         // The background is the source object's material, never a creature's and never on the wire
         // (`GetQuestBackgroundMaterial`, `0x502230`); the reader window's binding shares its body.
