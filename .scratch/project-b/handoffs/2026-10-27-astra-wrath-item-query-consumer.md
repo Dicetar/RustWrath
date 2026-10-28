@@ -378,6 +378,12 @@ target-shaped link; preserve observed factors rather than inventing missing ones
 The complete set of producer paths and live behavior remain unverified. OC owns
 protocol/world replication, so do not repair dropped wire fields in this UI slice.
 
+`ee45bf7a` carries the active UI target to loot-window rows and item-receipt chat
+links, using a shared target-aware formatter. Wrath links place the signed property
+and receipt factor in their target positions; vanilla output is preserved. Window
+rows still have no retained suffix factor and emit zero. Loot rolls, inspect, trade
+and auction remain separate producer work. Source-only: no build or test has run.
+
 Tracing the unimplemented negative-suffix family exposed two earlier admission blockers:
 the random-property loader accepted only 16 donor fields; the enchant loader accepted
 only 24. AC DBCStructure.h / DBCfmt.h at the existing source baseline define 24 and 38
