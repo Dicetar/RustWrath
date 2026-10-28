@@ -428,3 +428,12 @@ expose signed-name resolution and seed-scaled enchant amounts using AC's allocat
 formula. Route the shared item-name formatter through that observed name. No new
 resource/cache, parser fallback, guessed tooltip-token expansion, native field repair,
 test case or execution. Negative suffix stat rendering/raw-link Lua queries remain open.
+
+2026-10-28 raw-link suffix-name claim at 445f855f: clean UI script/host.rs,
+script/item_stats/wrath.rs and app/script_calls.rs, ui_items/calls.rs. Add one
+read-only optional RandomProperties access to existing ItemSteps and expose its signed
+suffix-name lookup through the lent host. Wrath GetItemInfo negative-property links
+must use that observed localized name and existing ITEM_SUFFIX_TEMPLATE, or remain
+unavailable, rather than returning a known unsuffixed name. Keep positive/donor paths
+and raw link instance fields unchanged. No new catalog/cache, packet, stat formatter,
+tests or execution. New SystemParam admission remains unverified until granted.
