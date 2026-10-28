@@ -6,8 +6,10 @@ Base HEAD: `2ffe7f61` (Questie animation defaults and GetParent)
 Goal: wire the 12340 group-loot family into the existing donor loot owners and retain the
 loot-response random suffix factor end to end, without changing Astra's UI behavior.
 
-Status: in progress. Source-only; no build, test, addon, server, socket or graphical run is
-authorized in this session.
+Status: source stage delivered for the wire/adapter half; the Astra-owned UI consumption is
+recorded but not edited. Source-only; no build, test, addon, server, socket or graphical run is
+authorized in this session. Implementation commit `05090606`; proposed cases recorded in
+`d8dbbab1`.
 
 ## File claim
 
