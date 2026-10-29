@@ -733,6 +733,32 @@ short run does not accept world entry or the map. No client process remained.
 Evidence and the bounded probe script are retained in the existing untracked
 verification folder. Next: allocation-level attribution, not another identical run.
 
+2026-10-29 UI startup claim: `crates/benilla-app/src/ui_script/lifecycle.rs`,
+`crates/benilla-app/src/ui_script/wrath_ui_slice_tests.rs`, and this checkpoint.
+The production Wrath VM lacks `playerStatusText` and six other startup settings,
+although the existing stock-frame fixture manually supplies them. Investigate and
+seed the existing fixture's settings through the production CVar owner; preserve
+OC's dirty files. Removing the test-only `playerStatusText` registration reproduced
+the real PlayerFrame OnLoad failure in the selected profile.
+
+The seven settings are now seeded into the existing host CVar owner before the
+Wrath in-game VM loads, and the selected-profile player-frame smoke uses that
+same registration. The focused smoke passes and confirms that PlayerHitIndicator
+is installed as the player's feedback object; the client build passes. Bounded
+run `astra-track-probe-20261029-102340-286` reached 2,260,324,352 private bytes
+at its 55-second deadline. Its stderr reports zero `playerStatusText` errors but
+still 1,693 CombatFeedback errors, four `targetStatusText` errors, 372 missing
+`threatShowNumeric` errors, and 1,633 unknown-focus errors. The target frame's
+OnLoad aborts on `targetStatusText`. No client process remained. This run is not
+world-entry or playable-alpha acceptance.
+
+The uninstrumented binary SHA-256 `D26F9AE2AE36A3F36754E2140B52096E71B82B88E6D8D69A896B02A4F5510654`,
+including OC's uncommitted source, completed the bounded shadow-profile run
+`astra-track-probe-20261029-100956-758` at peak 2,251,038,720 private bytes in
+55 seconds, without reaching the 5 GiB stop. This confirms only short-run memory
+containment; 264 particle effects, frame initialization, player-model visibility,
+map and gameplay acceptance remain open. No client process remained.
+
 2026-10-29 allocator attribution claim: temporary instrumentation only in
 `crates/benilla-app/src/lib.rs` and `crates/benilla-app/src/perf/journal.rs`, and
 this checkpoint. Wrap the existing debug allocator, preserving its no-allocation

@@ -34,6 +34,23 @@ fn make_glue_vm() -> mlua::Result<UiScript> {
     UiScript::glue_with_target(selected_ui_target())
 }
 
+/// Settings read by Wrath FrameXML during startup, with the defaults used by the stock UI fixture.
+const WRATH_UI_CVARS: &[(&str, &str)] = &[
+    ("Sound_OutputDriverIndex", "0"),
+    ("Sound_VoiceChatInputDriverIndex", "0"),
+    ("Sound_VoiceChatOutputDriverIndex", "0"),
+    ("VoiceChatMode", "0"),
+    ("rotateMinimap", "0"),
+    ("chatStyle", "im"),
+    ("playerStatusText", "0"),
+];
+
+pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {
+    for &(name, default) in WRATH_UI_CVARS {
+        cvars.learn_addon_row(name, default);
+    }
+}
+
 /// Install the VM the world holds outside the world: the glue screens', put up on the screen
 /// named `screen`. A glue whose select screen did not load (logged as an error by [`new_vm`] or
 /// the load) asks for no roster, and nothing else does.
@@ -499,9 +516,19 @@ fn load_ingame_ui_seated(world: &mut World, seat: LoadSeat) {
     // read `cameraSmoothStyle` and `cameraSmoothTrackingStyle` in their `OnLoad`, where a nil is a
     // concat error (`UIOptionsFrame.lua:379-384`, `:501-506`), and this VM was born inside this
     // call, before `cvars::sync_cvars`'s per-VM seed.
-    match world.get_resource::<crate::cvars::Cvars>() {
-        Some(cvars) => cvars.seed_vm(&mut script),
-        None => script.register_cvars(crate::cvars::registered_pairs()),
+    match world.get_resource_mut::<crate::cvars::Cvars>() {
+        Some(mut cvars) => {
+            if script.target() == UiTarget::Wrath335 {
+                register_wrath_cvars(&mut cvars);
+            }
+            cvars.seed_vm(&mut script);
+        }
+        None => {
+            script.register_cvars(crate::cvars::registered_pairs());
+            if script.target() == UiTarget::Wrath335 {
+                script.register_cvars(WRATH_UI_CVARS.iter().copied());
+            }
+        }
     }
     // The item locks before any file or event runs: a `/reload`'s survive, as on the reference's
     // item objects.

@@ -36,22 +36,10 @@ fn player_frame_script() -> Option<UiScript> {
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
     s.set_text_measurer(Box::new(super::FixedWidthFont(7.0)));
-    s.register_cvars(crate::cvars::registered_pairs().chain([
-        // The 3.3.5a audio panels read these at load (`AudioOptionsPanels.lua:132`, `:564`,
-        // `:676`); their stock defaults are the primary DirectSound driver at index 0 and
-        // push-to-talk, with voice chat off.
-        ("Sound_OutputDriverIndex", "0"),
-        ("Sound_VoiceChatInputDriverIndex", "0"),
-        ("Sound_VoiceChatOutputDriverIndex", "0"),
-        ("VoiceChatMode", "0"),
-        // Minimap_UpdateRotationSetting reads it at load (Minimap.lua:366).
-        ("rotateMinimap", "0"),
-        // The 3.3.5a chat window reads its style at load (FloatingChatFrame.lua).
-        ("chatStyle", "im"),
-        // `TextStatusBar.lua:71` reads the player bar's status-text switch; the stock client
-        // shows no numbers on the unit frames until the option is turned on.
-        ("playerStatusText", "0"),
-    ]));
+    let mut cvars = crate::cvars::Cvars::default();
+    super::lifecycle::register_wrath_cvars(&mut cvars);
+    cvars.seed_vm(&mut s);
+    s.register_cvars(crate::cvars::registered_pairs());
     crate::chr_classes::seat_localized_class_names_from_chain(&mut s, &mut chain)
         .expect("Wrath UI smoke must seat a complete localized class catalog before Constants.lua");
     // The played character the smoke reads back: the host's own unit state, pushed the way the
@@ -125,6 +113,12 @@ fn stock_player_frame_host_smoke_test() {
         s.eval::<bool>(r#"return PlayerFrame ~= nil and PlayerFrameHealthBar ~= nil"#)
             .unwrap(),
         "the stock PlayerFrame and its health bar loaded"
+    );
+    assert!(
+        s.eval::<bool>(
+            "return PlayerHitIndicator ~= nil and PlayerFrame.feedbackText == PlayerHitIndicator"
+        ).unwrap(),
+        "PlayerFrame_OnLoad must finish combat feedback initialization"
     );
 
     // 2. Manual event-delivery smoke: fire `UNIT_HEALTH` with the stock player token and read
