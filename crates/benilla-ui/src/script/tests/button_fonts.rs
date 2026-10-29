@@ -463,3 +463,23 @@ fn set_checked_does_not_relink_the_label() {
         .eval::<bool>("return Box:GetFontString():GetFontObject() == GameFontDisable")
         .unwrap());
 }
+/// 3.3.5a's Button carries the FontInstance `SetFormattedText` (`GossipFrame.lua:96` sizes a quest
+/// title with it), formatted by `string.format`; the 1.12 Button has no such verb.
+#[test]
+fn a_wrath_button_formats_its_label_and_a_vanilla_one_has_no_verb() {
+    let mut wrath = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    wrath
+        .run(r#"local b = CreateFrame("Button") b:SetFormattedText("%s %d", "x", 7) B = b"#)
+        .unwrap();
+    assert_eq!(wrath.eval::<String>("return B:GetText()").unwrap(), "x 7");
+
+    let vanilla = UiScript::new().unwrap();
+    assert!(
+        vanilla
+            .eval::<bool>(
+                r#"local b = CreateFrame("Button") return b.SetFormattedText == nil"#
+            )
+            .unwrap(),
+        "1.12's Button has no SetFormattedText"
+    );
+}

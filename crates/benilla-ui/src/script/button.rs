@@ -717,6 +717,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
+    // 3.3.5a's Button carries the FontInstance verb as well (`GossipFrame.lua:96` sizes a quest
+    // title with it); 1.12's Button has no such method. It formats through Lua's own
+    // `string.format` and lands on the label's `SetText`, as the FontString verb does.
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        m.set(
+            "SetFormattedText",
+            lua.create_function(|lua, (this, args): (Table, MultiValue)| {
+                let string: Table = lua.globals().get("string")?;
+                let format: mlua::Function = string.get("format")?;
+                let text: Value = format.call(args)?;
+                this.call_method::<()>("SetText", text)
+            })?,
+        )?;
+    }
+
     // GetText (`0x780e10`): nil for no label, and for an empty one (`0x780ec5`).
     m.set(
         "GetText",
