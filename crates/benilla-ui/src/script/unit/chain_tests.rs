@@ -524,3 +524,38 @@ fn wrath_tokens_are_quiet_and_resolve_present_units() {
         );
     }
 }
+
+#[test]
+fn wrath_bases_read_guid_snapshots_without_duplicate_token_pushes() {
+    let mut s = world_for(UiTarget::Wrath335);
+    let mut guids = s.unit_guids_view();
+    guids.focus = MOB;
+    guids.vehicle = MOB;
+    guids.boss[0] = MOB;
+    s.set_unit_guids(&guids);
+    s.set_unit_by_guid(MOB, Some(state("Shared", MOB, 432)));
+    for token in ["focus", "vehicle", "boss1"] {
+        assert_eq!(s.eval::<i64>(&format!("return UnitHealth('{token}')")).unwrap(), 432);
+    }
+    s.set_unit("focus", Some(state("Old focus", MOB, 999)));
+    guids.focus = P1;
+    s.set_unit_guids(&guids);
+    s.set_unit_by_guid(P1, Some(state("New focus", P1, 123)));
+    assert_eq!(s.eval::<i64>("return UnitHealth('focus')").unwrap(), 123);
+    guids.focus = 0;
+    s.set_unit_guids(&guids);
+    assert!(s.eval::<bool>("return UnitExists('focus') == nil").unwrap());
+}
+
+#[test]
+fn wrath_resolver_mode_is_owned_by_the_vm() {
+    for target in [UiTarget::Vanilla112, UiTarget::Wrath335] {
+        let mut s = UiScript::with_target(target).unwrap();
+        s.set_unit_guids(&UnitGuids {
+            wrath: target != UiTarget::Wrath335,
+            focus: MOB,
+            ..Default::default()
+        });
+        assert_eq!(s.unit_guids_view().wrath, target == UiTarget::Wrath335);
+    }
+}

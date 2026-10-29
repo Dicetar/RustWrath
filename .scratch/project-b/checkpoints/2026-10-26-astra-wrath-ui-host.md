@@ -784,3 +784,17 @@ this checkpoint. Wrap the existing debug allocator, preserving its no-allocation
 audio checks, to report live Rust allocation sizes at existing FPS sample points;
 compare them with process-private memory under the existing bounded probe. Remove
 instrumentation after collecting evidence. OC's dirty files remain untouched.
+
+2026-10-29 OC review claim: `script/model.rs`, `script/aura/mod.rs`, and
+`script/unit/chain_tests.rs` under benilla-ui. Reproduce getter lookup of populated
+Wrath bases using existing GUID snapshots and disagreement between the VM target
+and the incoming UnitGuids mode. Preserve OC's dirty wrath.rs and script/mod.rs.
+
+Both focused regressions failed before the repair (health 0 instead of 432,
+and caller-supplied mode overriding vanilla). Wrath focus/vehicle/boss getters now
+read the existing GUID snapshot and ignore named snapshots with stale identities;
+clearing focus clears its getter results. Incoming resolver state is normalized to
+the VM target. After repair, `cargo test --locked --offline -p benilla-ui --lib
+wrath_` passed 14 and `script::unit::` passed 91, with no skips. Evidence logs:
+`astra-oc-review-{red,green,unit}.log` in the existing OC alpha verification folder.
+No client binary rebuild or live acceptance run was performed in this review.

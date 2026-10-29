@@ -1338,6 +1338,16 @@ impl Model {
     /// pushed under the token, else, for a token with a `target` hop or for `target` itself, what
     /// the getters read for the guid it resolves to.
     pub(crate) fn unit(&self, token: &str) -> Option<&UnitState> {
+        if let UnitTokenParse::Unit {
+            base: base @ (UnitBase::Focus | UnitBase::Vehicle | UnitBase::Boss(_)),
+            hops,
+        } = parse_unit_token_for(token, self.is_wrath())
+        {
+            let guid = self.unit_guids.resolve_unit(base, hops)?;
+            return self.chained_unit(token).or_else(|| {
+                self.pushed_unit(token).filter(|unit| unit.guid == guid)
+            });
+        }
         self.pushed_unit(token).or_else(|| self.chained_unit(token))
     }
 
@@ -1363,7 +1373,9 @@ impl Model {
     /// push, base by base, and reads nothing here.
     fn chained_unit(&self, token: &str) -> Option<&UnitState> {
         match parse_unit_token_for(token, self.is_wrath()) {
-            UnitTokenParse::Unit { base, hops } if hops > 0 || base == UnitBase::Target => {
+            UnitTokenParse::Unit { base, hops }
+                if hops > 0 || matches!(base,
+                    UnitBase::Target | UnitBase::Focus | UnitBase::Vehicle | UnitBase::Boss(_)) => {
                 let guid = self.unit_guids.resolve_unit(base, hops)?;
                 match self.units_by_guid.get(&guid) {
                     Some(held) if held.has_object => Some(held),

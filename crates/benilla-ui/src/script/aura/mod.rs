@@ -224,6 +224,7 @@ impl super::UiScript {
         if model.unit_guids != *guids {
             model.unit_guids.clone_from(guids);
         }
+        model.unit_guids.wrath = model.is_wrath();
     }
 
     /// Seat the player's own guid in the unit-token resolver ahead of a full
