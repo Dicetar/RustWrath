@@ -4798,11 +4798,25 @@ fn wrath_stream_movement(
     let started = *local.started.get_or_insert(now);
     let prev_flags = local.flags.replace(flags);
     let changed = prev_flags != Some(flags);
-    let pose_changed = local.pos.replace(pos) != Some(pos) || local.facing.replace(facing) != Some(facing);
-    let periodic = local
+    let moved = local.pos.replace(pos) != Some(pos);
+    let turned = local.facing.replace(facing) != Some(facing);
+    // The pose does not stream per frame: the reference's mover sends a `MSG_MOVE_*` per axis
+    // transition, a `SET_FACING` for a standing turn, and a 500 ms heartbeat while moving (the
+    // 1.12 `stream_self_movement` cadence). A per-frame pose packet floods the server with
+    // heartbeats, whose rate check then rejects the stream.
+    let in_motion = flags
+        & (W_FLAG_FORWARD
+            | W_FLAG_BACKWARD
+            | W_FLAG_STRAFE_LEFT
+            | W_FLAG_STRAFE_RIGHT
+            | W_FLAG_TURN_LEFT
+            | W_FLAG_TURN_RIGHT
+            | W_FLAG_FALLING)
+        != 0;
+    let heartbeat_due = local
         .last_send
         .is_none_or(|at| now.duration_since(at) >= Duration::from_millis(500));
-    if !changed && !pose_changed && !periodic {
+    if !changed && !(in_motion && heartbeat_due) && !(!in_motion && (moved || turned)) {
         return;
     }
     let fall_edge = |was: Option<u32>, now: u32| {
@@ -4841,6 +4855,9 @@ fn wrath_stream_movement(
             } else {
                 benilla_protocol_wrath::opcode::MSG_MOVE_STOP
             }
+        } else if turned && !in_motion {
+            // A standing turn rides `SET_FACING`, as the reference's broadcaster sends it.
+            benilla_protocol_wrath::opcode::MSG_MOVE_SET_FACING
         } else {
             benilla_protocol_wrath::opcode::MSG_MOVE_HEARTBEAT
         })
