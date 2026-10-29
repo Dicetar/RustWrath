@@ -73,6 +73,9 @@ pub(super) struct ChatWindowFile {
     path: Option<PathBuf>,
     /// The `(realm, character)` [`Self::path`] was built for, per VM: a fresh VM restores again.
     identity: VmMemo<Option<(String, String)>>,
+    /// Whether this VM has had the chat boot burst (`UPDATE_CHAT_WINDOWS`, the colour walk): once
+    /// per UI load, identity or not, so a second call cannot overwrite what Lua changed since.
+    booted: VmMemo<bool>,
     /// Whether this VM has unsaved Lua writes, per VM: a replaced VM's stock table must not save.
     dirty: VmMemo<bool>,
     last_change: Option<std::time::Instant>,
@@ -393,12 +396,12 @@ fn shortcut_rows(channels: &super::edit::ChannelState) -> Vec<(u32, String)> {
 /// (`ChatFrame.lua:1357-1365`), whose `.id` is 0, and `UpdateColorByID(0, …)` recolours every line
 /// printed with no explicit colour, an addon's login `Print` among them.
 pub(crate) fn restore_chat_looks(world: &mut World, script: &mut UiScript) {
-    let Some(id) = world
+    // The boot burst (`0x4996b9`, `0x499934`) runs file or no file: the stock windows must get
+    // their `UPDATE_CHAT_WINDOWS` registration and tint even when no character file identity
+    // exists (a direct Wrath entry never enumerates a roster, so `pending_pick` stays unset).
+    let id = world
         .get_resource::<crate::glue_session::roster::Roster>()
-        .and_then(crate::ui_macro::identity)
-    else {
-        return;
-    };
+        .and_then(crate::ui_macro::identity);
     // Owned rows up front: `ChatWindowFile` is borrowed mutably below.
     let Some(channels) = world.get_resource::<super::edit::ChannelState>() else {
         return;
@@ -412,69 +415,71 @@ pub(crate) fn restore_chat_looks(world: &mut World, script: &mut UiScript) {
     // The DBC seed: every `ChatChannels.dbc` row the client joins by itself (`flags & 1`).
     let seed_mask = auto_rows.iter().fold(0, |m, (_, id)| m | zone_bit(*id));
     // Scoped, so `ChannelState` can take the mask afterwards.
-    let mut parsed;
-    {
-        let Some(mut file) = world.get_resource_mut::<ChatWindowFile>() else {
-            return;
-        };
-        if file.identity.get(script).as_ref() == Some(&id) {
-            return; // already restored for this character into this VM
+    let mut parsed = Parsed::default();
+    if let Some(mut file) = world.get_resource_mut::<ChatWindowFile>() {
+        if *file.booted.get(script) {
+            return; // this VM has had its boot burst; never re-apply over later Lua changes
         }
-        let who = format!("{} on {}", id.1, id.0);
-        file.path = crate::local_state::chat_character_path(&id.0, &id.1);
-        *file.identity.get(script) = Some(id);
-        *file.dirty.get(script) = false;
-        file.last_change = None;
-        let text = file
-            .path
-            .as_ref()
-            .and_then(|path| match std::fs::read_to_string(path) {
-                Ok(t) => Some(t),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => {
-                    warn!("chat cache: cannot read {}: {e}", path.display());
-                    None
-                }
-            });
-        let had_file = text.is_some();
-        // No marker: its `ZONECHANNELS` words may come from an empty roster. Repaired below, once.
-        let damaged = text
-            .as_deref()
-            .is_some_and(|t| !t.contains(WRITER_GENERATION));
-        parsed = text.map(|t| parse(&t, &rows)).unwrap_or_default();
-        if !had_file {
-            // The loader's no-file path (`0x4997ad`): window 1 gets each seed row as
-            // `(Shortcut, id)`, which `ChatFrame_RegisterForChannels` matches zone speech by.
-            let mut general = ChatWindowLook::stock(0);
-            general.channels = auto_rows.clone();
-            parsed.looks.push((0, general));
-        }
-        if !parsed.looks.is_empty() || !parsed.colors.is_empty() {
-            info!(
-                "chat cache: {} windows, {} colour rows, {} custom channels restored",
-                parsed.looks.len(),
-                parsed.colors.len(),
-                parsed.joined.len()
-            );
-        }
-        if damaged {
-            // The one-time repair: re-seed window 1 and OR the seed into the mask, additive and
-            // deduplicated like the in-window `ZONECHANNELS` arm (`0x499332`-`0x4994e7`).
-            if let Some((_, general)) = parsed.looks.iter_mut().find(|(w, _)| *w == 0) {
-                for (shortcut, id) in &auto_rows {
-                    if !general
-                        .channels
-                        .iter()
-                        .any(|(c, _)| c.eq_ignore_ascii_case(shortcut))
-                    {
-                        general.channels.push((shortcut.clone(), *id));
+        *file.booted.get(script) = true;
+        if let Some(id) = id {
+            let who = format!("{} on {}", id.1, id.0);
+            file.path = crate::local_state::chat_character_path(&id.0, &id.1);
+            *file.identity.get(script) = Some(id);
+            *file.dirty.get(script) = false;
+            file.last_change = None;
+            let text = file
+                .path
+                .as_ref()
+                .and_then(|path| match std::fs::read_to_string(path) {
+                    Ok(t) => Some(t),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(e) => {
+                        warn!("chat cache: cannot read {}: {e}", path.display());
+                        None
+                    }
+                });
+            let had_file = text.is_some();
+            // No marker: its `ZONECHANNELS` words may come from an empty roster. Repaired below,
+            // once.
+            let damaged = text
+                .as_deref()
+                .is_some_and(|t| !t.contains(WRITER_GENERATION));
+            parsed = text.map(|t| parse(&t, &rows)).unwrap_or_default();
+            if !had_file {
+                // The loader's no-file path (`0x4997ad`): window 1 gets each seed row as
+                // `(Shortcut, id)`, which `ChatFrame_RegisterForChannels` matches zone speech by.
+                let mut general = ChatWindowLook::stock(0);
+                general.channels = auto_rows.clone();
+                parsed.looks.push((0, general));
+            }
+            if !parsed.looks.is_empty() || !parsed.colors.is_empty() {
+                info!(
+                    "chat cache: {} windows, {} colour rows, {} custom channels restored",
+                    parsed.looks.len(),
+                    parsed.colors.len(),
+                    parsed.joined.len()
+                );
+            }
+            if damaged {
+                // The one-time repair: re-seed window 1 and OR the seed into the mask, additive
+                // and deduplicated like the in-window `ZONECHANNELS` arm (`0x499332`-`0x4994e7`).
+                if let Some((_, general)) = parsed.looks.iter_mut().find(|(w, _)| *w == 0) {
+                    for (shortcut, id) in &auto_rows {
+                        if !general
+                            .channels
+                            .iter()
+                            .any(|(c, _)| c.eq_ignore_ascii_case(shortcut))
+                        {
+                            general.channels.push((shortcut.clone(), *id));
+                        }
                     }
                 }
+                parsed.zone_mask = Some(parsed.zone_mask.unwrap_or(0) | seed_mask);
+                // Owed a write, which stamps the marker; it saves next frame (`last_change` is
+                // `None`).
+                *file.dirty.get(script) = true;
+                info!("chat cache: repaired an unmarked file's zone channels for {who}");
             }
-            parsed.zone_mask = Some(parsed.zone_mask.unwrap_or(0) | seed_mask);
-            // Owed a write, which stamps the marker; it saves next frame (`last_change` is `None`).
-            *file.dirty.get(script) = true;
-            info!("chat cache: repaired an unmarked file's zone channels for {who}");
         }
     }
     // The durable mask: the file's word, else the DBC seed; confirmed joins OR into it after.

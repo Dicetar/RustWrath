@@ -2577,6 +2577,112 @@ fn the_chat_cache_restore_is_finished_before_player_login() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// A direct Wrath entry never enumerates a roster, so `pending_pick` stays unset: the boot burst
+/// must still fire (or chat frames never register for `CHAT_MSG_*` and the background stays the
+/// untinted white texture), and a later restore call must not overwrite what Lua changed since.
+#[test]
+fn a_direct_entry_without_a_roster_identity_still_seats_the_chat_boot() {
+    let _data = benilla_formats::wow_data_or_skip!();
+    let _l = crate::local_state::test_env::ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tmp = std::env::temp_dir().join(format!("benilla-chat-direct-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let home = tmp.join("benilla-config");
+    let probe = home.join("AddOns").join("ChatBootProbe");
+    std::fs::create_dir_all(&probe).expect("hermetic home + probe addon dir");
+    std::fs::write(
+        probe.join("ChatBootProbe.toc"),
+        "## Interface: 11200\nChatBootProbe.lua\n",
+    )
+    .expect("probe toc");
+    std::fs::write(
+        probe.join("ChatBootProbe.lua"),
+        r#"
+        ChatBootProbe = { order = "" }
+        local f = CreateFrame("Frame")
+        f:RegisterEvent("VARIABLES_LOADED")
+        f:RegisterEvent("UPDATE_CHAT_WINDOWS")
+        f:RegisterEvent("PLAYER_LOGIN")
+        f:SetScript("OnEvent", function()
+            if not string.find(ChatBootProbe.order, event, 1, 1) then
+                ChatBootProbe.order = ChatBootProbe.order .. event .. " "
+            end
+        end)
+        "#,
+    )
+    .expect("probe lua");
+    let _capture = crate::local_state::test_env::EnvGuard::unset("WOW_CAPTURE");
+    let _home =
+        crate::local_state::test_env::EnvGuard::set("BENILLA_HOME", home.to_str().expect("utf-8"));
+
+    let mut world = bevy::prelude::World::new();
+    world.init_resource::<crate::ui_script::AddOnIdentity>();
+    world.init_resource::<crate::minimap::MinimapZoom>();
+    world.init_resource::<crate::ui_script::ReloadUiPending>();
+    world.init_resource::<super::edit::ChannelState>();
+    world.init_resource::<super::settings::ChatWindowFile>();
+    crate::ui_script::setup_script(&mut world);
+    // The direct entry: a roster resource with no pending pick, as a Wrath session leaves it.
+    world.insert_resource(crate::glue_session::roster::Roster::default());
+    crate::ui_script::load_ingame_ui_on_world_entry(&mut world);
+    world
+        .non_send_resource_mut::<benilla_ui::script::UiScript>()
+        .fire_world_enter();
+
+    let read = |world: &mut bevy::prelude::World, expr: &str| -> String {
+        world
+            .non_send_resource::<benilla_ui::script::UiScript>()
+            .eval::<Option<String>>(&format!("return tostring({expr})"))
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        read(&mut world, "ChatBootProbe.order"),
+        "VARIABLES_LOADED UPDATE_CHAT_WINDOWS PLAYER_LOGIN ",
+        "the boot burst must fire between VARIABLES_LOADED and PLAYER_LOGIN with no identity"
+    );
+    // `ChatFrame1.messageTypeList` needs the 1.12 stock UI this test's chain cannot serve (the
+    // existing ordering test owns that assertion on a real 1.12 install); the window record is
+    // the direct-entry regression and lives in the VM itself.
+    let stock = world
+        .non_send_resource::<benilla_ui::script::UiScript>()
+        .chat_window_looks()[0]
+        .clone();
+    assert_eq!(
+        stock,
+        benilla_ui::script::ChatWindowLook::stock(0),
+        "a direct entry keeps the boot window record"
+    );
+    assert_eq!((stock.r, stock.g, stock.b, stock.a), (0, 0, 0, 0));
+
+    // A second restore into the same VM must not re-run the burst or overwrite a Lua change.
+    world
+        .non_send_resource::<benilla_ui::script::UiScript>()
+        .lua()
+        .load("SetChatWindowColor(1, 0.5, 0.25, 0.125)")
+        .exec()
+        .expect("window colour");
+    let mut script = world
+        .remove_non_send_resource::<benilla_ui::script::UiScript>()
+        .expect("VM");
+    super::settings::restore_chat_looks(&mut world, &mut script);
+    world.insert_non_send_resource(script);
+    let after = world
+        .non_send_resource::<benilla_ui::script::UiScript>()
+        .chat_window_looks()[0]
+        .clone();
+    assert_eq!(
+        (after.r, after.g, after.b),
+        (127, 63, 31),
+        "a later restore must not reset the seat's saved colour"
+    );
+
+    drop(world);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// A VM with the local player `SendChatMessage` needs (`0x49f223`), as in game.
 fn in_world_vm() -> benilla_ui::script::UiScript {
     let mut script = benilla_ui::script::UiScript::new().expect("VM");
