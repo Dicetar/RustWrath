@@ -32,6 +32,193 @@ fn parse(b: &[u8]) -> Result<M2Format> {
     parse_m2(&mut Cursor::new(b))
 }
 
+/// One v264 M2Track (stride 0x14): interp@0, gseq@2, then two-level timestamps @0x04 and values
+/// @0x0c: one `(count, offset)` descriptor per sequence.
+fn m2track_wrath(interp: u16, gseq: u16, ts: (u32, u32), vals: (u32, u32)) -> Vec<u8> {
+    let mut t = vec![0u8; 0x14];
+    t[0..2].copy_from_slice(&interp.to_le_bytes());
+    t[2..4].copy_from_slice(&gseq.to_le_bytes());
+    t[0x04..0x08].copy_from_slice(&ts.0.to_le_bytes());
+    t[0x08..0x0c].copy_from_slice(&ts.1.to_le_bytes());
+    t[0x0c..0x10].copy_from_slice(&vals.0.to_le_bytes());
+    t[0x10..0x14].copy_from_slice(&vals.1.to_le_bytes());
+    t
+}
+
+/// A v264 model's per-sequence track: two inner timestamps/values arrays flatten into one key
+/// list with a `(lo, hi)` window per sequence, the shape [`M2Track::ranges`] documents. This is
+/// the layout a Wrath player body's M2TextureWeight uses; read as pre-Wrath (`0x1c` stride) the
+/// second sequence's descriptor is misread as the values array and a constant-0 weight culls the
+/// whole body (the G1 body bug).
+#[test]
+fn a_wrath_track_flattens_per_sequence_arrays_behind_windows() {
+    let mut b = header();
+    b[4..8].copy_from_slice(&264u32.to_le_bytes());
+    // Two sequences' key arrays: seq 0 draws twice, seq 1 hides.
+    let ts0 = b.len() as u32;
+    b.extend(0u32.to_le_bytes());
+    b.extend(500u32.to_le_bytes());
+    let ts1 = b.len() as u32;
+    b.extend(0u32.to_le_bytes());
+    let v0 = b.len() as u32;
+    b.extend(0x7fffu16.to_le_bytes());
+    b.extend(0x7fffu16.to_le_bytes());
+    let v1 = b.len() as u32;
+    b.extend(0x8001u16.to_le_bytes()); // −1.0, hidden
+                                       // The two-level descriptor arrays: 2 sequences each.
+    let ts_desc = b.len() as u32;
+    b.extend(2u32.to_le_bytes());
+    b.extend(ts0.to_le_bytes());
+    b.extend(1u32.to_le_bytes());
+    b.extend(ts1.to_le_bytes());
+    let v_desc = b.len() as u32;
+    b.extend(2u32.to_le_bytes());
+    b.extend(v0.to_le_bytes());
+    b.extend(1u32.to_le_bytes());
+    b.extend(v1.to_le_bytes());
+    // One M2TextureWeight at the v264 header position 0x58.
+    let weight_ofs = b.len() as u32;
+    b.extend(m2track_wrath(1, 0xffff, (2, ts_desc), (2, v_desc)));
+    set_arr(&mut b, 0x58, 1, weight_ofs);
+
+    let fmt = parse(&b).expect("a wrath weight fixture parses");
+    let m = fmt.model();
+    assert_eq!(m.transparency_tracks.len(), 1);
+    let t = &m.transparency_tracks[0];
+    assert_eq!(t.keys.len(), 3, "both sequences' keys flatten in file order");
+    assert_eq!(
+        t.ranges,
+        vec![(0, 1), (2, 2)],
+        "one inclusive index window per sequence, each ending on its own last key"
+    );
+    assert_eq!(t.keys[0].0, 0);
+    assert_eq!(t.keys[1].0, 500);
+    assert_eq!(t.keys[2].0, 0, "a sequence's keys start from its own clock");
+    let values: Vec<f32> = t.keys.iter().map(|&(_, v)| v).collect();
+    assert!((values[0] - 1.0).abs() < 1e-4);
+    assert!((values[1] - 1.0).abs() < 1e-4);
+    assert!(
+        (values[2] + 1.0).abs() < 1e-4,
+        "0x8001 is −1.0, not an unsigned +1.0 (got {})",
+        values[2]
+    );
+}
+
+/// A v264 `M2TextureWeight` over per-sequence `(ms, fix16)` keys. A global-sequence track keeps a
+/// single flat timeline (`seqs[0]`), the exporters' shape.
+fn wrath_fix16_track(b: &mut Vec<u8>, gseq: u16, seqs: &[&[(u32, u16)]]) -> Vec<u8> {
+    if gseq != 0xffff {
+        let flat: &[(u32, u16)] = seqs.first().copied().unwrap_or(&[]);
+        let ts = b.len() as u32;
+        for (ms, _) in flat {
+            b.extend(ms.to_le_bytes());
+        }
+        let vs = b.len() as u32;
+        for (_, v) in flat {
+            b.extend(v.to_le_bytes());
+        }
+        return m2track_wrath(1, gseq, (flat.len() as u32, ts), (flat.len() as u32, vs));
+    }
+    let mut ts_desc: Vec<(u32, u32)> = Vec::new();
+    let mut v_desc: Vec<(u32, u32)> = Vec::new();
+    for seq in seqs {
+        let ts = b.len() as u32;
+        for (ms, _) in seq.iter() {
+            b.extend(ms.to_le_bytes());
+        }
+        ts_desc.push((seq.len() as u32, ts));
+        let vs = b.len() as u32;
+        for (_, v) in seq.iter() {
+            b.extend(v.to_le_bytes());
+        }
+        v_desc.push((seq.len() as u32, vs));
+    }
+    let ts_ofs = b.len() as u32;
+    for (n, o) in &ts_desc {
+        b.extend(n.to_le_bytes());
+        b.extend(o.to_le_bytes());
+    }
+    let v_ofs = b.len() as u32;
+    for (n, o) in &v_desc {
+        b.extend(n.to_le_bytes());
+        b.extend(o.to_le_bytes());
+    }
+    m2track_wrath(
+        1,
+        0xffff,
+        (seqs.len() as u32, ts_ofs),
+        (seqs.len() as u32, v_ofs),
+    )
+}
+
+/// An inner sequence with no keys must not steal a neighbour's window: it holds the next key when
+/// one follows, and the model's last key when it is the tail — the file bracket's own behaviour.
+/// No slot's window may overlap another's.
+#[test]
+fn a_wrath_empty_sequence_holds_a_neighbour_without_overlapping_windows() {
+    let mut b = header();
+    b[4..8].copy_from_slice(&264u32.to_le_bytes());
+    let first: &[(u32, u16)] = &[(0, 0x7fff), (500, 0x7fff)];
+    let none: &[(u32, u16)] = &[];
+    let last: &[(u32, u16)] = &[(0, 0x8001)];
+    let track = wrath_fix16_track(&mut b, 0xffff, &[first, none, last, none]);
+    let weight_ofs = b.len() as u32;
+    b.extend(track);
+    set_arr(&mut b, 0x58, 1, weight_ofs);
+
+    let fmt = parse(&b).expect("a wrath weight fixture parses");
+    assert_eq!(fmt.model().transparency_tracks.len(), 1);
+    let t = &fmt.model().transparency_tracks[0];
+    assert_eq!(t.keys.len(), 3);
+    assert_eq!(t.ranges, vec![(0, 1), (2, 2), (2, 2), (2, 2)]);
+    for pair in t.ranges.windows(2) {
+        assert!(
+            pair[0].1 < pair[1].0 || pair[0].0 == pair[1].0,
+            "windows must not overlap: {:?}",
+            t.ranges
+        );
+    }
+    assert!(t.ranges.iter().all(|&(_, hi)| hi as usize <= t.keys.len() - 1));
+}
+
+/// A global-sequence track is one flat timeline: no `ranges`, its keys read straight from the
+/// record's pairs, and the global-sequence index kept.
+#[test]
+fn a_wrath_global_sequence_track_reads_flat() {
+    let mut b = header();
+    b[4..8].copy_from_slice(&264u32.to_le_bytes());
+    let flat: &[(u32, u16)] = &[(0, 0x7fff), (250, 0x8001)];
+    let track = wrath_fix16_track(&mut b, 3, &[flat]);
+    let weight_ofs = b.len() as u32;
+    b.extend(track);
+    set_arr(&mut b, 0x58, 1, weight_ofs);
+
+    let fmt = parse(&b).expect("a wrath gseq fixture parses");
+    let t = &fmt.model().transparency_tracks[0];
+    assert_eq!(t.gseq, 3);
+    assert!(t.ranges.is_empty(), "a global sequence has no per-slot windows");
+    assert_eq!(t.keys.len(), 2);
+    assert_eq!(t.keys[0].0, 0);
+    assert_eq!(t.keys[1].0, 250);
+}
+
+/// A forged two-level count is capped by the bytes present, as the Wrath bone reader already is:
+/// the parse stays reader-bounded instead of reserving or addressing past the file.
+#[test]
+fn a_forged_wrath_sequence_count_stops_at_the_file_end() {
+    let mut b = header();
+    b[4..8].copy_from_slice(&264u32.to_le_bytes());
+    let weight_ofs = b.len() as u32;
+    // One track whose timestamps describe u32::MAX sequences at an offset past EOF.
+    b.extend(m2track_wrath(1, 0xffff, (u32::MAX, 0xffff_ff00), (0, 0)));
+    set_arr(&mut b, 0x58, 1, weight_ofs);
+
+    let fmt = parse(&b).expect("a forged count does not abort the parse");
+    let t = &fmt.model().transparency_tracks[0];
+    assert!(t.keys.is_empty());
+    assert!(t.ranges.is_empty(), "no descriptors fit the file");
+}
+
 #[test]
 fn minimal_header_parses_to_an_empty_model() {
     let b = header();

@@ -1,11 +1,19 @@
 //! M2Track readers and the cubic track sampler.
 
-use benilla_bytes::ByteExt;
+use benilla_bytes::{capped, ByteExt};
 
-/// One `M2Track` (v256, `0x1c` bytes): `interp`@0, `gseq`@2, then ranges, timestamps (u32 ms) and
-/// values as `(count, offset)` pairs @`0x04`, `0x0c`, `0x14`. Keys are absolute timeline ms: a
-/// sequence track keys inside each sequence's band, a `gseq` track loops on its global sequence
-/// (`0x713d50`). The key count is `min(timestamps, values)`, as vanilla art pads one array.
+/// One `M2Track` (`0x1c` bytes before Wrath): `interp`@0, `gseq`@2, then ranges, timestamps (u32
+/// ms) and values as `(count, offset)` pairs @`0x04`, `0x0c`, `0x14`. Keys are absolute timeline
+/// ms: a sequence track keys inside each sequence's band, a `gseq` track loops on its global
+/// sequence (`0x713d50`). The key count is `min(timestamps, values)`, as vanilla art pads one
+/// array.
+///
+/// Wrath (v264) shrank the record to `0x14` bytes and gave each sequence its own timeline:
+/// timestamps @`0x04` and values @`0x0c` are two-level arrays (`M2Array<M2Array<_>>`), one inner
+/// array per sequence, keyed from that sequence's own start. [`track_read`] flattens them and
+/// fills [`M2Track::ranges`] with each sequence's index window, which every consumer already
+/// selects by file slot (`key_anim::bake_track`'s `(lo, hi)`), so the flattened keys need no
+/// rebase.
 #[derive(Clone, Debug)]
 pub struct M2Track<V> {
     /// `0` step (the previous key), nonzero linear: the scalar sampler's two-way test (`0x71af20`).
@@ -17,7 +25,8 @@ pub struct M2Track<V> {
     /// keys). Brackets, not the clip's keys: `hi` often lands in a later sequence's band. A band
     /// with no keys resolves to `keys[lo]`.
     pub ranges: Vec<(u32, u32)>,
-    /// `(absolute ms, value)` keys, file order (time-ascending within a band).
+    /// `(absolute ms, value)` keys, file order (time-ascending within a band); a Wrath track's
+    /// times are per-sequence, which [`Self::ranges`] disambiguates.
     pub keys: Vec<(u32, V)>,
 }
 
@@ -48,7 +57,7 @@ impl<V: Copy + PartialEq> M2Track<V> {
 }
 
 /// Read one `M2Track<V>` with a per-value reader. An out-of-range track reads as no keys, a
-/// tolerance real art needs.
+/// tolerance real art needs. Version ≥ 264 carries the per-sequence layout (see [`M2Track`]).
 fn track_read<V>(
     b: &[u8],
     track_ofs: usize,
@@ -58,6 +67,9 @@ fn track_read<V>(
     let (Some(interp), Some(gseq)) = (b.u16_at(track_ofs), b.u16_at(track_ofs + 2)) else {
         return M2Track::default();
     };
+    if b.u32_at(4).is_some_and(|v| v >= 264) {
+        return track_read_sequences(b, track_ofs, val_size, interp, gseq, read_val);
+    }
     let Some(((tn, to), (vn, vo))) = b
         .u32_at(track_ofs + 0x0c)
         .zip(b.u32_at(track_ofs + 0x10))
@@ -81,6 +93,92 @@ fn track_read<V>(
             .collect(),
         None => Vec::new(),
     };
+    M2Track {
+        interp,
+        gseq,
+        ranges,
+        keys,
+    }
+}
+
+/// A Wrath `M2Track` (`0x14` bytes): timestamps @`0x04` and values @`0x0c`, each two-level. A
+/// global-sequence track keeps one flat timeline (the exporters write it flat, as
+/// `benilla_formats`' `read_wrath_track` reads it); a sequence track's inner arrays are indexed by
+/// file slot, keyed from 0, and flatten into `keys` behind per-slot `(lo, hi)` windows.
+fn track_read_sequences<V>(
+    b: &[u8],
+    track_ofs: usize,
+    val_size: usize,
+    interp: u16,
+    gseq: u16,
+    read_val: impl Fn(&[u8], usize) -> Option<V>,
+) -> M2Track<V> {
+    let (tc, to, vc, vo) = match (
+        b.u32_at(track_ofs + 0x04),
+        b.u32_at(track_ofs + 0x08),
+        b.u32_at(track_ofs + 0x0c),
+        b.u32_at(track_ofs + 0x10),
+    ) {
+        (Some(tc), Some(to), Some(vc), Some(vo)) => {
+            (tc as usize, to as usize, vc as usize, vo as usize)
+        }
+        _ => return M2Track::default(),
+    };
+    let read_keys = |n: usize, ts: usize, vs: usize| -> Vec<(u32, V)> {
+        // Bound the count by the bytes present, as the Wrath bone reader does
+        // (`benilla_formats::models::anim::read_wrath_track`): a forged count cannot make the
+        // iterator address past the file.
+        let n = capped(n, 4, b.len().saturating_sub(ts));
+        let n = capped(n, val_size, b.len().saturating_sub(vs));
+        (0..n)
+            .map_while(|i| b.u32_at(ts + i * 4).zip(read_val(b, vs + i * val_size)))
+            .collect()
+    };
+    if gseq != 0xffff {
+        return M2Track {
+            interp,
+            gseq,
+            ranges: Vec::new(),
+            keys: read_keys(tc.min(vc), to, vo),
+        };
+    }
+    let count = capped(tc.min(vc), 8, b.len().saturating_sub(to));
+    let count = capped(count, 8, b.len().saturating_sub(vo));
+    let mut keys = Vec::new();
+    let mut ranges = Vec::with_capacity(count);
+    for s in 0..count {
+        let (Some((tn, ts)), Some((vn, vs))) = (
+            b.u32_at(to + s * 8)
+                .zip(b.u32_at(to + s * 8 + 4)),
+            b.u32_at(vo + s * 8)
+                .zip(b.u32_at(vo + s * 8 + 4)),
+        ) else {
+            break;
+        };
+        let start = keys.len() as u32;
+        keys.extend(read_keys(
+            tn.min(vn) as usize,
+            ts as usize,
+            vs as usize,
+        ));
+        // `hi` is the slot's last key, inclusive like the file's own brackets: the consumers read
+        // the window as `[lo, hi]`. A slot with no keys keeps `lo == hi` at the next key, the
+        // bracket's forward hold; a trailing one lands past the end and is clamped below.
+        let hi = if keys.len() as u32 > start {
+            keys.len() as u32 - 1
+        } else {
+            start
+        };
+        ranges.push((start, hi));
+    }
+    // A trailing empty slot's forward hold has no key to point at; clamp both ends onto the last
+    // key, where every consumer's own bounds clamp already lands.
+    if let Some(last) = keys.len().checked_sub(1) {
+        for r in &mut ranges {
+            r.0 = r.0.min(last as u32);
+            r.1 = r.1.min(last as u32);
+        }
+    }
     M2Track {
         interp,
         gseq,

@@ -347,22 +347,27 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
         );
     }
 
-    // M2Color (stride 0x38): an RGB track @ +0x00 and a fix16 alpha track @ +0x1c. M2TextureWeight
-    // (stride 0x1c): one weight track. An out-of-range track reads as no keys, so these loops run
-    // over the records the file holds, never the raw count.
+    // M2Color (stride 2 tracks): an RGB track @ +0x00 and a fix16 alpha track after it.
+    // M2TextureWeight (stride 1 track): one weight track. The track itself is `0x1c` bytes before
+    // Wrath and `0x14` from v264 (per-sequence arrays, see `track::M2Track`). An out-of-range
+    // track reads as no keys, so these loops run over the records the file holds, never the raw
+    // count.
+    let track_size = if wrath { 0x14 } else { 0x1c };
+    let color_size = 2 * track_size;
     let colors_avail = b.len().saturating_sub(colors_arr.1 as usize);
-    let colors_cap = capped(colors_arr.0 as usize, 0x38, colors_avail);
+    let colors_cap = capped(colors_arr.0 as usize, color_size, colors_avail);
     let mut color_alpha_tracks = Vec::with_capacity(colors_cap);
     let mut color_rgb_tracks = Vec::with_capacity(colors_cap);
     for i in 0..colors_cap {
-        color_alpha_tracks.push(track_fix16(b, colors_arr.1 as usize + i * 0x38 + 0x1c));
-        color_rgb_tracks.push(track_vec3_timed(b, colors_arr.1 as usize + i * 0x38));
+        let base = colors_arr.1 as usize + i * color_size;
+        color_alpha_tracks.push(track_fix16(b, base + track_size));
+        color_rgb_tracks.push(track_vec3_timed(b, base));
     }
     let transparency_avail = b.len().saturating_sub(transparency_arr.1 as usize);
-    let transparency_cap = capped(transparency_arr.0 as usize, 0x1c, transparency_avail);
+    let transparency_cap = capped(transparency_arr.0 as usize, track_size, transparency_avail);
     let mut transparency_tracks = Vec::with_capacity(transparency_cap);
     for i in 0..transparency_cap {
-        transparency_tracks.push(track_fix16(b, transparency_arr.1 as usize + i * 0x1c));
+        transparency_tracks.push(track_fix16(b, transparency_arr.1 as usize + i * track_size));
     }
     let tulookup_avail = b.len().saturating_sub(texture_unit_lookup_arr.1 as usize);
     let mut texture_unit_lookup = Vec::with_capacity(capped(
@@ -388,17 +393,18 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
         );
     }
 
-    // M2TextureTransform (stride 0x54): translation @+0x00, rotation @+0x1c, scaling @+0x38
-    // (`0x70ebd0`), bounded by the file like the colour tracks.
+    // M2TextureTransform (stride 3 tracks): translation @+0x00, rotation after it, scaling after
+    // that (`0x70ebd0`), bounded by the file like the colour tracks.
+    let transform_size = 3 * track_size;
     let ttf_avail = b.len().saturating_sub(tex_anim_arr.1 as usize);
-    let ttf_cap = capped(tex_anim_arr.0 as usize, 0x54, ttf_avail);
+    let ttf_cap = capped(tex_anim_arr.0 as usize, transform_size, ttf_avail);
     let mut texture_transforms = Vec::with_capacity(ttf_cap);
     for i in 0..ttf_cap {
-        let base = tex_anim_arr.1 as usize + i * 0x54;
+        let base = tex_anim_arr.1 as usize + i * transform_size;
         texture_transforms.push(M2TextureTransform {
             translation: track_vec3_timed(b, base),
-            rotation: track_quat(b, base + 0x1c),
-            scaling: track_vec3_timed(b, base + 0x38),
+            rotation: track_quat(b, base + track_size),
+            scaling: track_vec3_timed(b, base + 2 * track_size),
         });
     }
     let talookup_avail = b.len().saturating_sub(tex_anim_lookup_arr.1 as usize);
