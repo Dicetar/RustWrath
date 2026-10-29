@@ -279,9 +279,18 @@ impl CompositePlan {
     pub fn run(&self, mut read: impl FnMut(&str) -> Result<BlpMipChain>) -> Result<BlpMipChain> {
         let mut atlas =
             read(&self.base).with_context(|| format!("reading base skin '{}'", self.base))?;
+        // The tile partition is defined on the 256² vanilla atlas; HD section art is its exact
+        // upscale (the wm-hd base skin measures 512²), so the tiles scale with the base's size.
+        let sx = (atlas.width / 256).max(1);
+        let sy = (atlas.height / 256).max(1);
         for (candidates, tile) in &self.layers {
             if let Some(overlay) = candidates.iter().find_map(|path| read(path).ok()) {
-                blit_over(&mut atlas, &overlay, *tile);
+                let (x, y, w, h) = *tile;
+                blit_over(
+                    &mut atlas,
+                    &overlay,
+                    (x * sx, y * sy, w * sx, h * sy),
+                );
             }
         }
         Ok(atlas)
@@ -1330,6 +1339,30 @@ mod tests {
             texels: crate::BlpTexels::Rgba8Unorm,
             mips: vec![px],
         }
+    }
+
+    /// A 512² HD base gets its overlay tiles at twice the vanilla coordinates and sizes, so the
+    /// face strip lands where the HD atlas expects it instead of across the body.
+    #[test]
+    fn hd_section_tiles_scale_with_the_base_atlas() {
+        let plan = CompositePlan {
+            base: "base".into(),
+            layers: vec![(vec!["overlay".into()], TILE_G8)],
+        };
+        let base = chain(512, 512, [10, 20, 30, 255].repeat(512 * 512));
+        let overlay = chain(256, 128, [200, 100, 50, 255].repeat(256 * 128));
+        let atlas = plan
+            .run(|p| match p {
+                "base" => Ok(base.clone()),
+                "overlay" => Ok(overlay.clone()),
+                other => anyhow::bail!("unexpected {other}"),
+            })
+            .expect("composite");
+        let px = |x: usize, y: usize| &atlas.mips[0][(y * 512 + x) * 4..][..4];
+        assert_eq!(px(0, 320), &[200, 100, 50, 255], "G8 at y 160×2");
+        assert_eq!(px(255, 383), &[200, 100, 50, 255], "128×32 doubled");
+        assert_eq!(px(0, 160), &[10, 20, 30, 255], "the vanilla position is body");
+        assert_eq!(px(0, 384), &[10, 20, 30, 255], "one row past the scaled tile");
     }
 
     #[test]
