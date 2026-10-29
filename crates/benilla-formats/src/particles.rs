@@ -478,6 +478,15 @@ fn shape_of(v: u16) -> ParticleShape {
 /// The vanilla M2's particle emitters, textures resolved through `benilla-m2`'s textures table;
 /// empty for a model with none or a file that is not MD20.
 pub fn parse_m2_particle_emitters(bytes: &[u8]) -> Result<Vec<ParticleEmitterDef>> {
+    if bytes.get(..4) == Some(b"MD20") && bytes.get(4..8) == Some(&264u32.to_le_bytes()) {
+        let count = bytes.get(0x128..0x12c)
+            .and_then(|b| b.try_into().ok()).map(u32::from_le_bytes)
+            .ok_or_else(|| anyhow::anyhow!("truncated Wrath particle header"))?;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        anyhow::bail!("Wrath M2 particle layout is not yet supported ({count} emitters)");
+    }
     let textures: Vec<Option<String>> = match parse_m2(&mut Cursor::new(bytes)) {
         Ok(fmt) => fmt
             .model()
@@ -665,6 +674,19 @@ pub fn parse_m2_particle_emitters(bytes: &[u8]) -> Result<Vec<ParticleEmitterDef
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrath_particle_header_does_not_follow_the_vanilla_table() {
+        let mut bytes = vec![0u8; 0x200];
+        bytes[..4].copy_from_slice(b"MD20");
+        bytes[4..8].copy_from_slice(&264u32.to_le_bytes());
+        // A bogus nonzero legacy table must not be interpreted as Wrath particles.
+        bytes[0x13c..0x140].copy_from_slice(&1u32.to_le_bytes());
+        assert!(parse_m2_particle_emitters(&bytes).unwrap().is_empty());
+        // A real nonempty Wrath particle table is not yet supported.
+        bytes[0x128..0x12c].copy_from_slice(&1u32.to_le_bytes());
+        assert!(parse_m2_particle_emitters(&bytes).is_err());
+    }
 
     #[test]
     fn bit_one_is_the_unlit_flag_and_mod_blends_never_light() {

@@ -328,7 +328,10 @@ impl AssetLoader for M2ModelLoader {
         let skeleton_raw = parse_m2_skeleton(&bytes).unwrap_or_default();
 
         let mut emitters: Vec<ModelEmitter> = parse_m2_particle_emitters(&bytes)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                warn!("M2 particle data unavailable for {}: {e:#}", ctx.path());
+                Vec::new()
+            })
             .into_iter()
             .map(|def| {
                 let texture = def.texture.as_deref().map(|t| {

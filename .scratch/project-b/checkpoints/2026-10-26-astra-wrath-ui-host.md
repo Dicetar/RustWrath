@@ -660,6 +660,38 @@ evidence. Owner authorized execution. Preserve OC's dirty files. Remove temporar
 instrumentation after diagnosis; retain logs, and do not claim images cause private
 memory growth without a measurement that distinguishes them.
 
+Allocator stack capture identified repeated 1,338,368-byte allocations from
+`EmitParams::bake` / `key_anim::bake_track`; additional temporary instrumentation
+claims `crates/benilla-assets/src/m2.rs` and `crates/benilla-formats/src/particles.rs`
+to identify the actual model/version and raw key counts. No permanent format
+change until the on-disk layout and consumer semantics are established.
+
+The bounded sample identified `creature/tiger/tiger.m2`, version 264, 756768 bytes:
+the legacy parser treats raw fields as tracks with `tn=3223322624` and later
+`n=167296`. Its 0x13c header and 0x1f8 record are vanilla, whereas the 12340
+header points to particles at 0x128 and uses 0x1dc records. Claim the same files
+for a provisional explicit refusal of nonempty unsupported Wrath particle data;
+this prevents interpreting unrelated bytes as emitters and must not be called
+full particle support. Restore correct visual behavior with a real Wrath decoder.
+
+Containment result: focused `wrath_particle_header_does_not_follow_the_vanilla_table`
+failed before the guard and passes afterward; `cargo test --locked --offline -p
+benilla-formats --lib particles::tests` reports 8 passed (install-dependent cases
+may skip). The guard checks the actual 12340 particle count and refuses nonempty
+unsupported data with a warning, keeping the vanilla reader on its original layout.
+The diagnostic build plus the existing OC dirty UI work ran on the selected shadow
+profile for the full 55-second limit: `astra-track-probe-20261029-100605-143`, 311
+memory samples, peak private 2.112 GiB versus previous >5 GiB in under 20 seconds.
+The run did not establish connected world entry or map behavior; it logged 21
+unsupported particle models and heavy UI errors. This is a measured containment,
+not complete visual fidelity, a stable alpha, or a fix for all memory growth.
+
+All temporary allocation stack/image-path tracing was removed from source after
+the measurement. Original OC dirty files remain untouched. The next required
+particle slice is a genuine 264 particle header/record/track/over-life decoder,
+tested against the selected installed profile. Player model, memory stability
+beyond this run and UI errors remain open.
+
 The 5 GiB bounded FPS-journal run `astra-profile-20261029-010306-773` stopped at
 5.5 GiB private; last journal sample had 1,520 entities, 315 images and 112 M2s.
 The `astra-churn-20261029-010357-187` comparison stopped at 5.01 GiB; the optional
@@ -700,3 +732,10 @@ No area/continent DBC error or Rust panic was logged before termination; this
 short run does not accept world entry or the map. No client process remained.
 Evidence and the bounded probe script are retained in the existing untracked
 verification folder. Next: allocation-level attribution, not another identical run.
+
+2026-10-29 allocator attribution claim: temporary instrumentation only in
+`crates/benilla-app/src/lib.rs` and `crates/benilla-app/src/perf/journal.rs`, and
+this checkpoint. Wrap the existing debug allocator, preserving its no-allocation
+audio checks, to report live Rust allocation sizes at existing FPS sample points;
+compare them with process-private memory under the existing bounded probe. Remove
+instrumentation after collecting evidence. OC's dirty files remain untouched.
