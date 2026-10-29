@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use benilla_dbc::{FieldType, Schema, SchemaField};
+use benilla_dbc::{FieldType, RecordSet, Schema, SchemaField};
 
 use crate::dbc::{parse, str_at, u32_at};
 use crate::items::ItemDisplay;
@@ -234,34 +234,31 @@ impl CharSections {
         let bytes = chain
             .read_file(CHAR_SECTIONS)
             .with_context(|| format!("reading {CHAR_SECTIONS}"))?;
-        let rs = parse(&bytes, char_sections_schema(), "CharSections")?;
-        let mut sections = HashMap::with_capacity(rs.records().len());
-        for r in rs.records() {
-            // fields: ID, Race, Sex, SectionType, Variation, Color, Tex0, Tex1, Tex2, Flags.
-            if let (Some(race), Some(sex), Some(ty), Some(var), Some(color)) = (
-                u32_at(r, 1),
-                u32_at(r, 2),
-                u32_at(r, 3),
-                u32_at(r, 4),
-                u32_at(r, 5),
-            ) {
-                let texs = [
-                    str_at(&rs, r, 6).unwrap_or_default(),
-                    str_at(&rs, r, 7).unwrap_or_default(),
-                    str_at(&rs, r, 8).unwrap_or_default(),
-                ];
-                let key = (race as u8, sex as u8, ty as u8, var as u8, color as u8);
-                // A row flagged `0x1` can share its key with a standard row (Human male skin 0 has
-                // `…Skin00_00` and `…_100`); the standard row wins in either order.
-                let extra = u32_at(r, 9).unwrap_or(0) & 0x1 != 0;
-                if extra {
-                    sections.entry(key).or_insert(texs);
-                } else {
-                    sections.insert(key, texs);
+        let hint = super::wrath_client(chain);
+        Self::parse_table(&bytes, hint)
+    }
+
+    /// Parse the table under the client version's layout, unless its texture column does not
+    /// validate on a skin row: both 1.12 and 12340 carry ten fields (1.12: variation, colour,
+    /// TextureName0-2, flags @4-9; 12340: TextureName0-2, flags, variation, colour @4-9), so the
+    /// data itself arbitrates. A table with no skin row keeps the version's layout, as before.
+    fn parse_table(bytes: &[u8], wrath_hint: bool) -> Result<Self> {
+        let mut first_error: Option<anyhow::Error> = None;
+        for wrath in [wrath_hint, !wrath_hint] {
+            match parse(bytes, char_sections_schema_for(wrath), "CharSections") {
+                Ok(rs) if has_blp_skin_row(&rs, wrath) => return Ok(collect(&rs, wrath)),
+                Ok(_) => {}
+                Err(e) => {
+                    first_error.get_or_insert(e);
                 }
-            }
+            };
         }
-        Ok(Self { sections })
+        // Neither layout validated (an unusual or empty table): keep the client-version layout,
+        // preserving the pre-validation behaviour for data that carries no skin row at all.
+        match parse(bytes, char_sections_schema_for(wrath_hint), "CharSections") {
+            Ok(rs) => Ok(collect(&rs, wrath_hint)),
+            Err(e) => Err(first_error.unwrap_or(e)),
+        }
     }
 }
 
@@ -577,28 +574,163 @@ fn blit_over(dst: &mut BlpMipChain, src: &BlpMipChain, tile: Tile) {
     }
 }
 
-/// CharSections.dbc: 10 fields, three of them texture names.
-pub(crate) fn char_sections_schema() -> Schema {
+/// Whether any skin row (`SectionType 0`) names a `.blp` in the layout's `TextureName0` column;
+/// the data-side check that picks between the two ten-field layouts.
+fn has_blp_skin_row(rs: &RecordSet, wrath: bool) -> bool {
+    let tex_i = if wrath { 4 } else { 6 };
+    rs.records().iter().any(|r| {
+        u32_at(r, 3) == Some(0)
+            && str_at(rs, r, tex_i)
+                .is_some_and(|t| t.to_ascii_lowercase().ends_with(".blp"))
+    })
+}
+
+/// Key the parsed rows. Wrath: SectionType@3, Tex0-2@4-6, Flags@7, Variation@8, Color@9.
+/// 1.12: Variation@4, Color@5, Tex0-2@6-8, Flags@9.
+fn collect(rs: &RecordSet, wrath: bool) -> CharSections {
+    let (var_i, color_i, tex_i, flags_i) = if wrath { (8, 9, 4, 7) } else { (4, 5, 6, 9) };
+    let mut sections = HashMap::with_capacity(rs.records().len());
+    for r in rs.records() {
+        // fields: ID, Race, Sex, SectionType, then the layout's columns.
+        if let (Some(race), Some(sex), Some(ty), Some(var), Some(color)) = (
+            u32_at(r, 1),
+            u32_at(r, 2),
+            u32_at(r, 3),
+            u32_at(r, var_i),
+            u32_at(r, color_i),
+        ) {
+            let texs = [
+                str_at(rs, r, tex_i).unwrap_or_default(),
+                str_at(rs, r, tex_i + 1).unwrap_or_default(),
+                str_at(rs, r, tex_i + 2).unwrap_or_default(),
+            ];
+            let key = (race as u8, sex as u8, ty as u8, var as u8, color as u8);
+            // A row flagged `0x1` can share its key with a standard row (Human male skin 0 has
+            // `…Skin00_00` and `…_100`). 1.12 marks the extra row with the bit; 12340 marks the
+            // playable standard row with it (CharSectionFlags: 0x1 = PLAYER), so there the bitless
+            // row only fills a key no player row claimed.
+            let flagged = u32_at(r, flags_i).unwrap_or(0) & 0x1 != 0;
+            let extra = flagged != wrath;
+            if extra {
+                sections.entry(key).or_insert(texs);
+            } else {
+                sections.insert(key, texs);
+            }
+        }
+    }
+    CharSections { sections }
+}
+
+/// CharSections.dbc: 10 fields, three of them texture names. 1.12 lays them after
+/// variation/color; 12340 moves them to columns 4-6, so the schema's string fields move too.
+pub(crate) fn char_sections_schema_for(wrath: bool) -> Schema {
+    let names: [&str; 10] = if wrath {
+        [
+            "ID",
+            "RaceID",
+            "SexID",
+            "SectionType",
+            "TextureName0",
+            "TextureName1",
+            "TextureName2",
+            "Flags",
+            "VariationIndex",
+            "ColorIndex",
+        ]
+    } else {
+        [
+            "ID",
+            "RaceID",
+            "SexID",
+            "SectionType",
+            "VariationIndex",
+            "ColorIndex",
+            "TextureName0",
+            "TextureName1",
+            "TextureName2",
+            "Flags",
+        ]
+    };
+    let tex0 = if wrath { 4 } else { 6 };
     let mut s = Schema::new("CharSections");
-    for (name, ty) in [
-        ("ID", FieldType::UInt32),
-        ("RaceID", FieldType::UInt32),
-        ("SexID", FieldType::UInt32),
-        ("SectionType", FieldType::UInt32),
-        ("VariationIndex", FieldType::UInt32),
-        ("ColorIndex", FieldType::UInt32),
-        ("TextureName0", FieldType::String),
-        ("TextureName1", FieldType::String),
-        ("TextureName2", FieldType::String),
-        ("Flags", FieldType::UInt32),
-    ] {
+    for (i, name) in names.into_iter().enumerate() {
+        let ty = if (tex0..tex0 + 3).contains(&i) {
+            FieldType::String
+        } else {
+            FieldType::UInt32
+        };
         s.add_field(SchemaField::new(name, ty));
     }
     s
 }
 
+/// The 1.12 layout, for the DBC dump tool.
+pub(crate) fn char_sections_schema() -> Schema {
+    char_sections_schema_for(false)
+}
+
 #[cfg(test)]
 mod tests {
+    /// A ten-column CharSections WDBC with one human-male skin row (race 1, sex 0, colour 0) in
+    /// `wrath`'s column order: 12340 puts TextureName0 at 4, 1.12 at 6.
+    fn skin_row_dbc(wrath: bool) -> Vec<u8> {
+        let path = "Character\\Human\\Male\\HumanMaleSkin00_00.blp";
+        let mut strings = vec![0u8];
+        let tex = strings.len() as u32;
+        strings.extend_from_slice(path.as_bytes());
+        strings.push(0);
+        // A standard row: 12340 flags the playable row `0x1`, 1.12 marks only the extra one.
+        let row: [u32; 10] = if wrath {
+            [1, 1, 0, SECTION_SKIN as u32, tex, 0, 0, 0x11, 0, 0]
+        } else {
+            [1, 1, 0, SECTION_SKIN as u32, 0, 0, tex, 0, 0, 0]
+        };
+        let mut b = Vec::new();
+        b.extend_from_slice(b"WDBC");
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&10u32.to_le_bytes());
+        b.extend_from_slice(&40u32.to_le_bytes());
+        b.extend_from_slice(&(strings.len() as u32).to_le_bytes());
+        for v in row {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&strings);
+        b
+    }
+
+    /// The version hint only proposes a layout: the data's skin row must validate it. Both files
+    /// resolve the same skin under either hint, so a mislabelled chain cannot blank the atlas.
+    #[test]
+    fn the_skin_row_validates_the_char_sections_layout_over_the_version_hint() {
+        for file_wrath in [false, true] {
+            let bytes = skin_row_dbc(file_wrath);
+            for hint in [false, true] {
+                let cs = CharSections::parse_table(&bytes, hint).unwrap_or_else(|e| {
+                    panic!("file_wrath={file_wrath} hint={hint}: {e:#}")
+                });
+                assert_eq!(
+                    cs.skin_texture(1, 0, 0),
+                    Some("Character\\Human\\Male\\HumanMaleSkin00_00.blp"),
+                    "file_wrath={file_wrath} hint={hint}"
+                );
+            }
+        }
+    }
+
+    /// A table with no skin row cannot validate either layout; it keeps the version hint's
+    /// columns, the pre-validation behaviour for unusual catalogs.
+    #[test]
+    fn a_table_without_skin_rows_keeps_the_hint_layout() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"WDBC");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        bytes.extend_from_slice(&40u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let cs = CharSections::parse_table(&bytes, true).expect("an empty table parses");
+        assert!(cs.skin_texture(1, 0, 0).is_none());
+    }
+
     /// The `(cell, texture)` of a worn contribution; these fixtures pass no emblem.
     fn worn_cell<'a>(step: &EquipBlit<'a>) -> (i8, &'a str) {
         match step.source {

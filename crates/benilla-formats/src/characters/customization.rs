@@ -438,7 +438,7 @@ fn load_races(
     if fields < 29 {
         bail!("ChrRaces.dbc has {fields} fields; the 1.12 layout needs at least 29");
     }
-    let wrath = fields >= 69;
+    let wrath = fields >= super::WRATH_CHR_RACES_FIELDS;
     let locale = chain.locale();
     let (file_field, name_field, male_facial, female_facial, hair_field, locale_column) = if wrath {
         let column = crate::Locale::wrath_dbc_column(locale.wrath_index()).unwrap_or(0);
@@ -609,17 +609,19 @@ fn load_available_sections(chain: &mut Chain, wrath: bool) -> Result<HashSet<Sec
     let bytes = chain
         .read_file(CHAR_SECTIONS)
         .with_context(|| format!("reading {CHAR_SECTIONS}"))?;
-    // 10 fields (ID, Race, Sex, SectionType, Variation, Color, Tex0-2, Flags); we read the ints.
+    // 10 fields: ID, Race, Sex, SectionType, then 12340's Tex0-2/Flags/Variation/Color or 1.12's
+    // Variation/Color/Tex0-2/Flags; we read the ints.
     let rs = parse_with_trailing_fields(&bytes, all_u32_schema("CharSections", 10), "CharSections")?;
+    let (var_i, color_i, flags_i) = if wrath { (8, 9, 7) } else { (4, 5, 9) };
     let mut avail = HashSet::new();
     for r in rs.records() {
         if let (Some(race), Some(sex), Some(ty), Some(var), Some(color), Some(flags)) = (
             u32_at(r, 1),
             u32_at(r, 2),
             u32_at(r, 3),
-            u32_at(r, 4),
-            u32_at(r, 5),
-            u32_at(r, 9),
+            u32_at(r, var_i),
+            u32_at(r, color_i),
+            u32_at(r, flags_i),
         ) {
             // 1.12 marks unavailable sections with 0x1; 12340's flag is PLAYER (pinned
             // `CharSectionFlags`), so the 12340 create domain is the player-flagged rows.

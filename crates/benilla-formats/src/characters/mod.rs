@@ -22,3 +22,20 @@ pub use sections::{
 // The loaders' own schemas, for the `benilla-extract dbc` CSV dump (`crate::schema_for`).
 pub(crate) use geosets::{char_facial_hair_schema, char_hair_geosets_schema, helmet_vis_schema};
 pub(crate) use sections::char_sections_schema;
+
+use crate::Chain;
+
+/// The 12340 `ChrRaces` layout's column count. 1.12 ships 29 fields, 12340 ships 69 (the selected
+/// 3.3.5a data measures exactly 69), so the field count is the client-version probe every
+/// character table that changed layout reads.
+pub(crate) const WRATH_CHR_RACES_FIELDS: usize = 69;
+
+/// Whether the chain's data is 12340, read off `ChrRaces.dbc`'s WDBC field count. An unreadable
+/// table means the 1.12 layout, the default every caller here must keep.
+pub(crate) fn wrath_client(chain: &mut Chain) -> bool {
+    chain
+        .read_file("DBFilesClient\\ChrRaces.dbc")
+        .ok()
+        .and_then(|bytes| crate::dbc::field_count(&bytes))
+        .is_some_and(|fields| fields >= WRATH_CHR_RACES_FIELDS)
+}
