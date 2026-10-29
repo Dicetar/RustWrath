@@ -48,6 +48,10 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("partyStatusText", "0"),
     ("petStatusText", "0"),
     ("threatShowNumeric", "0"),
+    // Provisional: the stock target frame reads it at OnLoad; the 12340 default is not yet
+    // independently confirmed, but the target castbar is part of the stock presentation.
+    ("showTargetCastbar", "1"),
+    ("showBattlefieldMinimap", "0"),
 ];
 
 pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {

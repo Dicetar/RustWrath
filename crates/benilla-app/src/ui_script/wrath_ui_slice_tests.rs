@@ -46,6 +46,7 @@ fn player_frame_script() -> Option<UiScript> {
     // app pushes it at login, so the stock unit verbs answer what a session would.
     s.set_unit_guids(&UnitGuids {
         player: 0x10,
+        wrath: true,
         ..Default::default()
     });
     s.set_unit(

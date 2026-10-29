@@ -443,7 +443,7 @@ struct Asked<'a> {
 /// The `"player"` token's own push is the active player whatever its guid reads, as the resolver
 /// names it.
 fn asked<T>(lua: &Lua, token: &str, f: impl FnOnce(Option<Asked<'_>>) -> T) -> mlua::Result<T> {
-    super::unit::check_unit_token(&Some(token.to_string()))?;
+    super::unit::check_unit_token_in(lua, &Some(token.to_string()))?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     let player_guid = model.unit_guids.player;
     let player_push = model.pushed_unit("player");
@@ -790,7 +790,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             // Both arguments' gates, then the resolver (`0x51863f`), then the index (`0x51865a`).
             let token = binding_abi::string_arg(lua, token, STAT_USAGE)?;
             let idx = binding_abi::number_arg(lua, i, STAT_USAGE)? - 1;
-            super::unit::check_unit_token(&Some(token.clone()))?;
+            super::unit::check_unit_token_in(lua, &Some(token.clone()))?;
             if !(0..5).contains(&idx) {
                 return Err(mlua::Error::RuntimeError(STAT_INDEX_ERROR.into()));
             }
@@ -825,7 +825,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             // Both arguments' gates, then the resolver (`0x5184df`), then the index (`0x5184fd`).
             let token = binding_abi::string_arg(lua, token, RESISTANCE_USAGE)?;
             let school = binding_abi::number_arg(lua, school, RESISTANCE_USAGE)?;
-            super::unit::check_unit_token(&Some(token.clone()))?;
+            super::unit::check_unit_token_in(lua, &Some(token.clone()))?;
             if !(0..7).contains(&school) {
                 return Err(mlua::Error::RuntimeError(RESISTANCE_INDEX_ERROR.into()));
             }
@@ -1097,7 +1097,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         let token = super::binding_abi::string_arg(lua, unit, usage)?;
         let slot0 = super::inventory_verbs::inventory_slot_arg(lua, slot, invalid)?;
         let token = Some(token);
-        super::unit::check_unit_token(&token)?;
+        super::unit::check_unit_token_in(lua, &token)?;
         Ok((token, i64::from(slot0) + 1))
     }
 
@@ -1162,7 +1162,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 return Ok(MultiValue::new());
             }
             let token = Some(token);
-            super::unit::check_unit_token(&token)?;
+            super::unit::check_unit_token_in(lua, &token)?;
             let link = player_inv_slot(lua, &token, i64::from(slot0) + 1)
                 .and_then(|v| v.link.or(v.uncached_link));
             Ok(match link {
@@ -1193,7 +1193,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 ));
             }
             let token = Some(token);
-            super::unit::check_unit_token(&token)?;
+            super::unit::check_unit_token_in(lua, &token)?;
             // The item table's slot (`0x6228a0`), empty for another player: 1 (`0x4c8797`).
             let Some(v) = own_inv_slot(lua, &token, i64::from(slot0) + 1) else {
                 return Ok(1i64);
@@ -1289,7 +1289,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 return Ok(super::container::item_cooldown_triple(None, model.now));
             }
-            super::unit::check_unit_token(&Some(token.clone()))?;
+            super::unit::check_unit_token_in(lua, &Some(token.clone()))?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let live = usize::try_from(slot0 + 1).ok();
             let own = model.inventory_reader(&token) == Some(InvReader::Own);

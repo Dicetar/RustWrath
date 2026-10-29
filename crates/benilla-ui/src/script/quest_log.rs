@@ -1847,7 +1847,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 return Ok(Value::Nil);
             }
             // The token's guid (`0x515970`), which raises on an unknown token.
-            super::unit::check_unit_token(&Some(token.clone()))?;
+            super::unit::check_unit_token_in(lua, &Some(token.clone()))?;
             let Some(unit) = model.unit(&token) else {
                 return Ok(Value::Nil);
             };

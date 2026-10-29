@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::script::{UiScript, UnitGuids, UnitState};
+use crate::script::{UiScript, UiTarget, UnitGuids, UnitState};
 
 const ME: u64 = 0x10;
 const PET: u64 = 0xF140_0000_0000_0077;
@@ -45,7 +45,11 @@ fn state(name: &str, guid: u64, health: u32) -> UnitState {
 /// holds. raid3 targets the add, raid4 a held unit with no snapshot, our pet its foe, and party2
 /// is out of range. Pushed by name: the bases. Pushed by guid: the units a chain ends on.
 fn world() -> UiScript {
-    let mut s = UiScript::new().unwrap();
+    world_for(UiTarget::Vanilla112)
+}
+
+fn world_for(target: UiTarget) -> UiScript {
+    let mut s = UiScript::with_target(target).unwrap();
     s.set_unit_guids(&UnitGuids {
         player: ME,
         pet: PET,
@@ -415,4 +419,108 @@ fn unit_is_unit_matches_the_strings_before_it_resolves_them() {
     }
     // Unequal strings resolve, so an unknown one raises.
     assert!(s.run(r#"UnitIsUnit("focus", "target")"#).is_err());
+}
+
+/// Wrath's extra unit names are recognised with empty state, and a real focus/vehicle/boss
+/// resolves once its host field and snapshot are present. Vanilla still raises the same names.
+#[test]
+fn wrath_tokens_are_quiet_and_resolve_present_units() {
+    let mut s = world_for(UiTarget::Wrath335);
+    let mut guids = s.unit_guids_view();
+    guids.wrath = true;
+    s.set_unit_guids(&guids);
+    for token in ["focus", "vehicle", "boss1", "boss4"] {
+        assert!(
+            eval::<bool>(
+                &s,
+                &format!(r#"return UnitExists("{token}") == nil"#)
+            ),
+            "{token} absent"
+        );
+        assert_eq!(
+            s.eval::<i64>(&format!(r#"return UnitPowerType("{token}")"#))
+                .unwrap(),
+            0,
+            "{token} power type"
+        );
+        assert!(
+            eval::<bool>(
+                &s,
+                &format!(r#"return UnitIsUnit("{token}", "target") == nil"#)
+            ),
+            "{token} does not equal target"
+        );
+    }
+
+    // UnitGUID is the resolver's identity, not a pushed snapshot: a known token answers
+    // before any UnitState arrives, and a target change or disappearance follows immediately.
+    guids.focus = FAR;
+    guids.target = MOB;
+    s.set_unit_guids(&guids);
+    assert_eq!(
+        s.eval::<String>(r#"return UnitGUID("focus")"#).unwrap(),
+        format!("0x{FAR:016X}")
+    );
+    assert_eq!(
+        s.eval::<String>(r#"return UnitGUID("target")"#).unwrap(),
+        format!("0x{MOB:016X}")
+    );
+    assert_eq!(s.eval::<i64>(r#"return UnitLevel("focus")"#).unwrap(), 0);
+    assert_eq!(
+        s.eval::<i64>(r#"return UnitIsPartyLeader("focus")"#).unwrap(),
+        1,
+        "no snapshot is the zero-guid leader, as the reference"
+    );
+    s.set_unit(
+        "focus",
+        Some(UnitState {
+            exists: true,
+            guid: FAR,
+            level: 60,
+            group_leader: true,
+            ..Default::default()
+        }),
+    );
+    assert_eq!(s.eval::<i64>(r#"return UnitLevel("focus")"#).unwrap(), 60);
+    assert_eq!(
+        s.eval::<i64>(r#"return UnitIsPartyLeader("focus")"#).unwrap(),
+        1
+    );
+    guids.target = P1;
+    s.set_unit_guids(&guids);
+    assert_eq!(
+        s.eval::<String>(r#"return UnitGUID("target")"#).unwrap(),
+        format!("0x{P1:016X}")
+    );
+    guids.focus = 0;
+    s.set_unit_guids(&guids);
+    assert!(eval::<bool>(&s, r#"return UnitGUID("focus") == nil"#));
+
+    guids.focus = MOB;
+    guids.vehicle = P1;
+    guids.boss[0] = MOB;
+    s.set_unit_guids(&guids);
+    s.set_unit("focus", Some(state("Focus", MOB, 100)));
+    s.set_unit("vehicle", Some(state("Vehicle", P1, 200)));
+    s.set_unit("boss1", Some(state("Boss", MOB, 300)));
+    for (token, other) in [
+        ("focus", "target"),
+        ("vehicle", "party1"),
+        ("boss1", "target"),
+    ] {
+        assert!(
+            eval::<bool>(
+                &s,
+                &format!(r#"return UnitExists("{token}") == 1"#)
+            ),
+            "{token} present"
+        );
+        assert!(
+            eval::<bool>(
+                &s,
+                &format!(r#"return UnitIsUnit("{token}", "{other}") == 1"#)
+            ),
+            "{token} shares {other}'s guid"
+        );
+    }
 }

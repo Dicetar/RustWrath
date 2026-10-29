@@ -20,6 +20,15 @@ pub struct UnitGuids {
     pub mouseover: u64,
     /// The interaction NPC `[0xb4e2d0]`.
     pub npc: u64,
+    /// Whether this VM is the 3.3.5 client: `focus`, `vehicle` and `bossN` are Wrath tokens,
+    /// never 1.12 ones.
+    pub wrath: bool,
+    /// The client-local focus guid; 0 without a focus.
+    pub focus: u64,
+    /// The vehicle the player controls; 0 without one.
+    pub vehicle: u64,
+    /// `boss1..boss4`, index N-1 (`INSTANCE_ENCOUNTER_ENGAGE_UNIT`).
+    pub boss: [u64; 4],
     /// `partyN`'s guid, index N-1 (`0x4e81a0`).
     pub party: [u64; 4],
     /// `partypetN`'s guid, index N-1 (`0x4e81d0`).
@@ -46,6 +55,9 @@ enum Base {
     RaidPet,
     Raid,
     Mouseover,
+    Focus,
+    Vehicle,
+    Boss,
 }
 
 /// Each prefix and its base, in the resolver's order; a prefix test compares `strlen(literal)`
@@ -61,6 +73,13 @@ const PREFIXES: [(&str, Base); 8] = [
     ("mouseover", Base::Mouseover),
 ];
 
+/// Wrath-only bases, tried before the vanilla ones only when [`UnitGuids::wrath`] is set.
+const WRATH_PREFIXES: [(&str, Base); 3] = [
+    ("focus", Base::Focus),
+    ("vehicle", Base::Vehicle),
+    ("boss", Base::Boss),
+];
+
 /// The unit a token starts from, before any `target` hop. A numbered base carries its 0-based
 /// row, [`index_of`]'s: a table lookup that fails on the reserved `u32::MAX` of a missing or zero
 /// number names nobody.
@@ -72,6 +91,12 @@ pub enum UnitBase {
     Mouseover,
     /// The interaction NPC; an exact compare, so it takes no `target` hop (`0x515bec`).
     Npc,
+    /// Wrath's client-local focus.
+    Focus,
+    /// Wrath's controlled vehicle.
+    Vehicle,
+    /// Wrath's `boss1..boss4`, index N-1.
+    Boss(u32),
     Party(u32),
     PartyPet(u32),
     Raid(u32),
@@ -110,6 +135,16 @@ pub(crate) fn token_recognised(token: &str) -> bool {
     token.eq_ignore_ascii_case("npc") || base_of(token.as_bytes()).is_some()
 }
 
+/// [`token_recognised`] for a VM that may be the Wrath client, whose resolver also knows
+/// `focus`, `vehicle` and `bossN`.
+pub(crate) fn token_recognised_for(token: &str, wrath: bool) -> bool {
+    token_recognised(token)
+        || (wrath
+            && WRATH_PREFIXES
+                .iter()
+                .any(|(p, _)| has_prefix(token.as_bytes(), p)))
+}
+
 /// The inline base-10 parse after `party`, `partypet`, `raid` and `raidpet`, then `dec` to a
 /// 0-based index (`0x515ab1`-`0x515acc`): digits accumulate with 32-bit wrap, and a missing
 /// number leaves 0, whose index `0xffffffff` every bound rejects.
@@ -126,11 +161,27 @@ fn index_of(s: &[u8]) -> (u32, usize) {
 /// party1 and one hop, `"targettarget"` the target and one, and `"npctarget"` is none of the nine
 /// compares, as `npc` is one full-string compare.
 pub fn parse_unit_token(token: &str) -> UnitTokenParse {
+    parse_unit_token_for(token, false)
+}
+
+/// [`parse_unit_token`] with the Wrath-only bases available: `focus`, `vehicle`, and numbered
+/// `boss1..boss4` (the same 0-based row rule as `partyN`).
+pub fn parse_unit_token_for(token: &str, wrath: bool) -> UnitTokenParse {
     let bytes = token.as_bytes();
     if bytes.is_empty() {
         return UnitTokenParse::Nobody;
     }
-    let Some((base, len)) = base_of(bytes) else {
+    let found = base_of(bytes).or_else(|| {
+        wrath
+            .then(|| {
+                WRATH_PREFIXES
+                    .iter()
+                    .find(|(p, _)| has_prefix(bytes, p))
+                    .map(|&(p, b)| (b, p.len()))
+            })
+            .flatten()
+    });
+    let Some((base, len)) = found else {
         return if token.eq_ignore_ascii_case("npc") {
             UnitTokenParse::Unit {
                 base: UnitBase::Npc,
@@ -151,6 +202,9 @@ pub fn parse_unit_token(token: &str) -> UnitTokenParse {
         Base::Pet => UnitBase::Pet,
         Base::Target => UnitBase::Target,
         Base::Mouseover => UnitBase::Mouseover,
+        Base::Focus => UnitBase::Focus,
+        Base::Vehicle => UnitBase::Vehicle,
+        Base::Boss => numbered(UnitBase::Boss),
         Base::PartyPet => numbered(UnitBase::PartyPet),
         Base::Party => numbered(UnitBase::Party),
         Base::RaidPet => numbered(UnitBase::RaidPet),
@@ -172,7 +226,7 @@ impl UnitGuids {
     /// match, where the reference raises `Unknown unit name: %s` (`0x515c14`). An empty token is
     /// nobody (`0x51599d`).
     pub(crate) fn resolve(&self, token: &str) -> Result<Option<u64>, ()> {
-        match parse_unit_token(token) {
+        match parse_unit_token_for(token, self.wrath) {
             UnitTokenParse::Unknown => Err(()),
             UnitTokenParse::Nobody => Ok(None),
             UnitTokenParse::Unit { base, hops } => Ok(self.resolve_unit(base, hops)),
@@ -195,6 +249,9 @@ impl UnitGuids {
             UnitBase::Pet => self.pet,
             UnitBase::Target => self.target,
             UnitBase::Npc => self.npc,
+            UnitBase::Focus => self.focus,
+            UnitBase::Vehicle => self.vehicle,
+            UnitBase::Boss(row) => at(&self.boss, row),
             // Deviation: `0x4e81d0` has no bound and reads past its four-entry table, which is
             // stale memory, not a mechanism; past it, nobody.
             UnitBase::PartyPet(row) => at(&self.party_pets, row),
@@ -235,6 +292,13 @@ impl UnitGuids {
         name("target".into(), UnitBase::Target);
         name("mouseover".into(), UnitBase::Mouseover);
         name("npc".into(), UnitBase::Npc);
+        if self.wrath {
+            name("focus".into(), UnitBase::Focus);
+            name("vehicle".into(), UnitBase::Vehicle);
+            for row in 0..self.boss.len() {
+                name(format!("boss{}", row + 1), UnitBase::Boss(row as u32));
+            }
+        }
         for row in 0..self.party.len() {
             name(format!("party{}", row + 1), UnitBase::Party(row as u32));
         }
@@ -270,6 +334,18 @@ impl UnitGuids {
         ] {
             if at == guid {
                 out.push(token.to_string());
+            }
+        }
+        if self.wrath {
+            for (token, at) in [("focus", self.focus), ("vehicle", self.vehicle)] {
+                if at == guid {
+                    out.push(token.to_string());
+                }
+            }
+            for (row, at) in self.boss.iter().enumerate() {
+                if *at == guid {
+                    out.push(format!("boss{}", row + 1));
+                }
             }
         }
         if let Some(row) = (0..4).find(|&i| self.party[i] == guid || self.party_pets[i] == guid) {
@@ -394,6 +470,18 @@ mod tests {
                 (P1_PET, MOB),
                 (R3, 0),
             ]),
+            ..Default::default()
+        }
+    }
+
+    /// A Wrath resolver with the three extension bases populated.
+    fn wrath_guids() -> UnitGuids {
+        UnitGuids {
+            wrath: true,
+            focus: MOB,
+            vehicle: P1_PET,
+            boss: [R3, ME, MOB, P1],
+            ..guids()
         }
     }
 
@@ -566,6 +654,83 @@ mod tests {
             parse_unit_token(&deep),
             unit(Player, 1000),
             "no depth limit"
+        );
+    }
+
+    /// The Wrath names parse only in Wrath mode; vanilla still raises them.
+    #[test]
+    fn wrath_tokens_are_a_wrath_only_extension() {
+        use UnitBase::*;
+        let unit = |base, hops| UnitTokenParse::Unit { base, hops };
+        for (token, want) in [
+            ("focus", unit(Focus, 0)),
+            ("focustarget", unit(Focus, 1)),
+            ("vehicle", unit(Vehicle, 0)),
+            ("vehicletargettarget", unit(Vehicle, 2)),
+            ("boss1", unit(Boss(0), 0)),
+            ("boss4target", unit(Boss(3), 1)),
+            ("BOSS2TARGET", unit(Boss(1), 1)),
+            // A numbered base with no number is the row every bound rejects, as `party` is.
+            ("boss", unit(Boss(u32::MAX), 0)),
+            ("boss0", unit(Boss(u32::MAX), 0)),
+            ("boss5", unit(Boss(4), 0)),
+        ] {
+            assert_eq!(parse_unit_token_for(token, true), want, "{token}");
+            assert_eq!(parse_unit_token(token), UnitTokenParse::Unknown, "{token}");
+        }
+        for token in ["focus1", "vehiclex", "boss1x"] {
+            assert_eq!(
+                parse_unit_token_for(token, true),
+                UnitTokenParse::Nobody,
+                "{token}"
+            );
+        }
+    }
+
+    /// The Wrath bases resolve through their host fields, including target hops; absent state
+    /// still reads as nobody rather than raising.
+    #[test]
+    fn wrath_bases_resolve_from_their_host_state() {
+        let g = wrath_guids();
+        assert_eq!(g.resolve("focus"), Ok(Some(MOB)));
+        assert_eq!(g.resolve("vehicle"), Ok(Some(P1_PET)));
+        assert_eq!(g.resolve("boss1"), Ok(Some(R3)));
+        assert_eq!(g.resolve("boss2"), Ok(Some(ME)));
+        assert_eq!(g.resolve("focustarget"), Ok(Some(P1)));
+        assert_eq!(g.resolve("vehicletarget"), Ok(Some(MOB)));
+        assert_eq!(g.resolve("boss2target"), Ok(Some(MOB)));
+        let absent = UnitGuids {
+            wrath: true,
+            ..Default::default()
+        };
+        for token in ["focus", "vehicle", "boss1", "boss4"] {
+            assert_eq!(absent.resolve(token), Ok(None), "{token}");
+        }
+        // Vanilla keeps the old raise even with the same empty state.
+        assert_eq!(absent.resolve("focus"), Ok(None));
+        assert!(guids().resolve("focus").is_err());
+        assert!(guids().resolve("vehicle").is_err());
+        assert!(guids().resolve("boss1").is_err());
+    }
+
+    /// The reverse fan-out names the Wrath bases and keeps them out of the vanilla list.
+    #[test]
+    fn wrath_bases_join_the_reverse_fan_out() {
+        let g = wrath_guids();
+        assert!(g.bound_tokens().contains(&"focus".to_string()));
+        assert!(g.bound_tokens().contains(&"vehicle".to_string()));
+        assert!(g.bound_tokens().contains(&"boss1".to_string()));
+        assert!(!guids().bound_tokens().contains(&"focus".to_string()));
+        assert_eq!(
+            g.tokens_of(MOB),
+            ["target", "focus", "boss3", "npc", "mouseover"],
+            "the Wrath focus and boss rows name the same guid"
+        );
+        assert_eq!(g.tokens_of(FAR), ["party2"]);
+        assert_eq!(
+            g.tokens_of(P1_PET),
+            ["vehicle", "partypet1", "raidpet1"],
+            "vehicle precedes the group rows"
         );
     }
 

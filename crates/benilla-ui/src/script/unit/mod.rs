@@ -551,15 +551,30 @@ impl super::UiScript {
     }
 }
 
-use resolve::token_recognised;
+use resolve::token_recognised_for;
 
 /// The resolver's token check: an unrecognised token raises `Unknown unit name`, as `0x515970`
 /// ends in `luaL_error`; `""`, an absent token and a recognised one naming nothing pass. Whether
 /// nil arrives is per binding: of the 83 in the table at `0x850438`, 53 raise `Usage:` first and
 /// 13 unit-token bindings take nil with no gate.
 pub(crate) fn check_unit_token(token: &Option<String>) -> mlua::Result<()> {
+    check_unit_token_for(token, false)
+}
+
+/// [`check_unit_token_for`] with the VM's own target contract: the selected 3.3.5 host admits
+/// `focus`, `vehicle` and `bossN`, a vanilla host keeps raising them.
+pub(crate) fn check_unit_token_in(lua: &Lua, token: &Option<String>) -> mlua::Result<()> {
+    let wrath = lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath());
+    check_unit_token_for(token, wrath)
+}
+
+/// [`check_unit_token`] for a VM that may be the Wrath client, whose resolver also recognises
+/// `focus`, `vehicle` and `bossN`.
+pub(crate) fn check_unit_token_for(token: &Option<String>, wrath: bool) -> mlua::Result<()> {
     match token {
-        Some(t) if !t.is_empty() && !token_recognised(t) => {
+        Some(t) if !t.is_empty() && !token_recognised_for(t, wrath) => {
             Err(mlua::Error::runtime(format!("Unknown unit name: {t}")))
         }
         _ => Ok(()),
@@ -574,8 +589,8 @@ fn with_unit<T>(
     default: T,
     f: impl FnOnce(&UnitState) -> T,
 ) -> mlua::Result<T> {
-    check_unit_token(token)?;
     let model = lua.app_data_ref::<Model>().expect("model app_data");
+    check_unit_token_for(token, model.is_wrath())?;
     Ok(match token.as_ref().and_then(|t| model.unit(t)) {
         Some(u) => f(u),
         None => default,
@@ -607,6 +622,6 @@ mod selection_tests;
 mod tests;
 
 pub use relations::UnitRelations;
-pub use resolve::{parse_unit_token, UnitBase, UnitGuids, UnitTokenParse};
+pub use resolve::{parse_unit_token, parse_unit_token_for, UnitBase, UnitGuids, UnitTokenParse};
 
 pub(super) use bindings::install;

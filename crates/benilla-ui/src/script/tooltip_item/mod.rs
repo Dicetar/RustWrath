@@ -559,7 +559,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 let name_only = super::binding_abi::positive_number_flag(lua, name_only)?;
                 // The token's resolve (`0x533061`), which raises for one it does not know, then
                 // `CanReadUnitInventory` (`0x53306a`), through `Model::inv_slot`.
-                super::unit::check_unit_token(&Some(unit.clone()))?;
+                super::unit::check_unit_token_in(lua, &Some(unit.clone()))?;
                 let (item_id, name, quality, inst, count, repair_cost, currently_equipped) = {
                     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                     // Only the active player's slots hold item objects; another player's item is

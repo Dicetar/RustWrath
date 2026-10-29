@@ -1,4 +1,4 @@
-//! Wrath aura queries over native slots, independent of the lossy 1.12 descriptor projection.
+﻿//! Wrath aura queries over native slots, independent of the lossy 1.12 descriptor projection.
 //! Tuple consumer: the target BuffFrame.lua / AuraButton_Update. Missing policy or expiration
 //! observations are nil; a hidden-duration aura uses the client's numeric zero convention.
 //! Timed entries use the native receipt's presentation anchor, never the query's time.
@@ -66,7 +66,7 @@ fn caster_token(lua: &Lua, guid: Option<u64>) -> Option<String> {
 fn find(lua: &Lua, args: &MultiValue, forced: Option<bool>) -> mlua::Result<Option<(u64, WrathAuraView)>> {
     let token = super::binding_abi::string_arg(lua, args.front().cloned().unwrap_or(Value::Nil),
         "Usage: UnitAura(unit, index or name [, rank] [, filter])")?;
-    super::unit::check_unit_token(&Some(token.clone()))?;
+    super::unit::check_unit_token_for(&Some(token.clone()), true)?;
     let input = args.get(1).cloned().unwrap_or(Value::Nil);
     let number = lua.coerce_number(input.clone())?;
     let (index, name, rank, filter_arg) = if let Some(number) = number {

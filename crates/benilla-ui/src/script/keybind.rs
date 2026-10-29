@@ -487,6 +487,20 @@ pub(crate) fn run_command(lua: &Lua, command: &str, down: bool) -> mlua::Result<
     ran.map(|()| true)
 }
 
+/// The action bound to one chord, for `GetBindingAction` and its Wrath alias `GetBindingByKey`.
+fn action_for_key(lua: &Lua, key: &str) -> String {
+    let key = key.to_ascii_uppercase();
+    let model = lua.app_data_mut::<Model>().expect("model app_data");
+    model
+        .keybinds
+        .live
+        .iter()
+        .find(|(k, _)| k == &key)
+        .map(|(_, c)| c.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// The binding globals. `GetBinding(i)` answers the row's name and then every key bound to it
 /// (`0x4b7f60`: `1 + matches` values), so a `HEADER_*` row answers its name alone, which the stock
 /// window reads as three names (`Blizzard_BindingUI.lua:84`, `:87`). Only `GetNumBindings` and
@@ -581,16 +595,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetBindingAction",
         lua.create_function(|lua, key: Value| {
             let key = super::binding_abi::string_arg(lua, key, "Usage: GetBindingAction(\"KEY\")")?;
-            let model = lua.app_data_mut::<Model>().expect("model app_data");
-            let key = key.to_ascii_uppercase();
-            let name = model
-                .keybinds
-                .live
-                .iter()
-                .find(|(k, _)| k == &key)
-                .map(|(_, c)| c.as_str())
-                .unwrap_or("");
-            lua.create_string(name)
+            let name = action_for_key(lua, &key);
+            lua.create_string(&name)
+        })?,
+    )?;
+    // 3.3.5's `GetBindingFromClick` (`UIParent.lua:3195`) calls this name; it is the same
+    // key-to-command lookup as `GetBindingAction`, which 1.12 has.
+    lua.globals().set(
+        "GetBindingByKey",
+        lua.create_function(|lua, key: Value| {
+            let key = super::binding_abi::string_arg(lua, key, "Usage: GetBindingByKey(\"KEY\")")?;
+            let name = action_for_key(lua, &key);
+            lua.create_string(&name)
         })?,
     )?;
     // The set's copy into the live table (`0x4b8252` → `0x4b6310`, destination 3) signals
@@ -745,6 +761,25 @@ mod tests {
                     .unwrap(),
                 row(&[""]),
                 "GetBinding({miss})"
+            );
+        }
+    }
+
+    /// Wrath's `GetBindingFromClick` asks for the action by chord; the answer must match
+    /// `GetBindingAction`, and an unbound chord is `""` rather than an error.
+    #[test]
+    fn get_binding_by_key_is_the_action_lookup() {
+        let s = script();
+        for (key, want) in [("W", "MOVEFORWARD"), ("SPACE", "JUMP"), ("F", "")] {
+            assert_eq!(
+                s.eval::<String>(&format!("return GetBindingByKey(\"{key}\")"))
+                    .unwrap(),
+                want
+            );
+            assert_eq!(
+                s.eval::<String>(&format!("return GetBindingAction(\"{key}\")"))
+                    .unwrap(),
+                want
             );
         }
     }

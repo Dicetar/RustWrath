@@ -1,4 +1,4 @@
-//! Wrath spell queries use the lent app host, never a separate catalog or simulated spell state.
+﻿//! Wrath spell queries use the lent app host, never a separate catalog or simulated spell state.
 
 use mlua::{Lua, MultiValue, Value};
 
@@ -62,7 +62,7 @@ fn string(lua: &Lua, value: Option<&str>) -> mlua::Result<Value> {
 fn unit_cast(lua: &Lua, token: Value, channel: bool) -> mlua::Result<MultiValue> {
     let usage = if channel { "Usage: UnitChannelInfo(unit)" } else { "Usage: UnitCastingInfo(unit)" };
     let token = super::binding_abi::string_arg(lua, token, usage)?;
-    super::unit::check_unit_token(&Some(token.clone()))?;
+    super::unit::check_unit_token_for(&Some(token.clone()), true)?;
     let guid = {
         let model = lua.app_data_ref::<Model>().expect("model");
         model.unit(&token).map(|unit| unit.guid)

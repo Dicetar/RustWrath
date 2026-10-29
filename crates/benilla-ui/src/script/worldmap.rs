@@ -750,6 +750,50 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // 3.3.5's `WorldMapFrame_OnUpdate` and death-release tail call these; 1.12 has neither a
+    // Wintergrasp timer nor a death-release map marker. Answer nothing/none so the stock update
+    // hides both instead of raising every frame.
+    g.set(
+        "GetWintergraspWaitTime",
+        lua.create_function(|_, ()| Ok(Value::Nil))?,
+    )?;
+    g.set(
+        "GetDeathReleasePosition",
+        lua.create_function(|_, ()| Ok((0.0f64, 0.0f64)))?,
+    )?;
+    // `WorldMapFrame_OnLoad` calls this before its first `WorldMapFrame_Update`; 1.12 has no
+    // map pings. A no-op lets OnLoad reach the update that paints the map and seats the frame.
+    g.set(
+        "InitWorldMapPing",
+        lua.create_function(|_, _owner: Value| Ok(()))?,
+    )?;
+    // 3.3.5's `WorldMapFrame_Update` reads these before it paints the detail tiles. 1.12 has
+    // no dungeon floor selector and no terrain-map mode; a zero level and no zoom keep the
+    // stock update on its ordinary zone path.
+    g.set(
+        "GetCurrentMapDungeonLevel",
+        lua.create_function(|_, ()| Ok(0i64))?,
+    )?;
+    g.set(
+        "DungeonUsesTerrainMap",
+        lua.create_function(|_, ()| Ok(false))?,
+    )?;
+    g.set(
+        "IsZoomOutAvailable",
+        lua.create_function(|_, ()| Ok(false))?,
+    )?;
+    // Wrath's debug-zone-map and quest-map hooks are not part of the 1.12 map surface. The
+    // former answers false so the stock UI never exposes a debug map; the latter is a no-op
+    // where the quest map would repaint.
+    g.set(
+        "HasDebugZoneMap",
+        lua.create_function(|_, ()| Ok(false))?,
+    )?;
+    g.set(
+        "QuestMapUpdateAllQuests",
+        lua.create_function(|_, ()| Ok(()))?,
+    )?;
+
     g.set(
         "SetMapZoom",
         lua.create_function(|lua, (c, z): (Value, Value)| {

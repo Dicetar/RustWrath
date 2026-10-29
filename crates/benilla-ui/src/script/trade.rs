@@ -1021,7 +1021,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "InitiateTrade",
         lua.create_function(|lua, unit: Value| {
             let token = binding_abi::string_arg(lua, unit, "Usage: InitiateTrade(\"unit\")")?;
-            super::unit::check_unit_token(&Some(token.clone()))?;
+            super::unit::check_unit_token_in(lua, &Some(token.clone()))?;
             let guid = lua
                 .app_data_ref::<Model>()
                 .expect("model app_data")

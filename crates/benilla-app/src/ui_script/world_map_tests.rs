@@ -1012,3 +1012,28 @@ fn a_reopened_map_shows_the_players_zone_before_its_first_paint() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+
+/// The Wrath map update's two missing globals answer quietly, so the stock `OnUpdate` and the
+/// death-release tail do not raise once per frame.
+#[test]
+fn wrath_map_timer_globals_answer_quietly() {
+    let s = UiScript::new().unwrap();
+    assert!(s
+        .eval::<bool>("return GetWintergraspWaitTime() == nil")
+        .unwrap());
+    assert_eq!(
+        s.eval::<(f64, f64)>("return GetDeathReleasePosition()")
+            .unwrap(),
+        (0.0, 0.0)
+    );
+    assert!(s
+        .eval::<bool>("return InitWorldMapPing({}) == nil")
+        .unwrap());
+    assert_eq!(
+        s.eval::<i64>("return GetCurrentMapDungeonLevel()").unwrap(),
+        0
+    );
+    assert!(!s.eval::<bool>("return DungeonUsesTerrainMap()").unwrap());
+    assert!(!s.eval::<bool>("return IsZoomOutAvailable()").unwrap());
+    assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
+}

@@ -89,6 +89,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "VehicleExit",
         lua.create_function(|_, _args: mlua::MultiValue| Ok(()))?,
     )?;
+    // The pitch controls are the other vehicle-only named handlers in VehicleMenuBar.xml. With
+    // no vehicle the frame is never shown; defining the handlers keeps the XML's OnMouseDown/Up
+    // assignments loadable instead of raising "named script handler is not a function".
+    for name in [
+        "VehicleAimUpStart",
+        "VehicleAimUpStop",
+        "VehicleAimDownStart",
+        "VehicleAimDownStop",
+    ] {
+        lua.globals().set(
+            name,
+            lua.create_function(|_, _args: mlua::MultiValue| Ok(()))?,
+        )?;
+    }
 
     // `GetNumTrackingTypes`/`GetTrackingInfo` (`Minimap.lua:427`, `:430`): the tracking types come
     // from the player's known tracking spells (aura TRACK_CREATURES/TRACK_RESOURCES); the host has

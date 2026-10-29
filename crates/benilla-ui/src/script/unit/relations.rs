@@ -10,7 +10,7 @@ use mlua::{Lua, Value};
 
 use super::super::binding_abi::{flag, string_arg};
 use super::super::Model;
-use super::{check_unit_token, UnitGuids};
+use super::{check_unit_token_for, UnitGuids};
 
 /// The engine's relation functions between two units, by guid, `a` as `this` and `b` its
 /// argument: what the six verbs ask. A method answers `None` when the host does not hold either
@@ -61,7 +61,7 @@ impl super::super::UiScript {
 /// `GetGUIDFromName 0x515970` on one token: the guid of the unit it names, 0 for nobody. An
 /// unknown token raises `Unknown unit name` (`0x515c14`).
 fn guid_of(model: &Model, token: &str) -> mlua::Result<u64> {
-    check_unit_token(&Some(token.to_string()))?;
+    check_unit_token_for(&Some(token.to_string()), model.is_wrath())?;
     Ok(model.unit(token).map_or(0, |u| u.guid))
 }
 

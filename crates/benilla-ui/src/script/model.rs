@@ -6,7 +6,7 @@ use crate::widget::{FrameHandle, RegionHandle, WidgetArena};
 use super::{
     auction, backdrop, bank, camera_view, char_stats, chat_window, colorselect, container, craft,
     cursor, death, follow, gossip, guild, item_calls, item_text, loot, loot_roll, macros, mail,
-    merchant, parse_unit_token, party, petition, pvp, quest, quest_log, reputation, simplehtml,
+    merchant, parse_unit_token_for, party, petition, pvp, quest, quest_log, reputation, simplehtml,
     skills, slider, social, spellbook, stable, taxi, trade, tradeskill, trainer, weapon_enchant,
     ActionSlot, AuraState, FontObject, ItemTemplateView, MusicRequest, PlayerReqState, RegionData,
     ScriptValue, SoundRequest, UnitBase, UnitState, UnitTokenParse,
@@ -1329,6 +1329,11 @@ impl Model {
         self.warnings.push(msg);
     }
 
+    /// Whether this VM is the 3.3.5 client, whose resolver adds `focus`, `vehicle` and `bossN`.
+    pub(crate) fn is_wrath(&self) -> bool {
+        self.target == super::UiTarget::Wrath335
+    }
+
     /// The state of the unit `token` names, as the `Unit*` getters read it: the snapshot the app
     /// pushed under the token, else, for a token with a `target` hop or for `target` itself, what
     /// the getters read for the guid it resolves to.
@@ -1357,7 +1362,7 @@ impl Model {
     /// the name cache (`0x5171eb`) and nothing more. Any other token without a hop is the app's to
     /// push, base by base, and reads nothing here.
     fn chained_unit(&self, token: &str) -> Option<&UnitState> {
-        match parse_unit_token(token) {
+        match parse_unit_token_for(token, self.is_wrath()) {
             UnitTokenParse::Unit { base, hops } if hops > 0 || base == UnitBase::Target => {
                 let guid = self.unit_guids.resolve_unit(base, hops)?;
                 match self.units_by_guid.get(&guid) {

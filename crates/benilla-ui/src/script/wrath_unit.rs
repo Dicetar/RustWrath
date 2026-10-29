@@ -1,4 +1,4 @@
-//! Wrath resource getters over the current unit projection and the existing raw-field owner.
+﻿//! Wrath resource getters over the current unit projection and the existing raw-field owner.
 
 use mlua::{Lua, Value};
 
@@ -6,7 +6,7 @@ use super::{host, unit, Model};
 
 fn power(lua: &Lua, token: Value, kind: Value, raw: Option<bool>, maximum: bool) -> mlua::Result<u32> {
     let token = super::binding_abi::string_arg(lua, token, "Usage: UnitPower(unit [, powerType [, unmodified]])")?;
-    unit::check_unit_token(&Some(token.clone()))?;
+    unit::check_unit_token_for(&Some(token.clone()), true)?;
     let guid = {
         let model = lua.app_data_ref::<Model>().expect("model");
         let Some(unit) = model.unit(&token) else { return Ok(0) };
@@ -34,6 +34,28 @@ fn power(lua: &Lua, token: Value, kind: Value, raw: Option<bool>, maximum: bool)
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
+    // `UnitGUID(unit)`: the 16-digit 0x-prefixed guid string the 3.3.5 addon surface expects;
+    // nil for a token that names nobody.
+    globals.set("UnitGUID", lua.create_function(|lua, token: Value| {
+        let token = super::binding_abi::string_arg(lua, token, "Usage: UnitGUID(unit)")?;
+        unit::check_unit_token_for(&Some(token.clone()), true)?;
+        // The resolver's identity, not a pushed snapshot: `UnitGUID` must answer a known
+        // token even before any `UnitState` for it has arrived.
+        let guid = {
+            let model = lua.app_data_ref::<Model>().expect("model");
+            match unit::parse_unit_token_for(&token, true) {
+                unit::UnitTokenParse::Unit { base, hops } => {
+                    model.unit_guids.resolve_unit(base, hops).unwrap_or(0)
+                }
+                _ => 0,
+            }
+        };
+        if guid == 0 {
+            Ok(Value::Nil)
+        } else {
+            Ok(Value::String(lua.create_string(format!("0x{guid:016X}"))?))
+        }
+    })?)?;
     globals.set("UnitPower", lua.create_function(|lua, (token, kind, raw): (Value, Value, Option<bool>)| {
         power(lua, token, kind, raw, false)
     })?)?;
@@ -42,7 +64,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     })?)?;
     globals.set("UnitPowerType", lua.create_function(|lua, token: Value| {
         let token = super::binding_abi::string_arg(lua, token, "Usage: UnitPowerType(unit)")?;
-        unit::check_unit_token(&Some(token.clone()))?;
+        unit::check_unit_token_for(&Some(token.clone()), true)?;
         let guid = lua.app_data_ref::<Model>().expect("model").unit(&token).map_or(0, |unit| unit.guid);
         let kind = host::with_host(lua, |host| host.unit_power_type(guid)).flatten().unwrap_or(0);
         let name = match kind {

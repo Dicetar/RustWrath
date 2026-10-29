@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use benilla_formats::{ChrClasses, ChrRaces, Reaction};
 use benilla_protocol::messages::ObjectType;
 use benilla_ui::script::{
-    parse_unit_token, ScriptValue, UiScript, UnitBase, UnitState, UnitTokenParse, WornDisplay,
+    parse_unit_token_for, ScriptValue, UiScript, UnitBase, UnitState, UnitTokenParse, WornDisplay,
 };
 
 use crate::creature_type::CreatureTypeSources;
@@ -127,6 +127,10 @@ impl Plugin for UiUnitPlugin {
                 .run_if(crate::ui_script::ingame_ui_up),
         )
         .init_resource::<UnitFeedState>()
+        .insert_resource(WrathUnitTokens {
+            active: crate::wrath::selected_from_env(),
+            ..Default::default()
+        })
         // A UI-only harness has no sound or net stack, and a missing resource or message is a
         // system-validation panic; declaring twice is idempotent.
         .init_resource::<crate::sound::MessageSounds>()
@@ -681,6 +685,17 @@ pub(crate) fn pet_token_guid(me: Option<&ObjectStore>) -> u64 {
     me.and_then(|s| s.0.unit_pet_guid()).unwrap_or(0)
 }
 
+/// Wrath-only unit identities for the target/assist resolver. These are client or encounter
+/// state, not object-store snapshots; zero is nobody. The producers are not wired yet, but the
+/// target path has the same fields as the UI resolver instead of silently rejecting the tokens.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub(crate) struct WrathUnitTokens {
+    pub(crate) active: bool,
+    pub(crate) focus: u64,
+    pub(crate) vehicle: u64,
+    pub(crate) boss: [u64; 4],
+}
+
 /// The one unit-token resolver, the reference's `0x515970`: case-insensitive compares, then the
 /// object manager; a caller wanting a type tests the resolved unit. [`Selection`] is a parameter
 /// because [`crate::target::SelectCommit`] holds it as `ResMut`.
@@ -692,6 +707,7 @@ pub(crate) struct UnitTokens<'w, 's> {
     hovered_go: Option<Res<'w, crate::target::HoveredObject>>,
     interact: Option<Res<'w, crate::ui_session::InteractNpc>>,
     group: Res<'w, crate::ui_party::GroupState>,
+    wrath: Option<Res<'w, WrathUnitTokens>>,
     /// The stores as of the drain's place, so a verb a listener calls reads its packet's.
     pub(crate) stores: views::ViewStores<'w, 's>,
     me: Query<'w, 's, (Entity, &'static Guid), With<SelfPlayer>>,
@@ -715,10 +731,12 @@ impl UnitTokens<'_, '_> {
     /// so a hop off a unit the object manager does not hold is nobody (`0x515a16`). `None` is
     /// nobody.
     pub(crate) fn guid(&self, token: &str, selection: &Selection) -> Option<u64> {
-        let UnitTokenParse::Unit { base, hops } = parse_unit_token(token) else {
+        let wrath = self.wrath.as_deref().filter(|w| w.active);
+        let UnitTokenParse::Unit { base, hops } = parse_unit_token_for(token, wrath.is_some())
+        else {
             return None;
         };
-        let mut guid = self.base(base, selection).filter(|&g| g != 0)?;
+        let mut guid = self.base(base, selection, wrath).filter(|&g| g != 0)?;
         for _ in 0..hops {
             let (entity, _) = self.held(guid)?;
             let store = self.stores.get(entity).ok().filter(|s| s.is_unit())?;
@@ -733,7 +751,12 @@ impl UnitTokens<'_, '_> {
     }
 
     /// The guid a token's base names, before any `target` hop.
-    fn base(&self, base: UnitBase, selection: &Selection) -> Option<u64> {
+    fn base(
+        &self,
+        base: UnitBase,
+        selection: &Selection,
+        wrath: Option<&WrathUnitTokens>,
+    ) -> Option<u64> {
         match base {
             UnitBase::Player => self.me().map(|(_, guid)| guid),
             UnitBase::Target => selection.guid,
@@ -757,6 +780,11 @@ impl UnitTokens<'_, '_> {
             UnitBase::Party(row) => self.party_member(row),
             // The interaction NPC's guid, `[0xb4e2d0]` (`0x515c00`).
             UnitBase::Npc => self.interact.as_ref()?.1,
+            UnitBase::Focus => Some(wrath?.focus),
+            UnitBase::Vehicle => Some(wrath?.vehicle),
+            UnitBase::Boss(row) => usize::try_from(row)
+                .ok()
+                .and_then(|row| wrath?.boss.get(row).copied()),
         }
     }
 
@@ -1913,6 +1941,40 @@ mod tests {
             distance: 5.0,
         });
         assert_eq!(resolve(&mut app), None, "a nearer GameObject names nobody");
+    }
+
+    /// The target/assist resolver admits the Wrath tokens through the same host fields as the
+    /// UI resolver; a vanilla host still refuses to parse them.
+    #[test]
+    fn wrath_target_path_resolves_focus_vehicle_and_boss_state() {
+        use bevy::ecs::system::RunSystemOnce;
+        const FOCUS: u64 = 0x22;
+        const VEHICLE: u64 = 0x21;
+        const BOSS: u64 = 0xF130_0000_0000_00B0;
+
+        let mut app = App::new();
+        app.init_resource::<crate::ui_party::GroupState>()
+            .insert_resource(WrathUnitTokens {
+                active: true,
+                focus: FOCUS,
+                vehicle: VEHICLE,
+                boss: [BOSS, 0, 0, 0],
+            });
+        let resolve = |app: &mut App, token: &str| {
+            let token = token.to_string();
+            app.world_mut()
+                .run_system_once(move |tokens: UnitTokens| {
+                    tokens.guid(&token, &Selection::default())
+                })
+                .unwrap()
+        };
+        assert_eq!(resolve(&mut app, "focus"), Some(FOCUS));
+        assert_eq!(resolve(&mut app, "vehicle"), Some(VEHICLE));
+        assert_eq!(resolve(&mut app, "boss1"), Some(BOSS));
+        assert_eq!(resolve(&mut app, "boss4"), None);
+
+        app.insert_resource(WrathUnitTokens::default());
+        assert_eq!(resolve(&mut app, "focus"), None, "vanilla refuses the token");
     }
 
     /// `partypetN` and `raidpetN` through the one resolver (`0x515970`): the pet the member's

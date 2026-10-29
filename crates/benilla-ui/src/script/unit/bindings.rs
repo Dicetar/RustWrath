@@ -10,7 +10,7 @@ use super::super::calls::{submit, ScriptCall};
 use super::super::protected::select_may_cast;
 use super::super::Model;
 use super::{
-    check_unit_token, classification_word, grey_band, level_is_hidden, unit_is_grey,
+    check_unit_token_in, classification_word, grey_band, level_is_hidden, unit_is_grey,
     unit_predicate, unknownobject, with_unit, PlayerRecord, SelectionRequest,
 };
 
@@ -103,7 +103,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "UnitIsPartyLeader",
         lua.create_function(|lua, token: Option<String>| {
-            check_unit_token(&token)?;
+            check_unit_token_in(lua, &token)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let by_flag = token
                 .as_ref()
@@ -197,7 +197,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 token,
                 r#"Usage: UnitLevel("unit")"#,
             )?);
-            check_unit_token(&token)?;
+            check_unit_token_in(lua, &token)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let Some(u) = token.as_ref().and_then(|t| model.unit(t)) else {
                 return Ok(0i64);
@@ -382,8 +382,8 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             }
             let (a, b) = (Some(a), Some(b));
             // Both go through the resolver, so either one unrecognised raises.
-            check_unit_token(&a)?;
-            check_unit_token(&b)?;
+            check_unit_token_in(lua, &a)?;
+            check_unit_token_in(lua, &b)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let guid = |t: &Option<String>| {
                 t.as_deref()
@@ -433,7 +433,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         g.set(
             name,
             lua.create_function(move |lua, token: Option<String>| {
-                check_unit_token(&token)?;
+                check_unit_token_in(lua, &token)?;
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 let Some(u) = token.as_ref().and_then(|t| model.unit(t)) else {
                     return Ok(Value::Nil);
@@ -467,7 +467,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "UnitInRaid",
         lua.create_function(|lua, token: Option<String>| {
-            check_unit_token(&token)?;
+            check_unit_token_in(lua, &token)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let hit = token
                 .as_ref()
@@ -787,7 +787,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, token: Value| {
             let token =
                 crate::script::binding_abi::string_arg(lua, token, r#"Usage: UnitXP("unit")"#)?;
-            check_unit_token(&Some(token.clone()))?;
+            check_unit_token_in(lua, &Some(token.clone()))?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(if names_self(&model, &token) {
                 i64::from(model.player_xp)
@@ -801,7 +801,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, token: Value| {
             let token =
                 crate::script::binding_abi::string_arg(lua, token, r#"Usage: UnitXPMax("unit")"#)?;
-            check_unit_token(&Some(token.clone()))?;
+            check_unit_token_in(lua, &Some(token.clone()))?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(if names_self(&model, &token) {
                 i64::from(model.player_next_level_xp)
@@ -929,7 +929,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, token: Value| {
             let token =
                 super::super::binding_abi::string_arg(lua, token, r#"Usage: TargetUnit("unit")"#)?;
-            check_unit_token(&Some(token.clone()))?;
+            check_unit_token_in(lua, &Some(token.clone()))?;
             let may_cast = select_may_cast(lua);
             submit(
                 lua,
@@ -953,7 +953,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, token: Value| {
             let token =
                 super::super::binding_abi::string_arg(lua, token, r#"Usage: AssistUnit("unit")"#)?;
-            check_unit_token(&Some(token.clone()))?;
+            check_unit_token_in(lua, &Some(token.clone()))?;
             let may_cast = select_may_cast(lua);
             submit(
                 lua,
@@ -1055,7 +1055,7 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             {
                 return Ok(());
             }
-            check_unit_token(&Some(token.clone()))?;
+            check_unit_token_in(lua, &Some(token.clone()))?;
             submit(lua, ScriptCall::SpellTargetUnit(token))?;
             Ok(())
         })?,

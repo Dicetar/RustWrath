@@ -134,6 +134,9 @@ impl UnitAuras {
         let mut g = std::mem::take(&mut self.guids);
         let mut walk = std::mem::take(&mut self.walk);
         (g.player, g.pet, g.target, g.mouseover, g.npc) = (me, pet, target, mouseover, npc);
+        // `focus`, `vehicle` and `bossN` are Wrath tokens; the vanilla resolver must keep
+        // rejecting them. Their guids stay 0 until their host sources exist.
+        g.wrath = crate::wrath::selected_from_env();
         fill_group(&mut g, group, &held);
         g.held.clear();
         walk.clear();
