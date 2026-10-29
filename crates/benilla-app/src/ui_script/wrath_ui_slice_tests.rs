@@ -108,6 +108,11 @@ fn player_frame_script() -> Option<UiScript> {
 fn stock_player_frame_host_smoke_test() {
     let Some(mut s) = player_frame_script() else { return; };
 
+    for name in ["targetStatusText", "partyStatusText", "petStatusText", "threatShowNumeric"] {
+        let value: String = s.eval(&format!("return GetCVar('{name}')")).unwrap();
+        assert_eq!(value, "0", "Wrath startup CVar {name} must be registered");
+    }
+
     // 1. The frame exists and the stock health bar reads the unit it is anchored to.
     assert!(
         s.eval::<bool>(r#"return PlayerFrame ~= nil and PlayerFrameHealthBar ~= nil"#)

@@ -741,6 +741,25 @@ seed the existing fixture's settings through the production CVar owner; preserve
 OC's dirty files. Removing the test-only `playerStatusText` registration reproduced
 the real PlayerFrame OnLoad failure in the selected profile.
 
+2026-10-29 follow-up claim: `crates/benilla-app/src/ui_script/lifecycle.rs`,
+`crates/benilla-app/src/ui_script/wrath_ui_slice_tests.rs`, and this checkpoint.
+The selected 3.3.5 UI reads separate target, party and pet status switches and
+`threatShowNumeric`. Start these optional displays off pending independent 12340
+default evidence, retain saved settings, and verify the registry and live path.
+
+Focused selected-profile `stock_player_frame_host_smoke_test` passed after
+registering those rows; `cargo build --locked --offline -p benilla` passed.
+Bounded run `astra-track-probe-20261029-103028-456` completed the 55-second
+deadline with peak private memory 2,550,558,720 bytes. Its corresponding
+`connected-run-20261029-103029-076.stderr.log` contains zero missing target,
+party, pet or threat setting errors and zero `CombatFeedback.lua:107` errors;
+it contains 2,915 unknown-focus errors and nine unknown-vehicle errors. The
+target frame now reaches `TargetFrame.lua:652` and fails on `vehicle`. Client
+binary SHA-256: `CC86191ABF5734F5235E2C303DCFEAE7C45304DC8539A5D8B3FBC70E1724CDD1`.
+The binary includes OC's uncommitted UI work. No client or build process remains.
+This run does not prove connected world entry or playable alpha. The four off
+defaults are provisional, not independently verified from build 12340.
+
 The seven settings are now seeded into the existing host CVar owner before the
 Wrath in-game VM loads, and the selected-profile player-frame smoke uses that
 same registration. The focused smoke passes and confirms that PlayerHitIndicator

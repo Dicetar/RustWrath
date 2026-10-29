@@ -43,6 +43,11 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("rotateMinimap", "0"),
     ("chatStyle", "im"),
     ("playerStatusText", "0"),
+    // Provisional defaults for optional displays; the selected FrameXML reads all four.
+    ("targetStatusText", "0"),
+    ("partyStatusText", "0"),
+    ("petStatusText", "0"),
+    ("threatShowNumeric", "0"),
 ];
 
 pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {
