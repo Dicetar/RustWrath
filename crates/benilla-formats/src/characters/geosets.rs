@@ -203,40 +203,11 @@ impl CharacterGeosets {
             let bytes = chain
                 .read_file(CHAR_FACIAL_HAIR)
                 .with_context(|| format!("reading {CHAR_FACIAL_HAIR}"))?;
-            let rs = parse(
-                &bytes,
-                char_facial_hair_schema(),
-                "CharacterFacialHairStyles",
-            )?;
-            let mut m = HashMap::with_capacity(rs.records().len());
-            for r in rs.records() {
-                // fields: RaceID, SexID, VariationID(facialHair), 3×unused, Geoset100/300/200.
-                if let (Some(race), Some(sex), Some(var)) =
-                    (u32_at(r, 0), u32_at(r, 1), u32_at(r, 2))
-                {
-                    let g = [
-                        u32_at(r, 6).unwrap_or(0),
-                        u32_at(r, 7).unwrap_or(0),
-                        u32_at(r, 8).unwrap_or(0),
-                    ];
-                    // The first row wins.
-                    m.entry((race as u8, sex as u8, var as u8)).or_insert(g);
-                }
-            }
-            m
+            parse_facial_hair_styles(&bytes)?
         };
         // HelmetGeosetVisData, the helm hide-masks: without the file, helms hide nothing.
         let helmet_vis = match chain.read_file(HELMET_GEOSET_VIS) {
-            Ok(bytes) => {
-                let rs = parse(&bytes, helmet_vis_schema(), "HelmetGeosetVisData")?;
-                let mut m = HashMap::with_capacity(rs.records().len());
-                for r in rs.records() {
-                    if let Some(id) = u32_at(r, 0) {
-                        m.insert(id, std::array::from_fn(|i| u32_at(r, 1 + i).unwrap_or(0)));
-                    }
-                }
-                m
-            }
+            Ok(bytes) => parse_helmet_vis(&bytes)?,
             Err(_) => HashMap::new(),
         };
         Ok(Self {
@@ -263,45 +234,184 @@ pub(crate) fn char_hair_geosets_schema() -> Schema {
     s
 }
 
-/// HelmetGeosetVisData.dbc: 6 fields, 0x18-byte records (loader `0x546f00`); the five masks are
-/// race bitmasks (`0x4799a0`).
-pub(crate) fn helmet_vis_schema() -> Schema {
+/// HelmetGeosetVisData: 6 fields in 1.12 (ID plus five race masks, `0x18`-byte records, loader
+/// `0x546f00`); 12340 ships eight, two trailing masks the client ignores.
+pub(crate) fn helmet_vis_schema_for(wrath: bool) -> Schema {
     let mut s = Schema::new("HelmetGeosetVisData");
-    for (name, ty) in [
-        ("ID", FieldType::UInt32),
-        ("HideHair", FieldType::UInt32),
-        ("HideFacial1", FieldType::UInt32),
-        ("HideFacial2", FieldType::UInt32),
-        ("HideFacial3", FieldType::UInt32),
-        ("HideEars", FieldType::UInt32),
-    ] {
-        s.add_field(SchemaField::new(name, ty));
+    s.add_field(SchemaField::new("ID", FieldType::UInt32));
+    let names: &[&str] = if wrath {
+        &[
+            "HideHair",
+            "HideFacial1",
+            "HideFacial2",
+            "HideFacial3",
+            "HideEars",
+            "Unused6",
+            "Unused7",
+        ]
+    } else {
+        &[
+            "HideHair",
+            "HideFacial1",
+            "HideFacial2",
+            "HideFacial3",
+            "HideEars",
+        ]
+    };
+    for name in names {
+        s.add_field(SchemaField::new(*name, FieldType::UInt32));
     }
     s
 }
 
-/// CharacterFacialHairStyles.dbc: 9 fields, no ID column.
-pub(crate) fn char_facial_hair_schema() -> Schema {
+/// The 1.12 layout, for the DBC dump tool.
+pub(crate) fn helmet_vis_schema() -> Schema {
+    helmet_vis_schema_for(false)
+}
+
+/// CharacterFacialHairStyles.dbc: no ID column. 1.12 ships nine fields (three unused slots before
+/// the geosets); 12340 ships eight, the geosets directly after the variation.
+pub(crate) fn char_facial_hair_schema_for(wrath: bool) -> Schema {
+    let names: &[&str] = if wrath {
+        &[
+            "RaceID",
+            "SexID",
+            "VariationID",
+            "Geoset100",
+            "Geoset300",
+            "Geoset200",
+            "Unused6",
+            "Unused7",
+        ]
+    } else {
+        &[
+            "RaceID",
+            "SexID",
+            "VariationID",
+            "Unused3",
+            "Unused4",
+            "Unused5",
+            "Geoset100",
+            "Geoset300",
+            "Geoset200",
+        ]
+    };
     let mut s = Schema::new("CharacterFacialHairStyles");
-    for (name, ty) in [
-        ("RaceID", FieldType::UInt32),
-        ("SexID", FieldType::UInt32),
-        ("VariationID", FieldType::UInt32),
-        ("Unused3", FieldType::UInt32),
-        ("Unused4", FieldType::UInt32),
-        ("Unused5", FieldType::UInt32),
-        ("Geoset100", FieldType::UInt32),
-        ("Geoset300", FieldType::UInt32),
-        ("Geoset200", FieldType::UInt32),
-    ] {
-        s.add_field(SchemaField::new(name, ty));
+    for name in names {
+        s.add_field(SchemaField::new(*name, FieldType::UInt32));
     }
     s
+}
+
+/// CharacterFacialHairStyles: `(race, sex, variation)` → `[Geoset100, Geoset300, Geoset200]`, the
+/// first row winning as the client's linear scans (`0x478740`) do. The file's own field count
+/// picks the layout: 1.12 ships nine columns with three unused ones before the geosets; 12340
+/// ships eight, the geosets right after the variation (the selected 3.3.5a data measures eight).
+fn parse_facial_hair_styles(bytes: &[u8]) -> Result<HashMap<(u8, u8, u8), [u32; 3]>> {
+    let wrath = crate::dbc::field_count(bytes).is_some_and(|fields| fields < 9);
+    let rs = parse(
+        bytes,
+        char_facial_hair_schema_for(wrath),
+        "CharacterFacialHairStyles",
+    )?;
+    let (g100, g300, g200) = if wrath { (3, 4, 5) } else { (6, 7, 8) };
+    let mut m = HashMap::with_capacity(rs.records().len());
+    for r in rs.records() {
+        // fields: RaceID, SexID, VariationID(facialHair), then the three geosets.
+        if let (Some(race), Some(sex), Some(var)) = (u32_at(r, 0), u32_at(r, 1), u32_at(r, 2)) {
+            let g = [
+                u32_at(r, g100).unwrap_or(0),
+                u32_at(r, g300).unwrap_or(0),
+                u32_at(r, g200).unwrap_or(0),
+            ];
+            m.entry((race as u8, sex as u8, var as u8)).or_insert(g);
+        }
+    }
+    Ok(m)
+}
+
+/// HelmetGeosetVisData: row id → the five race masks the geoset dispatch reads (hair, facial 1-3,
+/// ears). 1.12 ships six columns; 12340 ships eight with two trailing masks the client ignores,
+/// so the five the reader takes keep their indices on both.
+fn parse_helmet_vis(bytes: &[u8]) -> Result<HashMap<u32, [u32; 5]>> {
+    let wrath = crate::dbc::field_count(bytes).is_some_and(|fields| fields > 6);
+    let rs = parse(bytes, helmet_vis_schema_for(wrath), "HelmetGeosetVisData")?;
+    let mut m = HashMap::with_capacity(rs.records().len());
+    for r in rs.records() {
+        if let Some(id) = u32_at(r, 0) {
+            m.insert(id, std::array::from_fn(|i| u32_at(r, 1 + i).unwrap_or(0)));
+        }
+    }
+    Ok(m)
+}
+
+/// The 1.12 layout, for the DBC dump tool.
+pub(crate) fn char_facial_hair_schema() -> Schema {
+    char_facial_hair_schema_for(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A WDBC with `fields` u32 columns per row.
+    fn dbc_rows(rows: &[Vec<u32>], fields: u32) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"WDBC");
+        b.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        b.extend_from_slice(&fields.to_le_bytes());
+        b.extend_from_slice(&(fields * 4).to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        for row in rows {
+            assert_eq!(row.len(), fields as usize);
+            for v in row {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    /// 12340's HelmetGeosetVisData adds two trailing masks; the five the dispatch reads (row
+    /// 368's shipped all-races masks) keep their columns, so a helm still hides the same groups.
+    #[test]
+    fn the_helmet_vis_layout_tolerates_the_wraths_two_extra_masks() {
+        let wrath = dbc_rows(
+            &[vec![
+                368,
+                u32::MAX,
+                0xffff_007f,
+                0xffff_007f,
+                0xffff_007f,
+                u32::MAX,
+                0,
+                0,
+            ]],
+            8,
+        );
+        assert_eq!(
+            parse_helmet_vis(&wrath).unwrap().get(&368),
+            Some(&[u32::MAX, 0xffff_007f, 0xffff_007f, 0xffff_007f, u32::MAX])
+        );
+        let vanilla = dbc_rows(&[vec![245, 0, 0, 0, 0, 0]], 6);
+        assert_eq!(parse_helmet_vis(&vanilla).unwrap().get(&245), Some(&[0; 5]));
+    }
+
+    /// The facial-hair layout is the file's own: 12340's eight columns keep Geoset100/300/200 at
+    /// 3-5, 1.12's nine keep the same values at 6-8 after three unused slots. Both name human
+    /// male variation 1's shipped 1/2/1.
+    #[test]
+    fn the_facial_hair_layout_follows_the_file_field_count() {
+        let wrath = dbc_rows(&[vec![1, 0, 1, 1, 2, 1, 0, 0]], 8);
+        assert_eq!(
+            parse_facial_hair_styles(&wrath).unwrap().get(&(1, 0, 1)),
+            Some(&[1, 2, 1])
+        );
+        let vanilla = dbc_rows(&[vec![1, 0, 1, 0, 0, 0, 1, 2, 1]], 9);
+        assert_eq!(
+            parse_facial_hair_styles(&vanilla).unwrap().get(&(1, 0, 1)),
+            Some(&[1, 2, 1])
+        );
+    }
 
     #[test]
     fn geoset_visibility_preserves_unmanaged_ids() {

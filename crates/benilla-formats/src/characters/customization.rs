@@ -644,9 +644,11 @@ fn load_facial_hair_styles(chain: &mut Chain) -> Result<HashMap<(u8, u8), HashSe
     let bytes = chain
         .read_file(CHAR_FACIAL_HAIR_STYLES)
         .with_context(|| format!("reading {CHAR_FACIAL_HAIR_STYLES}"))?;
+    // 1.12 ships nine columns, 12340 eight; race/sex/variation lead both.
+    let fields = crate::dbc::field_count(&bytes).unwrap_or(9);
     let rs = parse_with_trailing_fields(
         &bytes,
-        all_u32_schema("CharacterFacialHairStyles", 9),
+        all_u32_schema("CharacterFacialHairStyles", fields.min(9)),
         "CharacterFacialHairStyles",
     )?;
     let mut map: HashMap<(u8, u8), HashSet<u8>> = HashMap::new();
