@@ -433,13 +433,18 @@ pub(crate) fn seat_text_measurer(script: &mut UiScript, atlas: &UiFontAtlas, sea
 /// screen size, `tick`, the measure round-trip, `resolve` and the script errors. The quads are
 /// [`paint_script`]'s, after the camera that places the `WorldFrame` nameplates.
 pub(super) fn tick_script(
-    mut hosted_vm: crate::script_calls::HostedVm,
+    // `HostedVm` lends a `Res<UiClock>` through its Wrath query applier; `tick_script` also
+    // writes the clock. A `ParamSet` keeps the two borrows disjoint: the host runs first, then
+    // the clock is published before the paint pass.
+    mut clock_set: ParamSet<(
+        crate::script_calls::HostedVm,
+        ResMut<super::UiClock>,
+    )>,
     window: Query<&Window, With<PrimaryWindow>>,
     // The paced frame step, unclamped, as 1.12.1 hands `OnUpdate` its frame time (`0x76b2c0`):
     // not `Time<Real>`, which pipelined rendering mis-splits, nor `Time<Virtual>`, which clamps a
     // stall to 250 ms and which the capture harness pauses.
     step: Res<benilla_world::frame_pace::FrameStep>,
-    mut ui_clock: ResMut<super::UiClock>,
     mut font_atlas: Option<ResMut<UiFontAtlas>>,
     // The booth seam's DPI, and the pane map cleared when the VM or the window is gone.
     mut booths: crate::portrait::BoothBridge,
@@ -457,6 +462,8 @@ pub(super) fn tick_script(
     mut ui_cost: ResMut<super::UiFrameCost>,
     mut pass: ResMut<super::UiPassState>,
 ) {
+    let mut ui_now = None;
+    let mut hosted_vm = clock_set.p0();
     hosted_vm.run(|script| {
         pass.live = false;
         let Some(script) = script else {
@@ -547,10 +554,7 @@ pub(super) fn tick_script(
         // The VM's clock anchored at the instant the paced clock stands at, which moves by the same
         // steps; every `Instant` to `GetTime` conversion goes through this pair, never
         // `Instant::now()`.
-        *ui_clock = super::UiClock {
-            anchor: step.at,
-            ui_now: script.now(),
-        };
+        ui_now = Some(script.now());
         let us_tick = lap();
         // ── The FontString measure round-trip, before the resolve ────────────────────────────────
         // A request reads only region data, never a resolved rect, and `resolve` writes no region's
@@ -636,7 +640,13 @@ pub(super) fn tick_script(
             solves_before: solves_before.unwrap_or(0),
             derives_before: derives_before.unwrap_or(0),
         };
-    })
+    });
+    if let Some(ui_now) = ui_now {
+        *clock_set.p1() = super::UiClock {
+            anchor: step.at,
+            ui_now,
+        };
+    }
 }
 
 /// The UI pass's second half, after the camera and the plate driver: an incremental measure and
