@@ -4,6 +4,20 @@
 
 use mlua::Lua;
 
+/// The 3.3.5a `Bindings.xml` `<ModifiedClick>` rows' defaults: SELFCAST ALT, FOCUSCAST NONE,
+/// DRESSUP and SOCKETITEM CTRL, every other action SHIFT. An unknown action has no default.
+fn modified_click(action: &str) -> Option<&'static str> {
+    match action {
+        "SELFCAST" => Some("ALT"),
+        "FOCUSCAST" => Some("NONE"),
+        "DRESSUP" | "SOCKETITEM" => Some("CTRL"),
+        "AUTOLOOTTOGGLE" | "CHATLINK" | "COMPAREITEMS" | "OPENALLBAGS" | "PICKUPACTION"
+        | "QUESTWATCHTOGGLE" | "SHOWITEMFLYOUT" | "SPLITSTACK" | "STICKYCAMERA"
+        | "TOKENWATCHTOGGLE" => Some("SHIFT"),
+        _ => None,
+    }
+}
+
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `IsStereoVideoAvailable` (`VideoOptionsPanels.lua:571`): the stereo-3D path needs glasses
     // driver hardware the real client probes for at boot; benilla has no stereo renderer, so the
@@ -41,21 +55,32 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // `GetModifiedClick` (`InterfaceOptionsPanels.xml:225`, `InterfaceOptionsPanels.lua:134`): the
-    // modifier the 3.3.5a `Bindings.xml` `<ModifiedClick>` rows hold by default — SELFCAST ALT,
-    // FOCUSCAST NONE, AUTOLOOTTOGGLE SHIFT, every other action SHIFT except DRESSUP and SOCKETITEM
-    // CTRL. An unknown action answers nil, which the controls panel's `or "NONE"` covers.
+    // modifier the 3.3.5a `Bindings.xml` `<ModifiedClick>` rows hold by default. An unknown action
+    // answers nil, which the controls panel's `or "NONE"` covers.
     lua.globals().set(
         "GetModifiedClick",
-        lua.create_function(|_, action: String| {
-            Ok(match action.as_str() {
-                "SELFCAST" => Some("ALT"),
-                "FOCUSCAST" => Some("NONE"),
-                "DRESSUP" | "SOCKETITEM" => Some("CTRL"),
-                "AUTOLOOTTOGGLE" | "CHATLINK" | "COMPAREITEMS" | "OPENALLBAGS" | "PICKUPACTION"
-                | "QUESTWATCHTOGGLE" | "SHOWITEMFLYOUT" | "SPLITSTACK" | "STICKYCAMERA"
-                | "TOKENWATCHTOGGLE" => Some("SHIFT"),
-                _ => None,
-            })
+        lua.create_function(|_, action: String| Ok(modified_click(&action)))?,
+    )?;
+
+    // `IsModifiedClick` (the stock bindings' release legs, e.g. `CAMERAORSELECTORMOVE`'s
+    // `CameraOrSelectOrMoveStop(IsModifiedClick("STICKYCAMERA"))`): whether the action's bound
+    // modifier is held right now, 1 or nil. Without it the release leg dies before it can stop the
+    // move the press leg started, and the key stays logically down.
+    lua.globals().set(
+        "IsModifiedClick",
+        lua.create_function(|lua, action: String| -> mlua::Result<mlua::Value> {
+            let Some(want) = modified_click(&action) else {
+                return Ok(mlua::Value::Nil);
+            };
+            let model = lua.app_data_ref::<super::Model>().expect("model app_data");
+            let (shift, ctrl, alt) = model.modifiers;
+            let held = match want {
+                "SHIFT" => shift,
+                "CTRL" => ctrl,
+                "ALT" => alt,
+                _ => false, // NONE
+            };
+            Ok(super::binding_abi::flag(held))
         })?,
     )?;
 
@@ -264,4 +289,41 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The stock bindings' release legs need `IsModifiedClick`: 1 when the action's modifier is
+    /// held, nil otherwise, and nil for an unknown action — the shape `CameraOrSelectOrMoveStop`
+    /// reads after `CAMERAORSELECTORMOVE`'s press leg.
+    #[test]
+    fn is_modified_click_reads_the_held_modifier() {
+        let mut script = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335)
+            .expect("VM");
+        let read = |script: &crate::script::UiScript, action: &str| {
+            script
+                .eval::<Option<i64>>(&format!("return IsModifiedClick(\"{action}\")"))
+                .ok()
+                .flatten()
+        };
+        assert_eq!(read(&script, "STICKYCAMERA"), None, "nothing held");
+        script.set_modifiers(true, false, false);
+        assert_eq!(read(&script, "STICKYCAMERA"), Some(1), "shift held");
+        assert_eq!(read(&script, "SELFCAST"), None, "self-cast wants alt");
+        script.set_modifiers(false, false, true);
+        assert_eq!(read(&script, "SELFCAST"), Some(1), "alt held");
+        assert_eq!(read(&script, "STICKYCAMERA"), None, "no shift with alt");
+        assert_eq!(read(&script, "NO_SUCH_ACTION"), None, "unknown actions");
+        assert_eq!(
+            script
+                .eval::<Option<String>>("return GetModifiedClick(\"STICKYCAMERA\")")
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("SHIFT"),
+            "GetModifiedClick answers the same table"
+        );
+    }
 }
