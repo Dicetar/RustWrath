@@ -15,7 +15,7 @@
 use mlua::{Lua, MultiValue, Value};
 
 use super::binding_abi;
-use super::Model;
+use super::{Model, UiTarget};
 
 /// One gossip option; its 1-based index is its place in [`GossipMenu::options`].
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -179,21 +179,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // ══ The two quest lists ══
     // The reference splits the quest rows by wire icon, 3 and 4 active and the rest available,
     // behind two vararg verbs (`0x4e2430`, `0x4e2580`); the app splits them at parse time.
+    // 3.3.5's `GossipFrame.lua` strides the available list by 5 (`title, level, isTrivial,
+    // isDaily, isRepeatable`) and the active list by 4 (`title, level, isTrivial, isComplete`);
+    // 1.12 strides both by 2, so the extra fields are target-gated.
     fn quest_rows(lua: &Lua, active: bool) -> mlua::Result<MultiValue> {
-        let rows: Vec<(String, u32)> = {
+        let (rows, wrath): (Vec<(String, u32)>, bool) = {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            model.gossip.as_ref().map_or_else(Vec::new, |m| {
+            let rows = model.gossip.as_ref().map_or_else(Vec::new, |m| {
                 m.quests
                     .iter()
                     .filter(|q| q.active == active)
                     .map(|q| (q.title.clone(), q.level))
                     .collect()
-            })
+            });
+            (rows, model.target == UiTarget::Wrath335)
         };
-        let mut out = Vec::with_capacity(rows.len() * 2);
+        let mut out = Vec::with_capacity(rows.len() * if wrath { 5 } else { 2 });
         for (title, level) in rows {
             out.push(Value::String(lua.create_string(&title)?));
             out.push(Value::Integer(i64::from(level)));
+            if wrath {
+                // isTrivial / isDaily / isRepeatable (available) or isTrivial / isComplete
+                // (active): the wire carries none of them here, so every flag reads false.
+                out.push(Value::Boolean(false));
+                out.push(Value::Boolean(false));
+                if !active {
+                    out.push(Value::Boolean(false));
+                }
+            }
         }
         Ok(MultiValue::from_vec(out))
     }
@@ -205,6 +218,44 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetGossipActiveQuests",
         lua.create_function(|lua, ()| quest_rows(lua, true))?,
+    )?;
+
+    // The 3.3.5 counts and the force flag its `GossipFrame.lua` reads before it can show:
+    // `GetNumGossipAvailableQuests`, `GetNumGossipActiveQuests`, `GetNumGossipOptions` and
+    // `ForceGossip()`. The app never force-opens a gossip, so the flag is false, which keeps the
+    // frame's single-non-gossip-option shortcut.
+    g.set(
+        "GetNumGossipOptions",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.gossip.as_ref().map_or(0, |m| m.options.len()) as i64)
+        })?,
+    )?;
+    g.set(
+        "GetNumGossipAvailableQuests",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model
+                .gossip
+                .as_ref()
+                .map_or(0, |m| m.quests.iter().filter(|q| !q.active).count())
+                as i64)
+        })?,
+    )?;
+    g.set(
+        "GetNumGossipActiveQuests",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model
+                .gossip
+                .as_ref()
+                .map_or(0, |m| m.quests.iter().filter(|q| q.active).count())
+                as i64)
+        })?,
+    )?;
+    g.set(
+        "ForceGossip",
+        lua.create_function(|_, ()| Ok(false))?,
     )?;
 
     // A select's index is 1-based within its own list, as `GossipFrame.lua:73` numbers the
@@ -386,6 +437,56 @@ mod tests {
             vec![(false, 2), (true, 1), (true, 0)]
         );
         assert!(s.take_gossip_quest_selects().is_empty(), "taken");
+    }
+
+    /// 3.3.5's `GossipFrame.lua` reads the counts, `ForceGossip`, and 5/4-field quest strides; the
+    /// vanilla VM keeps its 2-field pairs.
+    #[test]
+    fn the_wrath_gossip_rows_carry_the_frames_five_and_four_field_strides() {
+        use super::GossipQuestRow;
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let mut m = menu();
+        m.quests = vec![
+            GossipQuestRow {
+                title: "A Threat Within".into(),
+                level: 7,
+                active: false,
+            },
+            GossipQuestRow {
+                title: "Report to Goldshire".into(),
+                level: 5,
+                active: true,
+            },
+        ];
+        s.set_gossip(Some(m));
+        assert_eq!(s.eval::<i64>("return GetNumGossipOptions()").unwrap(), 2);
+        assert_eq!(
+            s.eval::<i64>("return GetNumGossipAvailableQuests()").unwrap(),
+            1
+        );
+        assert_eq!(
+            s.eval::<i64>("return GetNumGossipActiveQuests()").unwrap(),
+            1
+        );
+        assert!(!s.eval::<bool>("return ForceGossip()").unwrap());
+        assert_eq!(s.arity("GetGossipAvailableQuests()").unwrap(), 5);
+        assert_eq!(s.arity("GetGossipActiveQuests()").unwrap(), 4);
+        assert_eq!(
+            s.eval::<(String, i64, bool, bool, bool)>("return GetGossipAvailableQuests()")
+                .unwrap(),
+            (
+                "A Threat Within".to_string(),
+                7,
+                false,
+                false,
+                false
+            )
+        );
+        assert_eq!(
+            s.eval::<(String, i64, bool, bool)>("return GetGossipActiveQuests()")
+                .unwrap(),
+            ("Report to Goldshire".to_string(), 5, false, false)
+        );
     }
 
     #[test]
