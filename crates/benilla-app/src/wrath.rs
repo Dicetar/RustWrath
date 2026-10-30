@@ -4175,6 +4175,25 @@ fn push_player_inventory_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
     }
 }
 
+/// The 3.3.5 `PLAYER_VISIBLE_ITEM_*` block into the 1.12 twelve-dword slots: each 3.3.5 slot is
+/// two fields (entry, two packed 16-bit enchants) at 283 + 2n, against 1.12's entry at +2 and its
+/// seven enchant dwords at +3. The perm/temp enchants the glow fold reads land at +3/+4.
+fn push_visible_item_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
+    for slot in 0..19u16 {
+        let src = usize::from(
+            benilla_protocol_wrath::fields::PLAYER_VISIBLE_ITEM_1_ENTRYID + 2 * slot,
+        );
+        let Some(entry) = raw.get(src).copied() else {
+            break;
+        };
+        let ench = raw.get(src + 1).copied().unwrap_or(0);
+        let dst = benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 12 * slot;
+        pairs.push((dst + 2, entry));
+        pairs.push((dst + 3, ench & 0xffff));
+        pairs.push((dst + 4, ench >> 16));
+    }
+}
+
 /// Translate one item/container's Wrath fields into the 1.12 item layout. The first fields
 /// coincide; the enchant array is shorter in 1.12, and the durability/random columns moved after
 /// the two extra 3.3.5 enchant slots. Container fields start at a different base.
@@ -4492,6 +4511,7 @@ fn wrath_apply_world(world: &mut World) {
                     pairs.push((benilla_protocol::field::FIELD_PLAYER_FLAGS, *value));
                 }
                 push_player_inventory_fields(raw, &mut pairs);
+                push_visible_item_fields(raw, &mut pairs);
                 if let Some(value) = raw.get(634) {
                     pairs.push((716, *value));
                 }
@@ -5842,6 +5862,25 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 3.3.5's two-field visible slots feed the 1.12 twelve-dword block: entry at +2, the packed
+    /// 16-bit enchants at +3/+4.
+    #[test]
+    fn wrath_visible_items_land_in_the_twelve_dword_slots() {
+        let mut raw = vec![0u32; 1171];
+        raw[283] = 4368; // head, entry
+        raw[284] = 0x0002_0001; // perm enchant 1, temp 2
+        raw[283 + 2 * 18] = 5976; // tabard, entry
+        let mut pairs = Vec::new();
+        push_visible_item_fields(&raw, &mut pairs);
+        let at = |slot: u16| {
+            benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 12 * slot
+        };
+        assert!(pairs.contains(&(at(0) + 2, 4368)));
+        assert!(pairs.contains(&(at(0) + 3, 1)));
+        assert!(pairs.contains(&(at(0) + 4, 2)));
+        assert!(pairs.contains(&(at(18) + 2, 5976)));
+    }
 
     #[test]
     fn terminal_scope_loss_clears_ecs_and_input_without_a_digest() {
