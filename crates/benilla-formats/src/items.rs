@@ -11,7 +11,7 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, RecordSet, Schema, SchemaField};
 
-use crate::dbc::{parse_with_trailing_fields, str_at, u32_at};
+use crate::dbc::{field_count, parse_with_trailing_fields, str_at, u32_at};
 #[cfg(test)]
 use crate::dbc::parse;
 use crate::models::model_name;
@@ -144,7 +144,12 @@ pub(crate) fn item_display_info_schema() -> Schema {
 }
 
 /// The catalog from a parsed record set, testable without a chain.
+#[cfg(test)]
 fn catalog_from_records(rs: RecordSet) -> ItemDisplayCatalog {
+    catalog_from_layout(rs, 0)
+}
+
+fn catalog_from_layout(rs: RecordSet, shift: usize) -> ItemDisplayCatalog {
     let mut displays = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
@@ -154,17 +159,17 @@ fn catalog_from_records(rs: RecordSet) -> ItemDisplayCatalog {
         ];
         let model_texture = [str_at(&rs, r, 3), str_at(&rs, r, 4)];
         let geoset_groups = [
-            u32_at(r, 6).unwrap_or(0),
-            u32_at(r, 7).unwrap_or(0),
-            u32_at(r, 8).unwrap_or(0),
+            u32_at(r, 6 + shift).unwrap_or(0),
+            u32_at(r, 7 + shift).unwrap_or(0),
+            u32_at(r, 8 + shift).unwrap_or(0),
         ];
-        let region_textures = std::array::from_fn(|i| str_at(&rs, r, 14 + i));
-        let helmet_vis = [u32_at(r, 12).unwrap_or(0), u32_at(r, 13).unwrap_or(0)];
+        let region_textures = std::array::from_fn(|i| str_at(&rs, r, 14 + shift + i));
+        let helmet_vis = [u32_at(r, 12 + shift).unwrap_or(0), u32_at(r, 13 + shift).unwrap_or(0)];
         let icon = str_at(&rs, r, 5).map(|i| format!("Interface\\Icons\\{i}"));
-        let group_sounds = u32_at(r, 11).unwrap_or(0);
-        let spell_visual = u32_at(r, 10).unwrap_or(0);
-        let flags = u32_at(r, 9).unwrap_or(0);
-        let item_visual = u32_at(r, 22).unwrap_or(0) as i32;
+        let group_sounds = u32_at(r, 11 + shift).unwrap_or(0);
+        let spell_visual = u32_at(r, 10 + shift).unwrap_or(0);
+        let flags = u32_at(r, 9 + shift).unwrap_or(0);
+        let item_visual = u32_at(r, 22 + shift).unwrap_or(0) as i32;
         displays.insert(
             id,
             ItemDisplay {
@@ -189,13 +194,56 @@ pub fn load_item_display_catalog(chain: &mut Chain) -> Result<ItemDisplayCatalog
     let bytes = chain
         .read_file(ITEM_DISPLAY_INFO)
         .with_context(|| format!("reading {ITEM_DISPLAY_INFO}"))?;
-    let rs = parse_with_trailing_fields(&bytes, item_display_info_schema(), "ItemDisplayInfo")?;
-    Ok(catalog_from_records(rs))
+    parse_item_display_catalog(&bytes)
+}
+
+fn parse_item_display_catalog(bytes: &[u8]) -> Result<ItemDisplayCatalog> {
+    // Build 12340 has InventoryIcon[2], shifting geosets and all subsequent fields by one;
+    // WoWDBDefs ItemDisplayInfo, 3.0.1.8303–3.3.5.12340. ParticleColorID is the final field.
+    let fields = field_count(bytes).context("ItemDisplayInfo field count missing")?;
+    anyhow::ensure!(matches!(fields, 23..=25), "unsupported ItemDisplayInfo field count {fields}");
+    let wrath = fields == 25;
+    let mut schema = item_display_info_schema();
+    if wrath {
+        schema.fields.insert(6, SchemaField::new("InventoryIconSecond", FieldType::String));
+    }
+    let rs = parse_with_trailing_fields(bytes, schema, "ItemDisplayInfo")?;
+    Ok(catalog_from_layout(rs, usize::from(wrath)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrath_item_display_keeps_geosets_and_all_clothing_regions() {
+        let mut strings = StringBlock::new();
+        let mut row = [0u32; 25];
+        row[0] = 123;
+        row[5] = strings.push("INV_Chest_Test");
+        row[6] = strings.push("InventoryIconSecond");
+        row[7..10].copy_from_slice(&[2, 3, 4]);
+        row[10..15].copy_from_slice(&[1, 42, 43, 44, 45]);
+        let regions: Vec<String> = (0..8).map(|i| format!("ClothingRegion{i}")).collect();
+        for (i, name) in regions.iter().enumerate() {
+            row[15 + i] = strings.push(name);
+        }
+        row[23] = 46;
+        row[24] = 47;
+        let record: Vec<u8> = row.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let bytes = build_wdbc(1, 25, 100, &record, &strings.0);
+        let cat = parse_item_display_catalog(&bytes).unwrap();
+        let display = cat.get(123).unwrap();
+        assert_eq!(display.geoset_groups, [2, 3, 4]);
+        assert_eq!(display.helmet_vis, [44, 45]);
+        assert_eq!(display.flags, 1);
+        assert_eq!(display.spell_visual, 42);
+        assert_eq!(display.group_sounds, 43);
+        assert_eq!(display.item_visual, 46);
+        for (actual, expected) in display.region_textures.iter().zip(&regions) {
+            assert_eq!(actual.as_deref(), Some(expected.as_str()));
+        }
+    }
 
     /// A minimal synthetic WDBC: 20-byte header, fixed-width records, string block.
     fn build_wdbc(

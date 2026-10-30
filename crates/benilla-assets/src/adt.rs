@@ -8,7 +8,8 @@
 use std::collections::HashMap;
 
 use benilla_formats::{
-    adt_to_tile_mesh, blp_bytes_to_native_chain, ChunkMesh, Doodad, WmoInstance, ALPHA_MAP_SIZE,
+    adt_to_tile_mesh, blp_bytes_to_native_prefix, ChunkMesh, Doodad,
+    WmoInstance, ALPHA_MAP_SIZE,
     SHADOW_MAP_SIZE,
 };
 use bevy::asset::io::Reader;
@@ -249,7 +250,11 @@ impl AssetLoader for AdtLoader {
 async fn read_layer(ctx: &mut LoadContext<'_>, key: &str) -> Option<RawLayer> {
     if let Some(spec) = key.strip_suffix(".blp").map(|stem| format!("{stem}_s.blp")) {
         if let Ok(bytes) = ctx.read_asset_bytes(mpq_url(&spec)).await {
-            if let Ok(chain) = blp_bytes_to_native_chain(&bytes) {
+            // The same optional-tail recovery as world art: a corrupt final mip keeps the layer.
+            if let Ok((chain, rejected)) = blp_bytes_to_native_prefix(&bytes) {
+                if let Some(level) = rejected {
+                    bevy::log::warn!("terrain layer {spec}: rejected mip {level}");
+                }
                 return Some(RawLayer {
                     chain,
                     matte: false,
@@ -258,7 +263,10 @@ async fn read_layer(ctx: &mut LoadContext<'_>, key: &str) -> Option<RawLayer> {
         }
     }
     let bytes = ctx.read_asset_bytes(mpq_url(key)).await.ok()?;
-    let chain = blp_bytes_to_native_chain(&bytes).ok()?;
+    let (chain, rejected) = blp_bytes_to_native_prefix(&bytes).ok()?;
+    if let Some(level) = rejected {
+        bevy::log::warn!("terrain layer {key}: rejected mip {level}");
+    }
     Some(RawLayer { chain, matte: true })
 }
 

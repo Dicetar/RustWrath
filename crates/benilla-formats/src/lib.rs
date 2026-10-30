@@ -605,6 +605,18 @@ pub fn blp_bytes_to_mip_chain(bytes: &[u8]) -> Result<BlpMipChain> {
 pub fn blp_bytes_to_native_chain(bytes: &[u8]) -> Result<BlpMipChain> {
     let decoded =
         benilla_blp::decode_native(bytes).map_err(|e| anyhow::anyhow!("decoding BLP: {e}"))?;
+    Ok(native_blp_chain(decoded))
+}
+
+/// Rendering fallback for a corrupt optional mip tail; returns the rejected mip for diagnostics.
+/// Strict callers retain `blp_bytes_to_native_chain`.
+pub fn blp_bytes_to_native_prefix(bytes: &[u8]) -> Result<(BlpMipChain, Option<usize>)> {
+    let (decoded, rejected) = benilla_blp::decode_native_with_mip_fallback(bytes)
+        .map_err(|e| anyhow::anyhow!("decoding BLP: {e}"))?;
+    Ok((native_blp_chain(decoded), rejected))
+}
+
+fn native_blp_chain(decoded: benilla_blp::NativeBlp) -> BlpMipChain {
     // At least one level, as in `blp_bytes_to_mip_chain`.
     let (width, height, count) = (
         decoded.width,
@@ -618,12 +630,12 @@ pub fn blp_bytes_to_native_chain(bytes: &[u8]) -> Result<BlpMipChain> {
         .take(count)
         .map(|m| m.bytes)
         .collect();
-    Ok(BlpMipChain {
+    BlpMipChain {
         width,
         height,
         texels,
         mips,
-    })
+    }
 }
 
 /// Our schema for a known 1.12 DBC by base filename, as DBC files carry no column types. A

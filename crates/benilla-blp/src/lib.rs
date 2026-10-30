@@ -305,6 +305,10 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedBlp> {
 /// Decode a BLP2 texture keeping its DXTC blocks verbatim, the form the reference uploads; Raw1
 /// and Raw3 decode as in [`decode`].
 pub fn decode_native(bytes: &[u8]) -> Result<NativeBlp> {
+    decode_native_impl(bytes, false).map(|(image, _)| image)
+}
+
+fn decode_native_impl(bytes: &[u8], recover_tail: bool) -> Result<(NativeBlp, Option<usize>)> {
     let h = parse_header(bytes)?;
     let texels = if h.compression == 2 {
         h.dxt_texels()
@@ -314,13 +318,22 @@ pub fn decode_native(bytes: &[u8]) -> Result<NativeBlp> {
     let n = h.chain.clamp(1, 16);
 
     let mut mips = Vec::with_capacity(n);
+    let mut rejected = None;
     for level in 0..n {
         let (lw, lh) = level_size(h.width, h.height, level);
         let need = texels.level_bytes(lw, lh);
         let data = if h.compression == 2 {
-            h.dxt_level_span(bytes, level, need)?
+            h.dxt_level_span(bytes, level, need)
         } else {
-            h.level_data(bytes, level)?
+            h.level_data(bytes, level)
+        };
+        let data = match data {
+            Ok(data) => data,
+            Err(Error::OutOfBounds { .. }) if recover_tail && level > 0 => {
+                rejected = Some(level);
+                break;
+            }
+            Err(error) => return Err(error),
         };
         let Some(data) = data else {
             break;
@@ -338,13 +351,22 @@ pub fn decode_native(bytes: &[u8]) -> Result<NativeBlp> {
         });
     }
 
-    Ok(NativeBlp {
-        width: h.width,
-        height: h.height,
-        texels,
-        mips,
-        mip_chain_count: h.chain,
-    })
+    Ok((
+        NativeBlp {
+            width: h.width,
+            height: h.height,
+            texels,
+            mips,
+            mip_chain_count: h.chain,
+        },
+        rejected,
+    ))
+}
+
+/// Decode for rendering, preserving valid levels before a corrupt optional mip.
+/// The second result identifies the rejected level; strict diagnostics use `decode_native`.
+pub fn decode_native_with_mip_fallback(bytes: &[u8]) -> Result<(NativeBlp, Option<usize>)> {
+    decode_native_impl(bytes, true)
 }
 
 /// Decode one block-compressed level to RGBA8, for a device without BC support;
@@ -437,6 +459,41 @@ fn decode_dxt(data: &[u8], w: u32, h: u32, texels: BlpTexels) -> Result<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrupt_optional_mip_preserves_valid_texture_prefix() {
+        let mut bytes = dxt_blp(1, 16);
+        let valid = decode_native(&bytes).unwrap();
+        let end = bytes.len() as u32;
+        bytes[28..32].copy_from_slice(&end.to_le_bytes());
+        bytes[92..96].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(
+            decode_native(&bytes),
+            Err(Error::OutOfBounds { level: 2 })
+        ));
+        let (recovered, rejected) = decode_native_with_mip_fallback(&bytes).unwrap();
+        assert_eq!(rejected, Some(2));
+        assert_eq!(recovered.mips.len(), 2);
+        assert_eq!(recovered.mips[0].bytes, valid.mips[0].bytes);
+        assert_eq!(recovered.mips[1].bytes, valid.mips[1].bytes);
+        bytes[20..24].copy_from_slice(&end.to_le_bytes());
+        bytes[84..88].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(decode_native_with_mip_fallback(&bytes).is_err());
+    }
+
+    #[test]
+    fn mip_fallback_leaves_valid_chains_unchanged() {
+        for (alpha, block_size) in [(0, 8), (1, 16), (7, 16)] {
+            let bytes = dxt_blp(alpha, block_size);
+            let strict = decode_native(&bytes).unwrap();
+            let (recovered, rejected) = decode_native_with_mip_fallback(&bytes).unwrap();
+            assert_eq!(rejected, None);
+            assert_eq!(strict.mips.len(), recovered.mips.len());
+            for (expected, actual) in strict.mips.iter().zip(&recovered.mips) {
+                assert_eq!(expected.bytes, actual.bytes);
+            }
+        }
+    }
 
     /// A BLP2 header, magic to `mip_sizes[16]`.
     fn header(

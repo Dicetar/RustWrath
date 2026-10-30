@@ -7,7 +7,7 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use serde::{Deserialize, Serialize};
 
-use benilla_formats::{blp_bytes_to_native_chain, blp_to_rgba};
+use benilla_formats::blp_to_rgba;
 
 use crate::gpu_blp::{for_upload, UploadChain};
 
@@ -58,12 +58,24 @@ impl AssetLoader for BlpImageLoader {
         reader.read_to_end(&mut bytes).await?;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
         Ok(match settings.variant {
-            BlpVariant::WorldArt => world_art_image(
-                for_upload(blp_bytes_to_native_chain(&bytes).map_err(to_io)?),
+            BlpVariant::WorldArt => {
+                // Deviation: retain valid art when a custom archive's optional mip tail is
+                // corrupt (wm-hd piinetree01.blp); never recover a corrupt base image.
+                let (chain, rejected) = benilla_formats::blp_bytes_to_native_prefix(&bytes)
+                    .map_err(to_io)?;
+                if let Some(level) = rejected {
+                    bevy::log::warn!(
+                        "BLP {}: rejected mip {level}; keeping {} valid levels",
+                        ctx.path(), chain.mips.len()
+                    );
+                }
+                world_art_image(
+                    for_upload(chain),
                 // The address mode rides the asset path (`crate::texture_url`): one `.blp` can be
                 // uploaded under two samplers.
-                crate::sampler_mode_of(&ctx.path().to_string()),
-            ),
+                    crate::sampler_mode_of(&ctx.path().to_string()),
+                )
+            }
             BlpVariant::Sprite => {
                 let (w, h, rgba) = blp_to_rgba(&bytes).map_err(to_io)?;
                 sprite_image(w, h, rgba)
@@ -76,9 +88,18 @@ impl AssetLoader for BlpImageLoader {
                 let (w, h, rgba) = blp_to_rgba(&bytes).map_err(to_io)?;
                 effect_image(w, h, rgba)
             }
-            BlpVariant::PointSprite => point_sprite_image(for_upload(
-                blp_bytes_to_native_chain(&bytes).map_err(to_io)?,
-            )),
+            BlpVariant::PointSprite => {
+                let (chain, rejected) = benilla_formats::blp_bytes_to_native_prefix(&bytes)
+                    .map_err(to_io)?;
+                if let Some(level) = rejected {
+                    bevy::log::warn!(
+                        "BLP {}: rejected mip {level}; keeping {} valid levels",
+                        ctx.path(),
+                        chain.mips.len()
+                    );
+                }
+                point_sprite_image(for_upload(chain))
+            }
             BlpVariant::Cursor => {
                 let (w, h, rgba) = blp_to_rgba(&bytes).map_err(to_io)?;
                 cursor_image(w, h, rgba)

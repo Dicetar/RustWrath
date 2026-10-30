@@ -1313,6 +1313,28 @@ mod world_unit_tests {
         }
     }
 
+    /// The selected 12340 profile's ItemDisplayInfo is the 25-field layout with
+    /// `InventoryIcon[2]`; the catalog must load through the profile chain.
+    #[test]
+    fn the_selected_profile_item_display_is_the_25_field_wrath_layout() {
+        let Some(manifest) = std::env::var_os("WM_ASSET_MANIFEST") else {
+            benilla_formats::skipped("needs WM_ASSET_MANIFEST", &[]);
+            return;
+        };
+        let manifest = std::path::PathBuf::from(manifest);
+        let profile = std::env::var("WM_ASSET_PROFILE").expect("WM_ASSET_PROFILE");
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_assets::open_profile_chain(&data, &manifest, &profile)
+            .expect("profile chain");
+        let bytes = chain
+            .read_file("DBFilesClient\\ItemDisplayInfo.dbc")
+            .expect("ItemDisplayInfo");
+        let fields = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        assert_eq!(fields, 25, "12340 ItemDisplayInfo is the 25-field layout");
+        let catalog = benilla_formats::load_item_display_catalog(&mut chain).expect("catalog");
+        assert!(catalog.len() > 10_000, "catalog rows: {}", catalog.len());
+    }
+
     #[test]
     fn every_wire_body_becomes_a_world_unit_and_the_viewer_is_marked() {
         let mut app = App::new();
