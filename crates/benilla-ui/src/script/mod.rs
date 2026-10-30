@@ -881,6 +881,9 @@ impl UiScript {
     /// The glue host uses the same client contract as its in-game counterpart.
     pub fn glue_with_target(target: UiTarget) -> mlua::Result<UiScript> {
         let lua = install_framescript(VmKind::Glue, target)?;
+        // GlueXML reads `GetCVar`/`GetCVarDefault` in AccountLogin and the options panels; the
+        // in-game owner was installed only on the in-game path.
+        cvars::install(&lua)?;
         glue::install(&lua)?;
         object::guard_receivers(&lua)?;
         Ok(Self::host(lua))
