@@ -357,4 +357,34 @@ Remaining graphics defects: the glue character-create textures
 dropdowns blank; `debuglocals` keeps the stock error handler noisy; the Share button's state
 texture remains visually weak (label, rect and click work; `GetWidth` 1 is the reference rule).
 
+## 2026-10-30 MH2O water-plane repair validated
+
+Astra's uncommitted MH2O array-layout repair is now committed as `8a103f58` (plus the
+`liquid_heights` diagnostic example). Reference pin
+`e67b6ffef23655dc7da061cb2d36b7963f6ef71a`:
+`WoW/Source/LiquidSystem/LiquidData.cpp` `CInstanceVertexData::GetHeight` OFFSET `0x008A3130`
+reads the height float array for vertex formats 0/1; `GetDepth` OFFSET `0x008A3160` reads format
+0's depth at `offsetVertexData + 4 * vertexCount` (after the heights) and format 2's at the
+offset; `GetTexCoord` OFFSET `0x008A31B0` reads format 1's UVs after the heights. The reference's
+format-3 accessors return 0 (a reconstruction gap); the decoder follows the TrinityCore 3.3.5
+`adt.h` height/UV/depth layout. This confirms separate arrays, not interleaved vertex structs.
+
+- Focused checks: `cargo test -p benilla-adt` 10/10; `liquid_heights` on
+  `astra-camp.adt` validates 33 MH2O layers against authored bounds.
+- Same-location rendered result: pre-fix `oc-run-20261030-143128-296.png` shows the pale
+  stretched planes at the camp shoreline; post-fix `oc-run-20261030-224641-845.png` shows a
+  coherent teal water surface with sparkles at the same camp. The controlled `water-noon`
+  captures (`mh2o-water-noon-fixed.png` vs `mh2o-water-noon-noliquid.png`) differ at the basin
+  when `WOW_NO_LIQUID=1`; the 1.12-tuned camera now lands in forest under the 3.3.5 profile and
+  a GlueXML `vx_vars_init.lua` popup obstructs part of the frame (capture-only artifact).
+- Binary SHA-256 `3064460EE585ABBC33CDB40F072F2F37C708FCCE8E390615242ACBA848A6D715` (HEAD
+  `8a103f58`, rebuilt from the current source).
+- The massive-plane symptom is fixed for the demonstrated water geometry. The green surface
+  covering the camera is the doodad `world/generic/buildings/humantentlarge/humantentlarge.m2`
+  (#56070, consolidated batch): one material with flags `0x0004` (two-sided), blend 0, texture
+  `humantentsdoor.blp`. 12340 `Engine/Source/Model2/CM2SceneRender.cpp:317` sets
+  `GxRs_Culling = !(m_flags & 4)`, so the reference also draws both sides; the fork's culling
+  matches. Do not cull this material. The green-camera symptom remains open pending a
+  camera-collision or same-view reference comparison; the pale stretched scenery was the water.
+
 No alpha or full-replacement claim follows.
