@@ -4674,6 +4674,11 @@ fn wrath_apply_world(world: &mut World) {
                     },
                     ObjectStore(fields),
                     UnitSpeeds(default_speeds()),
+                    // The 1.12 spawn path installs this before attaching model parts. Without a
+                    // root InheritedVisibility every child mesh raises B0004 and can inherit as
+                    // hidden: terrain and UI drew, the world bodies did not.
+                    Visibility::default(),
+                    InheritedVisibility::default(),
                     transform.unwrap_or_default(),
                 ));
                 if *guid == player_guid {
