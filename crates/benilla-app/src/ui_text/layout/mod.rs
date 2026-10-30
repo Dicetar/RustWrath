@@ -120,9 +120,16 @@ pub(crate) const UI_SEAT_NUDGE: f32 = 1.0;
 /// `SetAlphaGradient`'s alpha at a character: opaque before `start`, linear to 0 over `length`.
 fn gradient_alpha(index: usize, start: f32, length: f32) -> f32 {
     let i = index as f32;
+    if length <= 0.0 {
+        // A zero length is no reveal window. `SetAlphaGradient(0, 0)` is the stock clear: the
+        // 3.3.5 quest log's `QuestInfo_ShowDescriptionText` calls it and `QUEST_TEMPLATE_LOG`
+        // carries no fading frame, so the description must draw whole. A positive start keeps
+        // the hard edge the 1.12 reveal uses.
+        return if start <= 0.0 || i < start { 1.0 } else { 0.0 };
+    }
     if i < start {
         1.0
-    } else if length > 0.0 && i < start + length {
+    } else if i < start + length {
         1.0 - (i - start) / length
     } else {
         0.0
@@ -410,9 +417,13 @@ mod gradient_tests {
         assert!((gradient_alpha(25, 10.0, 30.0) - 0.5).abs() < 1e-6);
         assert_eq!(gradient_alpha(40, 10.0, 30.0), 0.0);
         assert_eq!(gradient_alpha(1000, 10.0, 30.0), 0.0);
-        // Zero length: a hard reveal edge, never a divide by zero.
+        // Zero length at a positive start: a hard reveal edge, never a divide by zero.
         assert_eq!(gradient_alpha(5, 10.0, 0.0), 1.0);
         assert_eq!(gradient_alpha(15, 10.0, 0.0), 0.0);
+        // Zero length at 0 is the stock clear: the 3.3.5 log's description draws whole with
+        // `SetAlphaGradient(0, 0)` and no fading frame in `QUEST_TEMPLATE_LOG`.
+        assert_eq!(gradient_alpha(0, 0.0, 0.0), 1.0);
+        assert_eq!(gradient_alpha(500, 0.0, 0.0), 1.0);
     }
 }
 

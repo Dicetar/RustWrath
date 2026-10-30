@@ -167,7 +167,8 @@ pub enum QuadContent {
         /// plus this, rounded up to a whole device pixel (`LayoutLines` `0x5cdc20`).
         spacing: f32,
         /// `SetAlphaGradient`: before `start` opaque, the next `length` characters fading from 1
-        /// to 0, the rest invisible.
+        /// to 0, the rest invisible. A zero length at start 0 clears the reveal, which the stock
+        /// 3.3.5 quest log uses for its description; a positive start keeps the hard edge.
         alpha_gradient: Option<(f32, f32)>,
         /// Seat the text at `rect` without the UI grid's block-top snap: true on a nameplate
         /// (`super::nameplate::is_world_seated`), which slides on a device-pixel snap, so a second
