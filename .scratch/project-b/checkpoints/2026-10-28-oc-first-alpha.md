@@ -331,4 +331,30 @@ WorldMapArea/Continent layouts, `849af7d8` bone-track bounds, `3b0b0e0f` particl
 vehicle/boss production state remain open. Her opencode worktree
 (`D:/Projects/project-b-opencode`, B-ticket branch) is a separate project and was not touched.
 
+## 2026-10-30 graphics data: BLP tails, item display and quest headers
+
+Continued Astra's graphics work from her preserved dirty tree. Commits: `532a527a` (corrupt BLP
+mip-tail recovery, extended from world art to terrain layers and point sprites; 12340
+ItemDisplayInfo 25-field layout with `InventoryIcon[2]`) and `8174473b` (id-to-name tables read
+the file's own field count instead of 1.12's; 12340 AreaTable 36 fields, QuestInfo 18). Both
+committed only the intended files; her untracked `benilla-blp/examples/inspect_mips.rs`
+diagnostic is included.
+
+- Real-data tests, selected `wm-hd` profile: `the_selected_profile_item_display_is_the_25_field_wrath_layout`
+  (25 fields, >10,000 rows) and `the_selected_profile_names_quest_headers_and_tags`
+  (`AreaTable 33 -> Stranglethorn Vale`, `QuestInfo 41 -> PvP`) pass; `benilla-blp` 9/9.
+- Rendered evidence: `connected-run-20261030-213012-338.stderr.log` (signal
+  `INSTRUMENT START quest-log header and detail check`, rows named Duskwood, Mage, Stormwind City,
+  Stranglethorn Vale, Wailing Caverns; The Hermit's description and objectives) and screenshot
+  `oc-run-20261030-213011-603.png` (named headers, full description, labeled controls).
+- Binary SHA-256 `0B6F82B3EAD0DC8C1E75E54B55AD82352617E7C15F3D32DA81447464038438AA` from clean
+  HEAD `8174473b`.
+
+Remaining graphics defects: the glue character-create textures
+`Interface\Glues\CharacterCreate\{AlternateForm,CharacterCreate-Arrow,Frame-Sides}` fail to load
+(16 warnings; profile/archive gap); the green wedge when the camera enters an M2 doodad interior;
+12340 particle data still refused (real 264 effects disabled, Astra's containment); map zone
+dropdowns blank; `debuglocals` keeps the stock error handler noisy; the Share button's state
+texture remains visually weak (label, rect and click work; `GetWidth` 1 is the reference rule).
+
 No alpha or full-replacement claim follows.
