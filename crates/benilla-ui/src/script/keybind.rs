@@ -600,15 +600,22 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     // 3.3.5's `GetBindingFromClick` (`UIParent.lua:3195`) calls this name; it is the same
-    // key-to-command lookup as `GetBindingAction`, which 1.12 has.
-    lua.globals().set(
-        "GetBindingByKey",
-        lua.create_function(|lua, key: Value| {
-            let key = super::binding_abi::string_arg(lua, key, "Usage: GetBindingByKey(\"KEY\")")?;
-            let name = action_for_key(lua, &key);
-            lua.create_string(&name)
-        })?,
-    )?;
+    // key-to-command lookup as `GetBindingAction`, which 1.12 has. Only the Wrath host installs
+    // it, keeping the 1.12 global surface exact.
+    if lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath())
+    {
+        lua.globals().set(
+            "GetBindingByKey",
+            lua.create_function(|lua, key: Value| {
+                let key =
+                    super::binding_abi::string_arg(lua, key, "Usage: GetBindingByKey(\"KEY\")")?;
+                let name = action_for_key(lua, &key);
+                lua.create_string(&name)
+            })?,
+        )?;
+    }
     // The set's copy into the live table (`0x4b8252` → `0x4b6310`, destination 3) signals
     // `UPDATE_BINDINGS` (`0x4b649d`) before the verb returns. The set is read by `tonumber`
     // alone (`0x4b8228`, a non-number is 0); 3 and above raise the usage (`0x4b8232`-`0x4b823d`).
@@ -677,8 +684,17 @@ mod tests {
     const DEFAULTS: &str = "bind W MOVEFORWARD\r\nbind UP MOVEFORWARD\r\nbind SPACE JUMP\r\n\
                             bind NUMPAD0 JUMP\r\nbind MOUSEWHEELUP CAMERAZOOMIN\r\n";
 
-    fn script() -> UiScript {
-        let mut s = UiScript::new().unwrap();
+fn wrath_script() -> UiScript {
+    let mut s =
+        UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.set_default_bindings(parse_bindings_wtf(DEFAULTS));
+    s.load_binding_set(1);
+    s.register_bindings(&parse(CORE).unwrap());
+    s
+}
+
+fn script() -> UiScript {
+    let mut s = UiScript::new().unwrap();
         s.set_default_bindings(parse_bindings_wtf(DEFAULTS));
         s.load_binding_set(1);
         s.register_bindings(&parse(CORE).unwrap());
@@ -769,7 +785,7 @@ mod tests {
     /// `GetBindingAction`, and an unbound chord is `""` rather than an error.
     #[test]
     fn get_binding_by_key_is_the_action_lookup() {
-        let s = script();
+        let s = wrath_script();
         for (key, want) in [("W", "MOVEFORWARD"), ("SPACE", "JUMP"), ("F", "")] {
             assert_eq!(
                 s.eval::<String>(&format!("return GetBindingByKey(\"{key}\")"))

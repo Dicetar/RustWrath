@@ -44,6 +44,40 @@ fn fixture(s: &mut UiScript) {
     s.resolve();
 }
 
+/// 3.3.5's `<NormalFont style="GameFontNormal"/>` links the font object exactly as 1.12's
+/// `inherits=` does, so the stock `UIPanelButtonTemplate` labels take their font.
+#[test]
+fn a_style_attribute_links_the_state_font_object() {
+    let mut s = script();
+    s.set_screen_size(800.0, 600.0);
+    load(
+        &s,
+        r#"<Ui>
+             <Font name="GameFontNormal" font="Fonts\FRIZQT__.TTF" virtual="true">
+               <FontHeight><AbsValue val="12"/></FontHeight>
+               <Color r="1.0" g="0.82" b="0"/>
+             </Font>
+             <Button name="StyleFont">
+               <Size><AbsDimension x="100" y="20"/></Size>
+               <Anchors><Anchor point="BOTTOMLEFT"><Offset><AbsDimension x="100" y="100"/></Offset></Anchor></Anchors>
+               <ButtonText name="$parentText"/>
+               <NormalFont style="GameFontNormal"/>
+             </Button>
+           </Ui>"#,
+    );
+    s.run(r#"StyleFont:SetText("Label")"#).unwrap();
+    s.resolve();
+    let (file, height): (Option<String>, Option<f32>) = s
+        .eval("local f, h = StyleFont:GetFontString():GetFont(); return f, h")
+        .unwrap();
+    assert_eq!(file.as_deref(), Some("Fonts\\FRIZQT__.TTF"));
+    assert_eq!(height, Some(12.0));
+    let drawn = s.extract().into_iter().any(|q| {
+        matches!(q.content, QuadContent::Text { text: Some(t), .. } if t == "Label")
+    });
+    assert!(drawn, "the styled label draws");
+}
+
 /// The label's drawn colour.
 fn drawn_color(s: &mut UiScript) -> Option<[f32; 4]> {
     s.resolve();

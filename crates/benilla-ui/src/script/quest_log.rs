@@ -128,6 +128,13 @@ pub struct QuestRecordView {
     pub description: String,
     pub objectives_text: String,
     pub reward_spell: Option<QuestRewardSpell>,
+    /// 12340's honor, talents, arena points and title rewards, and its reward reputation rows
+    /// as `(faction, amount)`. The 1.12 wire carries none of them and leaves every field zero.
+    pub reward_honor: u32,
+    pub reward_talents: u32,
+    pub reward_arena_points: u32,
+    pub reward_title: u32,
+    pub reward_factions: Vec<(u32, i32)>,
 }
 
 /// One row of the display list `0xbb71c0`: a header, or a quest and its slot (`+0x4`).
@@ -1478,6 +1485,72 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }))
         })?,
     )?;
+    // 12340's reward lines: honor, talents, arena points, the title id and the reputation rows
+    // come from the template the adapter translated. `GetQuestLogRewardXP` has no stored value:
+    // the 3.3.5 client computes it from `QuestXP.dbc`, which is not wired yet, so it answers 0
+    // (incomplete compatibility, not a computed reward). 1.12 has none of these globals, so only
+    // the Wrath host installs them.
+    if lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath())
+    {
+    install_detail_count(lua, "GetQuestLogRewardHonor", |r| {
+        i64::from(r.reward_honor)
+    })?;
+    install_detail_count(lua, "GetQuestLogRewardTalents", |r| {
+        i64::from(r.reward_talents)
+    })?;
+    install_detail_count(lua, "GetQuestLogRewardArenaPoints", |r| {
+        i64::from(r.reward_arena_points)
+    })?;
+    install_detail_count(lua, "GetQuestLogRewardXP", |_| 0)?;
+    g.set(
+        "GetQuestLogRewardTitle",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model
+                .selected_quest_record()
+                .filter(|r| r.reward_title != 0)
+                .map_or(Value::Nil, |r| Value::Integer(i64::from(r.reward_title))))
+        })?,
+    )?;
+    install_detail_count(lua, "GetNumQuestLogRewardFactions", |r| {
+        r.reward_factions.len() as i64
+    })?;
+    g.set(
+        "GetQuestLogRewardFactionInfo",
+        lua.create_function(|lua, index: Value| {
+            let i = lua
+                .coerce_number(index)?
+                .ok_or_else(|| mlua::Error::runtime("Usage: GetQuestLogRewardFactionInfo(index)"))?;
+            let row = i.trunc() as i64 - 1;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let pair = model
+                .selected_quest_record()
+                .and_then(|r| usize::try_from(row).ok().and_then(|n| r.reward_factions.get(n)));
+            Ok(match pair {
+                Some(&(faction, amount)) => {
+                    (Value::Integer(i64::from(faction)), Value::Integer(i64::from(amount)))
+                }
+                None => (Value::Nil, Value::Nil),
+            })
+        })?,
+    )?;
+    }
+    // 3.3.5's `ProcessQuestLogRewardFactions` is the client routine the stock QuestInfo calls
+    // before it lays out the reward block. The faction rows themselves are read through
+    // `GetNumQuestLogRewardFactions`/`GetQuestLogRewardFactionInfo` below; this entry only
+    // completes the call so the reward layout continues (compatibility, not an implemented
+    // faction-reward routine).
+    if lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath())
+    {
+        g.set(
+            "ProcessQuestLogRewardFactions",
+            lua.create_function(|_, ()| Ok(()))?,
+        )?;
+    }
     install_detail_count(lua, "GetQuestLogRequiredMoney", |r| {
         i64::from(r.required_money)
     })?;
@@ -2295,6 +2368,63 @@ mod tests {
             .eval::<bool>(
                 "local _, _, _, h, c = GetQuestLogTitle(3)\n\
                  return h == nil and c == nil and type(h) ~= 'boolean'"
+            )
+            .unwrap());
+    }
+
+    /// The stock reward layout calls this client routine; the faction data itself is read through
+    /// the getters. It stays a compatibility entry, and only the 3.3.5 host has it.
+    #[test]
+    fn process_quest_log_reward_factions_is_a_wrath_compat_entry() {
+        let wrath =
+            UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        assert!(wrath
+            .eval::<bool>("return type(ProcessQuestLogRewardFactions) == 'function'")
+            .unwrap());
+        let vanilla = UiScript::new().unwrap();
+        assert!(vanilla
+            .eval::<bool>("return ProcessQuestLogRewardFactions == nil")
+            .unwrap());
+    }
+
+    /// 12340's reward lines come from the selected record; the 1.12 wire leaves them zero and
+    /// the title getter nil, and the XP getter is the documented incomplete 0.
+    #[test]
+    fn wrath_reward_lines_come_from_the_selected_record() {
+        let mut s =
+            UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        caches(&mut s);
+        let mut log = two_quests_log();
+        log[0].1.reward_honor = 250;
+        log[0].1.reward_talents = 1;
+        log[0].1.reward_arena_points = 20;
+        log[0].1.reward_title = 42;
+        log[0].1.reward_factions = vec![(72, 500), (47, -300)];
+        seat(&mut s, &log);
+        let got = s
+            .eval::<String>(
+                "SelectQuestLogEntry(2) \
+                 return table.concat({tostring(GetQuestLogRewardHonor()), \
+                    tostring(GetQuestLogRewardTalents()), \
+                    tostring(GetQuestLogRewardArenaPoints()), \
+                    tostring(GetQuestLogRewardTitle()), \
+                    tostring(GetNumQuestLogRewardFactions())}, ',')",
+            )
+            .unwrap();
+        assert_eq!(got, "250,1,20,42,2");
+        assert!(s
+            .eval::<bool>(
+                "local f, a = GetQuestLogRewardFactionInfo(1) \
+                 local g, b = GetQuestLogRewardFactionInfo(2) \
+                 return f == 72 and a == 500 and g == 47 and b == -300"
+            )
+            .unwrap());
+        s.run("SelectQuestLogEntry(3)").unwrap();
+        assert!(s
+            .eval::<bool>(
+                "return GetQuestLogRewardTitle() == nil \
+                    and GetQuestLogRewardXP() == 0 \
+                    and GetNumQuestLogRewardFactions() == 0"
             )
             .unwrap());
     }

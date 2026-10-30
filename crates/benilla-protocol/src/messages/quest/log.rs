@@ -66,6 +66,15 @@ pub struct QuestTemplate {
     pub reward_spell: u32,
     pub src_item_id: u32,
     pub flags: u32,
+    /// 12340's honor/title/talent/arena rewards and reward reputation arrays. The 1.12 wire
+    /// carries none of them, so its decoder seeds every field zero; the Wrath adapter translates
+    /// them from `SMSG_QUEST_QUERY_RESPONSE`.
+    pub honor: u32,
+    pub honor_multiplier: f32,
+    pub title_reward: u32,
+    pub bonus_talents: u32,
+    pub bonus_arena_points: u32,
+    pub rep_rewards: [(u32, i32, u32); 5],
     pub rewards: [(u32, u32); QUEST_REWARDS_COUNT as usize],
     pub choices: [(u32, u32); QUEST_REWARD_CHOICES_COUNT as usize],
     pub point_map_id: u32,
@@ -185,6 +194,12 @@ pub(in crate::messages) fn read_quest_query_response(r: &mut &[u8]) -> io::Resul
         reward_spell,
         src_item_id,
         flags,
+        honor: 0,
+        honor_multiplier: 0.0,
+        title_reward: 0,
+        bonus_talents: 0,
+        bonus_arena_points: 0,
+        rep_rewards: [(0, 0, 0); 5],
         rewards,
         choices,
         point_map_id,

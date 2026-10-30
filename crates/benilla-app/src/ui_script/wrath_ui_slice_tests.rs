@@ -11,6 +11,11 @@ use benilla_ui::script::{ScriptValue, UiScript, UiTarget, UnitGuids, UnitState};
 
 /// A fresh chain avoids the shared loader's cached source and its vanilla fixture stand-ins.
 fn player_frame_script() -> Option<UiScript> {
+    stock_script_through("PlayerFrame.xml", true)
+}
+
+/// The TOC prefix through `leaf`, the production order the chosen profile lists.
+fn stock_script_through(leaf: &str, strict: bool) -> Option<UiScript> {
     let Some(manifest) = std::env::var_os("WM_ASSET_MANIFEST") else {
         benilla_formats::skipped("Wrath UI smoke needs an explicit WM_ASSET_MANIFEST", &[]);
         return None;
@@ -28,8 +33,8 @@ fn player_frame_script() -> Option<UiScript> {
     assert_eq!(toc.interface_version(), 30300, "selected FrameXML must be the Wrath interface");
     let last = toc.files.iter().position(|path|
         path.replace('\\', "/").rsplit('/').next()
-            .is_some_and(|leaf| leaf.eq_ignore_ascii_case("PlayerFrame.xml")))
-        .expect("selected FrameXML.toc must list PlayerFrame.xml");
+            .is_some_and(|name| name.eq_ignore_ascii_case(leaf)))
+        .expect("selected FrameXML.toc must list the requested leaf");
 
     let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
     assert_eq!(s.target(), UiTarget::Wrath335, "explicit Wrath host");
@@ -80,6 +85,20 @@ fn player_frame_script() -> Option<UiScript> {
             let doc = benilla_ui::framexml::parse(&benilla_ui::source::decode(&bytes))
                 .unwrap_or_else(|error| panic!("{path}: {error}"));
             let report = benilla_ui::loader::load_in(&s, &doc, &path, &|request| chain.read(request).ok());
+            if !strict {
+                // A wider TOC prefix pulls in windows whose own incomplete wrath APIs error at
+                // load (party, pet, spellbook). Only the quest log's own files must be clean.
+                assert!(report.missing_files.is_empty(), "{path}: missing files: {:?}", report.missing_files);
+                for error in &report.errors {
+                    assert!(
+                        !["QuestLogFrame", "QuestFrame", "QuestInfo", "UIPanelTemplates", "GameTooltip"]
+                            .iter()
+                            .any(|k| error.contains(k)),
+                        "{path}: quest log loader error: {error}"
+                    );
+                }
+                continue;
+            }
             assert!(report.errors.is_empty(), "{path}: loader errors: {:?}", report.errors);
             assert!(report.missing_files.is_empty(), "{path}: missing files: {:?}", report.missing_files);
             // The wrath FrameXML text sinks reach for keys the FrameXML locale stream no longer
@@ -103,6 +122,47 @@ fn player_frame_script() -> Option<UiScript> {
         }
     }
     Some(s)
+}
+
+/// The stock control panel's Share button is declared one pixel wide on purpose: its LEFT and
+/// RIGHT anchors span the gap between Abandon and Track, and the resolved frame must take that
+/// span so the control has a click target. Loaded through the production TOC prefix, as the
+/// client boots it.
+#[test]
+fn stock_questlog_share_button_spans_the_control_panel_gap() {
+    let Some(mut s) = stock_script_through("QuestLogFrame.xml", false) else { return };
+    s.run("ShowUIPanel(QuestLogFrame)").unwrap();
+    s.resolve();
+    let (width, left, right, abandon_right, track_left) = s
+        .eval::<(f32, f32, f32, f32, f32)>(
+            "return QuestLogFramePushQuestButton:GetWidth(), \
+                    QuestLogFramePushQuestButton:GetLeft(), \
+                    QuestLogFramePushQuestButton:GetRight(), \
+                    QuestLogFrameAbandonButton:GetRight(), \
+                    QuestLogFrameTrackButton:GetLeft()",
+        )
+        .unwrap();
+    assert!(
+        (left - abandon_right).abs() < 0.5
+            && (right - track_left).abs() < 0.5
+            && (right - left) > 20.0,
+        "Share spans A.right..B.left: w={width} l={left} r={right} \
+         abandon_right={abandon_right} track_left={track_left}"
+    );
+    // `GetWidth` answers the declared 1 px (the reference's stored-size rule); the usable control
+    // is the resolved rect above, which the stock hit test and state texture fill.
+    assert_eq!(
+        width, 1.0,
+        "GetWidth answers the declared size, not the anchored span"
+    );
+    let font = s
+        .eval::<Option<String>>(
+            "local f = QuestLogFrameAbandonButton:GetFontString() \
+             local file = f and f:GetFont() \
+             return file",
+        )
+        .unwrap();
+    assert!(font.is_some(), "the stock button label has a font object");
 }
 
 #[test]

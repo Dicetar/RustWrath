@@ -1799,6 +1799,67 @@ mod tests {
         );
     }
 
+    /// The stock quest-log Share button: an explicit width of 1, but opposing LEFT/RIGHT anchors
+    /// between two siblings must stretch the frame across the gap (as the client draws it).
+    #[test]
+    fn opposing_anchors_stretch_past_a_stored_width() {
+        const PANEL: Handle = 1;
+        const A: Handle = 2;
+        const B: Handle = 3;
+        const C: Handle = 4;
+        let mut s = LayoutSolver::new();
+        s.begin();
+        s.set_external(SCREEN, screen_rect());
+        s.set_frame(
+            PANEL,
+            &LayoutInput::sized(
+                vec![Anchor::new(
+                    Point::BottomLeft,
+                    SCREEN,
+                    Point::BottomLeft,
+                    18.0,
+                    9.0,
+                )],
+                307.0,
+                26.0,
+            ),
+        );
+        s.set_entry(PANEL, None, true);
+        s.set_frame(
+            A,
+            &LayoutInput::sized(
+                vec![Anchor::new(Point::Left, PANEL, Point::Left, 0.0, 1.0)],
+                110.0,
+                21.0,
+            ),
+        );
+        s.set_entry(A, None, true);
+        s.set_frame(
+            B,
+            &LayoutInput::sized(
+                vec![Anchor::new(Point::Right, PANEL, Point::Right, -3.0, 1.0)],
+                100.0,
+                21.0,
+            ),
+        );
+        s.set_entry(B, None, true);
+        s.set_frame(
+            C,
+            &LayoutInput::sized(
+                vec![
+                    Anchor::new(Point::Left, A, Point::Right, 0.0, 0.0),
+                    Anchor::new(Point::Right, B, Point::Left, 0.0, 0.0),
+                ],
+                1.0,
+                21.0,
+            ),
+        );
+        s.set_entry(C, None, true);
+        s.solve();
+        let c = s.rect(C).expect("C resolves");
+        assert_eq!((c.left, c.right), (128.0, 222.0), "C stretches between the siblings");
+    }
+
     /// A target that stores a new rect reaches what anchors to it, which resolves again.
     #[test]
     fn a_target_with_a_new_rect_reaches_its_dependents() {

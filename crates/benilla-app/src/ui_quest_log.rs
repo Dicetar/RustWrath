@@ -662,6 +662,16 @@ fn record_view(t: &QuestTemplate, tables: &RecordTables) -> QuestRecordView {
         description: crate::npc_text::substitute(&t.details, tables.macros),
         objectives_text: crate::npc_text::substitute(&t.objectives_text, tables.macros),
         reward_spell: crate::ui_quest::reward_spell_view(t.reward_spell, tables.spells),
+        reward_honor: t.honor,
+        reward_talents: t.bonus_talents,
+        reward_arena_points: t.bonus_arena_points,
+        reward_title: t.title_reward,
+        reward_factions: t
+            .rep_rewards
+            .iter()
+            .filter(|&&(faction, _, _)| faction != 0)
+            .map(|&(faction, amount, _)| (faction, amount))
+            .collect(),
     }
 }
 

@@ -110,6 +110,28 @@ fn set_thumb_path(lua: &Lua, this: &Table, path: &str) -> mlua::Result<()> {
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let m = lua.create_table()?;
 
+    // 3.3.5 `Slider:Enable`/`Disable`: the scroll bars call them; the enabled flag gates a thumb
+    // press. 1.12's Slider has no such pair, so only the 3.3.5 target installs it.
+    if lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath())
+    {
+        m.set(
+            "Enable",
+            lua.create_function(|lua, this: Table| {
+                with_slider(lua, &this, |s| s.enabled = true)?;
+                Ok(())
+            })?,
+        )?;
+        m.set(
+            "Disable",
+            lua.create_function(|lua, this: Table| {
+                with_slider(lua, &this, |s| s.enabled = false)?;
+                Ok(())
+            })?,
+        )?;
+    }
+
     m.set(
         "SetMinMaxValues",
         lua.create_function(|lua, (this, min, max): (Table, Value, Value)| {
@@ -299,7 +321,8 @@ pub(super) fn begin_drag(
     let h = hit?;
     let r = model.frame_rect(h)?;
     let (vertical, fraction, thumb) = match model.arena.frame(h).map(|f| &f.kind_state) {
-        Some(KindState::Slider(s)) => (s.vertical, s.fraction(), s.thumb),
+        Some(KindState::Slider(s)) if s.enabled => (s.vertical, s.fraction(), s.thumb),
+        Some(KindState::Slider(_)) => return None,
         _ => return None,
     };
     // No thumb region: the press still captures, the dispatcher's store being unconditional, but

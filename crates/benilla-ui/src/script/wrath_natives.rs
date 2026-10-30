@@ -2,7 +2,7 @@
 //! has no verb for. Each answer is the real client's on a machine without the optional hardware
 //! the query asks about, or with the single output device benilla mixes through.
 
-use mlua::Lua;
+use mlua::{Lua, Value};
 
 /// The 3.3.5a `Bindings.xml` `<ModifiedClick>` rows' defaults: SELFCAST ALT, FOCUSCAST NONE,
 /// DRESSUP and SOCKETITEM CTRL, every other action SHIFT. An unknown action has no default.
@@ -25,6 +25,25 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "IsStereoVideoAvailable",
         lua.create_function(|_, ()| Ok(false))?,
+    )?;
+
+    // `UnitIsPossessed` (`PetFrame.lua:186`): no possessed unit exists in benilla, so the stock
+    // pet frame keeps its ordinary layout.
+    lua.globals().set(
+        "UnitIsPossessed",
+        lua.create_function(|_, _unit: Option<String>| Ok(false))?,
+    )?;
+
+    // `IsReferAFriendLinked` (`UnitPopup.lua:788`) and `GetReadyCheckStatus`
+    // (`PartyMemberFrame.lua:289`): benilla has no recruit-a-friend link and runs no ready
+    // check, so the stock frames load with those features absent (compatibility entries).
+    lua.globals().set(
+        "IsReferAFriendLinked",
+        lua.create_function(|_, _unit: Option<String>| Ok(false))?,
+    )?;
+    lua.globals().set(
+        "GetReadyCheckStatus",
+        lua.create_function(|_, _unit: Option<String>| Ok(Value::Nil))?,
     )?;
 
     // `HasCompletedAnyAchievement` (`MainMenuBarMicroButtons.lua:103`): the micro menu's

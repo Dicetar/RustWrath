@@ -656,7 +656,13 @@ impl Loader<'_> {
         name: &str,
     ) {
         use crate::script::{font, FontMask};
-        if let Some(parent) = el.attr("inherits").filter(|n| !n.is_empty()) {
+        // 3.3.5 FrameXML writes the state fonts as `<NormalFont style="GameFontNormal"/>`; the
+        // 1.12 files write `inherits=`. Both name the font object to follow.
+        if let Some(parent) = el
+            .attr("inherits")
+            .or_else(|| el.attr("style"))
+            .filter(|n| !n.is_empty())
+        {
             let to = self.model().fonts.id(parent);
             match to {
                 Some(to) => self.link_font_node(id, to, name),

@@ -752,7 +752,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     // 3.3.5's `WorldMapFrame_OnUpdate` and death-release tail call these; 1.12 has neither a
     // Wintergrasp timer nor a death-release map marker. Answer nothing/none so the stock update
-    // hides both instead of raising every frame.
+    // hides both instead of raising every frame. The whole set is Wrath-only, so the 1.12 global
+    // surface stays exact.
+    if lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath())
+    {
     g.set(
         "GetWintergraspWaitTime",
         lua.create_function(|_, ()| Ok(Value::Nil))?,
@@ -793,6 +798,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "QuestMapUpdateAllQuests",
         lua.create_function(|_, ()| Ok(()))?,
     )?;
+    }
 
     g.set(
         "SetMapZoom",

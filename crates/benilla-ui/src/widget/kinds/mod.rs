@@ -1538,6 +1538,9 @@ pub struct SliderState {
     pub vertical: bool,
     /// The thumb texture (`<ThumbTexture>`), placed at [`Self::fraction`] along the track.
     pub thumb: Option<RegionHandle>,
+    /// 3.3.5's `Slider:Enable`/`Disable`: when false, a thumb press does not start a drag. The
+    /// 1.12 slider has no such state, so the default is enabled.
+    pub enabled: bool,
 }
 
 impl Default for SliderState {
@@ -1551,6 +1554,7 @@ impl Default for SliderState {
             step: 0.0,
             vertical: true,
             thumb: None,
+            enabled: true,
         }
     }
 }

@@ -223,7 +223,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // The 3.3.5 counts and the force flag its `GossipFrame.lua` reads before it can show:
     // `GetNumGossipAvailableQuests`, `GetNumGossipActiveQuests`, `GetNumGossipOptions` and
     // `ForceGossip()`. The app never force-opens a gossip, so the flag is false, which keeps the
-    // frame's single-non-gossip-option shortcut.
+    // frame's single-non-gossip-option shortcut. 1.12 has none of these names.
+    if lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath())
+    {
     g.set(
         "GetNumGossipOptions",
         lua.create_function(|lua, ()| {
@@ -257,6 +261,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "ForceGossip",
         lua.create_function(|_, ()| Ok(false))?,
     )?;
+    }
 
     // A select's index is 1-based within its own list, as `GossipFrame.lua:73` numbers the
     // buttons; the host scans the message's rows for it (`0x4e2ad7`, `0x4e2b17`).

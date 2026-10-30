@@ -16,6 +16,44 @@ fn thumb_rect(quads: &[crate::script::ExtractedQuad], needle: &str) -> (f32, f32
     (r.left, r.right, r.bottom, r.top)
 }
 
+/// 3.3.5's `Slider:Enable`/`Disable` gate a thumb press: a disabled bar keeps its value, and
+/// enabling it lets the same press jump the value. 1.12 has neither method.
+#[test]
+fn wrath_slider_enable_gates_a_thumb_press() {
+    let mut s =
+        crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.set_screen_size(1024.0, 768.0);
+    s.run(
+        r#"
+        sl = CreateFrame("Slider", "GateSl")
+        sl:SetPoint("BOTTOMLEFT", nil, "BOTTOMLEFT", 100, 100)
+        sl:SetWidth(16); sl:SetHeight(100)
+        sl:SetThumbTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
+        local t = sl:GetThumbTexture()
+        t:SetWidth(16); t:SetHeight(16)
+        sl:SetMinMaxValues(0, 100)
+        sl:SetValue(0)
+        sl:Disable()
+    "#,
+    )
+    .unwrap();
+    s.resolve();
+    // A press near the bottom (the max end) would jump the value if the slider took it.
+    s.mouse_button(108.0, 110.0, "LeftButton", true);
+    s.mouse_button(108.0, 110.0, "LeftButton", false);
+    assert_eq!(
+        s.eval::<f64>("return sl:GetValue()").unwrap(),
+        0.0,
+        "a disabled slider takes no press"
+    );
+    s.run("sl:Enable()").unwrap();
+    s.mouse_button(108.0, 110.0, "LeftButton", true);
+    assert!(
+        s.eval::<f64>("return sl:GetValue()").unwrap() > 50.0,
+        "an enabled slider jumps to the press"
+    );
+}
+
 #[test]
 fn slider_thumb_draws_at_value_fraction_along_the_track() {
     let mut s = script();

@@ -806,6 +806,17 @@ pub struct QuestTemplate {
     pub reward_spell: u32,
     pub src_item_id: u32,
     pub flags: u32,
+    /// 12340's `RewardHonor`/`RewardHonorMultiplier`, the honor line the log and reward panels
+    /// read; 0 for a quest without one.
+    pub honor_reward: u32,
+    pub honor_multiplier: f32,
+    /// 12340's title, talent and arena-point rewards; 0 when the quest grants none.
+    pub title_reward: u32,
+    pub bonus_talents: u32,
+    pub bonus_arena_points: u32,
+    /// Three 12340 arrays of five: faction id, amount and the override; a zero faction is a
+    /// row the client does not show.
+    pub rep_rewards: [(u32, i32, u32); 5],
     pub rewards: [(u32, u32); 4],
     pub choices: [(u32, u32); 6],
     pub point_map_id: u32,
@@ -2859,14 +2870,14 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
     let money_max_level = r.u32()?;
     let reward_spell = r.u32()?;
     let _reward_spell_cast = r.i32()?;
-    let _honor_addition = r.u32()?;
-    let _honor_multiplier = r.f32()?;
+    let honor_reward = r.u32()?;
+    let honor_multiplier = r.f32()?;
     let src_item_id = r.u32()?;
     let flags = r.u32()?;
-    let _char_title = r.u32()?;
+    let title_reward = r.u32()?;
     let _players_slain = r.u32()?;
-    let _bonus_talents = r.u32()?;
-    let _arena_points = r.u32()?;
+    let bonus_talents = r.u32()?;
+    let bonus_arena_points = r.u32()?;
     let _unk = r.u32()?;
     let mut rewards = [(0u32, 0u32); 4];
     for slot in &mut rewards {
@@ -2878,10 +2889,22 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
     for slot in &mut choices {
         *slot = (r.u32()?, r.u32()?);
     }
-    // Three arrays of five, not five interleaved triples; only their length matters here.
-    for _ in 0..15 {
-        let _reputation = r.u32()?;
+    // Three arrays of five: faction ids, amounts and overrides.
+    let mut rep_factions = [0u32; 5];
+    for faction in &mut rep_factions {
+        *faction = r.u32()?;
     }
+    let mut rep_amounts = [0u32; 5];
+    for amount in &mut rep_amounts {
+        *amount = r.u32()?;
+    }
+    let mut rep_overrides = [0u32; 5];
+    for over in &mut rep_overrides {
+        *over = r.u32()?;
+    }
+    let rep_rewards = std::array::from_fn(|i| {
+        (rep_factions[i], rep_amounts[i] as i32, rep_overrides[i])
+    });
     let point_map_id = r.u32()?;
     let point_x = r.f32()?;
     let point_y = r.f32()?;
@@ -2919,9 +2942,10 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
     Ok(QuestTemplate {
         quest_id, method, level, zone_or_sort, quest_type, rep_objective_faction,
         rep_objective_value, opposite_rep_faction, opposite_rep_value, next_quest_in_chain,
-        money, money_max_level, reward_spell, src_item_id, flags, rewards, choices,
-        point_map_id, point_x, point_y, point_opt, title, objectives_text, details, end_text,
-        objectives,
+        money, money_max_level, reward_spell, src_item_id, flags, honor_reward,
+        honor_multiplier, title_reward, bonus_talents, bonus_arena_points, rep_rewards,
+        rewards, choices, point_map_id, point_x, point_y, point_opt, title, objectives_text,
+        details, end_text, objectives,
     })
 }
 
