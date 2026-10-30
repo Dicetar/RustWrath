@@ -1099,6 +1099,34 @@ mod tests {
     use super::*;
     use crate::items::Items;
 
+    /// The selected 12340 profile's AreaTable has 36 fields and QuestInfo 18; the loader reads
+    /// the file's own count, so the stock log's zone headers and quest tags are named.
+    #[test]
+    fn the_selected_profile_names_quest_headers_and_tags() {
+        let Some(manifest) = std::env::var_os("WM_ASSET_MANIFEST") else {
+            benilla_formats::skipped("needs WM_ASSET_MANIFEST", &[]);
+            return;
+        };
+        let manifest = std::path::PathBuf::from(manifest);
+        let profile = std::env::var("WM_ASSET_PROFILE").expect("WM_ASSET_PROFILE");
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_assets::open_profile_chain(&data, &manifest, &profile)
+            .expect("profile chain");
+        let headers =
+            benilla_formats::load_quest_header_names(&mut chain).expect("quest header names");
+        assert_eq!(
+            headers.resolve(33),
+            Some("Stranglethorn Vale"),
+            "AreaTable 33 names the zone under the 36-field layout"
+        );
+        let tags = benilla_formats::load_quest_tag_names(&mut chain).expect("quest tag names");
+        assert_eq!(
+            tags.resolve(41),
+            Some("PvP"),
+            "QuestInfo 41 names the tag under the 18-field layout"
+        );
+    }
+
     fn obj(
         creature_or_go: u32,
         required_count: u32,

@@ -170,7 +170,15 @@ pub(crate) fn load_id_name_table(
     let bytes = chain
         .read_file(file)
         .with_context(|| format!("reading {file}"))?;
-    let rs = parse(&bytes, id_name_schema(what, name_col, cols), what)?;
+    // The selected profile may be a later build whose table carries trailing columns (12340's
+    // AreaTable has 36 fields against 1.12's 25). The name block starts at the same column; read
+    // the file's own count, never fewer than the layout the caller requires.
+    let fields = field_count(&bytes).with_context(|| format!("{what}: {file} field count"))?;
+    anyhow::ensure!(
+        fields >= cols,
+        "{what}: {file} has {fields} fields, needs at least {cols}"
+    );
+    let rs = parse(&bytes, id_name_schema(what, name_col, fields), what)?;
     let locale = chain.locale();
     let mut out = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
