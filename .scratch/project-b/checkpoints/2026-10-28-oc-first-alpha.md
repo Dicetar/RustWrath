@@ -218,3 +218,117 @@ Live short tests after the rebuild:
   claimed. The vehicle pitch handlers are callable no-ops and are not vehicle functionality.
 
 No alpha or full-replacement claim follows.
+
+## 2026-10-30 quest exchange and stock quest-log rendering
+
+Status: source/verification cycle continuing from `76e108da`. Branch `wotlk`; commits this
+block: `76e108da` (12340 quest exchange), `94153b34` (quest-log detail/controls),
+`f82d12dd` (25 Wrath quest slots), `75bff9e8` (description gradient clear). No server, DB,
+WM, install or credential operation. Astra's concurrent dirty files
+(`crates/benilla-assets/src/blp.rs`, `crates/benilla-blp/src/lib.rs`,
+`crates/benilla-formats/src/{items,lib}.rs`, untracked `crates/benilla-blp/examples/`) are
+preserved untouched; the verified binary includes them, so the exact source is HEAD plus that
+concurrent work, not a clean HEAD checkout.
+
+### Verified fixes
+
+- The quest-giver chain reaches the stock frames: `SMSG_QUESTGIVER_QUEST_DETAILS` 12340
+  layout (second GUID, extra dword, reputation/emote tail), `SMSG_QUEST_QUERY_RESPONSE`
+  12340 layout (six choices, completed text, relocated item requirements), quest-log seat
+  through the watcher, and the adapter's `WrathQuestSlots` notices.
+- Stock controls now render: 3.3.5 `<NormalFont style="...">` links the font object (the
+  `UIPanelButtonTemplate` labels had no font and measured 1x1), `Slider:Enable`/`Disable`
+  exists for `HybridScrollFrame`, and the quest log's Share button resolves to its anchored
+  94-px rect (its `GetWidth` stays the declared 1 px per the 1.12 getter rule).
+- The description body now draws: the 3.3.5 log template has no fading frame, so
+  `SetAlphaGradient(0, 0)` must clear the reveal. `gradient_alpha` now returns opaque for a
+  zero-length gradient at start 0 while keeping the hard edge for a positive start.
+- Wrath-only globals are installed only in the Wrath host: gossip counts/`ForceGossip`, the
+  quest-log reward getters and `ProcessQuestLogRewardFactions`, `GetBindingByKey`, and the
+  map/Wintergrasp helpers. `the_engine_adds_no_global_past_1_12` passes again. The reward
+  getters read translated 12340 honor/talent/arena/title/reputation data; XP remains 0
+  (the `QuestXP.dbc` calculation is not wired) and `ProcessQuestLogRewardFactions` is a
+  compatibility entry, not an implemented routine.
+
+### 25-slot verification
+
+`QUEST_LOG_SLOTS` is 25. The adapter keeps the full 12340 window in a `WrathQuestSlots`
+component beside the 1.12 descriptor's 20-slot projection; the feed and field notices read
+it, and the VM's rows/selection iterate all 25.
+
+- `cargo test -p benilla-app --lib wrath_quest_slots_keep_all_twenty_five`: pass (slot 25 id,
+  counters, state and timer).
+- `cargo test -p benilla-ui --lib the_log_holds_all_twenty_five_wrath_slots`: pass (26 rows =
+  header + 25 quests; the 25th row selects and returns its text).
+- `cargo test -p benilla-ui --lib wrath_reward_lines_come_from_the_selected_record`: pass.
+
+### Observed evidence
+
+- Quest accept/display PASS: `connected-run-20261030-065229-083.stderr.log`
+  (`panel shown=true title="Panther Mastery" desc=present objectives="...kill 10 Panthers." -> PASS`),
+  screenshot `oc-run-20261030-065228-716.png`.
+- Controls/title/objectives rendered (description still blank): `connected-run-20261030-131126-237.stderr.log`,
+  screenshot `oc-run-20261030-131125-846.png`; probe showed the labels' font
+  `Fonts\FRIZQT__.TTF@12` and the Share rect `l=128 r=222`.
+- Description fixed: `connected-run-20261030-170441-580.stderr.log` has the explicit
+  `probe-log: INSTRUMENT START quest-log detail render check` and `INSTRUMENT END`, with
+  `detail desc ... text=Now you're ready to turn it up a notch...`; screenshot
+  `oc-run-20261030-170440-837.png` shows the full description body, objectives and labeled
+  Abandon/Share/Track/Close controls.
+- Binary SHA-256 of that run: `DBAAB5CD38C8720A980167F66569B1B041B4F97689BB8097AA3B4FC2455F3A9B`
+  (`target/debug/benilla.exe`, built from HEAD `f82d12dd` plus the `75bff9e8` edits and
+  Astra's concurrent dirty files above).
+- Full `benilla-ui` lib: 3355 passed, 3 failed, 1 ignored. The three failures are outside this
+  slice: `script::tests::glue_surface::the_glue_vm_answers_the_glue_surface` (in-game CVar/video
+  globals reachable in the glue VM since `1542e4e1`) and two local-timezone tests
+  (`stdlib::date_and_time_read_the_local_zone`, `stdlib::time_converts_a_date_table`).
+  `benilla-protocol-wrath`: 32 passed.
+
+### Remaining graphics/UI defects
+
+- The quest log's zone headers are blank: `AreaTable.dbc` (schema 25 vs 36 fields) and
+  `QuestInfo.dbc` (10 vs 18) still fail their Wrath layouts, so grouping names are empty.
+- The Share button's state texture is visually weaker than its neighbours; its label, hit rect
+  and click path work. `GetWidth` reporting 1 is the reference rule, not the rect.
+- The green wedge remains when the camera enters an M2 doodad interior (tent): no M2 camera
+  collision.
+- 12340 particle data is still refused (`3b0b0e0f` containment); real 264 effects are disabled.
+- Map zone dropdowns remain blank; `debuglocals` makes the stock error handler noisy; the
+  broader missing-API list from Astra's handoff still stands (vehicle/boss production state,
+  `GameTooltip:IsUnit`, etc.).
+
+### Owner's interactive combat/loot/turn-in route
+
+Launch without probe variables (stock UI, shadow data; the identity wrapper prints no secret):
+
+```powershell
+$env:WOW_STOCK_UI = '1'
+$env:WOW_DATA_OVERRIDE = 'D:\Projects\project-b-client\.scratch\project-b\verification\2026-10-28-oc-alpha\shadow-data'
+powershell -NoProfile -ExecutionPolicy Bypass -File '.scratch\project-b\verification\2026-10-28-oc-alpha\run-from-identity.ps1'
+```
+
+Character: Dicetar (`0x6a7`), Nesingwary's Expedition, 20/25 quests. Current mastery progress:
+Tiger Mastery 186 7/10, Raptor Mastery 194 8/10, Panther Mastery 191 0/10.
+
+1. Kill 10 Stranglethorn Panthers (entry 683) near the camp with melee; the Panther Mastery
+   counter in the log must advance 0/10 -> 10/10 and the row show `(Complete)`.
+2. Loot one panther corpse; check the loot window and the coin/item update.
+3. Return to Hemet Nesingwary (`0xf1300002cc003dba`), open the gossip window, select the
+   active Panther Mastery row, complete the quest and choose a reward. Record XP/coin.
+4. Log out and back in; the quest must be gone, the reward must persist, and no other quest
+   may be reset. Do not reset completed quests; the five Green Hills chapters and the other
+   log entries stay in progress.
+
+Combat remains human-driven. No kill-probe or unattended combat is authorized; the temporary
+kill probe and its registrations were removed. Any further diagnostic run must print an
+explicit instrument-start signal and state its expected result first.
+
+### Astra's work in this block
+
+Reviewed Astra's handoff (`2026-10-29-astra-to-oc.md`) and commits: `68585d5b` Wrath
+WorldMapArea/Continent layouts, `849af7d8` bone-track bounds, `3b0b0e0f` particle containment,
+`7a3ab86a` Wrath startup CVars. The 264 particle decoder, map zone selection/dropdowns and the
+vehicle/boss production state remain open. Her opencode worktree
+(`D:/Projects/project-b-opencode`, B-ticket branch) is a separate project and was not touched.
+
+No alpha or full-replacement claim follows.
