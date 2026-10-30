@@ -252,24 +252,23 @@ fn read_mh2o(data: &[u8]) -> Result<Mh2oChunk> {
                 let raw = data
                     .bytes_at(vertex_at, vertex_count * stride)
                     .ok_or(Error::Truncated("MH2O vertex data"))?;
+                // MH2O stores parallel arrays, not vertex structs: heights, optional UV pairs,
+                // then depths. TrinityCore 3.3.5 adt.h GetLiquidHeight/GetLiquidDepth.
+                let height_bytes = if lvf == 2 { 0 } else { vertex_count * 4 };
+                let uv_bytes = if matches!(lvf, 1 | 3) { vertex_count * 4 } else { 0 };
                 for i in 0..vertex_count {
-                    let v = &raw[i * stride..(i + 1) * stride];
-                    match lvf {
-                        0 => {
-                            heights.push(f32::from_le_bytes(v[0..4].try_into().unwrap()));
-                            depths.push(v[4]);
-                        }
-                        1 => {
-                            heights.push(f32::from_le_bytes(v[0..4].try_into().unwrap()));
-                            uvs.push([u16::from_le_bytes([v[4], v[5]]), u16::from_le_bytes([v[6], v[7]])]);
-                        }
-                        2 => depths.push(v[0]),
-                        3 => {
-                            heights.push(f32::from_le_bytes(v[0..4].try_into().unwrap()));
-                            uvs.push([u16::from_le_bytes([v[4], v[5]]), u16::from_le_bytes([v[6], v[7]])]);
-                            depths.push(v[8]);
-                        }
-                        _ => {}
+                    if height_bytes != 0 {
+                        heights.push(raw.f32_at(i * 4).ok_or(Error::Truncated("MH2O height"))?);
+                    }
+                    if uv_bytes != 0 {
+                        let uv = height_bytes + i * 4;
+                        uvs.push([
+                            raw.u16_at(uv).ok_or(Error::Truncated("MH2O UV"))?,
+                            raw.u16_at(uv + 2).ok_or(Error::Truncated("MH2O UV"))?,
+                        ]);
+                    }
+                    if matches!(lvf, 0 | 2 | 3) {
+                        depths.push(raw[height_bytes + uv_bytes + i]);
                     }
                 }
             }
@@ -697,6 +696,27 @@ pub use combined_alpha::CombinedAlphaMap;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mh2o_height_and_depth_arrays_are_not_interleaved() {
+        let instance = 256 * 12;
+        let vertex = instance + 24;
+        let mut data = vec![0u8; vertex + 20];
+        data[0..4].copy_from_slice(&(instance as u32).to_le_bytes());
+        data[4..8].copy_from_slice(&1u32.to_le_bytes());
+        data[instance..instance + 2].copy_from_slice(&5u16.to_le_bytes());
+        data[instance + 14] = 1;
+        data[instance + 15] = 1;
+        data[instance + 20..instance + 24].copy_from_slice(&(vertex as u32).to_le_bytes());
+        for (i, height) in [12.0f32, 12.5, 13.0, 13.5].iter().enumerate() {
+            data[vertex + i * 4..vertex + i * 4 + 4].copy_from_slice(&height.to_le_bytes());
+        }
+        data[vertex + 16..vertex + 20].copy_from_slice(&[20, 40, 60, 80]);
+        let parsed = read_mh2o(&data).unwrap();
+        let layer = &parsed.entries[0].instances[0];
+        assert_eq!(layer.heights, [12.0, 12.5, 13.0, 13.5]);
+        assert_eq!(layer.depths, [20, 40, 60, 80]);
+    }
 
     /// Build one IFF chunk: reversed magic + `u32` size + payload.
     fn chunk(magic: &[u8; 4], payload: &[u8]) -> Vec<u8> {
