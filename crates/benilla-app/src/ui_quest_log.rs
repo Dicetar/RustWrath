@@ -684,7 +684,7 @@ fn has_world_state_token(text: &str) -> bool {
     })
 }
 
-/// The descriptor's twenty slots, as the engine reads them.
+/// The descriptor's twenty slots, as the engine reads it.
 pub(crate) fn slot_views(store: &ObjectFields) -> [QuestSlotView; QUEST_LOG_SLOTS] {
     std::array::from_fn(|slot| {
         store
@@ -698,8 +698,17 @@ pub(crate) fn slot_views(store: &ObjectFields) -> [QuestSlotView; QUEST_LOG_SLOT
     })
 }
 
+/// The slots the log reads: the Wrath window's full twenty-five when the adapter carries it, else
+/// the 1.12 descriptor's twenty (the rest stay empty).
+pub(crate) fn slot_views_of(
+    store: &ObjectFields,
+    wrath: Option<&crate::wrath::WrathQuestSlots>,
+) -> [QuestSlotView; QUEST_LOG_SLOTS] {
+    wrath.map_or_else(|| slot_views(store), |slots| slots.0)
+}
+
 /// Every quest-log slot as `(quest id, state)`, the slot watcher's input.
-type SlotStates = [(u32, u8); PLAYER_QUEST_LOG_SLOTS as usize];
+type SlotStates = [(u32, u8); QUEST_LOG_SLOTS];
 
 /// The quests the slot watcher `0x5ddd80` announces, per slot as `(quest id, state)`: a quest in a
 /// slot that held none, or the same quest with its fail bit cleared (`0x5dde17`-`0x5dde34`). A slot
@@ -740,6 +749,7 @@ pub(crate) struct FeedMemo {
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct QuestLogReads<'w, 's> {
     self_q: Query<'w, 's, (&'static ObjectStore, &'static Guid), With<SelfPlayer>>,
+    wrath_slots: Query<'w, 's, Option<&'static crate::wrath::WrathQuestSlots>, With<SelfPlayer>>,
     names: Res<'w, NameCache>,
     // The bag walk behind an item objective's count.
     objects: crate::net::Objects<'w, 's>,
@@ -796,6 +806,8 @@ pub(crate) fn feed_quest_log(
             return 0;
         };
         let store = &store.0;
+        let wrath_slots = reads.wrath_slots.iter().next().flatten();
+        let current_slots = slot_views_of(store, wrath_slots);
         let slots_moved = field_notices
             .iter()
             .any(|n| matches!(n, FieldNotice::QuestLog));
@@ -851,7 +863,7 @@ pub(crate) fn feed_quest_log(
             // create can land before this VM's player flag, and that notice would then rebuild
             // nothing. Seat the slots through the watcher's own entry so it rebuilds and fires
             // `QUEST_LOG_UPDATE` once.
-            let slot_views = slot_views(store);
+            let slot_views = current_slots;
             debug!(
                 "ui_quest_log: seat {:#x} with {} quests",
                 guid.0,
@@ -940,11 +952,8 @@ pub(crate) fn feed_quest_log(
         // The slot watcher's accept line, whose catalog row carries `QUESTADDED`. The seat is
         // silent: the initial create fills the whole log.
         if seat || slots_moved {
-            let now: SlotStates = std::array::from_fn(|slot| {
-                store
-                    .player_quest_log(slot as u8)
-                    .map_or((0, 0), |s| (s.quest_id, s.state))
-            });
+            let now: SlotStates =
+                std::array::from_fn(|slot| (current_slots[slot].quest_id, current_slots[slot].state));
             if let Some(prior) = memo.prior.as_ref() {
                 for quest_id in accepted_quests(prior, &now) {
                     quest_lines.push(crate::ui_quest::QuestLine::Accepted(quest_id));
@@ -955,8 +964,8 @@ pub(crate) fn feed_quest_log(
 
         // The held counts the item lines read (`0x622130`), current before the field notices fire.
         if seat || slots_moved || bags_moved || records_landed {
-            let held: HashMap<u32, u32> = (0..PLAYER_QUEST_LOG_SLOTS)
-                .filter_map(|slot| store.player_quest_log(slot))
+            let held: HashMap<u32, u32> = current_slots
+                .iter()
                 .filter_map(|s| quest_log.templates.get(s.quest_id))
                 .flat_map(|t| t.objectives.iter().map(|o| o.item_id))
                 .filter(|&id| id != 0)

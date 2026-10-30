@@ -41,7 +41,10 @@ use super::Model;
 use crate::strings::{fill, global, Arg};
 
 /// The quest slots, `PLAYER_QUEST_LOG_1_1` on, 12 bytes each (`0x4de73e`).
-pub const QUEST_LOG_SLOTS: usize = 20;
+/// The quest slots the VM's log holds: 3.3.5's 25. The 1.12 wire carries 20, and the adapter's
+/// descriptor projection fills those; the Wrath path carries all 25 beside it. Consumers that
+/// index the model use this, so the two paths share one shape.
+pub const QUEST_LOG_SLOTS: usize = 25;
 
 /// The slot state byte's complete bit (`test byte [slot+7],1`, `0x4e02a2`).
 const SLOT_COMPLETE: u8 = 0x01;
@@ -2368,6 +2371,41 @@ mod tests {
             .eval::<bool>(
                 "local _, _, _, h, c = GetQuestLogTitle(3)\n\
                  return h == nil and c == nil and type(h) ~= 'boolean'"
+            )
+            .unwrap());
+    }
+
+    /// 3.3.5 has twenty-five quest slots; the model and its rows carry all of them, not the 1.12
+    /// twenty-slot projection.
+    #[test]
+    fn the_log_holds_all_twenty_five_wrath_slots() {
+        let mut s =
+            UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        caches(&mut s);
+        let log: Vec<_> = (1..=25u32)
+            .map(|i| {
+                let mut r = record(&format!("Quest {i}"), 5, 12, "Elven");
+                r.description = format!("Text {i}");
+                r.objectives_text = format!("Objective {i}");
+                (i, r, slot(i, 0, 0))
+            })
+            .collect();
+        seat(&mut s, &log);
+        assert_eq!(
+            s.eval::<(i64, i64)>("return GetNumQuestLogEntries()")
+                .unwrap(),
+            (26, 25),
+            "one header and all twenty-five quest rows"
+        );
+        // The rebuild sorts the rows; find the twenty-fifth quest by title, then read its text.
+        assert!(s
+            .eval::<bool>(
+                "local row \
+                 for i = 1, 26 do if GetQuestLogTitle(i) == 'Quest 25' then row = i end end \
+                 if not row then return false end \
+                 SelectQuestLogEntry(row) \
+                 local d = GetQuestLogQuestText() \
+                 return d == 'Text 25'"
             )
             .unwrap());
     }

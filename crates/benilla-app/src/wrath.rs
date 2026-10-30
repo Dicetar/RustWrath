@@ -56,6 +56,7 @@ use benilla_wm_native::{
 };
 use benilla_protocol_wrath::gameplay::{self, ServerEvent as WrathGameplayEvent};
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
+use benilla_ui::script::{QuestSlotView, QUEST_LOG_SLOTS};
 use crate::entities::Equipment;
 use crate::items::{Countdowns, ItemObject};
 use crate::net::{
@@ -4151,25 +4152,34 @@ struct WrathStreamed;
 #[derive(Component, Clone, Copy)]
 struct WrathGeneration(u32);
 
-/// The 1.12 quest-log window (`PLAYER_QUEST_LOG_1_1` through its twenty slots) as the edges a
-/// 3.3.5 player update moved: the watch `0x4de4d0` runs on any byte of it.
-fn quest_log_edges(
-    old: &benilla_protocol::ObjectFields,
-    new: &benilla_protocol::ObjectFields,
-) -> Vec<(u16, u32, u32)> {
-    let base = benilla_protocol::field::FIELD_PLAYER_QUEST_LOG_1_1;
-    let old: std::collections::HashMap<u16, u32> = old.raw_fields().collect();
-    let new: std::collections::HashMap<u16, u32> = new.raw_fields().collect();
-    (0..60)
-        .filter_map(|offset| {
-            let index = base + offset;
-            let (old_value, new_value) = (
-                old.get(&index).copied().unwrap_or(0),
-                new.get(&index).copied().unwrap_or(0),
-            );
-            (old_value != new_value).then_some((index, old_value, new_value))
-        })
-        .collect()
+/// The full 3.3.5 quest-log window (25 five-dword slots) carried beside the 1.12 descriptor's
+/// twenty-slot projection. The stock log reads this, so no server slot is lost.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct WrathQuestSlots(pub [QuestSlotView; QUEST_LOG_SLOTS]);
+
+/// Map 12340's `PLAYER_QUEST_LOG_*` block: id, state, two count dwords (four 16-bit counts) and
+/// the deadline, five dwords a slot for twenty-five slots.
+fn wrath_quest_slots(raw: &[u32]) -> [QuestSlotView; QUEST_LOG_SLOTS] {
+    std::array::from_fn(|slot| {
+        let src = 158 + slot * 5;
+        let quest_id = raw.get(src).copied().unwrap_or(0);
+        if quest_id == 0 {
+            return QuestSlotView::default();
+        }
+        let state = raw.get(src + 1).copied().unwrap_or(0);
+        let counts = u64::from(raw.get(src + 2).copied().unwrap_or(0))
+            | (u64::from(raw.get(src + 3).copied().unwrap_or(0)) << 32);
+        let mut counters = [0u8; 4];
+        for (i, counter) in counters.iter_mut().enumerate() {
+            *counter = ((counts >> (i * 16)) & 0xffff).min(63) as u8;
+        }
+        QuestSlotView {
+            quest_id,
+            counters,
+            state: (state & 0xff) as u8,
+            timer: raw.get(src + 4).copied().unwrap_or(0),
+        }
+    })
 }
 
 /// Copy the player inventory bands the 1.12 item owners walk. The 3.3.5 arrays are wider in the
@@ -4490,6 +4500,7 @@ fn wrath_apply_world(world: &mut World) {
             pairs.push((16, target as u32));
             pairs.push((17, (target >> 32) as u32));
         }
+        let mut wrath_slots: Option<WrathQuestSlots> = None;
         if kind == EntityKind::Player {
             if let Some(bytes) = remote.player_bytes {
                 pairs.push((193, bytes));
@@ -4499,27 +4510,24 @@ fn wrath_apply_world(world: &mut World) {
             }
             if let Some(raw) = remote.player_fields.as_deref() {
                 // 3.3.5 uses 148 as UNIT_END; 1.12 uses a different player layout. Map the
-                // durable fields the stock quest/loot/player frames read.
+                // durable fields the stock quest/loot/player frames read. The descriptor keeps
+                // the 1.12 twenty-slot projection; the full twenty-five go beside it.
+                let slots = wrath_quest_slots(raw);
                 for slot in 0..20usize {
-                    let src = 158 + slot * 5;
-                    let id = raw.get(src).copied().unwrap_or(0);
-                    if id == 0 {
+                    let s = slots[slot];
+                    if s.quest_id == 0 {
                         continue;
                     }
-                    let state = raw.get(src + 1).copied().unwrap_or(0);
-                    let counts = u64::from(raw.get(src + 2).copied().unwrap_or(0))
-                        | (u64::from(raw.get(src + 3).copied().unwrap_or(0)) << 32);
-                    let timer = raw.get(src + 4).copied().unwrap_or(0);
-                    let mut packed = (state & 0xff) << 24;
-                    for i in 0..4 {
-                        let count = ((counts >> (i * 16)) & 0xffff).min(63) as u32;
-                        packed |= count << (i * 6);
+                    let mut packed = u32::from(s.state) << 24;
+                    for (i, count) in s.counters.iter().enumerate() {
+                        packed |= u32::from(*count) << (i * 6);
                     }
                     let dst = 198 + slot * 3;
-                    pairs.push((dst as u16, id));
+                    pairs.push((dst as u16, s.quest_id));
                     pairs.push(((dst + 1) as u16, packed));
-                    pairs.push(((dst + 2) as u16, timer));
+                    pairs.push(((dst + 2) as u16, s.timer));
                 }
+                wrath_slots = Some(WrathQuestSlots(slots));
                 for (src, dst) in [(25u16, 23u16), (26, 24), (27, 25), (33, 29), (34, 30), (35, 31)] {
                     if let Some(value) = raw.get(src as usize) {
                         pairs.push((dst, *value));
@@ -4573,11 +4581,10 @@ fn wrath_apply_world(world: &mut World) {
                 let new_span = matches!(kind, EntityKind::Unit | EntityKind::Player)
                     .then(|| aura_span(&fields));
                 // The player descriptor is replaced whole, so the 1.12 watches get the quest-log
-                // edges by hand, as the packet path's alerts block would carry them.
-                let quest_edges = (kind == EntityKind::Player)
-                    .then(|| old.as_ref().map(|old| quest_log_edges(old, &fields)))
-                    .flatten()
-                    .unwrap_or_default();
+                // signals by hand when any of the twenty-five slots moved.
+                let old_slots = world.get::<WrathQuestSlots>(entity).copied();
+                let quest_slots_changed =
+                    wrath_slots.is_some_and(|slots| old_slots != Some(slots));
                 world.entity_mut(entity).insert((
                     NetEntity {
                         kind,
@@ -4586,7 +4593,10 @@ fn wrath_apply_world(world: &mut World) {
                     },
                     ObjectStore(fields),
                 ));
-                if !quest_edges.is_empty() && *guid == player_guid {
+                if let Some(slots) = wrath_slots {
+                    world.entity_mut(entity).insert(slots);
+                }
+                if quest_slots_changed && *guid == player_guid {
                     // The same two signals the 1.12 values block raises: the rebuild notice and
                     // the event the stock log frame listens for.
                     let mut notices =
@@ -4718,6 +4728,9 @@ fn wrath_apply_world(world: &mut World) {
                     InheritedVisibility::default(),
                     transform.unwrap_or_default(),
                 ));
+                if let Some(slots) = wrath_slots {
+                    entity.insert(slots);
+                }
                 if *guid == player_guid {
                     entity.insert((
                         SelfPlayer,
@@ -5905,14 +5918,30 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
+    /// All twenty-five 12340 slots survive the mapping, not just the 1.12 twenty.
     #[test]
-    fn a_moved_quest_slot_becomes_one_edge_per_dword() {
-        let old = benilla_protocol::ObjectFields::from_pairs(&[(198, 57), (199, 0x0102)]);
-        let new = benilla_protocol::ObjectFields::from_pairs(&[(198, 57), (199, 0x0103), (201, 339)]);
-        let edges = quest_log_edges(&old, &new);
-        assert!(edges.contains(&(199, 0x0102, 0x0103)), "{edges:?}");
-        assert!(edges.contains(&(201, 0, 339)), "{edges:?}");
-        assert!(!edges.iter().any(|(index, _, _)| *index == 198), "{edges:?}");
+    fn wrath_quest_slots_keep_all_twenty_five() {
+        let mut raw = vec![0u32; 158 + 25 * 5];
+        raw[158] = 57; // slot 1
+        raw[158 + 1] = 0x2;
+        raw[158 + 2] = 3 | (4 << 16);
+        raw[158 + 4] = 111;
+        let last = 158 + 24 * 5;
+        raw[last] = 999; // slot 25
+        raw[last + 1] = 0x3;
+        raw[last + 2] = 1 | (2 << 16);
+        raw[last + 3] = 5 | (6 << 16);
+        raw[last + 4] = 777;
+        let slots = wrath_quest_slots(&raw);
+        assert_eq!(slots.len(), 25);
+        assert_eq!(slots[0].quest_id, 57);
+        assert_eq!(slots[0].counters[0], 3);
+        assert_eq!(slots[0].counters[1], 4);
+        assert_eq!(slots[0].timer, 111);
+        assert_eq!(slots[24].quest_id, 999, "the 25th slot is kept");
+        assert_eq!(slots[24].counters, [1, 2, 5, 6]);
+        assert_eq!(slots[24].state, 3);
+        assert_eq!(slots[24].timer, 777);
     }
 
     /// 3.3.5's two-field visible slots feed the 1.12 twelve-dword block: entry at +2, the packed

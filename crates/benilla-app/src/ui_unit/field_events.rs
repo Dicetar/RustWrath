@@ -30,6 +30,8 @@ pub(crate) struct NoticeFiring<'w, 's> {
     names: Res<'w, crate::names::NameCache>,
     // The quest log's watcher reads the slots.
     me: Query<'w, 's, &'static crate::net::ObjectStore, With<crate::net::SelfPlayer>>,
+    /// The Wrath adapter's full twenty-five-slot window beside the 1.12 descriptor.
+    me_slots: Query<'w, 's, &'static crate::wrath::WrathQuestSlots, With<crate::net::SelfPlayer>>,
     tutorials: Option<Res<'w, crate::tutorial::Tutorials>>,
     // The form table the bonus bar's offset reads (`0x4e4fc0`).
     spells: Option<Res<'w, crate::ui_action::Spells>>,
@@ -58,7 +60,8 @@ impl NoticeFiring<'_, '_> {
         }
         if notice == FieldNotice::QuestLog {
             if let Some(store) = self.me.iter().next() {
-                script.quest_log_changed(crate::ui_quest_log::slot_views(&store.0));
+                let slots = self.me_slots.iter().next();
+                script.quest_log_changed(crate::ui_quest_log::slot_views_of(&store.0, slots));
             }
             return false;
         }
