@@ -1338,6 +1338,10 @@ impl Model {
     /// pushed under the token, else, for a token with a `target` hop or for `target` itself, what
     /// the getters read for the guid it resolves to.
     pub(crate) fn unit(&self, token: &str) -> Option<&UnitState> {
+        // The 3.3.5 quest frame's tokens name the interaction NPC, which the app pushes as `npc`.
+        if self.is_wrath() && super::unit::is_quest_unit_token(token) {
+            return self.pushed_unit("npc");
+        }
         if let UnitTokenParse::Unit {
             base: base @ (UnitBase::Focus | UnitBase::Vehicle | UnitBase::Boss(_)),
             hops,

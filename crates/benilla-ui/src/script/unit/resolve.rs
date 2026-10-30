@@ -140,9 +140,17 @@ pub(crate) fn token_recognised(token: &str) -> bool {
 pub(crate) fn token_recognised_for(token: &str, wrath: bool) -> bool {
     token_recognised(token)
         || (wrath
-            && WRATH_PREFIXES
-                .iter()
-                .any(|(p, _)| has_prefix(token.as_bytes(), p)))
+            && (is_quest_unit_token(token)
+                || WRATH_PREFIXES
+                    .iter()
+                    .any(|(p, _)| has_prefix(token.as_bytes(), p))))
+}
+
+/// The 3.3.5 client's two quest-frame unit tokens, which name the open questgiver: `questnpc`
+/// on the greeting, detail and progress panels, `questturnin` on the reward panel. The 1.12
+/// resolver has neither.
+pub(crate) fn is_quest_unit_token(token: &str) -> bool {
+    token.eq_ignore_ascii_case("questnpc") || token.eq_ignore_ascii_case("questturnin")
 }
 
 /// The inline base-10 parse after `party`, `partypet`, `raid` and `raidpet`, then `dec` to a
@@ -182,7 +190,9 @@ pub fn parse_unit_token_for(token: &str, wrath: bool) -> UnitTokenParse {
             .flatten()
     });
     let Some((base, len)) = found else {
-        return if token.eq_ignore_ascii_case("npc") {
+        return if token.eq_ignore_ascii_case("npc")
+            || (wrath && is_quest_unit_token(token))
+        {
             UnitTokenParse::Unit {
                 base: UnitBase::Npc,
                 hops: 0,
@@ -685,6 +695,30 @@ mod tests {
                 "{token}"
             );
         }
+    }
+
+    /// The 3.3.5 quest frame's `questnpc`/`questturnin` are the interaction NPC; 1.12 raises
+    /// them as unknown.
+    #[test]
+    fn wrath_quest_tokens_name_the_interaction_npc() {
+        let g = wrath_guids();
+        for token in ["questnpc", "questturnin", "QUESTNPC", "QuestTurnIn"] {
+            assert_eq!(g.resolve(token), Ok(Some(MOB)), "{token}");
+            assert!(
+                guids().resolve(token).is_err(),
+                "{token} stays unknown in vanilla"
+            );
+        }
+        assert_eq!(
+            parse_unit_token_for("questnpc", true),
+            UnitTokenParse::Unit {
+                base: UnitBase::Npc,
+                hops: 0
+            }
+        );
+        assert_eq!(parse_unit_token("questnpc"), UnitTokenParse::Unknown);
+        assert!(token_recognised_for("questnpc", true));
+        assert!(!token_recognised_for("questnpc", false));
     }
 
     /// The Wrath bases resolve through their host fields, including target hops; absent state

@@ -446,6 +446,13 @@ pub(super) fn install_in_game(lua: &Lua) -> mlua::Result<()> {
             )?;
             let mut model = lua.app_data_mut::<Model>().expect("model");
             model.set_texel(rh, super::texel::TexSet::Own(None));
+            // The 3.3.5 quest frame binds `questnpc`/`questturnin`, the same NPC the app seats
+            // under `npc`; the booth slots are keyed by the latter.
+            let unit = if model.is_wrath() && super::unit::is_quest_unit_token(&unit) {
+                "npc".to_string()
+            } else {
+                unit
+            };
             let data = model.region_data.entry(rh).or_default();
             // Lowercased: the reference resolves the token case-insensitively (`0x519ef0` →
             // `0x515970`), stock `MerchantFrame.lua:68` passes `"NPC"`, and the app's bakes are

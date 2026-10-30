@@ -27,6 +27,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(false))?,
     )?;
 
+    // `HasCompletedAnyAchievement` (`MainMenuBarMicroButtons.lua:103`): the micro menu's
+    // achievement button asks whether the account has any; benilla has no achievements, so the
+    // answer is false and the button stays in its stock "none" state.
+    lua.globals().set(
+        "HasCompletedAnyAchievement",
+        lua.create_function(|_, ()| Ok(false))?,
+    )?;
+
+    // `GetQuestLogGroupNum` (`QuestInfo.lua:211`) and `GetDailyQuestsCompleted`
+    // (`QuestLogFrame.lua:520`): the suggested party size of the selected log quest and the
+    // daily-quest tally. benilla tracks neither; 0 hides both lines, as the stock client does
+    // with no daily quests and a solo-suggested quest.
+    lua.globals().set(
+        "GetQuestLogGroupNum",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
+    lua.globals().set(
+        "GetDailyQuestsCompleted",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
+
     // `Sound_GameSystem_*` (`AudioOptionsPanels.lua:135`, `:167`): the client enumerates the Miles
     // output devices, and a stock install registers its one DirectSound output as the primary
     // driver (`Sound_OutputDriverName` defaults to "Primary Sound Driver"). benilla's single kira
@@ -294,6 +315,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The micro menu's achievement button reads this before it can update; without an
+    /// achievement system the answer the stock client gives is false.
+    #[test]
+    fn has_completed_any_achievement_is_false() {
+        let script =
+            crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).expect("VM");
+        assert_eq!(
+            script
+                .eval::<bool>("return HasCompletedAnyAchievement() and true or false")
+                .unwrap(),
+            false
+        );
+    }
 
     /// The stock bindings' release legs need `IsModifiedClick`: 1 when the action's modifier is
     /// held, nil otherwise, and nil for an unknown action — the shape `CameraOrSelectOrMoveStop`

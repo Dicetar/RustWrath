@@ -807,7 +807,7 @@ pub struct QuestTemplate {
     pub src_item_id: u32,
     pub flags: u32,
     pub rewards: [(u32, u32); 4],
-    pub choices: [(u32, u32); 4],
+    pub choices: [(u32, u32); 6],
     pub point_map_id: u32,
     pub point_x: f32,
     pub point_y: f32,
@@ -2669,6 +2669,7 @@ fn read_gossip(b: &[u8]) -> Result<ServerEvent> {
         options.push(GossipOption { index, icon, coded, message: r.cstring()? });
         let _box_message = r.cstring()?;
     }
+
     let quests = read_quest_rows(&mut r)?;
     Ok(ServerEvent::Gossip { npc, menu_id, text_id, options, quests })
 }
@@ -2747,9 +2748,12 @@ fn read_reward_block(r: &mut Reader<'_>) -> Result<Vec<RewardItem>> {
 }
 
 fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
+    // 12340 (`SMSG_QUESTGIVER_QUEST_DETAILS`): the second GUID, the extra dword after
+    // `is_finished`, and the reputation/emote tail are Wrath-only; the 1.12 reader's
+    // money-first tail cuts the packet short.
     let mut r = Reader::new(b);
     let npc = r.u64()?;
-    let _divider = r.u32()?;
+    let _guid2 = r.u64()?;
     let quest_id = r.u32()?;
     let title = r.cstring()?;
     let details = r.cstring()?;
@@ -2758,16 +2762,32 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
     let _flags = r.u32()?;
     let _suggested = r.u32()?;
     let _finished = r.u8()?;
+    let _unknown = r.u32()?;
     let choices = read_reward_block(&mut r)?;
     let rewards = read_reward_block(&mut r)?;
-    let money = r.i32()?;
+    let money = r.u32()?;
     let _xp = r.u32()?;
     let _honor = r.u32()?;
     let _honor_multiplier = r.f32()?;
     let reward_spell = r.u32()?;
+    let _casted_spell = r.u32()?;
+    let _title_reward = r.u32()?;
+    let _talent_reward = r.u32()?;
+    let _arena_point_reward = r.u32()?;
+    for _ in 0..15 {
+        let _reputation = r.u32()?;
+    }
+    let emotes = r.u32()?;
+    for _ in 0..emotes {
+        let _emote = r.u32()?;
+        let _delay = r.u32()?;
+    }
+    if r.at != b.len() {
+        anyhow::bail!("quest details left {} bytes", b.len() - r.at);
+    }
     Ok(ServerEvent::QuestDetails(QuestDetails {
         npc, quest_id, title, details, objectives,
-        auto_finish: auto_finish as u32, choices, rewards, money, reward_spell,
+        auto_finish: auto_finish as u32, choices, rewards, money: money as i32, reward_spell,
     }))
 }
 
@@ -2852,14 +2872,15 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
     for slot in &mut rewards {
         *slot = (r.u32()?, r.u32()?);
     }
-    let mut choices = [(0u32, 0u32); 4];
+    // 12340 has six choice slots, not the four the 2.4 layout carried; the two extra pairs
+    // shift every field after them.
+    let mut choices = [(0u32, 0u32); 6];
     for slot in &mut choices {
         *slot = (r.u32()?, r.u32()?);
     }
-    for _ in 0..5 {
-        let _faction = r.u32()?;
-        let _value = r.i32()?;
-        let _override = r.i32()?;
+    // Three arrays of five, not five interleaved triples; only their length matters here.
+    for _ in 0..15 {
+        let _reputation = r.u32()?;
     }
     let point_map_id = r.u32()?;
     let point_x = r.f32()?;
@@ -2868,28 +2889,18 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
     let title = r.cstring()?;
     let objectives_text = r.cstring()?;
     let details = r.cstring()?;
-    let _area_description = r.cstring()?;
     let end_text = r.cstring()?;
+    // 12340 adds a fifth string, the completed-log text.
+    let _completed_text = r.cstring()?;
     let mut raw = [(0u32, 0u32, 0u32, 0u32); 4];
     for slot in &mut raw {
         *slot = (r.u32()?, r.u32()?, r.u32()?, r.u32()?);
     }
-    let mut item_objectives = Vec::with_capacity(6);
+    // The item requirement block moved after the objectives and is redundant with each
+    // objective's own item fields, which the model already carries.
     for _ in 0..6 {
-        let item = r.u32()?;
-        let count = r.u32()?;
-        if item != 0 {
-            item_objectives.push((item, count));
-        }
-    }
-    let mut item_objectives = item_objectives.into_iter();
-    for slot in &mut raw {
-        if slot.0 == 0 && slot.2 == 0 {
-            if let Some((item, count)) = item_objectives.next() {
-                slot.2 = item;
-                slot.3 = count;
-            }
-        }
+        let _item = r.u32()?;
+        let _count = r.u32()?;
     }
     let mut texts = Vec::with_capacity(4);
     for _ in 0..4 {
@@ -2902,6 +2913,9 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
         item_count: raw[i].3,
         text: std::mem::take(&mut texts[i]),
     });
+    if r.at != b.len() {
+        anyhow::bail!("quest template left {} bytes (at {} of {})", b.len() - r.at, r.at, b.len());
+    }
     Ok(QuestTemplate {
         quest_id, method, level, zone_or_sort, quest_type, rep_objective_faction,
         rep_objective_value, opposite_rep_faction, opposite_rep_value, next_quest_in_chain,
@@ -3481,6 +3495,120 @@ mod tests {
                 text: String::new(),
             }
         );
+    }
+
+    /// The 12340 details tail: second GUID, the dword after `is_finished`, reputation
+    /// arrays and the emote list, which the 1.12 reader did not know.
+    fn quest_details_bytes() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x0000_0002_0000_0011u64.to_le_bytes()); // npc
+        b.extend_from_slice(&0u64.to_le_bytes()); // guid2
+        b.extend_from_slice(&338u32.to_le_bytes()); // quest
+        b.extend_from_slice(b"The Green Hills\0");
+        b.extend_from_slice(b"Details.\0");
+        b.extend_from_slice(b"Objectives.\0");
+        b.push(1); // auto finish
+        b.extend_from_slice(&8u32.to_le_bytes()); // flags
+        b.extend_from_slice(&0u32.to_le_bytes()); // suggested
+        b.push(0); // is_finished
+        b.extend_from_slice(&0u32.to_le_bytes()); // 12340 dword
+        b.extend_from_slice(&1u32.to_le_bytes()); // one choice
+        b.extend_from_slice(&44u32.to_le_bytes());
+        b.extend_from_slice(&2u32.to_le_bytes());
+        b.extend_from_slice(&555u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes()); // no fixed rewards
+        b.extend_from_slice(&4700u32.to_le_bytes()); // money
+        b.extend_from_slice(&0u32.to_le_bytes()); // xp
+        b.extend_from_slice(&0u32.to_le_bytes()); // honor
+        b.extend_from_slice(&0f32.to_le_bytes()); // honor multiplier
+        b.extend_from_slice(&0u32.to_le_bytes()); // reward spell
+        b.extend_from_slice(&0u32.to_le_bytes()); // casted spell
+        b.extend_from_slice(&0u32.to_le_bytes()); // title
+        b.extend_from_slice(&0u32.to_le_bytes()); // talent
+        b.extend_from_slice(&0u32.to_le_bytes()); // arena
+        for _ in 0..15 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // reputations
+        }
+        b.extend_from_slice(&1u32.to_le_bytes()); // one emote
+        b.extend_from_slice(&5u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn quest_details_reads_the_12340_tail() {
+        let event = parse(crate::opcode::SMSG_QUESTGIVER_QUEST_DETAILS, &quest_details_bytes()).unwrap();
+        match event.unwrap() {
+            ServerEvent::QuestDetails(d) => {
+                assert_eq!(d.quest_id, 338);
+                assert_eq!(d.title, "The Green Hills");
+                assert_eq!(d.money, 4700);
+                assert_eq!(d.choices.len(), 1);
+                assert_eq!(d.choices[0].item_id, 44);
+                assert_eq!(d.choices[0].count, 2);
+                assert_eq!(d.rewards.len(), 0);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    /// The 12340 template: six choice slots, the completed text and the relocated item
+    /// requirement block; the 2.4 layout shifted every string after the choices.
+    #[test]
+    fn quest_template_reads_the_12340_layout() {
+        let mut b = Vec::new();
+        for v in [338u32, 0, 40, 30, 5280, 0, 0, 0, 0, 0, 0, 0, 0] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&4700i32.to_le_bytes()); // money
+        b.extend_from_slice(&0u32.to_le_bytes()); // max-level money
+        b.extend_from_slice(&0u32.to_le_bytes()); // reward spell
+        b.extend_from_slice(&0u32.to_le_bytes()); // casted spell
+        b.extend_from_slice(&0u32.to_le_bytes()); // honor
+        b.extend_from_slice(&0f32.to_le_bytes()); // honor multiplier
+        b.extend_from_slice(&0u32.to_le_bytes()); // source item
+        b.extend_from_slice(&8u32.to_le_bytes()); // flags
+        for _ in 0..5 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // title, slain, talents, arena, unknown
+        }
+        for _ in 0..4 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // reward id
+            b.extend_from_slice(&0u32.to_le_bytes()); // reward count
+        }
+        for slot in [11u32, 22, 33, 44, 55, 66] {
+            b.extend_from_slice(&slot.to_le_bytes()); // choice id
+            b.extend_from_slice(&(slot / 11).to_le_bytes()); // choice count
+        }
+        for _ in 0..15 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // reputation arrays
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // point map
+        b.extend_from_slice(&0f32.to_le_bytes()); // x
+        b.extend_from_slice(&0f32.to_le_bytes()); // y
+        b.extend_from_slice(&0u32.to_le_bytes()); // point opt
+        b.extend_from_slice(b"Title\0Objective\0Details\0End\0Completed\0");
+        for objective in [(7u32, 3u32, 0u32, 0u32), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)] {
+            for v in [objective.0, objective.1, objective.2, objective.3] {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for _ in 0..6 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // item requirement id
+            b.extend_from_slice(&0u32.to_le_bytes()); // item requirement count
+        }
+        b.extend_from_slice(b"One\0Two\0Three\0Four\0");
+        let template = read_quest_template(&b).expect("parse");
+        assert_eq!(template.quest_id, 338);
+        assert_eq!(template.title, "Title");
+        assert_eq!(template.objectives_text, "Objective");
+        assert_eq!(template.details, "Details");
+        assert_eq!(template.end_text, "End");
+        assert_eq!(template.money, 4700);
+        assert_eq!(template.choices[5], (66, 6));
+        assert_eq!(template.objectives[0].creature_or_go, 7);
+        assert_eq!(template.objectives[0].required_count, 3);
+        assert_eq!(template.objectives[0].text, "One");
+        assert_eq!(template.objectives[3].text, "Four");
     }
 
     #[test]

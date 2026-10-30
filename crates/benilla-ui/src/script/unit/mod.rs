@@ -622,6 +622,7 @@ mod selection_tests;
 mod tests;
 
 pub use relations::UnitRelations;
+pub(crate) use resolve::is_quest_unit_token;
 pub use resolve::{parse_unit_token, parse_unit_token_for, UnitBase, UnitGuids, UnitTokenParse};
 
 pub(super) use bindings::install;

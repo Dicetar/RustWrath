@@ -143,6 +143,7 @@ impl QuestVerbs<'_, '_> {
             return None;
         }
         let (npc, quest) = (giver.npc.unwrap_or(0), d.quest_id);
+        debug!("ui_quest: accept quest {quest} on {npc:#x}");
         let _ = self
             .net
             .0

@@ -23,6 +23,32 @@ fn player() -> UnitState {
     }
 }
 
+/// The 3.3.5 quest frame's tokens read the interaction NPC's pushed snapshot; 1.12 raises them.
+#[test]
+fn wrath_quest_tokens_read_the_interaction_npc() {
+    let npc = UnitState {
+        exists: true,
+        name: Some("Hemet Nesingwary".into()),
+        level: 43,
+        ..Default::default()
+    };
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.set_unit("npc", Some(npc.clone()));
+    for token in ["questnpc", "questturnin"] {
+        let name = s
+            .eval::<Option<String>>(&format!(r#"return UnitName("{token}")"#))
+            .unwrap();
+        assert_eq!(name.as_deref(), Some("Hemet Nesingwary"), "{token}");
+    }
+    let mut vanilla = UiScript::new().unwrap();
+    vanilla.set_unit("npc", Some(npc));
+    let err = vanilla
+        .run(r#"UnitName("questnpc")"#)
+        .expect_err("the 1.12 resolver has no questnpc")
+        .to_string();
+    assert!(err.contains("Unknown unit name"), "{err}");
+}
+
 /// `0x6e6d90`'s order: the `Usage:` check, the not-targeting no-op, the token check, the queue.
 #[test]
 fn spell_target_unit_checks_in_the_references_order() {

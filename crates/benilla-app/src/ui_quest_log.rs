@@ -794,6 +794,7 @@ pub(crate) fn feed_quest_log(
         let seat = memo.player != Some(guid.0);
         // The rebuild's misses, each looked up with a callback (`0x4de65f`) below.
         let asks = script.take_quest_record_asks();
+
         let landing = !quest_log.fresh.is_empty() || !asks.is_empty();
         // The macro inputs, read when a record is to be built or a name may have landed.
         let subject = (seat || landing || reads.names.is_changed() || reads.states.is_changed())
@@ -836,7 +837,17 @@ pub(crate) fn feed_quest_log(
                 script.set_quest_creature_name(entry, name.to_string());
             }
             memo.creatures_seen = reads.names.creatures_landed_since(usize::MAX).1;
-            script.set_quest_slots(slot_views(store));
+            // The seat's descriptor commit is the field watcher's input, not a later notice: the
+            // create can land before this VM's player flag, and that notice would then rebuild
+            // nothing. Seat the slots through the watcher's own entry so it rebuilds and fires
+            // `QUEST_LOG_UPDATE` once.
+            let slot_views = slot_views(store);
+            debug!(
+                "ui_quest_log: seat {:#x} with {} quests",
+                guid.0,
+                slot_views.iter().filter(|s| s.quest_id != 0).count()
+            );
+            script.quest_log_changed(slot_views);
             memo.prior = None;
             memo.subject = key;
         } else if (subject.is_some() && memo.subject != key)
@@ -862,6 +873,7 @@ pub(crate) fn feed_quest_log(
             .collect();
         let records_landed = !landed.is_empty();
         if records_landed {
+            debug!("ui_quest_log: landing {} records", landed.len());
             script.land_quest_records(landed);
         }
         for id in std::mem::take(&mut quest_log.refused) {

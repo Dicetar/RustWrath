@@ -2756,14 +2756,7 @@ fn translate_gameplay(
                 src_item_id: t.src_item_id,
                 flags: t.flags,
                 rewards: t.rewards,
-                choices: [
-                    t.choices[0],
-                    t.choices[1],
-                    t.choices[2],
-                    t.choices[3],
-                    (0, 0),
-                    (0, 0),
-                ],
+                choices: t.choices,
                 point_map_id: t.point_map_id,
                 point_x: t.point_x,
                 point_y: t.point_y,
@@ -4152,6 +4145,27 @@ struct WrathStreamed;
 #[derive(Component, Clone, Copy)]
 struct WrathGeneration(u32);
 
+/// The 1.12 quest-log window (`PLAYER_QUEST_LOG_1_1` through its twenty slots) as the edges a
+/// 3.3.5 player update moved: the watch `0x4de4d0` runs on any byte of it.
+fn quest_log_edges(
+    old: &benilla_protocol::ObjectFields,
+    new: &benilla_protocol::ObjectFields,
+) -> Vec<(u16, u32, u32)> {
+    let base = benilla_protocol::field::FIELD_PLAYER_QUEST_LOG_1_1;
+    let old: std::collections::HashMap<u16, u32> = old.raw_fields().collect();
+    let new: std::collections::HashMap<u16, u32> = new.raw_fields().collect();
+    (0..60)
+        .filter_map(|offset| {
+            let index = base + offset;
+            let (old_value, new_value) = (
+                old.get(&index).copied().unwrap_or(0),
+                new.get(&index).copied().unwrap_or(0),
+            );
+            (old_value != new_value).then_some((index, old_value, new_value))
+        })
+        .collect()
+}
+
 /// Copy the player inventory bands the 1.12 item owners walk. The 3.3.5 arrays are wider in the
 /// bank (28 -> 24 slots), bank bags (7 -> 6) and otherwise use a different base; every array here
 /// is copied explicitly, with the extra 3.3.5 tail dropped rather than folded into a neighbour.
@@ -4552,6 +4566,12 @@ fn wrath_apply_world(world: &mut World) {
                     .and_then(benilla_protocol::ObjectFields::unit_max_health);
                 let new_span = matches!(kind, EntityKind::Unit | EntityKind::Player)
                     .then(|| aura_span(&fields));
+                // The player descriptor is replaced whole, so the 1.12 watches get the quest-log
+                // edges by hand, as the packet path's alerts block would carry them.
+                let quest_edges = (kind == EntityKind::Player)
+                    .then(|| old.as_ref().map(|old| quest_log_edges(old, &fields)))
+                    .flatten()
+                    .unwrap_or_default();
                 world.entity_mut(entity).insert((
                     NetEntity {
                         kind,
@@ -4560,6 +4580,17 @@ fn wrath_apply_world(world: &mut World) {
                     },
                     ObjectStore(fields),
                 ));
+                if !quest_edges.is_empty() && *guid == player_guid {
+                    // The same two signals the 1.12 values block raises: the rebuild notice and
+                    // the event the stock log frame listens for.
+                    let mut notices =
+                        world.resource_mut::<crate::field_watch::NoticeLane>();
+                    notices.write(crate::field_watch::FieldNotice::QuestLog);
+                    notices.write(crate::field_watch::FieldNotice::Unit {
+                        guid: *guid,
+                        id: crate::field_watch::id::UNIT_QUEST_LOG_CHANGED,
+                    });
+                }
                 if let Some(new_span) = new_span {
                     // The 12340 aura packets changed this unit's descriptor window; hand the
                     // 1.12 aura watcher the same edges and one call the stock block path makes.
@@ -5867,6 +5898,16 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_moved_quest_slot_becomes_one_edge_per_dword() {
+        let old = benilla_protocol::ObjectFields::from_pairs(&[(198, 57), (199, 0x0102)]);
+        let new = benilla_protocol::ObjectFields::from_pairs(&[(198, 57), (199, 0x0103), (201, 339)]);
+        let edges = quest_log_edges(&old, &new);
+        assert!(edges.contains(&(199, 0x0102, 0x0103)), "{edges:?}");
+        assert!(edges.contains(&(201, 0, 339)), "{edges:?}");
+        assert!(!edges.iter().any(|(index, _, _)| *index == 198), "{edges:?}");
+    }
 
     /// 3.3.5's two-field visible slots feed the 1.12 twelve-dword block: entry at +2, the packed
     /// 16-bit enchants at +3/+4.
