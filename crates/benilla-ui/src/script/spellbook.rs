@@ -123,6 +123,37 @@ pub struct SpellBookState {
     pub slots: Vec<SpellSlotView>,
 }
 
+/// 12340 CGSpellBook::UpdateSpells keeps the final ranked entry in each same-name run,
+/// separately within each skill line. Unranked entries remain distinct.
+fn highest_rank_slots(book: &SpellBookState, tab: &SpellTabView) -> Vec<usize> {
+    let mut visible: Vec<usize> = Vec::new();
+    for (index, slot) in book
+        .slots
+        .iter()
+        .enumerate()
+        .skip(tab.offset as usize)
+        .take(tab.num_spells as usize)
+    {
+        // GetSpellProgressionRank (0x0053B540): a nonzero ASCII numeric rank.
+        let ranked = slot
+            .rank
+            .as_deref()
+            .unwrap_or_default()
+            .bytes()
+            .any(|byte| (b'1'..=b'9').contains(&byte));
+        if ranked
+            && visible
+                .last()
+                .is_some_and(|&last| book.slots[last].name == slot.name)
+        {
+            *visible.last_mut().expect("nonempty ranked run") = index;
+        } else {
+            visible.push(index);
+        }
+    }
+    visible
+}
+
 impl super::UiScript {
     /// Replace the book; the app fires `SPELLS_CHANGED` on its own diff.
     pub fn set_spellbook(&mut self, state: SpellBookState) {
@@ -261,7 +292,11 @@ pub(super) fn cooldown_tuple(cooldown: Option<(i64, u32, bool)>, now: f64) -> (f
         Some((start_ms, duration_ms, enabled)) => {
             let (start, duration) = (start_ms as f64 / 1000.0, f64::from(duration_ms) / 1000.0);
             if start + duration > now || !enabled {
-                (crate::script::clock::held_start(start, enabled, now), duration, i32::from(enabled))
+                (
+                    crate::script::clock::held_start(start, enabled, now),
+                    duration,
+                    i32::from(enabled),
+                )
             } else {
                 (0.0, 0.0, 1)
             }
@@ -270,11 +305,17 @@ pub(super) fn cooldown_tuple(cooldown: Option<(i64, u32, bool)>, now: f64) -> (f
     }
 }
 
-pub(super) fn book_cooldown(lua: &Lua, (id, book_type): (Value, Value)) -> mlua::Result<(f64, f64, i32)> {
+pub(super) fn book_cooldown(
+    lua: &Lua,
+    (id, book_type): (Value, Value),
+) -> mlua::Result<(f64, f64, i32)> {
     let (id, book_type) = spell_slot_args(id, book_type, "GetSpellCooldown")?;
     let now = crate::script::clock::now(lua);
     let model = lua.app_data_ref::<Model>().expect("model app_data");
-    Ok(cooldown_tuple(book_slot(&model, id, &book_type).and_then(|s| s.cooldown), now))
+    Ok(cooldown_tuple(
+        book_slot(&model, id, &book_type).and_then(|s| s.cooldown),
+        now,
+    ))
 }
 
 /// The slot a `bookType` binding reads. The reference forks `isPet ? [0xb6f098 + 4*i] :
@@ -373,7 +414,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetSpellTabInfo(i) -> name, texture, offset, numSpells, four values on every path
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        g.set(
+            "GetKnownSlotFromHighestRankSlot",
+            lua.create_function(|lua, index: Value| {
+                let index = lua.coerce_number(index)?.unwrap_or(0.0).trunc();
+                if !index.is_finite() || index < 1.0 || index > 1024.0 {
+                    return Ok(0_i64);
+                }
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let book = &model.spellbook;
+                // Script_GetKnownSlotFromHighestRankSlot (0x0053B650), absent slots return 0.
+                Ok(book
+                    .tabs
+                    .iter()
+                    .flat_map(|tab| highest_rank_slots(book, tab))
+                    .nth(index as usize - 1)
+                    .map_or(0, |known| known as i64 + 1))
+            })?,
+        )?;
+    }
+
+    // Vanilla GetSpellTabInfo(i) -> name, texture, offset, numSpells on every path.
+    // Wrath adds the highest-rank offset/count (0x0053BE70).
     // (`0x4b3ce0`). Out of range, 0 and negatives included (`0x4b3d26`), is `nil, nil, 0, 0`
     // (`0x4b3e12`): `SpellBookFrame.lua:295` and `:328` compare `id > (offset + numSpells)`
     // unguarded, so the zeros hide every button where a nil would raise. In range, the General
@@ -386,20 +449,32 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, i: Value| {
             let i = super::binding_abi::number_arg(lua, i, "Usage: GetSpellTabInfo(index)")?;
             // Zero or a negative fails `usize::try_from`, as the unsigned compare fails it.
-            let tab = {
+            let (tab, wrath, visible_offset, visible_count) = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                usize::try_from(i64::from(i) - 1)
-                    .ok()
-                    .and_then(|n| model.spellbook.tabs.get(n))
-                    .cloned()
+                let index = usize::try_from(i64::from(i) - 1).ok();
+                let tab = index.and_then(|n| model.spellbook.tabs.get(n)).cloned();
+                let wrath = model.target == super::UiTarget::Wrath335;
+                let (offset, count) = if wrath && tab.is_some() {
+                    let index = index.expect("resolved tab index");
+                    let offset: usize = model.spellbook.tabs[..index]
+                        .iter()
+                        .map(|t| highest_rank_slots(&model.spellbook, t).len())
+                        .sum();
+                    (
+                        offset,
+                        highest_rank_slots(&model.spellbook, tab.as_ref().unwrap()).len(),
+                    )
+                } else {
+                    (0, 0)
+                };
+                (tab, wrath, offset, count)
             };
             let Some(tab) = tab else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Integer(0),
-                    Value::Integer(0),
-                ]));
+                let mut values = vec![Value::Nil, Value::Nil, Value::Integer(0), Value::Integer(0)];
+                if wrath {
+                    values.extend([Value::Integer(0), Value::Integer(0)]);
+                }
+                return Ok(MultiValue::from_vec(values));
             };
             let texture = match &tab.texture {
                 Some(t) => Value::String(lua.create_string(t)?),
@@ -409,17 +484,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             // `GetText` answers a missing key with its empty string (`0x703bf0`).
             let name = match &tab.name {
                 SpellTabName::General => Value::String(
-                    lua.create_string(crate::strings::global(lua, "GENERAL").unwrap_or_default())?,
+                    lua.create_string(
+                        crate::strings::global(
+                            lua,
+                            if wrath { "GENERAL_SPELLS" } else { "GENERAL" },
+                        )
+                        .unwrap_or_default(),
+                    )?,
                 ),
                 SpellTabName::Line(name) => Value::String(lua.create_string(name)?),
                 SpellTabName::Missing => Value::Nil,
             };
-            Ok(MultiValue::from_vec(vec![
+            let mut values = vec![
                 name,
                 texture,
                 Value::Integer(i64::from(tab.offset)),
                 Value::Integer(i64::from(tab.num_spells)),
-            ]))
+            ];
+            // Script_GetSpellTabInfo (0x0053BE70): Wrath adds the displayed interval.
+            if wrath {
+                values.extend([
+                    Value::Integer(visible_offset as i64),
+                    Value::Integer(visible_count as i64),
+                ]);
+            }
+            Ok(MultiValue::from_vec(values))
         })?,
     )?;
 
@@ -460,27 +549,33 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     // IsCurrentCast(id, bookType) (`0x4b4370`) reads back the app's per-slot verdict,
     // `SpellSlotView::current`.
-    g.set(
-        "IsCurrentCast",
-        lua.create_function(|lua, (id, book_type): (Value, Value)| {
-            let (id, book_type) = spell_slot_args(id, book_type, "IsCurrentCast")?;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let current = book_slot(&model, id, &book_type).is_some_and(|s| s.current);
-            // 1 or nil, never false, as the reference's bindings answer.
-            match current {
-                true => Ok(Value::Integer(1)),
-                false => Ok(Value::Nil),
-            }
-        })?,
-    )?;
+    // Wrath IsSelectedSpell (0x005412C0 -> IsSelectedSlot 0x0053D350) reads the same
+    // form/profession selection verdict, rather than the transient in-flight cast.
+    let wrath =
+        lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335;
+    for verb in ["IsCurrentCast"]
+        .into_iter()
+        .chain(wrath.then_some("IsSelectedSpell"))
+    {
+        g.set(
+            verb,
+            lua.create_function(move |lua, (id, book_type): (Value, Value)| {
+                let (id, book_type) = spell_slot_args(id, book_type, verb)?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let current = book_slot(&model, id, &book_type).is_some_and(|s| s.current);
+                // 1 or nil, never false, as the reference's bindings answer.
+                match current {
+                    true => Ok(Value::Integer(1)),
+                    false => Ok(Value::Nil),
+                }
+            })?,
+        )?;
+    }
 
     // GetSpellCooldown(id, bookType) -> start, duration, enable in `GetTime` seconds, as
     // `GetActionCooldown`: enable 0 for an on-hold cooldown; an expired or empty one answers the
     // reference's no-cooldown `(0, 0, 1)`, so a re-feed cannot replay the finish flash.
-    g.set(
-        "GetSpellCooldown",
-        lua.create_function(book_cooldown)?,
-    )?;
+    g.set("GetSpellCooldown", lua.create_function(book_cooldown)?)?;
 
     g.set(
         "IsSpellPassive",
@@ -492,6 +587,43 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             ))
         })?,
     )?;
+
+    if wrath {
+        // 12340 Script_IsPassiveSpell (0x00541340): the real slot's attributes & 0x40.
+        g.set(
+            "IsPassiveSpell",
+            lua.create_function(|lua, args: MultiValue| {
+                let input = args.front().cloned().unwrap_or(Value::Nil);
+                let second = args.get(1).cloned().unwrap_or(Value::Nil);
+                if lua.coerce_number(input.clone())?.is_some()
+                    && lua.coerce_string(second.clone())?.is_some()
+                {
+                    let (id, book) = spell_slot_args(input, second, "IsPassiveSpell")?;
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    return Ok(MultiValue::from_vec(vec![flag(
+                        book_slot(&model, id, &book).is_some_and(|slot| slot.passive),
+                    )]));
+                }
+                let name = lua
+                    .coerce_string(input)?
+                    .ok_or_else(|| mlua::Error::runtime("IsPassiveSpell(): Invalid spell slot"))?;
+                let mut name = name.to_str()?.to_owned();
+                let rank = lua.coerce_string(second)?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                if let Some(rank) = rank {
+                    let rank = rank.to_str()?;
+                    if !model.unit(&rank).is_some_and(|unit| unit.exists) {
+                        name = format!("{name}({rank})");
+                    }
+                }
+                let Some(spell) = resolve_spell_in_books(&model.spellbook, &model.pet_book, &name)
+                else {
+                    return Ok(MultiValue::new());
+                };
+                Ok(MultiValue::from_vec(vec![flag(spell.passive)]))
+            })?,
+        )?;
+    }
 
     // CastSpell(id, bookType [, onSelf]), the plain click, queues the slot's spell unless it is
     // passive. The third argument goes through `GetBoolOrDefault(L, 3, 0)` (`0x4b4333`-`0x4b433c`),
@@ -1636,6 +1768,161 @@ mod tests {
                 .eval::<bool>(&format!("return (GetSpellTabInfo({idx})) == nil"))
                 .unwrap());
         }
+    }
+
+    #[test]
+    fn wrath_spellbook_empty_tabs_supply_both_intervals() {
+        let s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        for index in [0, 1, 99, -1] {
+            assert_eq!(s.arity(&format!("GetSpellTabInfo({index})")).unwrap(), 6);
+            assert_eq!(
+                s.eval::<i64>(&format!(
+                    "local _,_,a,b,c,d=GetSpellTabInfo({index}) return a+b+c+d"
+                ))
+                .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn wrath_passive_spell_reads_real_player_and_pet_flags() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        s.set_spellbook(book());
+        assert!(s
+            .eval::<bool>("return IsPassiveSpell(1,'spell') == nil")
+            .unwrap());
+        assert_eq!(
+            s.eval::<i64>("return IsPassiveSpell(2,'spell')").unwrap(),
+            1
+        );
+        assert_eq!(
+            s.eval::<i64>("return IsPassiveSpell('Fire Blast')")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            s.eval::<i64>("return IsPassiveSpell('Fire Blast','Rank 1')")
+                .unwrap(),
+            1
+        );
+        assert_eq!(s.arity("IsPassiveSpell('Missing')").unwrap(), 0);
+        s.set_pet_book(PetBookState {
+            slots: vec![SpellSlotView {
+                name: "Pet passive".into(),
+                passive: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        assert_eq!(s.eval::<i64>("return IsPassiveSpell(1,'pet')").unwrap(), 1);
+        assert!(s
+            .eval::<bool>("return IsPassiveSpell(99,'pet') == nil")
+            .unwrap());
+        let vanilla = UiScript::new().unwrap();
+        assert!(vanilla
+            .eval::<bool>("return IsPassiveSpell == nil and type(IsSpellPassive)=='function'")
+            .unwrap());
+    }
+
+    #[test]
+    fn wrath_spellbook_highest_rank_view_maps_to_known_slots() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let slot = |name: &str, rank: Option<&str>, id| SpellSlotView {
+            name: name.into(),
+            rank: rank.map(str::to_owned),
+            spell_id: id,
+            ..Default::default()
+        };
+        s.set_spellbook(SpellBookState {
+            tabs: vec![
+                SpellTabView {
+                    name: "Fire".into(),
+                    offset: 0,
+                    num_spells: 4,
+                    ..Default::default()
+                },
+                SpellTabView {
+                    name: "Frost".into(),
+                    offset: 4,
+                    num_spells: 2,
+                    ..Default::default()
+                },
+            ],
+            slots: vec![
+                slot("Fireball", Some("Rank 1"), 133),
+                slot("Fireball", Some("Rank 2"), 143),
+                slot("Utility", None, 1),
+                slot("Utility", None, 2),
+                slot("Frostbolt", Some("Rank 1"), 116),
+                slot("Frostbolt", Some("Rank 2"), 205),
+            ],
+        });
+        assert_eq!(
+            s.eval::<(i64, i64, i64, i64)>("local _,_,a,b,c,d=GetSpellTabInfo(1) return a,b,c,d")
+                .unwrap(),
+            (0, 4, 0, 3)
+        );
+        assert_eq!(
+            s.eval::<(i64, i64, i64, i64)>("local _,_,a,b,c,d=GetSpellTabInfo(2) return a,b,c,d")
+                .unwrap(),
+            (4, 2, 3, 1)
+        );
+        for (displayed, known) in [(0, 0), (1, 2), (2, 3), (3, 4), (4, 6), (5, 0)] {
+            assert_eq!(
+                s.eval::<i64>(&format!(
+                    "return GetKnownSlotFromHighestRankSlot({displayed})"
+                ))
+                .unwrap(),
+                known
+            );
+        }
+        assert_eq!(
+            s.eval::<String>("return (GetSpellName(GetKnownSlotFromHighestRankSlot(4), 'spell'))")
+                .unwrap(),
+            "Frostbolt"
+        );
+        assert_eq!(s.eval::<String>(
+            "local _,rank=GetSpellName(GetKnownSlotFromHighestRankSlot(1), 'spell') return rank"
+        ).unwrap(), "Rank 2");
+    }
+
+    #[test]
+    fn wrath_spellbook_general_name_is_localized_at_call_time() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        s.run("GENERAL='Donor'; GENERAL_SPELLS='General spells'")
+            .unwrap();
+        s.set_spellbook(SpellBookState {
+            tabs: vec![SpellTabView::default()],
+            ..Default::default()
+        });
+        assert_eq!(
+            s.eval::<String>("return (GetSpellTabInfo(1))").unwrap(),
+            "General spells"
+        );
+        s.run("GENERAL_SPELLS='Localized'").unwrap();
+        assert_eq!(
+            s.eval::<String>("return (GetSpellTabInfo(1))").unwrap(),
+            "Localized"
+        );
+        let vanilla = UiScript::new().unwrap();
+        assert!(vanilla
+            .eval::<bool>("return GetKnownSlotFromHighestRankSlot == nil")
+            .unwrap());
+        assert!(vanilla
+            .eval::<bool>("return IsSelectedSpell == nil")
+            .unwrap());
+        s.set_spellbook(book());
+        assert!(s
+            .eval::<bool>("return IsSelectedSpell(1,'spell') == nil")
+            .unwrap());
+        let mut selected = book();
+        selected.slots[0].current = true;
+        s.set_spellbook(selected);
+        assert_eq!(
+            s.eval::<i64>("return IsSelectedSpell(1,'spell')").unwrap(),
+            1
+        );
     }
 
     #[test]

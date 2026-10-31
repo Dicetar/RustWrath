@@ -796,6 +796,7 @@ pub struct QuestTemplate {
     pub level: u32,
     pub zone_or_sort: i32,
     pub quest_type: u32,
+    pub suggested_players: u32,
     pub rep_objective_faction: u32,
     pub rep_objective_value: u32,
     pub opposite_rep_faction: u32,
@@ -2859,7 +2860,7 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
     let _min_level = r.u32()?;
     let zone_or_sort = r.i32()?;
     let quest_type = r.u32()?;
-    let _suggested = r.u32()?;
+    let suggested_players = r.u32()?;
     let rep_objective_faction = r.u32()?;
     let rep_objective_value = r.u32()?;
     let opposite_rep_faction = r.u32()?;
@@ -2940,7 +2941,7 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
         anyhow::bail!("quest template left {} bytes (at {} of {})", b.len() - r.at, r.at, b.len());
     }
     Ok(QuestTemplate {
-        quest_id, method, level, zone_or_sort, quest_type, rep_objective_faction,
+        quest_id, method, level, zone_or_sort, quest_type, suggested_players, rep_objective_faction,
         rep_objective_value, opposite_rep_faction, opposite_rep_value, next_quest_in_chain,
         money, money_max_level, reward_spell, src_item_id, flags, honor_reward,
         honor_multiplier, title_reward, bonus_talents, bonus_arena_points, rep_rewards,
@@ -3581,7 +3582,7 @@ mod tests {
     #[test]
     fn quest_template_reads_the_12340_layout() {
         let mut b = Vec::new();
-        for v in [338u32, 0, 40, 30, 5280, 0, 0, 0, 0, 0, 0, 0, 0] {
+        for v in [338u32, 0, 40, 30, 5280, 0, 3, 0, 0, 0, 0, 0, 0] {
             b.extend_from_slice(&v.to_le_bytes());
         }
         b.extend_from_slice(&4700i32.to_le_bytes()); // money
@@ -3623,6 +3624,7 @@ mod tests {
         b.extend_from_slice(b"One\0Two\0Three\0Four\0");
         let template = read_quest_template(&b).expect("parse");
         assert_eq!(template.quest_id, 338);
+        assert_eq!(template.suggested_players, 3);
         assert_eq!(template.title, "Title");
         assert_eq!(template.objectives_text, "Objective");
         assert_eq!(template.details, "Details");

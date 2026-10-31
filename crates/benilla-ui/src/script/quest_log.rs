@@ -91,6 +91,9 @@ pub struct QuestRecordView {
     pub title: String,
     /// `GetQuestLogTitle`'s return 2, which colors the stock row.
     pub level: u32,
+    /// Wrath's suggested party size and daily-quest flag from the query template.
+    pub suggested_players: u32,
+    pub daily: bool,
     /// The template's `ZoneOrSort`, the header group (`[template+0xc]`, `0x4de6de`).
     pub zone_or_sort: i32,
     /// The group's name: `AreaTable` above 0, `QuestSort` below, the reference's literal for 0
@@ -834,7 +837,9 @@ pub(crate) fn selected_quest_item(
         count,
         quality: template.map_or(1, |t| t.quality as i32),
         item_id,
-        link: template.map(|t| super::item_stats::item_link_for_target(model.target, item_id, &t.name, t.quality)),
+        link: template.map(|t| {
+            super::item_stats::item_link_for_target(model.target, item_id, &t.name, t.quality)
+        }),
     })
 }
 
@@ -1236,6 +1241,31 @@ fn abandon_items(model: &Model) -> Vec<String> {
 }
 
 /// Register the quest-log globals.
+/// 12340 Script_GetQuestLogTitle (0x005E5CC0) inserts group size and appends daily/id;
+/// displayQuestID adds a tenth boolean. Donor VMs retain the original six-value ABI.
+fn title_returns(
+    model: &Model,
+    mut values: Vec<Value>,
+    group: u32,
+    daily: bool,
+    id: u32,
+) -> MultiValue {
+    if model.target == super::UiTarget::Wrath335 {
+        values.insert(3, Value::Integer(i64::from(group)));
+        values.push(if daily { Value::Integer(1) } else { Value::Nil });
+        values.push(Value::Integer(i64::from(id)));
+        if model
+            .cvars
+            .get("displayquestid")
+            .and_then(|row| row.value.parse::<i64>().ok())
+            .is_some_and(|value| value != 0)
+        {
+            values.push(Value::Boolean(true));
+        }
+    }
+    MultiValue::from_vec(values)
+}
+
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
@@ -1251,7 +1281,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // `title, level, tag, isHeader, isCollapsed, isComplete`, always six (`0x4df930`). The index
+    // Donor `title, level, tag, isHeader, isCollapsed, isComplete` (`0x4df930`). The index
     // truncates as `_ftol` does, and a missing or non-number one raises `Usage:`; out of range it
     // answers `nil, 0, nil, nil, nil, nil`, and a header's level is 0 too. A quest's title, level
     // and tag are its record's. `isComplete` is -1 on the slot's failed bit (`0x4dfa61`) or the
@@ -1263,39 +1293,57 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let n = number_arg(lua, i, "Usage: GetQuestLogTitle(index)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let Some(row) = usize::try_from(n).ok().and_then(|n| model.quest_row(n)) else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Integer(0),
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                ]));
+                return Ok(title_returns(
+                    &model,
+                    vec![
+                        Value::Nil,
+                        Value::Integer(0),
+                        Value::Nil,
+                        Value::Nil,
+                        Value::Nil,
+                        Value::Nil,
+                    ],
+                    0,
+                    false,
+                    0,
+                ));
             };
             // Returns 4 and 5 are 1 or nil, never booleans.
             let one = |b: bool| if b { Value::Integer(1) } else { Value::Nil };
             if row.is_header {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::String(lua.create_string(&row.header)?),
-                    Value::Integer(0),
-                    Value::Nil,
-                    Value::Integer(1),
-                    one(row.collapsed),
-                    Value::Nil,
-                ]));
+                return Ok(title_returns(
+                    &model,
+                    vec![
+                        Value::String(lua.create_string(&row.header)?),
+                        Value::Integer(0),
+                        Value::Nil,
+                        Value::Integer(1),
+                        one(row.collapsed),
+                        Value::Nil,
+                    ],
+                    0,
+                    false,
+                    0,
+                ));
             }
             let store = &model.quest_store;
             let (Some(record), Some(slot)) =
                 (store.records.get(&row.quest_id), store.slot(row.slot))
             else {
-                return Ok(MultiValue::from_vec(vec![
-                    Value::Nil,
-                    Value::Integer(0),
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                    Value::Nil,
-                ]));
+                return Ok(title_returns(
+                    &model,
+                    vec![
+                        Value::Nil,
+                        Value::Integer(0),
+                        Value::Nil,
+                        Value::Nil,
+                        Value::Nil,
+                        Value::Nil,
+                    ],
+                    0,
+                    false,
+                    row.quest_id,
+                ));
             };
             let tag = match &record.tag {
                 Some(t) => Value::String(lua.create_string(t)?),
@@ -1310,14 +1358,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             } else {
                 Value::Nil
             };
-            let out = MultiValue::from_vec(vec![
-                Value::String(lua.create_string(&record.title)?),
-                Value::Integer(i64::from(record.level)),
-                tag,
-                Value::Nil,
-                Value::Nil,
-                complete,
-            ]);
+            let out = title_returns(
+                &model,
+                vec![
+                    Value::String(lua.create_string(&record.title)?),
+                    Value::Integer(i64::from(record.level)),
+                    tag,
+                    Value::Nil,
+                    Value::Nil,
+                    complete,
+                ],
+                record.suggested_players,
+                record.daily,
+                row.quest_id,
+            );
             drop(model);
             if passed {
                 owe_turn_in_tutorial(&mut lua.app_data_mut::<Model>().expect("model app_data"));
@@ -1497,48 +1551,49 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         .app_data_ref::<Model>()
         .is_some_and(|model| model.is_wrath())
     {
-    install_detail_count(lua, "GetQuestLogRewardHonor", |r| {
-        i64::from(r.reward_honor)
-    })?;
-    install_detail_count(lua, "GetQuestLogRewardTalents", |r| {
-        i64::from(r.reward_talents)
-    })?;
-    install_detail_count(lua, "GetQuestLogRewardArenaPoints", |r| {
-        i64::from(r.reward_arena_points)
-    })?;
-    install_detail_count(lua, "GetQuestLogRewardXP", |_| 0)?;
-    g.set(
-        "GetQuestLogRewardTitle",
-        lua.create_function(|lua, ()| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model
-                .selected_quest_record()
-                .filter(|r| r.reward_title != 0)
-                .map_or(Value::Nil, |r| Value::Integer(i64::from(r.reward_title))))
-        })?,
-    )?;
-    install_detail_count(lua, "GetNumQuestLogRewardFactions", |r| {
-        r.reward_factions.len() as i64
-    })?;
-    g.set(
-        "GetQuestLogRewardFactionInfo",
-        lua.create_function(|lua, index: Value| {
-            let i = lua
-                .coerce_number(index)?
-                .ok_or_else(|| mlua::Error::runtime("Usage: GetQuestLogRewardFactionInfo(index)"))?;
-            let row = i.trunc() as i64 - 1;
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let pair = model
-                .selected_quest_record()
-                .and_then(|r| usize::try_from(row).ok().and_then(|n| r.reward_factions.get(n)));
-            Ok(match pair {
-                Some(&(faction, amount)) => {
-                    (Value::Integer(i64::from(faction)), Value::Integer(i64::from(amount)))
-                }
-                None => (Value::Nil, Value::Nil),
-            })
-        })?,
-    )?;
+        install_detail_count(lua, "GetQuestLogRewardHonor", |r| i64::from(r.reward_honor))?;
+        install_detail_count(lua, "GetQuestLogRewardTalents", |r| {
+            i64::from(r.reward_talents)
+        })?;
+        install_detail_count(lua, "GetQuestLogRewardArenaPoints", |r| {
+            i64::from(r.reward_arena_points)
+        })?;
+        install_detail_count(lua, "GetQuestLogRewardXP", |_| 0)?;
+        g.set(
+            "GetQuestLogRewardTitle",
+            lua.create_function(|lua, ()| {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                Ok(model
+                    .selected_quest_record()
+                    .filter(|r| r.reward_title != 0)
+                    .map_or(Value::Nil, |r| Value::Integer(i64::from(r.reward_title))))
+            })?,
+        )?;
+        install_detail_count(lua, "GetNumQuestLogRewardFactions", |r| {
+            r.reward_factions.len() as i64
+        })?;
+        g.set(
+            "GetQuestLogRewardFactionInfo",
+            lua.create_function(|lua, index: Value| {
+                let i = lua.coerce_number(index)?.ok_or_else(|| {
+                    mlua::Error::runtime("Usage: GetQuestLogRewardFactionInfo(index)")
+                })?;
+                let row = i.trunc() as i64 - 1;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let pair = model.selected_quest_record().and_then(|r| {
+                    usize::try_from(row)
+                        .ok()
+                        .and_then(|n| r.reward_factions.get(n))
+                });
+                Ok(match pair {
+                    Some(&(faction, amount)) => (
+                        Value::Integer(i64::from(faction)),
+                        Value::Integer(i64::from(amount)),
+                    ),
+                    None => (Value::Nil, Value::Nil),
+                })
+            })?,
+        )?;
     }
     // 3.3.5's `ProcessQuestLogRewardFactions` is the client routine the stock QuestInfo calls
     // before it lays out the reward block. The faction rows themselves are read through
@@ -2151,6 +2206,59 @@ mod tests {
     const WORKER: u32 = 257;
     const HAMMER: u32 = 2024;
 
+    #[test]
+    fn wrath_quest_title_keeps_stock_header_completion_and_metadata_positions() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let mut quest = record("Kobold Camp Cleanup", 3, 12, "Elwynn Forest");
+        quest.suggested_players = 3;
+        quest.daily = true;
+        quest.needs_complete_bit = true;
+        seat(&mut s, &[(7, quest, slot(7, 0, SLOT_COMPLETE))]);
+        assert_eq!(
+            s.eval::<i64>("return select('#',GetQuestLogTitle(1))")
+                .unwrap(),
+            9
+        );
+        assert!(s
+            .eval::<bool>(
+                "local title,level,tag,group,header,fold,done,daily,id=GetQuestLogTitle(1) \
+             return title=='Elwynn Forest' and group==0 and header==1 and fold==nil \
+             and done==nil and daily==nil and id==0"
+            )
+            .unwrap());
+        assert!(s
+            .eval::<bool>(
+                "local title,level,tag,group,header,fold,done,daily,id=GetQuestLogTitle(2) \
+             return title=='Kobold Camp Cleanup' and group==3 and header==nil and fold==nil \
+             and done==1 and daily==1 and id==7"
+            )
+            .unwrap());
+        assert!(s
+            .eval::<bool>(
+                "local _,_,_,group,header,fold,done,daily,id=GetQuestLogTitle(999) \
+             return group==0 and header==nil and fold==nil and done==nil and daily==nil and id==0"
+            )
+            .unwrap());
+        s.run("RegisterCVar('displayQuestID','1')").unwrap();
+        assert_eq!(
+            s.eval::<i64>("return select('#',GetQuestLogTitle(2))")
+                .unwrap(),
+            10
+        );
+        assert!(s
+            .eval::<bool>(
+                "local _,_,_,_,_,_,_,_,_,display=GetQuestLogTitle(2) return display==true"
+            )
+            .unwrap());
+        s.run("SetCVar('displayQuestID','0'); CollapseQuestHeader(1)")
+            .unwrap();
+        assert!(s
+            .eval::<bool>(
+                "local _,_,_,_,header,fold=GetQuestLogTitle(1) return header==1 and fold==1"
+            )
+            .unwrap());
+    }
+
     fn threat_within() -> QuestRecordView {
         let mut r = record("A Threat Within", 1, 12, "Elwynn Forest");
         r.objectives[0] = kill(VERMIN, 10);
@@ -2379,8 +2487,7 @@ mod tests {
     /// twenty-slot projection.
     #[test]
     fn the_log_holds_all_twenty_five_wrath_slots() {
-        let mut s =
-            UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
         caches(&mut s);
         let log: Vec<_> = (1..=25u32)
             .map(|i| {
@@ -2414,8 +2521,7 @@ mod tests {
     /// the getters. It stays a compatibility entry, and only the 3.3.5 host has it.
     #[test]
     fn process_quest_log_reward_factions_is_a_wrath_compat_entry() {
-        let wrath =
-            UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let wrath = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
         assert!(wrath
             .eval::<bool>("return type(ProcessQuestLogRewardFactions) == 'function'")
             .unwrap());
@@ -2429,8 +2535,7 @@ mod tests {
     /// the title getter nil, and the XP getter is the documented incomplete 0.
     #[test]
     fn wrath_reward_lines_come_from_the_selected_record() {
-        let mut s =
-            UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
         caches(&mut s);
         let mut log = two_quests_log();
         log[0].1.reward_honor = 250;

@@ -620,6 +620,8 @@ fn record_view(t: &QuestTemplate, tables: &RecordTables) -> QuestRecordView {
     QuestRecordView {
         title: t.title.clone(),
         level: t.level,
+        suggested_players: t.suggested_players,
+        daily: t.flags & 0x1000 != 0,
         zone_or_sort: t.zone_or_sort,
         header,
         // `Type` is a `QuestInfo.dbc` id, 0 naming none; no table gives `None`, never `""`.

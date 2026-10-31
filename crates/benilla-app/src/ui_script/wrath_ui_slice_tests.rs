@@ -14,6 +14,33 @@ fn player_frame_script() -> Option<UiScript> {
     stock_script_through("PlayerFrame.xml", true)
 }
 
+#[test]
+fn stock_wrath_spellbook_maps_displayed_ranks_to_known_slots() {
+    use benilla_ui::script::{SpellBookState, SpellSlotView, SpellTabView};
+    let Some(mut s) = stock_script_through("SpellBookFrame.xml", true) else { return; };
+    assert!(s.eval::<bool>("return GetCVarBool('ShowAllSpellRanks')").unwrap());
+    s.set_spellbook(SpellBookState {
+        tabs: vec![SpellTabView {
+            name: "Fire".into(), offset: 0, num_spells: 2, ..Default::default()
+        }],
+        slots: vec![
+            SpellSlotView { spell_id: 133, name: "Fireball".into(), rank: Some("Rank 1".into()), ..Default::default() },
+            SpellSlotView { spell_id: 143, name: "Fireball".into(), rank: Some("Rank 2".into()), ..Default::default() },
+        ],
+    });
+    s.run("SetCVar('ShowAllSpellRanks', '0')").unwrap();
+    assert_eq!(s.eval::<(i64, i64)>(
+        "local _,_,offset,count=SpellBook_GetTabInfo(1) return offset,count"
+    ).unwrap(), (0, 1));
+    assert_eq!(s.eval::<(i64, i64)>("return SpellBook_GetSpellID(1)").unwrap(), (2, 1));
+    s.run("SpellButton_UpdateSelection(SpellButton1)").unwrap();
+    s.run("SetCVar('ShowAllSpellRanks', '1')").unwrap();
+    assert_eq!(s.eval::<(i64, i64)>(
+        "local _,_,offset,count=SpellBook_GetTabInfo(1) return offset,count"
+    ).unwrap(), (0, 2));
+    assert_eq!(s.eval::<(i64, i64)>("return SpellBook_GetSpellID(1)").unwrap(), (1, 1));
+}
+
 /// The TOC prefix through `leaf`, the production order the chosen profile lists.
 fn stock_script_through(leaf: &str, strict: bool) -> Option<UiScript> {
     let Some(manifest) = std::env::var_os("WM_ASSET_MANIFEST") else {

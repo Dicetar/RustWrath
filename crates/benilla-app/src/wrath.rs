@@ -284,6 +284,8 @@ pub struct WrathSessionConfig {
     pub password: String,
     pub auth_addr: String,
     pub world_addr: String,
+    /// Optional named boot selection; a missing requested roster entry must not fall back.
+    pub character_name: Option<String>,
     /// WM bridge token; absent = the bridge stays disabled for this session.
     pub wm_token: Option<String>,
     /// `None` keeps the graphical session alive until the app cancels it.
@@ -328,6 +330,8 @@ impl WrathSessionConfig {
             password,
             auth_addr,
             world_addr,
+            character_name: std::env::var("WOW_CHAR").ok()
+                .map(|name| name.trim().to_owned()).filter(|name| !name.is_empty()),
             wm_token,
             dwell,
             actions: None,
@@ -2746,6 +2750,7 @@ fn translate_gameplay(
                 level: t.level,
                 zone_or_sort: t.zone_or_sort,
                 quest_type: t.quest_type,
+                suggested_players: t.suggested_players,
                 rep_objective_faction: t.rep_objective_faction,
                 rep_objective_value: t.rep_objective_value,
                 opposite_rep_faction: t.opposite_rep_faction,
@@ -5040,6 +5045,19 @@ impl Drop for PublisherOwner {
     }
 }
 
+/// Explicit boot selection uses the account's actual roster and never falls back on a miss.
+fn boot_character<'a>(
+    records: &'a [gameplay::CharEnumRecord],
+    name: Option<&str>,
+) -> anyhow::Result<&'a gameplay::CharEnumRecord> {
+    use anyhow::Context;
+    match name {
+        Some(name) => records.iter().find(|record| record.name.eq_ignore_ascii_case(name))
+            .with_context(|| format!("WOW_CHAR requested character {name:?}, absent from the account roster")),
+        None => records.first().context("no character on the account roster"),
+    }
+}
+
 /// The 3.3.5 record onto the established roster seam's record. The appearance bytes, position
 /// and the 19 equipment slots carry over; the first bag slot and the customize flags have no
 /// stock equivalent and drop (`Player::BuildEnumData` writes 23 visual slots; the stock record
@@ -5349,7 +5367,7 @@ pub fn run_session_with_cancel(
 
     // Character selection: reuse the renderless driver's create-first flow is intentionally
     // out of scope here â€” the graphical path logs into an existing character (issue 23's
-    // driver owns creation). Enumerate and pick the first disposable character.
+    // driver owns creation). Enumerate before resolving a named boot or parked-screen pick.
     world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
     let mut records: Option<Vec<gameplay::CharEnumRecord>> = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -5390,7 +5408,7 @@ pub fn run_session_with_cancel(
         }
     };
     // The parked session publishes the fresh roster as the reply the screen's ask ordered; the
-    // boot flow publishes nothing, its own first record decides the entry. A later re-ask
+    // boot flow publishes nothing, its named boot selection decides the entry. A later re-ask
     // lands in the serve loop and republishes under its own cause.
     if parked.is_some() {
         publish_roster(
@@ -5447,10 +5465,10 @@ pub fn run_session_with_cancel(
         }
         entered.expect("picked guid")
     } else {
-        records
-            .first()
-            .map(|record| record.guid)
-            .expect("disposable record guid")
+        let record = boot_character(&records, config.character_name.as_deref())?;
+        info!("wrath: boot selection name={} guid={:#x} race={} class={} map={}",
+            record.name, record.guid, record.race, record.class, record.map);
+        record.guid
     };
     session.start_session(guid); // re-begin with the real full GUID; phase resets to selection
     session.note_player_login();
@@ -6148,6 +6166,18 @@ mod command_tap_tests {
                 enchant_id: 0,
             }),
         }
+    }
+
+    #[test]
+    fn wrath_named_boot_character_does_not_fall_back_to_first() {
+        let first = enum_record(0x42, 30);
+        let mut firna = enum_record(0x43, 1);
+        firna.name = "Firna".into();
+        let records = [first, firna];
+        assert_eq!(boot_character(&records, Some("firna")).unwrap().guid, 0x43);
+        assert!(boot_character(&records, Some("Missing")).is_err());
+        assert_eq!(boot_character(&records, None).unwrap().guid, 0x42);
+        assert!(boot_character(&[], None).is_err());
     }
 
     /// The 3.3.5 record onto the 1.12 roster seam: the appearance bytes, position and the 19

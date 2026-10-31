@@ -798,3 +798,81 @@ the VM target. After repair, `cargo test --locked --offline -p benilla-ui --lib
 wrath_` passed 14 and `script::unit::` passed 91, with no skips. Evidence logs:
 `astra-oc-review-{red,green,unit}.log` in the existing OC alpha verification folder.
 No client binary rebuild or live acceptance run was performed in this review.
+
+2026-10-31 Astra gameplay claim: `benilla-ui/src/script/spellbook.rs` and the existing
+`benilla-app/src/ui_script/wrath_ui_slice_tests.rs` fixture. OC owns quest markers/graphics;
+leave those files and the owner's dirty instruction documents untouched. Current base d1b54f50.
+Reproduce the live SpellBookFrame.lua:626 nil numSpells error through the real selected-profile
+caller. Reference pin e67b6ff: SpellBookFrame_Scripts.cpp Script_GetSpellTabInfo 0x0053BE70
+returns both known and highest-rank tab intervals; Script_GetKnownSlotFromHighestRankSlot
+0x0053B650 maps displayed slots back to the known list. General uses GENERAL_SPELLS.
+
+Owner selected new human Firna, same account. Additional claim: wrath.rs boot character
+admission and the existing run-from-identity.ps1 wrapper's optional character argument.
+Current Wrath boot ignores WOW_CHAR and enters records.first(); explicit selection must
+resolve the requested roster record and refuse a missing name. Keep parked roster selection
+unchanged. No identity-file or credential changes.
+
+Related caller prerequisites: claim lifecycle.rs only for ShowAllSpellRanks registration.
+GameUI_CVar.cpp:647 registers it with default 1. Missing row currently makes GetCVarBool
+return nil, wrongly choosing highest-rank-only behavior. Wrath IsSelectedSpell 0x005412C0
+reads IsSelectedSlot 0x0053D350; connect it to the existing per-slot selection verdict (forms;
+the donor's profession-open selection producer remains a separate gap).
+
+Additional required route repair: claim quest_log.rs in benilla-ui, ui_quest_log.rs and only
+mechanical fixture fields in ui_quest/lines.rs and capture/fixtures.rs, shared messages/quest/log.rs,
+and the Wrath gameplay.rs quest-template record/reader. The selected QuestLogFrame.lua reads
+suggestedGroup in position 4 and completion in 7, not the donor's 6. Direct production-library
+probe fails (6 returns vs 9). Reference QuestLog_Scripts.cpp Script_GetQuestLogTitle 0x005E5CC0
+returns 9 (10 with displayQuestID enabled); QuestLog.cpp GetQuestSuggestedPlayers 0x005DED30
+reads the template, IsDailyQuest 0x005DECC0 reads flags & 0x1000. Preserve the actual wire
+suggested-player field instead of inventing a zero for Wrath. The in-flight Astra app-test
+compiler was deliberately cancelled after verifying its PID ancestry; no OC process stopped.
+
+Focused verification: `astra-gameplay-ui-green.log` reports 88 passed / zero failed for
+script::spellbook::tests and script::quest_log::tests (both targets); `astra-quest-template-wire.log`
+passes the 12340 template layout including suggested_players=3. Earlier `astra-spellbook-red.log`
+captures three pre-fix failures. `astra-quest-title-red.log` captures the production UI artifact's
+six-vs-nine failure; `astra-spellbook-artifact.log` passes the fresh artifact's slot/selection
+contract before that quest fix. The first app fixture run passed named admission but linked a
+pre-IsSelectedSpell library and failed the real stock caller there; do not report that fixture
+green. The subsequent app test compilation was intentionally cancelled for the quest-log repair.
+Current client build is queued behind OC's Cargo owner; no live Firna or gameplay gate passes
+from this evidence yet. Credentials/identity file unchanged; wrapper gains -CharacterName.
+
+Later artifact check: OC's `benilla_app-564816602d2a82f7.exe` (13:12:32 build, before the quest
+tuple patch) passes the two unchanged named-boot and actual selected-profile stock-spellbook
+tests, 2/2, in `astra-spellbook-host-artifact.log`. This closes the earlier stale-library
+IsSelectedSpell fixture failure for that code; it is not a full-current-tree app-test result.
+The current client build remains running after the 88-test UI gate. Source remains frozen.
+
+First actual Firna preflight: connected-run-20261031-133034-203, binary
+624625B022349082FD2FB559D8A3730071D301BBD3BBB80293DC1EF4CC6E5A7B,
+HEAD 36fa08f7 (OC's marker commit preserved) plus Astra's dirty patch. Entered map 0 as Firna
+0x1522, race 1/class 1, level 1; four tabs and quest-title arity 9 passed. Capture
+astra-firna-20261031-133033.png confirms Northshire Valley but a blank spellbook. Log identifies
+SpellBookFrame.lua:496 calling absent IsPassiveSpell; donor only binds IsSpellPassive. Do not
+claim painted/usable spellbook acceptance from IsShown. Implement the Wrath book/name binding
+from Script_IsPassiveSpell 0x00541340, real stored passive state; require text/icon paint next
+tick plus capture. No GetSpellTexture change is justified by this failure.
+
+Paint repair verified: `astra-gameplay-ui-paint.log` 89/89, client build passed in
+`astra-gameplay-paint-build.log`. `connected-run-20261031-134958-868` selects Firna and reports
+FIRNA_SPELLBOOK_PAINT text=Auto Attack iconShown=true; capture astra-firna-20261031-134958.png
+visibly confirms names/icons/passive labels in Northshire. Binary SHA256
+CD97B79EA5833A7D8D4C9A3626A85B074E7637159BCDA7DB6FD786F3C474DBD7,
+source base 36fa08f7 plus this patch. Peak private 3.48 GiB; exit code 0 at bounded 45-second
+probe deadline. No movement, quest mutation or combat acceptance from this run. No owned client
+remains running. CARGO_INCREMENTAL=1 reused the existing current build cache for this iteration;
+no binary backups created.
+
+Next required batch, not implemented in this checkpoint: stock QuestInfo/QuestFrame callers
+need GetRewardXP/Honor/ArenaPoints/Talents/Title, GetSuggestedGroupNum, QuestFlagsPVP,
+QuestGetAutoAccept, GetAvailableQuestInfo and IsActiveQuestTrivial; raw details/offer fields
+are currently discarded. The offer parser also mislabels RewSpellCast as reward_spell and
+does not consume its full tail. GetQuestLogGroupNum is still a zero stand-in despite the now
+retained group field; GetQuestLogRewardXP is still a zero stand-in. The plain native inventory
+also identifies GetMaxDailyQuests, GetQuestLink and GetFactionInfoByID; Lua helper names in
+that inventory are not missing natives. Resolve contracts/data ownership before adding APIs;
+do not fill them with success placeholders. Human owner is available for combat after these
+accept/reward route blockers are closed.
