@@ -264,6 +264,7 @@ pub use spell_visual::{
 mod emit_timing;
 pub use emit_timing::{EmitParams, EmitTiming, ParamsNow};
 mod particles;
+pub mod wrath_particles;
 pub use particles::{
     parse_m2_particle_emitters, CellRamp, OverLife, OverLifeSample, ParticleBlend,
     ParticleEmitterDef, ParticleShape, SplineData,

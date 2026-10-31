@@ -136,7 +136,7 @@ pub(super) fn dump_emitter(
         let center = particle_center(dframe, placement, p);
         let half = particle_half(def, placement, p, dframe.size_scale);
         // The over-life colour the quad carries, raw as `expand_quads` pushes it.
-        let rgba = def.over_life.sample((p.age / p.life).clamp(0.0, 1.0)).color;
+        let rgba = def.sample_over_life((p.age / p.life).clamp(0.0, 1.0)).color;
         let Some((ndc, viewz)) = project(center) else {
             info!("PARTICLE_DEPTHDUMP f={fidx} p{i} behind the camera");
             continue;

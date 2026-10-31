@@ -90,7 +90,7 @@ pub(super) fn particle_half(
     } else {
         size_scale
     };
-    def.over_life.sample(u_age).size * def.twinkle(noise) * scale
+    def.sample_over_life(u_age).size * def.twinkle(noise) * scale
 }
 
 /// Expand one pool into the shared stream: world-space quads, corners in perimeter order for the
@@ -141,7 +141,7 @@ pub(super) fn expand_quads(
             continue;
         }
         let u_age = (p.age / p.life).clamp(0.0, 1.0);
-        let ol = def.over_life.sample(u_age);
+        let ol = def.sample_over_life(u_age);
         let (mut rgba, size) = (ol.color, ol.size);
         // The model's render alpha scales alpha alone, never RGB (`0x7b9b10`, the `0x7b9b42` fmul).
         rgba[3] *= frame.alpha;

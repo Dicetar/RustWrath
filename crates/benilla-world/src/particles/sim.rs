@@ -859,7 +859,7 @@ pub(super) fn simulate_particles(
                 let world = ride.to_world(pos);
                 if let Some(hit) = spatial.cast_ray(world, Dir3::NEG_Y, 20.0, true, &snap_filter) {
                     pos = ride.to_stored(
-                        world.with_y(world.y - hit.distance + def.over_life.sample(0.0).size),
+                        world.with_y(world.y - hit.distance + def.sample_over_life(0.0).size),
                     );
                 }
             }

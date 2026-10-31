@@ -238,6 +238,8 @@ impl SplineData {
 /// One vanilla M2 particle emitter, positions and vectors model-local (WoW axes, Z up).
 #[derive(Debug, Clone)]
 pub struct ParticleEmitterDef {
+    /// Version-264 independent age curves, retained without a lossy three-key projection.
+    pub wrath_curves: Option<std::sync::Arc<crate::wrath_particles::WrathParticleEmitter>>,
     pub flags: u32,
     pub position: [f32; 3],
     pub bone: u16,
@@ -302,6 +304,10 @@ pub struct ParticleEmitterDef {
 }
 
 impl ParticleEmitterDef {
+    /// Sample the selected file version's authored age curves.
+    pub fn sample_over_life(&self, age: f32) -> OverLifeSample {
+        self.wrath_curves.as_ref().map_or_else(|| self.over_life.sample(age), |e| e.sample_age(age))
+    }
     /// File flag 0x10 (runtime 0x100; the flag remap `0x70faf8`..`0x70fc44` is not the identity).
     /// Set, particles live emitter-local and the draw re-applies the live emitter matrix, so the
     /// cloud rides the emitter; clear, the spawn bakes them into world space, so a moving host lays
@@ -443,7 +449,7 @@ fn read_raw_track(
     out
 }
 
-fn blend_of(v: u8) -> ParticleBlend {
+pub(super) fn blend_of(v: u8) -> ParticleBlend {
     match v {
         3 | 4 => ParticleBlend::Add,
         2 | 5 | 6 => ParticleBlend::Alpha, // 5/6 (mod/mod2x): no modulate path yet
@@ -459,7 +465,7 @@ const LIGHTING_BY_BLEND: [bool; 7] = [true, true, true, true, true, false, false
 /// Whether the reference lights this emitter's quads: its synthesized per-draw material
 /// (`0x70d8b0`) decides `GL_LIGHTING` as a mesh's does (`0x70baf0`, at `0x70bb00`), lit iff file
 /// bit 0x1 is clear and `0x811fa8[blend]` is set. Bit 0x1 is unlit; wowdev has it inverted.
-fn lit_of(flags: u32, blend_byte: u8) -> bool {
+pub(super) fn lit_of(flags: u32, blend_byte: u8) -> bool {
     flags & 0x1 == 0
         && LIGHTING_BY_BLEND
             .get(usize::from(blend_byte))
@@ -467,7 +473,7 @@ fn lit_of(flags: u32, blend_byte: u8) -> bool {
             .unwrap_or(true)
 }
 
-fn shape_of(v: u16) -> ParticleShape {
+pub(super) fn shape_of(v: u16) -> ParticleShape {
     match v {
         2 => ParticleShape::Sphere,
         3 => ParticleShape::Spline,
@@ -479,13 +485,7 @@ fn shape_of(v: u16) -> ParticleShape {
 /// empty for a model with none or a file that is not MD20.
 pub fn parse_m2_particle_emitters(bytes: &[u8]) -> Result<Vec<ParticleEmitterDef>> {
     if bytes.get(..4) == Some(b"MD20") && bytes.get(4..8) == Some(&264u32.to_le_bytes()) {
-        let count = bytes.get(0x128..0x12c)
-            .and_then(|b| b.try_into().ok()).map(u32::from_le_bytes)
-            .ok_or_else(|| anyhow::anyhow!("truncated Wrath particle header"))?;
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        anyhow::bail!("Wrath M2 particle layout is not yet supported ({count} emitters)");
+        return crate::wrath_particles::render_emitters(bytes);
     }
     let textures: Vec<Option<String>> = match parse_m2(&mut Cursor::new(bytes)) {
         Ok(fmt) => fmt
@@ -617,6 +617,7 @@ pub fn parse_m2_particle_emitters(bytes: &[u8]) -> Result<Vec<ParticleEmitterDef
             ],
         };
         out.push(ParticleEmitterDef {
+            wrath_curves: None,
             flags: le_u32(bytes, e + 0x04),
             position: le_vec3(bytes, e + 0x08),
             bone: le_u16(bytes, e + 0x14),
@@ -683,7 +684,7 @@ mod tests {
         // A bogus nonzero legacy table must not be interpreted as Wrath particles.
         bytes[0x13c..0x140].copy_from_slice(&1u32.to_le_bytes());
         assert!(parse_m2_particle_emitters(&bytes).unwrap().is_empty());
-        // A real nonempty Wrath particle table is not yet supported.
+        // A nonempty Wrath table without valid records must still be rejected.
         bytes[0x128..0x12c].copy_from_slice(&1u32.to_le_bytes());
         assert!(parse_m2_particle_emitters(&bytes).is_err());
     }

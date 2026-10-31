@@ -33,6 +33,7 @@ pub mod testing {
     /// A minimal emitter def for kernel tests; only the fields the emit kernel reads matter.
     pub fn particle_def(shape: ParticleShape) -> ParticleEmitterDef {
         ParticleEmitterDef {
+            wrath_curves: None,
             flags: 0,
             position: [1.0, 2.0, 3.0],
             bone: 0,
