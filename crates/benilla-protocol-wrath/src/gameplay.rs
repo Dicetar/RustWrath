@@ -11,6 +11,9 @@ use anyhow::Result;
 
 use crate::cast_failure;
 
+mod movement;
+pub use movement::{MonsterFacing, MonsterMove};
+
 /// `CMSG_SET_SELECTION` (`MiscHandler.cpp:543`): full `u64` GUID.
 pub fn logout_request() -> Vec<u8> {
     Vec::new()
@@ -957,7 +960,9 @@ pub struct InitialSpellCooldown {
 
 /// One typed reply this slice understands.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ServerEvent {    AttackStart { attacker: u64, victim: u64 },
+pub enum ServerEvent {
+    MonsterMove(MonsterMove),
+    AttackStart { attacker: u64, victim: u64 },
     AttackStop { attacker: u64, victim: u64 },
     AttackSwingError(AttackSwingError),
     CastFailed {
@@ -1350,6 +1355,8 @@ pub enum PeriodicAuraTick {
 pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
     use crate::opcode::*;
     Some(match opcode {
+        SMSG_MONSTER_MOVE => movement::read(body, false).map(ServerEvent::MonsterMove),
+        SMSG_MONSTER_MOVE_TRANSPORT => movement::read(body, true).map(ServerEvent::MonsterMove),
         SMSG_ATTACKSTART => read_attack_start(body),
         SMSG_ATTACKSTOP => read_attack_stop(body),
         SMSG_ATTACKSWING_NOTINRANGE => Ok(ServerEvent::AttackSwingError(AttackSwingError::NotInRange)),
@@ -3303,6 +3310,22 @@ pub fn parse_char_enum(payload: &[u8]) -> Result<Vec<CharEnumRecord>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrath_monster_move_reaches_the_gameplay_decoder() {
+        // AC MovementPacketBuilder: mover, movement byte, start, spline id, stop type.
+        let mut body = vec![1, 7, 0];
+        for value in [1.0f32, 2.0, 3.0] {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        body.extend_from_slice(&123u32.to_le_bytes());
+        body.push(1);
+        let event = parse(0x0dd, &body).expect("roaming/stop packets must not be discarded")
+            .expect("the complete stop body is valid");
+        let ServerEvent::MonsterMove(m) = event else { panic!("wrong movement event") };
+        assert!(m.stop);
+        assert_eq!((m.guid, m.spline_id, m.start), (7, 123, [1.0, 2.0, 3.0]));
+    }
 
     fn le<const N: usize>(v: &[u8]) -> [u8; N] {
         v.try_into().unwrap()

@@ -2039,6 +2039,29 @@ fn translate_gameplay(
     received_at: Instant,
 ) -> Vec<SessionEvent> {
     match event {
+        WrathGameplayEvent::MonsterMove(m) => {
+            // The donor's remote ground-spline consumer already moves the entity, its model
+            // and selection circle together. Curved/cyclic/ballistic and self rides need a
+            // Wrath-specific evaluator; do not silently reinterpret their flags as 1.12.
+            let unsupported = m.flags & (0x200 | 0x800 | 0x2000 | 0x4000 | 0x40000 | 0x80000 | 0x400000);
+            if m.guid == self_guid || unsupported != 0 {
+                debug!(guid = m.guid, flags = m.flags, "Wrath spline needs unsupported evaluator");
+                return Vec::new();
+            }
+            let facing = match m.facing {
+                gameplay::MonsterFacing::None => benilla_protocol::MonsterMoveFacing::None,
+                gameplay::MonsterFacing::Spot(p) => benilla_protocol::MonsterMoveFacing::Spot(p),
+                gameplay::MonsterFacing::Target(g) => benilla_protocol::MonsterMoveFacing::Target(g),
+                gameplay::MonsterFacing::Angle(a) => benilla_protocol::MonsterMoveFacing::Angle(a),
+            };
+            vec![SessionEvent::MonsterMove {
+                guid: m.guid, transport: m.transport.map(|(guid, _seat)| guid), start: m.start,
+                spline_id: m.spline_id, path: m.path, facing, stop: m.stop,
+                duration_ms: m.duration_ms, flying: false,
+                // Used only for self server rides by this consumer; those are excluded above.
+                run_mode: false,
+            }]
+        }
         WrathGameplayEvent::AttackStart { attacker, victim } => {
             vec![SessionEvent::AttackStart { attacker, victim }]
         }
@@ -4171,6 +4194,25 @@ struct WrathStreamed;
 #[derive(Component, Clone, Copy)]
 struct WrathGeneration(u32);
 
+/// Last replicated pose applied to the root. Unrelated descriptor changes must not reset a
+/// server spline to the older create-block position after it has moved or finished.
+#[derive(Component, Clone, Copy, PartialEq)]
+struct WrathAppliedPosition(benilla_protocol_wrath::updates::PositionSnapshot);
+
+fn vanilla_npc_flags(flags: u32) -> u32 {
+    // AC UnitDefines.h NPCFlags -> the donor service ladder in target/cursor_mode.rs.
+    let mut mapped = flags & 0x3;
+    for (source, destination) in [
+        (0x70, 0x10), (0xf80, 0x4), (0x1000, 0x4000), (0x2000, 0x8),
+        (0x4000, 0x20), (0x8000, 0x40), (0x10000, 0x80), (0x20000, 0x100),
+        (0x40000, 0x200), (0x80000, 0x400), (0x100000, 0x800),
+        (0x200000, 0x1000), (0x400000, 0x2000),
+    ] {
+        if flags & source != 0 { mapped |= destination; }
+    }
+    mapped
+}
+
 /// The full 3.3.5 quest-log window (25 five-dword slots) carried beside the 1.12 descriptor's
 /// twenty-slot projection. The stock log reads this, so no server slot is lost.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Default)]
@@ -4507,7 +4549,7 @@ fn wrath_apply_world(world: &mut World) {
             pairs.push((138, bytes));
         }
         if let Some(flags) = remote.npc_flags {
-            pairs.push((147, flags));
+            pairs.push((147, vanilla_npc_flags(flags)));
         }
         if let Some(flags) = remote.dynamic_flags {
             pairs.push((143, flags));
@@ -4700,8 +4742,15 @@ fn wrath_apply_world(world: &mut World) {
                     world.entity_mut(entity).insert(SelfPlayer);
                 }
                 if *guid != player_guid {
-                    if let Some(transform) = transform {
-                        world.entity_mut(entity).insert(transform);
+                    if let (Some(transform), Some(position)) = (transform, remote.position) {
+                        let stamp = WrathAppliedPosition(position);
+                        if world.get::<WrathAppliedPosition>(entity) != Some(&stamp) {
+                            if let Some(mut current) = world.get_mut::<Transform>(entity) {
+                                current.translation = transform.translation;
+                                current.rotation = transform.rotation;
+                            }
+                            world.entity_mut(entity).insert(stamp);
+                        }
                     }
                 } else if let (Some(pose), Some(server_flags)) =
                     (remote.position, remote.move_flags)
@@ -4754,6 +4803,9 @@ fn wrath_apply_world(world: &mut World) {
                     InheritedVisibility::default(),
                     transform.unwrap_or_default(),
                 ));
+                if let Some(position) = remote.position {
+                    entity.insert(WrathAppliedPosition(position));
+                }
                 if let Some(slots) = wrath_slots {
                     entity.insert(slots);
                 }
