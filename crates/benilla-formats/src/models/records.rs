@@ -62,28 +62,46 @@ impl WmoLight {
 }
 
 /// The first value of a 28-byte M2Track (values `count@0x14`, `ofs@0x18`).
-fn track_first_f32(bytes: &[u8], track: usize) -> Option<f32> {
-    let nval = bytes.u32_at(track + 0x14)? as usize;
-    let ofs = bytes.u32_at(track + 0x18)? as usize;
-    if nval == 0 {
-        return None;
+/// Wrath's 20-byte track instead points to nested per-sequence arrays. Only inline or global
+/// payloads may be read from this buffer; external sequence offsets belong to their .anim.
+fn track_first_offset(bytes: &[u8], track: usize, stride: usize) -> Option<usize> {
+    if bytes.u32_at(4) == Some(264) {
+        let count = bytes.u32_at(track + 12)? as usize;
+        let table = bytes.u32_at(track + 16)? as usize;
+        let count = count.min(bytes.len().saturating_sub(table) / 8);
+        for slot in 0..count {
+            if bytes.u16_at(track + 2)? == u16::MAX {
+                let sequences = bytes.u32_at(0x20)? as usize;
+                if slot >= bytes.u32_at(0x1c)? as usize
+                    || bytes.u32_at(sequences.checked_add(slot.checked_mul(64)?)? + 12)? & 0x20 == 0 {
+                    continue;
+                }
+            }
+            let entry = table + slot * 8;
+            if bytes.u32_at(entry)? == 0 { continue; }
+            let offset = bytes.u32_at(entry + 4)? as usize;
+            bytes.get(offset..offset.checked_add(stride)?)?;
+            return Some(offset);
+        }
+        None
+    } else {
+        if bytes.u32_at(track + 0x14)? == 0 { return None; }
+        let offset = bytes.u32_at(track + 0x18)? as usize;
+        bytes.get(offset..offset.checked_add(stride)?)?;
+        Some(offset)
     }
+}
+
+fn track_first_f32(bytes: &[u8], track: usize) -> Option<f32> {
+    let ofs = track_first_offset(bytes, track, 4)?;
     bytes.f32_at(ofs)
 }
 fn track_first_u8(bytes: &[u8], track: usize) -> Option<u8> {
-    let nval = bytes.u32_at(track + 0x14)? as usize;
-    let ofs = bytes.u32_at(track + 0x18)? as usize;
-    if nval == 0 {
-        return None;
-    }
+    let ofs = track_first_offset(bytes, track, 1)?;
     bytes.get(ofs).copied()
 }
 fn track_first_vec3(bytes: &[u8], track: usize) -> Option<[f32; 3]> {
-    let nval = bytes.u32_at(track + 0x14)? as usize;
-    let ofs = bytes.u32_at(track + 0x18)? as usize;
-    if nval == 0 {
-        return None;
-    }
+    let ofs = track_first_offset(bytes, track, 12)?;
     Some([
         bytes.f32_at(ofs)?,
         bytes.f32_at(ofs + 4)?,
@@ -112,11 +130,18 @@ fn quat_rotate_z(q: [f32; 4]) -> [f32; 3] {
 }
 
 fn track_first_quat(bytes: &[u8], track: usize) -> Option<[f32; 4]> {
-    let nval = bytes.u32_at(track + 0x14)? as usize;
-    let ofs = bytes.u32_at(track + 0x18)? as usize;
-    if nval == 0 {
-        return None;
+    if bytes.u32_at(4) == Some(264) {
+        let ofs = track_first_offset(bytes, track, 8)?;
+        let mut q = [0.0f32; 4];
+        for (i, value) in q.iter_mut().enumerate() {
+            let raw = bytes.u16_at(ofs + i * 2)? as i16;
+            *value = (if raw < 0 { f32::from(raw) + 32768.0 }
+                else { f32::from(raw) - 32767.0 }) / 32767.0;
+        }
+        let norm = q.iter().map(|v| v * v).sum::<f32>().sqrt();
+        return (norm > 1e-8).then(|| q.map(|v| v / norm));
     }
+    let ofs = track_first_offset(bytes, track, 16)?;
     Some([
         bytes.f32_at(ofs)?,
         bytes.f32_at(ofs + 4)?,
@@ -129,10 +154,13 @@ fn track_first_quat(bytes: &[u8], track: usize) -> Option<[f32; 4]> {
 /// chain. Bone table `count@0x34`/`ofs@0x38`, stride `0x6c`: flags `u32@4` (`0x04` keeps the
 /// root's orientation), parent `i16@8`, rotation `@0x28`. Rotation animation is not applied.
 fn bone_z_axis(bytes: &[u8], bone: i16) -> [f32; 3] {
-    let (Some(count), Some(ofs)) = (bytes.u32_at(0x34), bytes.u32_at(0x38)) else {
+    let wrath = bytes.u32_at(4) == Some(264);
+    let (header, stride, rotation) = if wrath { (0x2c, 88, 36) } else { (0x34, 0x6c, 0x28) };
+    let (Some(count), Some(ofs)) = (bytes.u32_at(header), bytes.u32_at(header + 4)) else {
         return [0.0, 0.0, 1.0];
     };
     let (count, ofs) = (count as usize, ofs as usize);
+    let count = count.min(bytes.len().saturating_sub(ofs) / stride);
     // Local rotations leaf to root, bounded by the bone count.
     let mut chain: Vec<[f32; 4]> = Vec::new();
     let mut idx = bone;
@@ -140,8 +168,8 @@ fn bone_z_axis(bytes: &[u8], bone: i16) -> [f32; 3] {
         if idx < 0 || idx as usize >= count {
             break;
         }
-        let rec = ofs + idx as usize * 0x6c;
-        if let Some(q) = track_first_quat(bytes, rec + 0x28) {
+        let Some(rec) = ofs.checked_add(idx as usize * stride) else { break };
+        if let Some(q) = track_first_quat(bytes, rec + rotation) {
             chain.push(q);
         }
         let flags = bytes.u32_at(rec + 4).unwrap_or(0);
@@ -163,7 +191,10 @@ fn bone_z_axis(bytes: &[u8], bone: i16) -> [f32; 3] {
 /// `@0xb8`.
 fn read_m2_light(bytes: &[u8], rec: usize) -> Option<M2Light> {
     let bone = bytes.u16_at(rec + 0x02)? as i16;
-    Some(M2Light {
+    let wrath = bytes.u32_at(4) == Some(264);
+    let stride = if wrath { 20 } else { 28 };
+    let track = |index: usize| rec + 16 + index * stride;
+    let light = M2Light {
         light_type: bytes.u16_at(rec)?,
         bone,
         bone_z: bone_z_axis(bytes, bone),
@@ -172,31 +203,38 @@ fn read_m2_light(bytes: &[u8], rec: usize) -> Option<M2Light> {
             bytes.f32_at(rec + 0x08)?,
             bytes.f32_at(rec + 0x0c)?,
         ],
-        ambient_color: track_first_vec3(bytes, rec + 0x10).unwrap_or([1.0; 3]),
-        ambient_intensity: track_first_f32(bytes, rec + 0x2c).unwrap_or(0.0),
-        diffuse_color: track_first_vec3(bytes, rec + 0x48).unwrap_or([1.0; 3]),
-        diffuse_intensity: track_first_f32(bytes, rec + 0x64).unwrap_or(1.0),
-        attenuation_start: track_first_f32(bytes, rec + 0x80).unwrap_or(0.0),
-        attenuation_end: track_first_f32(bytes, rec + 0x9c).unwrap_or(0.0),
-        visibility_off: track_first_u8(bytes, rec + 0xb8) == Some(0),
-    })
+        ambient_color: track_first_vec3(bytes, track(0)).unwrap_or([1.0; 3]),
+        ambient_intensity: track_first_f32(bytes, track(1)).unwrap_or(0.0),
+        diffuse_color: track_first_vec3(bytes, track(2)).unwrap_or([1.0; 3]),
+        diffuse_intensity: track_first_f32(bytes, track(3)).unwrap_or(1.0),
+        attenuation_start: track_first_f32(bytes, track(4)).unwrap_or(0.0),
+        attenuation_end: track_first_f32(bytes, track(5)).unwrap_or(0.0),
+        visibility_off: track_first_u8(bytes, track(6)) == Some(0),
+    };
+    let finite = light.position.iter().chain(&light.ambient_color).chain(&light.diffuse_color)
+        .chain(&light.bone_z).copied().chain([light.ambient_intensity, light.diffuse_intensity,
+            light.attenuation_start, light.attenuation_end]).all(f32::is_finite);
+    (finite && (!wrath || light.light_type <= 1)).then_some(light)
 }
 
 /// The M2 lights array (MD20 `count@0x11c`, `ofs@0x120`, stride `0xd4`).
 pub fn parse_m2_lights(bytes: &[u8]) -> Vec<M2Light> {
-    let (Some(count), Some(ofs)) = (bytes.u32_at(0x11c), bytes.u32_at(0x120)) else {
+    // 12340 M2Data.h: lights @0x108, seven 20-byte tracks after the 16-byte light head.
+    let (header, stride) = if bytes.u32_at(4) == Some(264) { (0x108, 156) } else { (0x11c, 0xd4) };
+    let (Some(count), Some(ofs)) = (bytes.u32_at(header), bytes.u32_at(header + 4)) else {
         return Vec::new();
     };
     let (count, ofs) = (count as usize, ofs as usize);
+    let count = count.min(bytes.len().saturating_sub(ofs) / stride);
     let mut out = Vec::with_capacity(count.min(256));
     for i in 0..count {
-        let rec = match ofs.checked_add(i * 0xd4) {
-            Some(r) if r + 0xd4 <= bytes.len() => r,
+        let rec = match ofs.checked_add(i * stride) {
+            Some(r) if r + stride <= bytes.len() => r,
             _ => break,
         };
         match read_m2_light(bytes, rec) {
             Some(light) => out.push(light),
-            None => break, // unreachable after the guard above
+            None => continue,
         }
     }
     out
@@ -302,6 +340,56 @@ pub fn parse_wmo_lights(root_bytes: &[u8]) -> Vec<WmoLight> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrath_models_without_lights_do_not_decode_other_tables() {
+        let mut b = vec![0u8; 1024];
+        b[..4].copy_from_slice(b"MD20");
+        b[4..8].copy_from_slice(&264u32.to_le_bytes());
+        // The old header points to unrelated data in v264.
+        b[0x11c..0x120].copy_from_slice(&1u32.to_le_bytes());
+        b[0x120..0x124].copy_from_slice(&320u32.to_le_bytes());
+        b[320..322].copy_from_slice(&1u16.to_le_bytes());
+        assert!(parse_m2_lights(&b).is_empty());
+    }
+
+    #[test]
+    fn wrath_lights_use_156_byte_records_and_nested_track_values() {
+        let mut b = vec![0u8; 1024];
+        b[..4].copy_from_slice(b"MD20");
+        b[4..8].copy_from_slice(&264u32.to_le_bytes());
+        b[0x108..0x10c].copy_from_slice(&1u32.to_le_bytes());
+        b[0x10c..0x110].copy_from_slice(&320u32.to_le_bytes());
+        b[320..322].copy_from_slice(&1u16.to_le_bytes());
+        b[322..324].copy_from_slice(&u16::MAX.to_le_bytes());
+        for (i, value) in [1.0f32, 2.0, 3.0].iter().enumerate() {
+            b[324 + i * 4..328 + i * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        for (i, values) in [[0.2f32, 0.3, 0.4], [0.5, 0.0, 0.0], [0.8, 0.7, 0.6],
+            [2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [9.0, 0.0, 0.0], [0.0; 3]]
+            .iter().enumerate() {
+            let track = 336 + i * 20;
+            let table = 512 + i * 8;
+            let payload = 600 + i * 16;
+            for (at, value) in [(track + 12, 1), (track + 16, table as u32),
+                (table, 1), (table + 4, payload as u32)] {
+                b[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            for (component, value) in values.iter().enumerate() {
+                b[payload + component * 4..payload + component * 4 + 4]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        let lights = parse_m2_lights(&b);
+        assert_eq!(lights.len(), 1);
+        let light = lights[0];
+        assert_eq!(light.position, [1.0, 2.0, 3.0]);
+        assert_eq!(light.ambient_color, [0.2, 0.3, 0.4]);
+        assert_eq!(light.diffuse_color, [0.8, 0.7, 0.6]);
+        assert_eq!((light.ambient_intensity, light.diffuse_intensity), (0.5, 2.0));
+        assert_eq!((light.attenuation_start, light.attenuation_end), (3.0, 9.0));
+        assert!(light.visibility_off);
+    }
 
     /// A 2-bone chain: the root turned 90° about +X, the child 90° about its own +Z.
     fn two_bone_chain() -> Vec<u8> {
