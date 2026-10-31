@@ -95,12 +95,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // move the press leg started, and the key stays logically down.
     lua.globals().set(
         "IsModifiedClick",
-        lua.create_function(|lua, action: String| -> mlua::Result<mlua::Value> {
+        lua.create_function(|lua, action: Option<String>| -> mlua::Result<mlua::Value> {
+            let model = lua.app_data_ref::<super::Model>().expect("model app_data");
+            let (shift, ctrl, alt) = model.modifiers;
+            let Some(action) = action else {
+                return Ok(super::binding_abi::flag(shift || ctrl || alt));
+            };
             let Some(want) = modified_click(&action) else {
                 return Ok(mlua::Value::Nil);
             };
-            let model = lua.app_data_ref::<super::Model>().expect("model app_data");
-            let (shift, ctrl, alt) = model.modifiers;
             let held = match want {
                 "SHIFT" => shift,
                 "CTRL" => ctrl,
@@ -109,6 +112,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             };
             Ok(super::binding_abi::flag(held))
         })?,
+    )?;
+
+    // `SpellCanTargetItem(spell)` (`SecureTemplates.lua:537`): the secure action button's gate
+    // for a spell aimed at the cursor item. The client has no spell-targeting cursor item, so
+    // false is the correct answer and lets the ordinary UseAction path run; without this the
+    // Battle Shout and Attack key/click handlers die before they reach the action.
+    lua.globals().set(
+        "SpellCanTargetItem",
+        lua.create_function(|_, _spell: Option<mlua::Value>| Ok(false))?,
     )?;
 
     // `BNFeaturesEnabled` (`InterfaceOptionsPanels.lua:820`, `:857`, `:1610`): Battle.net features
@@ -350,8 +362,28 @@ mod tests {
                 .flatten()
         };
         assert_eq!(read(&script, "STICKYCAMERA"), None, "nothing held");
+        assert_eq!(
+            script
+                .eval::<Option<i64>>("return IsModifiedClick()")
+                .unwrap(),
+            None,
+            "the stock loot/spell buttons call it with no action"
+        );
+        assert!(
+            !script
+                .eval::<bool>("return SpellCanTargetItem(6673) and true or false")
+                .unwrap(),
+            "no cursor item to target"
+        );
         script.set_modifiers(true, false, false);
         assert_eq!(read(&script, "STICKYCAMERA"), Some(1), "shift held");
+        assert_eq!(
+            script
+                .eval::<Option<i64>>("return IsModifiedClick()")
+                .unwrap(),
+            Some(1),
+            "no-arg reads any held modifier"
+        );
         assert_eq!(read(&script, "SELFCAST"), None, "self-cast wants alt");
         script.set_modifiers(false, false, true);
         assert_eq!(read(&script, "SELFCAST"), Some(1), "alt held");

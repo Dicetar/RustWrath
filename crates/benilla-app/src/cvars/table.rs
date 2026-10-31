@@ -527,6 +527,11 @@ pub(crate) const REGISTERED: &[Registered] = &[
     // origin to `surface + 2/9`. Ours: `benilla_world::collision::camera_filter` and
     // `player::camera_water`.
     same("cameraWaterCollision", "1"),
+    // 3.3.5a's bag and loot panels query these names (`MainMenuBarBagButtons.lua:132`,
+    // `LootFrame.lua:168`). The 1.12 table has no rows for them, and a missing CVar raises in
+    // GetCVar (`0x488c53`), aborting their OnLoad before the bag bar and loot buttons wire up.
+    same("displayFreeBagSlots", "1"),
+    same("lootUnderMouse", "0"),
     // `cameraTerrainTilt` `[0xbe0fd4]` "0" (`0x50bcfd`), Follow Terrain: probe and staircase
     // `0x50d900`, arm `0x50dbc0`; ours is `player::camera_dynamics::TerrainTilt`.
     same("cameraTerrainTilt", "0"),

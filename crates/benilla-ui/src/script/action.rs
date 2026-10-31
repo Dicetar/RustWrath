@@ -399,6 +399,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // GetActionInfo(slot): the standard action-bar type and id (`"spell"`, `"item"` or `"macro"`).
+    // The client's action slot carries no spellbook subtype, so only the two stock consumers that
+    // need it are served here; an empty slot returns nothing and a non-number raises.
+    g.set(
+        "GetActionInfo",
+        lua.create_function(|lua, action: Value| {
+            let action = binding_abi::index_arg32(lua, action, "Usage: GetActionInfo(slot)")?;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let mut out = MultiValue::new();
+            if let Some(slot) = model.actions.get(&action) {
+                let (kind, id) = match macro_slot_id(slot.kind, slot.action) {
+                    Some(id) => ("macro", id),
+                    None if slot.kind == ACTION_KIND_ITEM => ("item", slot.action),
+                    None => ("spell", slot.action),
+                };
+                out.push_back(Value::String(lua.create_string(kind)?));
+                out.push_back(Value::Integer(i64::from(id)));
+            }
+            Ok(out)
+        })?,
+    )?;
+
     // GetActionText(slot): the macro's name, else nil. `0x4e7050` tests only
     // `raw & 0xf0000000 == 0x40000000`, so spell, item and empty slots all answer nil; a missing or
     // non-number slot raises `Usage: GetActionText(slot)` (`0x84bff4`); the slot is 1-based
@@ -487,6 +509,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(i64::from(model.bonus_bar_offset))
         })?,
+    )?;
+
+    // GetMultiCastBarOffset(): the multi-cast bar's page offset. No multicast bar is installed,
+    // so 0 keeps the stock MultiCastActionButtons on the default page instead of paging on nil
+    // (`ActionButton.lua:146`).
+    g.set(
+        "GetMultiCastBarOffset",
+        lua.create_function(|_, ()| Ok(0i64))?,
     )?;
 
     // ChangeActionBarPage(): fires `ACTIONBAR_PAGE_CHANGED` synchronously and returns nothing
@@ -742,6 +772,46 @@ mod tests {
             s.eval::<String>("return GetActionText(1)").unwrap(),
             "Charge"
         );
+    }
+
+    #[test]
+    fn get_action_info_reads_the_slot_kind_and_id() {
+        let mut s = UiScript::new().unwrap();
+        s.keep_calls();
+        let slot = |kind, action| ActionSlot {
+            kind,
+            action,
+            ..Default::default()
+        };
+        s.set_action(1, Some(slot(super::ACTION_KIND_SPELL, 133)));
+        s.set_action(2, Some(slot(super::ACTION_KIND_ITEM, 117)));
+        s.set_action(3, Some(slot(super::ACTION_KIND_MACRO, 5)));
+        assert_eq!(
+            s.eval::<(String, i64)>("return GetActionInfo(1)").unwrap(),
+            ("spell".into(), 133)
+        );
+        assert_eq!(
+            s.eval::<(String, i64)>("return GetActionInfo(2)").unwrap(),
+            ("item".into(), 117)
+        );
+        assert_eq!(
+            s.eval::<(String, i64)>("return GetActionInfo(3)").unwrap(),
+            ("macro".into(), 5)
+        );
+        assert_eq!(
+            s.eval::<i64>("return table.getn({GetActionInfo(9)})")
+                .unwrap(),
+            0,
+            "an empty slot returns nothing"
+        );
+        let err = s.run("GetActionInfo()").unwrap_err().to_string();
+        assert!(err.contains("Usage: GetActionInfo(slot)"), "{err}");
+    }
+
+    #[test]
+    fn get_multi_cast_bar_offset_is_zero_without_a_multicast_bar() {
+        let s = UiScript::new().unwrap();
+        assert_eq!(s.eval::<i64>("return GetMultiCastBarOffset()").unwrap(), 0);
     }
 
     /// `GetActionAutocast` answers a pet spell's two bits only for a macro bound out of the pet's
