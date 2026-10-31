@@ -93,6 +93,17 @@ impl MpqAssetReader {
     /// The bytes of the archive file `path` names.
     fn read_bytes(&self, path: &Path) -> Result<Vec<u8>, AssetReaderError> {
         let internal = internal_path(path)?;
+        // The WM character models are custom HD rigs whose talk animation can carry non-finite
+        // joints; use the stock base character/skin/texture instead until that rig is supported.
+        let stock_character = internal
+            .to_ascii_lowercase()
+            .replace('\\', "/")
+            .starts_with("character/");
+        if stock_character {
+            return self.chain.read_base(&internal).map_err(|e| {
+                AssetReaderError::Io(Arc::new(std::io::Error::other(format!("{e:#}"))))
+            });
+        }
         if !self.chain.contains(&internal) {
             return Err(AssetReaderError::NotFound(path.to_path_buf()));
         }

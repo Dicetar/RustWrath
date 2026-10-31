@@ -55,3 +55,36 @@ result before matching, and the subsequent Windows `cargo build -p benilla` pass
 The owner's subsequent Firna screenshots still show severe stretched geometry and an
 `Unknown`/`Dead` questgiver label. The placement guard is not a visually accepted repair;
 the shared commit preserves work in progress and does not establish playable alpha.
+
+## 2026-10-31 Player skinning repair
+
+The torn character is the **player**, not the guard. Firna is the human-female display; the
+guard is the intact human male. `wm-hd` replaces `Character\Human\Female\HumanFemale.m2` with a
+7.9 MB custom HD rig (stock 1.5 MB) and its skin with 238 KB (stock 90 KB). During the guard
+interaction the palette writer saw a non-finite joint: `benilla_world::rig_palette` warned
+`rig 299 bone 39: non-finite joint; bind pose used`. The finite-but-wrong HD rig, not the
+guard or the placement guard, produced the stretched golden body/arm planes.
+
+Repair:
+- `benilla-world/src/rig_palette.rs`: `write_rig`, `write_rig_worlds` and `write_rider` now
+  replace a non-finite joint/rider matrix with the bind-pose row (identity) and warn once. Test
+  `rig_palette::tests::a_non_finite_joint_uses_the_bind_pose_row` passes.
+- `benilla-formats/src/chain.rs` + `benilla-assets/src/lib.rs`: `character/` paths read the
+  lowest-priority stock archive (`read_base`), bypassing the custom WM character rigs and their
+  skins/textures until that rig is supported. Test
+  `chain::tests::the_base_character_model_is_the_stock_not_the_wm_patch` passes.
+
+Rendered checks (binary
+`72FFD47B73F73CE4B5C4DA1E1FBA31FA368FC76DE9390A5EE232D89349967B7D`, HEAD `52b9af2c` plus this
+patch):
+- `oc-firna-verify-20261031-161752-867.png`: Firna is the stock human female with orange hair,
+  white shirt, tan pants/boots; coherent body; the guard and `?` marker are intact.
+- `oc-firna-verify-20261031-162145-096.png`: stock Firna in the abbey courtyard; coherent body;
+  the guard and `?` marker visible; `nonfinite=1` was sanitized by the palette guard.
+- The D-key probe used to change the camera angle moved Firna about 20 yd into the courtyard;
+  that test movement is disclosed and not repeated. The latest capture has no open quest window,
+  so the talk state itself still needs an owner-driven confirmation.
+
+Remaining: the `Unknown`/`Dead` questgiver label and the blank/absent quest frame are Astra's
+UI/name area; the HD character rigs are bypassed rather than supported; the stock talk/emote
+still produced one non-finite joint, now held at the bind pose. No playable-alpha claim follows.

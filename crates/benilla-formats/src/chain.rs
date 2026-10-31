@@ -171,6 +171,32 @@ impl Chain {
         self.read(name)
     }
 
+    /// The lowest-priority archive with an entry for `name`: the stock base copy, bypassing the WM
+    /// patch that replaces the character models with a custom rig our loader cannot skin. A
+    /// tombstone still hides the path, as in [`Self::read`].
+    pub fn archive_for_base(&self, name: &str) -> Result<Archive> {
+        let archive = self
+            .archives
+            .iter()
+            .find(|a| a.contains(name))
+            .ok_or_else(|| anyhow!("file not in patch chain: {name}"))?;
+        if archive.is_delete_marker(name) {
+            bail!(
+                "file deleted from patch chain: {name} (tombstoned by {})",
+                archive.path().display()
+            );
+        }
+        Ok(archive.clone())
+    }
+
+    /// Read a file from its lowest-priority archive (the stock base), bypassing WM replacements.
+    pub fn read_base(&self, name: &str) -> Result<Vec<u8>> {
+        let archive = self.archive_for_base(name)?;
+        archive
+            .read_file(name)
+            .with_context(|| format!("reading {name} from {}", archive.path().display()))
+    }
+
     /// The chain's named files with sizes, for development and extraction; a file in no listfile
     /// (most of `texture.MPQ`) is readable by name but not listed. Unions every archive's
     /// `(listfile)`, as each names only its own files; sizes come from the winning archive.
@@ -485,6 +511,22 @@ mod tests {
         assert_eq!(
             mount_order(&dir),
             owned(&["DBC.mpq", "Model.MPQ", "PATCH.mpq"])
+        );
+    }
+
+    /// The WM patch replaces the human female model with a custom HD rig; the base read must
+    /// return the stock model instead, or the player's talk animation tears the character.
+    #[test]
+    fn the_base_character_model_is_the_stock_not_the_wm_patch() {
+        let data = crate::wow_data_or_skip!();
+        let chain = Chain::open(&data).expect("open chain");
+        let base = chain
+            .read_base("Character\\Human\\Female\\HumanFemale.m2")
+            .expect("stock human female model");
+        assert!(
+            base.len() < 3_000_000,
+            "stock model expected, got {} bytes",
+            base.len()
         );
     }
 }

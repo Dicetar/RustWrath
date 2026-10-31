@@ -90,6 +90,8 @@ pub struct RigPalettes {
     /// The exhaustion warning's once-a-session latch, never reset: [`Self::denied`] resets with
     /// each census, so gating on it would warn once a census window.
     denied_warned: bool,
+    /// The once-a-session latch for a non-finite joint sanitized to the bind pose.
+    non_finite_warned: bool,
     /// `WOW_RIG_COST` meters, printed and reset by [`publish_rig_palettes`].
     cost_copies: u32,
     cost_copy_us: f32,
@@ -117,6 +119,7 @@ impl Default for RigPalettes {
             live_bones: 0,
             denied: 0,
             denied_warned: false,
+            non_finite_warned: false,
             cost_copies: 0,
             cost_copy_us: 0.0,
             cost_rows: 0,
@@ -160,6 +163,8 @@ fn rebase(mut world: Affine3A, origin: Vec3) -> Affine3A {
     world.translation -= bevy::math::Vec3A::from(origin);
     world
 }
+
+
 
 /// [`rebase`] for a `GlobalTransform`.
 pub(crate) fn rebase_global(g: GlobalTransform, origin: Vec3) -> GlobalTransform {
@@ -318,7 +323,16 @@ impl RigPalettes {
             let Ok(g) = worlds.get(joints[b]) else {
                 continue; // a torn-down joint keeps its last rows
             };
-            let m = rebase(g.affine(), origin) * Affine3A::from_mat4(ibp[b]);
+            let raw = rebase(g.affine(), origin) * Affine3A::from_mat4(ibp[b]);
+            let m = if raw.is_finite() {
+                raw
+            } else {
+                if !self.non_finite_warned {
+                    self.non_finite_warned = true;
+                    warn!("rig {} bone {b}: non-finite joint; bind pose used", rig.slot);
+                }
+                Affine3A::IDENTITY
+            };
             let (m3, t) = (m.matrix3, m.translation);
             let r = 3 * (base as usize + b);
             rows[r] = [m3.x_axis.x, m3.y_axis.x, m3.z_axis.x, t.x];
@@ -353,7 +367,16 @@ impl RigPalettes {
             &mut self.cost_copy_us,
         );
         for b in 0..n as usize {
-            let m = worlds[b].affine() * Affine3A::from_mat4(ibp[b]);
+            let raw = worlds[b].affine() * Affine3A::from_mat4(ibp[b]);
+            let m = if raw.is_finite() {
+                raw
+            } else {
+                if !self.non_finite_warned {
+                    self.non_finite_warned = true;
+                    warn!("rig {slot} bone {b}: non-finite joint; bind pose used");
+                }
+                Affine3A::IDENTITY
+            };
             let (m3, t) = (m.matrix3, m.translation);
             let r = 3 * (base as usize + b);
             rows[r] = [m3.x_axis.x, m3.y_axis.x, m3.z_axis.x, t.x];
@@ -377,6 +400,15 @@ impl RigPalettes {
         if len == 0 {
             return;
         }
+        let frame = if frame.is_finite() {
+            frame
+        } else {
+            if !self.non_finite_warned {
+                self.non_finite_warned = true;
+                warn!("rig {slot}: non-finite rider frame; bind pose used");
+            }
+            Affine3A::IDENTITY
+        };
         let (m3, t) = (frame.matrix3, frame.translation);
         let want = [
             [m3.x_axis.x, m3.y_axis.x, m3.z_axis.x, t.x],
@@ -972,6 +1004,36 @@ pub fn spawn_joints(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A corrupt HD animation key can make a joint's global non-finite. It must not reach the
+    /// skin palette: the bind-pose row keeps the character coherent instead of tearing it.
+    #[test]
+    fn a_non_finite_joint_uses_the_bind_pose_row() {
+        let mut app = App::new();
+        let joint = app
+            .world_mut()
+            .spawn(GlobalTransform::from(Transform {
+                translation: Vec3::new(f32::NAN, 0.0, 0.0),
+                ..default()
+            }))
+            .id();
+        let mut p = RigPalettes::default();
+        let (slot, base) = p.alloc(1).unwrap();
+        let rig = RigSkin {
+            slot,
+            base,
+            len: 1,
+            joints: vec![joint],
+            ibp: Handle::default(),
+        };
+        let mut state = app.world_mut().query::<Ref<GlobalTransform>>();
+        let worlds = state.query(app.world());
+        p.write_rig(&rig, &[Mat4::IDENTITY], Vec3::ZERO, &worlds);
+        let r = 3 * base as usize;
+        assert_eq!(p.rows[r], [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(p.rows[r + 1], [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(p.rows[r + 2], [0.0, 0.0, 1.0, 0.0]);
+    }
 
     #[test]
     fn alloc_free_coalesce_roundtrip() {
