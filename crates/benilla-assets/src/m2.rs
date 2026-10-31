@@ -235,7 +235,8 @@ impl AssetLoader for M2ModelLoader {
         let mut missing = 0;
         for (id, variation) in benilla_formats::m2_external_animation_ids(&bytes) {
             let sibling = model_path.with_file_name(format!("{stem}{id:04}-{variation:02}.anim"));
-            let path = bevy::asset::AssetPath::from(sibling).with_source(ctx.path().source().clone_owned());
+            let source = ctx.path().source().clone_owned();
+            let path = bevy::asset::AssetPath::from(sibling).with_source(source);
             match ctx.read_asset_bytes(path).await {
                 Ok(data) => { external.insert((id, variation), data); }
                 Err(_) => { missing += 1; }
@@ -255,11 +256,11 @@ impl AssetLoader for M2ModelLoader {
         // Creature skins fill at the spawn site, so no skin directory or list is passed. Wrath
         // models store geometry in a sibling `Foo00.skin`; the actor route uses LOD 0.
         let subs = if bytes.get(4..8) == Some(&264u32.to_le_bytes()) {
-            let path = ctx.path().path();
-            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let path = ctx.path().path().to_path_buf();
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
             let skin_path = path.with_file_name(format!("{stem}00.skin"));
-            let skin_asset = bevy::asset::AssetPath::from(skin_path.clone())
-                .with_source(ctx.path().source().clone_owned());
+            let source = ctx.path().source().clone_owned();
+            let skin_asset = bevy::asset::AssetPath::from(skin_path.clone()).with_source(source);
             let skin_bytes = ctx.read_asset_bytes(skin_asset).await.map_err(|e| {
                 std::io::Error::other(format!("reading companion skin {}: {e}", skin_path.display()))
             })?;
