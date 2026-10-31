@@ -19,9 +19,11 @@ trace_chrome = ["bevy/trace_chrome"]
 # Links Bevy as a shared library so an incremental rebuild relinks faster. The binary then starts
 # only through `cargo run`, which puts the toolchain's libstd on the loader path.
 bevy_dynamic_linking = ["bevy/dynamic_linking"]
+hotpatch = ["dev", "dep:benilla-hotpatch-bevy", "bevy/embedded_watcher"]
 
 [dependencies]
 anyhow.workspace = true
+benilla-hotpatch-bevy = { path = "../benilla-hotpatch-bevy", optional = true }
 # The EditBox clipboard, on the main thread as NSPasteboard requires; bevy_egui's 3.x.
 arboard = "3"
 benilla-ui = { path = "../benilla-ui" }

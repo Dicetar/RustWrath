@@ -1,0 +1,9 @@
+[package]
+name = "benilla-hotpatch-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Versioned C-layout presentation interface; no Bevy or Rust-owned values cross DLLs"
+
+[lints]
+workspace = true

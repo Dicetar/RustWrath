@@ -51,6 +51,9 @@ mod debug_panel;
 /// The dev/player seam: the instrument groups and the boundary rule. Always compiled; what it holds
 /// is not.
 mod dev;
+#[cfg(feature = "hotpatch")]
+mod hotpatch;
+
 #[cfg(feature = "dev")]
 mod devtools;
 mod doodad_events;
@@ -495,6 +498,8 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // The probe fleet, last so it observes the fully-built app; compiled out by
     // `--no-default-features`.
     app.add_plugins(dev::DevProbesPlugin);
+    #[cfg(feature = "hotpatch")]
+    app.add_plugins(hotpatch::plugin);
 
     // Returns the app's exit status: a failed capture sets `AppExit::error()`
     // (`capture::drive_capture`), which must not exit 0 with no PNG on disk.

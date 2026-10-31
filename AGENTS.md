@@ -49,3 +49,10 @@ Use `project-b-12340-reference` for this fork's rendering, formats, protocol-fac
 behavior and Lua/UI contracts. Skill: `C:/Users/Qraag/.codex/skills/project-b-12340-reference/SKILL.md`.
 It points to the canonical repository guide; availability of source is not permission to copy it
 or evidence of runtime correctness.
+
+### Client hotpatch modules
+
+Read `docs/architecture/adr-0002-live-client-modules.md` before changing reload/module interfaces.
+The native host is under construction; DLL staging is not in-game dispatch or visual acceptance.
+Current ownership and the shared build/run reservation are in `docs/agents/active-ownership.md`.
+The owner assigned graphics/modules/integration seams to Astra; OC continues playable combat.

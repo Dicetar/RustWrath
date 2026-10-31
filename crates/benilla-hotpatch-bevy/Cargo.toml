@@ -1,0 +1,19 @@
+[package]
+name = "benilla-hotpatch-bevy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host-side Bevy pose adapter; no engine state crosses the native module ABI"
+
+[dependencies]
+bevy.workspace = true
+benilla-world = { path = "../benilla-world", default-features = false }
+benilla-hotpatch = { path = "../benilla-hotpatch" }
+benilla-hotpatch-abi = { path = "../benilla-hotpatch-abi" }
+
+[dev-dependencies]
+benilla-assets = { path = "../benilla-assets", default-features = false }
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -17,3 +17,12 @@ The owner may override any row; later documents must not treat them as owner-con
 | # | Goal | Added | Staged interpretation (proposal, vetoable) |
 |---|---|---|---|
 | 6 | **Client-side hot-patching** — live client changes without client restart/rebuild, mirroring the server-side live-change rule | 2026-10-24, owner message | **C1:** hot-reload of client data — assets via a file-watch/re-import path on the manifest loader (ticket 05 must leave a seam), tuning/config files, and Lua/XML (the addon host already has a reload lifecycle; stock `/reload` semantics). **C2:** WM-pushed client-side definitions — the native client channel (ticket 11) carries versioned client-content publications (UI tweaks, shell visuals, tuning) to connected clients. **C3, optional/last:** hot-swappable native presentation modules (dylib with stable ABI, swap at state boundaries) — explicitly not promised by the base plan's extension model; only if C1+C2 prove insufficient. |
+
+2026-10-31 update: the owner promoted native presentation hotpatching to immediate work and
+approved the one-time host rebuild/restart. Routine supported changes should then activate in
+place, using `/reload` for UI. ADR-0002 records the supported interfaces and maintenance limits.
+The owner subsequently transferred graphics, rig math and integration scheduling to Astra;
+OpenCode retains playable combat. The post-edit pose seam and restoration adapter are now
+implemented, with a focused reload/non-accumulation check passing. Actual client activation
+still requires rendered acceptance. File-watch support alone does not establish complete
+asset/model hotpatching.
