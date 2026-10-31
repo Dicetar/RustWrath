@@ -18,6 +18,9 @@ A benilla-derived (Rust + Bevy) World of Warcraft 3.3.5a client fork, speaking t
 
 ## Standing rules
 
+- Canonical project repository: https://github.com/Dicetar/RustWrath (`origin`). Keep
+  `samwhosung/benilla` as `upstream` for donor research. Work in the existing checkout;
+  see `docs/agents/repository.md` for branch and collaboration rules.
 - Owner decisions and their adopted defaults: `docs/baseline/owner-decisions.md`.
 - Server trees under D:/WOW are read-only unless a ticket says otherwise; WM source owner is wm-project.
 - Estimates only with assumptions; no schedules derived from commit counts.
