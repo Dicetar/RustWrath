@@ -56,20 +56,31 @@ fn seq_loop(info: &BillboardInfo, anim_id: u16) -> Option<BoneScaleAnim> {
         .map(|(_, l)| l.clone())
 }
 
-/// The marker M2 per dialog status: the reference's file table `0xc4d9d8` through the status map
-/// `0x80c454` = `{0,3,0,2,7,1,6,6}`, its `.mdx` names loaded as `.m2`. The statuses are
-/// UNAVAILABLE 1, INCOMPLETE 3, REWARD_REP 4, AVAILABLE 5, REWARD_OLD 6 and REWARD2 7; NONE 0 and
-/// CHAT 2 draw nothing. File index 4, the green `!`, comes from the flight-master status instead,
-/// and index 5, the blue `!`, is unreachable in 1.12.1.
+/// The marker M2 per `QuestGiverStatus`: the reference's `s_interactIcons` file table
+/// (`0x00ADAC98`) through `s_questStatusIcons` (`0x00A34F5C` =
+/// `{0,6,1,2,3,5,10,11,4,9,9}`), its `.mdx` names loaded as `.m2`. Status 5 (`INCOMPLETE`) is the
+/// grey `?`; 2/8 (`LOW_LEVEL_AVAILABLE`, `AVAILABLE`) the gold `!`; 9/10 (`REWARD2`/`REWARD`) the
+/// gold `?`; 3/6 (`LOW_LEVEL_REWARD_REP`, `REWARD_REP`) the light-blue `?`; 4/7
+/// (`LOW_LEVEL_AVAILABLE_REP`, `AVAILABLE_REP`) the blue `!`. Index 7, the green `!`, comes from
+/// the flight-master status instead, and index 8 is unused.
 fn marker_model(status: u32) -> Option<&'static str> {
-    match status {
-        1 => Some("Interface\\Buttons\\TalkToMeGrey.m2"),
-        3 => Some("Interface\\Buttons\\TalkToMeQuestion_Grey.m2"),
-        4 => Some("Interface\\Buttons\\TalkToMeQuestion_LTBlue.m2"),
-        5 => Some("Interface\\Buttons\\TalkToMe.m2"),
-        6 | 7 => Some("Interface\\Buttons\\TalkToMeQuestionMark.m2"),
-        _ => None,
-    }
+    const ICONS: [Option<&str>; 12] = [
+        None,
+        Some("Interface\\Buttons\\TalkToMe.m2"),
+        Some("Interface\\Buttons\\TalkToMeQuestion_LTBlue.m2"),
+        Some("Interface\\Buttons\\TalkToMeBlue.m2"),
+        Some("Interface\\Buttons\\TalkToMe.m2"),
+        Some("Interface\\Buttons\\TalkToMeQuestion_Grey.m2"),
+        Some("Interface\\Buttons\\TalkToMeGrey.m2"),
+        Some("Interface\\Buttons\\TalkToMeGreen.m2"),
+        None,
+        Some("Interface\\Buttons\\TalkToMeQuestionMark.m2"),
+        Some("Interface\\Buttons\\TalkToMeQuestion_LTBlue.m2"),
+        Some("Interface\\Buttons\\TalkToMeBlue.m2"),
+    ];
+    const STATUS: [u32; 11] = [0, 6, 1, 2, 3, 5, 10, 11, 4, 9, 9];
+    let icon = *STATUS.get(status as usize)?;
+    ICONS.get(icon as usize).copied().flatten()
 }
 
 /// One live marker's root and model; a status change swaps the whole instance (`0x607480`).
@@ -552,6 +563,27 @@ impl Plugin for QuestMarkersPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reference's `s_questStatusIcons` (`0x00A34F5C`) through `s_interactIcons`
+    /// (`0x00ADAC98`): the server's 0-10 `QuestGiverStatus` lands on the file the 1.12 client
+    /// draws. The old 0-7 table drew a grey `?` for status 3 (`LOW_LEVEL_REWARD_REP`) and a gold
+    /// `!` for status 5 (`INCOMPLETE`).
+    #[test]
+    fn the_marker_model_is_the_reference_status_table() {
+        let name = |status| marker_model(status).map(|p| p.rsplit('\\').next().unwrap());
+        assert_eq!(name(0), None);
+        assert_eq!(name(1), Some("TalkToMeGrey.m2"));
+        assert_eq!(name(2), Some("TalkToMe.m2"));
+        assert_eq!(name(3), Some("TalkToMeQuestion_LTBlue.m2"));
+        assert_eq!(name(4), Some("TalkToMeBlue.m2"));
+        assert_eq!(name(5), Some("TalkToMeQuestion_Grey.m2"));
+        assert_eq!(name(6), Some("TalkToMeQuestion_LTBlue.m2"));
+        assert_eq!(name(7), Some("TalkToMeBlue.m2"));
+        assert_eq!(name(8), Some("TalkToMe.m2"));
+        assert_eq!(name(9), Some("TalkToMeQuestionMark.m2"));
+        assert_eq!(name(10), Some("TalkToMeQuestionMark.m2"));
+        assert_eq!(name(11), None);
+    }
 
     fn root(seat: Option<Entity>, slot: Option<u16>) -> QuestMarkerRoot {
         QuestMarkerRoot {
