@@ -8,7 +8,7 @@ mod share;
 pub use giver::{
     dialog_status, questgiver_accept_quest, questgiver_choose_reward, questgiver_complete_quest,
     questgiver_hello, questgiver_query_quest, questgiver_request_reward, questgiver_status_query,
-    QuestComplete, QuestDetails, QuestGiverList, QuestListEntry, QuestOfferReward,
+    QuestComplete, QuestDetails, QuestGiverList, QuestListEntry, QuestOfferReward, QuestPanelExtra,
     QuestRequestItems, QuestRequiredItem, QuestRewardItem, QUEST_EMOTE_COUNT,
 };
 pub use log::{

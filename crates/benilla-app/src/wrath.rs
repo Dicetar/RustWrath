@@ -1976,10 +1976,21 @@ fn reward_items(items: Vec<gameplay::RewardItem>) -> Vec<QuestRewardItem> {
         .collect()
 }
 
+fn quest_panel_extra(extra: gameplay::QuestPanelExtra) -> benilla_protocol::messages::QuestPanelExtra {
+    benilla_protocol::messages::QuestPanelExtra {
+        flags: extra.flags, suggested_players: extra.suggested_players, xp: extra.xp,
+        honor_tenths: extra.honor_tenths, honor_multiplier: extra.honor_multiplier,
+        cast_spell: extra.cast_spell, title_id: extra.title_id, talents: extra.talents,
+        arena_points: extra.arena_points, reputation: extra.reputation,
+    }
+}
+
 fn quest_entries(quests: Vec<gameplay::QuestListEntry>) -> Vec<QuestListEntry> {
     quests
         .into_iter()
         .map(|q| QuestListEntry {
+            flags: q.flags,
+            repeatable: q.repeatable,
             quest_id: q.quest_id,
             icon: q.icon,
             level: q.level,
@@ -2699,6 +2710,7 @@ fn translate_gameplay(
             quests: quest_entries(quests),
         })],
         WrathGameplayEvent::QuestDetails(d) => vec![SessionEvent::QuestDetail(QuestDetails {
+            extra: quest_panel_extra(d.extra),
             npc: d.npc,
             quest_id: d.quest_id,
             title: d.title,
@@ -2725,6 +2737,7 @@ fn translate_gameplay(
         }
         WrathGameplayEvent::QuestOffer(o) => {
             vec![SessionEvent::QuestOffer(QuestOfferReward {
+                extra: quest_panel_extra(o.extra),
                 npc: o.npc,
                 quest_id: o.quest_id,
                 title: o.title,
@@ -2751,6 +2764,7 @@ fn translate_gameplay(
                 zone_or_sort: t.zone_or_sort,
                 quest_type: t.quest_type,
                 suggested_players: t.suggested_players,
+                xp_difficulty: t.xp_difficulty,
                 rep_objective_faction: t.rep_objective_faction,
                 rep_objective_value: t.rep_objective_value,
                 opposite_rep_faction: t.opposite_rep_faction,
@@ -4160,7 +4174,11 @@ struct WrathGeneration(u32);
 /// The full 3.3.5 quest-log window (25 five-dword slots) carried beside the 1.12 descriptor's
 /// twenty-slot projection. The stock log reads this, so no server slot is lost.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct WrathQuestSlots(pub [QuestSlotView; QUEST_LOG_SLOTS]);
+pub(crate) struct WrathQuestSlots(
+    pub [QuestSlotView; QUEST_LOG_SLOTS],
+    pub u32, // PLAYER_FIELD_MAX_LEVEL
+    pub u32, // Nonempty PLAYER_FIELD_DAILY_QUESTS_1 slots.
+);
 
 /// Map 12340's `PLAYER_QUEST_LOG_*` block: id, state, two count dwords (four 16-bit counts) and
 /// the deadline, five dwords a slot for twenty-five slots.
@@ -4532,7 +4550,10 @@ fn wrath_apply_world(world: &mut World) {
                     pairs.push(((dst + 1) as u16, packed));
                     pairs.push(((dst + 2) as u16, s.timer));
                 }
-                wrath_slots = Some(WrathQuestSlots(slots));
+                let max_level = raw.get(benilla_protocol_wrath::fields::PLAYER_FIELD_MAX_LEVEL as usize).copied().unwrap_or(0);
+                let daily_start = benilla_protocol_wrath::fields::PLAYER_FIELD_DAILY_QUESTS_1 as usize;
+                let daily = raw.iter().skip(daily_start).take(25).filter(|&&quest| quest != 0).count() as u32;
+                wrath_slots = Some(WrathQuestSlots(slots, max_level, daily));
                 for (src, dst) in [(25u16, 23u16), (26, 24), (27, 25), (33, 29), (34, 30), (35, 31)] {
                     if let Some(value) = raw.get(src as usize) {
                         pairs.push((dst, *value));

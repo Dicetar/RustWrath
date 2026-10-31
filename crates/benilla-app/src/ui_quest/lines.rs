@@ -218,6 +218,7 @@ pub(crate) fn test_template(
         zone_or_sort: 12,
         quest_type: 0,
         suggested_players: 0,
+        xp_difficulty: 0,
         rep_objective_faction: 0,
         rep_objective_value: 0,
         opposite_rep_faction: 0,

@@ -56,6 +56,8 @@ pub struct QuestTemplate {
     pub quest_type: u32,
     /// Wrath's suggested party size; absent on the 1.12 wire.
     pub suggested_players: u32,
+    /// Wrath QuestXP.dbc difficulty column; absent on the donor wire.
+    pub xp_difficulty: u32,
     pub rep_objective_faction: u32,
     pub rep_objective_value: u32,
     /// The faction whose standing must not pass [`Self::opposite_rep_value`] at turn-in
@@ -187,6 +189,7 @@ pub(in crate::messages) fn read_quest_query_response(r: &mut &[u8]) -> io::Resul
         zone_or_sort,
         quest_type,
         suggested_players: 0,
+        xp_difficulty: 0,
         rep_objective_faction,
         rep_objective_value,
         opposite_rep_faction,

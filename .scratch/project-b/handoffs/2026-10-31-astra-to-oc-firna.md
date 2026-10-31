@@ -36,3 +36,9 @@ spellbook in astra-firna-20261031-134958.png; 89 focused tests and client build 
 3.48 GiB; normal deadline exit. No owned client remains running. OC marker commit 36fa08f7 is
 preserved as source parent. Combat/quest acceptance is still pending: Astra found the next
 quest-detail/reward native API gaps and is closing their real wire-to-state consumption next.
+
+Active second-batch claim also includes formats quest_info/lib (CharTitles and QuestXP),
+UI quest/reputation/wrath_natives, app ui_reputation (one DBC-derived hasRep field) and mechanical
+reputation fixture literals. UI quest_log and app ui_quest_log remain Astra-owned. Preserve
+OC's graphics edits in assets/coords and world/terrain_stream/spawn, and his capture tools.
+The shared Cargo build is running; avoid another client login until the Firna handoff.

@@ -61,6 +61,11 @@ pub fn wmo_doodad_local(position: [f32; 3], orientation: [f32; 4], scale: f32) -
 /// conjugation `B · q · B⁻¹`, not a component shuffle.
 pub fn wow_rotation_to_bevy(q: [f32; 4]) -> Quat {
     let q_wow = Quat::from_xyzw(q[0], q[1], q[2], q[3]);
+    // A custom MODD may store a zero or non-finite orientation; normalizing it would turn the
+    // whole prop's transform into NaN and draw screen-filling planes. No rotation is identity.
+    if !q_wow.is_finite() || q_wow.length_squared() < 1e-12 {
+        return Quat::IDENTITY;
+    }
     let to_bevy = wow_to_bevy_quat();
     // Normalized against a denormalized stored quaternion.
     (to_bevy * q_wow * to_bevy.inverse()).normalize()
@@ -181,6 +186,13 @@ mod tests {
         let local = wmo_doodad_local([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0);
         let world = wmo_world.mul_transform(local);
         assert!(close(world.translation, wmo_world.translation));
+    }
+
+    #[test]
+    fn a_zero_stored_orientation_is_identity_not_nan() {
+        let q = wow_rotation_to_bevy([0.0; 4]);
+        assert!(q.is_finite(), "a zero MODD orientation must not normalize to NaN");
+        assert!(q.dot(Quat::IDENTITY).abs() > 0.9999);
     }
 
     #[test]

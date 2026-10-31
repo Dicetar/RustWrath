@@ -182,7 +182,7 @@ pub use anim_data::{load_anim_data_catalog, AnimDataCatalog, AnimEntry};
 mod quest_headers;
 pub use quest_headers::{load_quest_header_names, QuestHeaderNames};
 mod quest_info;
-pub use quest_info::{load_quest_tag_names, QuestTagNames};
+pub use quest_info::{load_quest_experience, load_quest_tag_names, load_quest_title_names, QuestTagNames, QuestTitleNames};
 mod area_trigger;
 pub use area_trigger::{load_area_trigger_catalog, AreaTriggerCatalog, AreaTriggerRow};
 mod area_sound;

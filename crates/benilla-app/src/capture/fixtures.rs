@@ -536,6 +536,7 @@ pub(super) fn seed_ui_fixture(
                 quest.open(
                     NPC_GUID,
                     crate::ui_quest::QuestView::Detail(benilla_protocol::messages::QuestDetails {
+                        extra: Default::default(),
                         npc: NPC_GUID,
                         quest_id: 783,
                         title: "A Threat Within".into(),
@@ -582,12 +583,14 @@ pub(super) fn seed_ui_fixture(
                             quests: vec![
                                 benilla_protocol::messages::QuestListEntry {
                                     quest_id: 84,
+                                    flags: 0, repeatable: false,
                                     icon: 0,
                                     level: 4,
                                     title: "Brotherhood of Thieves".into(),
                                 },
                                 benilla_protocol::messages::QuestListEntry {
                                     quest_id: 40,
+                                    flags: 0, repeatable: false,
                                     icon: 0,
                                     level: 3,
                                     title: "Eagan Peltskinner".into(),
@@ -647,6 +650,7 @@ pub(super) fn seed_ui_fixture(
                     zone_or_sort: 12,
                     quest_type: 1,
                     suggested_players: 0,
+                    xp_difficulty: 0,
                     rep_objective_faction: 0,
                     rep_objective_value: 0,
                     opposite_rep_faction: 0,
@@ -708,6 +712,7 @@ pub(super) fn seed_ui_fixture(
                     zone_or_sort: 12,
                     quest_type: 0,
                     suggested_players: 0,
+                    xp_difficulty: 0,
                     rep_objective_faction: 0,
                     rep_objective_value: 0,
                     opposite_rep_faction: 0,

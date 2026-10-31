@@ -36,6 +36,9 @@ pub type QuestRequiredItem = QuestRewardItem;
 /// One greeting-panel quest row; `icon` is a [`dialog_status`] value, a `u32` (`Quest.h:270`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestListEntry {
+    /// Wrath-only menu metadata, absent from the donor wire.
+    pub flags: u32,
+    pub repeatable: bool,
     pub quest_id: u32,
     pub icon: u32,
     pub level: u32,
@@ -52,10 +55,28 @@ pub struct QuestGiverList {
     pub quests: Vec<QuestListEntry>,
 }
 
+/// Wrath-only panel metadata, retained separately from the donor packet layout.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct QuestPanelExtra {
+    pub flags: u32,
+    pub suggested_players: u32,
+    pub xp: u32,
+    /// The 12340 packet carries ten times the displayed honor.
+    pub honor_tenths: u32,
+    pub honor_multiplier: f32,
+    pub cast_spell: i32,
+    pub title_id: u32,
+    pub talents: u32,
+    pub arena_points: u32,
+    pub reputation: [(u32, i32, u32); 5],
+}
+
 /// `SMSG_QUESTGIVER_QUEST_DETAILS` (vmangos `Quest.cpp:205-273`): the accept panel. `money` is
 /// signed, negative for a quest that costs money (`GetRewOrReqMoney`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QuestDetails {
+    /// Wrath-only metadata; the 1.12 decoder leaves it at its empty default.
+    pub extra: QuestPanelExtra,
     pub npc: u64,
     pub quest_id: u32,
     pub title: String,
@@ -69,8 +90,9 @@ pub struct QuestDetails {
 }
 
 /// `SMSG_QUESTGIVER_OFFER_REWARD` (vmangos `Quest.cpp:275-339`): the reward panel.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QuestOfferReward {
+    pub extra: QuestPanelExtra,
     pub npc: u64,
     pub quest_id: u32,
     pub title: String,
@@ -201,6 +223,8 @@ pub(in crate::messages) fn read_questgiver_quest_list(r: &mut &[u8]) -> io::Resu
     let mut quests = Vec::with_capacity(capacity_hint(count, 32));
     for _ in 0..count {
         quests.push(QuestListEntry {
+            flags: 0,
+            repeatable: false,
             quest_id: read_u32_le(r)?,
             icon: read_u32_le(r)?,
             level: read_u32_le(r)?,
@@ -239,6 +263,7 @@ pub(in crate::messages) fn read_questgiver_quest_details(
         let _delay = read_u32_le(r)?;
     }
     Ok(QuestDetails {
+        extra: QuestPanelExtra::default(),
         npc,
         quest_id,
         title,
@@ -274,6 +299,7 @@ pub(in crate::messages) fn read_questgiver_offer_reward(
     let quest_flags = read_u32_le(r)?;
     let reward_spell = read_u32_le(r)?;
     Ok(QuestOfferReward {
+        extra: QuestPanelExtra::default(),
         npc,
         quest_id,
         title,

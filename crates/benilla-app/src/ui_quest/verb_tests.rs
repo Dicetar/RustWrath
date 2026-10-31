@@ -125,6 +125,7 @@ impl Client {
 
 fn row(quest_id: u32, icon: u32) -> QuestListEntry {
     QuestListEntry {
+        flags: 0, repeatable: false,
         quest_id,
         icon,
         level: 1,
@@ -145,6 +146,7 @@ fn greeting() -> QuestView {
 
 fn detail() -> QuestView {
     QuestView::Detail(QuestDetails {
+        extra: Default::default(),
         npc: NPC,
         quest_id: 100,
         title: "A Threat Within".into(),
@@ -174,6 +176,7 @@ fn progress() -> QuestView {
 
 fn reward(choices: u32) -> QuestView {
     QuestView::Reward(QuestOfferReward {
+        extra: Default::default(),
         npc: NPC,
         quest_id: 100,
         title: "A Threat Within".into(),

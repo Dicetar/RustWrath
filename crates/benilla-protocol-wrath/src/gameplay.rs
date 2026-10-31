@@ -622,6 +622,8 @@ pub struct ActionButton {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestListEntry {
+    pub flags: u32,
+    pub repeatable: bool,
     pub quest_id: u32,
     pub icon: u32,
     pub level: u32,
@@ -650,8 +652,23 @@ pub struct RewardItem {
     pub display_id: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct QuestPanelExtra {
+    pub flags: u32,
+    pub suggested_players: u32,
+    pub xp: u32,
+    pub honor_tenths: u32,
+    pub honor_multiplier: f32,
+    pub cast_spell: i32,
+    pub title_id: u32,
+    pub talents: u32,
+    pub arena_points: u32,
+    pub reputation: [(u32, i32, u32); 5],
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct QuestDetails {
+    pub extra: QuestPanelExtra,
     pub npc: u64,
     pub quest_id: u32,
     pub title: String,
@@ -677,8 +694,9 @@ pub struct QuestRequestItems {
     pub is_complete: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct QuestOfferReward {
+    pub extra: QuestPanelExtra,
     pub npc: u64,
     pub quest_id: u32,
     pub title: String,
@@ -797,6 +815,7 @@ pub struct QuestTemplate {
     pub zone_or_sort: i32,
     pub quest_type: u32,
     pub suggested_players: u32,
+    pub xp_difficulty: u32,
     pub rep_objective_faction: u32,
     pub rep_objective_value: u32,
     pub opposite_rep_faction: u32,
@@ -2721,12 +2740,10 @@ fn read_quest_greeting(b: &[u8]) -> Result<ServerEvent> {
         quests.push(QuestListEntry {
             quest_id: r.u32()?,
             icon: vanilla_quest_giver_status(r.u32()?).unwrap_or(0),
-            level: r.i32()?.max(0) as u32,
-            title: {
-                let _flags = r.u32()?;
-                let _repeatable = r.u8()?;
-                r.cstring()?
-            },
+            level: r.i32()? as u32,
+            flags: r.u32()?,
+            repeatable: r.u8()? != 0,
+            title: r.cstring()?,
         });
     }
     Ok(ServerEvent::QuestGreeting { npc, greeting, emote_delay, emote, quests })
@@ -2739,12 +2756,10 @@ fn read_quest_rows(r: &mut Reader<'_>) -> Result<Vec<QuestListEntry>> {
         quests.push(QuestListEntry {
             quest_id: r.u32()?,
             icon: vanilla_quest_giver_status(r.u32()?).unwrap_or(0),
-            level: r.i32()?.max(0) as u32,
-            title: {
-                let _flags = r.u32()?;
-                let _repeatable = r.u8()?;
-                r.cstring()?
-            },
+            level: r.i32()? as u32,
+            flags: r.u32()?,
+            repeatable: r.u8()? != 0,
+            title: r.cstring()?,
         });
     }
     Ok(quests)
@@ -2771,24 +2786,23 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
     let details = r.cstring()?;
     let objectives = r.cstring()?;
     let auto_finish = r.u8()?;
-    let _flags = r.u32()?;
-    let _suggested = r.u32()?;
+    let mut extra = QuestPanelExtra {
+        flags: r.u32()?, suggested_players: r.u32()?, ..Default::default()
+    };
     let _finished = r.u8()?;
     let _unknown = r.u32()?;
     let choices = read_reward_block(&mut r)?;
     let rewards = read_reward_block(&mut r)?;
     let money = r.u32()?;
-    let _xp = r.u32()?;
-    let _honor = r.u32()?;
-    let _honor_multiplier = r.f32()?;
+    extra.xp = r.u32()?;
+    extra.honor_tenths = r.u32()?;
+    extra.honor_multiplier = r.f32()?;
     let reward_spell = r.u32()?;
-    let _casted_spell = r.u32()?;
-    let _title_reward = r.u32()?;
-    let _talent_reward = r.u32()?;
-    let _arena_point_reward = r.u32()?;
-    for _ in 0..15 {
-        let _reputation = r.u32()?;
-    }
+    extra.cast_spell = r.i32()?;
+    extra.title_id = r.u32()?;
+    extra.talents = r.u32()?;
+    extra.arena_points = r.u32()?;
+    extra.reputation = read_quest_reputation(&mut r)?;
     let emotes = r.u32()?;
     for _ in 0..emotes {
         let _emote = r.u32()?;
@@ -2798,7 +2812,7 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
         anyhow::bail!("quest details left {} bytes", b.len() - r.at);
     }
     Ok(ServerEvent::QuestDetails(QuestDetails {
-        npc, quest_id, title, details, objectives,
+        extra, npc, quest_id, title, details, objectives,
         auto_finish: auto_finish as u32, choices, rewards, money: money as i32, reward_spell,
     }))
 }
@@ -2832,7 +2846,9 @@ fn read_quest_offer(b: &[u8]) -> Result<ServerEvent> {
     let offer_text = r.cstring()?;
     let auto_finish = r.u8()?;
     let quest_flags = r.u32()?;
-    let _suggested = r.u32()?;
+    let mut extra = QuestPanelExtra {
+        flags: quest_flags, suggested_players: r.u32()?, ..Default::default()
+    };
     let emote_count = r.u32()?;
     for _ in 0..emote_count {
         let _delay = r.u32()?;
@@ -2841,15 +2857,32 @@ fn read_quest_offer(b: &[u8]) -> Result<ServerEvent> {
     let choices = read_reward_block(&mut r)?;
     let rewards = read_reward_block(&mut r)?;
     let money = r.i32()?;
-    let _xp = r.u32()?;
-    let _honor = r.u32()?;
-    let _honor_multiplier = r.f32()?;
+    extra.xp = r.u32()?;
+    extra.honor_tenths = r.u32()?;
+    extra.honor_multiplier = r.f32()?;
     let _unk = r.u32()?;
     let reward_spell = r.u32()?;
+    extra.cast_spell = r.i32()?;
+    extra.title_id = r.u32()?;
+    extra.talents = r.u32()?;
+    extra.arena_points = r.u32()?;
+    let _unknown = r.u32()?;
+    extra.reputation = read_quest_reputation(&mut r)?;
+    if r.at != b.len() {
+        anyhow::bail!("quest offer left {} bytes", b.len() - r.at);
+    }
     Ok(ServerEvent::QuestOffer(QuestOfferReward {
-        npc, quest_id, title, offer_text, auto_finish: auto_finish as u32,
+        extra, npc, quest_id, title, offer_text, auto_finish: auto_finish as u32,
         choices, rewards, money, quest_flags, reward_spell,
     }))
+}
+
+fn read_quest_reputation(r: &mut Reader<'_>) -> Result<[(u32, i32, u32); 5]> {
+    let mut rows = [(0, 0, 0); 5];
+    for row in &mut rows { row.0 = r.u32()?; }
+    for row in &mut rows { row.1 = r.i32()?; }
+    for row in &mut rows { row.2 = r.u32()?; }
+    Ok(rows)
 }
 
 fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
@@ -2866,7 +2899,7 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
     let opposite_rep_faction = r.u32()?;
     let opposite_rep_value = r.u32()?;
     let next_quest_in_chain = r.u32()?;
-    let _xp_id = r.u32()?;
+    let xp_difficulty = r.u32()?;
     let money = r.i32()?;
     let money_max_level = r.u32()?;
     let reward_spell = r.u32()?;
@@ -2941,7 +2974,7 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
         anyhow::bail!("quest template left {} bytes (at {} of {})", b.len() - r.at, r.at, b.len());
     }
     Ok(QuestTemplate {
-        quest_id, method, level, zone_or_sort, quest_type, suggested_players, rep_objective_faction,
+        quest_id, method, level, zone_or_sort, quest_type, suggested_players, xp_difficulty, rep_objective_faction,
         rep_objective_value, opposite_rep_faction, opposite_rep_value, next_quest_in_chain,
         money, money_max_level, reward_spell, src_item_id, flags, honor_reward,
         honor_multiplier, title_reward, bonus_talents, bonus_arena_points, rep_rewards,
@@ -3575,6 +3608,34 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn quest_offer_retains_reward_metadata_and_requires_the_full_tail() {
+        let mut b = 0x42u64.to_le_bytes().to_vec();
+        b.extend_from_slice(&7u32.to_le_bytes());
+        b.extend_from_slice(b"Title\0Reward text\0");
+        b.push(1);
+        for word in [0x2008u32, 3, 0, 0, 0, 400, 123, 70] {
+            b.extend_from_slice(&word.to_le_bytes());
+        }
+        b.extend_from_slice(&1.5f32.to_le_bytes());
+        for word in [8u32, 55, 66, 77, 2, 33, 0] {
+            b.extend_from_slice(&word.to_le_bytes());
+        }
+        for word in [72u32, 0, 0, 0, 0, u32::MAX, 0, 0, 0, 0, 100, 0, 0, 0, 0] {
+            b.extend_from_slice(&word.to_le_bytes());
+        }
+        let ServerEvent::QuestOffer(offer) = read_quest_offer(&b).unwrap() else { panic!("offer"); };
+        assert_eq!(offer.reward_spell, 55);
+        assert_eq!(offer.extra, QuestPanelExtra {
+            flags: 0x2008, suggested_players: 3, xp: 123, honor_tenths: 70,
+            honor_multiplier: 1.5, cast_spell: 66, title_id: 77, talents: 2, arena_points: 33,
+            reputation: [(72, -1, 100), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)],
+        });
+        assert!(read_quest_offer(&b[..b.len()-1]).is_err());
+        b.push(0);
+        assert!(read_quest_offer(&b).is_err());
     }
 
     /// The 12340 template: six choice slots, the completed text and the relocated item

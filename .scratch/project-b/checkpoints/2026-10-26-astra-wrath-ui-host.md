@@ -876,3 +876,40 @@ also identifies GetMaxDailyQuests, GetQuestLink and GetFactionInfoByID; Lua help
 that inventory are not missing natives. Resolve contracts/data ownership before adding APIs;
 do not fill them with success placeholders. Human owner is available for combat after these
 accept/reward route blockers are closed.
+
+Next batch claim: protocol messages/quest/giver.rs and its re-exports; Wrath gameplay.rs
+details/offer full reward tails; wrath.rs translation; ui_quest owner and quest.rs UI bindings.
+Only mechanical metadata defaults in existing ui_session/quest/capture fixtures. Preserve OC's
+36fa08f7 and bda86cba. Reference QuestFrame_Scripts.cpp getters 0x0058C0E0 (XP), 0x0058C110
+(honor/10), 0x0058C3B0 (group), 0x0058D810 (title), and matching local AC GossipDef.cpp
+SendQuestGiverQuestDetails/SendQuestGiverOfferReward field writers. Correction to the earlier
+offer-parser note: AC explicitly writes unused 0x08 before RewSpell, so the existing _unk skip
+and reward_spell read are correctly aligned; the missing work is retaining the remaining tail,
+not swapping reward_spell with RewSpellCast.
+
+Title lookup claim: formats quest_info.rs/lib.rs, using CharTitlesRec's 37-column pair of
+localized name blocks (2 and 19). The app's existing quest feed receives a QuestTitles resource
+and resolves the gender/name from its existing NPC macro subject. UI QuestExtraView holds real
+packet XP/honor/group/flags/talents/arena values and the resolved optional title; no zero-return
+replacement for a missing packet producer. Shared donor metadata defaults consume no bytes.
+
+Continuation claim: quest log XP/title/group and reputation-by-ID callers required by stock
+QuestInfo; formats quest_info, shared quest/log, ui_quest_log, UI quest_log/reputation and
+wrath_natives. QuestXP uses CalculateExperience 0x005E0420 and the selected QuestXP.dbc;
+PLAYER_FIELD_MAX_LEVEL and the 25 daily IDs supply the cap/count rather than constants or
+zero stand-ins. Solo XP is in scope; recruit-a-friend party bonus is not implemented here.
+GetFactionInfoByID 0x005D11E0 uses current reputation entries with Wrath's 13-value contract;
+the donor keeps 11. GetQuestLink and reward reputation calculation remain explicit follow-ups.
+OC's newly dirty capture/dev/probes files and prior owner docs are outside this claim.
+
+Commit snapshot: Windows client build passed after the new QuestXP loader's E0597 lifetime
+fix; 87 quest UI tests, 17 reputation UI tests, 23 donor quest protocol tests, 3 Wrath quest
+protocol tests and 1 title-format test passed. Evidence: astra-quest-build-fixed.log,
+astra-quest-ui-final.log, astra-quest-donor-final.log, astra-quest-wire-final.log and
+astra-quest-formats-final.log in the existing 2026-10-28-oc-alpha verification directory.
+Binary SHA-256: 12E8E17F90B3C245EEC621F0349A88D2E6EAF40D2B6DDA10A8BB8593C2A3A5BB.
+Firna's connected screenshots subsequently fail visual acceptance: huge stretched geometry
+and a questgiver labelled Unknown/Dead. Quest/combat/loot/reward/persistence acceptance is
+not complete. After the visual failure the owner paused, then resumed the goal with a maximum
+of 20 tests per task, restricted to the most necessary checks. The counts above precede that
+new limit. No new build or test was run for the commit request.

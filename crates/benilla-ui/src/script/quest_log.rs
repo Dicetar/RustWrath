@@ -93,6 +93,7 @@ pub struct QuestRecordView {
     pub level: u32,
     /// Wrath's suggested party size and daily-quest flag from the query template.
     pub suggested_players: u32,
+    pub xp_difficulty: u32,
     pub daily: bool,
     /// The template's `ZoneOrSort`, the header group (`[template+0xc]`, `0x4de6de`).
     pub zone_or_sort: i32,
@@ -140,6 +141,7 @@ pub struct QuestRecordView {
     pub reward_talents: u32,
     pub reward_arena_points: u32,
     pub reward_title: u32,
+    pub reward_title_name: Option<String>,
     pub reward_factions: Vec<(u32, i32)>,
 }
 
@@ -177,6 +179,9 @@ pub(crate) struct QuestLogState {
 /// The live inputs the verbs read, and the lookups in flight.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct QuestLogStore {
+    xp: HashMap<u32, [u32; 10]>,
+    max_level: u32,
+    daily_completed: u32,
     pub(crate) slots: [QuestSlotView; QUEST_LOG_SLOTS],
     /// The quest cache's mirror, by quest id.
     pub(crate) records: HashMap<u32, QuestRecordView>,
@@ -204,6 +209,16 @@ pub(crate) struct QuestLogStore {
     latched: HashSet<u32>,
     /// The quest-giver refreshes (`0x5eb070`) the latch asked for since the app last drained.
     giver_refreshes: u32,
+}
+
+/// 12340 CalculateExperience (0x005E0420): difficulty column, level penalty and reward rounding.
+fn quest_experience(rows: &HashMap<u32, [u32; 10]>, quest: &QuestRecordView, player_level: u32) -> u32 {
+    let level = if quest.level as i32 == -1 { player_level } else { quest.level };
+    let Some(&base) = rows.get(&level).and_then(|row| row.get(quest.xp_difficulty as usize)) else { return 0; };
+    let factor = (2 * (i64::from(level) - i64::from(player_level)) + 20).clamp(1, 10) as u64;
+    let value = factor * u64::from(base) / 10;
+    let step = if value <= 100 { 5 } else if value <= 500 { 10 } else if value <= 1000 { 25 } else { 50 };
+    (((value + step / 2) / step) * step).min(u64::from(u32::MAX)) as u32
 }
 
 impl QuestLogStore {
@@ -933,6 +948,18 @@ impl super::UiScript {
         self.model_mut().quest_store.player = present;
     }
 
+    /// Loaded once per VM from the selected asset chain.
+    pub fn set_quest_experience(&mut self, rows: HashMap<u32, [u32; 10]>) {
+        self.model_mut().quest_store.xp = rows;
+    }
+
+    /// Actual Wrath player descriptor values, independent of the visible quest rows.
+    pub fn set_quest_player_metadata(&mut self, max_level: u32, daily_completed: u32) {
+        let mut model = self.model_mut();
+        model.quest_store.max_level = max_level;
+        model.quest_store.daily_completed = daily_completed;
+    }
+
     /// `SMSG_QUERY_TIME_RESPONSE` (`0x4de400` into `0x4deef0`): the clock offset is set, then
     /// `QUEST_LOG_UPDATE` (`0x4def1b`), player or none.
     pub fn quest_log_clock_synced(&mut self) {
@@ -1535,18 +1562,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let top = model
                 .unit("player")
-                .is_some_and(|p| p.exists && p.level as i32 >= 60);
+                .is_some_and(|p| p.exists && if model.is_wrath() {
+                    model.quest_store.max_level != 0 && p.level >= model.quest_store.max_level
+                } else { p.level as i32 >= 60 });
             Ok(model.selected_quest_record().map_or(0, |r| {
                 let bonus = if top { r.reward_money_max_level } else { 0 };
                 i64::from((r.reward_money as i32).wrapping_add(bonus))
             }))
         })?,
     )?;
-    // 12340's reward lines: honor, talents, arena points, the title id and the reputation rows
-    // come from the template the adapter translated. `GetQuestLogRewardXP` has no stored value:
-    // the 3.3.5 client computes it from `QuestXP.dbc`, which is not wired yet, so it answers 0
-    // (incomplete compatibility, not a computed reward). 1.12 has none of these globals, so only
-    // the Wrath host installs them.
+    // Wrath reward metadata and the selected-profile QuestXP table. The descriptor supplies
+    // the actual level cap and daily count; the solo experience calculation uses the DBC.
     if lua
         .app_data_ref::<Model>()
         .is_some_and(|model| model.is_wrath())
@@ -1558,15 +1584,25 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         install_detail_count(lua, "GetQuestLogRewardArenaPoints", |r| {
             i64::from(r.reward_arena_points)
         })?;
-        install_detail_count(lua, "GetQuestLogRewardXP", |_| 0)?;
+        install_detail_count(lua, "GetQuestLogGroupNum", |r| i64::from(r.suggested_players))?;
+        g.set("GetDailyQuestsCompleted", lua.create_function(|lua, ()| {
+            Ok(lua.app_data_ref::<Model>().expect("model app_data").quest_store.daily_completed)
+        })?)?;
+        g.set("GetQuestLogRewardXP", lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(player) = model.unit("player").filter(|p| p.exists) else { return Ok(0); };
+            if player.level >= model.quest_store.max_level { return Ok(0); }
+            Ok(model.selected_quest_record().map_or(0, |quest| quest_experience(&model.quest_store.xp, quest, player.level)))
+        })?)?;
         g.set(
             "GetQuestLogRewardTitle",
             lua.create_function(|lua, ()| {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 Ok(model
                     .selected_quest_record()
-                    .filter(|r| r.reward_title != 0)
-                    .map_or(Value::Nil, |r| Value::Integer(i64::from(r.reward_title))))
+                    .and_then(|r| r.reward_title_name.as_deref())
+                    .map(|title| lua.create_string(title).map(Value::String))
+                    .transpose()?.unwrap_or(Value::Nil))
             })?,
         )?;
         install_detail_count(lua, "GetNumQuestLogRewardFactions", |r| {
@@ -2207,6 +2243,28 @@ mod tests {
     const HAMMER: u32 = 2024;
 
     #[test]
+    fn wrath_experience_uses_difficulty_level_rounding_and_the_player_cap() {
+        use crate::script::{UiTarget, UnitGuids, UnitState};
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_unit_guids(&UnitGuids { player: 1, wrath: true, ..Default::default() });
+        s.set_quest_experience([(3, [0, 0, 123, 0, 0, 0, 0, 0, 0, 0])].into());
+        s.set_quest_player_metadata(80, 4);
+        let mut quest = record("Kobold Camp Cleanup", 3, 12, "Elwynn Forest");
+        quest.xp_difficulty = 2;
+        quest.suggested_players = 3;
+        seat(&mut s, &[(7, quest, slot(7, 0, 0))]);
+        s.run("SelectQuestLogEntry(2)").unwrap();
+        for (level, xp) in [(3, 120), (10, 75), (25, 10), (80, 0)] {
+            s.set_unit("player", Some(UnitState { guid: 1, exists: true, has_object: true, level, ..Default::default() }));
+            assert_eq!(s.eval::<u32>("return GetQuestLogRewardXP()").unwrap(), xp);
+        }
+        assert_eq!(s.eval::<u32>("return GetQuestLogGroupNum()").unwrap(), 3);
+        assert_eq!(s.eval::<u32>("return GetDailyQuestsCompleted()").unwrap(), 4);
+        s.set_quest_player_metadata(80, 0);
+        assert_eq!(s.eval::<u32>("return GetDailyQuestsCompleted()").unwrap(), 0);
+    }
+
+    #[test]
     fn wrath_quest_title_keeps_stock_header_completion_and_metadata_positions() {
         let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
         let mut quest = record("Kobold Camp Cleanup", 3, 12, "Elwynn Forest");
@@ -2531,8 +2589,7 @@ mod tests {
             .unwrap());
     }
 
-    /// 12340's reward lines come from the selected record; the 1.12 wire leaves them zero and
-    /// the title getter nil, and the XP getter is the documented incomplete 0.
+    /// Reward values and formatted titles belong to the selected record.
     #[test]
     fn wrath_reward_lines_come_from_the_selected_record() {
         let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
@@ -2542,6 +2599,7 @@ mod tests {
         log[0].1.reward_talents = 1;
         log[0].1.reward_arena_points = 20;
         log[0].1.reward_title = 42;
+        log[0].1.reward_title_name = Some("Lady Firna".into());
         log[0].1.reward_factions = vec![(72, 500), (47, -300)];
         seat(&mut s, &log);
         let got = s
@@ -2554,7 +2612,7 @@ mod tests {
                     tostring(GetNumQuestLogRewardFactions())}, ',')",
             )
             .unwrap();
-        assert_eq!(got, "250,1,20,42,2");
+        assert_eq!(got, "250,1,20,Lady Firna,2");
         assert!(s
             .eval::<bool>(
                 "local f, a = GetQuestLogRewardFactionInfo(1) \

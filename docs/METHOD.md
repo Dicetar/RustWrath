@@ -1,5 +1,14 @@
 # METHOD — how benilla is built
 
+## Project B fork reference selection
+
+For this repository's `wotlk` retarget, the target is 3.3.5a build 12340. Consult the preserved
+12340 decompilation before designing or repairing a target-specific mechanism:
+`D:/Projects/wowdecomp-reference`, pinned at `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`.
+[Reference workflow](agents/12340-reference.md) defines how to locate functions, record evidence
+and resolve uncertain reconstruction. Use benilla-re for donor 1.12 behavior, not as proof of
+Wrath layouts or ABI. All evidence, install-read-only and verification rules below still apply.
+
 benilla is a from-scratch World of Warcraft 1.12.1 client in Rust and Bevy. It reads the game's
 data from the player's own install, speaks the original protocol to any 1.12.1 server, and does
 not build a server or simulate the game. The reference client is the spec: benilla does what

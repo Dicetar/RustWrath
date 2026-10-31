@@ -1,5 +1,13 @@
 # benilla
 
+## Project B / wotlk reference override
+
+This checkout is the Project B 3.3.5a fork. For Wrath build 12340 behavior, consult the preserved
+decompilation at `D:/Projects/wowdecomp-reference` before implementing or guessing client
+mechanisms. Pin: `e67b6ffef23655dc7da061cb2d36b7963f6ef71a` (Terrorblade/wowdecomp).
+Read [the reference workflow](docs/agents/12340-reference.md) for source routing and validation.
+The 1.12 instructions below still govern donor compatibility; they do not define Wrath layouts.
+
 A from-scratch World of Warcraft 1.12.1 client in Rust and Bevy. The reference client is the
 spec: benilla is a faithful, modern implementation of it, not a place to get creative.
 
@@ -34,3 +42,10 @@ Default five-label vocabulary in use. See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 Single-context: `CONTEXT.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.
+
+### 12340 reference skill
+
+Use `project-b-12340-reference` for this fork's rendering, formats, protocol-facing client
+behavior and Lua/UI contracts. Skill: `C:/Users/Qraag/.codex/skills/project-b-12340-reference/SKILL.md`.
+It points to the canonical repository guide; availability of source is not permission to copy it
+or evidence of runtime correctness.

@@ -17,6 +17,7 @@ fn entry(faction_id: u32, rep_list_id: u32, parent_id: u32, name: &str) -> Facti
         bar_max: 9000,
         visible: true,
         is_header: false,
+        has_reputation: false,
         at_war: false,
         can_toggle_at_war: true,
         inactive: false,

@@ -150,6 +150,15 @@ pub(super) fn spawn_loaded_placements(
     let deadline = Instant::now() + SPAWN_BUDGET;
 
     'placements: for (&unique_id, p) in by_id.iter_mut() {
+        // A corrupt custom placement (the HD profile carries NaN doodads) must not reach Bevy's
+        // transform propagation or the collider weld: NaN geometry draws as screen-filling planes.
+        if !p.transform.translation.is_finite()
+            || !p.transform.rotation.is_finite()
+            || !p.transform.scale.is_finite()
+        {
+            warn!("placement {unique_id:#x} has a non-finite transform; skipped");
+            continue;
+        }
         // 1. The model's own geometry, once; a WMO also resolves its doodad props for step 2.
         if !p.spawned {
             let entities = match &p.model {

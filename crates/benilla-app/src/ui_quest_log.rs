@@ -530,7 +530,7 @@ impl Plugin for UiQuestLogPlugin {
             .init_resource::<crate::field_watch::NoticeLane>()
             .add_systems(
                 Startup,
-                (load_quest_header_names, load_quest_tag_names)
+                (load_quest_header_names, load_quest_tag_names, load_quest_experience)
                     .after(benilla_assets::AssetSet::Open),
             )
             .add_systems(
@@ -594,6 +594,7 @@ const MISSING_HEADER: &str = "Missing header! (quest designers)";
 
 /// What a record resolves through besides its template.
 struct RecordTables<'a> {
+    titles: Option<&'a crate::ui_quest::QuestTitles>,
     headers: Option<&'a QuestHeaderNamesRes>,
     tags: Option<&'a QuestTagNamesRes>,
     macros: &'a crate::npc_text::MacroContext<'a>,
@@ -621,6 +622,7 @@ fn record_view(t: &QuestTemplate, tables: &RecordTables) -> QuestRecordView {
         title: t.title.clone(),
         level: t.level,
         suggested_players: t.suggested_players,
+        xp_difficulty: t.xp_difficulty,
         daily: t.flags & 0x1000 != 0,
         zone_or_sort: t.zone_or_sort,
         header,
@@ -668,6 +670,7 @@ fn record_view(t: &QuestTemplate, tables: &RecordTables) -> QuestRecordView {
         reward_talents: t.bonus_talents,
         reward_arena_points: t.bonus_arena_points,
         reward_title: t.title_reward,
+        reward_title_name: tables.titles.and_then(|titles| tables.macros.subject.and_then(|subject| titles.0.render(t.title_reward, subject.gender == 1, &subject.name))),
         reward_factions: t
             .rep_rewards
             .iter()
@@ -750,6 +753,8 @@ pub(crate) struct FeedMemo {
 /// What the feed reads of the player and the caches.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct QuestLogReads<'w, 's> {
+    xp: Option<Res<'w, QuestExperience>>,
+    titles: Option<Res<'w, crate::ui_quest::QuestTitles>>,
     self_q: Query<'w, 's, (&'static ObjectStore, &'static Guid), With<SelfPlayer>>,
     wrath_slots: Query<'w, 's, Option<&'static crate::wrath::WrathQuestSlots>, With<SelfPlayer>>,
     names: Res<'w, NameCache>,
@@ -809,6 +814,9 @@ pub(crate) fn feed_quest_log(
         };
         let store = &store.0;
         let wrath_slots = reads.wrath_slots.iter().next().flatten();
+        if let Some(slots) = wrath_slots {
+            script.set_quest_player_metadata(slots.1, slots.2);
+        }
         let current_slots = slot_views_of(store, wrath_slots);
         let slots_moved = field_notices
             .iter()
@@ -835,6 +843,7 @@ pub(crate) fn feed_quest_log(
             states: &reads.states,
         };
         let tables = RecordTables {
+            titles: reads.titles.as_deref(),
             headers: reads.header_names.as_deref(),
             tags: reads.tag_names.as_deref(),
             macros: &macros,
@@ -849,6 +858,9 @@ pub(crate) fn feed_quest_log(
             .map(|s| (s.name.clone(), s.race.clone(), s.class.clone(), s.gender));
 
         if seat {
+            if let Some(xp) = &reads.xp {
+                script.set_quest_experience(xp.0.clone());
+            }
             // The reference's records and slots outlive a `/reload` in its caches and descriptor; a
             // new VM is seated with both before its world-enter cascade rebuilds the list.
             // So are the creature names, which the leaderboard reads off the cache (`0xc0e354`).
@@ -1052,6 +1064,20 @@ fn show_toasts(
 /// The `ZoneOrSort` header names; without client data only id 0's header has a name.
 #[derive(Resource)]
 pub(crate) struct QuestHeaderNamesRes(pub benilla_formats::QuestHeaderNames);
+
+#[derive(Resource)]
+struct QuestExperience(HashMap<u32, [u32; 10]>);
+
+fn load_quest_experience(mut commands: Commands, assets: Option<Res<benilla_assets::WorldAssets>>) {
+    use benilla_assets::LockRecover;
+    if !crate::wrath::selected_from_env() { return; }
+    let Some(assets) = assets else { return; };
+    let loaded = benilla_formats::load_quest_experience(&mut assets.chain.lock_recover());
+    match loaded {
+        Ok(rows) => { commands.insert_resource(QuestExperience(rows)); }
+        Err(error) => warn!("quest experience unavailable: {error:#}"),
+    }
+}
 
 /// Startup: reads the `AreaTable` and `QuestSort` names off the patch chain.
 fn load_quest_header_names(

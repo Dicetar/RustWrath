@@ -312,6 +312,7 @@ pub(crate) fn reputation_row(
         bar_max: RANK_BOUNDS[rank as usize + 1],
         visible: flags & flag::VISIBLE != 0,
         is_header: flags & flag::HEADER != 0,
+        has_reputation: (info.default_flags_for(race, class) as i32) < 0,
         at_war: flags & flag::AT_WAR != 0,
         // What `GetFactionInfo` reports; the toggle itself is stricter (`0x4d5fd0`).
         can_toggle_at_war: flags & flag::PEACE_FORCED == 0 && standing >= -3000,

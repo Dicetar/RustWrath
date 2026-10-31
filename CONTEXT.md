@@ -9,6 +9,7 @@ A benilla-derived (Rust + Bevy) World of Warcraft 3.3.5a client fork, speaking t
 - **WM-enhanced / Experimental modes** — owned carriers/addons; souls/building/custom geometry after capability negotiation.
 - **Reducer** — the time-free wire→typed-state decode layer (H2 replay depends on its purity).
 - **Oracle** — the pin-verified known-original client executable used for targeted RE questions (narrow, budgeted, artifact-preserved).
+- **12340 decomp reference** — preserved full-history Git checkout at `D:/Projects/wowdecomp-reference`, pin `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`; reconstructed source used to investigate Wrath mechanisms before implementing. Distinct from the original-binary Oracle. Workflow: `docs/agents/12340-reference.md`.
 - **Profiles** — asset patch chains: `base` (stock archives) vs `wm-hd` (owner's lettered patches); loader is manifest-defined, provenance-tagged.
 - **WM** — the owner's Python orchestration service (D:/WOW/wm-project); one brain, two transports (existing DB/SOAP bus; future native client channel).
 - **Spellwright v3** — deployed composable-spell system (wm_spellforge_* tables, WM_FORGE3 addon channel); the first live-change proof candidate.

@@ -10,7 +10,21 @@ use benilla_protocol::messages::{
 };
 use bevy::prelude::*;
 
-use benilla_ui::script::{QuestItemView, QuestPanel, QuestRewardSpell, QuestState};
+use benilla_ui::script::{QuestExtraView, QuestItemView, QuestPanel, QuestRewardSpell, QuestState};
+use benilla_assets::{AssetSet, LockRecover, WorldAssets};
+
+#[derive(Resource)]
+pub(crate) struct QuestTitles(pub(crate) benilla_formats::QuestTitleNames);
+
+fn load_quest_titles(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
+    if !crate::wrath::selected_from_env() { return; }
+    let Some(assets) = assets else { return; };
+    let result = benilla_formats::load_quest_title_names(&mut assets.chain.lock_recover());
+    match result {
+        Ok(names) => { commands.insert_resource(QuestTitles(names)); }
+        Err(error) => warn!("quest title names unavailable: {error:#}"),
+    }
+}
 
 use crate::entities::ItemDisplays;
 use crate::items::Items;
@@ -270,6 +284,7 @@ impl Plugin for UiQuestPlugin {
         net::register(app);
         lines::register(app);
         app.init_resource::<QuestGiver>()
+            .add_systems(Startup, load_quest_titles.after(AssetSet::Open))
             .add_latched_window::<QuestGiver>()
             .add_sweep_leg(SweepLeg::Quest, close_quest_on_leave_world)
             .add_systems(
@@ -433,7 +448,7 @@ fn snapshot(
     spells: Option<&Spells>,
 ) -> Option<QuestState> {
     snapshot_in_target(
-        giver, items, icons, ask, macros, spells, benilla_ui::script::UiTarget::Vanilla112,
+        giver, items, icons, ask, macros, spells, None, benilla_ui::script::UiTarget::Vanilla112,
     )
 }
 
@@ -444,10 +459,17 @@ fn snapshot_in_target(
     ask: Ask<'_>,
     macros: &crate::npc_text::MacroContext,
     spells: Option<&Spells>,
+    titles: Option<&QuestTitles>,
     target: benilla_ui::script::UiTarget,
 ) -> Option<QuestState> {
     // The wire sends quest text unexpanded; the client substitutes `$N`, `$B` and `$G`.
     let sub = |t: &str| crate::npc_text::substitute(t, macros);
+    let extra = |meta: &benilla_protocol::messages::QuestPanelExtra| QuestExtraView {
+        flags: meta.flags, suggested_players: meta.suggested_players, xp: meta.xp,
+        honor_tenths: meta.honor_tenths, talents: meta.talents, arena_points: meta.arena_points,
+        title: titles.and_then(|titles| macros.subject.and_then(|subject|
+            titles.0.render(meta.title_id, subject.gender == 1, &subject.name))),
+    };
     // The cell zero is a closed window, whatever panel its kind still names.
     giver.npc?;
     Some(match giver.view.as_ref()? {
@@ -456,6 +478,7 @@ fn snapshot_in_target(
             let mut available_titles = Vec::new();
             let mut active_levels = Vec::new();
             let mut available_levels = Vec::new();
+            let mut available_metadata = Vec::new();
             for q in &l.quests {
                 if row_is_active(q.icon) {
                     active_titles.push(q.title.clone());
@@ -463,6 +486,7 @@ fn snapshot_in_target(
                 } else {
                     available_titles.push(q.title.clone());
                     available_levels.push(q.level);
+                    available_metadata.push((q.flags, q.repeatable));
                 }
             }
             QuestState {
@@ -472,10 +496,12 @@ fn snapshot_in_target(
                 available_titles,
                 active_levels,
                 available_levels,
+                available_metadata,
                 ..Default::default()
             }
         }
         QuestView::Detail(d) => QuestState {
+            extra: extra(&d.extra),
             panel: QuestPanel::Detail,
             title: sub(&d.title),
             body: sub(&d.details),
@@ -496,6 +522,7 @@ fn snapshot_in_target(
             ..Default::default()
         },
         QuestView::Reward(o) => QuestState {
+            extra: extra(&o.extra),
             panel: QuestPanel::Reward,
             title: sub(&o.title),
             body: sub(&o.offer_text),
@@ -529,7 +556,7 @@ pub(crate) fn feed_quest(
     names: Res<NameCache>,
     states: Res<crate::world_state::WorldStates>,
     self_q: Query<(&ObjectStore, &Guid), With<SelfPlayer>>,
-    (spells, unit_names): (Option<Res<Spells>>, crate::ui_unit::NameTables),
+    (spells, unit_names, titles): (Option<Res<Spells>>, crate::ui_unit::NameTables, Option<Res<QuestTitles>>),
     go_templates: Res<crate::go_templates::GameObjectTemplates>,
     materials: Option<Res<crate::ui_item_text::PageMaterials>>,
     mut sink: MessageSink,
@@ -577,6 +604,7 @@ pub(crate) fn feed_quest(
                 states: &states,
             },
             spells.as_deref(),
+            titles.as_deref(),
             script.target(),
         );
         // The background is the source object's material, never a creature's and never on the wire
@@ -740,6 +768,7 @@ mod tests {
             app.world_mut().resource_mut::<QuestGiver>().open(
                 SOURCE,
                 QuestView::Detail(QuestDetails {
+                    extra: Default::default(),
                     npc: SOURCE,
                     quest_id: 100,
                     title: "A Threat Within".into(),
@@ -784,6 +813,7 @@ mod tests {
         giver.open(
             0x42,
             QuestView::Detail(QuestDetails {
+                extra: Default::default(),
                 npc: 0x42,
                 quest_id: 100,
                 title: "A Threat Within".into(),
@@ -845,6 +875,7 @@ mod tests {
         giver.open(
             0x42,
             QuestView::Detail(QuestDetails {
+                extra: Default::default(),
                 npc: 0x42,
                 quest_id: 100,
                 title: "A Threat Within".into(),
@@ -919,6 +950,7 @@ mod tests {
     #[test]
     fn the_greeting_snapshot_keeps_each_quests_level_beside_its_title() {
         let row = |quest_id, icon, level, title: &str| benilla_protocol::messages::QuestListEntry {
+            flags: 0, repeatable: false,
             quest_id,
             icon,
             level,
@@ -1123,6 +1155,7 @@ mod tests {
 
     fn offer(quest_id: u32, title: &str, choice: u32) -> QuestView {
         QuestView::Detail(benilla_protocol::messages::QuestDetails {
+            extra: Default::default(),
             npc: 0x10,
             quest_id,
             title: title.into(),

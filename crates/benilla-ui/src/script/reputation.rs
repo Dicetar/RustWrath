@@ -54,6 +54,8 @@ pub struct FactionEntry {
     pub visible: bool,
     /// Flag `0x08`: this row is a header.
     pub is_header: bool,
+    /// The matching DBC race/class row permits a header reputation bar (Wrath).
+    pub has_reputation: bool,
     /// Flag `0x02`, which `FactionToggleAtWar` writes at once (`0x4d6074`).
     pub at_war: bool,
     /// Flag `0x10` clear and `standing >= -3000`: what `GetFactionInfo` reports (`0x4d6608`).
@@ -564,6 +566,40 @@ fn unknown_faction() -> MultiValue {
     MultiValue::from_vec(out)
 }
 
+/// Wrath's thirteen-value view, including hasRep before isWatched (0x005D11E0).
+fn wrath_faction_info(lua: &Lua, faction: i64) -> mlua::Result<MultiValue> {
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    let header = is_header_key(&model, faction);
+    let collapsed = header && model.reputation_collapsed.contains(&faction);
+    if let Some(entry) = entry_of(&model, faction) {
+        return Ok(MultiValue::from_vec(vec![
+            Value::String(lua.create_string(&entry.name)?),
+            Value::String(lua.create_string(&entry.description)?),
+            Value::Integer(i64::from(entry.standing_id)),
+            Value::Integer(i64::from(entry.bar_min)),
+            Value::Integer(i64::from(entry.bar_max)),
+            Value::Integer(i64::from(entry.standing)),
+            binding_abi::flag(entry.at_war),
+            binding_abi::flag(entry.can_toggle_at_war),
+            binding_abi::flag(header),
+            binding_abi::flag(collapsed),
+            binding_abi::flag(header && entry.has_reputation),
+            binding_abi::flag(model.reputation.watched == Some(entry.rep_list_id)),
+            binding_abi::flag(model.reputation_rows.iter().take(model.reputation_visible).find(|row| row.faction == faction).and_then(|row| entry_of(&model, row.key)).is_some_and(|parent| parent.parent_id != 0)),
+        ]));
+    }
+    drop(model);
+    let mut values = unknown_faction().into_vec();
+    values.extend([Value::Nil, Value::Nil]);
+    if header && faction >= KEY_INACTIVE {
+        values[0] = Value::String(lua.create_string(synthetic_header(lua, faction))?);
+        values[1] = Value::String(lua.create_string("")?);
+        values[8] = Value::Integer(1);
+        values[9] = binding_abi::flag(collapsed);
+    }
+    Ok(MultiValue::from_vec(values))
+}
+
 /// Hand `call` to the host, which applies it before this returns ([`super::calls::submit`]).
 fn submit(lua: &Lua, call: ReputationCall) -> mlua::Result<()> {
     super::calls::submit(lua, super::ScriptCall::Reputation(call))
@@ -571,6 +607,13 @@ fn submit(lua: &Lua, call: ReputationCall) -> mlua::Result<()> {
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
+
+    if lua.app_data_ref::<Model>().is_some_and(|model| model.is_wrath()) {
+        g.set("GetFactionInfoByID", lua.create_function(|lua, id: Value| {
+            let id = binding_abi::index_arg32(lua, id, "Usage: GetFactionInfoByID(id)")? as i32;
+            wrath_faction_info(lua, i64::from(id))
+        })?)?;
+    }
 
     // GetNumFactions() → the displayed count (`0xb73764`, `0x4d64c6`), 0 before any push.
     g.set(
@@ -594,6 +637,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let index = binding_abi::index_arg(lua, index, "Usage: GetFactionInfo(index)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let faction = faction_at(&model, index);
+            if model.is_wrath() {
+                drop(model);
+                return wrath_faction_info(lua, faction);
+            }
             let is_header = is_header_key(&model, faction);
             let collapsed = is_header && model.reputation_collapsed.contains(&faction);
             if let Some(e) = entry_of(&model, faction) {
@@ -852,6 +899,7 @@ mod tests {
             bar_max: 9000,
             visible: true,
             is_header: false,
+            has_reputation: false,
             at_war: false,
             can_toggle_at_war: true,
             inactive: false,
@@ -884,6 +932,19 @@ mod tests {
             ],
             watched: None,
         }
+    }
+
+    #[test]
+    fn wrath_faction_by_id_reads_hidden_rows_and_keeps_the_thirteen_value_contract() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let mut snapshot = state();
+        snapshot.entries.iter_mut().find(|row| row.faction_id == 72).unwrap().visible = false;
+        snapshot.watched = Some(19);
+        s.set_reputation(snapshot);
+        assert!(s.eval::<bool>("local name,_,rank,lo,hi,value,war,toggle,header,collapsed,hasRep,watched,child=GetFactionInfoByID(72) return name=='Stormwind' and rank==5 and lo==3000 and hi==9000 and value==4000 and war==nil and toggle==1 and header==nil and hasRep==nil and watched==1 and child==nil").unwrap());
+        assert_eq!(s.eval::<usize>("return select('#',GetFactionInfoByID(99999))").unwrap(), 13);
+        assert_eq!(s.eval::<usize>("return select('#',GetFactionInfo(1))").unwrap(), 13);
+        assert!(UiScript::new().unwrap().eval::<bool>("return GetFactionInfoByID == nil").unwrap());
     }
 
     fn seated() -> UiScript {

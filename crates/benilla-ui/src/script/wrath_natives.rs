@@ -54,19 +54,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(false))?,
     )?;
 
-    // `GetQuestLogGroupNum` (`QuestInfo.lua:211`) and `GetDailyQuestsCompleted`
-    // (`QuestLogFrame.lua:520`): the suggested party size of the selected log quest and the
-    // daily-quest tally. benilla tracks neither; 0 hides both lines, as the stock client does
-    // with no daily quests and a solo-suggested quest.
-    lua.globals().set(
-        "GetQuestLogGroupNum",
-        lua.create_function(|_, ()| Ok(0))?,
-    )?;
-    lua.globals().set(
-        "GetDailyQuestsCompleted",
-        lua.create_function(|_, ()| Ok(0))?,
-    )?;
-
     // `Sound_GameSystem_*` (`AudioOptionsPanels.lua:135`, `:167`): the client enumerates the Miles
     // output devices, and a stock install registers its one DirectSound output as the primary
     // driver (`Sound_OutputDriverName` defaults to "Primary Sound Driver"). benilla's single kira

@@ -598,6 +598,7 @@ mod tests {
         giver.open(
             0x4000_0000_0000_0BAD,
             crate::ui_quest::QuestView::Detail(QuestDetails {
+                extra: Default::default(),
                 npc: 0x4000_0000_0000_0BAD,
                 quest_id,
                 title: "A Threat Within".into(),
@@ -844,6 +845,7 @@ mod tests {
 
     fn detail(npc: u64, quest_id: u32) -> QuestDetails {
         QuestDetails {
+            extra: Default::default(),
             npc,
             quest_id,
             title: "A Threat Within".into(),
@@ -944,6 +946,7 @@ mod tests {
 
     fn offer(npc: u64, quest_id: u32, auto_finish: u32) -> QuestOfferReward {
         QuestOfferReward {
+            extra: Default::default(),
             npc,
             quest_id,
             title: "A Threat Within".into(),
