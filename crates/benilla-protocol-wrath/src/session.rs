@@ -550,7 +550,7 @@ impl SessionState {
     /// driver may retry a later export when state has moved on.
     pub fn export(
         &mut self,
-        exported_at_unix_ms: i64,
+        _exported_at_unix_ms: i64,
         client_uptime_ms: u64,
     ) -> Result<Option<SelfObservation>> {
         // A newer state always supersedes a retained snapshot (latest-only coalescing).

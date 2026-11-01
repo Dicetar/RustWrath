@@ -18,7 +18,7 @@ use crate::ui_items::{count_of, InventoryScope};
 use bevy::prelude::*;
 
 use benilla_protocol::messages::{
-    quest_flags, quest_slot_state, QuestTemplate, PLAYER_QUEST_LOG_SLOTS,
+    quest_flags, quest_slot_state, QuestTemplate,
 };
 use benilla_protocol::ObjectFields;
 use benilla_ui::script::{

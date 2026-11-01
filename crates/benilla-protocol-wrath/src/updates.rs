@@ -4,7 +4,7 @@
 //! `Object.cpp:332-482` and `Unit.cpp (BuildMovementPacket)`, and the values mask from
 //! `Object.cpp:508-512` (u8 block count, u32 mask words, ascending set-bit values).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 /// Update-flag bits (`UpdateData.h:33-46`), in the builder's write order.
 pub mod update_flags {
