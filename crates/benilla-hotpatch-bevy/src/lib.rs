@@ -108,7 +108,7 @@ fn apply_pose(
     for (entity, mut rig, selected) in &mut rigs {
         if !rig.pose_dirty
             && !runtime.refresh
-            && !rig.has_billboard
+            && !rig.has_camera_billboards()
             && !roots_changed.contains(rig.joints_root)
         {
             continue;

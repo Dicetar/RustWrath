@@ -42,6 +42,11 @@ pub struct RigPose {
 }
 
 impl RigPose {
+    /// Whether camera movement requires this rig's billboard pose to be recomposed.
+    pub fn has_camera_billboards(&self) -> bool {
+        self.has_billboard
+    }
+
     /// The rig at bind pose, composed; anchors come from [`Self::anchor_for`].
     pub fn new(joints_root: Entity, skeleton: &ModelSkeleton) -> Self {
         let locals: Vec<Transform> = skeleton
