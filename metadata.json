@@ -1,0 +1,6 @@
+{
+  "name": "RustWrath - WotLK Client Engine & Studio",
+  "description": "Interactive World of Warcraft Wrath of the Lich King (3.3.5a) and 1.12 client engine, FrameXML host, 3D character viewer, and Azeroth simulation studio.",
+  "permissions": [],
+  "capabilities": []
+}
