@@ -39,6 +39,10 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     // 12340 GameUI_CVar.cpp:647: stock spellbook rank-display preference.
     ("ShowAllSpellRanks", "1"),
     ("Sound_OutputDriverIndex", "0"),
+    // 12340 SoundInterface2_CVar.cpp / ConsoleDevice_CVar.cpp.
+    ("Sound_EnableAllSound", "1"),
+    ("gxStereoEnabled", "0"),
+    ("windowResizeLock", "0"),
     ("Sound_VoiceChatInputDriverIndex", "0"),
     ("Sound_VoiceChatOutputDriverIndex", "0"),
     ("VoiceChatMode", "0"),
@@ -104,8 +108,13 @@ fn install_glue_vm(world: &mut World, screen: &str) -> bool {
     // The CVar table before the load and the first screen, as the in-game build seeds its own:
     // this VM is born before `cvars::sync_cvars`'s per-VM seed, and the character screen's
     // `OnShow` names the realm `GetServerName` reads off `realmName` (`0x46d289`).
-    if let Some(cvars) = world.get_resource::<crate::cvars::Cvars>() {
+    if let Some(mut cvars) = world.get_resource_mut::<crate::cvars::Cvars>() {
+        if script.target() == UiTarget::Wrath335 {
+            register_wrath_cvars(&mut cvars);
+        }
         cvars.seed_vm(&mut script);
+    } else if script.target() == UiTarget::Wrath335 {
+        script.register_cvars(WRATH_UI_CVARS.iter().copied());
     }
     seed_agreements(world, &mut script);
     // Before the stock `Constants.lua` runs, as the client has its class labels before the UI.

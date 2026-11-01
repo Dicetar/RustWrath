@@ -398,6 +398,7 @@ pub fn pane_clock_step_ms(elapsed: f32) -> u64 {
 /// and written by `Model`'s 23 methods (table `0x878948`); the render is the app's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelState {
+    pub effects: ModelEffects,
     /// `SetModel`'s path as written (`.mdx`); the app's loader maps it to the shipped `.m2`.
     pub path: Option<String>,
     /// The `CGCharacterModelBase` half (`0x505680`) of a `PlayerModel`, `DressUpModel` or
@@ -528,9 +529,17 @@ impl ModelLight {
 }
 
 /// A fresh pane as the `CSimpleModel` ctor leaves it.
+/// Wrath ModelFFX's glow and six independent light sets (scene/character/pet × live/ghost).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelEffects {
+    pub glow: Option<f32>,
+    pub lights: [[Vec<ModelLight>; 2]; 3],
+}
+
 impl Default for ModelState {
     fn default() -> Self {
         Self {
+            effects: ModelEffects::default(),
             path: None,
             character: None,
             sequence: 0,

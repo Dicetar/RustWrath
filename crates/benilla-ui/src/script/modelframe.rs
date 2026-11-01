@@ -329,6 +329,33 @@ fn parse_set_light(a: &[Value]) -> SetLight {
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let m = lua.create_table()?;
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        // 12340 CSimpleModel_Scripts::SetGlow 0x004E6160; the base model is inert.
+        m.set("SetGlow", lua.create_function(|lua, (this, value): (Table, Value)| {
+            let value = number(&value).ok_or_else(|| usage(lua, &this, "SetGlow(value)"))?;
+            with_model(lua, &this, |m| { if m.ffx { m.effects.glow = Some(value); } })
+        })?)?;
+        // 0x004E6BE0 clears all six arrays; Add* uses SetLightHelper and caps each at four.
+        m.set("ResetLights", lua.create_function(|lua, this: Table| {
+            with_model(lua, &this, |m| m.effects.lights = Default::default())
+        })?)?;
+        for (name, lane) in [("AddLight", 0), ("AddCharacterLight", 1), ("AddPetLight", 2)] {
+            m.set(name, lua.create_function(move |lua, args: MultiValue| {
+                let mut it = args.into_iter();
+                let Some(Value::Table(this)) = it.next() else { return Err(mlua::Error::runtime("expected a Model")); };
+                let ghost = it.next().as_ref().and_then(number).is_some_and(|n| n as i32 != 0) as usize;
+                let args: Vec<_> = it.collect();
+                match parse_set_light(&args) {
+                    SetLight::Raise => Err(mlua::Error::runtime(SET_LIGHT_USAGE)),
+                    SetLight::NoOp => with_model(lua, &this, |_| ()),
+                    SetLight::Set(light) => with_model(lua, &this, |m| {
+                        let lights = &mut m.effects.lights[lane][ghost];
+                        if lights.len() < 4 { lights.push(light); }
+                    }),
+                }
+            })?)?;
+        }
+    }
 
     // ── Content: the model, and clearing ────────────────────────────────────────────────────
     //
@@ -789,6 +816,14 @@ impl crate::script::UiScript {
 
     /// A named pane's yaw in radians, 0.0 before the pane exists; the stock `Model_OnLoad` sets
     /// 0.61 (`UIParent.lua:1422`).
+    pub fn model_effects(&self, handle: FrameHandle) -> Option<crate::widget::ModelEffects> {
+        let m = self.model_ref();
+        match &m.arena.frame(handle)?.kind_state {
+            KindState::Model(pane) => Some(pane.effects.clone()),
+            _ => None,
+        }
+    }
+
     pub fn model_pane_facing(&self, name: &str) -> f32 {
         self.model_pane(name).map_or(0.0, |m| m.facing)
     }

@@ -231,6 +231,9 @@ fn resolve_item_in_target(
         stats,
         link,
         max_stack: template.map(|t| t.stackable),
+        // The 1.12 merchant list carries no extended cost; Wrath's is filled by the item query
+        // path when its fields arrive.
+        extended_cost: None,
     }
 }
 
@@ -315,6 +318,7 @@ fn resolve_buyback(
         // No max stack: `GetMerchantItemMaxStack` indexes the merchant list, and a buyback row
         // is bought whole.
         max_stack: None,
+        extended_cost: None,
     }
 }
 

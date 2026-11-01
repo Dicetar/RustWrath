@@ -505,6 +505,16 @@ pub fn blp_to_rgba(blp_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     Ok((level0.width, level0.height, level0.rgba))
 }
 
+/// Render level zero while preserving valid pixels ahead of a corrupt optional mip tail.
+/// Strict diagnostics remain available through `blp_to_rgba`.
+pub fn blp_to_rgba_base(blp_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let (decoded, _) = benilla_blp::decode_native_with_mip_fallback(blp_bytes)
+        .map_err(|e| anyhow::anyhow!("decoding BLP base: {e}"))?;
+    let level = decoded.mips.first().ok_or_else(|| anyhow::anyhow!("BLP has no level 0"))?;
+    let rgba = benilla_blp::decode_level(decoded.texels, level.width, level.height, &level.bytes);
+    Ok((level.width, level.height, rgba))
+}
+
 /// Read a texture from the chain by internal path (accepts `/` or `\`) and decode to RGBA8.
 pub fn read_texture_rgba(chain: &mut Chain, path: &str) -> Result<(u32, u32, Vec<u8>)> {
     let name = path.replace('/', "\\");

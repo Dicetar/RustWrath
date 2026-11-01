@@ -991,18 +991,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                             Value::Nil,
                         ]));
                     };
-                    let start_quest = model.item_templates.get(&s.item_id).map_or_else(
-                        || {
+                    let start_quest = match model.item_templates.get(&s.item_id) {
+                        Some(t) => t.start_quest,
+                        None => {
                             if s.item_id != 0 {
                                 model.item_stat_reads.insert(s.item_id);
                             }
                             0
-                        },
-                        |t| t.start_quest,
-                    );
+                        }
+                    };
                     let in_log = start_quest != 0
                         && model
                             .quest_log
+                            .entries
                             .iter()
                             .any(|e| !e.is_header && e.quest_id == start_quest);
                     (
@@ -1040,15 +1041,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         // and `MainMenuBarBagButtons.lua`.
         lua.globals().set(
             "GetContainerItemPurchaseInfo",
-            lua.create_function(|_, _: MultiValue| {
-                Ok((0i64, 0i64, 0i64, 0i64, Value::Nil))
-            })?,
+            // No refund receipt owner exists yet. Native 12340 returns no values without one;
+            // numeric zero would falsely advertise purchase data to Lua presence checks.
+            lua.create_function(|_, _: MultiValue| Ok(MultiValue::new()))?,
         )?;
         lua.globals().set(
             "GetContainerItemPurchaseItem",
-            lua.create_function(|_, _: MultiValue| {
-                Ok((Value::Nil, 0i64, Value::Nil))
-            })?,
+            lua.create_function(|_, _: MultiValue| Ok(MultiValue::new()))?,
         )?;
         lua.globals().set(
             "GetContainerFreeSlots",
@@ -1060,7 +1059,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 )?);
                 let free: Vec<u32> = {
                     let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    let Some(c) = model.container(bag) else {
+                    let Some(c) = model.bag(bag) else {
                         return Ok(MultiValue::new());
                     };
                     (1..=c.num_slots)

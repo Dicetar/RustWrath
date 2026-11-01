@@ -208,6 +208,8 @@ pub struct ActionUse {
     /// `UseAction`'s third argument, which only the self-cast bindings (`SELFACTIONBUTTON1`-`12`)
     /// pass, through `ActionButtonUp(id, 1)`.
     pub on_self: bool,
+    /// The Wrath unit argument resolved when the call ran; absent means the normal selection.
+    pub target_guid: Option<u64>,
     /// The item locks as the call read them. An item slot's use leg tests its copy's lock inside
     /// the call (`0x4e607b` → `0x5d8d32`), so the app, which finds the copy, tests it against
     /// these and not the locks a later call in the frame took or released.
@@ -464,9 +466,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             )?;
             let may_cast = protected::gate(lua, Tag::CAST);
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let (check_cursor, on_self) = if model.is_wrath()
-                && !matches!(rest.front(), Some(Value::Integer(_) | Value::Number(_)))
-            {
+            let wrath = model.is_wrath();
+            let target_token = if wrath {
+                lua.coerce_string(rest.front().cloned().unwrap_or(Value::Nil))?
+                    .map(|value| value.to_string_lossy())
+            } else { None };
+            let target_guid = match target_token.as_deref() {
+                Some(token) => match model.unit(token).filter(|unit| unit.exists && unit.guid != 0) {
+                    Some(unit) => Some(unit.guid),
+                    None => return Ok(()),
+                },
+                None => None,
+            };
+            let (check_cursor, on_self) = if wrath {
                 // 12340 `Script_UseAction` (`0x005AC000`) & `CGActionBar::UseAction` (`0x005ABBC0`):
                 // arg 2 is the optional unit token (`"player"`, `"target"`, ...) and arg 3 is the
                 // mouse button; `button != nil` (from a click, not a keybind) places a held cursor
@@ -499,6 +511,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     super::ScriptCall::UseAction(ActionUse {
                         action,
                         on_self,
+                        target_guid,
                         item_locks,
                         may_cast,
                     }),

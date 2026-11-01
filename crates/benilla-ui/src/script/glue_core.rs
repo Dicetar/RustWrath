@@ -533,6 +533,7 @@ pub fn launch_addon_url_allowed(url: &str) -> bool {
 /// The glue core's slots and queue in the VM's model.
 #[derive(Clone, Default)]
 pub(crate) struct GlueCore {
+    pub(super) account_expansion: u8,
     requests: Vec<GlueRequest>,
     /// The glue manager the verbs call in place, once the host has seated this VM.
     host: Option<std::rc::Rc<dyn GlueHost>>,
@@ -571,6 +572,10 @@ impl super::UiScript {
     /// Seat the glue manager the verbs call in place ([`GlueHost`]).
     pub fn set_glue_host(&mut self, host: std::rc::Rc<dyn GlueHost>) {
         self.model_mut().glue.host = Some(host);
+    }
+
+    pub fn set_glue_account_expansion(&mut self, expansion: u8) {
+        self.model_mut().glue.account_expansion = expansion;
     }
 
     /// Drain the manager calls made while no host was seated, for the host to run now.
@@ -1139,11 +1144,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetAccountExpansionLevel",
         lua.create_function(|lua, ()| {
-            let target = lua.app_data_ref::<Model>().expect("model").target;
-            Ok(match target {
-                super::UiTarget::Wrath335 => 2,
-                super::UiTarget::Vanilla112 => 0,
-            })
+            Ok(lua.app_data_ref::<Model>().expect("model").glue.account_expansion)
         })?,
     )?;
 
@@ -1161,6 +1162,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "IsTrialAccount",
         lua.create_function(|_, ()| Ok(Value::Nil))?,
+    )?;
+
+    // 12340 0x004DD440 reads SFile's trial mode. This host mounts full local MPQs;
+    // it has no streaming/trial archive source, independently of account entitlement.
+    g.set(
+        "IsStreamingTrial",
+        lua.create_function(|_, ()| Ok(false))?,
     )?;
 
     g.set(

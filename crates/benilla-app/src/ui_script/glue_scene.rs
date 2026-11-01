@@ -125,6 +125,10 @@ pub(crate) fn feed_stock_glue_preview(
     let is_hidden = hidden.is_some();
     let shown = visible.as_ref().map(|p| p.handle);
     let pane = visible.or(hidden);
+    let effects = script.as_deref().and_then(|s| pane.as_ref().and_then(|p| s.model_effects(p.handle))).unwrap_or_default();
+    if preview.effects != effects {
+        preview.effects = effects;
+    }
     let mgr = mgr.get();
     let (scene, look, yaw, fog) = match script.as_deref() {
         Some(s) => {

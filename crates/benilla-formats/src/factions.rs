@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, parse_with_trailing_fields, u32_at};
+use crate::dbc::{field_count, loc_str, parse, parse_with_trailing_fields, u32_at};
 use crate::Chain;
 
 const FACTION_TEMPLATE: &str = "DBFilesClient\\FactionTemplate.dbc";
@@ -383,7 +383,7 @@ fn faction_template_schema() -> Schema {
 }
 
 /// `Faction.dbc`: 37 fields in build 5875 (vmangos `FactionEntry`).
-fn faction_schema() -> Schema {
+fn faction_schema(wrath: bool) -> Schema {
     let mut s = Schema::new("Faction");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
     s.add_field(SchemaField::new("ReputationIndex", FieldType::Int32));
@@ -400,11 +400,20 @@ fn faction_schema() -> Schema {
         s.add_field(SchemaField::new(format!("RepFlags{i}"), FieldType::UInt32));
     }
     s.add_field(SchemaField::new("Team", FieldType::UInt32));
-    for i in 0..8 {
+    // 12340 FactionRec: ParentFactionMod[2], ParentFactionCap[2], then 16 locales.
+    if wrath {
+        for i in 0..2 {
+            s.add_field(SchemaField::new(format!("ParentMod{i}"), FieldType::Float32));
+        }
+        for i in 0..2 {
+            s.add_field(SchemaField::new(format!("ParentCap{i}"), FieldType::UInt32));
+        }
+    }
+    for i in 0..if wrath { 16 } else { 8 } {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..if wrath { 16 } else { 8 } {
         s.add_field(SchemaField::new(format!("Desc{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("DescFlags", FieldType::UInt32));
@@ -413,12 +422,12 @@ fn faction_schema() -> Schema {
 
 /// `FactionGroup.dbc`: 12 fields, 48-byte rows; `MaskID` is a bit index, read by `0x48d540` at
 /// `+0x4` with the name at `+0xc`.
-fn faction_group_schema() -> Schema {
+fn faction_group_schema(wrath: bool) -> Schema {
     let mut s = Schema::new("FactionGroup");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
     s.add_field(SchemaField::new("MaskID", FieldType::UInt32));
     s.add_field(SchemaField::new("InternalName", FieldType::String));
-    for i in 0..8 {
+    for i in 0..if wrath { 16 } else { 8 } {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -467,7 +476,8 @@ pub fn load_faction_catalog(chain: &mut Chain) -> Result<FactionCatalog> {
     let bytes = chain
         .read_file(FACTION)
         .with_context(|| format!("reading {FACTION}"))?;
-    let rs = parse(&bytes, faction_schema(), "Faction")?;
+    let wrath = field_count(&bytes) == Some(57);
+    let rs = parse(&bytes, faction_schema(wrath), "Faction")?;
     let locale = chain.locale();
     let mut factions = HashMap::with_capacity(rs.records().len());
     let mut names = HashMap::with_capacity(rs.records().len());
@@ -488,11 +498,11 @@ pub fn load_faction_catalog(chain: &mut Chain) -> Result<FactionCatalog> {
                 },
             );
             // The name block, column 19: after the ID, the index, 16 slot columns and `Team`.
-            if let Some(name) = loc_str(&rs, r, 19, locale) {
+            if let Some(name) = loc_str(&rs, r, if wrath { 23 } else { 19 }, locale) {
                 names.insert(id, name);
             }
             // The description block, column 28, past the name block; empty on most rows.
-            if let Some(desc) = loc_str(&rs, r, 28, locale) {
+            if let Some(desc) = loc_str(&rs, r, if wrath { 40 } else { 28 }, locale) {
                 descriptions.insert(id, desc);
             }
         }
@@ -501,7 +511,7 @@ pub fn load_faction_catalog(chain: &mut Chain) -> Result<FactionCatalog> {
     let bytes = chain
         .read_file(FACTION_GROUP)
         .with_context(|| format!("reading {FACTION_GROUP}"))?;
-    let rs = parse(&bytes, faction_group_schema(), "FactionGroup")?;
+    let rs = parse(&bytes, faction_group_schema(field_count(&bytes) == Some(20)), "FactionGroup")?;
     let mut group_names = HashMap::with_capacity(rs.records().len());
     let mut group_internal_names = HashMap::with_capacity(rs.records().len());
     let groups = rs

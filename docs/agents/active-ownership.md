@@ -29,6 +29,37 @@ artificial file boundaries.
      reference) and Procedural Terrain / Spawner / Story modules on top of the Phase 2 ABI without
      breaking the baseline client.
 
+## Current ticket
+
+2026-11-01 follow-up screenshots: Astra owns the login CVar initialization, Wrath
+creation return contracts/catalogs, ModelFFX methods/preview consumption, and world-entry
+loading-screen release/art repairs. Build reservation: `astra-glue-followup-build.log`.
+The merchant owner must leave these paths and this Cargo slot alone until release.
+The merchant run made mechanical ModelEffects export / integer-width compilation fixes;
+those edits are preserved. Do not launch a client from the previous binary for acceptance.
+
+2026-11-01: OC is stopped by the owner. Astra resumes the reported login/realm-screen
+errors and artwork repair: glue_core.rs, glue_select.rs, glue_realm.rs, Cfg_Categories
+loader, selected-profile UI texture consumers as needed, and their existing app seams.
+The shared Cargo slot is reserved for this bounded repair. No competing client or build.
+
+Astra: review-contract repairs in UI attributes/container/action and app action dispatch;
+interactive Wrath login/realm/roster/create/delete integration and launcher tools.
+This is a per-ticket reservation under the unified workflow, not a permanent crate partition.
+No client was running at task admission; the earlier Firna reservation has expired.
+The integration rebuild passed; the shared Cargo slot is released. No client was launched.
+Origin `511369d7` has been pulled, preserving its movement/combat/graphics/module work
+and the local login changes. Source changes remain uncommitted for review.
+
+Collaborating Engineer: Vendor / Merchant FrameXML 3.3.5a Parity.
+File ownership: `crates/benilla-ui/src/script/merchant.rs` and associated tests.
+Scope: 12340 reference parity for `GetMerchantItemInfo` (7-value return), `GetMerchantItemCostInfo`,
+`GetMerchantItemCostItem`, `ExtendedCostView`, and invalid-index return tuples matching
+`WoW/Source/Ui/MerchantFrame_Scripts.cpp`. Zero overlap with Astra's uncommitted files or
+OC's reserved combat/action-bar areas.
+Status: COMPLETED. Targeted merchant unit tests passed (26/26). Handoff documented in
+`.scratch/project-b/handoffs/2026-11-01-ce-merchant-framexml-parity.md`. Build slot released.
+
 ## Shared Live-Session Rules
 
 - **Human Live Session Reservation**: Firna (human warrior, GUID `0x1522`, dedicated existing account).

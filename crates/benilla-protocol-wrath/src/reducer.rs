@@ -479,7 +479,7 @@ impl WorldState {
 
     /// Update an existing tracked unit's authoritative position when `SMSG_MONSTER_MOVE` arrives
     /// so subsequent values-only updates do not snap the unit back to its old create-block pose.
-    pub fn apply_monster_move(&mut self, mv: &crate::gameplay::movement::MonsterMove) -> bool {
+    pub fn apply_monster_move(&mut self, mv: &crate::gameplay::MonsterMove) -> bool {
         let Some(entry) = self.objects.get_mut(&mv.guid) else {
             return false;
         };
@@ -497,7 +497,7 @@ impl WorldState {
             .and_then(|m| m.position)
             .map_or(0.0, |p| p.o);
         let o = match mv.facing {
-            crate::gameplay::movement::MonsterFacing::Angle(a) => a,
+            crate::gameplay::MonsterFacing::Angle(a) => a,
             _ => old_o,
         };
         let next_pos = crate::updates::PositionSnapshot {

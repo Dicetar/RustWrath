@@ -3,7 +3,7 @@
 //! [`Scene`] whose commands apply before the next event's, so a create's store and speeds are live
 //! components by the time the next block reads them. An `SMSG_UPDATE_OBJECT`'s blocks and its
 //! passes are [`update`]'s.
-use benilla_assets::coords::bevy_to_wow;
+use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_protocol::{
     EntityKind, MonsterMoveFacing, MoveSpeeds, ObjectFields, SpeedKind, SplineMode,
 };

@@ -202,6 +202,7 @@ pub(crate) struct SceneFog {
 /// none once `SetCharSelectBackground` put the select screen's in its place (`0x472150`).
 #[derive(Resource)]
 pub(crate) struct GluePreview {
+    pub(crate) effects: benilla_ui::widget::ModelEffects,
     pub(crate) scene: Option<GlueSceneFile>,
     pub(crate) look: Option<GlueLook>,
     pub(crate) yaw: f32,
@@ -257,6 +258,7 @@ impl Default for SceneRoot {
 impl Default for GluePreview {
     fn default() -> Self {
         Self {
+            effects: Default::default(),
             scene: None,
             look: None,
             yaw: 0.0,
@@ -294,6 +296,7 @@ impl GluePreview {
 /// the booth camera while it shows.
 #[derive(Resource)]
 pub(crate) struct CreateScene {
+    effects: benilla_ui::widget::ModelEffects,
     root: Entity,
     file: Option<GlueSceneFile>,
     handle: Option<Handle<M2Model>>,
@@ -371,6 +374,7 @@ impl CreateScene {
     /// No scene up, over its two roots.
     fn empty(root: Entity, pet_root: Entity) -> Self {
         CreateScene {
+            effects: Default::default(),
             root,
             file: None,
             handle: None,
@@ -604,6 +608,24 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
         lobes,
         points,
     }
+}
+
+fn pane_scene_rig(preview: &GluePreview, model: &M2Model, ghost: bool) -> SceneRig {
+    let lights = &preview.effects.lights[0][usize::from(ghost)];
+    if lights.is_empty() {
+        return if ghost { ghost_rig() } else { scene_rig(&model.lights) };
+    }
+    let mut rig = SceneRig::default();
+    for light in lights {
+        for (sum, value) in rig.ambient.iter_mut().zip(light.ambient) { *sum += value; }
+        let vector = benilla_assets::coords::wow_to_bevy(light.vector);
+        if light.omni {
+            rig.points.push((vector, light.diffuse));
+        } else {
+            rig.lobes.push((-vector, light.diffuse));
+        }
+    }
+    rig
 }
 
 /// The ghost select screen's rig: the reference's fill callback `0x472150`, on the scene, the
@@ -846,7 +868,13 @@ pub(super) fn sync_glue_ffx(
     } else {
         *ffx
     };
-    let want = glue_ffx(preview.look.as_ref(), held);
+    let mut want = glue_ffx(preview.look.as_ref(), held);
+    if let Some(glow) = preview.effects.glow {
+        want = benilla_world::ffx_glow::GlueFfx::Custom {
+            glow_bits: glow.to_bits(),
+            ghost: matches!(preview.look, Some(GlueLook::Select(ref l)) if l.flags & benilla_protocol::CHARACTER_FLAG_GHOST != 0),
+        };
+    }
     if *ffx != want {
         *ffx = want;
     }
@@ -1014,20 +1042,17 @@ pub(super) fn sync_glue_scene(
         // Same scene, other screen: rebuild in place.
         scene.spawned = false;
         commands.entity(scene.root).despawn_related::<Children>();
-    } else if scene.spawned && scene.ghost != ghost {
+    } else if scene.spawned && (scene.ghost != ghost || scene.effects != preview.effects) {
         // The selection crossed the ghost bit: re-light in place, as the reference's fill
         // callback does (`0x472150`); a respawn would restart the stage's emitters.
         if let (Some(model), Some(light)) = (
             scene.handle.as_ref().and_then(|h| m2s.get(h)),
             scene.light.clone(),
         ) {
-            let rig = if ghost {
-                ghost_rig()
-            } else {
-                scene_rig(&model.lights)
-            };
+            let rig = pane_scene_rig(&preview, model, ghost);
             scene_light_blob(&rig, fog).write(&queue, &light);
             scene.ghost = ghost;
+            scene.effects = preview.effects.clone();
             // The character and the pet re-bake onto the rewritten buffer.
             scene.rev += 1;
             info!(
@@ -1048,11 +1073,7 @@ pub(super) fn sync_glue_scene(
             scene.handle.as_ref().and_then(|h| m2s.get(h)),
             scene.light.clone(),
         ) {
-            let rig = if ghost {
-                ghost_rig()
-            } else {
-                scene_rig(&model.lights)
-            };
+            let rig = pane_scene_rig(&preview, model, ghost);
             scene_light_blob(&rig, fog).write(&queue, &light);
         }
         scene.fog = fog;
@@ -1088,11 +1109,7 @@ pub(super) fn sync_glue_scene(
             .iter()
             .find(|a| a.id == 0)
             .map_or((Quat::IDENTITY, 1.0), |a| stage_frame(model, a.bone));
-        let rig = if ghost {
-            ghost_rig()
-        } else {
-            scene_rig(&model.lights)
-        };
+        let rig = pane_scene_rig(&preview, model, ghost);
         let blob = scene_light_blob(&rig, fog);
         let light = scene
             .light
@@ -1109,6 +1126,7 @@ pub(super) fn sync_glue_scene(
         scene.fog = fog;
         scene.stage = preview.stage;
         scene.ghost = ghost;
+        scene.effects = preview.effects.clone();
         let dc = blob.probe_dc();
         info!(
             "create scene: {name} rig — ambient {:?}, {} point light(s), probe dc ({:.2},{:.2},{:.2})",

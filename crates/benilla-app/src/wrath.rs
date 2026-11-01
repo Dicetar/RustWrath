@@ -123,6 +123,7 @@ pub struct WrathOutbound {
 /// replies older than the scope it has already adopted, so a queue race across a transfer cannot
 /// apply a retired world's tooltip, quest or inventory reply to the replacement world.
 pub struct WrathSessionEvent {
+    login_generation: Option<u64>,
     session_epoch: u64,
     world_generation: u64,
     event: SessionEvent,
@@ -133,6 +134,7 @@ pub struct WrathSessionEvent {
 impl WrathSessionEvent {
     fn scoped(session: &SessionState, event: SessionEvent) -> Self {
         Self {
+            login_generation: None,
             session_epoch: session.epoch(),
             world_generation: session.world_generation(),
             event,
@@ -142,11 +144,17 @@ impl WrathSessionEvent {
 
     fn forced(event: SessionEvent) -> Self {
         Self {
+            login_generation: None,
             session_epoch: 0,
             world_generation: 0,
             event,
             force: true,
         }
+    }
+
+    fn for_login(mut self, generation: Option<u64>) -> Self {
+        self.login_generation = generation;
+        self
     }
 }
 
@@ -215,6 +223,8 @@ impl WrathFeedEvent {
 /// Shared handles between the IO thread and the app.
 #[derive(Clone)]
 pub struct WrathFeed {
+    authenticated: Arc<AtomicBool>,
+    account_expansion: Arc<std::sync::atomic::AtomicU8>,
     pub latest: WrathLatest,
     pub events: WrathEvents,
     /// Native cast/channel/item-text/failure traffic on its own bounded queue so it cannot
@@ -229,6 +239,8 @@ pub struct WrathFeed {
 impl WrathFeed {
     fn new() -> Self {
         Self {
+            authenticated: Arc::new(AtomicBool::new(false)),
+            account_expansion: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             latest: Arc::new(Mutex::new(None)),
             events: Arc::new(Mutex::new(VecDeque::with_capacity(WRATH_EVENT_CAPACITY))),
             native: Arc::new(Mutex::new(VecDeque::with_capacity(
@@ -280,6 +292,9 @@ impl WrathFeed {
 /// environment/launcher, never from committed files (system review Â§8).
 #[derive(Clone)]
 pub struct WrathSessionConfig {
+    /// Present for a screen-owned attempt; direct probe launches retain their existing path.
+    login_generation: Option<u64>,
+    preferred_realm: Option<u8>,
     pub account: String,
     pub password: String,
     pub auth_addr: String,
@@ -303,6 +318,23 @@ pub fn selected_from_env() -> bool {
         .is_some_and(|value| !value.is_empty() && value != "0")
 }
 
+pub fn interactive_from_env() -> bool {
+    std::env::var("WOW_WRATH_LOGIN_UI").is_ok_and(|v| v == "1")
+}
+
+/// Translate 12340 ResponseCodes into the established glue manager's semantic status table.
+/// AC SharedDefines.h: creation 0x2f..0x38, deletion 0x47..0x49, names 0x58..0x67.
+fn roster_status(action: benilla_protocol::CharAction, raw: u8) -> u8 {
+    match (action, raw) {
+        (benilla_protocol::CharAction::Create, 0x2f..=0x38) => raw - 1,
+        (benilla_protocol::CharAction::Create, 0x59..=0x64) => raw - 0x14,
+        (benilla_protocol::CharAction::Create, 0x58 | 0x65..=0x67) => 0x51,
+        (benilla_protocol::CharAction::Delete, 0x47..=0x49) => raw - 0x0e,
+        (benilla_protocol::CharAction::Create, _) => 0x30,
+        (benilla_protocol::CharAction::Delete, _) => 0x3a,
+    }
+}
+
 impl WrathSessionConfig {
     /// Build the selected graphical path from the same protected environment the rest of the
     /// client uses. Credentials never come from committed source or command-line arguments.
@@ -311,12 +343,19 @@ impl WrathSessionConfig {
         if !selected_from_env() {
             return Ok(None);
         }
-        let account = std::env::var("WOW_USER").context("WOW_WRATH needs WOW_USER")?;
-        let password = std::env::var("WOW_PASS").context("WOW_WRATH needs WOW_PASS")?;
+        let interactive = interactive_from_env();
+        let account = if interactive { String::new() } else {
+            std::env::var("WOW_USER").context("WOW_WRATH needs WOW_USER")?
+        };
+        let password = if interactive { String::new() } else {
+            std::env::var("WOW_PASS").context("WOW_WRATH needs WOW_PASS")?
+        };
         let auth_addr =
             std::env::var("WOW_WRATH_AUTH").unwrap_or_else(|_| "127.0.0.1:3724".to_owned());
         let world_addr =
-            std::env::var("WOW_WRATH_WORLD").unwrap_or_else(|_| "127.0.0.1:8095".to_owned());
+            std::env::var("WOW_WRATH_WORLD").unwrap_or_else(|_| {
+                if interactive { String::new() } else { "127.0.0.1:8095".to_owned() }
+            });
         let dwell = std::env::var("WOW_WRATH_DWELL")
             .ok()
             .map(|raw| raw.parse::<u64>().map(Duration::from_secs))
@@ -326,6 +365,8 @@ impl WrathSessionConfig {
             .ok()
             .filter(|token| !token.is_empty());
         Ok(Some(Self {
+            login_generation: interactive.then_some(0),
+            preferred_realm: None,
             account,
             password,
             auth_addr,
@@ -428,12 +469,22 @@ pub(crate) enum WrathSessionStart {
 }
 
 /// One ask a parked session serves from the select screen, in the order the app made it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum WrathParkedCommand {
     /// `GetCharacterListUpdate`: `CMSG_CHAR_ENUM` again on the parked link.
     Enumerate,
     /// Enter World the screen asked for: `CMSG_PLAYER_LOGIN` on the parked link.
     Enter(u64),
+    Create(benilla_protocol::CharCreateReq),
+    Delete(u64),
+    Realm(benilla_protocol::RealmInfo),
+    RefreshRealms,
+}
+
+#[derive(Resource)]
+struct WrathLoginQueue {
+    requests: Receiver<crate::net::LoginRequest>,
+    pending: Option<WrathSessionConfig>,
 }
 
 /// The parked character-select input a fresh session serves, and the ask that started it.
@@ -815,6 +866,9 @@ pub struct WrathControl {
 }
 
 impl WrathControl {
+    pub(crate) fn account_expansion(&self) -> u8 {
+        self.feed.as_ref().map_or(0, |f| f.account_expansion.load(Ordering::SeqCst))
+    }
     /// Whether a worker is currently running.
     pub fn running(&self) -> bool {
         self.worker.as_ref().is_some_and(|w| !w.is_finished())
@@ -826,7 +880,7 @@ impl WrathControl {
     /// reply.
     fn park_serve(&mut self, roster_asked: bool, command: WrathParkedCommand) {
         if let Some(park) = self.park_commands.as_ref() {
-            if park.send(command).is_ok() {
+            if park.send(command.clone()).is_ok() {
                 return;
             }
         }
@@ -921,7 +975,17 @@ impl WrathControl {
                         result.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")),
                     ));
                 }
-                if let Some(sink) = events_out {
+                if let Some(sink) = events_out.filter(|_| !cancel.load(Ordering::SeqCst)) {
+                    if config.login_generation.is_some() && result.is_err()
+                        && !feed.authenticated.load(Ordering::SeqCst)
+                    {
+                        let _ = sink.send(WrathSessionEvent::forced(SessionEvent::LoginFailed {
+                            refusal: None,
+                            reason: result.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default(),
+                            dial: None,
+                        }).for_login(config.login_generation));
+                        return;
+                    }
                     let end = if result.is_ok() {
                         benilla_protocol::SessionEnd::LoggedOut
                     } else {
@@ -934,7 +998,7 @@ impl WrathControl {
                     let _ = sink.send(WrathSessionEvent::forced(SessionEvent::Disconnected {
                         reason,
                         end,
-                    }));
+                    }).for_login(config.login_generation));
                 }
             })
             .expect("spawn wrath session thread");
@@ -1288,8 +1352,12 @@ impl Plugin for WrathNetPlugin {
             // a wrath-owned channel: the same ordered send path, drained by the pick
             // admission here (`roster::send_pick` and the screen's re-asks stay untouched).
             let (pick_tx, pick_rx) = crossbeam_channel::unbounded();
-            app.insert_resource(CharPick(ParkSender::park(pick_tx)))
+            app.insert_resource(CharPick(ParkSender::park(pick_tx.clone())))
+                .insert_resource(crate::net::RealmChoice(ParkSender::park(pick_tx)))
                 .insert_resource(WrathPickQueue(pick_rx));
+            let (login_tx, login_rx) = crossbeam_channel::unbounded();
+            app.insert_resource(crate::net::LoginSubmit(login_tx))
+                .insert_resource(WrathLoginQueue { requests: login_rx, pending: None });
             // One typed action seam for the app's lifetime; every publisher replacement clones
             // these channel ends, so a world transfer never strands a pending intent.
             let (action_tx, action_rx) = crossbeam_channel::unbounded::<ActionRequest>();
@@ -1323,6 +1391,7 @@ impl Plugin for WrathNetPlugin {
                 (
                     wrath_session_ownership,
                     wrath_shutdown_on_exit,
+                    wrath_login_admission,
                     wrath_pick_admission,
                 )
                     .chain(),
@@ -1404,7 +1473,10 @@ fn wrath_session_ownership(
     }
     let retry_due = control.retry_at.is_some_and(|at| Instant::now() >= at);
     let may_retry = control.restart_allowed && control.restart_attempts > 0 && retry_due;
-    if control.shutdown || (*state.get() != ClientState::InWorld && !may_retry) {
+    let roster_restart = *state.get() == ClientState::CharSelect && control.ended
+        && control.restart_allowed && control.config.as_ref().is_some_and(|c|
+            c.login_generation.is_some() && c.preferred_realm.is_some());
+    if control.shutdown || (*state.get() != ClientState::InWorld && !may_retry && !roster_restart) {
         return;
     }
     let may_admit = !control.ended
@@ -1421,7 +1493,9 @@ fn wrath_session_ownership(
         // A retry is only ever the boot flow's: a parked link that dies has no retry (the
         // `SessionEnded` arm refuses to arm one), so the fresh session re-dials the account
         // the way the boot path does.
-        control.start(WrathSessionStart::Auto);
+        control.start(if roster_restart {
+            WrathSessionStart::Parked { roster_asked: true }
+        } else { WrathSessionStart::Auto });
     }
 }
 
@@ -1429,20 +1503,103 @@ fn wrath_session_ownership(
 /// lives in the IO thread this plugin replaces). At character selection an enumeration or an
 /// Enter World ask lands on the running parked session, or starts one and lands there; the
 /// admission gates are `start`'s. Elsewhere the asks are stale and dropped with their order
-/// intact. Create, delete and rename are the stock run's park loop and have no Wrath
-/// counterpart yet; a select-screen ask for one is refused with a note, nothing sent.
+/// intact. Create/delete stay on that parked world connection and wait for server results.
+fn wrath_login_admission(
+    mut control: ResMut<WrathControl>,
+    mut login: ResMut<WrathLoginQueue>,
+    abandon: Res<crate::net::LoginAbandon>,
+) {
+    if control.config.as_ref().is_none_or(|c| c.login_generation.is_none()) {
+        // The existing direct-entry runner owns its explicit identity and named boot pick.
+        for _ in login.requests.try_iter() {}
+        return;
+    }
+    let generation = crate::net::LoginAbandon::now(Some(&abandon));
+    if control.config.as_ref().and_then(|c| c.login_generation)
+        .is_some_and(|g| g != generation)
+    {
+        control.cancel.store(true, Ordering::SeqCst);
+        login.pending = None;
+        if let Some(config) = control.config.as_mut() {
+            config.account.clear();
+            config.password.clear();
+            config.login_generation = Some(generation);
+        }
+    }
+    for request in login.requests.try_iter().collect::<Vec<_>>() {
+        if request.generation != generation { continue; }
+        let Some(mut config) = control.config.clone() else { continue };
+        config.account = request.user;
+        config.password = request.pass;
+        config.auth_addr = if request.host.contains(':') { request.host }
+            else { format!("{}:3724", request.host) };
+        config.character_name = None;
+        config.login_generation = Some(generation);
+        config.preferred_realm = None;
+        control.cancel.store(true, Ordering::SeqCst);
+        login.pending = Some(config);
+    }
+    if login.pending.is_some() && control.worker.is_none() && control.retiring.is_none()
+        && control.terminal_ready && control.session_events_empty()
+        && control.publisher_retiring.is_empty()
+    {
+        control.config = login.pending.take();
+        control.ended = false;
+        control.shutdown = false;
+        control.retry_at = None;
+        control.start(WrathSessionStart::Parked { roster_asked: false });
+    }
+}
+
 fn wrath_pick_admission(
     mut control: ResMut<WrathControl>,
     state: Res<State<ClientState>>,
     pick: Option<Res<WrathPickQueue>>,
+    mut login: ResMut<WrathLoginQueue>,
+    abandon: Res<crate::net::LoginAbandon>,
+    mut realm_lists: MessageWriter<crate::net::RealmListMessage>,
 ) {
     let Some(pick) = pick.as_ref() else { return };
     let at_select = *state.get() == ClientState::CharSelect;
     for request in pick.0.try_iter() {
-        let ParkRequest::Char(request) = request else {
-            // Realm asks stay the stock run's path: the wrath session keeps the one realm it
-            // dialed, and a realm dialog over the select screen is the stock run's flow.
-            continue;
+        let request = match request {
+            ParkRequest::Char(request) => request,
+            ParkRequest::Realm(request) => {
+                use crate::net::RealmRequest;
+                match request {
+                    RealmRequest::Enter { realm, generation }
+                        if generation == crate::net::LoginAbandon::now(Some(&abandon)) => {
+                        if let Some(config) = control.config.as_mut() {
+                            config.preferred_realm = Some(realm.id);
+                        }
+                        if at_select && control.feed.as_ref()
+                            .is_some_and(|f| f.authenticated.load(Ordering::SeqCst)) {
+                            if let Some(mut config) = control.config.clone() {
+                                config.preferred_realm = Some(realm.id);
+                                config.login_generation = Some(generation);
+                                login.pending = Some(config);
+                                control.cancel.store(true, Ordering::SeqCst);
+                            }
+                        } else if let Some(tx) = control.park_commands.as_ref() {
+                            let _ = tx.send(WrathParkedCommand::Realm(realm));
+                        }
+                    }
+                    RealmRequest::Refresh => {
+                        let sent = control.park_commands.as_ref().is_some_and(|tx|
+                            tx.send(WrathParkedCommand::RefreshRealms).is_ok());
+                        if !sent {
+                            realm_lists.write(crate::net::RealmListMessage {
+                                realms: Vec::new(), failed: true,
+                            });
+                        }
+                    }
+                    RealmRequest::Close if !at_select => {
+                        control.cancel.store(true, Ordering::SeqCst);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
         };
         match request {
             CharRequest::Enumerate => {
@@ -1455,13 +1612,16 @@ fn wrath_pick_admission(
                     control.park_serve(false, WrathParkedCommand::Enter(guid));
                 }
             }
-            CharRequest::Create(_) | CharRequest::Delete(_) | CharRequest::Rename { .. } => {
-                warn!("wrath: the select screen's create, delete and rename asks are not wired to the wrath session; the graphical flow keeps the records the account holds");
+            CharRequest::Create(request) if at_select => {
+                control.park_serve(false, WrathParkedCommand::Create(request));
+            }
+            CharRequest::Delete(guid) if at_select => {
+                control.park_serve(false, WrathParkedCommand::Delete(guid));
             }
             CharRequest::Abandon => {
-                // The parked session's stop is app-owned (the shutdown edge owns the cancel);
-                // a select-screen Back is the stock run's park, not a Wrath flow.
+                control.cancel.store(true, Ordering::SeqCst);
             }
+            _ => {}
         }
     }
 }
@@ -3645,6 +3805,7 @@ fn scope_is_older(
 /// only path for Wrath gameplay replies; the stock 1.12 inbound channel is not used, so a queued
 /// old-world reply cannot overtake the transfer teardown.
 fn wrath_dispatch_events(world: &mut World) {
+    let login_generation = crate::net::LoginAbandon::now(world.get_resource::<crate::net::LoginAbandon>());
     let (current_epoch, current_world) = world
         .get_resource::<WrathWorldView>()
         .map_or((0, 0), |view| (view.session_epoch, view.world_generation));
@@ -3657,6 +3818,7 @@ fn wrath_dispatch_events(world: &mut World) {
 
     let mut deliver = Vec::with_capacity(tagged.len());
     for event in tagged {
+        if event.login_generation.is_some_and(|g| g != login_generation) { continue; }
         if event.force
             || (!ended
                 && !scope_is_older(
@@ -4993,16 +5155,15 @@ fn wrath_apply_world(world: &mut World) {
                         let applied = WrathAppliedCreateSpline(cs.id);
                         if world.get::<WrathAppliedCreateSpline>(entity) != Some(&applied) {
                             let create = benilla_protocol::CreateSpline {
-                                flags: cs.flags,
-                                facing_angle: cs.facing_angle,
-                                facing_target: cs.facing_target,
-                                facing_spot: cs.facing_spot,
+                                flying: cs.flags & 0x2000 != 0,
+                                cyclic: cs.flags & 0x80000 != 0,
+                                run_mode: remote.move_flags.is_none_or(|f| f & 0x100 == 0),
                                 time_passed_ms: cs.time_passed_ms,
                                 duration_ms: cs.duration_ms,
                                 id: cs.id,
                                 path: cs.path.clone(),
                             };
-                            if let Some(spline) = crate::net::motion::create_spline(&create, None) {
+                            if let Some(spline) = crate::net::motion::create_spline(create) {
                                 world.entity_mut(entity).insert((spline, applied));
                             } else {
                                 world.entity_mut(entity).insert(applied);
@@ -5074,16 +5235,15 @@ fn wrath_apply_world(world: &mut World) {
                 if *guid != player_guid {
                     if let Some(cs) = &remote.create_spline {
                         let create = benilla_protocol::CreateSpline {
-                            flags: cs.flags,
-                            facing_angle: cs.facing_angle,
-                            facing_target: cs.facing_target,
-                            facing_spot: cs.facing_spot,
+                            flying: cs.flags & 0x2000 != 0,
+                            cyclic: cs.flags & 0x80000 != 0,
+                            run_mode: remote.move_flags.is_none_or(|f| f & 0x100 == 0),
                             time_passed_ms: cs.time_passed_ms,
                             duration_ms: cs.duration_ms,
                             id: cs.id,
                             path: cs.path.clone(),
                         };
-                        if let Some(spline) = crate::net::motion::create_spline(&create, None) {
+                        if let Some(spline) = crate::net::motion::create_spline(create) {
                             entity.insert((spline, WrathAppliedCreateSpline(cs.id)));
                         } else {
                             entity.insert(WrathAppliedCreateSpline(cs.id));
@@ -5116,15 +5276,15 @@ fn wrath_apply_world(world: &mut World) {
             .map(|n| NetCommands(n.0.clone()))
         {
             if !unit_name_lookups.is_empty() {
-                if let Some(mut names) = world.get_resource_mut::<crate::net::NameCache>() {
+                if let Some(names) = world.get_resource::<crate::names::NameCache>() {
                     for (guid, fields) in &unit_name_lookups {
                         names.lookup_fields(*guid, fields, &net);
                     }
                 }
             }
             if !go_template_requests.is_empty() {
-                if let Some(mut go_templates) =
-                    world.get_resource_mut::<crate::net::GameObjectTemplates>()
+                if let Some(go_templates) =
+                    world.get_resource::<crate::go_templates::GameObjectTemplates>()
                 {
                     for (guid, fields) in &go_template_requests {
                         go_templates.request_at_create(*guid, fields, &net);
@@ -5626,11 +5786,48 @@ pub fn run_session_with_cancel(
         None => (None, false),
     };
 
-    let logon = benilla_protocol_wrath::logon::logon(&config.auth_addr, &config.account, &config.password)?;
-    let realm = logon
-        .realms
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("realm list is empty"))?;
+    let send_glue = |event| {
+        if let Some(sink) = events_out.as_ref() {
+            let _ = sink.send(WrathSessionEvent::forced(event).for_login(config.login_generation));
+        }
+    };
+    send_glue(SessionEvent::LoginStage { stage: benilla_protocol::LoginStage::Connecting });
+    let mut logon = benilla_protocol_wrath::logon::logon(&config.auth_addr, &config.account, &config.password)?;
+    if cancel.load(Ordering::SeqCst) { return Ok(()); }
+    send_glue(SessionEvent::LoginStage { stage: benilla_protocol::LoginStage::Handshaking });
+    let realm_view = |r: &benilla_protocol_wrath::auth::RealmInfo| benilla_protocol::RealmInfo {
+        name: r.name.clone(), address: r.address.clone(), population: r.population,
+        characters: r.characters, realm_type: u32::from(r.realm_type), flags: r.flags,
+        category: r.category, id: r.realm_id,
+    };
+    let publish_realms = |logon: &benilla_protocol_wrath::logon::Logon, failed| {
+        send_glue(SessionEvent::RealmList {
+            realms: logon.realms.iter().map(realm_view).collect(), failed,
+        });
+    };
+    let realm_id = if config.login_generation.is_some() {
+        publish_realms(&logon, false);
+        if let Some(id) = config.preferred_realm { id } else {
+            let input = parked.as_ref().ok_or_else(|| anyhow::anyhow!("login needs a parked session"))?;
+            loop {
+                if cancel.load(Ordering::SeqCst) { return Ok(()); }
+                match input.recv_timeout(Duration::from_millis(100)) {
+                    Ok(WrathParkedCommand::Realm(r)) if logon.realms.iter()
+                        .any(|v| v.realm_id == r.id && v.flags & 3 == 0) => break r.id,
+                    Ok(WrathParkedCommand::RefreshRealms) => {
+                        let failed = logon.refresh_realms().is_err();
+                        publish_realms(&logon, failed);
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return Ok(()),
+                    _ => {}
+                }
+            }
+        }
+    } else {
+        logon.realms.first().ok_or_else(|| anyhow::anyhow!("realm list is empty"))?.realm_id
+    };
+    let realm = logon.realms.iter().find(|r| r.realm_id == realm_id)
+        .ok_or_else(|| anyhow::anyhow!("selected realm is no longer available"))?.clone();
 
     let publisher_config = match &config.wm_token {
         Some(token) => {
@@ -5664,9 +5861,51 @@ pub fn run_session_with_cancel(
     let started = std::time::Instant::now();
 
     let (mut world, seed) =
-        benilla_protocol_wrath::world::WorldConnection::connect(&config.world_addr)?;
+        benilla_protocol_wrath::world::WorldConnection::connect(
+            if config.world_addr.is_empty() { &realm.address } else { &config.world_addr }
+        )?;
     world.stream_mut().set_read_timeout(Some(Duration::from_millis(200)))?;
+    if config.login_generation.is_some() {
+        send_glue(SessionEvent::LoginStage { stage: benilla_protocol::LoginStage::WorldConnected });
+    }
     world.auth_session(&logon.account, &logon.session_key, &seed, realm.realm_id as u32)?;
+    // auth_session sends the proof; only the server's AUTH_OK accepts the world link.
+    let mut auth_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if cancel.load(Ordering::SeqCst) { return Ok(()); }
+        anyhow::ensure!(Instant::now() < auth_deadline, "timeout waiting for world authentication");
+        match world.recv() {
+            Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_AUTH_RESPONSE => {
+                let code = *p.payload.first().ok_or_else(|| anyhow::anyhow!("empty auth response"))?;
+                if let Some(expansion) = p.payload.get(10) {
+                    // AuthHandler.cpp: billing fields precede the account expansion byte.
+                    feed.account_expansion.store(*expansion, Ordering::SeqCst);
+                }
+                if code == benilla_protocol_wrath::opcode::AUTH_OK { break; }
+                if code == 0x1b {
+                    // AuthHandler.cpp: initial queue includes billing; later updates are six bytes.
+                    let offset = if p.payload.len() >= 16 { 11 } else { 1 };
+                    let bytes = p.payload.get(offset..offset + 4)
+                        .ok_or_else(|| anyhow::anyhow!("truncated queue response"))?;
+                    send_glue(SessionEvent::LoginQueued {
+                        position: Some(u32::from_le_bytes(bytes.try_into()?)), realm: Some(realm.name.clone()),
+                    });
+                    auth_deadline = Instant::now() + Duration::from_secs(60);
+                } else {
+                    anyhow::bail!("world server refused authentication ({code:#04x})");
+                }
+            }
+            Ok(_) => {}
+            Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    feed.authenticated.store(true, Ordering::SeqCst);
+    if let Some(generation) = config.login_generation {
+        send_glue(SessionEvent::WorldAuthenticated {
+            realm: realm_view(&realm), epoch: session.epoch(), generation,
+        });
+    }
     session.note_player_login();
 
     struct Adapter<'a> {
@@ -5898,12 +6137,12 @@ pub fn run_session_with_cancel(
                 &session,
                 SessionEvent::CharacterList {
                     characters: roster_from(records),
-                    realm: None,
+                    realm: Some(realm_view(&realm)),
                     cause,
                     epoch: session.epoch(),
-                    generation: 0,
+                    generation: config.login_generation.unwrap_or(0),
                 },
-            ));
+            ).for_login(config.login_generation));
         }
     };
     // The parked session publishes the fresh roster as the reply the screen's ask ordered; the
@@ -5926,17 +6165,21 @@ pub fn run_session_with_cancel(
         // keep the parked link's own windows — bounded socket reads and one cancel edge, no
         // other deadline: the screen may sit as long as it wants, as the stock park does.
         let mut entered: Option<u64> = None;
+        let mut roster_mutation: Option<benilla_protocol::CharAction> = None;
+        let mut mutation_deadline: Option<Instant> = None;
         while entered.is_none() {
             if cancel.load(Ordering::SeqCst) {
                 return Ok(());
             }
+            anyhow::ensure!(!mutation_deadline.is_some_and(|d| Instant::now() >= d),
+                "timeout waiting for character action response");
             for request in parked.try_iter() {
                 match request {
                     WrathParkedCommand::Enumerate => {
                         world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
                     }
                     WrathParkedCommand::Enter(picked) => {
-                        if records.iter().any(|record| record.guid == picked) {
+                        if roster_mutation.is_none() && records.iter().any(|record| record.guid == picked) {
                             entered = Some(picked);
                         } else {
                             // A stale pick from a roster this session never saw (a screen
@@ -5947,6 +6190,25 @@ pub fn run_session_with_cancel(
                             );
                         }
                     }
+                    WrathParkedCommand::Create(request) if roster_mutation.is_none() => {
+                        // AC CharacterHandler::HandleCharCreateOpcode: name CString, eight
+                        // appearance/race/class bytes and outfit byte, identical to this encoder.
+                        world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_CREATE,
+                            &benilla_protocol::messages::char_create(&request))?;
+                        roster_mutation = Some(benilla_protocol::CharAction::Create);
+                        mutation_deadline = Some(Instant::now() + Duration::from_secs(30));
+                    }
+                    WrathParkedCommand::Delete(guid) if roster_mutation.is_none()
+                        && records.iter().any(|record| record.guid == guid) => {
+                        world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_DELETE, &guid.to_le_bytes())?;
+                        roster_mutation = Some(benilla_protocol::CharAction::Delete);
+                        mutation_deadline = Some(Instant::now() + Duration::from_secs(30));
+                    }
+                    WrathParkedCommand::RefreshRealms => {
+                        let failed = logon.refresh_realms().is_err();
+                        publish_realms(&logon, failed);
+                    }
+                    _ => {}
                 }
             }
             if entered.is_some() {
@@ -5956,6 +6218,25 @@ pub fn run_session_with_cancel(
                 Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_ENUM => {
                     records = benilla_protocol_wrath::gameplay::parse_char_enum(&p.payload)?;
                     publish_roster(&records, RosterCause::Asked);
+                }
+                Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_CREATE
+                    || p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_DELETE => {
+                    let action = if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_CREATE {
+                        benilla_protocol::CharAction::Create
+                    } else { benilla_protocol::CharAction::Delete };
+                    if roster_mutation != Some(action) { continue; }
+                    let &[raw] = p.payload.as_slice() else {
+                        anyhow::bail!("invalid character action reply length");
+                    };
+                    roster_mutation = None;
+                    mutation_deadline = None;
+                    let code = roster_status(action, raw);
+                    send_glue(SessionEvent::CharActionResult { action, code });
+                    // The roster changes only after the server's response and fresh enum.
+                    if (action == benilla_protocol::CharAction::Create && raw == 0x2f)
+                        || (action == benilla_protocol::CharAction::Delete && raw == 0x47) {
+                        world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
+                    }
                 }
                 Ok(_) => {}
                 Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}

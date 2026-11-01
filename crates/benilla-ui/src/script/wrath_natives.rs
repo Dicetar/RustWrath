@@ -341,6 +341,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wrath_review_contracts_keep_nil_attributes_refunds_and_action_targets() {
+        use crate::script::{ScriptCall, UiScript, UiTarget, UnitState};
+        let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        script.keep_calls();
+        script.set_unit("mouseover", Some(UnitState {
+            exists: true, has_object: true, guid: 0x77, ..Default::default()
+        }));
+        assert!(script.eval::<bool>(r#"
+            local frame = CreateFrame('Button')
+            frame:SetAttribute('type', 'spell')
+            frame:SetAttribute('shift-type*', 'item')
+            return frame:GetAttribute(nil, 'type', nil) == 'spell'
+               and frame:GetAttribute('shift-', 'type', nil) == 'item'
+               and select('#', GetContainerItemPurchaseInfo(0, 1)) == 0
+               and select('#', GetContainerItemPurchaseItem(0, 1, 1)) == 0
+        "#).unwrap());
+        script.run("UseAction(1, 'mouseover', 'LeftButton')").unwrap();
+        assert!(matches!(script.take_script_calls().as_slice(),
+            [ScriptCall::UseAction(press)] if press.target_guid == Some(0x77)));
+        script.run("UseAction(1, 'focus', 'LeftButton')").unwrap();
+        assert!(script.take_script_calls().is_empty());
+    }
     use super::*;
 
     /// The micro menu's achievement button reads this before it can update; without an

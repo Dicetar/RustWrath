@@ -240,6 +240,15 @@ pub(crate) const REGISTERED: &[Registered] = &[
     // rate (`0x884060`), above 1500 MHz on a current x86 part, so those hosts register "50". It is
     // shipped (`sound::output::MIX_AHEAD_MS` is the same number, and a test holds the two together).
     same("SoundBufferSize", "50").latched(),
+    // 3.3.5's sound panel reads this name (`OptionsPanelTemplates.lua:210`); the 1.12 table has no
+    // row and a missing CVar raises, so the panel's OnLoad leaves a modal error over the login
+    // fields. One output device is the honest answer here.
+    ours(
+        "Sound_OutputDriverIndex",
+        "0",
+        "3.3.5's sound panel reads it; without the row its OnLoad raises a modal error over the \
+         login fields",
+    ),
     // benilla's own, not a 1.12 CVar. Deviation: the reference clips at full scale and has no
     // headroom mechanism (its SFX-bus duck `0x457960` is a sidechain armed only by server-pushed
     // voice lines); benilla limits because every SFX is mastered to full scale and overlapping

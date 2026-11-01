@@ -55,7 +55,12 @@ impl WorldConnection {
     /// Connect and consume the opening `SMSG_AUTH_CHALLENGE` (plaintext), returning the 4-byte
     /// auth seed.
     pub fn connect(addr: &str) -> Result<(Self, [u8; 4])> {
-        let mut stream = TcpStream::connect(addr).with_context(|| format!("connecting to {addr}"))?;
+        use std::net::ToSocketAddrs;
+        let timeout = std::time::Duration::from_secs(10);
+        let mut stream = addr.to_socket_addrs()?.map(|a| TcpStream::connect_timeout(&a, timeout))
+            .find_map(Result::ok).with_context(|| format!("connecting to {addr}"))?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
         let head = read_exact(&mut stream, 4)?;
         let size = ((head[0] as usize) << 8 | head[1] as usize) - 2;
         let op = u16::from_le_bytes([head[2], head[3]]);
@@ -140,7 +145,7 @@ impl WorldConnection {
         let mut first = [0u8; 1];
         match self.stream.read(&mut first) {
             Ok(1) => {}
-            Ok(_) => return Err(anyhow::Error::new(Idle)),
+            Ok(_) => anyhow::bail!("world stream closed"),
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
                 return Err(anyhow::Error::new(Idle))
             }

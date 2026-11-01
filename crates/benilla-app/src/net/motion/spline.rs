@@ -208,7 +208,7 @@ pub(in crate::net) fn monster_move_spline(
 /// The [`Spline`] a unit is already riding in its create block, back-dated by
 /// [`CreateSpline::time_passed_ms`]; `None` for a degenerate path, a zero duration, a finished
 /// ride, or anything under `WOW_CREATE_SPLINE=off`.
-pub(in crate::net) fn create_spline(spline: CreateSpline) -> Option<Spline> {
+pub(crate) fn create_spline(spline: CreateSpline) -> Option<Spline> {
     if !create_spline_enabled()
         || spline.duration_ms == 0
         || spline.path.len() < 2

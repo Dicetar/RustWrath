@@ -631,6 +631,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        for (verb, maximum) in [("GetCVarMin", false), ("GetCVarMax", true)] {
+            lua.globals().set(verb, lua.create_function(move |lua, args: mlua::MultiValue| {
+                let name = cvar_arg(args.front()).ok_or_else(|| mlua::Error::runtime(format!("Usage: {verb}(\"cvar\")")))?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let key = name.to_ascii_lowercase();
+                if !model.cvars.contains_key(&key) { return Err(unknown_cvar(&name)); }
+                // 12340 0x004DDEA0 / 0x004DDF80. Shadow maximum needs a host capability
+                // projection; leave that limit absent until the renderer supplies it.
+                Ok(match key.as_str() {
+                    "farclip" => Some(if maximum { 1277.0 } else { 177.0 }),
+                    "extshadowquality" if !maximum => Some(0.0),
+                    _ => None,
+                })
+            })?)?;
+        }
         // Read the applied row, as GetCVar does; no default/pending value or second registry.
         // Behavioral reference: wowless/modules/cvars.lua C_CVar.GetCVarBool (string == "1").
         lua.globals().set("GetCVarBool", lua.create_function(|lua, args: mlua::MultiValue| {

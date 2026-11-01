@@ -48,6 +48,9 @@ pub struct GlueCharacter {
     pub zone: Option<String>,
     /// The race row's file string (`ChrRaces+0x3c`); empty without a row.
     pub file_string: String,
+    pub class_file_string: String,
+    /// 12340 character-select scene token, resolved from the race/class DBC rows.
+    pub background_model: String,
     /// `+0x102`.
     pub gender: u8,
     /// `+0xfc`: bit `0x2000` is a ghost.
@@ -437,6 +440,20 @@ fn arg(args: &MultiValue, i: usize) -> Value {
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
+    if model(lua).is_wrath() {
+        // 12340 Script_GetSelectBackgroundModel, 0x004E3620: DK uses its class scene,
+        // gnomes share Dwarf, trolls share Orc; an invalid index uses the Orc race row.
+        g.set("GetSelectBackgroundModel", lua.create_function(|lua, args: MultiValue| {
+            let index = number_arg(lua, arg(&args, 0), "Usage: GetSelectBackgroundModel(index)")?
+                .wrapping_sub(1);
+            let m = model(lua);
+            let name = usize::try_from(index).ok()
+                .and_then(|i| m.glue.roster.records.get(i))
+                .map(|r| r.character.background_model.as_str())
+                .unwrap_or_else(|| m.glue.create.race_file(2));
+            lua.create_string(name)
+        })?)?;
+    }
 
     // `0x4731c0`: a string or number (`0x6f3510`) or the usage error (`0x838720`); the global of
     // that name castable to the model type (`0x76c760`) becomes the frame (`0x472100`), else the
@@ -519,7 +536,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .ok()
                 .and_then(|i| m.glue.roster.records.get(i))
             else {
-                return Ok(MultiValue::from_vec(vec![
+                let mut values = vec![
                     Value::Nil,
                     Value::Nil,
                     Value::Nil,
@@ -528,11 +545,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     Value::Nil,
                     Value::Number(0.0),
                     Value::Nil,
-                ]));
+                ];
+                if m.is_wrath() {
+                    values.insert(6, Value::Nil);
+                    values.push(Value::Nil);
+                }
+                return Ok(MultiValue::from_vec(values));
             };
             let c = &record.character;
             let text = |s: &str| lua.create_string(s).map(Value::String);
-            Ok(MultiValue::from_vec(vec![
+            let mut values = vec![
                 text(&c.name)?,
                 text(&c.race)?,
                 text(&c.class)?,
@@ -544,7 +566,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 text(&c.file_string)?,
                 Value::Number(f64::from(c.gender)),
                 flag(c.flags & 0x2000 != 0),
-            ]))
+            ];
+            // 12340 CharacterSelect.lua: classFilename precedes gender; PCC is the tenth value.
+            if m.is_wrath() {
+                values.insert(6, text(&c.class_file_string)?);
+                values.push(Value::Nil);
+            }
+            Ok(MultiValue::from_vec(values))
         })?,
     )?;
 
@@ -729,6 +757,28 @@ mod tests {
     use super::*;
     use crate::script::UiScript;
 
+    #[test]
+    fn wrath_glue_screenshot_contracts() {
+        use crate::script::{GlueCreateCatalog, GlueCreateRace, UiTarget};
+        let mut s = UiScript::glue_with_target(UiTarget::Wrath335).unwrap();
+        s.set_glue_create_catalog(std::rc::Rc::new(GlueCreateCatalog {
+            races: vec![GlueCreateRace { id: 2, file: "Orc".into(), ..Default::default() }],
+            ..Default::default()
+        }));
+        let mut human = character(1, "Firna");
+        human.background_model = "Human".into();
+        s.load_glue_roster(vec![human]);
+        s.set_glue_account_expansion(1);
+        assert!(s.eval::<bool>(r#"
+            return IsStreamingTrial() == false and RealmListUpdateRate() == 5
+                and GetSelectBackgroundModel(1) == 'Human'
+                and GetSelectBackgroundModel(0) == 'Orc'
+                and GetAccountExpansionLevel() == 1
+        "#).unwrap());
+        s.run("SetPreferredInfo(1, true, false)").unwrap();
+        assert!(s.run("GetSelectBackgroundModel()").is_err());
+    }
+
     fn character(guid: u64, name: &str) -> GlueCharacter {
         GlueCharacter {
             guid,
@@ -738,6 +788,8 @@ mod tests {
             level: 12,
             zone: Some("Teldrassil".into()),
             file_string: "NightElf".into(),
+            class_file_string: "DRUID".into(),
+            background_model: "NightElf".into(),
             gender: 1,
             flags: 0,
             model: true,

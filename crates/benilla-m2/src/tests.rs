@@ -770,6 +770,28 @@ fn camera_record_fields_and_lookup_parse() {
 }
 
 #[test]
+fn wrath_camera_uses_its_header_stride_and_bases() {
+    let record = 0x150usize;
+    let mut b = vec![0u8; record + 0x64];
+    b[..4].copy_from_slice(b"MD20");
+    b[4..8].copy_from_slice(&264u32.to_le_bytes());
+    set_arr(&mut b, 0x110, 1, record as u32);
+    set_arr(&mut b, 0x118, 1, 0x140);
+    for (offset, value) in [(4, 0.8f32), (8, 1000.0), (12, 0.1),
+        (0x24, 10.0), (0x28, 20.0), (0x2c, 30.0),
+        (0x44, 40.0), (0x48, 50.0), (0x4c, 60.0)] {
+        b[record + offset..record + offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let cameras = parse_cameras(&b);
+    assert_eq!(cameras.len(), 1);
+    assert_eq!(cameras[0].position_base, [10.0, 20.0, 30.0]);
+    assert_eq!(cameras[0].target_base, [40.0, 50.0, 60.0]);
+    assert_eq!(parse_camera_lookup(&b), vec![0]);
+    b.pop();
+    assert!(parse_cameras(&b).is_empty(), "a partial record must not become a camera");
+}
+
+#[test]
 fn cubic_sampler_takes_all_four_interp_legs() {
     // At the midpoint, hand-computed from the bases in `M2Track::sample_ms`:
     //   step   → value[k0]                                              = 0

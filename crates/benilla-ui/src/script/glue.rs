@@ -103,6 +103,14 @@ impl VmKind {
 /// and `GetCursorPosition` (`0x46dad0`) is byte for byte the in-game `0x48b820`.
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
+    if lua.app_data_ref::<Model>().expect("model").is_wrath() {
+        // 12340 0x004DCBF0: client expansion is one-based (Wrath = 3).
+        g.set("GetClientExpansionLevel", lua.create_function(|_, ()| Ok(3))?)?;
+        // 0x004DDC20 reads the world connection's account entitlement, not the client version.
+        g.set("GetAccountExpansionLevel", lua.create_function(|lua, ()| {
+            Ok(lua.app_data_ref::<Model>().expect("model").glue.account_expansion)
+        })?)?;
+    }
     g.set(
         "GetScreenWidth",
         lua.create_function(|lua, ()| {

@@ -575,7 +575,9 @@ fn drive_loading_screen(
     if entered.read().next().is_some() && *state.get() != crate::client_state::ClientState::InWorld
     {
         let map = roster.as_ref().and_then(|r| r.pending_map());
-        screen.raise("world entry", true, map, now);
+        // Wrath publishes this edge after the self create and authoritative placement;
+        // unlike transfer pending, that admission has no later worldport snap to await.
+        screen.raise("world entry", !crate::wrath::selected_from_env(), map, now);
         // The tip rides this edge alone: the reference's setter `0x406630` has one caller, in
         // `CGlueMgr::EnterWorld`, which neither `SMSG_TRANSFER_PENDING` arm reaches.
         screen.tip_edge = Some(TipEdge::Pick);

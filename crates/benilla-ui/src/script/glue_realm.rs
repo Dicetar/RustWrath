@@ -540,6 +540,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
+    // 12340 0x004DE450: legacy SRP logon refreshes every five seconds (BNet uses four).
+    // This backend implements the legacy SRP connection.
+    g.set(
+        "RealmListUpdateRate",
+        lua.create_function(|_, ()| Ok(5.0))?,
+    )?;
     // `IsTournamentRealmCategory(category)` (`RealmWizard.lua:35`): the stock wizard asks it while
     // building the category rows. This Realm has no tournament categories, so nil is the answer
     // that keeps the ordinary rows visible; without the global the wizard's update dies on its

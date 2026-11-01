@@ -1742,6 +1742,7 @@ fn status_text(code: u8) -> (Text, Option<u8>) {
 /// The login engine's messages the manager reads, as one parameter.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct LoginNews<'w, 's> {
+    wrath: Option<Res<'w, crate::wrath::WrathControl>>,
     stages: MessageReader<'w, 's, LoginStageMessage>,
     failures: MessageReader<'w, 's, LoginFailedMessage>,
     queued: MessageReader<'w, 's, LoginQueuedMessage>,
@@ -1826,6 +1827,9 @@ pub(crate) fn drive_glue_mgr(
         // A glue VM the glue build did not seat ([`seat_glue_build`]) is seated here.
         let mut fresh_vm = false;
         if let Some(s) = script.as_deref_mut() {
+            if let Some(wrath) = news.wrath.as_deref() {
+                s.set_glue_account_expansion(wrath.account_expansion());
+            }
             if shared.get().vm != Some(s.session()) {
                 seat_glue(
                     &shared,
@@ -2187,6 +2191,13 @@ fn glue_character(c: &Character, names: &RosterNames) -> GlueCharacter {
         level: c.level,
         zone: names.areas.and_then(|a| a.name(c.zone)).map(str::to_string),
         file_string: text(names.create.and_then(|r| r.race_file(c.race))),
+        class_file_string: text(names.classes.and_then(|k| k.file(u32::from(c.class)))),
+        background_model: if c.class == 6 {
+            text(names.classes.and_then(|k| k.file(6)))
+        } else {
+            let race = match c.race { 7 => 3, 8 => 2, race => race };
+            text(names.create.and_then(|r| r.race_file(race)))
+        },
         gender: c.gender,
         flags: c.flags,
         // `0x5ec480`: the race row's display for the gender, then its model rows.

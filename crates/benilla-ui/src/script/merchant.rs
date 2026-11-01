@@ -15,6 +15,30 @@ use super::container::UiCursorMode;
 use super::cursor::CursorPayload;
 use super::Model;
 
+/// An item's extended cost from `ItemExtendedCost.dbc` (Wrath 3.3.5a): honor, arena points, and
+/// up to five item requirements (`WoW/Source/DB/Rec/ItemExtendedCostRec.h`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtendedCostView {
+    pub honor_points: u32,
+    pub arena_points: u32,
+    pub items: Vec<ExtendedCostItemView>,
+}
+
+impl ExtendedCostView {
+    pub fn has_cost(&self) -> bool {
+        self.honor_points > 0 || self.arena_points > 0 || !self.items.is_empty()
+    }
+}
+
+/// One token or item requirement of an extended cost row (`ItemExtendedCost.dbc`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtendedCostItemView {
+    pub item_id: u32,
+    pub count: u32,
+    pub texture: Option<String>,
+    pub link: Option<String>,
+}
+
 /// One vendor row, resolved by the app; its 1-based index is its place in [`MerchantState::items`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MerchantItem {
@@ -37,6 +61,8 @@ pub struct MerchantItem {
     /// The template's `stackable`, `GetMerchantItemMaxStack`'s answer for a row sold singly;
     /// `None` while in flight and on a buyback row.
     pub max_stack: Option<u32>,
+    /// Wrath 3.3.5a: extended cost (honor, arena points, item tokens).
+    pub extended_cost: Option<ExtendedCostView>,
 }
 
 /// An item template's tooltip stat head, resolved per row by the app, which `SetMerchantItem` and
@@ -240,6 +266,19 @@ fn invalid_tuple() -> Vec<Value> {
     ]
 }
 
+/// Wrath 12340 `GetMerchantItemInfo` invalid-index seven-tuple (`0x00584E10`, `MerchantFrame_Scripts.cpp:284-292`).
+fn invalid_tuple_wrath() -> Vec<Value> {
+    vec![
+        Value::Nil,
+        Value::Nil,
+        Value::Integer(0),
+        Value::Integer(1),
+        Value::Integer(0),
+        Value::Integer(1),
+        Value::Nil,
+    ]
+}
+
 /// The row `PickupMerchantItem(index)` grabs, read before its clear: `None` for each silent
 /// refusal, a non-number (`0x4fb7cb`; a numeric string passes), `index < 1` (`0x4fb7e1`),
 /// `index > count` (`0x4fb7e9`), no merchant (`0x4fb7f7`), a dead row (`0x4fb80b`), or the held
@@ -288,7 +327,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, index: Value| {
             // `is-number` else `Usage: GetMerchantItemInfo(index)` (`0x84dc48`, `0x4fb16b`).
             let index = binding_abi::index_arg(lua, index, "Usage: GetMerchantItemInfo(index)")?;
-            let (item, usable) = {
+            let (item, usable, is_wrath) = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 let item = model
                     .merchant
@@ -298,10 +337,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let usable = item
                     .as_ref()
                     .is_none_or(|it| super::item_stats::item_usable_by_id(&model, it.item_id));
-                (item, usable)
+                (item, usable, model.target == super::UiTarget::Wrath335)
             };
             let Some(it) = item else {
-                return Ok(MultiValue::from_vec(invalid_tuple()));
+                return Ok(MultiValue::from_vec(if is_wrath {
+                    invalid_tuple_wrath()
+                } else {
+                    invalid_tuple()
+                }));
             };
             let name = match &it.name {
                 Some(n) => Value::String(lua.create_string(n)?),
@@ -316,14 +359,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                         .unwrap_or(super::item_stats::MISSING_ITEM_ICON),
                 )?,
             );
-            Ok(MultiValue::from_vec(vec![
+            let mut returns = vec![
                 name,
                 texture,
                 Value::Integer(i64::from(it.price)),
                 Value::Integer(i64::from(it.quantity)),
                 Value::Integer(i64::from(it.num_available)),
                 usable_value(usable),
-            ]))
+            ];
+            if is_wrath {
+                let has_cost = it.extended_cost.as_ref().is_some_and(|c| c.has_cost());
+                returns.push(if has_cost {
+                    Value::Integer(1)
+                } else {
+                    Value::Nil
+                });
+            }
+            Ok(MultiValue::from_vec(returns))
         })?,
     )?;
 
@@ -363,6 +415,65 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 None => Ok(Value::Nil),
             }
         })?)?;
+
+        // 12340 MerchantFrame_Scripts.cpp:101-142: Script_GetMerchantItemCostInfo
+        g.set(
+            "GetMerchantItemCostInfo",
+            lua.create_function(|lua, index: Value| {
+                let index = binding_abi::index_arg(lua, index, "Usage: GetMerchantItemCostInfo(index)")?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let cost = model
+                    .merchant
+                    .as_ref()
+                    .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
+                    .and_then(|it| it.extended_cost.as_ref());
+                let (honor, arena, count) = match cost {
+                    Some(c) => (
+                        i64::from(c.honor_points),
+                        i64::from(c.arena_points),
+                        c.items.len() as i64,
+                    ),
+                    None => (0, 0, 0),
+                };
+                Ok(MultiValue::from_vec(vec![
+                    Value::Integer(honor),
+                    Value::Integer(arena),
+                    Value::Integer(count),
+                ]))
+            })?,
+        )?;
+
+        // 12340 MerchantFrame_Scripts.cpp:200-253: Script_GetMerchantItemCostItem
+        g.set(
+            "GetMerchantItemCostItem",
+            lua.create_function(|lua, (index, cost_index): (Value, Value)| {
+                let usage = "Usage: GetMerchantItemCostItem(index, itemIndex)";
+                let index = binding_abi::index_arg(lua, index, usage)?;
+                let cost_index = binding_abi::index_arg(lua, cost_index, usage)?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let cost_item = model
+                    .merchant
+                    .as_ref()
+                    .and_then(|m| index.checked_sub(1).and_then(|n| m.items.get(n)))
+                    .and_then(|it| it.extended_cost.as_ref())
+                    .and_then(|c| cost_index.checked_sub(1).and_then(|ci| c.items.get(ci)));
+                let Some(item) = cost_item else {
+                    return Ok(MultiValue::from_vec(vec![Value::Nil, Value::Integer(0)]));
+                };
+                let count = Value::Integer(i64::from(item.count));
+                match &item.texture {
+                    Some(tex) => {
+                        let texture = Value::String(lua.create_string(tex)?);
+                        let link = match &item.link {
+                            Some(l) => Value::String(lua.create_string(l)?),
+                            None => Value::Nil,
+                        };
+                        Ok(MultiValue::from_vec(vec![texture, count, link]))
+                    }
+                    None => Ok(MultiValue::from_vec(vec![Value::Nil, count])),
+                }
+            })?,
+        )?;
     }
 
     // GetMerchantItemMaxStack(index) (`0x4fb670`): the template's stack size, or 1 for a row sold
@@ -549,9 +660,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     g.set(
         "RepairAllItems",
-        lua.create_function(|lua, ()| {
+        lua.create_function(|lua, _guild_bank: Option<Value>| {
             // `0x4fbff0`: nothing, not even the purse test, unless the open merchant repairs
             // (`0x4fadb0`, `UNIT_NPC_FLAGS` bit 14).
+            // In 3.3.5a (12340 MerchantFrame_Scripts.cpp:683-747), RepairAllItems accepts an optional guildBank boolean.
             let repairs = lua
                 .app_data_ref::<Model>()
                 .expect("model app_data")
@@ -675,6 +787,7 @@ mod tests {
                     }),
                     link: Some("|cffffffff|Hitem:159:0:0:0|h[Refreshing Spring Water]|h|r".into()),
                     max_stack: Some(20),
+                    ..Default::default()
                 },
                 // In flight: the list arrived, its item template has not.
                 MerchantItem {
@@ -687,6 +800,7 @@ mod tests {
                     stats: None,
                     link: None,
                     max_stack: None, // in flight, like `name` above
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -1370,5 +1484,228 @@ mod tests {
             None,
             "the grab's ClearCursor cancels the wrap"
         );
+    }
+
+    #[test]
+    fn wrath_merchant_item_info_seven_tuple_and_extended_cost() {
+        use crate::script::{ExtendedCostItemView, ExtendedCostView, UiTarget};
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+
+        // 1. Invalid index returns 7 values: nil, nil, 0, 1, 0, 1, nil (WoW/Source/Ui/MerchantFrame_Scripts.cpp:284-292)
+        let invalid = s
+            .eval::<(
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                i64,
+                Option<i64>,
+                Option<i64>,
+            )>("return GetMerchantItemInfo(1)")
+            .unwrap();
+        assert_eq!(invalid, (None, None, 0, 1, 0, Some(1), None));
+
+        let mut state = stock();
+        // Row 1: normal item, no extended cost
+        // Row 3: extended cost with honor and tokens
+        state.items.push(MerchantItem {
+            name: Some("Deadly Gladiator's Pummeler".into()),
+            texture: Some("Interface\\Icons\\INV_Mace_105".into()),
+            price: 5000,
+            quantity: 1,
+            num_available: -1,
+            item_id: 42333,
+            extended_cost: Some(ExtendedCostView {
+                honor_points: 19000,
+                arena_points: 400,
+                items: vec![
+                    ExtendedCostItemView {
+                        item_id: 43228,
+                        count: 15,
+                        texture: Some("Interface\\Icons\\INV_BannerPVP_02".into()),
+                        link: Some(
+                            "|cffa335ee|Hitem:43228:0:0:0|h[Stone Keeper's Shard]|h|r".into(),
+                        ),
+                    },
+                    ExtendedCostItemView {
+                        item_id: 43307,
+                        count: 2,
+                        texture: None, // in flight
+                        link: None,
+                    },
+                ],
+            }),
+            ..Default::default()
+        });
+        s.set_merchant(Some(state));
+
+        // Row 1: 7th return is nil (no extended cost)
+        let (n1, _t1, _p1, _q1, _a1, u1, c1) = s
+            .eval::<(
+                String,
+                String,
+                i64,
+                i64,
+                i64,
+                Option<i64>,
+                Option<i64>,
+            )>("return GetMerchantItemInfo(1)")
+            .unwrap();
+        assert_eq!(n1, "Refreshing Spring Water");
+        assert_eq!(u1, Some(1));
+        assert_eq!(c1, None, "row 1 has no extended cost");
+
+        // Row 3: 7th return is 1 (has extended cost)
+        let (n3, _t3, _p3, _q3, _a3, u3, c3) = s
+            .eval::<(
+                String,
+                String,
+                i64,
+                i64,
+                i64,
+                Option<i64>,
+                Option<i64>,
+            )>("return GetMerchantItemInfo(3)")
+            .unwrap();
+        assert_eq!(n3, "Deadly Gladiator's Pummeler");
+        assert_eq!(u3, Some(1));
+        assert_eq!(c3, Some(1), "row 3 has extended cost");
+
+        // Out of range in Wrath: 7-tuple
+        let out_of_range = s
+            .eval::<(
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                i64,
+                Option<i64>,
+                Option<i64>,
+            )>("return GetMerchantItemInfo(99)")
+            .unwrap();
+        assert_eq!(out_of_range, (None, None, 0, 1, 0, Some(1), None));
+    }
+
+    #[test]
+    fn wrath_merchant_item_cost_info_and_item_queries() {
+        use crate::script::{ExtendedCostItemView, ExtendedCostView, UiTarget};
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+
+        // No vendor open: GetMerchantItemCostInfo returns (0, 0, 0)
+        let (h0, a0, c0) = s
+            .eval::<(i64, i64, i64)>("return GetMerchantItemCostInfo(1)")
+            .unwrap();
+        assert_eq!((h0, a0, c0), (0, 0, 0));
+
+        // GetMerchantItemCostItem returns (nil, 0)
+        let (t0, cnt0) = s
+            .eval::<(Option<String>, i64)>("return GetMerchantItemCostItem(1, 1)")
+            .unwrap();
+        assert_eq!((t0, cnt0), (None, 0));
+
+        let mut state = stock();
+        state.items.push(MerchantItem {
+            name: Some("Deadly Gladiator's Pummeler".into()),
+            texture: Some("Interface\\Icons\\INV_Mace_105".into()),
+            price: 5000,
+            quantity: 1,
+            num_available: -1,
+            item_id: 42333,
+            extended_cost: Some(ExtendedCostView {
+                honor_points: 19000,
+                arena_points: 400,
+                items: vec![
+                    ExtendedCostItemView {
+                        item_id: 43228,
+                        count: 15,
+                        texture: Some("Interface\\Icons\\INV_BannerPVP_02".into()),
+                        link: Some(
+                            "|cffa335ee|Hitem:43228:0:0:0|h[Stone Keeper's Shard]|h|r".into(),
+                        ),
+                    },
+                    ExtendedCostItemView {
+                        item_id: 43307,
+                        count: 2,
+                        texture: None, // in flight template
+                        link: None,
+                    },
+                ],
+            }),
+            ..Default::default()
+        });
+        s.set_merchant(Some(state));
+
+        // Row 1 (no extended cost): returns (0, 0, 0)
+        let (h1, a1, c1) = s
+            .eval::<(i64, i64, i64)>("return GetMerchantItemCostInfo(1)")
+            .unwrap();
+        assert_eq!((h1, a1, c1), (0, 0, 0));
+
+        // Row 3: returns (19000, 400, 2)
+        let (h3, a3, c3) = s
+            .eval::<(i64, i64, i64)>("return GetMerchantItemCostInfo(3)")
+            .unwrap();
+        assert_eq!(h3, 19000);
+        assert_eq!(a3, 400);
+        assert_eq!(c3, 2);
+
+        // Row 3, token 1: cached item returns (texture, count, link)
+        let (tex1, cnt1, link1) = s
+            .eval::<(String, i64, String)>("return GetMerchantItemCostItem(3, 1)")
+            .unwrap();
+        assert_eq!(tex1, "Interface\\Icons\\INV_BannerPVP_02");
+        assert_eq!(cnt1, 15);
+        assert_eq!(
+            link1,
+            "|cffa335ee|Hitem:43228:0:0:0|h[Stone Keeper's Shard]|h|r"
+        );
+
+        // Row 3, token 2: in-flight item returns (nil, count)
+        let (tex2, cnt2) = s
+            .eval::<(Option<String>, i64)>("return GetMerchantItemCostItem(3, 2)")
+            .unwrap();
+        assert_eq!(tex2, None);
+        assert_eq!(cnt2, 2);
+
+        // Row 3, token 3: out of bounds returns (nil, 0)
+        let (tex3, cnt3) = s
+            .eval::<(Option<String>, i64)>("return GetMerchantItemCostItem(3, 3)")
+            .unwrap();
+        assert_eq!((tex3, cnt3), (None, 0));
+
+        // Usage errors match 12340 reference
+        let err1 = s
+            .eval::<()>("GetMerchantItemCostInfo('bad')")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err1.contains("Usage: GetMerchantItemCostInfo(index)"),
+            "{err1}"
+        );
+
+        let err2 = s
+            .eval::<()>("GetMerchantItemCostItem('bad', 1)")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err2.contains("Usage: GetMerchantItemCostItem(index, itemIndex)"),
+            "{err2}"
+        );
+    }
+
+    #[test]
+    fn repair_all_items_accepts_guild_bank_arg() {
+        use crate::script::UiTarget;
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.keep_calls();
+        let mut state = stock();
+        state.can_repair = true;
+        s.set_merchant(Some(state));
+        s.set_repair_all_cost(500);
+
+        // Accepts 0, 1, or boolean arg without error
+        s.run("RepairAllItems(1)").unwrap();
+        s.run("RepairAllItems(false)").unwrap();
+        s.run("RepairAllItems()").unwrap();
     }
 }

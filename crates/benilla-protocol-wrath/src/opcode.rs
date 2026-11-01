@@ -3,6 +3,10 @@
 #![allow(dead_code)]
 
 pub const CMSG_CHAR_ENUM: u32 = 0x037;
+pub const CMSG_CHAR_CREATE: u32 = 0x036;
+pub const CMSG_CHAR_DELETE: u32 = 0x038;
+pub const SMSG_CHAR_CREATE: u16 = 0x03A;
+pub const SMSG_CHAR_DELETE: u16 = 0x03C;
 pub const SMSG_CHAR_ENUM: u16 = 0x03B;
 pub const CMSG_PLAYER_LOGIN: u32 = 0x03D;
 pub const SMSG_LOGIN_SETTIMESPEED: u16 = 0x042;

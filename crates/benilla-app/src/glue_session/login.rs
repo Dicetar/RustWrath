@@ -231,7 +231,7 @@ pub(crate) fn drive_policy(
     // can change, as [`crate::run_mode::fatal_when_driverless`] decides.
     if !attempt.intent.env_read {
         attempt.intent.env_read = true;
-        if crate::run_mode::env_login() {
+        if crate::run_mode::env_login() && !crate::wrath::interactive_from_env() {
             let user = std::env::var("WOW_USER").unwrap_or_default();
             let pass = std::env::var("WOW_PASS").unwrap_or_default();
             // A vmangos login kicks whoever holds the account, so the automated path logs in
