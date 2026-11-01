@@ -1741,6 +1741,7 @@ mod tests {
         };
         let mut accepted = crate::cvars::Cvars::with_value("readEULA", "1");
         accepted.set("readTOS", "1");
+        accepted.set("readTerminationWithoutNotice", "1");
         assert_eq!(
             screens(accepted),
             (false, true, true),
@@ -1776,6 +1777,7 @@ mod tests {
         setup_script(&mut world);
         let seeded = [
             accepted,
+            NoticeState::default(),
             NoticeState::default(),
             NoticeState::default(),
             NoticeState::default(),

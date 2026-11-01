@@ -13,7 +13,7 @@ fn glue_on(screen: GlueScreen) -> UiScript {
         accepted: true,
         show_notice: false,
     };
-    for notice in [GlueNotice::Eula, GlueNotice::Tos] {
+    for notice in [GlueNotice::Eula, GlueNotice::Tos, GlueNotice::TerminationWithoutNotice] {
         s.set_glue_notice(notice, accepted);
     }
     let _ = load_glue(&mut s);

@@ -54,7 +54,7 @@ pub(super) fn login_form_up(vm: StockVm) -> bool {
 /// turn (`TOSAccept`'s `OnClick`, then `AccountLogin_ShowUserAgreements`).
 pub(super) fn press_accept_agreements(vm: StockVm) {
     vm.press(
-        "AcceptEULA() AcceptTOS() AcceptScanning() AcceptContest() \
+        "AcceptEULA() AcceptTOS() AcceptScanning() AcceptContest() AcceptTerminationWithoutNotice() \
          AccountLogin_ShowUserAgreements()",
     );
 }

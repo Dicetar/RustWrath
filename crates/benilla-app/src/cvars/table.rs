@@ -864,4 +864,35 @@ pub(crate) const REGISTERED: &[Registered] = &[
     same("readEULA", "0"),
     same("readScanning", "0"),
     same("readContest", "0"),
+    // 3.3.5a 12340 client CVars
+    ours(
+        "readTerminationWithoutNotice",
+        "0",
+        "3.3.5a 12340 agreement CVar: Status of the Termination without Notice notice",
+    ),
+    ours(
+        "showToolsUI",
+        "-1",
+        "3.3.5a 12340 launcher display CVar: Display the launcher when starting the game",
+    ),
+    ours(
+        "accountList",
+        "",
+        "3.3.5a 12340 saved account list: List of wow accounts for saved Blizzard account",
+    ),
+    ours(
+        "g_accountUsesToken",
+        "0",
+        "3.3.5a 12340 token authenticator state: Saved whether uses authenticator",
+    ),
+    ours(
+        "converted",
+        "0",
+        "3.3.5a 12340 trial conversion state: Trial to Retail",
+    ),
+    ours(
+        "accounttype",
+        "",
+        "3.3.5a 12340 account type",
+    ),
 ];

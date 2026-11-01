@@ -1781,8 +1781,8 @@ pub(crate) struct GlueAsks<'w> {
 /// The four agreements' states off the CVar registry: the read `0x46a400` makes at `0x402b36`,
 /// before the first glue screen is set (`0x402b65`), so a returning player's login screen never
 /// sees them unaccepted.
-pub(crate) fn read_agreements(cvars: &crate::cvars::Cvars) -> [NoticeState; 4] {
-    let mut n = [NoticeState::default(); 4];
+pub(crate) fn read_agreements(cvars: &crate::cvars::Cvars) -> [NoticeState; 5] {
+    let mut n = [NoticeState::default(); 5];
     for notice in GlueNotice::ALL {
         if let Some(value) = cvars.get(notice.cvar()) {
             n[notice as usize] = NoticeState::from_cvar(value);
