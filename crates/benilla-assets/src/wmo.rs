@@ -9,9 +9,9 @@ use std::sync::Arc;
 use benilla_formats::{
     accumulate_wmo_group_camera_collision, accumulate_wmo_group_camera_only_collision,
     accumulate_wmo_group_collision, parse_wmo_lights, parse_wmo_root, wmo_group_doodad_refs,
-    wmo_group_footprint_tris, wmo_group_header, wmo_group_light_refs, wmo_group_liquid_mesh,
-    wmo_group_submeshes, CollisionMesh, FootprintTris, LiquidMesh, WmoDoodad, WmoDoodadSet, WmoFog,
-    WmoGroupInfo, WmoLight, WmoPortalInfo, WmoPortalRef,
+    wmo_group_footprint_tris, wmo_group_header, wmo_group_light_refs,
+    wmo_group_liquid_mesh_for_root, wmo_group_submeshes, CollisionMesh, FootprintTris, LiquidMesh,
+    WmoDoodad, WmoDoodadSet, WmoFog, WmoGroupInfo, WmoLight, WmoPortalInfo, WmoPortalRef,
 };
 use bevy::asset::io::Reader;
 use bevy::asset::{Asset, AssetLoader, LoadContext};
@@ -431,7 +431,7 @@ impl AssetLoader for WmoModelLoader {
                 nav.ref_count = h.portal_ref_count;
                 nav.area_table_id = h.area_table_id;
                 nav.fog_indices = h.fog_indices;
-                nav.group_liquid = h.group_liquid;
+                nav.group_liquid = root.resolve_group_liquid(h.group_liquid, h.flags);
             }
             // One walking gather feeds both the per-group faces and the flat collider.
             let mut gpos: Vec<[f32; 3]> = Vec::new();
@@ -477,7 +477,7 @@ impl AssetLoader for WmoModelLoader {
                 *slot = wmo_group_footprint_tris(&gbytes);
             }
             if let Some(slot) = group_liquids.get_mut(gi as usize) {
-                *slot = wmo_group_liquid_mesh(&gbytes);
+                *slot = wmo_group_liquid_mesh_for_root(&gbytes, &root);
             }
             for sub in subs {
                 // Lowercased: Bevy's loader lookup is case-sensitive, and an uppercase `.BLP` falls

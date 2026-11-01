@@ -365,6 +365,7 @@ pub struct WrathEntity {
     pub unit_flags: Option<u32>,
     pub mount_display_id: Option<u32>,
     pub bytes_1: Option<u32>,
+    pub bytes_2: Option<u32>,
     pub npc_flags: Option<u32>,
     pub dynamic_flags: Option<u32>,
     /// `UNIT_FIELD_TARGET`; absent when the reducer has not observed both GUID words.
@@ -2304,13 +2305,27 @@ fn translate_gameplay(
             ammo_display_id,
             item_caster,
             ..
-        } => vec![SessionEvent::SpellGo {
-            caster,
-            spell_id,
-            cast_flags: vanilla_cast_flags(cast_flags, true),
-            target: targets.unit,
-            hits,
-            misses: misses
+        } => {
+            let mut out = Vec::with_capacity(2);
+            // 3.3.5a replaced 1.12 `SMSG_CAST_RESULT` (`0x130`, sent on both success and failure)
+            // with failure-only `SMSG_CAST_FAILED` (`0x130`); a successful self cast goes straight
+            // to `SMSG_SPELL_GO` (`0x132`), so synthesize the success `CastResult` ahead of the GO
+            // to pop `PendingCast` (`spell/net.rs:1025`) and chain `modalNextSpell`.
+            if caster == self_guid {
+                out.push(SessionEvent::CastResult {
+                    spell_id,
+                    success: true,
+                    reason: None,
+                    arg: None,
+                });
+            }
+            out.push(SessionEvent::SpellGo {
+                caster,
+                spell_id,
+                cast_flags: vanilla_cast_flags(cast_flags, true),
+                target: targets.unit,
+                hits,
+                misses: misses
                 .into_iter()
                 .map(|(target, info, reflect_result)| {
                     benilla_protocol::messages::SpellGoMiss {
@@ -2320,14 +2335,16 @@ fn translate_gameplay(
                     }
                 })
                 .collect(),
-            go_target: targets.gameobject,
-            target_mask: vanilla_target_mask(targets.mask),
-            source: targets.source,
-            dest: targets.dest,
-            ammo_display_id,
-            item_caster,
-            unit_caster: caster,
-        }],
+                go_target: targets.gameobject,
+                target_mask: vanilla_target_mask(targets.mask),
+                source: targets.source,
+                dest: targets.dest,
+                ammo_display_id,
+                item_caster,
+                unit_caster: caster,
+            });
+            out
+        }
         WrathGameplayEvent::InitialSpells {
             spells,
             cooldowns,
@@ -4463,6 +4480,18 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(mut stand) = world.get_resource_mut::<crate::player::StandPending>() {
             *stand = crate::player::StandPending::default();
         }
+        if let Some(mut pending) = world.get_resource_mut::<crate::spell::PendingCast>() {
+            *pending = crate::spell::PendingCast::default();
+        }
+        if let Some(mut queued) = world.get_resource_mut::<crate::spell::QueuedMeleeSpell>() {
+            *queued = crate::spell::QueuedMeleeSpell::default();
+        }
+        if let Some(mut channel) = world.get_resource_mut::<crate::spell::ActiveChannel>() {
+            *channel = crate::spell::ActiveChannel::default();
+        }
+        if let Some(mut repeat) = world.get_resource_mut::<crate::spell::AutoRepeatActive>() {
+            *repeat = crate::spell::AutoRepeatActive::default();
+        }
         if let Some(input) = world.get_resource::<WrathInput>() {
             if let Ok(mut queue) = input.0.lock() {
                 queue.clear();
@@ -4545,8 +4574,19 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(mount) = remote.mount_display_id {
             pairs.push((133, mount));
         }
-        if let Some(bytes) = remote.bytes_1 {
-            pairs.push((138, bytes));
+        // 12340 moves `ShapeshiftForm` to `UNIT_FIELD_BYTES_2[3]` (`Unit_C.cpp:6652`) and shifts
+        // `VisFlags` to `UNIT_FIELD_BYTES_1[2]` (`Unit_C.cpp:5128`). Synthesize the 1.12
+        // `FIELD_UNIT_BYTES_1` (`138`: `[stand_state, pet_talents, shapeshift_form, vis_flags]`)
+        // and project `UNIT_FIELD_BYTES_2` onto `FIELD_UNIT_BYTES_2` (`164`: `[sheath_state, ...]`).
+        if remote.bytes_1.is_some() || remote.bytes_2.is_some() {
+            let b1 = remote.bytes_1.unwrap_or(0);
+            let b2 = remote.bytes_2.unwrap_or(0);
+            let vanilla_bytes_1 =
+                (b1 & 0x0000_ffff) | ((b2 >> 24) << 16) | (((b1 >> 16) & 0xff) << 24);
+            pairs.push((138, vanilla_bytes_1));
+        }
+        if let Some(bytes_2) = remote.bytes_2 {
+            pairs.push((164, bytes_2));
         }
         if let Some(flags) = remote.npc_flags {
             pairs.push((147, vanilla_npc_flags(flags)));
@@ -4710,6 +4750,16 @@ fn wrath_apply_world(world: &mut World) {
                         });
                     }
                 }
+                let old_bytes_1 = old.as_ref().and_then(|f| f.get_u32(138));
+                let new_bytes_1 = world
+                    .get::<ObjectStore>(entity)
+                    .and_then(|s| s.0.get_u32(138));
+                let old_bytes_2 = old.as_ref().and_then(|f| f.get_u32(164));
+                let new_bytes_2 = world
+                    .get::<ObjectStore>(entity)
+                    .and_then(|s| s.0.get_u32(164));
+                let old_unit_flags = old.as_ref().map(benilla_protocol::ObjectFields::unit_flags);
+                let new_unit_flags = remote.unit_flags.unwrap_or(0);
                 if old_health != remote.health {
                     let _ = world.write_message(FieldChanged {
                         at: crate::lanes::stamp(),
@@ -4730,6 +4780,61 @@ fn wrath_apply_world(world: &mut World) {
                         index: 28,
                         old: old_max.unwrap_or(0),
                         new: remote.max_health.unwrap_or(0),
+                    });
+                }
+                if old_unit_flags != Some(new_unit_flags) && remote.unit_flags.is_some() {
+                    let prev_flags = old_unit_flags.unwrap_or(0);
+                    let _ = world.write_message(FieldChanged {
+                        at: crate::lanes::stamp(),
+                        entity,
+                        guid: *guid,
+                        kind: object_type,
+                        index: 46,
+                        old: prev_flags,
+                        new: new_unit_flags,
+                    });
+                    if *guid == player_guid && (prev_flags ^ new_unit_flags) & 0x8_0000 != 0 {
+                        if let Some(mut notices) =
+                            world.get_resource_mut::<crate::field_watch::NoticeLane>()
+                        {
+                            let id = if new_unit_flags & 0x8_0000 != 0 {
+                                crate::field_watch::id::PLAYER_REGEN_DISABLED
+                            } else {
+                                crate::field_watch::id::PLAYER_REGEN_ENABLED
+                            };
+                            notices.write(crate::field_watch::FieldNotice::Global { id });
+                        }
+                    }
+                }
+                if old_bytes_1 != new_bytes_1 {
+                    let prev = old_bytes_1.unwrap_or(0);
+                    let next = new_bytes_1.unwrap_or(0);
+                    let _ = world.write_message(FieldChanged {
+                        at: crate::lanes::stamp(),
+                        entity,
+                        guid: *guid,
+                        kind: object_type,
+                        index: 138,
+                        old: prev,
+                        new: next,
+                    });
+                    if *guid == player_guid && (prev ^ next) & 0x00ff_0000 != 0 {
+                        if let Some(mut notices) =
+                            world.get_resource_mut::<crate::field_watch::NoticeLane>()
+                        {
+                            notices.write(crate::field_watch::FieldNotice::Shapeshift);
+                        }
+                    }
+                }
+                if old_bytes_2 != new_bytes_2 {
+                    let _ = world.write_message(FieldChanged {
+                        at: crate::lanes::stamp(),
+                        entity,
+                        guid: *guid,
+                        kind: object_type,
+                        index: 164,
+                        old: old_bytes_2.unwrap_or(0),
+                        new: new_bytes_2.unwrap_or(0),
                     });
                 }
                 if kind == EntityKind::Player {
@@ -5963,6 +6068,7 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 unit_flags: entry.field(fields::UNIT_FIELD_FLAGS),
                 mount_display_id: entry.field(fields::UNIT_FIELD_MOUNTDISPLAYID),
                 bytes_1: entry.field(fields::UNIT_FIELD_BYTES_1),
+                bytes_2: entry.field(fields::UNIT_FIELD_BYTES_2),
                 npc_flags: entry.field(fields::UNIT_NPC_FLAGS),
                 dynamic_flags: entry.field(fields::UNIT_DYNAMIC_FLAGS),
                 target: entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0),
@@ -6132,6 +6238,7 @@ mod command_tap_tests {
                 unit_flags: None,
                 mount_display_id: None,
                 bytes_1: None,
+                bytes_2: None,
                 npc_flags: None,
                 dynamic_flags: None,
                 target: None,

@@ -327,6 +327,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::MultiValue::new()))?,
     )?;
 
+    super::input_verbs::install_wrath(lua)?;
+
     Ok(())
 }
 
@@ -397,6 +399,51 @@ mod tests {
                 .as_deref(),
             Some("SHIFT"),
             "GetModifiedClick answers the same table"
+        );
+    }
+
+    /// 3.3.5a `Bindings.xml` maps `JUMP` to `JumpOrAscendStart`/`AscendStop`, `SITORSTAND` to
+    /// `SitStandOrDescendStart`/`DescendStop`, and `MOVEANDSTEER` to
+    /// `MoveAndSteerStart`/`MoveAndSteerStop`.
+    #[test]
+    fn wrath_movement_and_posture_bindings_queue_behind_the_movement_gate() {
+        use crate::script::calls::ScriptCall;
+        use crate::script::input_verbs::{BindingInput, FiredInput, HeldInput, PostureCall};
+
+        let mut script = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335)
+            .expect("VM");
+        script.keep_calls();
+        script
+            .run("JumpOrAscendStart() AscendStop() DescendStop() MoveAndSteerStart() MoveAndSteerStop()")
+            .unwrap();
+        assert!(
+            script.take_binding_input().is_empty(),
+            "movement verbs stay gated outside a binding body"
+        );
+
+        script
+            .run_binding(
+                "JumpOrAscendStart() AscendStop() SitStandOrDescendStart() DescendStop() \
+                 MoveAndSteerStart() MoveAndSteerStop()",
+            )
+            .unwrap();
+        assert_eq!(
+            script.take_binding_input(),
+            vec![
+                BindingInput::Start(HeldInput::PitchUp),
+                BindingInput::Fire(FiredInput::Jump),
+                BindingInput::Stop(HeldInput::PitchUp),
+                BindingInput::Start(HeldInput::PitchDown),
+                BindingInput::Stop(HeldInput::PitchDown),
+                BindingInput::Start(HeldInput::CameraOrSelectOrMove),
+                BindingInput::Start(HeldInput::TurnOrAction),
+                BindingInput::Stop(HeldInput::CameraOrSelectOrMove),
+                BindingInput::Stop(HeldInput::TurnOrAction),
+            ]
+        );
+        assert_eq!(
+            script.take_calls_like(&ScriptCall::Posture(PostureCall::SitOrStand)),
+            1
         );
     }
 }

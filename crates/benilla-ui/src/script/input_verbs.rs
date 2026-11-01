@@ -438,6 +438,91 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Register the 3.3.5a `Bindings.xml` movement and posture verbs from 12340
+/// `InputControl_Scripts.cpp` (`0x00AD1938`) and `GameUI_Scripts.cpp` (`0x0051B1D0`).
+pub(super) fn install_wrath(lua: &Lua) -> mlua::Result<()> {
+    let g = lua.globals();
+
+    // `JumpOrAscendStart` (`0x005FBF80`, `InputControl_Scripts.cpp:23`): opens on
+    // `CGGameUI::CanPerformAction(0)` (`Tag::MOVEMENT`), sets `INPUT_ASCEND_PLAYER_KEY`
+    // (`HeldInput::PitchUp`), and calls `TryJumpOrAscend` (`FiredInput::Jump`).
+    g.set(
+        "JumpOrAscendStart",
+        lua.create_function(|lua, _: MultiValue| {
+            if gate(lua) {
+                push(lua, BindingInput::Start(HeldInput::PitchUp));
+                push(lua, BindingInput::Fire(FiredInput::Jump));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // `AscendStop` (`0x005FC0A0`, `InputControl_Scripts.cpp:58`): clears `INPUT_ASCEND_PLAYER_KEY`
+    // behind `CGGameUI::CanPerformAction(0)`.
+    g.set(
+        "AscendStop",
+        lua.create_function(|lua, _: MultiValue| {
+            if gate(lua) {
+                push(lua, BindingInput::Stop(HeldInput::PitchUp));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // `SitStandOrDescendStart` (`0x0051B1D0`, `GameUI_Scripts.cpp:3048`): calls `DescendStart()`
+    // (`0x005FA8A0`, which sets `INPUT_DESCEND_PLAYER_KEY` behind `CanPerformAction(0)`) and
+    // toggles the active player's stand state between sitting and standing.
+    g.set(
+        "SitStandOrDescendStart",
+        lua.create_function(|lua, _: MultiValue| {
+            if gate(lua) {
+                push(lua, BindingInput::Start(HeldInput::PitchDown));
+            }
+            push_call(lua, ScriptCall::Posture(PostureCall::SitOrStand))
+        })?,
+    )?;
+
+    // `DescendStop` (`0x005FC140`, `InputControl_Scripts.cpp:70`): clears
+    // `INPUT_DESCEND_PLAYER_KEY` behind `CGGameUI::CanPerformAction(0)`.
+    g.set(
+        "DescendStop",
+        lua.create_function(|lua, _: MultiValue| {
+            if gate(lua) {
+                push(lua, BindingInput::Stop(HeldInput::PitchDown));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // `MoveAndSteerStart` (`0x005FC780`, `InputControl_Scripts.cpp:503`) and `MoveAndSteerStop`
+    // (`0x005FC840`, `InputControl_Scripts.cpp:543`): the 3.3.5a `MOVEANDSTEER` binding's C
+    // replacements for pressing/releasing both `INPUT_TURN_CAMERA` and `INPUT_TURN_PLAYER`.
+    g.set(
+        "MoveAndSteerStart",
+        lua.create_function(|lua, _: MultiValue| {
+            if gate(lua) {
+                push(lua, BindingInput::Start(HeldInput::CameraOrSelectOrMove));
+                push(lua, BindingInput::Start(HeldInput::TurnOrAction));
+            }
+            Ok(())
+        })?,
+    )?;
+    g.set(
+        "MoveAndSteerStop",
+        lua.create_function(|lua, _: MultiValue| {
+            if gate(lua) {
+                push(lua, BindingInput::Stop(HeldInput::CameraOrSelectOrMove));
+                push_look(lua, LookCall::MouseRelease { sticky: false });
+                push(lua, BindingInput::Stop(HeldInput::TurnOrAction));
+                push_look(lua, LookCall::MouseRelease { sticky: false });
+            }
+            Ok(())
+        })?,
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

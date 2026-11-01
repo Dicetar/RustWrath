@@ -94,6 +94,7 @@ fn poll(time: Res<Time>, mut runtime: ResMut<Runtime>) {
 fn apply_pose(
     mut runtime: ResMut<Runtime>,
     time: Res<Time>,
+    roots_changed: Query<(), Or<(Changed<Transform>, Changed<GlobalTransform>)>>,
     mut rigs: Query<(Entity, &mut RigPose, Has<HotpatchProbeTarget>), Without<AnimParked>>,
 ) {
     if !runtime.host.has_module() {
@@ -105,7 +106,11 @@ fn apply_pose(
     runtime.entities.clear();
     runtime.sample = None;
     for (entity, mut rig, selected) in &mut rigs {
-        if !rig.pose_dirty && !runtime.refresh {
+        if !rig.pose_dirty
+            && !runtime.refresh
+            && !rig.has_billboard
+            && !roots_changed.contains(rig.joints_root)
+        {
             continue;
         }
         // Use the same real bind-local sanitation as composition before giving a module input.

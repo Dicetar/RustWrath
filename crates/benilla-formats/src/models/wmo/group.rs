@@ -199,6 +199,17 @@ pub fn wmo_group_liquid_mesh(group_bytes: &[u8]) -> Option<LiquidMesh> {
     build_wmo_liquid_mesh(&lq, group.group_liquid)
 }
 
+/// [`wmo_group_liquid_mesh`] resolved against the owning [`WmoRoot`]'s `MOHD.flags & 0x4`
+/// (`use_liquid_type_dbc_id`, 12340 `CMapObjGroup::Create` `0x007D82E0`).
+pub fn wmo_group_liquid_mesh_for_root(group_bytes: &[u8], root: &WmoRoot) -> Option<LiquidMesh> {
+    let Ok(ParsedWmo::Group(group)) = parse_wmo(&mut Cursor::new(group_bytes)) else {
+        return None;
+    };
+    let lq = group.liquid?;
+    let resolved = root.resolve_group_liquid(group.group_liquid, group.flags);
+    build_wmo_liquid_mesh(&lq, resolved)
+}
+
 /// The [`LiquidMesh`] for a parsed [`WmoLiquid`] grid and its group's `groupLiquid`.
 fn build_wmo_liquid_mesh(lq: &WmoLiquid, group_liquid: u32) -> Option<LiquidMesh> {
     let (xv, yv, xt, yt) = (

@@ -53,6 +53,7 @@ pub struct WmoGroupInfo {
 pub struct WmoRoot {
     /// The raw parse, whose material and texture tables the group batch build reads.
     pub(super) parsed: ParsedWmo,
+    mohd_flags: u16,
     doodads: Vec<WmoDoodad>,
     doodad_sets: Vec<WmoDoodadSet>,
     group_infos: Vec<WmoGroupInfo>,
@@ -68,6 +69,36 @@ impl WmoRoot {
         match &self.parsed {
             ParsedWmo::Root(r) => r.n_groups,
             _ => 0,
+        }
+    }
+
+    /// `MOHD.flags & 0x4` (`SMOHeader::m_flags` at `+0x3c`, `MapObj.h:275`): whether a group's
+    /// `MOGP.groupLiquid` carries a 1-based `LiquidType.dbc` ID (`0` = no liquid) instead of the
+    /// legacy 0-based liquid index (`15` = no liquid), per 12340 `CMapObjGroup::Create`
+    /// (`MapObjRead.cpp:523`, `0x007D82E0`).
+    pub fn use_liquid_type_dbc_id(&self) -> bool {
+        (self.mohd_flags & 0x4) != 0
+    }
+
+    /// Resolve a group's raw `MOGP.groupLiquid` and `MOGP.flags` against this root's `MOHD.flags`
+    /// into [`super::NO_GROUP_LIQUID`] (`0xf`) when the group has no liquid override, or the
+    /// 0..=3 [`crate::liquid::LiquidKind`] nibble (`0` water, `1` ocean, `2` magma, `3` slime),
+    /// matching 12340 `CMapObjGroup::Create` (`0x007D82E0`) and `CMapObjGroup::GetLiquidType`
+    /// (`0x007D7310`).
+    pub fn resolve_group_liquid(&self, raw_group_liquid: u32, group_flags: u32) -> u32 {
+        let liquid_arg = if self.use_liquid_type_dbc_id() {
+            raw_group_liquid
+        } else if raw_group_liquid == super::NO_GROUP_LIQUID {
+            0
+        } else {
+            raw_group_liquid.saturating_add(1)
+        };
+        if liquid_arg == 0 {
+            return super::NO_GROUP_LIQUID;
+        }
+        match (liquid_arg - 1) & 3 {
+            0 if (group_flags & 0x80000) != 0 => 1,
+            n => n,
         }
     }
 
@@ -157,6 +188,10 @@ pub fn parse_wmo_root(bytes: &[u8]) -> Result<WmoRoot> {
     if !matches!(parsed, ParsedWmo::Root(_)) {
         anyhow::bail!("not a WMO root file");
     }
+    let mohd_flags = find_wmo_chunk(bytes, b"DHOM")
+        .filter(|mohd| mohd.len() >= 0x3e)
+        .map(|mohd| u16::from_le_bytes([mohd[0x3c], mohd[0x3d]]))
+        .unwrap_or(0);
     let (doodads, doodad_sets) = parse_wmo_doodads(bytes);
     let group_infos = parse_wmo_group_infos(bytes);
     let portals = parse_wmo_portals(bytes);
@@ -165,6 +200,7 @@ pub fn parse_wmo_root(bytes: &[u8]) -> Result<WmoRoot> {
     let convex_volume = parse_convex_volume(bytes);
     Ok(WmoRoot {
         parsed,
+        mohd_flags,
         doodads,
         doodad_sets,
         group_infos,
