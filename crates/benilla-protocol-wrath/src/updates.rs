@@ -103,6 +103,20 @@ pub struct PositionSnapshot {
     pub o: f32,
 }
 
+/// Spline payload carried inside a `LIVING` create/movement update block when
+/// `move_flags::SPLINE_ENABLED` (`0x0800_0000`) is set (`MovementPacketBuilder::WriteCreate`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateSplineSnapshot {
+    pub flags: u32,
+    pub facing_angle: Option<f32>,
+    pub facing_target: Option<u64>,
+    pub facing_spot: Option<[f32; 3]>,
+    pub time_passed_ms: u32,
+    pub duration_ms: u32,
+    pub id: u32,
+    pub path: Vec<[f32; 3]>,
+}
+
 /// The movement snapshot a reducer keeps: identity-bearing fields only. `position` is `None`
 /// when the block carried no position-bearing update flag — a missing position is never
 /// represented as an invented zero (Astra review finding 3).
@@ -115,6 +129,8 @@ pub struct MovementSnapshot {
     pub position: Option<PositionSnapshot>,
     /// The nine living-block speeds in wire order; `None` for non-living objects.
     pub speeds: Option<[f32; 9]>,
+    /// Active spline from a create/movement block when `SPLINE_ENABLED` is set.
+    pub create_spline: Option<CreateSplineSnapshot>,
 }
 
 impl MovementSnapshot {
@@ -127,6 +143,7 @@ impl MovementSnapshot {
             && self.extra_flags == other.extra_flags
             && self.position == other.position
             && self.speeds == other.speeds
+            && self.create_spline == other.create_spline
     }
 }
 
@@ -141,6 +158,7 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         time: 0,
         position: None,
         speeds: None,
+        create_spline: None,
     };
     if flags & update_flags::LIVING != 0 {
         // `Unit::BuildMovementPacket`
@@ -182,32 +200,47 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
             // `MoveSplineFlag.h:46-48`: Final_Point 0x8000, Final_Target 0x10000 (a u64),
             // Final_Angle 0x20000 (an f32).
             let spline_flags = r.u32()?;
+            let mut facing_angle = None;
+            let mut facing_target = None;
+            let mut facing_spot = None;
             if spline_flags & 0x0002_0000 != 0 {
-                r.f32()?; // final angle
+                facing_angle = Some(r.f32()?); // final angle
             } else if spline_flags & 0x0001_0000 != 0 {
-                r.u64()?; // final target guid
+                facing_target = Some(r.u64()?); // final target guid
             } else if spline_flags & 0x0000_8000 != 0 {
-                for _ in 0..3 {
-                    r.f32()?; // final point xyz
-                }
+                facing_spot = Some([r.f32()?, r.f32()?, r.f32()?]); // final point xyz
             }
-            r.u32()?; // time passed
-            r.u32()?; // duration
-            r.u32()?; // spline id
-            r.f32()?; // duration mod
-            r.f32()?; // duration mod next
-            r.f32()?; // vertical acceleration
-            r.u32()?; // effect start time
+            let time_passed_ms = r.u32()?; // time passed
+            let duration_ms = r.u32()?; // duration
+            let id = r.u32()?; // spline id
+            let _duration_mod = r.f32()?; // duration mod
+            let _duration_mod_next = r.f32()?; // duration mod next
+            let _vertical_accel = r.f32()?; // vertical acceleration
+            let _effect_start_time = r.u32()?; // effect start time
             let nodes = r.u32()? as usize;
+            let mut path = Vec::with_capacity(nodes.min(1024) + 2);
+            path.push([x, y, z]);
             for _ in 0..nodes {
-                for _ in 0..3 {
-                    r.f32()?; // one path node
+                let p = [r.f32()?, r.f32()?, r.f32()?];
+                if path.last().copied() != Some(p) {
+                    path.push(p);
                 }
             }
-            r.u8()?; // spline mode
-            for _ in 0..3 {
-                r.f32()?; // final destination
+            let _spline_mode = r.u8()?; // spline mode
+            let final_dest = [r.f32()?, r.f32()?, r.f32()?]; // final destination
+            if path.last().copied() != Some(final_dest) {
+                path.push(final_dest);
             }
+            snap.create_spline = Some(CreateSplineSnapshot {
+                flags: spline_flags,
+                facing_angle,
+                facing_target,
+                facing_spot,
+                time_passed_ms,
+                duration_ms,
+                id,
+                path,
+            });
         }
     } else if flags & update_flags::POSITION != 0 {
         let _transport = r.packed_guid()?;
@@ -255,6 +288,7 @@ pub fn standalone_movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         time: r.u32()?,
         position: None,
         speeds: None,
+        create_spline: None,
     };
     let (x, y, z, o) = (r.f32()?, r.f32()?, r.f32()?, r.f32()?);
     snap.position = Some(PositionSnapshot { x, y, z, o });

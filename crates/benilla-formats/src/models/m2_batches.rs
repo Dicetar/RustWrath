@@ -89,6 +89,9 @@ fn normalize_weights(w: [u8; 4]) -> [f32; 4] {
 /// Bone `bone_idx`'s scale track (`+0x44`) as a global-sequence [`BoneScaleAnim`], at the offsets
 /// `0x714260` reads; `None` for a sequence track or fewer than two keys.
 fn parse_bone_scale_anim(bytes: &[u8], bone_idx: usize) -> Option<BoneScaleAnim> {
+    if bytes.u32_at(4) == Some(264) {
+        return None;
+    }
     let bone_count = bytes.u32_at(0x34)? as usize;
     let bones_ofs = bytes.u32_at(0x38)? as usize;
     if bone_idx >= bone_count {
@@ -140,6 +143,9 @@ fn parse_bone_seq_translation(
     bone_idx: usize,
     band: (u32, u32),
 ) -> Option<BoneScaleAnim> {
+    if bytes.u32_at(4) == Some(264) {
+        return None;
+    }
     let (start, end) = band;
     let duration_ms = end.checked_sub(start).filter(|d| *d > 0)?;
     let bone_count = bytes.u32_at(0x34)? as usize;

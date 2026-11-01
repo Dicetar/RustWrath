@@ -267,3 +267,113 @@ impl Host {
         }
     }
 }
+
+/// Registry holding the active state of hot-pluggable gameplay modules (Movement, Souls Combat,
+/// Procedural Space/Spawner, and Story Quests). Each slot is independent so swapping or
+/// unloading any module falls back cleanly to the baseline client implementation without
+/// restarting or breaking the project.
+#[derive(Default)]
+pub struct ModularGameplayRegistry {
+    pub movement_enabled: bool,
+    pub combat_enabled: bool,
+    pub space_enabled: bool,
+    pub story_enabled: bool,
+}
+
+impl ModularGameplayRegistry {
+    pub const fn new() -> Self {
+        Self {
+            movement_enabled: false,
+            combat_enabled: false,
+            space_enabled: false,
+            story_enabled: false,
+        }
+    }
+
+    /// Enable or disable a specific hot-pluggable gameplay seam at runtime.
+    pub fn set_seam_enabled(&mut self, kind: benilla_hotpatch_abi::ModuleKind, enabled: bool) {
+        match kind {
+            benilla_hotpatch_abi::ModuleKind::Pose => {}
+            benilla_hotpatch_abi::ModuleKind::Movement => self.movement_enabled = enabled,
+            benilla_hotpatch_abi::ModuleKind::Combat => self.combat_enabled = enabled,
+            benilla_hotpatch_abi::ModuleKind::Space => self.space_enabled = enabled,
+            benilla_hotpatch_abi::ModuleKind::Story => self.story_enabled = enabled,
+        }
+    }
+
+    pub fn is_seam_enabled(&self, kind: benilla_hotpatch_abi::ModuleKind) -> bool {
+        match kind {
+            benilla_hotpatch_abi::ModuleKind::Pose => true,
+            benilla_hotpatch_abi::ModuleKind::Movement => self.movement_enabled,
+            benilla_hotpatch_abi::ModuleKind::Combat => self.combat_enabled,
+            benilla_hotpatch_abi::ModuleKind::Space => self.space_enabled,
+            benilla_hotpatch_abi::ModuleKind::Story => self.story_enabled,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use benilla_hotpatch_abi::{CombatOutput, ModuleKind, MovementOutput, ProceduralSpawn};
+
+    #[test]
+    fn modular_gameplay_seams_toggle_independently() {
+        let mut reg = ModularGameplayRegistry::new();
+        assert!(!reg.is_seam_enabled(ModuleKind::Movement));
+        assert!(!reg.is_seam_enabled(ModuleKind::Combat));
+        assert!(!reg.is_seam_enabled(ModuleKind::Space));
+        assert!(!reg.is_seam_enabled(ModuleKind::Story));
+
+        reg.set_seam_enabled(ModuleKind::Combat, true);
+        reg.set_seam_enabled(ModuleKind::Space, true);
+        assert!(reg.is_seam_enabled(ModuleKind::Combat));
+        assert!(reg.is_seam_enabled(ModuleKind::Space));
+        assert!(!reg.is_seam_enabled(ModuleKind::Movement));
+
+        reg.set_seam_enabled(ModuleKind::Combat, false);
+        assert!(!reg.is_seam_enabled(ModuleKind::Combat));
+    }
+
+    #[test]
+    fn module_abi_outputs_validate_finite_bounds() {
+        let mv = MovementOutput {
+            position: [1.0, 2.0, 3.0],
+            velocity: [0.0, 0.0, 0.0],
+            facing: 1.5,
+            pitch: 0.0,
+            move_flags: 0,
+            anim_override: 0,
+            emit_move_opcode: 0,
+        };
+        assert!(mv.valid());
+
+        let combat = CombatOutput {
+            next_phase: 4, // DodgeIFrame
+            phase_elapsed_sec: 0.12,
+            stamina: 85.0,
+            poise: 100.0,
+            lock_on_target: 0x1234,
+            primary_hit_target: 0,
+            trigger_spell_id: 0,
+            anim_kit_override: 0,
+            root_motion_speed: 6.5,
+            iframe_active: 1,
+            hyperarmor_active: 0,
+        };
+        assert!(combat.valid());
+
+        let spawn = ProceduralSpawn {
+            spawn_uid: 1,
+            spawn_kind: 1,
+            template_entry: 299,
+            display_id: 382,
+            position: [-8913.0, -134.0, 81.5],
+            orientation: 0.0,
+            scale: 1.0,
+            faction: 14,
+            level: 1,
+        };
+        assert!(spawn.valid());
+    }
+}

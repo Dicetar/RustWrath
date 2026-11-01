@@ -377,6 +377,8 @@ pub struct WrathEntity {
     pub position: Option<benilla_protocol_wrath::updates::PositionSnapshot>,
     /// The last reduced movement flags for this object.
     pub move_flags: Option<u32>,
+    /// Active spline carried by the create/movement update block (`SPLINE_ENABLED`).
+    pub create_spline: Option<benilla_protocol_wrath::updates::CreateSplineSnapshot>,
     pub generation: u32,
     /// The player's raw Wrath field window, needed where 1.12 and 3.3.5 pack different field
     /// indices (quest log, inventory, coinage). Only a player carries it.
@@ -2041,10 +2043,11 @@ fn translate_gameplay(
 ) -> Vec<SessionEvent> {
     match event {
         WrathGameplayEvent::MonsterMove(m) => {
-            // The donor's remote ground-spline consumer already moves the entity, its model
-            // and selection circle together. Curved/cyclic/ballistic and self rides need a
-            // Wrath-specific evaluator; do not silently reinterpret their flags as 1.12.
-            let unsupported = m.flags & (0x200 | 0x800 | 0x2000 | 0x4000 | 0x40000 | 0x80000 | 0x400000);
+            // 3.3.5a (`MoveSplineFlag.h`): `0x1000` is `Walkmode`, `0x2000` is `Flying`,
+            // `0x4000` is `OrientationFixed`, `0x40000` is `Catmullrom` (already expanded into
+            // uncompressed waypoints in `gameplay/movement.rs`), and `0x80000` is `Cyclic`.
+            // Only exclude `Falling` (`0x200`), `Parabolic` (`0x800`), and `Frozen` (`0x400000`).
+            let unsupported = m.flags & (0x200 | 0x800 | 0x400000);
             if m.guid == self_guid || unsupported != 0 {
                 debug!(guid = m.guid, flags = m.flags, "Wrath spline needs unsupported evaluator");
                 return Vec::new();
@@ -2056,11 +2059,16 @@ fn translate_gameplay(
                 gameplay::MonsterFacing::Angle(a) => benilla_protocol::MonsterMoveFacing::Angle(a),
             };
             vec![SessionEvent::MonsterMove {
-                guid: m.guid, transport: m.transport.map(|(guid, _seat)| guid), start: m.start,
-                spline_id: m.spline_id, path: m.path, facing, stop: m.stop,
-                duration_ms: m.duration_ms, flying: false,
-                // Used only for self server rides by this consumer; those are excluded above.
-                run_mode: false,
+                guid: m.guid,
+                transport: m.transport.map(|(guid, _seat)| guid),
+                start: m.start,
+                spline_id: m.spline_id,
+                path: m.path,
+                facing,
+                stop: m.stop,
+                duration_ms: m.duration_ms,
+                flying: (m.flags & 0x2000) != 0,
+                run_mode: (m.flags & 0x1000) == 0,
             }]
         }
         WrathGameplayEvent::AttackStart { attacker, victim } => {
@@ -2291,9 +2299,24 @@ fn translate_gameplay(
         WrathGameplayEvent::SpellFailure {
             caster,
             spell_id,
+            raw_reason,
             ..
         } => {
-            vec![SessionEvent::SpellFailedOther { caster, spell_id }]
+            let mut out = Vec::with_capacity(2);
+            if caster == self_guid {
+                let reason = match cast_failure::reason(raw_reason) {
+                    cast_failure::Reason::Vanilla(r) => Some(r),
+                    cast_failure::Reason::Unsupported(_) => Some(0x1c),
+                };
+                out.push(SessionEvent::CastResult {
+                    spell_id,
+                    success: false,
+                    reason,
+                    arg: None,
+                });
+            }
+            out.push(SessionEvent::SpellFailedOther { caster, spell_id });
+            out
         }
         WrathGameplayEvent::SpellGo {
             caster,
@@ -4216,6 +4239,10 @@ struct WrathGeneration(u32);
 #[derive(Component, Clone, Copy, PartialEq)]
 struct WrathAppliedPosition(benilla_protocol_wrath::updates::PositionSnapshot);
 
+/// Last create-block spline ID attached to this entity so repeated digests do not restart it.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+struct WrathAppliedCreateSpline(u32);
+
 fn vanilla_npc_flags(flags: u32) -> u32 {
     // AC UnitDefines.h NPCFlags -> the donor service ladder in target/cursor_mode.rs.
     let mut mapped = flags & 0x3;
@@ -4598,6 +4625,8 @@ fn wrath_apply_world(world: &mut World) {
 
     let mut item_creates: Vec<u64> = Vec::new();
     let mut field_diffs: Vec<(u64, ObjectType, Vec<(u16, u32, u32)>)> = Vec::new();
+    let mut unit_name_lookups: Vec<(u64, ObjectFields)> = Vec::new();
+    let mut go_template_requests: Vec<(u64, ObjectFields)> = Vec::new();
     let mut self_player_created = false;
 
     for guid in changes.created.iter().chain(changes.updated.iter()) {
@@ -4645,6 +4674,8 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(health) = remote.health {
             pairs.push((22, health));
             pairs.push((28, remote.max_health.unwrap_or(health)));
+        } else if let Some(max_health) = remote.max_health {
+            pairs.push((28, max_health));
         }
         if let Some(level) = remote.level {
             pairs.push((34, level));
@@ -4783,6 +4814,13 @@ fn wrath_apply_world(world: &mut World) {
                 let old_slots = world.get::<WrathQuestSlots>(entity).copied();
                 let quest_slots_changed =
                     wrath_slots.is_some_and(|slots| old_slots != Some(slots));
+                if old.as_ref().and_then(ObjectFields::object_entry) != fields.object_entry() {
+                    if matches!(kind, EntityKind::Unit | EntityKind::Player) {
+                        unit_name_lookups.push((*guid, fields.clone()));
+                    } else if kind == EntityKind::GameObject {
+                        go_template_requests.push((*guid, fields.clone()));
+                    }
+                }
                 world.entity_mut(entity).insert((
                     NetEntity {
                         kind,
@@ -4937,14 +4975,38 @@ fn wrath_apply_world(world: &mut World) {
                     world.entity_mut(entity).insert(SelfPlayer);
                 }
                 if *guid != player_guid {
+                    let has_active_spline =
+                        world.get::<crate::net::motion::Spline>(entity).is_some();
                     if let (Some(transform), Some(position)) = (transform, remote.position) {
                         let stamp = WrathAppliedPosition(position);
                         if world.get::<WrathAppliedPosition>(entity) != Some(&stamp) {
-                            if let Some(mut current) = world.get_mut::<Transform>(entity) {
-                                current.translation = transform.translation;
-                                current.rotation = transform.rotation;
+                            if !has_active_spline {
+                                if let Some(mut current) = world.get_mut::<Transform>(entity) {
+                                    current.translation = transform.translation;
+                                    current.rotation = transform.rotation;
+                                }
                             }
                             world.entity_mut(entity).insert(stamp);
+                        }
+                    }
+                    if let Some(cs) = &remote.create_spline {
+                        let applied = WrathAppliedCreateSpline(cs.id);
+                        if world.get::<WrathAppliedCreateSpline>(entity) != Some(&applied) {
+                            let create = benilla_protocol::CreateSpline {
+                                flags: cs.flags,
+                                facing_angle: cs.facing_angle,
+                                facing_target: cs.facing_target,
+                                facing_spot: cs.facing_spot,
+                                time_passed_ms: cs.time_passed_ms,
+                                duration_ms: cs.duration_ms,
+                                id: cs.id,
+                                path: cs.path.clone(),
+                            };
+                            if let Some(spline) = crate::net::motion::create_spline(&create, None) {
+                                world.entity_mut(entity).insert((spline, applied));
+                            } else {
+                                world.entity_mut(entity).insert(applied);
+                            }
                         }
                     }
                 } else if let (Some(pose), Some(server_flags)) =
@@ -4983,6 +5045,11 @@ fn wrath_apply_world(world: &mut World) {
                 if *guid == player_guid {
                     self_player_created = true;
                 }
+                if matches!(kind, EntityKind::Unit | EntityKind::Player) {
+                    unit_name_lookups.push((*guid, fields.clone()));
+                } else if kind == EntityKind::GameObject {
+                    go_template_requests.push((*guid, fields.clone()));
+                }
                 let mut entity = world.spawn((
                     WrathStreamed,
                     WrathGeneration(remote.generation),
@@ -5004,6 +5071,25 @@ fn wrath_apply_world(world: &mut World) {
                 if let Some(position) = remote.position {
                     entity.insert(WrathAppliedPosition(position));
                 }
+                if *guid != player_guid {
+                    if let Some(cs) = &remote.create_spline {
+                        let create = benilla_protocol::CreateSpline {
+                            flags: cs.flags,
+                            facing_angle: cs.facing_angle,
+                            facing_target: cs.facing_target,
+                            facing_spot: cs.facing_spot,
+                            time_passed_ms: cs.time_passed_ms,
+                            duration_ms: cs.duration_ms,
+                            id: cs.id,
+                            path: cs.path.clone(),
+                        };
+                        if let Some(spline) = crate::net::motion::create_spline(&create, None) {
+                            entity.insert((spline, WrathAppliedCreateSpline(cs.id)));
+                        } else {
+                            entity.insert(WrathAppliedCreateSpline(cs.id));
+                        }
+                    }
+                }
                 if let Some(slots) = wrath_slots {
                     entity.insert(slots);
                 }
@@ -5023,6 +5109,30 @@ fn wrath_apply_world(world: &mut World) {
 
     world.resource_mut::<SelfGuid>().0 = Some(player_guid);
     *world.resource_mut::<GuidIndex>() = index;
+
+    if !unit_name_lookups.is_empty() || !go_template_requests.is_empty() {
+        if let Some(net) = world
+            .get_resource::<NetCommands>()
+            .map(|n| NetCommands(n.0.clone()))
+        {
+            if !unit_name_lookups.is_empty() {
+                if let Some(mut names) = world.get_resource_mut::<crate::net::NameCache>() {
+                    for (guid, fields) in &unit_name_lookups {
+                        names.lookup_fields(*guid, fields, &net);
+                    }
+                }
+            }
+            if !go_template_requests.is_empty() {
+                if let Some(mut go_templates) =
+                    world.get_resource_mut::<crate::net::GameObjectTemplates>()
+                {
+                    for (guid, fields) in &go_template_requests {
+                        go_templates.request_at_create(*guid, fields, &net);
+                    }
+                }
+            }
+        }
+    }
 
     if self_player_created || !item_creates.is_empty() || !field_diffs.is_empty() {
         let mut stores_by_guid: HashMap<u64, ObjectFields> = HashMap::new();
@@ -6287,6 +6397,10 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 player_bytes_2: entry.field(fields::PLAYER_BYTES_2),
                 position: entry.movement.as_ref().and_then(|m| m.position),
                 move_flags: entry.movement.as_ref().map(|m| m.move_flags),
+                create_spline: entry
+                    .movement
+                    .as_ref()
+                    .and_then(|m| m.create_spline.clone()),
                 generation: entry.generation,
                 player_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
                     .then(|| (0..1171).map(|i| entry.field(i).unwrap_or(0)).collect()),
@@ -6498,6 +6612,7 @@ mod command_tap_tests {
                 player_bytes_2: None,
                 position: None,
                 move_flags: None,
+                create_spline: None,
                 generation: 1,
                 player_fields: None,
                 item_fields: None,

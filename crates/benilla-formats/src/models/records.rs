@@ -194,6 +194,22 @@ fn read_m2_light(bytes: &[u8], rec: usize) -> Option<M2Light> {
     let wrath = bytes.u32_at(4) == Some(264);
     let stride = if wrath { 20 } else { 28 };
     let track = |index: usize| rec + 16 + index * stride;
+    if wrath {
+        for index in 0..7 {
+            let t = track(index);
+            if bytes.u16_at(t).is_none_or(|interp| interp > 3) {
+                return None;
+            }
+        }
+    }
+    let clamp_rgb = |rgb: [f32; 3]| rgb.map(|c| if c.is_finite() { c.clamp(0.0, 1.0) } else { 1.0 });
+    let clamp_intensity = |v: f32, default: f32| {
+        if v.is_finite() {
+            v.clamp(0.0, 16.0)
+        } else {
+            default
+        }
+    };
     let light = M2Light {
         light_type: bytes.u16_at(rec)?,
         bone,
@@ -203,10 +219,10 @@ fn read_m2_light(bytes: &[u8], rec: usize) -> Option<M2Light> {
             bytes.f32_at(rec + 0x08)?,
             bytes.f32_at(rec + 0x0c)?,
         ],
-        ambient_color: track_first_vec3(bytes, track(0)).unwrap_or([1.0; 3]),
-        ambient_intensity: track_first_f32(bytes, track(1)).unwrap_or(0.0),
-        diffuse_color: track_first_vec3(bytes, track(2)).unwrap_or([1.0; 3]),
-        diffuse_intensity: track_first_f32(bytes, track(3)).unwrap_or(1.0),
+        ambient_color: clamp_rgb(track_first_vec3(bytes, track(0)).unwrap_or([1.0; 3])),
+        ambient_intensity: clamp_intensity(track_first_f32(bytes, track(1)).unwrap_or(0.0), 0.0),
+        diffuse_color: clamp_rgb(track_first_vec3(bytes, track(2)).unwrap_or([1.0; 3])),
+        diffuse_intensity: clamp_intensity(track_first_f32(bytes, track(3)).unwrap_or(1.0), 1.0),
         attenuation_start: track_first_f32(bytes, track(4)).unwrap_or(0.0),
         attenuation_end: track_first_f32(bytes, track(5)).unwrap_or(0.0),
         visibility_off: track_first_u8(bytes, track(6)) == Some(0),

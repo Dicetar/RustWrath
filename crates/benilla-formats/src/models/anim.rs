@@ -129,13 +129,21 @@ pub struct StringAnchors {
     pub bottom: (u16, [f32; 3]),
 }
 
-/// The `$WTT`/`$WTB` anchors from the raw event table (stride 44); `None` unless both exist.
+/// The `$WTT`/`$WTB` anchors from the raw event table (stride 44 in v256, 36 in v264); `None` unless both exist.
 pub fn parse_m2_string_anchors(b: &[u8]) -> Option<StringAnchors> {
-    let (ev_count, ev_ofs) = (le_u32(b, 0x114) as usize, le_u32(b, 0x118) as usize);
+    let (hdr, stride) = if le_u32(b, 4) == 264 {
+        (0x100, 36)
+    } else {
+        (0x114, 44)
+    };
+    if b.len() < hdr + 8 {
+        return None;
+    }
+    let (ev_count, ev_ofs) = (le_u32(b, hdr) as usize, le_u32(b, hdr + 4) as usize);
     let (mut top, mut bottom) = (None, None);
-    for e in 0..ev_count {
-        let erec = ev_ofs + e * 44;
-        if erec + 44 > b.len() {
+    for e in 0..ev_count.min(256) {
+        let erec = ev_ofs.checked_add(e * stride)?;
+        if erec + stride > b.len() {
             break;
         }
         let ident = b.get(erec..erec + 4)?;
@@ -163,10 +171,18 @@ pub fn parse_m2_string_anchors(b: &[u8]) -> Option<StringAnchors> {
 /// `0x7131b0`. The line reads only the pole's, though the bobber authors one; among weapons only
 /// the fishing pole does, so a held item keys on its presence.
 pub fn parse_m2_cch_marker(b: &[u8]) -> Option<(u16, [f32; 3])> {
-    let (ev_count, ev_ofs) = (le_u32(b, 0x114) as usize, le_u32(b, 0x118) as usize);
-    for e in 0..ev_count {
-        let erec = ev_ofs + e * 44;
-        if erec + 44 > b.len() {
+    let (hdr, stride) = if le_u32(b, 4) == 264 {
+        (0x100, 36)
+    } else {
+        (0x114, 44)
+    };
+    if b.len() < hdr + 8 {
+        return None;
+    }
+    let (ev_count, ev_ofs) = (le_u32(b, hdr) as usize, le_u32(b, hdr + 4) as usize);
+    for e in 0..ev_count.min(256) {
+        let erec = ev_ofs.checked_add(e * stride)?;
+        if erec + stride > b.len() {
             break;
         }
         if b.get(erec..erec + 4)? == b"$CCH" {

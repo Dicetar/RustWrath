@@ -1022,7 +1022,7 @@ fn cast_result(
     core.queued_melee.clear_save_if(spell_id);
     let slot = core.slot();
     let slot_holds = slot.map(super::inflight::Inflight::spell_id) == Some(spell_id);
-    if slot_holds {
+    if slot_holds || (!success && slot.is_some()) {
         core.cancel(false, false, super::REASON_ERROR);
     } else if success && slot.is_none() {
         core.reports.bar(CastBarEdge::Stop);

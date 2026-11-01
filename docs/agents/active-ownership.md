@@ -1,63 +1,41 @@
 # Active Project B ownership
 
-Owner instruction, 2026-10-31: Astra leads graphics fixes and the hotpatch/module system,
-including integration seams. OC continues his existing playable-combat work. This supersedes
-the earlier reservation of rig scheduling files to OC. One writer per file; preserve existing
-dirty work and coordinate exceptions explicitly.
+Owner instruction, 2026-11-01: Project B uses a **unified single-owner per-ticket workflow**.
+Any active agent may touch any crate in the workspace (`benilla-app`, `benilla-world`, `benilla-ui`,
+`benilla-formats`, `benilla-m2`, `benilla-assets`, `benilla-protocol-wrath`, `benilla-hotpatch*`)
+required to complete the active ticket end-to-end. The previous Astra-vs-OC crate partition is
+retired so cross-cutting fixes (wire -> state -> ECS -> M2/shader -> FrameXML) never stall at
+artificial file boundaries.
 
-## Astra
+## Sequencing & Architecture Rules
 
-- Graphics, M2/animation/rig math, palettes, attachments, shaders, asset/profile behavior.
-- Native module ABI/host/publisher, shader watch and dependency-aware asset reload design.
-- `benilla-world/src/rig_anim/{pose,compose}.rs`, `rig_anim.rs`, app `hotpatch.rs`, app/launcher
-  Cargo features/registration, new hotpatch crates and associated docs/tools.
-- Adopt and preserve OC's pending finite-local repair, including his writeback into locals.
-- Argon's 27d3b09d and local OpenCode edits are integrated; code HEAD df769fba builds.
-  Firna is open for the human owner, PID 38272, started 2026-11-01 04:29 Moscow time,
-  bounded to approximately 04:49 and 5 GiB private memory. No competing build or account
-  login during this session. Astra sends no controls. Automatic source/history backups run
-  every eight hours and retain three copies (docs/agents/backups.md).
-- External-animation repair claim: `benilla-formats/src/models/anim.rs`, its root re-export,
-  `benilla-formats/examples/animation_sources.rs`, and `benilla-assets/src/m2.rs`.
-- New owner-reported graphics blocker: roaming creature visuals remain at old positions while
-  their authoritative positions move; attack range follows the latter. Astra owns diagnosis
-  of transform/rig/visual synchronization, coordinating any shared entity-state seam with
-  OpenCode. No source repair or live resolution is claimed yet. Magenta lighting remains open.
-- Current movement claim: new `benilla-protocol-wrath/src/gameplay/movement.rs`, the minimal
-  event/opcode dispatch additions in `gameplay.rs`/`opcode.rs`, and `wrath.rs` movement-event
-  translation. Astra also handles Wrath NPC flag projection in `wrath.rs`; raw Wrath vendor
-  bit 0x80 currently becomes the donor innkeeper bit. OpenCode should leave these edits to
-  Astra while continuing cast/action/inventory/loot UI work.
-- Lighting claim: `benilla-formats/src/models/records.rs` and `examples/light_sources.rs`.
-  The actual zero-light HD model decoded 37,415 fake lights before the version/layout repair,
-  now zero. Camera-dependent magenta still needs same-scene rendered acceptance.
+1. **Track Sequencing**:
+   - **Phase 1 (Immediate Priority)**: Finish the playable Northshire alpha route end-to-end:
+     - Roaming creature visual vs. authoritative position synchronization (`SMSG_MONSTER_MOVE`
+       smooth/Catmull-Rom flags, create-block `SPLINE_ENABLED` paths, stop position snaps) and
+       NPC `Unknown` / `Dead` state resolution (`NameCache` / `GameObjectTemplates` hooks on create).
+     - Spellbook & hotbar cast-state gate cleanup (`PendingCast` clearing on instant casts,
+       `SMSG_CAST_FAILED`, and self `SMSG_SPELL_FAILURE` so `"Another action is in progress"` never sticks).
+     - FrameXML / UI parity (Character PaperDoll, Talents, Vendor/Merchant, Quest Log, Bags/Inventory).
+     - Camera-dependent magenta lighting & v264 M2 external `.anim` track / header offset fixes.
+   - **Phase 2**: Expand the hot-pluggable module architecture (`benilla-hotpatch-abi` &
+     `benilla-hotpatch`) across five swappable seams:
+     - `PoseModuleV1` (`pose-<sha1>.dll`): post-animation skeletal pose & attachment adjustments.
+     - `MovementModuleV1` (`movement-<sha1>.dll`): pluggable movement physics/controller (standard WoW vs. Souls inertia/dodge).
+     - `CombatModuleV1` (`combat-<sha1>.dll`): pluggable combat state machine (standard tab-target vs. Elden Ring / Souls stamina, poise, dodge i-frames, and weapon hitboxes).
+     - `SpaceModuleV1` (`space-<sha1>.dll`): pluggable procedural terrain chunks, decorations, dynamic mob spawns, and world item spawns.
+     - `StoryModuleV1` (`story-<sha1>.dll`): pluggable custom quest chains, dialogue trees, and objective trackers.
+   - **Phase 3**: Implement the Souls / Elden Ring Combat module (`Funny-Bones/ELDEN-RING-Combat-Rewrite`
+     reference) and Procedural Terrain / Spawner / Story modules on top of the Phase 2 ABI without
+     breaking the baseline client.
 
-## OC
+## Shared Live-Session Rules
 
-- Owner's 2026-11-01 live report: spellbook actions sometimes work, sometimes fail with
-  "another action is in progress"; action bars, inventory opening and looting still fail.
-  The owner has sent this directly to OpenCode. These remain combat/UI-owned blockers;
-  the quest/combat/loot/turn-in route cannot yet be accepted.
-- OpenCode owns the cast-state gate in `spellbook.rs`/`ui_cast` for this combat task, regardless
-  of earlier authorship. Do not redirect it to Astra solely because she previously edited it.
-- Binary correction: both human runs used SHA-256 5F4BD0DABE7B1252D9E67A62CD00BCC9013D3936112164C2661A67F6CD46B50A,
-  built successfully with 476cbb96/6edea9f5 and the external-animation repair. The 00:29 run
-  metadata pins 9c9fb301. The build log `astra-playable-graphics-build-fixed.log` records success.
-  3dec692e makes loader ownership more explicit; its absence cannot explain those UI failures.
-- Continue playable combat: input/targeting/attack/cast packet-to-state-to-UI behavior and the
-  quest/loot/reward/persistence route, with actual combat driven by the human owner.
-- Fix Unknown/Dead NPC name/health projection where it blocks interaction/targeting/combat.
-- `names.rs`, `ui_unit*`, combat/target/input owners, appropriate protocol gameplay handlers;
-  `wrath.rs` only for necessary state/command translation, after recording the exact claim.
-- Avoid graphics, rig, shader, profile, module, Cargo/lockfile and app-registration edits while
-  Astra owns them. If a combat blocker is in a graphics-owned file, report the concrete seam.
-
-## Shared rules
-
-Firna: human warrior, GUID 0x1522, dedicated existing account. Credentials stay in the ignored
-identity mechanism; no account/server/DB/WM/install modifications. No automated combat.
-At most 20 essential tests per task, no broad suite churn. A passing test/build does not prove
-rendered or playable acceptance. Keep at most three previous versions/backups, preserve evidence
-and do not duplicate the full target directory or worktree. Coordinate runs as well as source.
-
-Current OC prompt: `.scratch/project-b/handoffs/2026-10-31-astra-lead-oc-combat.md`.
+- **Human Live Session Reservation**: Firna (human warrior, GUID `0x1522`, dedicated existing account).
+  Credentials stay in the ignored identity mechanism; no account/server/DB/WM/install modifications.
+  Never launch a competing graphical client or automated login while the owner's live session is open.
+- **Minimal Diagnostics**: Run only targeted `--lib` unit tests or lightweight offline examples for the
+  crates touched (at most 20 essential tests per task; no workspace-wide test churn or unrequested
+  headless harness runs).
+- **Backups & Hygiene**: Keep at most three previous versions/backups, preserve evidence, and never
+  duplicate the full `target/` directory or worktree.

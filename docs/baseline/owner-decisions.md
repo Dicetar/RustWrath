@@ -26,3 +26,16 @@ OpenCode retains playable combat. The post-edit pose seam and restoration adapte
 implemented, with a focused reload/non-accumulation check passing. Actual client activation
 still requires rendered acceptance. File-watch support alone does not establish complete
 asset/model hotpatching.
+
+2026-11-01 owner-confirmed decisions:
+1. **Track Sequencing**: Finish the playable Northshire alpha route first (roaming creature
+   position sync, NPC Unknown/Dead state, cast-state gate, remaining FrameXML/UI parity, and
+   camera-dependent magenta lighting / HD model fixes), then expand the hot-pluggable module
+   system and implement Souls / Elden Ring combat.
+2. **Modular Hot-Pluggable Gameplay Seams**: Movement, combat (including the `Funny-Bones/ELDEN-RING-Combat-Rewrite`
+   Souls combat rewrite), procedural terrain generation (with dynamic spawns of mobs, decorations,
+   and items), and story quests must be implemented as hot-pluggable/swappable modules
+   (`PoseModuleV1`, `MovementModuleV1`, `CombatModuleV1`, `SpaceModuleV1`, `StoryModuleV1`) so
+   subsystems can be swapped or unloaded at runtime without breaking the base project.
+3. **Single-Owner Workflow**: Retire the split Astra-vs-OC crate lockouts in favor of a unified
+   single-owner workflow where any agent can touch any crate per ticket.

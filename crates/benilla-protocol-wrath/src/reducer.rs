@@ -477,6 +477,57 @@ impl WorldState {
         relevant
     }
 
+    /// Update an existing tracked unit's authoritative position when `SMSG_MONSTER_MOVE` arrives
+    /// so subsequent values-only updates do not snap the unit back to its old create-block pose.
+    pub fn apply_monster_move(&mut self, mv: &crate::gameplay::movement::MonsterMove) -> bool {
+        let Some(entry) = self.objects.get_mut(&mv.guid) else {
+            return false;
+        };
+        if mv.transport.is_some() {
+            return false;
+        }
+        let target_xyz = if mv.stop {
+            mv.start
+        } else {
+            mv.path.last().copied().unwrap_or(mv.start)
+        };
+        let old_o = entry
+            .movement
+            .as_ref()
+            .and_then(|m| m.position)
+            .map_or(0.0, |p| p.o);
+        let o = match mv.facing {
+            crate::gameplay::movement::MonsterFacing::Angle(a) => a,
+            _ => old_o,
+        };
+        let next_pos = crate::updates::PositionSnapshot {
+            x: target_xyz[0],
+            y: target_xyz[1],
+            z: target_xyz[2],
+            o,
+        };
+        match entry.movement.as_mut() {
+            Some(movement) => {
+                let changed = movement.position != Some(next_pos) || movement.create_spline.is_some();
+                movement.position = Some(next_pos);
+                movement.create_spline = None;
+                changed
+            }
+            None => {
+                entry.movement = Some(MovementSnapshot {
+                    update_flags: crate::updates::update_flags::LIVING,
+                    move_flags: 0,
+                    extra_flags: 0,
+                    time: 0,
+                    position: Some(next_pos),
+                    speeds: None,
+                    create_spline: None,
+                });
+                true
+            }
+        }
+    }
+
     fn remove(&mut self, guid: u64, events: &mut Vec<ChangeEvent>) {
         if let Some(entry) = self.objects.remove(&guid) {
             // The GUID stays meaningful across a recreate: remember how many lives it has had.
