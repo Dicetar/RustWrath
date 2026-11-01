@@ -4750,14 +4750,14 @@ fn wrath_apply_world(world: &mut World) {
                         });
                     }
                 }
-                let old_bytes_1 = old.as_ref().and_then(|f| f.get_u32(138));
+                let old_bytes_1 = old.as_ref().and_then(benilla_protocol::ObjectFields::unit_bytes_1);
                 let new_bytes_1 = world
                     .get::<ObjectStore>(entity)
-                    .and_then(|s| s.0.get_u32(138));
-                let old_bytes_2 = old.as_ref().and_then(|f| f.get_u32(164));
+                    .and_then(|s| s.0.unit_bytes_1());
+                let old_bytes_2 = old.as_ref().and_then(benilla_protocol::ObjectFields::unit_bytes_2);
                 let new_bytes_2 = world
                     .get::<ObjectStore>(entity)
-                    .and_then(|s| s.0.get_u32(164));
+                    .and_then(|s| s.0.unit_bytes_2());
                 let old_unit_flags = old.as_ref().map(benilla_protocol::ObjectFields::unit_flags);
                 let new_unit_flags = remote.unit_flags.unwrap_or(0);
                 if old_health != remote.health {
