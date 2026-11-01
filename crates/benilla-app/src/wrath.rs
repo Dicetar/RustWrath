@@ -2326,15 +2326,15 @@ fn translate_gameplay(
                 target: targets.unit,
                 hits,
                 misses: misses
-                .into_iter()
-                .map(|(target, info, reflect_result)| {
-                    benilla_protocol::messages::SpellGoMiss {
-                        target,
-                        info,
-                        reflect_result,
-                    }
-                })
-                .collect(),
+                    .into_iter()
+                    .map(|(target, info, reflect_result)| {
+                        benilla_protocol::messages::SpellGoMiss {
+                            target,
+                            info,
+                            reflect_result,
+                        }
+                    })
+                    .collect(),
                 go_target: targets.gameobject,
                 target_mask: vanilla_target_mask(targets.mask),
                 source: targets.source,
@@ -6114,6 +6114,47 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A self `SMSG_SPELL_GO` is 3.3.5's success answer: it must emit the 1.12 success result
+    /// first, or the in-flight slot stays armed and every later press says 0x61. Another caster's
+    /// GO never touches our slot.
+    #[test]
+    fn a_wrath_self_go_answers_the_pending_cast() {
+        let go = |caster| WrathGameplayEvent::SpellGo {
+            caster,
+            spell_id: 6673,
+            cast_flags: 0,
+            cast_count: 0,
+            server_time_ms: 0,
+            hits: Vec::new(),
+            misses: Vec::new(),
+            targets: gameplay::SpellTargets::default(),
+            ammo_display_id: None,
+            item_caster: None,
+        };
+        let events = translate_gameplay(go(0x1522), 0x1522, Instant::now());
+        assert!(
+            matches!(
+                events.first(),
+                Some(SessionEvent::CastResult {
+                    spell_id: 6673,
+                    success: true,
+                    reason: None,
+                    arg: None,
+                })
+            ),
+            "the self GO answers the send: {events:?}"
+        );
+        assert!(
+            matches!(events.get(1), Some(SessionEvent::SpellGo { caster: 0x1522, .. })),
+            "and the GO itself still follows: {events:?}"
+        );
+        assert_eq!(events.len(), 2);
+
+        let remote = translate_gameplay(go(0x99), 0x1522, Instant::now());
+        assert_eq!(remote.len(), 1);
+        assert!(matches!(remote[0], SessionEvent::SpellGo { caster: 0x99, .. }));
+    }
 
     /// All twenty-five 12340 slots survive the mapping, not just the 1.12 twenty.
     #[test]

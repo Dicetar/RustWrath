@@ -122,6 +122,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "SpellCanTargetItem",
         lua.create_function(|_, _spell: Option<mlua::Value>| Ok(false))?,
     )?;
+    // `SpellCanTargetItemID()` is the second half of the same secure-handler tail
+    // (`SpellCanTargetItem() or SpellCanTargetItemID()`): with no item-targeting spell it must
+    // answer false too, or every action-bar click dies on a nil call after the action ran.
+    lua.globals().set(
+        "SpellCanTargetItemID",
+        lua.create_function(|_, _spell: Option<mlua::Value>| Ok(false))?,
+    )?;
 
     // `BNFeaturesEnabled` (`InterfaceOptionsPanels.lua:820`, `:857`, `:1610`): Battle.net features
     // come with a Battle.net account connection benilla does not have, and the stock panels take
@@ -376,6 +383,12 @@ mod tests {
                 .eval::<bool>("return SpellCanTargetItem(6673) and true or false")
                 .unwrap(),
             "no cursor item to target"
+        );
+        assert!(
+            !script
+                .eval::<bool>("return SpellCanTargetItemID() and true or false")
+                .unwrap(),
+            "the secure handler's same tail asks this too"
         );
         script.set_modifiers(true, false, false);
         assert_eq!(read(&script, "STICKYCAMERA"), Some(1), "shift held");
