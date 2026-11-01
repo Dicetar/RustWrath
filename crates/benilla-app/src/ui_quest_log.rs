@@ -1421,10 +1421,10 @@ mod tests {
 
         /// The log's slots hold `log`, from slot 0, with no notice.
         fn write_log(&mut self, log: &[u32]) {
-            for slot in 0..PLAYER_QUEST_LOG_SLOTS {
-                let id = log.get(usize::from(slot)).copied().unwrap_or(0);
+            for slot in 0..QUEST_LOG_SLOTS {
+                let id = log.get(slot).copied().unwrap_or(0);
                 self.fields
-                    .insert(FIELD_PLAYER_QUEST_LOG_1_1 + 3 * u16::from(slot), id);
+                    .insert(FIELD_PLAYER_QUEST_LOG_1_1 + 3 * slot as u16, id);
             }
             self.write_store();
         }

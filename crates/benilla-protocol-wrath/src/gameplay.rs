@@ -1351,6 +1351,17 @@ pub enum PeriodicAuraTick {
     },
 }
 
+/// Decode one server opcode into the app-facing shape: `Ok(None)` for an opcode this slice does
+/// not consume, the codec's error for a malformed body. The session's direct movement arm reads
+/// this wrapper; [`parse`] remains the raw `Option<Result>` form its other callers pattern on.
+pub fn decode_server(opcode: u16, body: &[u8]) -> Result<Option<ServerEvent>> {
+    match parse(opcode, body) {
+        Some(Ok(event)) => Ok(Some(event)),
+        Some(Err(error)) => Err(error),
+        None => Ok(None),
+    }
+}
+
 /// Parse one server opcode; `None` means this slice does not translate that opcode.
 pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
     use crate::opcode::*;
