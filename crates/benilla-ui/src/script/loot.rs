@@ -371,17 +371,41 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.set_named_registry_value(REG_LOOTBUTTON_METHODS, m)?;
     }
 
-    // LootSlot(slot): the LOOT_BIND confirmation only (`0x4c2e70`: `luaL_checknumber(1)`,
-    // `dec eax`, `0x4c2790(slot, 1)`, whose arm at `0x4c27c0` returns unless the slot is the
-    // pending confirm, `cmp edi, [0x847cec]`). On an ordinary row it does nothing.
+    // LootSlot(slot): in 1.12 (`0x4c2e70`) the C++ `<LootButton>` click handler takes the slot and
+    // `LootSlot(slot)` is the LOOT_BIND confirmation (`0x4c2790(slot, 1)`). In 12340
+    // (`LootFrame.xml:3`, `LootFrame.lua:206-214`, `LootFrame_Scripts.cpp:316, 325`),
+    // `LootButton1..4` are plain `<Button>`s whose `<OnClick>` calls `LootSlot(self.slot)`
+    // (`0x00589520` -> `CGLootInfo::LootSlot(slot - 1)`), while `ConfirmLootSlot(slot)`
+    // (`0x00589590`) confirms a BoP slot.
     g.set(
         "LootSlot",
         lua.create_function(|lua, slot: Value| {
             // `is-number` else `Usage: LootSlot(slot)` (`0x84807c`, `0x4c2e81`).
             let slot = binding_abi::index_arg32(lua, slot, "Usage: LootSlot(slot)")?;
-            super::calls::submit(lua, ScriptCall::Loot(LootCall::Confirm(slot)))
+            let wrath = lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .is_wrath();
+            let call = if wrath {
+                LootCall::Take(slot)
+            } else {
+                LootCall::Confirm(slot)
+            };
+            super::calls::submit(lua, ScriptCall::Loot(call))
         })?,
     )?;
+    if lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath())
+    {
+        g.set(
+            "ConfirmLootSlot",
+            lua.create_function(|lua, slot: Value| {
+                let slot = binding_abi::index_arg32(lua, slot, "Usage: ConfirmLootSlot(slot)")?;
+                super::calls::submit(lua, ScriptCall::Loot(LootCall::Confirm(slot)))
+            })?,
+        )?;
+    }
 
     // CloseLoot([failed]) (`0x4c2ec0`): the flag is read through the client's flag coercion
     // (`0x4c2ec7`, `0x6f1c10`, default 0) and handed to the close (`0x48f200`), which raises

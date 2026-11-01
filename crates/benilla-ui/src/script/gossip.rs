@@ -36,6 +36,7 @@ pub struct GossipQuestRow {
     /// and `GossipFrame.lua:66` strides by 2 over them.
     pub level: u32,
     pub active: bool,
+    pub complete: bool,
 }
 
 /// One open gossip menu, pushed whole by the app.
@@ -183,28 +184,36 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // isDaily, isRepeatable`) and the active list by 4 (`title, level, isTrivial, isComplete`);
     // 1.12 strides both by 2, so the extra fields are target-gated.
     fn quest_rows(lua: &Lua, active: bool) -> mlua::Result<MultiValue> {
-        let (rows, wrath): (Vec<(String, u32)>, bool) = {
+        let (rows, wrath, player_level): (Vec<(String, u32, bool)>, bool, u32) = {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let rows = model.gossip.as_ref().map_or_else(Vec::new, |m| {
                 m.quests
                     .iter()
                     .filter(|q| q.active == active)
-                    .map(|q| (q.title.clone(), q.level))
+                    .map(|q| (q.title.clone(), q.level, q.complete))
                     .collect()
             });
-            (rows, model.target == UiTarget::Wrath335)
+            let player_level = model.unit("player").map_or(0, |u| u.level);
+            (rows, model.target == UiTarget::Wrath335, player_level)
         };
         let mut out = Vec::with_capacity(rows.len() * if wrath { 5 } else { 2 });
-        for (title, level) in rows {
+        for (title, level, complete) in rows {
             out.push(Value::String(lua.create_string(&title)?));
             out.push(Value::Integer(i64::from(level)));
             if wrath {
-                // isTrivial / isDaily / isRepeatable (available) or isTrivial / isComplete
-                // (active): the wire carries none of them here, so every flag reads false.
-                out.push(Value::Boolean(false));
-                out.push(Value::Boolean(false));
-                if !active {
-                    out.push(Value::Boolean(false));
+                // 12340 `GossipInfo_Scripts.cpp:123-176` (`0x0058B390`, `0x0058B490`): pushes
+                // `1` or `nil` (never `false`, which is truthy in Lua!) for `isTrivial`,
+                // `isDaily`/`isComplete`, and `isRepeatable`.
+                let level_i32 = level as i32;
+                let trivial = level_i32 != -1
+                    && i64::from(level_i32) + i64::from((player_level / 10 + 4).min(8))
+                        < i64::from(player_level);
+                out.push(binding_abi::flag(trivial));
+                if active {
+                    out.push(binding_abi::flag(complete));
+                } else {
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
                 }
             }
         }
@@ -401,16 +410,19 @@ mod tests {
                 title: "Report to Goldshire".into(),
                 level: 5,
                 active: true,
+                complete: false,
             },
             GossipQuestRow {
                 title: "A Threat Within".into(),
                 level: 7,
                 active: false,
+                complete: false,
             },
             GossipQuestRow {
                 title: "Kobold Camp Cleanup".into(),
                 level: 9,
                 active: false,
+                complete: false,
             },
         ];
         s.set_gossip(Some(m));
@@ -456,11 +468,13 @@ mod tests {
                 title: "A Threat Within".into(),
                 level: 7,
                 active: false,
+                complete: false,
             },
             GossipQuestRow {
                 title: "Report to Goldshire".into(),
                 level: 5,
                 active: true,
+                complete: true,
             },
         ];
         s.set_gossip(Some(m));
@@ -477,20 +491,16 @@ mod tests {
         assert_eq!(s.arity("GetGossipAvailableQuests()").unwrap(), 5);
         assert_eq!(s.arity("GetGossipActiveQuests()").unwrap(), 4);
         assert_eq!(
-            s.eval::<(String, i64, bool, bool, bool)>("return GetGossipAvailableQuests()")
-                .unwrap(),
-            (
-                "A Threat Within".to_string(),
-                7,
-                false,
-                false,
-                false
+            s.eval::<(String, i64, Option<i64>, Option<i64>, Option<i64>)>(
+                "return GetGossipAvailableQuests()"
             )
+            .unwrap(),
+            ("A Threat Within".to_string(), 7, None, None, None)
         );
         assert_eq!(
-            s.eval::<(String, i64, bool, bool)>("return GetGossipActiveQuests()")
+            s.eval::<(String, i64, Option<i64>, Option<i64>)>("return GetGossipActiveQuests()")
                 .unwrap(),
-            ("Report to Goldshire".to_string(), 5, false, false)
+            ("Report to Goldshire".to_string(), 5, None, Some(1))
         );
     }
 

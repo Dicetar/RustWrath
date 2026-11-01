@@ -84,6 +84,11 @@ fn install_wrath(lua: &Lua) -> mlua::Result<()> {
     })?;
     globals.set("wipe", wipe.clone())?;
     globals.get::<mlua::Table>("table")?.set("wipe", wipe)?;
+    // `Blizzard_DebugTools.lua:432` calls `debuglocals(4)` inside its error handler.
+    globals.set(
+        "debuglocals",
+        lua.create_function(|_, _level: Option<Value>| Ok(Value::Nil))?,
+    )?;
     Ok(())
 }
 

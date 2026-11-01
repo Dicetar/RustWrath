@@ -273,6 +273,9 @@ pub(crate) fn load_stock_bindings(script: &mut UiScript) {
 /// Every [`LAYER_MANIFEST`] entry, in order, after the whole core: the layer loads as more of the
 /// stock load, with no `ADDON_LOADED` and no registry row, as FrameXML does (`0x48ffed`).
 fn load_layer(script: &UiScript) -> Vec<String> {
+    if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+        return Vec::new();
+    }
     let layer = Addon::layer();
     layer.load_files(script, &layer.toc.files)
 }

@@ -2746,7 +2746,7 @@ fn read_quest_greeting(b: &[u8]) -> Result<ServerEvent> {
     for _ in 0..count {
         quests.push(QuestListEntry {
             quest_id: r.u32()?,
-            icon: vanilla_quest_giver_status(r.u32()?).unwrap_or(0),
+            icon: r.u32()?,
             level: r.i32()? as u32,
             flags: r.u32()?,
             repeatable: r.u8()? != 0,
@@ -2762,9 +2762,9 @@ fn read_quest_rows(r: &mut Reader<'_>) -> Result<Vec<QuestListEntry>> {
     for _ in 0..count {
         quests.push(QuestListEntry {
             quest_id: r.u32()?,
-            icon: vanilla_quest_giver_status(r.u32()?).unwrap_or(0),
+            icon: r.u32()?,
             level: r.i32()? as u32,
-            flags: r.u32()?,
+            flags: r.i32()? as u32,
             repeatable: r.u8()? != 0,
             title: r.cstring()?,
         });

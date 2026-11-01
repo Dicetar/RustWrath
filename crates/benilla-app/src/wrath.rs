@@ -4380,6 +4380,15 @@ fn aura_span(fields: &ObjectFields) -> [u32; crate::net::AURA_WATCH_SPAN] {
     span
 }
 
+fn diff_fields(old: &ObjectFields, new: &ObjectFields) -> Vec<(u16, u32, u32)> {
+    let mut moved = Vec::new();
+    let mut copy = old.clone();
+    copy.merge_diff(new.clone(), |index, prev, next| {
+        moved.push((index, prev, next));
+    });
+    moved
+}
+
 /// Spawn or update one item/container entity in the established `ItemObject`/`ObjectStore`
 /// owner. Items carry no `NetEntity` or transform; their GUID identity stays in `GuidIndex`.
 fn apply_item_world(
@@ -4387,7 +4396,7 @@ fn apply_item_world(
     index: &mut HashMap<u64, Entity>,
     guid: u64,
     remote: &WrathEntity,
-) {
+) -> (Option<ObjectFields>, ObjectFields) {
     let container = remote.type_id == benilla_protocol_wrath::updates::type_id::CONTAINER;
     let object_type = if container {
         ObjectType::Container
@@ -4414,12 +4423,31 @@ fn apply_item_world(
             existing = None;
         }
     }
+    let old_fields = existing.and_then(|entity| world.get::<ObjectStore>(entity).map(|s| s.0.clone()));
+    if old_fields.as_ref().and_then(ObjectFields::object_entry) != fields.object_entry() {
+        if let Some(entry) = fields.object_entry().filter(|&e| e != 0) {
+            if let Some(net) = world
+                .get_resource::<NetCommands>()
+                .map(|n| NetCommands(n.0.clone()))
+            {
+                if let Some(mut items) = world.get_resource_mut::<crate::items::Items>() {
+                    if items
+                        .template(entry, guid, crate::query_cache::Ask::Event(&net))
+                        .is_none()
+                        && old_fields.is_none()
+                    {
+                        items.wait(entry, crate::items::RecordCallback::SetUp(guid));
+                    }
+                }
+            }
+        }
+    }
     match existing {
         Some(entity) => {
             let mut e = world.entity_mut(entity);
             e.remove::<NetEntity>();
             e.insert((
-                ObjectStore(fields),
+                ObjectStore(fields.clone()),
                 ItemObject { container },
                 WrathGeneration(remote.generation),
             ));
@@ -4430,7 +4458,7 @@ fn apply_item_world(
                     WrathStreamed,
                     WrathGeneration(remote.generation),
                     Guid(guid),
-                    ObjectStore(fields),
+                    ObjectStore(fields.clone()),
                     ItemObject { container },
                     Countdowns::default(),
                 ))
@@ -4438,6 +4466,7 @@ fn apply_item_world(
             index.insert(guid, entity);
         }
     }
+    (old_fields, fields)
 }
 
 /// Translate the drained digest into the established `GuidIndex`/`NetEntity`/`ObjectStore` path.
@@ -4525,11 +4554,51 @@ fn wrath_apply_world(world: &mut World) {
     }
     let mut index = std::mem::take(&mut *world.resource_mut::<GuidIndex>());
 
+    if !changes.removed.is_empty()
+        && world.contains_resource::<crate::items::Items>()
+        && world.contains_resource::<crate::item_lane::ItemLane>()
+    {
+        let mut stores_by_guid: HashMap<u64, ObjectFields> = HashMap::new();
+        for (&g, &e) in &index.0 {
+            if let Some(store) = world.get::<ObjectStore>(e) {
+                stores_by_guid.insert(g, store.0.clone());
+            }
+        }
+        let mut destroyed_runs = Vec::new();
+        if let Some(items) = world.get_resource::<crate::items::Items>() {
+            let watch = crate::item_watch::Watch {
+                me: Some(player_guid),
+                lookup: |g: u64| stores_by_guid.get(&g),
+                items,
+            };
+            for guid in &changes.removed {
+                if index
+                    .0
+                    .get(guid)
+                    .is_some_and(|&e| world.get::<ItemObject>(e).is_some())
+                {
+                    if let Some(run) = watch.destroyed_run(*guid) {
+                        destroyed_runs.push(run);
+                    }
+                }
+            }
+        }
+        if let Some(mut lane) = world.get_resource_mut::<crate::item_lane::ItemLane>() {
+            for run in destroyed_runs {
+                lane.push(run);
+            }
+        }
+    }
+
     for guid in &changes.removed {
         if let Some(entity) = index.0.remove(guid) {
             world.despawn(entity);
         }
     }
+
+    let mut item_creates: Vec<u64> = Vec::new();
+    let mut field_diffs: Vec<(u64, ObjectType, Vec<(u16, u32, u32)>)> = Vec::new();
+    let mut self_player_created = false;
 
     for guid in changes.created.iter().chain(changes.updated.iter()) {
         let Some(remote) = entities.get(guid) else {
@@ -4540,7 +4609,22 @@ fn wrath_apply_world(world: &mut World) {
             benilla_protocol_wrath::updates::type_id::ITEM
                 | benilla_protocol_wrath::updates::type_id::CONTAINER
         ) {
-            apply_item_world(world, &mut index.0, *guid, remote);
+            let (old_item, new_item) = apply_item_world(world, &mut index.0, *guid, remote);
+            let item_kind = if remote.type_id == benilla_protocol_wrath::updates::type_id::CONTAINER
+            {
+                ObjectType::Container
+            } else {
+                ObjectType::Item
+            };
+            match old_item {
+                None => item_creates.push(*guid),
+                Some(old_fields) => {
+                    let moved = diff_fields(&old_fields, &new_item);
+                    if !moved.is_empty() {
+                        field_diffs.push((*guid, item_kind, moved));
+                    }
+                }
+            }
             continue;
         }
         let kind = entity_kind(remote.type_id);
@@ -4682,6 +4766,12 @@ fn wrath_apply_world(world: &mut World) {
         match existing {
             Some(entity) => {
                 let old = world.get::<ObjectStore>(entity).map(|store| store.0.clone());
+                if let Some(old_fields) = &old {
+                    let moved = diff_fields(old_fields, &fields);
+                    if !moved.is_empty() {
+                        field_diffs.push((*guid, object_type, moved));
+                    }
+                }
                 let old_health = old.as_ref().and_then(benilla_protocol::ObjectFields::unit_health);
                 let old_max = old
                     .as_ref()
@@ -4890,6 +4980,9 @@ fn wrath_apply_world(world: &mut World) {
                 }
             }
             None => {
+                if *guid == player_guid {
+                    self_player_created = true;
+                }
                 let mut entity = world.spawn((
                     WrathStreamed,
                     WrathGeneration(remote.generation),
@@ -4930,6 +5023,124 @@ fn wrath_apply_world(world: &mut World) {
 
     world.resource_mut::<SelfGuid>().0 = Some(player_guid);
     *world.resource_mut::<GuidIndex>() = index;
+
+    if self_player_created || !item_creates.is_empty() || !field_diffs.is_empty() {
+        let mut stores_by_guid: HashMap<u64, ObjectFields> = HashMap::new();
+        for (&g, &e) in &world.resource::<GuidIndex>().0 {
+            if let Some(store) = world.get::<ObjectStore>(e) {
+                stores_by_guid.insert(g, store.0.clone());
+            }
+        }
+        if self_player_created {
+            if let (Some(player_fields), Some(mut bag_cache)) = (
+                stores_by_guid.get(&player_guid),
+                world.get_resource_mut::<crate::item_watch::BagCache>(),
+            ) {
+                let lookup = |g: u64| stores_by_guid.get(&g);
+                bag_cache.seat(player_fields, &lookup);
+            }
+        }
+        let mut runs_to_push: Vec<crate::item_watch::Run> = Vec::new();
+        let mut entry_misses: Vec<(u64, u32)> = Vec::new();
+        if world.contains_resource::<crate::items::Items>()
+            && world.contains_resource::<crate::item_watch::BagCache>()
+        {
+            let mut bag_cache = world
+                .remove_resource::<crate::item_watch::BagCache>()
+                .unwrap_or_default();
+            if let Some(items) = world.get_resource::<crate::items::Items>() {
+                let watch = crate::item_watch::Watch {
+                    me: Some(player_guid),
+                    lookup: |g: u64| stores_by_guid.get(&g),
+                    items,
+                };
+                for guid in &item_creates {
+                    if let Some(fields) = stores_by_guid.get(guid) {
+                        runs_to_push.push(watch.created_run(*guid, fields, &bag_cache));
+                    }
+                }
+                for (guid, kind, moved) in &field_diffs {
+                    if let Some(fields) = stores_by_guid.get(guid) {
+                        let sent: Vec<u16> = moved.iter().map(|&(idx, _, _)| idx).collect();
+                        let block = crate::field_watch::Notified::new(
+                            crate::field_watch::Sent::Fields(&sent),
+                            moved,
+                        );
+                        for (_, run) in
+                            watch.placed_values(*guid, *kind, fields, &block, &mut bag_cache)
+                        {
+                            if let Some(crate::item_watch::ItemNotice::Entry {
+                                guid: item_guid,
+                                new,
+                                new_cached: false,
+                                ..
+                            }) = run.notice
+                            {
+                                entry_misses.push((item_guid, new));
+                            }
+                            runs_to_push.push(run);
+                        }
+                    }
+                }
+            }
+            world.insert_resource(bag_cache);
+        }
+        if !entry_misses.is_empty() {
+            if let Some(net) = world
+                .get_resource::<NetCommands>()
+                .map(|n| NetCommands(n.0.clone()))
+            {
+                if let Some(mut items) = world.get_resource_mut::<crate::items::Items>() {
+                    for (item_guid, new_entry) in entry_misses {
+                        items.template(new_entry, item_guid, crate::query_cache::Ask::Event(&net));
+                        items.wait_for_entry(item_guid, new_entry);
+                    }
+                }
+            }
+        }
+        if !runs_to_push.is_empty() {
+            if let Some(mut lane) = world.get_resource_mut::<crate::item_lane::ItemLane>() {
+                for run in runs_to_push {
+                    lane.push(run);
+                }
+            }
+        }
+        for (guid, kind, moved) in &field_diffs {
+            if *guid == player_guid && *kind == ObjectType::Player {
+                let inv_changed = moved.iter().any(|&(idx, _, _)| {
+                    (benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR
+                        ..benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 228)
+                        .contains(&idx)
+                        || (benilla_protocol::field::FIELD_PLAYER_INV_SLOT_HEAD
+                            ..benilla_protocol::field::FIELD_PLAYER_INV_SLOT_HEAD + 226)
+                            .contains(&idx)
+                });
+                let money_changed = moved
+                    .iter()
+                    .any(|&(idx, _, _)| idx == benilla_protocol::field::FIELD_PLAYER_FIELD_COINAGE);
+                if inv_changed || money_changed {
+                    if let Some(mut notices) =
+                        world.get_resource_mut::<crate::field_watch::NoticeLane>()
+                    {
+                        if inv_changed {
+                            notices.write(crate::field_watch::FieldNotice::Player {
+                                id: crate::field_watch::id::UNIT_INVENTORY_CHANGED,
+                            });
+                            notices.write(crate::field_watch::FieldNotice::Unit {
+                                guid: player_guid,
+                                id: crate::field_watch::id::UNIT_INVENTORY_CHANGED,
+                            });
+                        }
+                        if money_changed {
+                            notices.write(crate::field_watch::FieldNotice::Global {
+                                id: crate::field_watch::id::PLAYER_MONEY,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     stamp_aura_anchors(world, &entities);
     world.insert_resource(CurrentMap(map_id));

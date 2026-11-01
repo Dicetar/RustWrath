@@ -477,12 +477,14 @@ fn snapshot_in_target(
             let mut active_titles = Vec::new();
             let mut available_titles = Vec::new();
             let mut active_levels = Vec::new();
+            let mut active_complete = Vec::new();
             let mut available_levels = Vec::new();
             let mut available_metadata = Vec::new();
             for q in &l.quests {
                 if row_is_active(q.icon) {
                     active_titles.push(q.title.clone());
                     active_levels.push(q.level);
+                    active_complete.push(q.icon == 4);
                 } else {
                     available_titles.push(q.title.clone());
                     available_levels.push(q.level);
@@ -495,6 +497,7 @@ fn snapshot_in_target(
                 active_titles,
                 available_titles,
                 active_levels,
+                active_complete,
                 available_levels,
                 available_metadata,
                 ..Default::default()

@@ -948,6 +948,21 @@ fn parse_m2_animations_wrath(
             .collect()
     };
 
+    // 12340 `M2AnimateTrack` (`M2Model.cpp:3378, 3400, 5444, 5469, 5489`, `0x0082AEF0`): a bone
+    // track with `m_sequenceTimes.m_count > 0` evaluates an empty sequence (`keys.m_count == 0`)
+    // to `defaultValue` (`[0,0,0]`, `[0,0,0,1]`, `[1,1,1]`) instead of leaving the previous
+    // sequence's local transform latched on the bone.
+    let animated_tracks: Vec<(bool, bool, bool)> = bone_tracks
+        .iter()
+        .map(|(tr, rot, sc)| {
+            (
+                tr.sequences.iter().any(|k| !k.is_empty()),
+                rot.sequences.iter().any(|k| !k.is_empty()),
+                sc.sequences.iter().any(|k| !k.is_empty()),
+            )
+        })
+        .collect();
+
     let mut out = Vec::new();
     for s in 0..seq_count {
         let rec = seq_ofs + s * 0x40;
@@ -968,19 +983,30 @@ fn parse_m2_animations_wrath(
             vec3(b, rec + 0x2c).unwrap_or([0.0; 3]),
         );
         let mut bones = Vec::new();
-        for (i, (tr, rot, sc)) in bone_tracks.iter().enumerate() {
-            let translation = tr
+        for (i, ((tr, rot, sc), &(tr_any, rot_any, sc_any))) in
+            bone_tracks.iter().zip(animated_tracks.iter()).enumerate()
+        {
+            let mut translation = tr
                 .sequences
                 .get(source)
                 .map_or_else(|| constant(&tr.global), |k| seq_keys(k));
-            let rotation = rot
+            if translation.is_empty() && tr_any {
+                translation.push((0.0, [0.0, 0.0, 0.0]));
+            }
+            let mut rotation = rot
                 .sequences
                 .get(source)
                 .map_or_else(|| constant_q(&rot.global), |k| seq_quats(k));
-            let scale = sc
+            if rotation.is_empty() && rot_any {
+                rotation.push((0.0, [0.0, 0.0, 0.0, 1.0]));
+            }
+            let mut scale = sc
                 .sequences
                 .get(source)
                 .map_or_else(|| constant(&sc.global), |k| seq_keys(k));
+            if scale.is_empty() && sc_any {
+                scale.push((0.0, [1.0, 1.0, 1.0]));
+            }
             if !(translation.is_empty() && rotation.is_empty() && scale.is_empty()) {
                 bones.push(BoneKeys {
                     bone: i as u16,

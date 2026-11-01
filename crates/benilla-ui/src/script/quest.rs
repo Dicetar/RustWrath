@@ -74,6 +74,7 @@ pub struct QuestState {
     /// at `+0x08`, `0xbde690` and `0xbdfe60`): `GetActiveLevel` and `GetAvailableLevel` read it. A
     /// pool built without levels reads 0.
     pub active_levels: Vec<u32>,
+    pub active_complete: Vec<bool>,
     pub available_levels: Vec<u32>,
     pub available_metadata: Vec<(u32, bool)>,
     // Detail, progress and reward panels.
@@ -107,6 +108,7 @@ impl Default for QuestState {
             active_titles: Vec::new(),
             available_titles: Vec::new(),
             active_levels: Vec::new(),
+            active_complete: Vec::new(),
             available_levels: Vec::new(),
             available_metadata: Vec::new(),
             title: String::new(),
@@ -323,18 +325,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             name,
             lua.create_function(move |lua, i: Value| {
                 let i = binding_abi::index_arg(lua, i, usage)?;
-                let title = {
+                let (title, complete, wrath) = {
                     let model = lua.app_data_ref::<Model>().expect("model app_data");
-                    model.quest.as_ref().and_then(|q| {
+                    let n = i.checked_sub(1);
+                    let title = model.quest.as_ref().and_then(|q| {
                         let v = if active {
                             &q.active_titles
                         } else {
                             &q.available_titles
                         };
-                        i.checked_sub(1).and_then(|n| v.get(n)).cloned()
-                    })
+                        n.and_then(|idx| v.get(idx)).cloned()
+                    });
+                    let complete = active
+                        && model
+                            .quest
+                            .as_ref()
+                            .and_then(|q| n.and_then(|idx| q.active_complete.get(idx)).copied())
+                            .unwrap_or(false);
+                    (title, complete, model.is_wrath())
                 };
-                Ok(Value::String(lua.create_string(title.unwrap_or_default())?))
+                let title = Value::String(lua.create_string(title.unwrap_or_default())?);
+                if active && wrath {
+                    Ok(MultiValue::from_vec(vec![title, flag(complete)]))
+                } else {
+                    Ok(MultiValue::from_vec(vec![title]))
+                }
             })?,
         )
     }
@@ -700,7 +715,9 @@ mod tests {
         }));
         s.set_quest(Some(QuestState {
             panel: QuestPanel::Greeting,
-            active_titles: vec!["Active".into()], active_levels: vec![1],
+            active_titles: vec!["Active".into(), "Ready".into()],
+            active_levels: vec![1, 1],
+            active_complete: vec![false, true],
             available_titles: vec!["Scaling".into(), "Repeatable".into()],
             available_levels: vec![u32::MAX, 1],
             available_metadata: vec![(0x1000, false), (0, true)],
@@ -708,6 +725,8 @@ mod tests {
         }));
         assert!(s.eval::<bool>("local low,daily,rep=GetAvailableQuestInfo(1) return low==nil and daily==1 and rep==nil").unwrap());
         assert!(s.eval::<bool>("local low,daily,rep=GetAvailableQuestInfo(2) return low==1 and daily==nil and rep==1").unwrap());
+        assert!(s.eval::<bool>("local title,complete=GetActiveTitle(1) return title=='Active' and complete==nil").unwrap());
+        assert!(s.eval::<bool>("local title,complete=GetActiveTitle(2) return title=='Ready' and complete==1").unwrap());
         assert_eq!(s.eval::<i64>("return IsActiveQuestTrivial(1)").unwrap(), 1);
         s.set_quest(None);
         assert!(s.eval::<bool>("local _,daily=GetAvailableQuestInfo(1) return daily==1").unwrap());

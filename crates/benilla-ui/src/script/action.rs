@@ -450,10 +450,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // UseAction(action [, checkCursor [, onSelf]]): a nonzero `checkCursor` while the cursor holds
-    // a payload places it, as `PlaceAction` does; otherwise the press is queued with `onSelf`, the
-    // self-cast flag. FrameXML passes 1 from a click and 0 from a keybind; the binding's own test
-    // of it is untraced, and place-on-click is the reading that split implies.
+    // UseAction(action [, checkCursor [, onSelf]]) in 1.12 (`0x4e7140`), and
+    // UseAction(slot [, target [, button]]) in 12340 (`0x005AC000` -> `0x005ABBC0`).
     g.set(
         "UseAction",
         lua.create_function(|lua, (action, rest): (Value, MultiValue)| {
@@ -464,11 +462,32 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 action,
                 "Usage: UseAction(slot, [, checkCursor] [, onSelf])",
             )?;
-            // Both flags go through `GetBoolOrDefault` (`0x4e717e`, `0x4e716f`), default 0.
-            let check_cursor = bool_or_default(rest.front(), false);
-            let on_self = bool_or_default(rest.get(1), false);
             let may_cast = protected::gate(lua, Tag::CAST);
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let (check_cursor, on_self) = if model.is_wrath()
+                && !matches!(rest.front(), Some(Value::Integer(_) | Value::Number(_)))
+            {
+                // 12340 `Script_UseAction` (`0x005AC000`) & `CGActionBar::UseAction` (`0x005ABBC0`):
+                // arg 2 is the optional unit token (`"player"`, `"target"`, ...) and arg 3 is the
+                // mouse button; `button != nil` (from a click, not a keybind) places a held cursor
+                // payload unless the slot is a possession slot (`121..=132`).
+                let clicked = !matches!(rest.get(1), None | Some(Value::Nil));
+                let check_cursor =
+                    (clicked || !model.protected.events().binding) && !(121..=132).contains(&action);
+                let on_self = match rest.front() {
+                    Some(Value::String(s)) => s
+                        .to_str()
+                        .is_ok_and(|u| u.eq_ignore_ascii_case("player")),
+                    _ => false,
+                };
+                (check_cursor, on_self)
+            } else {
+                // Both flags go through `GetBoolOrDefault` (`0x4e717e`, `0x4e716f`), default 0.
+                (
+                    bool_or_default(rest.front(), false),
+                    bool_or_default(rest.get(1), false),
+                )
+            };
             if check_cursor && model.cursor.is_some() {
                 drop(model);
                 super::cursor::place_action(lua, action)?;
