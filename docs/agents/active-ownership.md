@@ -12,11 +12,10 @@ dirty work and coordinate exceptions explicitly.
 - `benilla-world/src/rig_anim/{pose,compose}.rs`, `rig_anim.rs`, app `hotpatch.rs`, app/launcher
   Cargo features/registration, new hotpatch crates and associated docs/tools.
 - Adopt and preserve OC's pending finite-local repair, including his writeback into locals.
-- The combined roaming/vendor/light-table build passed; the build/run slot is released.
-  No client/cargo/rustc process remains. New binary SHA-256:
-  42C19FF18A16418C7A498B4969C0A7851E9FEC20D49CA8A49BDCF80AA75CC995.
-  No new client has been launched. OpenCode may take a coordinated build/run slot; revalidate
-  processes and file claims first. These source repairs have no rendered acceptance yet.
+- Current owner request: pull Argon's 27d3b09d, preserve local OpenCode edits, rebuild and
+  launch Firna for the human. Astra reserves this integration/build/run slot; no competing
+  build or account login. A pre-integration source/history backup is preserved outside the
+  checkout; automatic backups run every eight hours (docs/agents/backups.md).
 - External-animation repair claim: `benilla-formats/src/models/anim.rs`, its root re-export,
   `benilla-formats/examples/animation_sources.rs`, and `benilla-assets/src/m2.rs`.
 - New owner-reported graphics blocker: roaming creature visuals remain at old positions while
