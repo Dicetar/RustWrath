@@ -755,6 +755,9 @@ fn install_framescript(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
 
     // `0x4587f0` (table `0x835a50`): `PlaySound`, `PlayMusic`, `PlaySoundFile`, `StopMusic`.
     sound::install(&lua)?;
+    if target == UiTarget::Wrath335 {
+        wrath_natives::install_frame_fallbacks(&lua)?;
+    }
     Ok(lua)
 }
 

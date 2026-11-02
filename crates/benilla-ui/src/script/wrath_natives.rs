@@ -1,6 +1,7 @@
 //! Wrath client-query natives the stock 3.3.5a FrameXML calls at load and the 1.12 interpreter
-//! has no verb for. Each answer is the real client's on a machine without the optional hardware
-//! the query asks about, or with the single output device benilla mixes through.
+//! has no verb for. Device queries describe supported local hardware. Some imported startup
+//! bindings below remain compatibility fallbacks rather than projections of live gameplay
+//! state; registering them does not establish support for those subsystems.
 
 use mlua::{Lua, MultiValue, Value};
 
@@ -466,13 +467,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // count.
     lua.globals().set(
         "GetTrackedAchievements",
-        lua.create_function(|_, ()| Ok(mlua::MultiValue::new()))?,
+        lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::MultiValue::new()))?,
     )?;
     lua.globals().set(
         "GetNumTrackedAchievements",
-        lua.create_function(|_, ()| Ok(0))?,
+        lua.create_function(|_, _: mlua::MultiValue| Ok(0))?,
     )?;
-
     // `BNFeaturesEnabled` (`InterfaceOptionsPanels.lua:820`, `:857`, `:1610`): Battle.net features
     // come with a Battle.net account connection benilla does not have, and the stock panels take
     // the same branch here as the real client on an account without them.
@@ -677,9 +677,158 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::MultiValue::new()))?,
     )?;
 
+    // `SetChatWindowUninteractable` (`FloatingChatFrame.lua:982`): whether a chat window receives clicks.
+    lua.globals().set(
+        "SetChatWindowUninteractable",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
+    )?;
+
+    // `GetExpansionLevel` (`LFDFrame.lua:1`) & `GetAccountExpansionLevel` (`ReputationFrame.lua:25`):
+    // 0 = Classic, 1 = The Burning Crusade, 2 = Wrath of the Lich King.
+    lua.globals().set(
+        "GetExpansionLevel",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(2))?,
+    )?;
+    lua.globals().set(
+        "GetAccountExpansionLevel",
+        lua.create_function(|lua, _: mlua::MultiValue| {
+            Ok(lua.app_data_ref::<Model>().expect("model").glue.account_expansion)
+        })?,
+    )?;
+
+    // `GetAttackPowerForStat` (`PaperDollFrame.lua:272`): attack power breakdown for a given stat.
+    lua.globals().set(
+        "GetAttackPowerForStat",
+        lua.create_function(|_, _: mlua::MultiValue| Ok((0i64, 0i64, 0i64)))?,
+    )?;
+
+    // `GetMirrorTimerInfo` (`MirrorTimer.lua:82`): breath/fatigue mirror timer info.
+    lua.globals().set(
+        "GetMirrorTimerInfo",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(("UNKNOWN", 0i64, 0i64, 0i64, 0i64, "")))?,
+    )?;
+
+    // `CalendarGetNumPendingInvites` (`GameTime.lua:157`): pending calendar invites count.
+    lua.globals().set(
+        "CalendarGetNumPendingInvites",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(0i64))?,
+    )?;
+
+    // `IsXPUserDisabled` (`MainMenuBar.lua:344`): whether XP gain is locked at NPC.
+    lua.globals().set(
+        "IsXPUserDisabled",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
+    )?;
+
+    // `IsPossessBarVisible` (`BonusActionBarFrame.lua:221`): mind control / vehicle possess bar.
+    lua.globals().set(
+        "IsPossessBarVisible",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
+    )?;
+
+    // `BNGetNumBlocked` (`FriendsFrame.lua:452`): blocked Battle.net contacts count.
+    lua.globals().set(
+        "BNGetNumBlocked",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(0i64))?,
+    )?;
+
+    // `GetNumVoiceSessions` (`ChannelFrame.lua:972`) & `IsVoiceChatAllowedByServer` (`AudioOptionsFrame.lua:41`).
+    lua.globals().set(
+        "GetNumVoiceSessions",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(0i64))?,
+    )?;
+    lua.globals().set(
+        "IsVoiceChatAllowedByServer",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
+    )?;
+
+    // `GetTotemInfo` (`TotemFrame.lua:34`, `MultiCastActionBarFrame.lua:313`): haveTotem, name, startTime, duration, icon.
+    lua.globals().set(
+        "GetTotemInfo",
+        lua.create_function(|_, _: mlua::MultiValue| Ok((false, "", 0i64, 0i64, "")))?,
+    )?;
+
+    // `GetRuneType` (`RuneFrame.lua:71`): Death Knight rune types (1=Blood, 2=Unholy, 3=Frost, 4=Death).
+    lua.globals().set(
+        "GetRuneType",
+        lua.create_function(|_, slot: Option<usize>| {
+            let rune_type = match slot.unwrap_or(1) {
+                1 | 2 => 1,
+                3 | 4 => 2,
+                5 | 6 => 3,
+                _ => 1,
+            };
+            Ok(rune_type)
+        })?,
+    )?;
+
+    // `GetHonorCurrency` (`PVPFrame.lua:515`): currency tab honor points.
+    lua.globals().set(
+        "GetHonorCurrency",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(0i64))?,
+    )?;
+
+    // `GetLFGRoles` (`LFGFrame.lua:251`) & `UnitGroupRolesAssigned` (`PlayerFrame.lua:250`): LFG roles.
+    lua.globals().set(
+        "GetLFGRoles",
+        lua.create_function(|_, _: mlua::MultiValue| Ok((false, false, false, false)))?,
+    )?;
+    lua.globals().set(
+        "UnitGroupRolesAssigned",
+        lua.create_function(|_, _: mlua::MultiValue| Ok("NONE"))?,
+    )?;
+
+    // `GetNumMapDebugObjects` (`WorldMapFrame.lua:402`): debug map pins.
+    lua.globals().set(
+        "GetNumMapDebugObjects",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(0i64))?,
+    )?;
+
+    // `GetSelectedDisplayChannel` (`ChannelFrame.lua:46`, `:51`): selected chat channel index.
+    lua.globals().set(
+        "GetSelectedDisplayChannel",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::Value::Nil))?,
+    )?;
+
+    // `IsLoggedIn` (AceAddon-3.0.lua:626): indicates character is in-world.
+    lua.globals().set(
+        "IsLoggedIn",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(true))?,
+    )?;
+
+    // `GetPlayerFacing` (Astrolabe-0.4.lua:370): player yaw orientation in radians.
+    lua.globals().set(
+        "GetPlayerFacing",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(0.0f64))?,
+    )?;
+
+    // Named script handlers referenced in FrameXML / LFRFrame XML.
+    lua.globals().set(
+        "QueryGuildEventLog",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
+    )?;
+    lua.globals().set(
+        "RefreshLFGList",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
+    )?;
+
     super::input_verbs::install_wrath(lua)?;
 
     Ok(())
+}
+
+/// The imported map placeholder requires the frame factory and widget method tables.
+/// It does not implement quest-blob geometry or panning.
+pub(super) fn install_frame_fallbacks(lua: &Lua) -> mlua::Result<()> {
+    lua.load(r#"
+        if not WorldMapBlobFrame then
+            local f = CreateFrame("Frame", "WorldMapBlobFrame")
+            if f then
+                function f:DrawBlob() end
+                function f:EnablePanning() end
+            end
+        end
+    "#).exec()
 }
 
 /// `GetLuaCompanionType` (`SpellBookFrame_Scripts.cpp:165`): `lua_tolstring` then a
@@ -1202,5 +1351,21 @@ mod tests {
             ("item".to_string(), 117.0),
             "the popup still sees the item on the cursor"
         );
+    }
+
+    #[test]
+    fn wrath_framexml_startup_natives_and_roles_are_defined() {
+        use crate::script::{UiScript, UiTarget};
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_glue_account_expansion(1);
+        assert_eq!(s.eval::<i64>("return GetExpansionLevel()").unwrap(), 2);
+        assert_eq!(s.eval::<i64>("return GetAccountExpansionLevel()").unwrap(), 1);
+        assert_eq!(s.eval::<String>("return UnitGroupRolesAssigned('player')").unwrap(), "NONE");
+        assert_eq!(s.eval::<i64>("return GetNumTrackedAchievements(false)").unwrap(), 0);
+        assert_eq!(s.eval::<i64>("return GetRuneType(1)").unwrap(), 1);
+        assert_eq!(s.eval::<i64>("return GetRuneType(3)").unwrap(), 2);
+        assert_eq!(s.eval::<i64>("return GetRuneType(5)").unwrap(), 3);
+        assert_eq!(s.eval::<bool>("return IsXPUserDisabled()").unwrap(), false);
+        assert_eq!(s.eval::<bool>("return IsLoggedIn()").unwrap(), true);
     }
 }

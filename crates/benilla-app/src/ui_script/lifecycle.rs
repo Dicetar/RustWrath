@@ -60,6 +60,20 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("showBattlefieldMinimap", "0"),
     // 12340 GameUI_CVar.cpp:608: Whether or not the keyring is shown.
     ("showKeyring", "0"),
+    ("alwaysShowActionBars", "0"),
+    ("trackerSorting", "0"),
+    ("stopAutoAttackOnTargetChange", "0"),
+    ("mapQuestDifficulty", "0"),
+    ("showPartyPets", "1"),
+    ("lastTalkedToGM", ""),
+    ("guildRecruitmentChannel", "1"),
+    ("showClock", "1"),
+    ("UnitNameFriendlyPlayerName", "1"),
+    ("showNewbieTips", "1"),
+    ("locale", "enUS"),
+    ("previewTalents", "0"),
+    ("fctSpellMechanics", "0"),
+    ("showDispelDebuffs", "0"),
 ];
 
 pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {
@@ -630,6 +644,11 @@ fn load_ingame_ui_seated(world: &mut World, seat: LoadSeat) {
     crate::ui_unit::seed_default_language(world, &mut script);
     crate::ui_unit::seed_language_table(world, &mut script);
     crate::ui_quest::seed_title_count(world, &mut script);
+    if script.target() == UiTarget::Wrath335 {
+        if let Some(wrath) = world.get_resource::<crate::wrath::WrathControl>() {
+            script.set_glue_account_expansion(wrath.account_expansion());
+        }
+    }
     // The world map's continent and zone lists: static DBC data in the reference, read at file
     // scope (Astrolabe builds its whole zone table from `GetMapContinents`/`GetMapZones` there).
     crate::ui_world_map::seed_world_map_catalog(world, &mut script);
