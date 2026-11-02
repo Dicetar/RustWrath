@@ -1,5 +1,11 @@
 # Owner decisions — adopted defaults (vetoable)
 
+Read dated amendments before applying an earlier proposal. The 2026-11-01 sequencing and
+single-owner workflow below supersede older permanent agent/crate partitions. Current
+assignments belong in [active ownership](../agents/active-ownership.md); operational rules
+are in [the workflow](../agents/workflow.md). This record does not establish that planned
+modules or alpha acceptance are implemented.
+
 Recorded 2026-10-24 after owner granted execution authority ("you can build, code and do anything you need").
 These defaults were recommended by GLM and adopted under a standing execution authorization; **absence of objection is not owner consent** — especially row 1 (maintenance-restart boundary), which stays a proposal until the owner confirms it.
 The owner may override any row; later documents must not treat them as owner-confirmed until then.

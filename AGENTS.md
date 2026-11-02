@@ -1,58 +1,62 @@
-# benilla
+# RustWrath agent instructions
 
-## Project B / wotlk reference override
+RustWrath is the Project B fork of benilla: a Rust/Bevy client targeting WoW 3.3.5a
+build 12340 and the owner's existing AzerothCore server. Preserve donor 1.12 behavior
+behind its version boundary. First delivery: a private Windows alpha with a working
+login/roster flow, then Firna's Northshire quest/combat/loot route.
 
-This checkout is the Project B 3.3.5a fork. For Wrath build 12340 behavior, consult the preserved
-decompilation at `D:/Projects/wowdecomp-reference` before implementing or guessing client
-mechanisms. Pin: `e67b6ffef23655dc7da061cb2d36b7963f6ef71a` (Terrorblade/wowdecomp).
-Read [the reference workflow](docs/agents/12340-reference.md) for source routing and validation.
-The 1.12 instructions below still govern donor compatibility; they do not define Wrath layouts.
+## Bootstrap
 
-A from-scratch World of Warcraft 1.12.1 client in Rust and Bevy. The reference client is the
-spec: benilla is a faithful, modern implementation of it, not a place to get creative.
+1. Read [CONTEXT.md](CONTEXT.md) for scope and domain language.
+2. Read [the workflow](docs/agents/workflow.md) and [active ownership](docs/agents/active-ownership.md).
+3. Read the relevant ticket/handoff; inspect HEAD, index, dirty diffs and live processes.
+4. Consult [METHOD](docs/METHOD.md), [CONTRIBUTING](docs/CONTRIBUTING.md), and relevant
+   parts of [MAP](docs/MAP.md). MAP is generated orientation, not runtime acceptance.
+5. For Wrath repairs, follow [the 12340 reference workflow](docs/agents/12340-reference.md).
 
-Read, in this order:
+System/developer instructions and direct owner requests take precedence. The Project B
+workflow qualifies inherited donor verification/release procedures; those procedures
+do not authorize broad test runs, builds or live sessions.
 
-1. `docs/METHOD.md` — the rules and how we work. Binding for every session.
-2. `docs/MAP.md` — what is built right now, generated from the code. Orient here before
-   touching anything.
-3. `docs/CONTRIBUTING.md` — what gets in and how a change is judged.
+## Ownership and execution
 
-What the real client does comes from [benilla-re](https://github.com/samwhosung/benilla-re), the
-reverse engineering of 1.12.1, before you build: clone it beside this repo and grep it, or look an
-address up at `https://samwhosung.github.io/benilla-re/?0x5e6853`. `docs/CONTRIBUTING.md`, "The
-reference", says how to read it and what to do when it has a gap.
+- Use one owner per ticket across whichever crates the fix needs. Permanent Astra/OC
+  crate lockouts are retired. Agree disjoint edits or sequence a shared file explicitly.
+- When collaboration is authorized, use AutoSwarm to assign, communicate and collect work.
+  Inspect tracked calls and manually opened sessions before starting duplicate work.
+  Handle routine coordination directly; do not make the owner relay messages.
+- One coordinator owns Cargo and client slots. Never start a competing build/client or
+  terminate another session to acquire a slot. Revalidate stale notes and PIDs.
+- Use existing owners and real native contracts. Nil/constant returns and broad error
+  suppression are not completed APIs. Name unsupported branches and missing consumers.
+- Close visible bugs against their original symptom. Separate source, compilation,
+  focused checks, receiver behavior and visible gameplay. No alpha claim from tests alone.
+- Preserve dirty source and untracked evidence. Stage explicit owned paths; no blanket
+  staging, reset/clean, shared-branch switch or pull/rebase underneath dirty work.
 
-The rest of the root is code and data: `crates/` the workspace, `reference/` benilla-re's
-tables vendored at a pinned commit, which the tests check against, `scripts/` the gates and
-instruments, `third_party/` vendored code.
+## Boundaries
 
-@docs/METHOD.md
+- Game install, server/DB and preserved reference are read-only unless explicitly assigned.
+  Never commit game data, extracted FrameXML/GlueXML, credentials or local runtime state.
+- The owner enters credentials and drives combat. No unattended combat, automated persistent
+  character creation/deletion, or competing login during an owner's live session.
+- Use only authorized verification. Keep essential targeted cases within the current
+  20-case task limit; do not fill that budget unnecessarily. Documentation maintenance
+  needs no Cargo build, test suite, client or server run.
+- Keep at most three completed source backups. Do not duplicate target or MPQ archives.
+  See [repository rules](docs/agents/repository.md) and [backups](docs/agents/backups.md).
 
-## Agent skills
+## Reference and documentation routing
 
-### Issue tracker
+- Wrath reference: D:/Projects/wowdecomp-reference, pin
+  e67b6ffef23655dc7da061cb2d36b7963f6ef71a. Investigate behavior; do not copy implementation.
+- Donor research: samwhosung/benilla-re establishes 1.12 behavior, not Wrath layouts.
+- Read the installed project-b-12340-reference skill before target-specific repairs when
+  available, and the installed autoswarm skill before delegation. Names do not install tools.
+- Module/ABI work: [ADR-0002](docs/architecture/adr-0002-live-client-modules.md).
+  A commit or staged DLL does not demonstrate activation in a running client.
+- [Documentation map](docs/agents/domain.md), [issues](docs/agents/issue-tracker.md),
+  [triage](docs/agents/triage-labels.md), [owner decisions](docs/baseline/owner-decisions.md).
 
-Project B tickets live as local markdown under `.scratch/project-b/issues/`. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Default five-label vocabulary in use. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: `CONTEXT.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.
-
-### 12340 reference skill
-
-Use `project-b-12340-reference` for this fork's rendering, formats, protocol-facing client
-behavior and Lua/UI contracts. Skill: `C:/Users/Qraag/.codex/skills/project-b-12340-reference/SKILL.md`.
-It points to the canonical repository guide; availability of source is not permission to copy it
-or evidence of runtime correctness.
-
-### Client hotpatch modules
-
-Read `docs/architecture/adr-0002-live-client-modules.md` before changing reload/module interfaces.
-The native host is under construction; DLL staging is not in-game dispatch or visual acceptance.
-Current ownership and the shared build/run reservation are in `docs/agents/active-ownership.md`.
-The owner assigned graphics/modules/integration seams to Astra; OC continues playable combat.
+Keep durable rules here and in linked guides, current reservations in active-ownership,
+and results/evidence in the owning handoff. Avoid accumulating session history here.

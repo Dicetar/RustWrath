@@ -5,12 +5,32 @@ login screen; enter your account and password there, choose the realm, then a ch
 The launcher does not read `.probe-identity` or save a password. The local auth/world servers
 must already be running. The launcher refuses to compete with an existing client or build.
 
-Build the executable after source changes:
+From PowerShell, the same entry point is:
+
+```powershell
+& 'D:\Projects\project-b-client\Launch RustWrath.cmd'
+```
+
+No commit, push or pull is required to test the existing local executable. The launcher
+does not rebuild it. If source changed, coordinate a rebuild before expecting those fixes
+in game. Do not pull or switch branches underneath uncommitted shared work.
+
+Build after source changes, with the shared Cargo slot free and no client running:
 
 ```powershell
 cd D:\Projects\project-b-client
 cargo build -p benilla --features hotpatch
 ```
+
+This workstation has an optional sccache wrapper. Set it in the build shell before Cargo:
+
+```powershell
+$env:RUSTC_WRAPPER = 'C:\Users\Qraag\.cargo\bin\sccache.exe'
+```
+
+Use that path only if installed. Selecting the wrapper does not prove a cache hit or speedup.
+The launcher uses target/debug/benilla.exe; another build profile does not replace that
+executable automatically. Git publication alone does not activate code in a running process.
 
 Launch from PowerShell with another data root or auth server:
 
@@ -26,9 +46,29 @@ The local world endpoint defaults to `127.0.0.1:8095`; pass `-WorldServer ''` to
 address advertised by the selected realm instead.
 No unattended probe, automatic character pick, combat action or timeout is enabled.
 
-The stock character screen owns selection, creation, appearance choices and deletion
-confirmation. Character changes must receive server replies before the roster refreshes.
-Settings use the existing stock options and local CVar persistence. Multiclassing is deferred.
+The intended stock workflow is login, optional realm choice, roster selection and world entry,
+with character creation/cancel and deletion confirmation on their respective screens.
+These paths remain under active repair; the presence of a button is not acceptance.
+Persistent creation/deletion must be driven by the owner. Settings use local CVar persistence;
+backend wiring must be verified for each option. Multiclassing is deferred.
+
+## Testing and troubleshooting
+
+- If the launcher reports an existing client/build, wait or coordinate with its owner;
+  do not start another executable or kill the other process to bypass it.
+- If the binary is missing, run the coordinated build above. A clean Git tree does not
+  establish that the executable is current.
+- If login cannot connect, confirm the local auth/world services are running and the
+  endpoint overrides are correct. This launcher does not start or modify the server.
+- Select Firna for Northshire and confirm her name/location before interacting. The owner
+  drives combat; successful login is not a completed gameplay check.
+- For a modal or black screen, record the exact error/action and newest Launcher run
+  directory. launch.txt identifies the PID and executable hash; stdout.log/stderr.log
+  contain diagnostics. Review/redact sensitive account/session details before sharing logs.
+  Capture relevant evidence before launcher retention removes old runs.
+
+Coordinate checks under [the project workflow](agents/workflow.md). Documentation updates
+alone need no compilation, client run or server interaction.
 
 Developer direct-entry runners remain separate: `WOW_WRATH=1` without
 `WOW_WRATH_LOGIN_UI=1` retains their explicit environment identity and named-character path.

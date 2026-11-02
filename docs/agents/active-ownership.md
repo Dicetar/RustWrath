@@ -1,72 +1,67 @@
 # Active Project B ownership
 
-Owner instruction, 2026-11-01: Project B uses a **unified single-owner per-ticket workflow**.
-Any active agent may touch any crate in the workspace (`benilla-app`, `benilla-world`, `benilla-ui`,
-`benilla-formats`, `benilla-m2`, `benilla-assets`, `benilla-protocol-wrath`, `benilla-hotpatch*`)
-required to complete the active ticket end-to-end. The previous Astra-vs-OC crate partition is
-retired so cross-cutting fixes (wire -> state -> ECS -> M2/shader -> FrameXML) never stall at
-artificial file boundaries.
+Use one accountable owner per ticket, across whichever crates are needed. Permanent
+Astra/OC crate partitions are retired. Standing coordination and execution rules are in
+[workflow.md](workflow.md); this file records assignments and resource reservations.
 
-## Sequencing & Architecture Rules
+## Current assignments to revalidate
 
-1. **Track Sequencing**:
-   - **Phase 1 (Immediate Priority)**: Finish the playable Northshire alpha route end-to-end:
-     - Roaming creature visual vs. authoritative position synchronization (`SMSG_MONSTER_MOVE`
-       smooth/Catmull-Rom flags, create-block `SPLINE_ENABLED` paths, stop position snaps) and
-       NPC `Unknown` / `Dead` state resolution (`NameCache` / `GameObjectTemplates` hooks on create).
-     - Spellbook & hotbar cast-state gate cleanup (`PendingCast` clearing on instant casts,
-       `SMSG_CAST_FAILED`, and self `SMSG_SPELL_FAILURE` so `"Another action is in progress"` never sticks).
-     - FrameXML / UI parity (Character PaperDoll, Talents, Vendor/Merchant, Quest Log, Bags/Inventory).
-     - Camera-dependent magenta lighting & v264 M2 external `.anim` track / header offset fixes.
-   - **Phase 2**: Expand the hot-pluggable module architecture (`benilla-hotpatch-abi` &
-     `benilla-hotpatch`) across five swappable seams:
-     - `PoseModuleV1` (`pose-<sha1>.dll`): post-animation skeletal pose & attachment adjustments.
-     - `MovementModuleV1` (`movement-<sha1>.dll`): pluggable movement physics/controller (standard WoW vs. Souls inertia/dodge).
-     - `CombatModuleV1` (`combat-<sha1>.dll`): pluggable combat state machine (standard tab-target vs. Elden Ring / Souls stamina, poise, dodge i-frames, and weapon hitboxes).
-     - `SpaceModuleV1` (`space-<sha1>.dll`): pluggable procedural terrain chunks, decorations, dynamic mob spawns, and world item spawns.
-     - `StoryModuleV1` (`story-<sha1>.dll`): pluggable custom quest chains, dialogue trees, and objective trackers.
-   - **Phase 3**: Implement the Souls / Elden Ring Combat module (`Funny-Bones/ELDEN-RING-Combat-Rewrite`
-     reference) and Procedural Terrain / Spawner / Story modules on top of the Phase 2 ABI without
-     breaking the baseline client.
+Snapshot reconciled on 2026-11-02 from existing reservations and recorded outcomes.
+A reservation is not proof that a process is still running. Inspect live state before
+editing, building or launching. Preserve dirty source from all owners.
 
-## Current ticket
+| Owner / task | Files or responsibility | Last recorded state |
+|---|---|---|
+| Astra / integration coordinator | Login, realm, roster, creation/cancel, world-entry integration; shared build/client coordination | Runtime follow-up and integration remain open; see next-batch handoff |
+| OpenCode / CVar repair | app cvars/table.rs, UI script/cvars.rs and CVar tests | AutoSwarm call call_5380cc6ac3844b74a45cdf5465d64056 completed; integration/backend gaps remain reported |
+| Gemini / proposed contract fixes | glue_select.rs, app ui_script/glue_mgr.rs, UI tooltip_item/, wrath_natives.rs and focused tests | Prompt prepared; launch/acceptance not established. Inspect actual work before assigning |
+| Merchant contributor | UI merchant.rs and associated tests | Reported complete in merchant handoff; build slot released |
 
-2026-11-01 follow-up screenshots: Astra owns the login CVar initialization, Wrath
-creation return contracts/catalogs, ModelFFX methods/preview consumption, and world-entry
-loading-screen release/art repairs. Build reservation: `astra-glue-followup-build.log`.
-The merchant owner must leave these paths and this Cargo slot alone until release.
-The merchant run made mechanical ModelEffects export / integer-width compilation fixes;
-those edits are preserved. Do not launch a client from the previous binary for acceptance.
+Manual OC session ses_e67532ec7fferWEL6rThWdiGOY previously acknowledged Astra's integration
+reservation and completed cursor work. Read-only AutoSwarm review
+call_14bd8c3d02904f618719b6c3ff2f23eb has recorded findings; inspect its result before repeating it.
+Do not infer that manually opened sessions are controlled by AutoSwarm.
 
-2026-11-01: OC is stopped by the owner. Astra resumes the reported login/realm-screen
-errors and artwork repair: glue_core.rs, glue_select.rs, glue_realm.rs, Cfg_Categories
-loader, selected-profile UI texture consumers as needed, and their existing app seams.
-The shared Cargo slot is reserved for this bounded repair. No competing client or build.
+## Build and client slots
 
-Astra: review-contract repairs in UI attributes/container/action and app action dispatch;
-interactive Wrath login/realm/roster/create/delete integration and launcher tools.
-This is a per-ticket reservation under the unified workflow, not a permanent crate partition.
-No client was running at task admission; the earlier Firna reservation has expired.
-The integration rebuild passed; the shared Cargo slot is released. No client was launched.
-Origin `511369d7` has been pulled, preserving its movement/combat/graphics/module work
-and the local login changes. Source changes remain uncommitted for review.
+At the documentation-maintenance admission on 2026-11-02, no benilla/Cargo/rustc process
+was observed. This is a snapshot, not a persistent free-slot guarantee. This docs task
+does not reserve or start a build/client. The previous dated build/PID reservations are
+historical and must not be reused as active locks.
 
-Collaborating Engineer: Vendor / Merchant FrameXML 3.3.5a Parity.
-File ownership: `crates/benilla-ui/src/script/merchant.rs` and associated tests.
-Scope: 12340 reference parity for `GetMerchantItemInfo` (7-value return), `GetMerchantItemCostInfo`,
-`GetMerchantItemCostItem`, `ExtendedCostView`, and invalid-index return tuples matching
-`WoW/Source/Ui/MerchantFrame_Scripts.cpp`. Zero overlap with Astra's uncommitted files or
-OC's reserved combat/action-bar areas.
-Status: COMPLETED. Targeted merchant unit tests passed (26/26). Handoff documented in
-`.scratch/project-b/handoffs/2026-11-01-ce-merchant-framexml-parity.md`. Build slot released.
+Before reserving a slot, inspect processes and coordinate with the task owner. Record:
 
-## Shared Live-Session Rules
+| Resource | Owner | Task / command and evidence log | State |
+|---|---|---|---|
+| Cargo | Set when acquired | Record the exact command/log | Revalidate before use |
+| Client | Set when acquired | Record binary hash, run/log, selected character | Revalidate before use |
 
-- **Human Live Session Reservation**: Firna (human warrior, GUID `0x1522`, dedicated existing account).
-  Credentials stay in the ignored identity mechanism; no account/server/DB/WM/install modifications.
-  Never launch a competing graphical client or automated login while the owner's live session is open.
-- **Minimal Diagnostics**: Run only targeted `--lib` unit tests or lightweight offline examples for the
-  crates touched (at most 20 essential tests per task; no workspace-wide test churn or unrequested
-  headless harness runs).
-- **Backups & Hygiene**: Keep at most three previous versions/backups, preserve evidence, and never
-  duplicate the full `target/` directory or worktree.
+Update the reservation when acquired and release it on completion. Do not overwrite a
+newer reservation or kill another owner's process to acquire the slot.
+
+## Current evidence and continuation
+
+- Local `.scratch/project-b/handoffs/2026-11-02-next-batch.md`: prioritized work,
+  known source changes, unproven behavior and acceptance order. Revalidate its baseline.
+- Local `.scratch/project-b/handoffs/2026-11-01-astra-next-session.md`:
+  prior source/build findings and AutoSwarm setup context; historical snapshot.
+- [Ownership record](../../.scratch/project-b/handoffs/2026-11-02-ownership-record.md):
+  preserved earlier reservations, including the pre-existing uncommitted instructions.
+- Runtime evidence is under the owning handoff's referenced verification/run paths.
+  Implemented APIs, compilation, model probes and visible gameplay are separate evidence.
+
+Local handoffs may be untracked or absent from a fresh clone. Request the relevant evidence
+when unavailable; do not infer its contents or treat a dated baseline as current state.
+
+## Acceptance and scope
+
+Deliver the private Windows login/realm/roster/create-cancel/world-entry workflow, then
+Firna's Northshire playable route. Resolve the current runtime blocker before expanding
+the module platform or Souls/procedural/story features. Adopted sequencing is recorded in
+[owner decisions](../baseline/owner-decisions.md); module interfaces are in
+[ADR-0002](../architecture/adr-0002-live-client-modules.md), not implementation guarantees.
+
+The owner enters credentials and drives combat. Respect the Firna live-session reservation;
+no competing account login, automated combat or persistent character creation/deletion.
+Use authorized essential targeted checks within the 20-case task ceiling, not workspace churn.
+Keep at most three completed backup generations and preserve evidence.
