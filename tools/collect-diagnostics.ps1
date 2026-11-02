@@ -47,12 +47,20 @@ $stdoutPath = Join-Path $RunDir 'stdout.log'
 $metaPath   = Join-Path $RunDir 'launch-meta.txt'
 
 $lines = New-Object System.Collections.Generic.List[string]
+$shareMode = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
 foreach ($p in @($stderrPath, $stdoutPath)) {
     if (Test-Path -LiteralPath $p) {
-        foreach ($line in [System.IO.File]::ReadLines($p)) {
-            # Strip ANSI escape sequences for clean regex matching
-            $clean = $line -replace '\x1b\[[0-9;]*[a-zA-Z]', ''
-            $lines.Add($clean)
+        $fs = New-Object System.IO.FileStream($p, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $shareMode)
+        $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8, $true)
+        try {
+            while ($null -ne ($line = $sr.ReadLine())) {
+                # Strip ANSI escape sequences for clean regex matching
+                $clean = $line -replace '\x1b\[[0-9;]*[a-zA-Z]', ''
+                $lines.Add($clean)
+            }
+        } finally {
+            $sr.Dispose()
+            $fs.Dispose()
         }
     }
 }
