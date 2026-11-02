@@ -909,4 +909,74 @@ pub(crate) const REGISTERED: &[Registered] = &[
         "0",
         "3.3.5a 12340 GameUI_CVar.cpp:608: Whether or not the keyring is shown",
     ),
+    ours(
+        "alwaysShowActionBars",
+        "0",
+        "3.3.5a 12340 InterfaceOptions: Whether to always show action bar grid",
+    ),
+    ours(
+        "trackerSorting",
+        "1",
+        "3.3.5a 12340 WatchFrame: Objective tracker sorting mode",
+    ),
+    ours(
+        "stopAutoAttackOnTargetChange",
+        "0",
+        "3.3.5a 12340 InterfaceOptions: Stop auto-attacking when switching targets",
+    ),
+    ours(
+        "mapQuestDifficulty",
+        "0",
+        "3.3.5a 12340 WorldMapFrame: Color quest POIs by difficulty",
+    ),
+    ours(
+        "showPartyPets",
+        "1",
+        "3.3.5a 12340 InterfaceOptions: Show party pet frames",
+    ),
+    ours(
+        "lastTalkedToGM",
+        "",
+        "3.3.5a 12340 UIParent: Name of the last GM who whispered the player",
+    ),
+    ours(
+        "guildRecruitmentChannel",
+        "1",
+        "3.3.5a 12340 InterfaceOptions: Guild recruitment channel enabled",
+    ),
+    ours(
+        "showClock",
+        "1",
+        "3.3.5a 12340 TimeManager: Whether to show the minimap clock",
+    ),
+    ours(
+        "UnitNameFriendlyPlayerName",
+        "0",
+        "3.3.5a 12340 InterfaceOptions: Show friendly player nameplates",
+    ),
+    ours(
+        "showNewbieTips",
+        "1",
+        "3.3.5a 12340 InterfaceOptions: Show newbie tips in UI",
+    ),
+    ours(
+        "locale",
+        "enUS",
+        "3.3.5a 12340 InterfaceOptions: Game client locale",
+    ),
+    ours(
+        "previewTalents",
+        "0",
+        "3.3.5a 12340 TalentFrame: Talent preview mode",
+    ),
+    ours(
+        "fctSpellMechanics",
+        "0",
+        "3.3.5a 12340 CombatText: Floating combat text spell mechanics",
+    ),
+    ours(
+        "showDispelDebuffs",
+        "0",
+        "3.3.5a 12340 InterfaceOptions: Show dispellable debuffs",
+    ),
 ];
