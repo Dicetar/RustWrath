@@ -43,10 +43,10 @@ impl ItemSetCatalog {
     }
 }
 
-fn item_set_schema() -> Schema {
+fn item_set_schema(locales: usize) -> Schema {
     let mut s = Schema::new("ItemSet");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -69,8 +69,18 @@ pub fn load_item_sets(chain: &mut Chain) -> Result<ItemSetCatalog> {
     let bytes = chain
         .read_file(ITEM_SET)
         .with_context(|| format!("reading {ITEM_SET}"))?;
-    let rs = parse(&bytes, item_set_schema(), "ItemSet")?;
+    let locales = if crate::dbc::field_count(&bytes) == Some(53) {
+        16
+    } else {
+        8
+    };
+    let rs = parse(&bytes, item_set_schema(locales), "ItemSet")?;
     let locale = chain.locale();
+    let items_base = 2 + locales;
+    let spells_base = items_base + 17;
+    let thresholds_base = spells_base + 8;
+    let req_skill_col = thresholds_base + 8;
+    let req_rank_col = req_skill_col + 1;
     let mut sets = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let (Some(id), Some(name)) = (u32_at(r, 0), loc_str(&rs, r, 1, locale)) else {
@@ -81,15 +91,18 @@ pub fn load_item_sets(chain: &mut Chain) -> Result<ItemSetCatalog> {
             id,
             ItemSetInfo {
                 name,
-                items: (10..27).map(at).filter(|&i| i != 0).collect(),
+                items: (items_base..items_base + 17)
+                    .map(at)
+                    .filter(|&i| i != 0)
+                    .collect(),
                 bonuses: (0..8)
                     .filter_map(|i| {
-                        let spell = at(27 + i);
-                        (spell != 0).then(|| (at(35 + i), spell))
+                        let spell = at(spells_base + i);
+                        (spell != 0).then(|| (at(thresholds_base + i), spell))
                     })
                     .collect(),
-                required_skill: at(43),
-                required_skill_rank: at(44),
+                required_skill: at(req_skill_col),
+                required_skill_rank: at(req_rank_col),
             },
         );
     }

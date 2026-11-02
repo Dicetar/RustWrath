@@ -39,6 +39,29 @@ pub(super) fn spin_angle(spin: f32, age: f32, phase: u32) -> f32 {
     }
 }
 
+/// Evaluate the quad's in-plane rotation angle: 1.12 uses `spin_angle(def.spin, age, phase)`,
+/// whereas 3.3.5a (`wrath_curves`) combines `initial_spin ± initial_spin_variation` and
+/// `(spin ± spin_variation) * age` seeded per particle by `phase`.
+fn particle_spin_angle(def: &ParticleEmitterDef, age: f32, phase: u32) -> Option<f32> {
+    if let Some(w) = def.wrath_curves.as_ref() {
+        if w.initial_spin == 0.0
+            && w.initial_spin_variation == 0.0
+            && w.spin == 0.0
+            && w.spin_variation == 0.0
+        {
+            return None;
+        }
+        let s0 = (f32::from(phase as u16) / 32767.5) - 1.0;
+        let s1 = (f32::from((phase >> 16) as u16) / 32767.5) - 1.0;
+        let theta0 = w.initial_spin + w.initial_spin_variation * s0;
+        let omega = w.spin + w.spin_variation * s1;
+        let angle = theta0 + spin_angle(omega, age, phase);
+        (angle != 0.0).then_some(angle)
+    } else {
+        (def.spin != 0.0).then(|| spin_angle(def.spin, age, phase))
+    }
+}
+
 /// The camera basis one frame of expansion billboards against.
 pub(super) struct CamBasis {
     pub(crate) right: Vec3,
@@ -169,8 +192,8 @@ pub(super) fn expand_quads(
             let (base_r, base_u) = plane_basis.unwrap_or((cam_right, cam_up));
             // Spin (file +0x198): in-plane by [`spin_angle`] (`0x7b2ddc`); on an XY quad this
             // is the reference's Rodrigues about the plane normal, as `normal × base_r = base_u`.
-            let (r, u) = if def.spin != 0.0 {
-                let (sa, ca) = spin_angle(def.spin, p.age, p.phase).sin_cos();
+            let (r, u) = if let Some(angle) = particle_spin_angle(def, p.age, p.phase) {
+                let (sa, ca) = angle.sin_cos();
                 (
                     (base_r * ca + base_u * sa) * half,
                     (base_u * ca - base_r * sa) * half,

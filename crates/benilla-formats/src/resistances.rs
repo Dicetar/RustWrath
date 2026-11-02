@@ -7,20 +7,22 @@
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{parse, u32_at};
+use crate::dbc::{field_count, parse, u32_at};
 use crate::Chain;
 
 const RESISTANCES: &str = "DBFilesClient\\Resistances.dbc";
-/// 12 fields: the id, `Flags`, the fizzle sound, eight name locales and their flags.
+/// 12 fields in 1.12 (8 name locales), 20 fields in 3.3.5a (16 name locales).
 const FIELDS: usize = 12;
+const FIELDS_335: usize = 20;
 const FLAGS_FIELD: usize = 1;
 /// The rows `0x53f510` walks (`0x53f534`-`0x53f539`), one per `UNIT_FIELD_RESISTANCES` slot.
 const MAX_SCHOOLS: usize = 7;
 
-fn schema() -> Schema {
+fn schema(fields: usize) -> Schema {
     let mut s = Schema::new("Resistances");
-    for i in 0..FIELDS {
-        let ty = if (3..=10).contains(&i) {
+    let locales = fields.saturating_sub(4);
+    for i in 0..fields {
+        let ty = if (3..3 + locales).contains(&i) {
             FieldType::String
         } else {
             FieldType::UInt32
@@ -39,7 +41,12 @@ pub fn load_armor_school(chain: &mut Chain) -> Result<Option<u8>> {
 }
 
 fn armor_school_from(bytes: &[u8]) -> Result<Option<u8>> {
-    let rs = parse(bytes, schema(), "Resistances.dbc")?;
+    let fields = if field_count(bytes) == Some(FIELDS_335) {
+        FIELDS_335
+    } else {
+        FIELDS
+    };
+    let rs = parse(bytes, schema(fields), "Resistances.dbc")?;
     Ok(rs
         .records()
         .iter()

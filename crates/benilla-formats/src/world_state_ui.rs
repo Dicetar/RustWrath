@@ -71,25 +71,32 @@ impl WorldStateUiCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(wrath_335: bool) -> Schema {
     let mut s = Schema::new("WorldStateUI");
     for name in ["ID", "MapID", "AreaID"] {
         s.add_field(SchemaField::new(name, FieldType::UInt32));
     }
+    if wrath_335 {
+        s.add_field(SchemaField::new("PhaseShift", FieldType::UInt32));
+    }
     s.add_field(SchemaField::new("Icon", FieldType::String));
+    let other_locales = if wrath_335 { 15 } else { 7 };
     let loc = |s: &mut Schema, name: &str| {
         s.add_field(SchemaField::new(name, FieldType::String)); // locale 0
         s.add_field(SchemaField::new_array(
             format!("{name}OtherLocales"),
             FieldType::String,
-            7,
+            other_locales,
         ));
         s.add_field(SchemaField::new(format!("{name}Flags"), FieldType::UInt32));
     };
     loc(&mut s, "Text");
     loc(&mut s, "Tooltip");
-    // +0x58: loaded, never read.
-    for name in ["UnreadCol22", "StateVariable", "Type"] {
+    if !wrath_335 {
+        // +0x58 in 1.12: loaded, never read.
+        s.add_field(SchemaField::new("UnreadCol22", FieldType::UInt32));
+    }
+    for name in ["StateVariable", "Type"] {
         s.add_field(SchemaField::new(name, FieldType::UInt32));
     }
     s.add_field(SchemaField::new("DynamicIcon", FieldType::String));
@@ -108,8 +115,15 @@ pub fn load_world_state_ui_catalog(chain: &mut Chain) -> Result<WorldStateUiCata
     let bytes = chain
         .read_file(WORLD_STATE_UI)
         .context("reading WorldStateUI.dbc")?;
-    let rs = parse(&bytes, schema(), "WorldStateUI")?;
+    let wrath_335 = crate::dbc::field_count(&bytes) == Some(63);
+    let rs = parse(&bytes, schema(wrath_335), "WorldStateUI")?;
     let locale = chain.locale();
+    let (icon_col, text_col, tooltip_col, state_col, type_col, dyn_icon_col, dyn_tip_col, ext_col) =
+        if wrath_335 {
+            (4, 5, 22, 39, 40, 41, 42, 59)
+        } else {
+            (3, 4, 13, 23, 24, 25, 26, 35)
+        };
     let mut rows = Vec::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
@@ -118,18 +132,18 @@ pub fn load_world_state_ui_catalog(chain: &mut Chain) -> Result<WorldStateUiCata
             WorldStateUiRow {
                 map_id: u32_at(r, 1).unwrap_or(0),
                 area_id: u32_at(r, 2).unwrap_or(0),
-                icon: str_at(&rs, r, 3).unwrap_or_default(),
-                text: loc_str(&rs, r, 4, locale).unwrap_or_default(),
-                tooltip: loc_str(&rs, r, 13, locale).unwrap_or_default(),
-                state_variable: u32_at(r, 23).unwrap_or(0),
-                ui_type: u32_at(r, 24).unwrap_or(0),
-                dynamic_icon: str_at(&rs, r, 25).unwrap_or_default(),
-                dynamic_tooltip: loc_str(&rs, r, 26, locale).unwrap_or_default(),
-                extended_ui: str_at(&rs, r, 35).unwrap_or_default(),
+                icon: str_at(&rs, r, icon_col).unwrap_or_default(),
+                text: loc_str(&rs, r, text_col, locale).unwrap_or_default(),
+                tooltip: loc_str(&rs, r, tooltip_col, locale).unwrap_or_default(),
+                state_variable: u32_at(r, state_col).unwrap_or(0),
+                ui_type: u32_at(r, type_col).unwrap_or(0),
+                dynamic_icon: str_at(&rs, r, dyn_icon_col).unwrap_or_default(),
+                dynamic_tooltip: loc_str(&rs, r, dyn_tip_col, locale).unwrap_or_default(),
+                extended_ui: str_at(&rs, r, ext_col).unwrap_or_default(),
                 extended_ui_state: [
-                    u32_at(r, 36).unwrap_or(0),
-                    u32_at(r, 37).unwrap_or(0),
-                    u32_at(r, 38).unwrap_or(0),
+                    u32_at(r, ext_col + 1).unwrap_or(0),
+                    u32_at(r, ext_col + 2).unwrap_or(0),
+                    u32_at(r, ext_col + 3).unwrap_or(0),
                 ],
             },
         ));

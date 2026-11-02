@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{field_count, loc_str, parse, u32_at};
 use crate::Chain;
 
 const GM_TICKET_CATEGORY: &str = "DBFilesClient\\GMTicketCategory.dbc";
@@ -41,10 +41,10 @@ impl GmTicketCategoryCatalog {
     }
 }
 
-fn gm_ticket_category_schema() -> Schema {
+fn gm_ticket_category_schema(locales: usize) -> Schema {
     let mut s = Schema::new("GMTicketCategory");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -57,7 +57,8 @@ pub fn load_gm_ticket_categories(chain: &mut Chain) -> Result<GmTicketCategoryCa
     let bytes = chain
         .read_file(GM_TICKET_CATEGORY)
         .with_context(|| format!("reading {GM_TICKET_CATEGORY}"))?;
-    let rs = parse(&bytes, gm_ticket_category_schema(), "GMTicketCategory")?;
+    let locales = if field_count(&bytes) == Some(18) { 16 } else { 8 };
+    let rs = parse(&bytes, gm_ticket_category_schema(locales), "GMTicketCategory")?;
     let locale = chain.locale();
     let mut categories = Vec::with_capacity(rs.records().len());
     for r in rs.records() {

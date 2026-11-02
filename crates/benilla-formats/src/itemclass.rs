@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{field_count, loc_str, parse, u32_at};
 use crate::Chain;
 
 const ITEM_CLASS: &str = "DBFilesClient\\ItemClass.dbc";
@@ -33,12 +33,12 @@ impl ItemClassCatalog {
     }
 }
 
-fn item_class_schema() -> Schema {
+fn item_class_schema(locales: usize) -> Schema {
     let mut s = Schema::new("ItemClass");
     s.add_field(SchemaField::new("ClassID", FieldType::UInt32));
     s.add_field(SchemaField::new("SubClassMapID", FieldType::UInt32));
     s.add_field(SchemaField::new("Flags", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -50,7 +50,8 @@ pub fn load_item_classes(chain: &mut Chain) -> Result<ItemClassCatalog> {
     let bytes = chain
         .read_file(ITEM_CLASS)
         .with_context(|| format!("reading {ITEM_CLASS}"))?;
-    let rs = parse(&bytes, item_class_schema(), "ItemClass")?;
+    let locales = if field_count(&bytes) == Some(20) { 16 } else { 8 };
+    let rs = parse(&bytes, item_class_schema(locales), "ItemClass")?;
     let locale = chain.locale();
     let mut names = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {

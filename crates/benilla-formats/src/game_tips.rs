@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::chain::Chain;
-use crate::dbc::{loc_str, parse};
+use crate::dbc::{field_count, loc_str, parse};
 
 const GAME_TIPS: &str = "DBFilesClient\\GameTips.dbc";
 
@@ -38,10 +38,10 @@ impl GameTipsCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(locales: usize) -> Schema {
     let mut s = Schema::new("GameTips");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    s.add_field(SchemaField::new_array("Text", FieldType::String, 8));
+    s.add_field(SchemaField::new_array("Text", FieldType::String, locales));
     s.add_field(SchemaField::new("TextMask", FieldType::UInt32));
     s.set_key_field("ID");
     s
@@ -49,7 +49,8 @@ fn schema() -> Schema {
 
 pub fn load_game_tips(chain: &mut Chain) -> Result<GameTipsCatalog> {
     let bytes = chain.read_file(GAME_TIPS).context("reading GameTips.dbc")?;
-    let rs = parse(&bytes, schema(), "GameTips")?;
+    let locales = if field_count(&bytes) == Some(18) { 16 } else { 8 };
+    let rs = parse(&bytes, schema(locales), "GameTips")?;
     let locale = chain.locale();
     let mut tips = Vec::with_capacity(rs.records().len());
     for r in rs.records() {

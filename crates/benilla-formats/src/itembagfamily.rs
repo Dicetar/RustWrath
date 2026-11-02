@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{field_count, loc_str, parse, u32_at};
 use crate::Chain;
 
 const ITEM_BAG_FAMILY: &str = "DBFilesClient\\ItemBagFamily.dbc";
@@ -36,10 +36,10 @@ impl ItemBagFamilyCatalog {
     }
 }
 
-fn item_bag_family_schema() -> Schema {
+fn item_bag_family_schema(locales: usize) -> Schema {
     let mut s = Schema::new("ItemBagFamily");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -51,7 +51,8 @@ pub fn load_item_bag_families(chain: &mut Chain) -> Result<ItemBagFamilyCatalog>
     let bytes = chain
         .read_file(ITEM_BAG_FAMILY)
         .with_context(|| format!("reading {ITEM_BAG_FAMILY}"))?;
-    let rs = parse(&bytes, item_bag_family_schema(), "ItemBagFamily")?;
+    let locales = if field_count(&bytes) == Some(18) { 16 } else { 8 };
+    let rs = parse(&bytes, item_bag_family_schema(locales), "ItemBagFamily")?;
     let locale = chain.locale();
     let mut names = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {

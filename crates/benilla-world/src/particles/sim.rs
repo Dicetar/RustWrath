@@ -988,7 +988,12 @@ pub(super) fn simulate_particles(
                 ),
             );
         }
+        let priority_bias = def
+            .wrath_curves
+            .as_ref()
+            .map_or(0.0, |w| f32::from(w.priority_plane) * 0.01);
         let bias = super::owner_last_bias(*owner_reach)
+            + priority_bias
             + if far {
                 crate::sky_order::FAR_SIDE_BIAS
             } else {

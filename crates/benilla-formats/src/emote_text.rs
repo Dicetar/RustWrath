@@ -138,12 +138,11 @@ fn emotes_text_schema() -> Schema {
     s
 }
 
-/// `EmotesTextData.dbc`: a 1.12 `LocalizedString` block, the 40-byte record the reader checks
-/// (`cmp eax,0x28`).
-fn emotes_text_data_schema() -> Schema {
+/// `EmotesTextData.dbc`: a `LocalizedString` block (8 locales in 1.12, 16 in 3.3.5a).
+fn emotes_text_data_schema(locales: usize) -> Schema {
     let mut s = Schema::new("EmotesTextData");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    for i in 0..LOCALES {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Text{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("Flags", FieldType::UInt32));
@@ -169,7 +168,12 @@ pub fn load_emote_text_catalog(chain: &mut Chain) -> Result<EmoteTextCatalog> {
     let bytes = chain
         .read_file(EMOTES_TEXT_DATA)
         .with_context(|| format!("reading {EMOTES_TEXT_DATA}"))?;
-    let rs = parse(&bytes, emotes_text_data_schema(), "EmotesTextData.dbc")?;
+    let locales = if crate::dbc::field_count(&bytes) == Some(18) {
+        16
+    } else {
+        LOCALES
+    };
+    let rs = parse(&bytes, emotes_text_data_schema(locales), "EmotesTextData.dbc")?;
     let locale = chain.locale();
     let mut data = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {

@@ -25,14 +25,41 @@ pub struct LfgDungeon {
     pub side: i32,
 }
 
-fn schema() -> Schema {
+fn schema(wrath_335: bool) -> Schema {
     let mut s = Schema::new("LFGDungeons");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    for i in 0..8 {
+    let locales = if wrath_335 { 16 } else { 8 };
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
-    for name in ["NameFlags", "MinLevel", "MaxLevel", "Type", "Faction"] {
-        s.add_field(SchemaField::new(name, FieldType::UInt32));
+    s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
+    s.add_field(SchemaField::new("MinLevel", FieldType::UInt32));
+    s.add_field(SchemaField::new("MaxLevel", FieldType::UInt32));
+    if wrath_335 {
+        for name in [
+            "TargetLevel",
+            "TargetLevelMin",
+            "TargetLevelMax",
+            "MapID",
+            "Difficulty",
+            "Flags",
+            "Type",
+            "Faction",
+        ] {
+            s.add_field(SchemaField::new(name, FieldType::UInt32));
+        }
+        s.add_field(SchemaField::new("TextureFilename", FieldType::String));
+        for name in ["ExpansionLevel", "OrderIndex", "GroupID"] {
+            s.add_field(SchemaField::new(name, FieldType::UInt32));
+        }
+        for i in 0..16 {
+            s.add_field(SchemaField::new(format!("Description{i}"), FieldType::String));
+        }
+        s.add_field(SchemaField::new("DescriptionFlags", FieldType::UInt32));
+    } else {
+        for name in ["Type", "Faction"] {
+            s.add_field(SchemaField::new(name, FieldType::UInt32));
+        }
     }
     s
 }
@@ -42,8 +69,14 @@ pub fn load_lfg_dungeons(chain: &mut Chain) -> Result<Vec<LfgDungeon>> {
     let bytes = chain
         .read_file(LFG_DUNGEONS)
         .with_context(|| format!("reading {LFG_DUNGEONS}"))?;
-    let rs = parse(&bytes, schema(), "LFGDungeons")?;
+    let wrath_335 = crate::dbc::field_count(&bytes) == Some(49);
+    let rs = parse(&bytes, schema(wrath_335), "LFGDungeons")?;
     let locale = chain.locale();
+    let (min_col, max_col, kind_col, side_col) = if wrath_335 {
+        (18, 19, 26, 27)
+    } else {
+        (10, 11, 12, 13)
+    };
     Ok(rs
         .records()
         .iter()
@@ -51,10 +84,10 @@ pub fn load_lfg_dungeons(chain: &mut Chain) -> Result<Vec<LfgDungeon>> {
             Some(LfgDungeon {
                 id: u32_at(r, 0)?,
                 name: loc_str(&rs, r, 1, locale).unwrap_or_default(),
-                min_level: u32_at(r, 10)?,
-                max_level: u32_at(r, 11)?,
-                kind: u32_at(r, 12)?,
-                side: i32_at(r, 13)?,
+                min_level: u32_at(r, min_col)?,
+                max_level: u32_at(r, max_col)?,
+                kind: u32_at(r, kind_col)?,
+                side: i32_at(r, side_col)?,
             })
         })
         .collect())

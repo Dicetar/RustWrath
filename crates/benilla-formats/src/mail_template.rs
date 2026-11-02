@@ -9,12 +9,13 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::chain::Chain;
-use crate::dbc::{loc_str_raw, parse, u32_at};
+use crate::dbc::{field_count, loc_str_raw, parse, u32_at};
 
 const MAIL_TEMPLATE: &str = "DBFilesClient\\MailTemplate.dbc";
 
-/// The column count the loader requires.
-const MAIL_TEMPLATE_FIELDS: usize = 10;
+/// The column count the loader requires (10 in 1.12, 35 in 3.3.5a where Subject_Lang precedes Body_Lang).
+const MAIL_TEMPLATE_FIELDS_112: usize = 10;
+const MAIL_TEMPLATE_FIELDS_335: usize = 35;
 
 /// Load `MailTemplate.dbc`'s bodies by id, in the locale's column. A row whose body the file
 /// leaves blank answers `""`, as the reference's row holds a pointer to an empty string.
@@ -22,9 +23,14 @@ pub fn load_mail_templates(chain: &mut Chain) -> Result<HashMap<u32, String>> {
     let bytes = chain
         .read_file(MAIL_TEMPLATE)
         .context("reading MailTemplate.dbc")?;
+    let (fields, body_col) = if field_count(&bytes) == Some(MAIL_TEMPLATE_FIELDS_335) {
+        (MAIL_TEMPLATE_FIELDS_335, 18)
+    } else {
+        (MAIL_TEMPLATE_FIELDS_112, 1)
+    };
     let mut schema = Schema::new("MailTemplate");
-    for i in 0..MAIL_TEMPLATE_FIELDS {
-        let ty = if (1..=8).contains(&i) {
+    for i in 0..fields {
+        let ty = if i == body_col {
             FieldType::String
         } else {
             FieldType::UInt32
@@ -36,7 +42,7 @@ pub fn load_mail_templates(chain: &mut Chain) -> Result<HashMap<u32, String>> {
     Ok(set
         .records()
         .iter()
-        .filter_map(|r| Some((u32_at(r, 0)?, loc_str_raw(&set, r, 1, locale)?)))
+        .filter_map(|r| Some((u32_at(r, 0)?, loc_str_raw(&set, r, body_col, locale)?)))
         .collect())
 }
 

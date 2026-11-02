@@ -112,13 +112,13 @@ impl PetLoyaltyNames {
     }
 }
 
-fn personality_schema() -> Schema {
+fn personality_schema(fields: usize, damage_field: usize, loyalty_rate_field: Option<usize>) -> Schema {
     let mut s = Schema::new("PetPersonality");
-    for i in 0..PERSONALITY_FIELDS {
+    for i in 0..fields {
         let ty = match i {
             NAME_FIELD => FieldType::String,
-            i if (DAMAGE_FIELD..DAMAGE_FIELD + 3).contains(&i) => FieldType::Float32,
-            i if (LOYALTY_RATE_FIELD..LOYALTY_RATE_FIELD + 3).contains(&i) => FieldType::Float32,
+            i if (damage_field..damage_field + 3).contains(&i) => FieldType::Float32,
+            i if loyalty_rate_field.is_some_and(|l| (l..l + 3).contains(&i)) => FieldType::Float32,
             // ID, the rest of the name block, and the thresholds, compared as integers.
             _ => FieldType::UInt32,
         };
@@ -127,9 +127,9 @@ fn personality_schema() -> Schema {
     s
 }
 
-fn loyalty_schema() -> Schema {
+fn loyalty_schema(fields: usize) -> Schema {
     let mut s = Schema::new("PetLoyalty");
-    for i in 0..LOYALTY_FIELDS {
+    for i in 0..fields {
         let ty = if i == NAME_FIELD {
             FieldType::String
         } else {
@@ -145,7 +145,22 @@ pub fn load_pet_personalities(chain: &mut Chain) -> Result<PetPersonalities> {
     let bytes = chain
         .read_file(PET_PERSONALITY)
         .with_context(|| format!("reading {PET_PERSONALITY}"))?;
-    let rs = parse(&bytes, personality_schema(), "PetPersonality.dbc")?;
+    let (fields, threshold_field, damage_field, loyalty_rate_field) =
+        if crate::dbc::field_count(&bytes) == Some(24) {
+            (24, 18, 21, None)
+        } else {
+            (
+                PERSONALITY_FIELDS,
+                THRESHOLD_FIELD,
+                DAMAGE_FIELD,
+                Some(LOYALTY_RATE_FIELD),
+            )
+        };
+    let rs = parse(
+        &bytes,
+        personality_schema(fields, damage_field, loyalty_rate_field),
+        "PetPersonality.dbc",
+    )?;
     let mut by_id = HashMap::new();
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
@@ -154,9 +169,9 @@ pub fn load_pet_personalities(chain: &mut Chain) -> Result<PetPersonalities> {
         by_id.insert(
             id,
             PetPersonality {
-                thresholds: triple_u32(THRESHOLD_FIELD),
-                damage: triple_f32(DAMAGE_FIELD),
-                loyalty_rate: triple_f32(LOYALTY_RATE_FIELD),
+                thresholds: triple_u32(threshold_field),
+                damage: triple_f32(damage_field),
+                loyalty_rate: loyalty_rate_field.map_or([0.0; 3], triple_f32),
             },
         );
     }
@@ -168,7 +183,12 @@ pub fn load_pet_loyalty_names(chain: &mut Chain) -> Result<PetLoyaltyNames> {
     let bytes = chain
         .read_file(PET_LOYALTY)
         .with_context(|| format!("reading {PET_LOYALTY}"))?;
-    let rs = parse(&bytes, loyalty_schema(), "PetLoyalty.dbc")?;
+    let fields = if crate::dbc::field_count(&bytes) == Some(18) {
+        18
+    } else {
+        LOYALTY_FIELDS
+    };
+    let rs = parse(&bytes, loyalty_schema(fields), "PetLoyalty.dbc")?;
     let locale = chain.locale();
     let mut by_id = HashMap::new();
     for r in rs.records() {

@@ -66,51 +66,65 @@ impl AreaPoiCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(wrath_335: bool) -> Schema {
     let mut s = Schema::new("AreaPOI");
-    for name in ["ID", "Importance", "Icon", "FactionID"] {
-        s.add_field(SchemaField::new(name, FieldType::UInt32));
-    }
+    s.add_field(SchemaField::new("ID", FieldType::UInt32));
+    s.add_field(SchemaField::new("Importance", FieldType::UInt32));
+    let icons = if wrath_335 { 9 } else { 1 };
+    s.add_field(SchemaField::new_array("Icon", FieldType::UInt32, icons));
+    s.add_field(SchemaField::new("FactionID", FieldType::UInt32));
     s.add_field(SchemaField::new_array("Pos", FieldType::Float32, 3));
     for name in ["ContinentID", "Flags", "AreaID"] {
         s.add_field(SchemaField::new(name, FieldType::UInt32));
     }
+    let other_locales = if wrath_335 { 15 } else { 7 };
     for (name_col, flags_col) in [("Name", "NameFlags"), ("Description", "DescriptionFlags")] {
         s.add_field(SchemaField::new(name_col, FieldType::String)); // locale 0
         s.add_field(SchemaField::new_array(
             format!("{name_col}OtherLocales"),
             FieldType::String,
-            7,
+            other_locales,
         ));
         s.add_field(SchemaField::new(flags_col, FieldType::UInt32));
     }
     s.add_field(SchemaField::new("WorldStateID", FieldType::UInt32));
+    if wrath_335 {
+        s.add_field(SchemaField::new("WorldMapLink", FieldType::UInt32));
+    }
     s
 }
 
 /// Read `AreaPOI.dbc` off the patch chain into an [`AreaPoiCatalog`].
 pub fn load_area_poi_catalog(chain: &mut Chain) -> Result<AreaPoiCatalog> {
     let bytes = chain.read_file(AREA_POI).context("reading AreaPOI.dbc")?;
-    let rs = parse(&bytes, schema(), "AreaPOI")?;
+    let wrath_335 = crate::dbc::field_count(&bytes) == Some(54);
+    let rs = parse(&bytes, schema(wrath_335), "AreaPOI")?;
     let locale = chain.locale();
+    let shift = if wrath_335 { 8 } else { 0 };
+    let desc_col = if wrath_335 { 35 } else { 19 };
+    let ws_col = if wrath_335 { 52 } else { 28 };
     let mut rows = Vec::with_capacity(rs.records().len());
     let mut by_id = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
-        let (Some(x), Some(y), Some(z)) = (f32_at(r, 4), f32_at(r, 5), f32_at(r, 6)) else {
+        let (Some(x), Some(y), Some(z)) = (
+            f32_at(r, 4 + shift),
+            f32_at(r, 5 + shift),
+            f32_at(r, 6 + shift),
+        ) else {
             continue;
         };
         let poi = AreaPoi {
             importance: u32_at(r, 1).unwrap_or(0),
             icon: u32_at(r, 2).unwrap_or(0),
-            faction_id: u32_at(r, 3).unwrap_or(0),
+            faction_id: u32_at(r, 3 + shift).unwrap_or(0),
             pos: [x, y, z],
-            continent_id: u32_at(r, 7).unwrap_or(0),
-            flags: u32_at(r, 8).unwrap_or(0),
-            area_id: u32_at(r, 9).unwrap_or(0),
-            name: loc_str(&rs, r, 10, locale).unwrap_or_default(),
-            description: loc_str(&rs, r, 19, locale).unwrap_or_default(),
-            world_state_id: u32_at(r, 28).unwrap_or(0),
+            continent_id: u32_at(r, 7 + shift).unwrap_or(0),
+            flags: u32_at(r, 8 + shift).unwrap_or(0),
+            area_id: u32_at(r, 9 + shift).unwrap_or(0),
+            name: loc_str(&rs, r, 10 + shift, locale).unwrap_or_default(),
+            description: loc_str(&rs, r, desc_col, locale).unwrap_or_default(),
+            world_state_id: u32_at(r, ws_col).unwrap_or(0),
         };
         by_id.insert(id, rows.len());
         rows.push((id, poi));

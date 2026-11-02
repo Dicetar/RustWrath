@@ -60,13 +60,13 @@ impl AuctionHouseCatalog {
     }
 }
 
-fn auction_house_schema() -> Schema {
+fn auction_house_schema(locales: usize) -> Schema {
     let mut s = Schema::new("AuctionHouse");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
     s.add_field(SchemaField::new("FactionID", FieldType::UInt32));
     s.add_field(SchemaField::new("DepositPercent", FieldType::UInt32));
     s.add_field(SchemaField::new("CutPercent", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -78,7 +78,12 @@ pub fn load_auction_houses(chain: &mut Chain) -> Result<AuctionHouseCatalog> {
     let bytes = chain
         .read_file(AUCTION_HOUSE)
         .with_context(|| format!("reading {AUCTION_HOUSE}"))?;
-    let rs = parse(&bytes, auction_house_schema(), "AuctionHouse")?;
+    let locales = if crate::dbc::field_count(&bytes) == Some(21) {
+        16
+    } else {
+        8
+    };
+    let rs = parse(&bytes, auction_house_schema(locales), "AuctionHouse")?;
     let locale = chain.locale();
     let mut houses = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {

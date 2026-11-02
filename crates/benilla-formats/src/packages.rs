@@ -8,12 +8,13 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::chain::Chain;
-use crate::dbc::{loc_str, parse, str_at, u32_at};
+use crate::dbc::{field_count, loc_str, parse, str_at, u32_at};
 
 const PACKAGE: &str = "DBFilesClient\\Package.dbc";
 
-/// The column count the loader requires.
-const PACKAGE_FIELDS: usize = 12;
+/// The column count the loader requires (12 in 1.12, 20 in 3.3.5a).
+const PACKAGE_FIELDS_112: usize = 12;
+const PACKAGE_FIELDS_335: usize = 20;
 
 /// One `Package.dbc` row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,8 +31,13 @@ pub struct PackageRow {
 /// Load `Package.dbc`'s rows, in file order.
 pub fn load_packages(chain: &mut Chain) -> Result<Vec<PackageRow>> {
     let bytes = chain.read_file(PACKAGE).context("reading Package.dbc")?;
+    let fields = if field_count(&bytes) == Some(PACKAGE_FIELDS_335) {
+        PACKAGE_FIELDS_335
+    } else {
+        PACKAGE_FIELDS_112
+    };
     let mut schema = Schema::new("Package");
-    for i in 0..PACKAGE_FIELDS {
+    for i in 0..fields {
         let ty = if i == 1 || i == 3 {
             FieldType::String
         } else {

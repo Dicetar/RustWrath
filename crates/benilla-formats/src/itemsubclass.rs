@@ -186,7 +186,7 @@ impl ItemSubClassCatalog {
     }
 }
 
-fn item_sub_class_schema() -> Schema {
+fn item_sub_class_schema(locales: usize) -> Schema {
     let mut s = Schema::new("ItemSubClass");
     s.add_field(SchemaField::new("Class", FieldType::UInt32));
     s.add_field(SchemaField::new("SubClass", FieldType::UInt32));
@@ -203,14 +203,14 @@ fn item_sub_class_schema() -> Schema {
     for name in ["ParrySeq", "ReadySeq", "AttackSeq", "SwingSize"] {
         s.add_field(SchemaField::new(format!("Weapon{name}"), FieldType::UInt32));
     }
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(
             format!("DisplayName{i}"),
             FieldType::String,
         ));
     }
     s.add_field(SchemaField::new("DisplayNameFlags", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(
             format!("VerboseName{i}"),
             FieldType::String,
@@ -220,11 +220,11 @@ fn item_sub_class_schema() -> Schema {
     s
 }
 
-fn item_sub_class_mask_schema() -> Schema {
+fn item_sub_class_mask_schema(locales: usize) -> Schema {
     let mut s = Schema::new("ItemSubClassMask");
     s.add_field(SchemaField::new("ClassID", FieldType::UInt32));
     s.add_field(SchemaField::new("Mask", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -237,13 +237,23 @@ pub fn load_item_sub_classes(chain: &mut Chain) -> Result<ItemSubClassCatalog> {
     let bytes = chain
         .read_file(ITEM_SUB_CLASS)
         .with_context(|| format!("reading {ITEM_SUB_CLASS}"))?;
-    let rs = parse(&bytes, item_sub_class_schema(), "ItemSubClass")?;
+    let sub_locales = if crate::dbc::field_count(&bytes) == Some(44) {
+        16
+    } else {
+        8
+    };
+    let rs = parse(&bytes, item_sub_class_schema(sub_locales), "ItemSubClass")?;
     let mask_bytes = chain
         .read_file(ITEM_SUB_CLASS_MASK)
         .with_context(|| format!("reading {ITEM_SUB_CLASS_MASK}"))?;
+    let mask_locales = if crate::dbc::field_count(&mask_bytes) == Some(19) {
+        16
+    } else {
+        8
+    };
     let mask_rs = parse(
         &mask_bytes,
-        item_sub_class_mask_schema(),
+        item_sub_class_mask_schema(mask_locales),
         "ItemSubClassMask",
     )?;
     let mut mask_groups = Vec::with_capacity(mask_rs.records().len());
@@ -257,6 +267,7 @@ pub fn load_item_sub_classes(chain: &mut Chain) -> Result<ItemSubClassCatalog> {
         };
         mask_groups.push((class, mask, name));
     }
+    let verbose_col = 11 + sub_locales;
     let mut rows = HashMap::with_capacity(rs.records().len());
     let mut names = HashMap::with_capacity(rs.records().len());
     let mut display_names = HashMap::with_capacity(rs.records().len());
@@ -276,9 +287,9 @@ pub fn load_item_sub_classes(chain: &mut Chain) -> Result<ItemSubClassCatalog> {
                 weapon_swing_size: u32_at(r, 9).unwrap_or(0),
             },
         );
-        // The verbose name (column 19) first, the display name (column 10) as fallback.
+        // The verbose name (column 19 in 1.12, 27 in 3.3.5a) first, the display name (column 10) as fallback.
         let display = loc_str(&rs, r, 10, locale).filter(|n| !n.is_empty());
-        let name = loc_str(&rs, r, 19, locale)
+        let name = loc_str(&rs, r, verbose_col, locale)
             .filter(|n| !n.is_empty())
             .or_else(|| display.clone());
         if let Some(name) = name {
