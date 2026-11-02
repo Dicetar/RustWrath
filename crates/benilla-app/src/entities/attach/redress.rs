@@ -141,10 +141,30 @@ pub(in crate::entities) fn redress_player_looks(
             worn.cloak,
             worn.helm,
             worn.tabard_preview,
+            look.as_ref().is_some_and(|l| {
+                l.class == 6 || match &l.body {
+                    super::char_skin::BodySkin::Composite { face } => sections.as_deref().is_some_and(|s| {
+                        s.tables.face_eye_glow(l.race, l.sex, *face, l.skin)
+                    }),
+                    super::char_skin::BodySkin::Baked(_) => false,
+                }
+            }),
         );
+        let version = if crate::wrath::selected_from_env() {
+            benilla_formats::GeosetVersion::Wrath335
+        } else {
+            benilla_formats::GeosetVersion::Vanilla112
+        };
         let visible = look.as_ref().and_then(|l| {
             let cg = characters.as_deref()?;
-            Some(cg.0.visible_geosets(l.race, l.sex, l.hair_style, l.facial_hair, &eg))
+            Some(cg.0.visible_geosets_for(
+                version,
+                l.race,
+                l.sex,
+                l.hair_style,
+                l.facial_hair,
+                &eg,
+            ))
         });
         // Cached per (appearance, worn set), so a swap back costs a lookup.
         let char_mats: CharSkinMaterials = match look.as_ref() {

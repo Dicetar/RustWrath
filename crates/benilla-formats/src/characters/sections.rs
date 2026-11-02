@@ -100,9 +100,16 @@ fn emblem_half(layer: usize) -> Option<&'static str> {
 /// CharSections: (race, sex, sectionType, variation, colorIndex) → the row's `TextureName`s.
 pub struct CharSections {
     sections: HashMap<(u8, u8, u8, u8, u8), [String; 3]>,
+    flags: HashMap<(u8, u8, u8, u8, u8), u32>,
 }
 
 impl CharSections {
+    /// Whether the selected face row requests the 12340 eye-glow effect.
+    pub fn face_eye_glow(&self, race: u8, sex: u8, face: u8, skin: u8) -> bool {
+        self.flags.get(&(race, sex, SECTION_FACE, face, skin))
+            .is_some_and(|flags| flags & 0x4 != 0)
+    }
+
     /// The 256² base body skin for a skin colour (`sectionType 0`).
     pub fn skin_texture(&self, race: u8, sex: u8, skin_color: u8) -> Option<&str> {
         self.tex(race, sex, SECTION_SKIN, 0, skin_color, 0)
@@ -599,6 +606,7 @@ fn has_blp_skin_row(rs: &RecordSet, wrath: bool) -> bool {
 fn collect(rs: &RecordSet, wrath: bool) -> CharSections {
     let (var_i, color_i, tex_i, flags_i) = if wrath { (8, 9, 4, 7) } else { (4, 5, 6, 9) };
     let mut sections = HashMap::with_capacity(rs.records().len());
+    let mut flags = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         // fields: ID, Race, Sex, SectionType, then the layout's columns.
         if let (Some(race), Some(sex), Some(ty), Some(var), Some(color)) = (
@@ -618,16 +626,19 @@ fn collect(rs: &RecordSet, wrath: bool) -> CharSections {
             // `…Skin00_00` and `…_100`). 1.12 marks the extra row with the bit; 12340 marks the
             // playable standard row with it (CharSectionFlags: 0x1 = PLAYER), so there the bitless
             // row only fills a key no player row claimed.
-            let flagged = u32_at(r, flags_i).unwrap_or(0) & 0x1 != 0;
+            let row_flags = u32_at(r, flags_i).unwrap_or(0);
+            let flagged = row_flags & 0x1 != 0;
             let extra = flagged != wrath;
             if extra {
                 sections.entry(key).or_insert(texs);
+                flags.entry(key).or_insert(row_flags);
             } else {
                 sections.insert(key, texs);
+                flags.insert(key, row_flags);
             }
         }
     }
-    CharSections { sections }
+    CharSections { sections, flags }
 }
 
 /// CharSections.dbc: 10 fields, three of them texture names. 1.12 lays them after
@@ -761,7 +772,7 @@ mod tests {
                 String::new(),
             ],
         );
-        let cs = CharSections { sections };
+        let cs = CharSections { sections, flags: HashMap::new() };
         assert_eq!(
             cs.skin_texture(1, 0, 3),
             Some("Character\\Human\\Male\\HumanMaleSkin00_03.blp")

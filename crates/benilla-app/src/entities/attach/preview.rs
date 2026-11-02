@@ -66,6 +66,8 @@ pub(in crate::entities) struct PreviewSpec {
     pub(in crate::entities) display_id: u32,
     pub(in crate::entities) race: u8,
     pub(in crate::entities) sex: u8,
+    /// The class whose Death Knight eye geoset (1703) is forced; 0 for a look with no class.
+    pub(in crate::entities) class: u8,
     pub(in crate::entities) skin: u8,
     pub(in crate::entities) face: u8,
     pub(in crate::entities) hair_style: u8,
@@ -163,6 +165,12 @@ pub(in crate::entities) fn build_glue_preview(
         GlueLook::Create(l) => (l.skin, l.face, l.hair_style, l.hair_color, l.facial_hair),
         GlueLook::Select(l) => (l.skin, l.face, l.hair_style, l.hair_color, l.facial_hair),
     };
+    // The create look carries its class; the select roster record now carries the same
+    // `SMSG_CHAR_ENUM` class (`SelectLook`), so a Death Knight mannequin forces 1703 too.
+    let class = match look {
+        GlueLook::Create(l) => l.class,
+        GlueLook::Select(l) => l.class,
+    };
 
     // A select look carries its roster record; a create look wears its (race, class, sex)
     // CharStartOutfit, which has no helm or cloak to hide, so its flags are 0.
@@ -186,6 +194,7 @@ pub(in crate::entities) fn build_glue_preview(
         display_id,
         race,
         sex,
+        class,
         skin,
         face,
         hair_style,
@@ -316,6 +325,8 @@ pub(in crate::entities) fn build_dressup_preview(
         display_id: look.display_id,
         race: look.race,
         sex: look.sex,
+        // The dressing room clones the live player, whose class rides in `unit_class()`.
+        class: look.class,
         skin: look.skin,
         face: look.face,
         hair_style: look.hair_style,
@@ -504,6 +515,7 @@ fn assemble(spec: &PreviewSpec, ctx: &mut PreviewCtx<'_, '_>) -> Option<Assemble
     let char_look = CharLook {
         race,
         sex,
+        class: spec.class,
         skin: spec.skin,
         hair_style: spec.hair_style,
         hair_color: spec.hair_color,
@@ -567,9 +579,35 @@ fn assemble(spec: &PreviewSpec, ctx: &mut PreviewCtx<'_, '_>) -> Option<Assemble
     }
 
     // The world path's geoset selection, the helm's hide-mask rows included (`0x4799a0`).
-    let eg = equip_geosets(ctx.displays.as_deref(), &bodyslots, cloak, helm, false);
+    // `GeosRenderPrep` (`0x4ED900`) forces 1703 for a Death Knight or a face whose CharSections
+    // flags carry 0x4; the preview body is always the live composite, so the face row applies.
+    let eye_glow = spec.class == 6
+        || ctx.sections.is_some_and(|s| {
+            s.tables
+                .face_eye_glow(race, sex, spec.face, spec.skin)
+        });
+    let eg = equip_geosets(
+        ctx.displays.as_deref(),
+        &bodyslots,
+        cloak,
+        helm,
+        false,
+        eye_glow,
+    );
+    let version = if crate::wrath::selected_from_env() {
+        benilla_formats::GeosetVersion::Wrath335
+    } else {
+        benilla_formats::GeosetVersion::Vanilla112
+    };
     let visible = ctx.characters.map(|c| {
-        c.0.visible_geosets(race, sex, char_look.hair_style, char_look.facial_hair, &eg)
+        c.0.visible_geosets_for(
+            version,
+            race,
+            sex,
+            char_look.hair_style,
+            char_look.facial_hair,
+            &eg,
+        )
     });
     let body_tex = super::char_skin::forced_body_atlas(
         &char_look,

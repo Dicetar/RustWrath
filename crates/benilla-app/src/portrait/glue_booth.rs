@@ -49,6 +49,8 @@ pub(crate) struct CreateLook {
 pub(crate) struct SelectLook {
     pub(crate) race: u8,
     pub(crate) sex: u8,
+    /// `SMSG_CHAR_ENUM` class; 6 (Death Knight) forces the 1703 eye-effect geoset in the preview.
+    pub(crate) class: u8,
     pub(crate) skin: u8,
     pub(crate) face: u8,
     pub(crate) hair_style: u8,
@@ -78,6 +80,7 @@ impl From<&benilla_protocol::Character> for SelectLook {
         Self {
             race: c.race,
             sex: c.gender.min(1),
+            class: c.class,
             skin: c.skin,
             face: c.face,
             hair_style: c.hair_style,

@@ -588,16 +588,31 @@ pub(super) fn attach_entity_visuals(
                 }
             }
             // The worn geoset selectors, the helm's hide-mask rows included (`0x4799a0`).
+            let eye_glow = look.as_ref().is_some_and(|l| {
+                l.class == 6 || match &l.body {
+                    char_skin::BodySkin::Composite { face } => sections.as_deref().is_some_and(|s| {
+                        s.tables.face_eye_glow(l.race, l.sex, *face, l.skin)
+                    }),
+                    char_skin::BodySkin::Baked(_) => false,
+                }
+            });
             let equip_geosets = equip_geosets(
                 displays.as_deref(),
                 &equip,
                 worn.cloak,
                 worn.helm,
                 worn.tabard_preview,
+                eye_glow,
             );
+            let version = if crate::wrath::selected_from_env() {
+                benilla_formats::GeosetVersion::Wrath335
+            } else {
+                benilla_formats::GeosetVersion::Vanilla112
+            };
             let visible_geosets = look.as_ref().and_then(|l| {
                 let cg = characters.as_deref()?;
-                Some(cg.0.visible_geosets(
+                Some(cg.0.visible_geosets_for(
+                    version,
                     l.race,
                     l.sex,
                     l.hair_style,
