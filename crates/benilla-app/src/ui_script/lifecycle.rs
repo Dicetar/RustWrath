@@ -58,6 +58,8 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     // independently confirmed, but the target castbar is part of the stock presentation.
     ("showTargetCastbar", "1"),
     ("showBattlefieldMinimap", "0"),
+    // 12340 GameUI_CVar.cpp:608: Whether or not the keyring is shown.
+    ("showKeyring", "0"),
 ];
 
 pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {

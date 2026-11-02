@@ -823,3 +823,17 @@ fn a_truncated_camera_record_is_dropped_not_half_read() {
     set_arr(&mut b, OFS_CAMERAS, 2, rec);
     assert_eq!(parse_cameras(&b).len(), 1);
 }
+
+#[test]
+fn wrath_external_skin_accepts_48_byte_particle_only_profile() {
+    // 12340 M2SkinProfile (M2Data.h:378) is 0x30 (48) bytes: magic "SKIN", five empty M2Array
+    // headers, and m_boneCountMax at +0x2c (e.g. ui-autocastbutton00.skin, *_smoke00.skin).
+    let mut b = vec![0u8; 48];
+    b[0..4].copy_from_slice(b"SKIN");
+    b[0x2c..0x30].copy_from_slice(&21u32.to_le_bytes());
+    let skin = parse_external_skin(&b).expect("48-byte particle-only .skin must parse");
+    assert!(skin.indices().is_empty());
+    assert!(skin.triangles().is_empty());
+    assert!(skin.submeshes().is_empty());
+    assert!(skin.batches().is_empty());
+}

@@ -220,10 +220,38 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| cursor_info(lua))?,
     )?;
 
-    // `GetCurrentTitle()` (`PaperDollFrame.lua:2593`): this character has no equipped title.
+    // 12340 `GameUI_Scripts.cpp` title natives (`0x005165E0`, `0x0051B3B0`, `0x0051B410`,
+    // `0x0051B4E0`, `0x00522E30`). `Script_GetCurrentTitle` (`0x0051B3B0`) pushes `0.0` (not nil)
+    // when no title is chosen (`m_playerChosenTitle <= 0`), and `PaperDollFrame.lua:2593` indexes
+    // and compares numeric title IDs against `GetNumTitles()`.
+    lua.globals().set(
+        "GetNumTitles",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
     lua.globals().set(
         "GetCurrentTitle",
-        lua.create_function(|_, ()| Ok(mlua::Value::Nil))?,
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
+    lua.globals().set(
+        "IsTitleKnown",
+        lua.create_function(|lua, id: mlua::Value| {
+            let _ = super::binding_abi::int_arg(lua, id, "Usage: IsTitleKnown(titleMaskID)")?;
+            Ok(0)
+        })?,
+    )?;
+    lua.globals().set(
+        "GetTitleName",
+        lua.create_function(|lua, id: mlua::Value| {
+            let _ = super::binding_abi::int_arg(lua, id, "Usage: GetTitleName(titleMaskID)")?;
+            Ok(mlua::MultiValue::new())
+        })?,
+    )?;
+    lua.globals().set(
+        "SetCurrentTitle",
+        lua.create_function(|lua, id: mlua::Value| {
+            let _ = super::binding_abi::int_arg(lua, id, "Usage: SetCurrentTitle(titleMaskID)")?;
+            Ok(())
+        })?,
     )?;
     // `IsPlayerResolutionAvailable()` (`VideoOptionsPanels.lua:435`): the resolution list is
     // host-driven; no per-player resolution check exists here.

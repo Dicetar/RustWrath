@@ -904,4 +904,9 @@ pub(crate) const REGISTERED: &[Registered] = &[
         "",
         "3.3.5a 12340 account type",
     ),
+    ours(
+        "showKeyring",
+        "0",
+        "3.3.5a 12340 GameUI_CVar.cpp:608: Whether or not the keyring is shown",
+    ),
 ];

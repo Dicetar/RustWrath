@@ -1314,6 +1314,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: MultiValue| Ok(Value::Nil))?,
     )?;
 
+    // 12340 `Script_RequestRealmSplitInfo` (`0x004DE2E0`, `GlueScriptEvents_Scripts.cpp:1690`):
+    // called from `CharacterSelect_OnShow` (`CharacterSelect.lua`) and returns 0 values.
+    g.set(
+        "RequestRealmSplitInfo",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
     Ok(())
 }
 
