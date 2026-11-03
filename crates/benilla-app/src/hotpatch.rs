@@ -21,16 +21,65 @@ fn capture_hotpatch_events(
     view: Option<Res<crate::wrath::WrathWorldView>>,
 ) {
     use benilla_hotpatch_bevy::HotpatchEvent;
-    use crate::quest_trace::{PatchEvent, Stage};
+    use crate::quest_trace::{HotpatchReason, PatchEvent, Stage};
+    use benilla_hotpatch_bevy::HotpatchReason as BevyReason;
     for event in events.read() {
         if let Some(trace) = &trace {
             let event = match event {
-                HotpatchEvent::CandidateStaged => PatchEvent::CandidateStaged,
-                HotpatchEvent::PublicationRejected => PatchEvent::PublicationRejected,
-                HotpatchEvent::CandidateRejected => PatchEvent::CandidateRejected,
-                HotpatchEvent::Activated { digest } => PatchEvent::Activated { digest: *digest },
-                HotpatchEvent::FrameFailed => PatchEvent::FrameFailed,
-                HotpatchEvent::RetentionFailed => PatchEvent::RetentionFailed,
+                HotpatchEvent::CandidateStaged { attempt } => {
+                    PatchEvent::CandidateStaged { attempt }
+                }
+                HotpatchEvent::PublicationRejected { attempt, reason } => {
+                    PatchEvent::PublicationRejected {
+                        attempt,
+                        reason: match reason {
+                            BevyReason::Publication => HotpatchReason::Publication,
+                            BevyReason::Evaluation => HotpatchReason::Evaluation,
+                            BevyReason::Retention => HotpatchReason::Retention,
+                            BevyReason::Frame => HotpatchReason::Frame,
+                            BevyReason::Unknown => HotpatchReason::Unknown,
+                        },
+                    }
+                }
+                HotpatchEvent::CandidateRejected { attempt, reason } => {
+                    PatchEvent::CandidateRejected {
+                        attempt,
+                        reason: match reason {
+                            BevyReason::Publication => HotpatchReason::Publication,
+                            BevyReason::Evaluation => HotpatchReason::Evaluation,
+                            BevyReason::Retention => HotpatchReason::Retention,
+                            BevyReason::Frame => HotpatchReason::Frame,
+                            BevyReason::Unknown => HotpatchReason::Unknown,
+                        },
+                    }
+                }
+                HotpatchEvent::Activated { attempt, digest } => {
+                    PatchEvent::Activated { attempt, digest }
+                }
+                HotpatchEvent::FrameFailed { attempt, reason } => {
+                    PatchEvent::FrameFailed {
+                        attempt,
+                        reason: match reason {
+                            BevyReason::Publication => HotpatchReason::Publication,
+                            BevyReason::Evaluation => HotpatchReason::Evaluation,
+                            BevyReason::Retention => HotpatchReason::Retention,
+                            BevyReason::Frame => HotpatchReason::Frame,
+                            BevyReason::Unknown => HotpatchReason::Unknown,
+                        },
+                    }
+                }
+                HotpatchEvent::RetentionFailed { attempt, reason } => {
+                    PatchEvent::RetentionFailed {
+                        attempt,
+                        reason: match reason {
+                            BevyReason::Publication => HotpatchReason::Publication,
+                            BevyReason::Evaluation => HotpatchReason::Evaluation,
+                            BevyReason::Retention => HotpatchReason::Retention,
+                            BevyReason::Frame => HotpatchReason::Frame,
+                            BevyReason::Unknown => HotpatchReason::Unknown,
+                        },
+                    }
+                }
             };
             trace.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
                 Stage::Hotpatch { event });
