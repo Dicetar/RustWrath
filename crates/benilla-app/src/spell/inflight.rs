@@ -939,7 +939,7 @@ mod tests {
             assert!(
                 matches!(
                     rx.try_recv(),
-                    Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL })
+                    Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
                 ),
                 "the move edge ships CMSG_CANCEL_CAST for the in-flight cast"
             );
@@ -1185,7 +1185,7 @@ mod tests {
             assert!(
                 matches!(
                     rx.try_recv(),
-                    Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL })
+                    Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
                 ),
                 "the second press reaches the cast half"
             );
@@ -1222,7 +1222,8 @@ mod tests {
                 matches!(
                     rx.try_recv(),
                     Ok(crate::net::ClientCommand::CancelCast {
-                        spell_id: HEROIC_STRIKE
+                        spell_id: HEROIC_STRIKE,
+                        ..
                     })
                 ),
                 "AbortCast names the queued strike on the wire, exactly as it would a cast"
@@ -1389,7 +1390,7 @@ mod tests {
             assert!(
                 matches!(
                     rx.try_recv(),
-                    Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL })
+                    Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
                 ),
                 "the nested cast is what sits in the inflight slot — it dies first"
             );
@@ -1417,7 +1418,8 @@ mod tests {
             assert!(matches!(
                 rx.try_recv(),
                 Ok(crate::net::ClientCommand::CancelCast {
-                    spell_id: HEROIC_STRIKE
+                    spell_id: HEROIC_STRIKE,
+                    ..
                 })
             ));
             assert_eq!(
@@ -1439,7 +1441,8 @@ mod tests {
             assert!(matches!(
                 rx.try_recv(),
                 Ok(crate::net::ClientCommand::CancelCast {
-                    spell_id: HEROIC_STRIKE
+                    spell_id: HEROIC_STRIKE,
+                    ..
                 })
             ));
             assert!(rx.try_recv().is_err());
@@ -1466,7 +1469,8 @@ mod tests {
                 matches!(
                     rx.try_recv(),
                     Ok(crate::net::ClientCommand::CancelChannelling {
-                        spell_id: ARCANE_MISSILES
+                        spell_id: ARCANE_MISSILES,
+                        ..
                     })
                 ),
                 "the move edge ships CMSG_CANCEL_CHANNELLING"
@@ -1549,7 +1553,7 @@ mod tests {
             run(&mut app, true);
             assert!(matches!(
                 rx.try_recv(),
-                Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL })
+                Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
             ));
             let self_e = app.world().resource::<GuidIndex>().0[&10];
             assert!(
@@ -1579,7 +1583,7 @@ mod tests {
             run(&mut app, true);
             assert!(matches!(
                 rx.try_recv(),
-                Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL })
+                Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
             ));
             let self_e = app.world().resource::<GuidIndex>().0[&10];
             assert!(
@@ -1620,7 +1624,7 @@ mod tests {
             assert_eq!(stop_casting(&mut app), Some(1));
             assert!(matches!(
                 rx.try_recv(),
-                Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL })
+                Ok(crate::net::ClientCommand::CancelCast { spell_id: FIREBALL, .. })
             ));
             assert_eq!(app.world().resource::<PendingCast>().current(), None);
         }

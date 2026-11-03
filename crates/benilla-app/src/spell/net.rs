@@ -2986,7 +2986,7 @@ mod tests {
         esc(&mut s);
         assert!(matches!(
             s.sent()[..],
-            [ClientCommand::CancelCast { spell_id: FIREBALL }]
+            [ClientCommand::CancelCast { spell_id: FIREBALL, .. }]
         ));
         assert_eq!(s.stream(), ["CHANGED", "STOP"]);
         assert_eq!(queued(&s), (Some(HEROIC_STRIKE), Some(HEROIC_STRIKE)));
@@ -2994,7 +2994,8 @@ mod tests {
         assert!(matches!(
             s.sent()[..],
             [ClientCommand::CancelCast {
-                spell_id: HEROIC_STRIKE
+                spell_id: HEROIC_STRIKE,
+                ..
             }]
         ));
         assert_eq!(s.stream(), ["CHANGED"]);

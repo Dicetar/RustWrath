@@ -1872,13 +1872,15 @@ fn wrath_wm_action_intake(
                     actions.last_cast_spell = Some(cast.identity.spell_id);
                     commands.push(ClientCommand::CancelCast {
                         spell_id: cast.identity.spell_id,
+                        trace: None,
                     });
                 } else if let Some(channel) = view.channeling(view.player_guid) {
                     commands.push(ClientCommand::CancelChannelling {
                         spell_id: channel.spell_id,
+                        trace: None,
                     });
                 } else if let Some(spell_id) = actions.last_cast_spell {
-                    commands.push(ClientCommand::CancelCast { spell_id, .. });
+                    commands.push(ClientCommand::CancelCast { spell_id, trace: None });
                 } else {
                     refused = Some("no client-known cast to cancel".to_owned());
                 }
@@ -6253,6 +6255,7 @@ fn wrath_stream_movement(
             payload,
             movement: true,
             receipt: None,
+            trace: None,
         });
     } else if let Some(trace) = &trace {
         trace.note_movement_refused();

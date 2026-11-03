@@ -713,6 +713,17 @@ fn send_spell_cast(
     trace: Option<crate::quest_trace::Source>,
     scope: Option<(u64, u64)>,
 ) {
+    let now = Instant::now();
+    let cast_trace_interaction = trace.as_ref().map(|t| {
+        t.begin(scope, None, crate::quest_trace::Operation::Observed)
+    });
+    if let Some(ix) = &cast_trace_interaction {
+        ix.record(crate::quest_trace::Stage::Cast {
+            spell_id: Some(spell_id),
+            attempt: None,
+            edge: crate::quest_trace::CastEdge::Requested,
+        });
+    }
     // A refusal through the reporter, then the attempt's `xor al,al` exit.
     macro_rules! refuse {
         ($fail:expr) => {{
@@ -727,17 +738,6 @@ fn send_spell_cast(
             refuse(core, spells, items, commands, __fail);
             return;
         }};
-    }
-    let now = Instant::now();
-    let cast_trace_interaction = trace.as_ref().map(|t| {
-        t.begin(scope, None, crate::quest_trace::Operation::Observed)
-    });
-    if let Some(ix) = &cast_trace_interaction {
-        ix.record(crate::quest_trace::Stage::Cast {
-            spell_id: Some(spell_id),
-            attempt: None,
-            edge: crate::quest_trace::CastEdge::Requested,
-        });
     }
     let def = spells.and_then(|s| s.catalog.get(spell_id));
     // TryCast's first branch (`6e4bce`, ahead of every gate): an `Effect[0] == TRADE_SKILL` cast
@@ -1647,7 +1647,8 @@ mod tests {
             matches!(
                 sent[..],
                 [ClientCommand::CancelCast {
-                    spell_id: ROCKBITER
+                    spell_id: ROCKBITER,
+                    ..
                 }]
             ),
             "the cancel and no cast: {sent:?}"
@@ -1699,7 +1700,7 @@ mod tests {
         send(&mut world, FIREBALL, CastCommit::Spell);
         let sent: Vec<_> = rx.try_iter().collect();
         assert!(
-            matches!(sent[..], [ClientCommand::CancelCast { spell_id: FIREBALL }]),
+            matches!(sent[..], [ClientCommand::CancelCast { spell_id: FIREBALL, .. }]),
             "{sent:?}"
         );
         let reports = world.resource::<CastReports>();
@@ -2345,7 +2346,8 @@ mod tests {
                 [
                     ClientCommand::CastSpell {
                         spell_id: CROWD_PUMMEL,
-                        target: None
+                        target: None,
+                        ..
                     },
                     ClientCommand::AttackSwing { guid: MOB }
                 ]
@@ -2671,7 +2673,8 @@ mod tests {
             rx.try_recv(),
             Ok(ClientCommand::CastSpell {
                 spell_id: HEARTHSTONE,
-                target: None
+                target: None,
+                ..
             })
         ));
 
@@ -2686,7 +2689,8 @@ mod tests {
                 spell_index: 0,
                 spell_id: HEARTHSTONE,
                 item_guid: None,
-                target: UseItemTarget::SelfImplicit
+                target: UseItemTarget::SelfImplicit,
+                ..
             })
         ));
 

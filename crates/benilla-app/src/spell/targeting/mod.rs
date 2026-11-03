@@ -958,6 +958,7 @@ mod tests {
             Ok(ClientCommand::CastSpell {
                 spell_id: HEAL,
                 target: Some(ALLY),
+                ..
             })
         ));
         assert!(errors(&mut world).is_empty());
@@ -1051,6 +1052,7 @@ mod tests {
             Ok(ClientCommand::CastSpell {
                 spell_id: HEAL,
                 target: Some(ALLY),
+                ..
             })
         ));
         assert!(errors(&mut world).is_empty());
@@ -1322,6 +1324,7 @@ mod tests {
                 Ok(ClientCommand::CastSpell {
                     spell_id: SPELL,
                     target: Some(sent),
+                    ..
                 }) if sent == guid
             );
             assert_eq!(clicked, binds, "{label}: the cursor's click");
@@ -1577,6 +1580,7 @@ mod tests {
                     Ok(ClientCommand::CastSpell {
                         spell_id: SPELL,
                         target: Some(sent),
+                        ..
                     }) if sent == guid
                 );
                 assert_eq!(clicked, binds, "{label}: the cursor's click");
