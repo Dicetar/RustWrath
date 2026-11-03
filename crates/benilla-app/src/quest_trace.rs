@@ -1055,7 +1055,11 @@ impl History {
                 continue;
             }
             let status = match event.stage {
-                Stage::GuardRefused => "blocked by a local guard",
+                Stage::GuardRefused
+                | Stage::Cast {
+                    edge: CastEdge::LocalRefusal { .. },
+                    ..
+                } => "blocked by a local guard",
                 Stage::NoWorld => "no active world connection",
                 Stage::AlreadyPending | Stage::TrackingCapacity => "local tracking is busy",
                 Stage::ChannelDisconnected => "command channel disconnected",
@@ -1063,11 +1067,20 @@ impl History {
                 Stage::Delivery(CommandDelivery::WriteFailed) => "socket write failed; outcome unknown",
                 Stage::Delivery(CommandDelivery::Written) => "sent; server outcome unconfirmed",
                 Stage::Delivery(CommandDelivery::OutboxAdmitted) => "queued; socket write unconfirmed",
-                Stage::ChannelAdmitted | Stage::Encoded => "command admitted; delivery unconfirmed",
+                Stage::ChannelAdmitted
+                | Stage::Encoded
+                | Stage::Cast {
+                    edge: CastEdge::Admitted,
+                    ..
+                } => "command admitted; delivery unconfirmed",
                 _ => "intent recorded; delivery unconfirmed",
             };
             let reason = match event.stage {
                 Stage::Delivery(CommandDelivery::Rejected(reason)) => format!(" ({reason:?})"),
+                Stage::Cast {
+                    edge: CastEdge::LocalRefusal { reason },
+                    ..
+                } => format!(" (reason={reason:#x})"),
                 _ => String::new(),
             };
             let suffix = if gaps { "; trace has gaps" } else { "" };
@@ -1670,6 +1683,7 @@ impl History {
         let slot_correlations = self.slot_correlations();
         let turn_in_correlations = self.turn_in_correlations();
         let ui_correlations = self.ui_error_correlations();
+        let ui_click_correlations = self.ui_click_correlations();
         let spawn = std::thread::Builder::new()
             .name("interaction-diagnostics-export".into())
             .spawn(move || {
@@ -1739,6 +1753,7 @@ impl History {
                         "slot_correlations": slot_correlations,
                         "turn_in_correlations": turn_in_correlations,
                         "ui_error_correlations": ui_correlations,
+                        "ui_click_correlations": ui_click_correlations,
                         "diagnostic_vectors": diagnostic_vectors,
                     }).to_string();
                     text.push('\n');
@@ -2089,18 +2104,45 @@ pub(crate) fn drain_history(history: &mut History) {
                     }
                 }
                 Stage::Delivery(CommandDelivery::Written) => {
-                    if let Some(open) = history
-                        .open_interactions
-                        .iter_mut()
-                        .find(|open| open.subject.interaction == event.subject.interaction)
-                    {
-                        open.state = OpenState::Written {
-                            seq,
-                            elapsed_ms: event.elapsed_ms,
-                        };
+                    if matches!(
+                        event.subject.operation,
+                        Operation::Open
+                            | Operation::Select
+                            | Operation::Accept
+                            | Operation::RequestReward
+                            | Operation::ChooseReward
+                    ) {
+                        if let Some(open) = history
+                            .open_interactions
+                            .iter_mut()
+                            .find(|open| open.subject.interaction == event.subject.interaction)
+                        {
+                            open.state = OpenState::Written {
+                                seq,
+                                elapsed_ms: event.elapsed_ms,
+                            };
+                        }
+                    } else {
+                        history
+                            .open_interactions
+                            .retain(|open| open.subject.interaction != event.subject.interaction);
                     }
                 }
+                Stage::ChannelAdmitted
+                    if matches!(
+                        event.subject.operation,
+                        Operation::Loot | Operation::Equip | Operation::Buy | Operation::Sell
+                    ) =>
+                {
+                    history
+                        .open_interactions
+                        .retain(|open| open.subject.interaction != event.subject.interaction);
+                }
                 Stage::GuardRefused
+                | Stage::Cast {
+                    edge: CastEdge::LocalRefusal { .. },
+                    ..
+                }
                 | Stage::NoWorld
                 | Stage::AlreadyPending
                 | Stage::TrackingCapacity
@@ -2231,8 +2273,15 @@ pub(crate) fn drain_history(history: &mut History) {
 
         let gaps = history.has_telemetry_gaps();
         let outcome = match event.stage {
-            Stage::GuardRefused | Stage::NoWorld | Stage::AlreadyPending
-            | Stage::TrackingCapacity | Stage::ChannelDisconnected
+            Stage::GuardRefused
+            | Stage::Cast {
+                edge: CastEdge::LocalRefusal { .. },
+                ..
+            }
+            | Stage::NoWorld
+            | Stage::AlreadyPending
+            | Stage::TrackingCapacity
+            | Stage::ChannelDisconnected
             | Stage::Delivery(CommandDelivery::Rejected(_)) => Some((
                 IncidentOutcome::LocalRefusal,
                 IncidentConfidence::Exact,

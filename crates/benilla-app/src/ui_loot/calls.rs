@@ -285,6 +285,9 @@ impl LootSteps<'_, '_> {
             ..
         }) = self.loot.window.action_at(row)
         else {
+            if let Some(t) = &trace {
+                t.record(crate::quest_trace::Stage::GuardRefused);
+            }
             return;
         };
         self.store(wire_slot, display_id, trace.clone());
