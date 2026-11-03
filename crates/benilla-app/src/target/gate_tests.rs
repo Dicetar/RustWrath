@@ -440,7 +440,7 @@ fn a_plate_right_click_binds_then_selects_then_acts_in_the_references_order() {
             assert!(
                 sent.iter().any(|c| matches!(
                     c,
-                    ClientCommand::CastSpell { spell_id, target: Some(t) }
+                    ClientCommand::CastSpell { spell_id, target: Some(t), .. }
                         if *spell_id == super::front_tests::HEAL && *t == guid
                 )),
                 "the heal is bound to the plate's unit: {what}"

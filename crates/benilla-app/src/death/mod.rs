@@ -1183,7 +1183,7 @@ mod tests {
         assert!(
             matches!(
                 sent.first(),
-                Some(ClientCommand::CancelCast { spell_id: FIREBALL })
+                Some(ClientCommand::CancelCast { spell_id: FIREBALL, .. })
             ),
             "the cancel leads the use: {sent:?}"
         );
@@ -1412,7 +1412,7 @@ mod tests {
         press_soulstone(&mut app);
         let sent: Vec<_> = rx.try_iter().collect();
         assert!(
-            matches!(sent[..], [ClientCommand::CancelCast { spell_id: FIREBALL }]),
+            matches!(sent[..], [ClientCommand::CancelCast { spell_id: FIREBALL, .. }]),
             "only the cancel goes out: {sent:?}"
         );
     }

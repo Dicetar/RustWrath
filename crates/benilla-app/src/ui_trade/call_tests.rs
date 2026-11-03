@@ -518,7 +518,7 @@ fn trade_casts(t: &mut Trade) -> (Vec<(u32, u8)>, bool) {
     let casts = sent(t)
         .into_iter()
         .filter_map(|c| match c {
-            ClientCommand::CastSpellTradeItem { spell_id, slot } => Some((spell_id, slot)),
+            ClientCommand::CastSpellTradeItem { spell_id, slot, .. } => Some((spell_id, slot)),
             _ => None,
         })
         .collect();

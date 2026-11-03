@@ -109,7 +109,7 @@ fn challenge(app: &mut App, rx: &Receiver<ClientCommand>, lua: &str) -> Vec<Opti
         .expect("the challenge runs");
     rx.try_iter()
         .filter_map(|c| match c {
-            ClientCommand::CastSpell { spell_id, target } if spell_id == DUEL => Some(target),
+            ClientCommand::CastSpell { spell_id, target, .. } if spell_id == DUEL => Some(target),
             _ => None,
         })
         .collect()

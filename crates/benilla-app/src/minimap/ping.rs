@@ -314,7 +314,7 @@ mod tests {
         let sent: Vec<_> = rx
             .try_iter()
             .filter_map(|c| match c {
-                ClientCommand::CastSpellAtDest { spell_id, dest } => Some((spell_id, dest)),
+                ClientCommand::CastSpellAtDest { spell_id, dest, .. } => Some((spell_id, dest)),
                 _ => None,
             })
             .collect();

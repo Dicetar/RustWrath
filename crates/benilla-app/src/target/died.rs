@@ -1091,7 +1091,8 @@ mod tests {
                 s,
                 ClientCommand::CastSpell {
                     spell_id: FIREBALL,
-                    target: Some(MOB)
+                    target: Some(MOB),
+                    ..
                 }
             )),
             "the cast goes out at the mob"
@@ -1115,7 +1116,7 @@ mod tests {
         assert!(
             matches!(
                 c.sent()[..],
-                [ClientCommand::CancelCast { spell_id: FIREBALL }]
+                [ClientCommand::CancelCast { spell_id: FIREBALL, .. }]
             ),
             "the record's unit died"
         );
@@ -1143,7 +1144,8 @@ mod tests {
                 s,
                 ClientCommand::CastSpell {
                     spell_id: MIND_VISION,
-                    target: None
+                    target: None,
+                    ..
                 }
             )),
             "the far cast goes out with no target"
@@ -1153,7 +1155,8 @@ mod tests {
         assert!(c.sent().iter().any(|s| matches!(
             s,
             ClientCommand::CancelCast {
-                spell_id: MIND_VISION
+                spell_id: MIND_VISION,
+                ..
             }
         )));
         assert_eq!(c.in_flight(), None);
@@ -1180,14 +1183,15 @@ mod tests {
             s,
             ClientCommand::CastSpell {
                 spell_id: FIREBALL,
-                target: Some(MOB)
+                target: Some(MOB),
+                ..
             }
         )));
         c.dies(mob, MOB, ObjectType::Unit);
         assert!(c
             .sent()
             .iter()
-            .any(|s| matches!(s, ClientCommand::CancelCast { spell_id: FIREBALL })));
+            .any(|s| matches!(s, ClientCommand::CancelCast { spell_id: FIREBALL, .. })));
     }
 
     /// `0x6058e5`-`0x605906`: the selection's death deselects (`0x493540(0, 0)` at `0x605901`)

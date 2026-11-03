@@ -176,6 +176,7 @@ fn food_dropped_on_our_targeted_pet_feeds_it() {
             ClientCommand::CastSpellItem {
                 spell_id: FEED_PET,
                 item_guid: JERKY,
+                trace: None,
             }
         )]
     );

@@ -276,6 +276,7 @@ fn chest_probe(
                         let _ = net.0.send(ClientCommand::CastSpellGameObject {
                             spell_id,
                             go_guid: guid,
+                            trace: None,
                         });
                     }
                     GoAction::OpenByKey { .. } | GoAction::Refuse(_) => {

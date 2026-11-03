@@ -998,7 +998,8 @@ fn a_pet_attack_with_the_cursor_up_casts_before_the_pet_acts() {
             [
                 ClientCommand::CastSpell {
                     spell_id: HEAL,
-                    target: Some(FOE)
+                    target: Some(FOE),
+                    ..
                 },
                 ClientCommand::PetAction {
                     pet_guid: PET,

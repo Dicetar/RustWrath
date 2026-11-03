@@ -695,7 +695,7 @@ fn a_far_spell_at_a_selection_with_no_object_sends_with_no_target() {
             .rx
             .try_iter()
             .filter_map(|c| match c {
-                ClientCommand::CastSpell { spell_id, target } if spell_id == spell => Some(target),
+                ClientCommand::CastSpell { spell_id, target, .. } if spell_id == spell => Some(target),
                 _ => None,
             })
             .collect();

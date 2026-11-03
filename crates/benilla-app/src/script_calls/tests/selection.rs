@@ -532,6 +532,7 @@ fn pick_wire(f: &Frame) -> Vec<String> {
             ClientCommand::CastSpell {
                 spell_id: SINISTER_STRIKE,
                 target,
+                ..
             } => Some(format!("CastSpell {:#x}", target.unwrap_or(0))),
             ClientCommand::AttackSwing { guid } => Some(format!("AttackSwing {guid:#x}")),
             _ => None,

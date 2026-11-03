@@ -1561,7 +1561,8 @@ mod attack_stand_tests {
                 a.sent()[..],
                 [
                     ClientCommand::CancelCast {
-                        spell_id: ARCANE_SHOT
+                        spell_id: ARCANE_SHOT,
+                        ..
                     },
                     ClientCommand::AttackSwing { guid: TARGET },
                 ]
@@ -1617,7 +1618,8 @@ mod attack_stand_tests {
                 a.sent()[..],
                 [
                     ClientCommand::CancelCast {
-                        spell_id: ARCANE_SHOT
+                        spell_id: ARCANE_SHOT,
+                        ..
                     },
                     ..
                 ]
@@ -1663,7 +1665,8 @@ mod attack_stand_tests {
             matches!(
                 a.sent()[..],
                 [ClientCommand::CancelCast {
-                    spell_id: AIMED_SHOT
+                    spell_id: AIMED_SHOT,
+                    ..
                 }]
             ),
             "both bits: the cancel, then the return"

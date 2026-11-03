@@ -195,7 +195,7 @@ impl Fix {
         let casts = sent
             .iter()
             .filter_map(|c| match c {
-                ClientCommand::CastSpell { spell_id, target } if *spell_id == HEAL => Some(*target),
+                ClientCommand::CastSpell { spell_id, target, .. } if *spell_id == HEAL => Some(*target),
                 _ => None,
             })
             .collect();
