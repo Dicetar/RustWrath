@@ -115,3 +115,63 @@ schema versions are rejected by `validate_snapshot_header` before row decoding. 
 GUIDs, credentials, chat, free-form strings, paths, packet bodies and coordinates are
 not exported; NPC identity is a run-local numeric alias. Run ID and export/inspector
 support are compiled only with the `dev` feature; coverage states this explicitly.
+
+### Evidence classes and class-aware retention
+
+Every retained row belongs to exactly one closed `EvidenceClass`, independent of the
+diagnostic vector that owns it. The mapping is explicit in
+`quest_trace::evidence_class_for_stage`:
+
+| Class | Stages | Intent |
+|---|---|---|
+| action | intent, guard, admission, encoded, outbox, delivery, outbound; cast; quest panel/slot/journal/turn-in; inventory, loot, vendor and equipment; `UiPress`/`UiClick`; session, world, login and hotpatch transitions; loss annotations; script errors, load errors and warnings; reducer/gameplay rejections; socket failures | protected action evidence |
+| health | frame window, asset failure/window, scene summary, replica revision, movement pressure, audio mixer/health, UI frame visibility | periodic, reclaimed first |
+| protocol | packet receipt, reducer acceptance, gameplay decode | protected decode-adjacent evidence |
+| unclassified | fallback only | counted, never inferred from a vector |
+
+`ScriptError`, `ScriptLoadError` and `ScriptWarning` are action evidence: a script failure
+can explain a UI action, and the Lua poll is change-driven rather than periodic, so these
+rows are not treated as disposable churn. A reducer or gameplay rejection is action
+evidence too, because it explains why an action did not land; successful decode steps stay
+protocol. The mapping is total over the closed `Stage` enum, so current producers cannot
+emit unclassified rows. The class and its counters remain so a future stage must choose a
+class explicitly instead of silently becoming disposable.
+
+Retention keeps at most 256 `health` rows and reclaims the oldest health row first while
+the 1024-row ring is under pressure. 64 health rows are protected, so a burst of UI clicks
+cannot leave the report with no frame, asset, scene, movement or audio context. Health
+rows above the reserve are evicted first, within their own budget, and counted; an
+incoming health row reclaims an older health row rather than an action row, so a periodic
+observation never displaces action evidence while any health row is retained. Only when
+no evictable health observation remains (retained health is at its reserve) does an
+incoming action/protocol/unclassified row evict the oldest row of that protected group.
+Rows keep their global sequence order for every reader. The store is a sequence-keyed
+ordered map plus one per-class sequence index; each insert and eviction is bounded
+(`O(log 1024)`), with no per-event scan of the ring and exact per-class membership.
+
+Per-class `retained`, `evicted` and `dropped` counts are exported in
+`coverage.evidence_classes`, `coverage.evidence_class_totals`, and the top-level
+`evidence_class_retention` / `evidence_class_totals` header keys. `dropped` is the sum of
+the classified ingress losses, so it always equals the per-class sum including
+`unclassified`; the totals also report whether `retained + evicted == received` and
+whether the class sums equal the global counters. Health-only eviction is visible loss but
+does not by itself mark an action conclusion as a telemetry gap; eviction of action,
+protocol or unclassified rows does, and `unclassified` loss is never hidden.
+
+### Incident evidence notes after eviction
+
+Incidents keep the existing bounded `evidence` sequence references. They also carry up to
+eight self-contained `evidence_notes`, each `{seq, elapsed_ms, class, stage}`, resolved
+from the live row when the incident is created or updated; no packet body, text, path or
+GUID is copied. When a chain overflows, the opening row and the most recent rows are kept.
+`evidence_notes_truncated` marks that older notes were dropped, and
+`evidence_truncated` still marks a bounded sequence chain. `missing_event_sequences` still
+lists references no longer in the ring, but the opening and terminal notes remain readable
+because they were captured before eviction.
+
+The inspector's incident line shows the opening and terminal note for the latest incident
+and says `opening note unavailable`, `terminal note unavailable`, or `notes truncated`
+rather than implying a row is present. The saved report uses the same incident record, so
+these fields survive export unchanged. All additions are additive to schema
+`rustwrath.interaction-diagnostics.v1` version 1: existing readers can ignore the new
+header and incident fields, and `validate_snapshot_header` is unchanged.

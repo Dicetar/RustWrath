@@ -1,6 +1,6 @@
 //! Host-owned interaction and client diagnostics, including worker-thread delivery results.
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -193,6 +193,174 @@ pub(crate) enum Stage {
     #[cfg(feature = "hotpatch")]
     Hotpatch { event: PatchEvent },
     Delivery(CommandDelivery),
+}
+
+/// Closed retention class for one diagnostic observation.
+///
+/// The class is intentionally independent of `DIAGNOSTIC_VECTOR_NAMES`: a vector says which
+/// subsystem produced the row, while the class says how much of the bounded ring it may hold.
+/// Per-vector eviction counts stay available for compatibility, but class loss is never inferred
+/// from them.
+///
+/// The mapping is total over the closed [`Stage`] enum, so current producers cannot emit
+/// `Unclassified`. The variant and its counters are kept for forward compatibility: a new
+/// `Stage` variant forces an explicit mapping decision at compile time instead of silently
+/// landing in a disposable bucket. Per-class loss counters therefore reconcile to zero
+/// unclassified rows today, and a future class that cannot be resolved is still counted rather
+/// than dropped outside the totals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum EvidenceClass {
+    /// A user or gameplay action chain: intent, admission, delivery, cast, quest/loot/vendor/
+    /// panel/UI interaction, lifecycle transition, and the failures that explain one.
+    Action,
+    /// A periodic health observation: frame, asset, scene, replica, movement pressure, audio
+    /// health/mixer and UI frame visibility. Cheap to lose and expected to repeat.
+    Health,
+    /// Decode-adjacent transport evidence: packet receipt, reducer acceptance, gameplay decode.
+    /// A rejection is classed `Action` because it directly explains a failed action.
+    Protocol,
+    /// Fallback class. See the type-level note: current producers map exhaustively.
+    Unclassified,
+}
+
+/// Number of evidence classes; fixed-size per-class counters derive from this.
+pub(crate) const EVIDENCE_CLASS_COUNT: usize = 4;
+
+impl EvidenceClass {
+    pub(crate) const ALL: [EvidenceClass; EVIDENCE_CLASS_COUNT] = [
+        EvidenceClass::Action,
+        EvidenceClass::Health,
+        EvidenceClass::Protocol,
+        EvidenceClass::Unclassified,
+    ];
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            EvidenceClass::Action => 0,
+            EvidenceClass::Health => 1,
+            EvidenceClass::Protocol => 2,
+            EvidenceClass::Unclassified => 3,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            EvidenceClass::Action => "action",
+            EvidenceClass::Health => "health",
+            EvidenceClass::Protocol => "protocol",
+            EvidenceClass::Unclassified => "unclassified",
+        }
+    }
+}
+
+/// Explicit evidence-class mapping for every producer stage.
+///
+/// Deliberate choices:
+/// - `ScriptError`, `ScriptLoadError` and `ScriptWarning` are `Action`, never `Health`. A script
+///   failure can explain a UI action, and the Lua diagnostic poller is change-driven rather than
+///   periodic, so these rows are not disposable retention churn.
+/// - `ReducerRejected` and `GameplayRejected` are `Action`: they directly explain why an action
+///   did not land. `PacketReceived`, `ReducerAccepted` and `GameplayDecoded` are `Protocol`.
+/// - `UiFrame` is `Health` (visibility is a periodic frame observation) while `UiPress` and
+///   `UiClick` are `Action` (they are the interaction evidence incidents are built from).
+/// - Loss annotations (`NativeEventsLost`, `ScriptRowsLost`, `ScriptRowsEvicted`,
+///   `AssetEventsLost`) are `Action`. They are the evidence that a gap exists; letting periodic
+///   churn reclaim them first would hide telemetry loss.
+/// - `AssetFailure` and `AssetWindow` are `Health` because the asset vector is explicitly a
+///   bounded periodic health channel (failures plus a 30-second heartbeat); `AssetEventsLost` is
+///   the protected loss annotation.
+pub(crate) fn evidence_class_for_stage(stage: &Stage) -> EvidenceClass {
+    match stage {
+        // Interaction, quest, inventory, loot, vendor, session and failure evidence.
+        Stage::Intent
+        | Stage::GuardRefused
+        | Stage::NoWorld
+        | Stage::AlreadyPending
+        | Stage::TrackingCapacity
+        | Stage::ChannelDisconnected
+        | Stage::ChannelAdmitted
+        | Stage::Encoded
+        | Stage::OpenCommandDequeued
+        | Stage::OpenOutboxAdmitted
+        | Stage::OpenOutboxRefused
+        | Stage::GreetingPanel
+        | Stage::DetailPanel
+        | Stage::ProgressPanel
+        | Stage::RewardPanel
+        | Stage::QuestSlotAdded
+        | Stage::QuestSlotProgressed { .. }
+        | Stage::QuestSlotRemoved
+        | Stage::AbandonSlot { .. }
+        | Stage::ServerQuestShareResult { .. }
+        | Stage::JournalProjection
+        | Stage::JournalRowInModel
+        | Stage::JournalTemplatePending
+        | Stage::JournalTemplateRefused
+        | Stage::QuestCompletePacket { .. }
+        | Stage::PlayerXpChanged { .. }
+        | Stage::PlayerMoneyChanged { .. }
+        | Stage::RewardItemPushed { .. }
+        | Stage::ServerQuestInvalid { .. }
+        | Stage::ServerQuestLogFull
+        | Stage::ServerQuestFailed { .. }
+        | Stage::ScriptError { .. }
+        | Stage::ScriptLoadError { .. }
+        | Stage::ScriptWarning { .. }
+        | Stage::UiReload { .. }
+        | Stage::UiReloadLoaded { .. }
+        | Stage::ScriptRowsLost { .. }
+        | Stage::ScriptRowsEvicted { .. }
+        | Stage::SessionPhase { .. }
+        | Stage::SessionEnded { .. }
+        | Stage::WorldTransfer { .. }
+        | Stage::LoginMilestone { .. }
+        | Stage::NativeEventsLost { .. }
+        | Stage::Cast { .. }
+        | Stage::InventoryFailure { .. }
+        | Stage::LootSlotRemoved { .. }
+        | Stage::LootMoneyNotify { .. }
+        | Stage::LootMoneyCleared
+        | Stage::LootErrorObserved { .. }
+        | Stage::LootResponseOpened
+        | Stage::LootReleasedObserved
+        | Stage::ItemPushResult { .. }
+        | Stage::VendorInventoryObserved { .. }
+        | Stage::VendorBuyResult { .. }
+        | Stage::VendorBuyFailedObserved { .. }
+        | Stage::VendorSellFailedObserved { .. }
+        | Stage::EquipmentSlotChanged { .. }
+        | Stage::MovementCorrectionApplied { .. }
+        | Stage::AssetEventsLost { .. }
+        | Stage::ReducerRejected { .. }
+        | Stage::GameplayRejected { .. }
+        | Stage::SocketReadFailed
+        | Stage::SocketWriteFailed
+        | Stage::Outbound { .. }
+        | Stage::UiPress { .. }
+        | Stage::UiClick { .. }
+        | Stage::DomainEvent { .. }
+        | Stage::Delivery(_) => EvidenceClass::Action,
+
+        // Periodic health channels.
+        Stage::ReplicaRevision { .. }
+        | Stage::AudioMixer { .. }
+        | Stage::AudioHealth { .. }
+        | Stage::MovementPressure { .. }
+        | Stage::SceneSummary { .. }
+        | Stage::FrameWindow { .. }
+        | Stage::AssetFailure { .. }
+        | Stage::AssetWindow { .. }
+        | Stage::UiFrame { .. } => EvidenceClass::Health,
+
+        // Decode-adjacent transport observations.
+        Stage::PacketReceived { .. }
+        | Stage::ReducerAccepted { .. }
+        | Stage::GameplayDecoded { .. } => EvidenceClass::Protocol,
+
+        #[cfg(feature = "hotpatch")]
+        Stage::Hotpatch { .. } => EvidenceClass::Action,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -550,8 +718,34 @@ pub(crate) const DIAGNOSTIC_VECTOR_COUNT: usize = DIAGNOSTIC_VECTOR_NAMES.len();
 /// Bounded retained-event ring capacity (oldest entries are evicted first).
 pub(crate) const RETAINED_CAPACITY: usize = 1024;
 
+/// Maximum number of `Health` observations retained at once.
+///
+/// Health rows are cheap, repetitive observations. Capping them guarantees that at least
+/// `RETAINED_CAPACITY - HEALTH_RETENTION_BUDGET` slots stay available for action and protocol
+/// evidence, so a noisy frame/asset/replica cadence can never crowd an action chain out by
+/// itself. A health row that is pushed out by this ceiling is counted as a class-aware eviction;
+/// health is never suppressed at the producer.
+pub(crate) const HEALTH_RETENTION_BUDGET: usize = 256;
+
+/// Minimum number of `Health` observations protected from action/protocol pressure.
+///
+/// When the ring is full the oldest `Health` row is reclaimed first while retained health is
+/// above this reserve. Below the reserve, action/protocol evidence is evicted so a burst of UI
+/// clicks cannot leave the report with no frame, asset, scene, movement or audio context at all.
+/// Health therefore always yields within its own bounded budget before action evidence yields,
+/// and the per-class eviction counters expose exactly how much health was reclaimed.
+pub(crate) const HEALTH_RETENTION_RESERVE: usize = 64;
+
+// Retention invariants: health has a real ceiling, the protected reserve fits inside it, and
+// health can never consume the whole ring by itself.
+const _: () = assert!(HEALTH_RETENTION_RESERVE <= HEALTH_RETENTION_BUDGET);
+const _: () = assert!(HEALTH_RETENTION_BUDGET < RETAINED_CAPACITY);
+
 /// Maximum bytes in one inspector/export summary line.
 const SNAPSHOT_LINE_BYTES: usize = 240;
+
+/// Maximum sequence references and self-contained evidence notes per incident.
+const MAX_INCIDENT_EVIDENCE: usize = 8;
 
 /// Asset failure/missed summaries are emitted at most once per second while a real condition is
 /// accumulating, plus a slow zero-value heartbeat so a healthy vector still has a denominator.
@@ -609,6 +803,10 @@ struct Ingress {
     dropped: AtomicU64,
     /// Per-vector producer-drop counters, indexed by `DIAGNOSTIC_VECTOR_NAMES`.
     dropped_by_vector: Vec<AtomicU64>,
+    /// Per-evidence-class producer-drop / rejected-ingress counters. The sum (including
+    /// `unclassified`) equals `dropped`; the class is resolved from the stage at ingress, before
+    /// the event can be lost.
+    dropped_by_class: [AtomicU64; EVIDENCE_CLASS_COUNT],
     next_id: AtomicU64,
     reload_generation: AtomicU64,
     update_packets_seen: AtomicU64,
@@ -748,6 +946,41 @@ pub(crate) struct DiagnosticCoverage {
     pub hotpatch_compiled: bool,
     pub export_and_inspector_compiled: bool,
     pub sampling: SamplingCoverage,
+    /// Class-aware retention: exactly one row per `EvidenceClass`, including `unclassified`.
+    pub evidence_classes: Vec<EvidenceClassCoverage>,
+    /// Cross-check of the per-class counters against the global counters.
+    pub evidence_class_totals: EvidenceClassTotals,
+    pub health_retention_budget: u64,
+    pub health_retention_reserve: u64,
+}
+
+/// One evidence-class row of the retention summary.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct EvidenceClassCoverage {
+    pub class: &'static str,
+    /// Rows of this class currently in the retained ring.
+    pub retained: u64,
+    /// Rows of this class evicted by the class-aware ring policy.
+    pub evicted: u64,
+    /// Rows of this class lost at the nonblocking ingress (producer drop / rejected ingress).
+    pub dropped: u64,
+}
+
+/// Explicit reconciliation of the class counters with the global counters.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct EvidenceClassTotals {
+    pub retained: u64,
+    pub evicted: u64,
+    pub dropped: u64,
+    pub global_received: u64,
+    pub global_evicted: u64,
+    pub global_dropped: u64,
+    pub unclassified_retained: u64,
+    pub unclassified_evicted: u64,
+    pub unclassified_dropped: u64,
+    /// `retained == retained_observations`, `evicted == global evicted`,
+    /// `dropped == global dropped`, and `received == retained + evicted`.
+    pub reconciles: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -983,6 +1216,13 @@ impl Source {
     pub(crate) fn producer_drops_for_vector(&self, vector: &str) -> u64 {
         let index = diagnostic_vector_index(vector);
         self.0.dropped_by_vector[index].load(Ordering::Relaxed)
+    }
+
+    /// Producer-drop / rejected-ingress loss for one evidence class. The class is resolved from
+    /// the stage before the nonblocking enqueue is attempted, so a refused event is still counted
+    /// under the class whose evidence was lost.
+    pub(crate) fn producer_drops_for_class(&self, class: EvidenceClass) -> u64 {
+        self.0.dropped_by_class[class.index()].load(Ordering::Relaxed)
     }
 
     pub(crate) fn update_packets_seen(&self) -> u64 {
@@ -1317,6 +1557,7 @@ impl Interaction {
         let ingress = &self.source.0;
         let vector_name = vector_for_stage(&stage);
         let vector_index = diagnostic_vector_index(vector_name.unwrap_or("unclassified"));
+        let class_index = evidence_class_for_stage(&stage).index();
         let event = Event {
             version: 1,
             subject: self.subject,
@@ -1326,6 +1567,7 @@ impl Interaction {
         if ingress.events.try_send(event).is_err() {
             ingress.dropped.fetch_add(1, Ordering::Relaxed);
             ingress.dropped_by_vector[vector_index].fetch_add(1, Ordering::Relaxed);
+            ingress.dropped_by_class[class_index].fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -1358,6 +1600,42 @@ struct Event {
     stage: Stage,
 }
 
+/// Self-contained, bounded description of one incident evidence row.
+///
+/// The note is captured while the row is still retained, so the incident stays interpretable
+/// after the ring evicts the referenced sequence. It deliberately carries only allowlisted
+/// structured values: the sequence, the producer-relative time, the evidence class and the
+/// bounded `Stage` enum. No packet body, free-form text, path or raw GUID is copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct EvidenceNote {
+    seq: u64,
+    elapsed_ms: u64,
+    class: EvidenceClass,
+    stage: Stage,
+}
+
+impl EvidenceNote {
+    fn from_event(seq: u64, event: &Event) -> Self {
+        Self {
+            seq,
+            elapsed_ms: event.elapsed_ms,
+            class: evidence_class_for_stage(&event.stage),
+            stage: event.stage,
+        }
+    }
+
+    /// Compact inspector rendering: `seq, elapsed_ms, class, stage`.
+    fn label(&self) -> String {
+        format!(
+            "#{} +{}ms {} {:?}",
+            self.seq,
+            self.elapsed_ms,
+            self.class.label(),
+            self.stage
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct Incident {
     version: u8,
@@ -1366,8 +1644,19 @@ struct Incident {
     confidence: IncidentConfidence,
     terminal_stage: Stage,
     evidence: Vec<u64>,
+    /// Bounded self-contained copy of the same evidence rows, resolved before eviction.
+    /// `evidence` stays the compatibility surface; this is the readable one.
+    evidence_notes: Vec<EvidenceNote>,
     evidence_truncated: bool,
+    evidence_notes_truncated: bool,
     telemetry_gap: bool,
+}
+
+/// The bounded evidence chain for one incident.
+struct EvidenceChain {
+    sequences: Vec<u64>,
+    notes: Vec<EvidenceNote>,
+    truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1552,7 +1841,13 @@ pub(crate) struct InspectorSnapshot {
 pub(crate) struct History {
     source: Source,
     incoming: Receiver<Event>,
-    entries: VecDeque<(u64, Event)>,
+    /// Retained rows in global sequence order. A `BTreeMap` keeps ordered iteration for every
+    /// existing reader while allowing an interior (class-selected) eviction in O(log capacity)
+    /// instead of scanning or shifting the ring.
+    entries: BTreeMap<u64, Event>,
+    /// Per-class sequence index. Membership is exact: every retained row is in exactly one set
+    /// and is removed from it in the same operation that removes it from `entries`.
+    class_sequences: [BTreeSet<u64>; EVIDENCE_CLASS_COUNT],
     incidents: VecDeque<Incident>,
     open_interactions: VecDeque<OpenInteraction>,
     /// Bounded written-cast candidates for native outcome correlation.
@@ -1561,6 +1856,9 @@ pub(crate) struct History {
     incidents_evicted: u64,
     received: u64,
     evicted: u64,
+    /// Class-aware retained-ring evictions, indexed by `EvidenceClass`.
+    /// The sum (including `unclassified`) must equal `evicted`.
+    evicted_by_class: [u64; EVIDENCE_CLASS_COUNT],
     /// Retained-ring evictions attributed to each vector, indexed by `DIAGNOSTIC_VECTOR_NAMES`.
     /// The sum (including `unclassified`) must equal `evicted`.
     retained_evictions: [u64; DIAGNOSTIC_VECTOR_COUNT],
@@ -1572,8 +1870,114 @@ pub(crate) struct History {
 }
 
 impl History {
+    fn retained_by_class(&self, class: EvidenceClass) -> u64 {
+        self.class_sequences[class.index()].len() as u64
+    }
+
+    /// Remove one retained row and attribute the loss to its class and vector in the same step.
+    /// The class index is the only place retention membership is tracked, so the per-class counts
+    /// can never drift from `entries`.
+    fn evict_sequence(&mut self, seq: u64) -> bool {
+        let Some(event) = self.entries.remove(&seq) else {
+            return false;
+        };
+        let class = evidence_class_for_stage(&event.stage);
+        self.class_sequences[class.index()].remove(&seq);
+        let vector = vector_for_stage(&event.stage).unwrap_or("unclassified");
+        let index = diagnostic_vector_index(vector);
+        self.retained_evictions[index] = self.retained_evictions[index].saturating_add(1);
+        self.evicted_by_class[class.index()] =
+            self.evicted_by_class[class.index()].saturating_add(1);
+        self.evicted = self.evicted.saturating_add(1);
+        true
+    }
+
+    fn evict_oldest_of(&mut self, class: EvidenceClass) -> bool {
+        match self.class_sequences[class.index()].iter().next().copied() {
+            Some(seq) => self.evict_sequence(seq),
+            None => false,
+        }
+    }
+
+    /// Class-aware eviction under full-ring pressure.
+    ///
+    /// An incoming health row reclaims an older health row rather than an action row, so a
+    /// periodic health observation can never displace action/protocol evidence while any health
+    /// row is retained. An incoming action/protocol/unclassified row reclaims health while
+    /// retained health is above its protected reserve, then reclaims the oldest row of its own
+    /// group. When the ring holds nothing but health rows at the reserve, the oldest health row
+    /// is the only possible victim.
+    fn evict_under_pressure(&mut self, incoming_health: bool) -> bool {
+        let health = self.retained_by_class(EvidenceClass::Health);
+        if health > 0 && (incoming_health || health > HEALTH_RETENTION_RESERVE as u64) {
+            return self.evict_oldest_of(EvidenceClass::Health);
+        }
+        let mut oldest: Option<(EvidenceClass, u64)> = None;
+        for class in [
+            EvidenceClass::Action,
+            EvidenceClass::Protocol,
+            EvidenceClass::Unclassified,
+        ] {
+            if let Some(&seq) = self.class_sequences[class.index()].iter().next() {
+                if oldest.map_or(true, |(_, candidate)| seq < candidate) {
+                    oldest = Some((class, seq));
+                }
+            }
+        }
+        if let Some((_, seq)) = oldest {
+            return self.evict_sequence(seq);
+        }
+        self.evict_oldest_of(EvidenceClass::Health)
+    }
+
+    /// Insert one retained row, applying the health ceiling and the global capacity policy.
+    /// O(log capacity) per event: no scan of the ring, no shift of retained entries.
+    fn insert_retained(&mut self, seq: u64, event: Event) {
+        let class = evidence_class_for_stage(&event.stage);
+        let incoming_health = class == EvidenceClass::Health;
+        if incoming_health {
+            while self.class_sequences[EvidenceClass::Health.index()].len()
+                >= HEALTH_RETENTION_BUDGET
+            {
+                if !self.evict_oldest_of(EvidenceClass::Health) {
+                    break;
+                }
+            }
+        }
+        while self.entries.len() >= RETAINED_CAPACITY {
+            if !self.evict_under_pressure(incoming_health) {
+                break;
+            }
+        }
+        self.class_sequences[class.index()].insert(seq);
+        self.entries.insert(seq, event);
+        debug_assert_eq!(
+            self.class_sequences
+                .iter()
+                .map(|set| set.len() as u64)
+                .fold(0u64, u64::saturating_add),
+            self.entries.len() as u64,
+            "per-class retained counts must sum to the retained observation count"
+        );
+        debug_assert_eq!(
+            self.evicted_by_class
+                .iter()
+                .copied()
+                .fold(0u64, u64::saturating_add),
+            self.evicted,
+            "per-class retained evictions must sum to the global evicted count"
+        );
+    }
+
+    /// Whether retained evidence that can support or refute an action conclusion was lost.
+    ///
+    /// Health-only churn is exported in the per-class counters but does not by itself make a
+    /// negative action conclusion unverified: periodic frame/asset/scene rows are not evidence
+    /// for or against an interaction. Losing an action, protocol or unclassified row does.
     fn has_telemetry_gaps(&self) -> bool {
-        self.evicted > 0
+        self.evicted_by_class[EvidenceClass::Action.index()] > 0
+            || self.evicted_by_class[EvidenceClass::Protocol.index()] > 0
+            || self.evicted_by_class[EvidenceClass::Unclassified.index()] > 0
             || self.source_gaps > 0
             || self.interaction_tracking_lost > 0
             || self.source.0.dropped.load(Ordering::Relaxed) > 0
@@ -1585,15 +1989,25 @@ impl History {
         outcome: IncidentOutcome,
         confidence: IncidentConfidence,
         terminal_stage: Stage,
-        mut evidence: Vec<u64>,
-        mut evidence_truncated: bool,
+        mut chain: EvidenceChain,
     ) {
         let telemetry_gap = self.has_telemetry_gaps();
-        if evidence.len() > 8 {
-            let drop_count = evidence.len() - 8;
-            evidence.drain(0..drop_count);
-            evidence_truncated = true;
+        // Both views of the chain are bounded to the same eight rows; older rows are dropped and
+        // the truncation is marked on the incident rather than silently forgotten.
+        let overflow = chain.sequences.len().saturating_sub(MAX_INCIDENT_EVIDENCE);
+        if overflow > 0 {
+            chain.sequences.drain(0..overflow);
+            let note_overflow = chain.notes.len().saturating_sub(MAX_INCIDENT_EVIDENCE);
+            if note_overflow > 0 {
+                chain.notes.drain(0..note_overflow);
+            }
+            chain.truncated = true;
         }
+        debug_assert_eq!(
+            chain.sequences.len(),
+            chain.notes.len(),
+            "incident evidence sequences and notes must stay aligned"
+        );
         if self.incidents.len() == 64 {
             self.incidents.pop_front();
             self.incidents_evicted += 1;
@@ -1604,39 +2018,116 @@ impl History {
             outcome,
             confidence,
             terminal_stage,
-            evidence,
-            evidence_truncated,
+            evidence: chain.sequences,
+            evidence_notes: chain.notes,
+            evidence_truncated: chain.truncated,
+            evidence_notes_truncated: chain.truncated,
             telemetry_gap,
         });
     }
 
-    fn collect_interaction_evidence(&self, interaction_id: u64, terminal_seq: u64) -> (Vec<u64>, bool) {
+    /// Collect the bounded evidence chain for one interaction, resolving notes from the events
+    /// themselves while they are still retained.
+    ///
+    /// The chain keeps the opening row and the most recent rows when it overflows: the opening
+    /// note explains how the interaction started, and the closing rows explain what happened.
+    /// The terminal row is the event currently being drained, which has not entered the ring yet
+    /// and is therefore always available regardless of ring pressure.
+    fn collect_interaction_evidence(
+        &self,
+        interaction_id: u64,
+        terminal_seq: u64,
+        terminal: &Event,
+    ) -> EvidenceChain {
+        self.collect_evidence_with_terminal(
+            interaction_id,
+            EvidenceNote::from_event(terminal_seq, terminal),
+        )
+    }
+
+    /// As [`Self::collect_interaction_evidence`], but with a terminal note synthesized from
+    /// bounded state when the terminal row is no longer available as a retained `Event`.
+    fn collect_evidence_with_terminal(
+        &self,
+        interaction_id: u64,
+        terminal_note: EvidenceNote,
+    ) -> EvidenceChain {
+        let terminal_seq = terminal_note.seq;
         if interaction_id == 0 {
-            return (vec![terminal_seq], false);
+            return EvidenceChain {
+                sequences: vec![terminal_seq],
+                notes: vec![terminal_note],
+                truncated: false,
+            };
         }
-        let mut evidence: Vec<u64> = self
+        let priors: Vec<(u64, &Event)> = self
             .entries
             .iter()
-            .rev()
             .filter(|(seq, prior)| {
-                prior.subject.interaction == interaction_id && *seq != terminal_seq
+                prior.subject.interaction == interaction_id && **seq != terminal_seq
             })
-            .take(8)
-            .map(|(prior_seq, _)| *prior_seq)
+            .map(|(prior_seq, prior)| (*prior_seq, prior))
             .collect();
-        let truncated = evidence.len() == 8;
-        evidence.truncate(7);
-        evidence.reverse();
-        evidence.push(terminal_seq);
-        (evidence, truncated)
+        let truncated = priors.len() > MAX_INCIDENT_EVIDENCE - 1;
+        let selected: Vec<(u64, &Event)> = if truncated {
+            let mut selected = Vec::with_capacity(MAX_INCIDENT_EVIDENCE);
+            selected.push(priors[0]);
+            selected.extend_from_slice(
+                &priors[priors.len() - (MAX_INCIDENT_EVIDENCE - 2)..],
+            );
+            selected
+        } else {
+            priors
+        };
+        let mut sequences: Vec<u64> = selected.iter().map(|(seq, _)| *seq).collect();
+        let mut notes: Vec<EvidenceNote> = selected
+            .iter()
+            .map(|(seq, event)| EvidenceNote::from_event(*seq, event))
+            .collect();
+        sequences.push(terminal_seq);
+        notes.push(terminal_note);
+        EvidenceChain {
+            sequences,
+            notes,
+            truncated,
+        }
+    }
+
+    /// Build the evidence chain for a correlated server outcome whose earlier rows were captured
+    /// as bounded open-interaction state rather than re-read from the ring.
+    fn correlate_written_evidence(
+        &self,
+        writes: impl Iterator<Item = (u64, u64)>,
+        terminal_seq: u64,
+        terminal: &Event,
+    ) -> EvidenceChain {
+        let mut sequences = Vec::with_capacity(MAX_INCIDENT_EVIDENCE);
+        let mut notes = Vec::with_capacity(MAX_INCIDENT_EVIDENCE);
+        for (seq, elapsed_ms) in writes {
+            sequences.push(seq);
+            notes.push(EvidenceNote {
+                seq,
+                elapsed_ms,
+                class: EvidenceClass::Action,
+                stage: Stage::Delivery(CommandDelivery::Written),
+            });
+        }
+        sequences.push(terminal_seq);
+        notes.push(EvidenceNote::from_event(terminal_seq, terminal));
+        EvidenceChain {
+            sequences,
+            notes,
+            truncated: false,
+        }
     }
 
     fn retire_scope(
         &mut self,
         retired_scope: Option<(u64, u64)>,
-        terminal_stage: Stage,
+        terminal: &Event,
         seq: u64,
     ) -> (u64, u64) {
+        let terminal_stage = terminal.stage;
         // An old scope's written cast can never explain a native edge in the new world.
         self.cast_candidates.retain(|candidate| {
             !match (retired_scope, candidate.subject.scope) {
@@ -1664,8 +2155,8 @@ impl History {
         let mut retired_local = 0u64;
         let mut retired_written = 0u64;
         for open in retired {
-            let (evidence, truncated) =
-                self.collect_interaction_evidence(open.subject.interaction, seq);
+            let chain =
+                self.collect_interaction_evidence(open.subject.interaction, seq, terminal);
             match open.state {
                 OpenState::Written { .. } => {
                     retired_written = retired_written.saturating_add(1);
@@ -1674,8 +2165,7 @@ impl History {
                         IncidentOutcome::WriteUnconfirmed,
                         IncidentConfidence::Unverified,
                         terminal_stage,
-                        evidence,
-                        truncated,
+                        chain,
                     );
                 }
                 OpenState::Local => {
@@ -1689,8 +2179,7 @@ impl History {
                             IncidentConfidence::Exact
                         },
                         terminal_stage,
-                        evidence,
-                        truncated,
+                        chain,
                     );
                 }
             }
@@ -1877,19 +2366,28 @@ impl History {
         }
         self.open_interactions = remaining;
         for open in expired {
-            let terminal_seq = match open.state {
-                OpenState::Written { seq, .. } => seq,
-                OpenState::Local => 0,
+            let chain = match open.state {
+                OpenState::Written { seq, elapsed_ms } => self.collect_evidence_with_terminal(
+                    open.subject.interaction,
+                    EvidenceNote {
+                        seq,
+                        elapsed_ms,
+                        class: EvidenceClass::Action,
+                        stage: Stage::Delivery(CommandDelivery::Written),
+                    },
+                ),
+                OpenState::Local => EvidenceChain {
+                    sequences: Vec::new(),
+                    notes: Vec::new(),
+                    truncated: false,
+                },
             };
-            let (evidence, truncated) =
-                self.collect_interaction_evidence(open.subject.interaction, terminal_seq);
             self.push_incident(
                 open.subject,
                 IncidentOutcome::WriteUnconfirmed,
                 IncidentConfidence::Unverified,
                 Stage::Delivery(CommandDelivery::Written),
-                evidence,
-                truncated,
+                chain,
             );
         }
     }
@@ -2510,25 +3008,48 @@ impl History {
 
     pub(crate) fn recent_incidents(&self) -> impl Iterator<Item = String> + '_ {
         self.incidents.iter().rev().take(8).map(|incident| {
-            let missing = incident.evidence.iter().any(|seq| {
-                !self.entries.iter().any(|(retained, _)| retained == seq)
-            });
+            let missing = incident
+                .evidence
+                .iter()
+                .filter(|seq| !self.entries.contains_key(*seq))
+                .count();
+            // The opening and terminal notes are self-contained copies resolved before eviction,
+            // so they stay readable even when both referenced rows are gone from the ring.
+            let opening = incident.evidence_notes.first().map_or_else(
+                || "opening note unavailable".to_string(),
+                EvidenceNote::label,
+            );
+            let terminal = incident.evidence_notes.last().map_or_else(
+                || "terminal note unavailable".to_string(),
+                EvidenceNote::label,
+            );
+            let mut flags: Vec<String> = Vec::new();
+            if incident.evidence_notes_truncated || incident.evidence_truncated {
+                flags.push("notes truncated".to_string());
+            }
+            if incident.evidence_notes.is_empty() {
+                flags.push("notes unavailable".to_string());
+            }
+            if missing > 0 {
+                flags.push(format!("{missing} evidence rows evicted"));
+            }
+            if incident.telemetry_gap {
+                flags.push("trace has gaps".to_string());
+            }
             format!(
-                "Action {} {:?} (npc {:?}, quest {:?}, item {:?}, count {:?}, slot {:?}): {:?} [{:?}] {:?} (evidence {:?}{}{}{})",
+                "Action {} {:?} npc {:?} quest {:?} item {:?}: open {opening}; terminal {terminal}; notes {}; {:?} [{:?}]",
                 incident.subject.interaction,
                 incident.subject.operation,
                 incident.subject.npc_alias,
                 incident.subject.quest,
                 incident.subject.item,
-                incident.subject.count,
-                incident.subject.slot,
+                if flags.is_empty() {
+                    "complete".to_string()
+                } else {
+                    flags.join(", ")
+                },
                 incident.outcome,
                 incident.confidence,
-                incident.terminal_stage,
-                incident.evidence,
-                if incident.evidence_truncated { ", truncated" } else { "" },
-                if missing { ", some events evicted" } else { "" },
-                if incident.telemetry_gap { ", trace has gaps" } else { "" },
             )
         })
     }
@@ -3468,7 +3989,15 @@ impl History {
     }
 
     pub(crate) fn counters(&self) -> (u64, u64, u64) {
-        (self.received, self.evicted, self.source.0.dropped.load(Ordering::Relaxed))
+        // The class counters are the authoritative breakdown of rejected ingress (every drop is
+        // classified before the nonblocking send is attempted), so the reported global drop
+        // count is their sum. This keeps `dropped == sum(per-class dropped)` exact for any
+        // snapshot, including `unclassified`, instead of racing two independent atomics.
+        let dropped = EvidenceClass::ALL
+            .iter()
+            .map(|class| self.source.producer_drops_for_class(*class))
+            .fold(0u64, u64::saturating_add);
+        (self.received, self.evicted, dropped)
     }
 
     /// Delivery counts across retained entries (admitted, written, rejected, write-failed).
@@ -3568,7 +4097,7 @@ impl History {
     /// global counter so a reader can verify the invariant.  Zero retained observations is not a
     /// healthy reading, so that caveat is always present.
     pub(crate) fn retention_summary(&self) -> Vec<String> {
-        const MAX_LINES: usize = 8;
+        const MAX_LINES: usize = 12;
         const MAX_EVICTION_LINES: usize = 4;
         fn bound(mut line: String) -> String {
             if line.len() > SNAPSHOT_LINE_BYTES {
@@ -3581,14 +4110,81 @@ impl History {
             line
         }
 
-        let first = self.entries.front().map(|(seq, _)| *seq);
-        let highest = self.entries.back().map(|(seq, _)| *seq);
-        let (received, evicted, dropped) = self.counters();
+        let first = self.entries.keys().next().copied();
+        let highest = self.entries.keys().next_back().copied();
+        let (received, evicted, _) = self.counters();
         let mut lines = Vec::with_capacity(MAX_LINES);
+
+        let class_line = |classes: &[EvidenceClass]| -> (u64, u64, u64) {
+            let mut retained = 0u64;
+            let mut evicted = 0u64;
+            let mut dropped = 0u64;
+            for &class in classes {
+                retained = retained.saturating_add(self.retained_by_class(class));
+                evicted = evicted.saturating_add(self.evicted_by_class[class.index()]);
+                dropped = dropped.saturating_add(self.source.producer_drops_for_class(class));
+            }
+            (retained, evicted, dropped)
+        };
+        let action = class_line(&[EvidenceClass::Action]);
+        let health = class_line(&[EvidenceClass::Health]);
+        let protocol = class_line(&[EvidenceClass::Protocol]);
+        let unclassified = class_line(&[EvidenceClass::Unclassified]);
+        let totals = (
+            action.0 + health.0 + protocol.0 + unclassified.0,
+            action.1 + health.1 + protocol.1 + unclassified.1,
+            action.2 + health.2 + protocol.2 + unclassified.2,
+        );
+        // Report the class-sum drop count so the summary line and the per-class lines agree.
+        let dropped = totals.2;
         lines.push(format!(
             "retention: retained seq {:?}..{:?} of {RETAINED_CAPACITY}; received={received} evicted={evicted} dropped={dropped} source_gaps={}",
             first, highest, self.source_gaps
         ));
+        lines.push(format!(
+            "evidence classes: action held={} evicted={} dropped={}; health held={} evicted={} dropped={}",
+            action.0, action.1, action.2, health.0, health.1, health.2
+        ));
+        lines.push(format!(
+            "evidence classes: protocol held={} evicted={} dropped={}; unclassified held={} evicted={} dropped={}; sum held={} evicted={} dropped={}",
+            protocol.0, protocol.1, protocol.2,
+            unclassified.0, unclassified.1, unclassified.2,
+            totals.0, totals.1, totals.2
+        ));
+        lines.push(format!(
+            "health retention: budget={HEALTH_RETENTION_BUDGET} reserve={HEALTH_RETENTION_RESERVE}; class-aware eviction reclaims the oldest health row first, then the oldest action/protocol/unclassified row"
+        ));
+        lines.push(
+            "zero retained observations is not proof that no event occurred (absence_not_proof=true)"
+                .to_string(),
+        );
+
+        let mut retained_by_vector = [0u64; DIAGNOSTIC_VECTOR_COUNT];
+        for (_, event) in &self.entries {
+            let vector = vector_for_stage(&event.stage).unwrap_or("unclassified");
+            let index = diagnostic_vector_index(vector);
+            retained_by_vector[index] = retained_by_vector[index].saturating_add(1);
+        }
+        let mut ranked: Vec<(usize, u64)> = retained_by_vector
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, count)| *count > 0)
+            .collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let top: Vec<String> = ranked
+            .iter()
+            .take(4)
+            .map(|(index, count)| format!("{}={count}", DIAGNOSTIC_VECTOR_NAMES[*index]))
+            .collect();
+        lines.push(format!(
+            "high-volume retained: {}",
+            if top.is_empty() { "none".to_string() } else { top.join(" ") }
+        ));
+        lines.push(
+            "cadence: asset=failure/missed or 30s heartbeat; frame=5s aggregate; replica=5s coalesced; ui_press/click, scene, movement, audio, script=change-driven"
+                .to_string(),
+        );
 
         let mut vector_entries = Vec::new();
         let mut vector_sum = 0u64;
@@ -3629,36 +4225,6 @@ impl History {
         packed.truncate(MAX_EVICTION_LINES);
         lines.extend(packed);
 
-        let mut retained_by_vector = [0u64; DIAGNOSTIC_VECTOR_COUNT];
-        for (_, event) in &self.entries {
-            let vector = vector_for_stage(&event.stage).unwrap_or("unclassified");
-            let index = diagnostic_vector_index(vector);
-            retained_by_vector[index] = retained_by_vector[index].saturating_add(1);
-        }
-        let mut ranked: Vec<(usize, u64)> = retained_by_vector
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, count)| *count > 0)
-            .collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let top: Vec<String> = ranked
-            .iter()
-            .take(4)
-            .map(|(index, count)| format!("{}={count}", DIAGNOSTIC_VECTOR_NAMES[*index]))
-            .collect();
-        lines.push(format!(
-            "high-volume retained: {}",
-            if top.is_empty() { "none".to_string() } else { top.join(" ") }
-        ));
-        lines.push(
-            "cadence: asset=failure/missed or 30s heartbeat; frame=5s aggregate; replica=5s coalesced; ui_press/click, scene, movement, audio, script=change-driven"
-                .to_string(),
-        );
-        lines.push(
-            "zero retained observations is not proof that no event occurred (absence_not_proof=true)"
-                .to_string(),
-        );
         lines.truncate(MAX_LINES);
         lines.into_iter().map(bound).collect()
     }
@@ -3897,6 +4463,42 @@ impl History {
             // no memory isolation or sandbox, so no trust boundary is claimed here.
             "hotpatch_trust_policy".to_string(),
         ];
+        let mut evidence_classes = Vec::with_capacity(EVIDENCE_CLASS_COUNT);
+        let mut class_retained = 0u64;
+        let mut class_evicted = 0u64;
+        let mut class_dropped = 0u64;
+        for class in EvidenceClass::ALL {
+            let retained = self.retained_by_class(class);
+            let evicted = self.evicted_by_class[class.index()];
+            let dropped = self.source.producer_drops_for_class(class);
+            class_retained = class_retained.saturating_add(retained);
+            class_evicted = class_evicted.saturating_add(evicted);
+            class_dropped = class_dropped.saturating_add(dropped);
+            evidence_classes.push(EvidenceClassCoverage {
+                class: class.label(),
+                retained,
+                evicted,
+                dropped,
+            });
+        }
+        let (global_received, global_evicted, _global_dropped) = self.counters();
+        let unclassified = &evidence_classes[EvidenceClass::Unclassified.index()];
+        let evidence_class_totals = EvidenceClassTotals {
+            retained: class_retained,
+            evicted: class_evicted,
+            dropped: class_dropped,
+            global_received,
+            global_evicted,
+            // Rejected ingress is classified before the nonblocking send, so the authoritative
+            // global drop count is the class sum rather than a second racing atomic.
+            global_dropped: class_dropped,
+            unclassified_retained: unclassified.retained,
+            unclassified_evicted: unclassified.evicted,
+            unclassified_dropped: unclassified.dropped,
+            reconciles: class_retained == self.entries.len() as u64
+                && class_evicted == global_evicted
+                && global_received == class_retained.saturating_add(class_evicted),
+        };
         DiagnosticCoverage {
             instrumented_paths,
             compiled_out_paths,
@@ -3927,6 +4529,10 @@ impl History {
                 movement_packets_coalesced: self.movement_coalesced(),
                 movement_packets_refused: self.movement_refused(),
             },
+            evidence_classes,
+            evidence_class_totals,
+            health_retention_budget: HEALTH_RETENTION_BUDGET as u64,
+            health_retention_reserve: HEALTH_RETENTION_RESERVE as u64,
         }
     }
     pub(crate) fn recent(&self) -> impl Iterator<Item = String> + '_ {
@@ -4161,16 +4767,19 @@ impl History {
         }
         self.source.0.export_status.store(1, Ordering::Release);
         let ingress = self.source.0.clone();
-        let rows: Vec<_> = self.entries.iter().cloned().collect();
+        let rows: Vec<(u64, Event)> = self
+            .entries
+            .iter()
+            .map(|(seq, event)| (*seq, event.clone()))
+            .collect();
         let incidents: Vec<_> = self.incidents.iter().map(|incident| {
             let missing: Vec<_> = incident.evidence.iter().copied()
-                .filter(|seq| !self.entries.iter().any(|(retained, _)| retained == seq))
+                .filter(|seq| !self.entries.contains_key(seq))
                 .collect();
             serde_json::json!({ "record": incident, "missing_event_sequences": missing })
         }).collect();
         let incidents_evicted = self.incidents_evicted;
         let interaction_tracking_lost = self.interaction_tracking_lost;
-        let (received, evicted, dropped) = self.counters();
         let ingress_pending = self.incoming.len();
         let source_gaps = self.source_gaps;
         #[cfg(feature = "hotpatch")]
@@ -4183,10 +4792,16 @@ impl History {
         let movement_coalesced = self.movement_coalesced();
         let movement_refused = self.movement_refused();
         let coverage = self.coverage();
+        // Use the same coverage snapshot for the top-level counters so `dropped`,
+        // `evicted` and `received` always agree with `evidence_class_totals`, even while
+        // producers are still running.
+        let received = coverage.evidence_class_totals.global_received;
+        let evicted = coverage.evidence_class_totals.global_evicted;
+        let dropped = coverage.evidence_class_totals.dropped;
         let diagnostic_vectors = self.diagnostic_vectors();
         let retention_summary = self.retention_summary();
-        let first_sequence = self.entries.front().map(|(seq, _)| *seq);
-        let highest_sequence = self.entries.back().map(|(seq, _)| *seq);
+        let first_sequence = self.entries.keys().next().copied();
+        let highest_sequence = self.entries.keys().next_back().copied();
         let npc_aliases_assigned = self.source.npc_alias_count();
         let run_id = self.source.0.run_id.clone();
         let asset_profile = self.source.0.asset_profile.clone();
@@ -4230,12 +4845,18 @@ impl History {
                         }
                         Some(format!("{:x}", digest.finalize()))
                     });
+                    let evidence_class_retention = coverage.evidence_classes.clone();
+                    let evidence_class_totals = coverage.evidence_class_totals.clone();
                     let mut text = serde_json::json!({
                         "schema": "rustwrath.interaction-diagnostics.v1",
                         "version": 1,
                         "run_id": run_id,
                         "protocol_mode": protocol_mode,
                         "coverage": coverage,
+                        "evidence_class_retention": evidence_class_retention,
+                        "evidence_class_totals": evidence_class_totals,
+                        "health_retention_budget": HEALTH_RETENTION_BUDGET,
+                        "health_retention_reserve": HEALTH_RETENTION_RESERVE,
                         "build_git_sha": if build.sha.is_empty() { None } else { Some(build.sha) },
                         "build_dirty_state": "unknown",
                         "executable_file_sha1": file_hash,
@@ -4329,6 +4950,7 @@ pub(crate) fn new_pair() -> (Source, History) {
         dropped_by_vector: (0..DIAGNOSTIC_VECTOR_NAMES.len())
             .map(|_| AtomicU64::new(0))
             .collect(),
+        dropped_by_class: std::array::from_fn(|_| AtomicU64::new(0)),
         next_id: AtomicU64::new(1),
         reload_generation: AtomicU64::new(0),
         update_packets_seen: AtomicU64::new(0),
@@ -4366,7 +4988,8 @@ pub(crate) fn new_pair() -> (Source, History) {
     let history = History {
         source: source.clone(),
         incoming,
-        entries: VecDeque::with_capacity(RETAINED_CAPACITY),
+        entries: BTreeMap::new(),
+        class_sequences: std::array::from_fn(|_| BTreeSet::new()),
         incidents: VecDeque::with_capacity(64),
         open_interactions: VecDeque::with_capacity(MAX_OPEN_INTERACTIONS),
         cast_candidates: VecDeque::with_capacity(MAX_OPEN_INTERACTIONS),
@@ -4374,6 +4997,7 @@ pub(crate) fn new_pair() -> (Source, History) {
         incidents_evicted: 0,
         received: 0,
         evicted: 0,
+        evicted_by_class: [0; EVIDENCE_CLASS_COUNT],
         retained_evictions: [0; DIAGNOSTIC_VECTOR_COUNT],
         source_gaps: 0,
         #[cfg(feature = "hotpatch")]
@@ -4863,7 +5487,7 @@ pub(crate) fn drain_history(history: &mut History) {
                 event: DomainEvent::PlayerDisconnected,
             } => {
                 let ended_scope = event.subject.scope;
-                let _ = history.retire_scope(ended_scope, event.stage, seq);
+                let _ = history.retire_scope(ended_scope, &event, seq);
             }
             Stage::WorldTransfer { .. }
             | Stage::DomainEvent {
@@ -4887,7 +5511,7 @@ pub(crate) fn drain_history(history: &mut History) {
                 let mut retired_local = 0u64;
                 let mut retired_written = 0u64;
                 for stale in stale_scopes {
-                    let (local, written) = history.retire_scope(stale, event.stage, seq);
+                    let (local, written) = history.retire_scope(stale, &event, seq);
                     retired_local = retired_local.saturating_add(local);
                     retired_written = retired_written.saturating_add(written);
                 }
@@ -4970,22 +5594,24 @@ pub(crate) fn drain_history(history: &mut History) {
                 .collect();
 
             if matching_indices.len() > 1 {
-                let mut evidence: Vec<u64> = matching_indices
+                let writes: Vec<(u64, u64)> = matching_indices
                     .iter()
                     .filter_map(|&idx| match history.open_interactions[idx].state {
-                        OpenState::Written { seq: write_seq, .. } => Some(write_seq),
+                        OpenState::Written { seq: write_seq, elapsed_ms } => {
+                            Some((write_seq, elapsed_ms))
+                        }
                         OpenState::Local => None,
                     })
                     .collect();
-                evidence.push(seq);
                 let first_subject = history.open_interactions[matching_indices[0]].subject;
+                let chain =
+                    history.correlate_written_evidence(writes.into_iter(), seq, &event);
                 history.push_incident(
                     first_subject,
                     IncidentOutcome::AmbiguousServerOutcome,
                     IncidentConfidence::Ambiguous,
                     event.stage,
-                    evidence,
-                    false,
+                    chain,
                 );
             }
             for idx in matching_indices.into_iter().rev() {
@@ -5078,22 +5704,24 @@ pub(crate) fn drain_history(history: &mut History) {
                     })
                     .collect();
                 if matching_indices.len() > 1 {
-                    let mut evidence: Vec<u64> = matching_indices
+                    let writes: Vec<(u64, u64)> = matching_indices
                         .iter()
                         .filter_map(|&idx| match history.open_interactions[idx].state {
-                            OpenState::Written { seq: write_seq, .. } => Some(write_seq),
+                            OpenState::Written { seq: write_seq, elapsed_ms } => {
+                                Some((write_seq, elapsed_ms))
+                            }
                             OpenState::Local => None,
                         })
                         .collect();
-                    evidence.push(seq);
                     let first_subject = history.open_interactions[matching_indices[0]].subject;
+                    let chain =
+                        history.correlate_written_evidence(writes.into_iter(), seq, &event);
                     history.push_incident(
                         first_subject,
                         IncidentOutcome::AmbiguousServerOutcome,
                         IncidentConfidence::Ambiguous,
                         event.stage,
-                        evidence,
-                        false,
+                        chain,
                     );
                 }
                 for idx in matching_indices.into_iter().rev() {
@@ -5391,56 +6019,43 @@ pub(crate) fn drain_history(history: &mut History) {
             _ => None,
         };
         if let Some((outcome, confidence, attributed_subject)) = outcome {
+            let note = EvidenceNote::from_event(seq, &event);
             let existing = history.incidents.iter_mut().rev().find(|incident| {
                 same_script_row(incident.terminal_stage, event.stage)
             });
             let updated = if let Some(incident) = existing {
                 incident.terminal_stage = event.stage;
                 incident.telemetry_gap |= gaps;
-                if incident.evidence.len() == 8 {
+                if incident.evidence.len() == MAX_INCIDENT_EVIDENCE {
                     incident.evidence.remove(0);
                     incident.evidence_truncated = true;
                 }
                 incident.evidence.push(seq);
+                if incident.evidence_notes.len() == MAX_INCIDENT_EVIDENCE {
+                    incident.evidence_notes.remove(0);
+                    incident.evidence_notes_truncated = true;
+                }
+                incident.evidence_notes.push(note);
                 true
             } else {
                 false
             };
             if !updated {
-                let (evidence, evidence_truncated) =
-                    history.collect_interaction_evidence(attributed_subject.interaction, seq);
+                let chain = history.collect_interaction_evidence(
+                    attributed_subject.interaction,
+                    seq,
+                    &event,
+                );
                 history.push_incident(
                     attributed_subject,
                     outcome,
                     confidence,
                     event.stage,
-                    evidence,
-                    evidence_truncated,
+                    chain,
                 );
             }
         }
-        if history.entries.len() == RETAINED_CAPACITY {
-            if let Some((_, evicted_event)) = history.entries.pop_front() {
-                // Classify the evicted event through the same registry used at ingress.  An
-                // event that cannot be attributed lands in `unclassified`, never outside the
-                // total, so per-vector counts always sum to the global evicted counter.
-                let vector = vector_for_stage(&evicted_event.stage).unwrap_or("unclassified");
-                let index = diagnostic_vector_index(vector);
-                history.retained_evictions[index] =
-                    history.retained_evictions[index].saturating_add(1);
-                history.evicted = history.evicted.saturating_add(1);
-                debug_assert_eq!(
-                    history
-                        .retained_evictions
-                        .iter()
-                        .copied()
-                        .fold(0u64, u64::saturating_add),
-                    history.evicted,
-                    "per-vector retained evictions must sum to the global evicted count"
-                );
-            }
-        }
-        history.entries.push_back((seq, event));
+        history.insert_retained(seq, event);
     }
     let now_ms = history.source.0.origin.elapsed().as_millis() as u64;
     history.expire_cast_windows(now_ms);
