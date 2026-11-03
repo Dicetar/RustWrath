@@ -157,8 +157,12 @@ fn on_log_full(
 ) {
     if let SessionEvent::QuestLogFull = ev {
         if let Some(trace) = trace.as_ref() {
-            trace.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
-                crate::quest_trace::Stage::ServerQuestLogFull);
+            trace.observe_with_npc(
+                view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                None,
+                quest.npc,
+                crate::quest_trace::Stage::ServerQuestLogFull,
+            );
         }
         quest_log_full(&mut quest);
     }
@@ -173,8 +177,12 @@ fn on_giver_invalid(
 ) {
     if let SessionEvent::QuestGiverInvalid { reason } = ev {
         if let Some(trace) = trace.as_ref() {
-            trace.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
-                crate::quest_trace::Stage::ServerQuestInvalid { reason });
+            trace.observe_with_npc(
+                view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                None,
+                quest.npc,
+                crate::quest_trace::Stage::ServerQuestInvalid { reason },
+            );
         }
         quest_giver_invalid(reason, &mut quest);
         crate::ui_session::queue(&mut commands, close_without_report);
@@ -193,8 +201,12 @@ fn on_giver_failed(
 ) {
     if let SessionEvent::QuestGiverFailed { quest_id, reason } = ev {
         if let Some(trace) = trace.as_ref() {
-            trace.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), Some(quest_id),
-                crate::quest_trace::Stage::ServerQuestFailed { reason });
+            trace.observe_with_npc(
+                view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                Some(quest_id),
+                quest.npc,
+                crate::quest_trace::Stage::ServerQuestFailed { reason },
+            );
         }
         let latched = script.is_some_and(|s| s.quest_log_latched(quest_id));
         quest_giver_failed(

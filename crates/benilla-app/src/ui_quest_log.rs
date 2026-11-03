@@ -924,7 +924,9 @@ pub(crate) fn feed_quest_log(
             debug!("ui_quest_log: landing {} records", landed.len());
             script.land_quest_records(landed);
         }
-        for id in std::mem::take(&mut quest_log.refused) {
+        let refused_ids = std::mem::take(&mut quest_log.refused);
+        let refused_any = !refused_ids.is_empty();
+        for id in refused_ids {
             script.refuse_quest_record(id);
         }
         let held_now: Vec<(u32, QuestRecordView)> = asks
@@ -937,6 +939,28 @@ pub(crate) fn feed_quest_log(
         let records_landed = records_landed || !held_now.is_empty();
         if !held_now.is_empty() {
             script.land_quest_records(held_now);
+        }
+        if (records_landed || refused_any) && !seat {
+            if let Some(trace) = &reads.quest_trace {
+                let scope = reads
+                    .wrath_view
+                    .as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation));
+                for slot in current_slots.iter().filter(|slot| slot.quest_id != 0) {
+                    trace.observe(
+                        scope,
+                        Some(slot.quest_id),
+                        crate::quest_trace::Stage::JournalProjection,
+                    );
+                    if script.quest_log_index(slot.quest_id) != 0 {
+                        trace.observe(
+                            scope,
+                            Some(slot.quest_id),
+                            crate::quest_trace::Stage::JournalRowInModel,
+                        );
+                    }
+                }
+            }
         }
 
         // Every creature name that lands goes to the engine unprompted, as the reference's

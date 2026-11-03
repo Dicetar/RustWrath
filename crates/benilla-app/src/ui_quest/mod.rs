@@ -484,7 +484,7 @@ pub(crate) fn open_panel(world: &mut World, npc: u64, view: QuestView) {
     crate::ui_session::register(world, npc);
     world.resource_mut::<QuestGiver>().open(npc, view);
     if let Some((trace, scope, quest, stage)) = observation {
-        trace.observe(scope, quest, stage);
+        trace.observe_with_npc(scope, quest, Some(npc), stage);
     }
 }
 

@@ -1065,9 +1065,10 @@ impl Dispatch<'_, '_> {
                 debug!("right-click interact: {guid:#x} ({arm:?})");
                 let trace = if matches!(arm, ServiceArm::Gossip | ServiceArm::Questgiver) {
                     self.quest_trace.as_ref().map(|source| {
-                        source.begin(
+                        source.begin_with_npc(
                             self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
                             None,
+                            Some(guid),
                             crate::quest_trace::Operation::Open,
                         )
                     })

@@ -41,16 +41,18 @@ newer reservation or kill another owner's process to acquire the slot.
 
 ## Current evidence and continuation
 
-- D00 default-on recording approved by owner on 2026-11-03. See
+- D00 default-on recording approved by owner on 2026-11-03, with D01–D07 correlation and
+  lifecycle continuation added in `crates/benilla-app/src/quest_trace.rs`,
+  `target/click.rs`, `ui_quest/{mod,net,verbs}.rs`, `ui_quest_log.rs`, `wrath.rs`, and
+  `debug_panel/mod.rs`. See
   [resident quest diagnostics](../architecture/rfc-resident-quest-diagnostics.md).
-  Source now includes selection and acceptance delivery evidence, panel and quest-slot
-  observations, journal model projection, periodic and reload-time Lua diagnostic counts,
-  bounded local incidents, and local JSONL export. The owner expanded scope to other
-  diagnostic vectors; source now includes UI frame state, allowlisted network boundaries,
-  casts, inventory/loot/vendor events, session transitions and hotpatch milestones.
-  Outcomes are heuristic. Visible rendering,
-  loss-aware server incidents, complete export identity and runtime validation remain open.
-  No build/client slot acquired.
+  Source now includes run-local `npc_alias` redaction, `Open`/`Select`/`Accept` panel and
+  quest-less server-refusal correlation (`ServerQuestLogFull`, `ServerQuestInvalid`),
+  scope retirement on disconnect/world transfer, reload-aware journal projection
+  evaluation (including async `SMSG_QUEST_QUERY_RESPONSE` template landings), loss-aware
+  `IncidentConfidence` and `AmbiguousServerOutcome` incidents, `SnapshotV1` header version
+  validation, and 7 focused acceptance unit tests in `quest_trace::tests`. Visible pixel
+  rendering and target-client runtime validation remain open. No build/client slot acquired.
 
 - Codex six-task batch (2026-11-03): G01–G06 source/design deliverables prepared;
   editing finished, no Cargo/client slot acquired. Existing dirty changes preserved.

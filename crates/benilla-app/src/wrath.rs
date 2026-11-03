@@ -4021,9 +4021,21 @@ fn wrath_dispatch_events(world: &mut World) {
                     SessionEvent::Worldport { .. } => Some(D::Worldport),
                     _ => None,
                 };
+                let npc = match &event.event {
+                    SessionEvent::GossipMenu { npc, .. } => Some(*npc),
+                    SessionEvent::VendorInventory { vendor, .. } => Some(*vendor),
+                    SessionEvent::LootResponse { guid, .. }
+                    | SessionEvent::LootError { guid, .. }
+                    | SessionEvent::LootReleaseResponse { guid, .. } => Some(*guid),
+                    _ => None,
+                };
                 if let Some(event_kind) = kind {
-                    trace.observe(Some((event.session_epoch, event.world_generation)), None,
-                        Stage::DomainEvent { event: event_kind });
+                    trace.observe_with_npc(
+                        Some((event.session_epoch, event.world_generation)),
+                        None,
+                        npc,
+                        Stage::DomainEvent { event: event_kind },
+                    );
                 }
             }
             deliver.push(event.event);

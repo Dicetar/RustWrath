@@ -93,10 +93,12 @@ impl QuestVerbs<'_, '_> {
                 giver.pools.available.get(index).map(|row| row.0)
             }
         });
+        let npc_for_trace = self.giver.as_ref().and_then(|giver| giver.npc);
         let trace = self.trace.as_ref().map(|source| {
-            source.begin(
+            source.begin_with_npc(
                 self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
                 quest,
+                npc_for_trace,
                 Operation::Select,
             )
         });
@@ -223,9 +225,11 @@ impl QuestVerbs<'_, '_> {
                 Some(QuestView::Detail(d)) => Some(d.quest_id),
                 _ => None,
             });
-            source.begin(
+            let npc_for_trace = self.giver.as_ref().and_then(|giver| giver.npc);
+            source.begin_with_npc(
                 self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
                 quest,
+                npc_for_trace,
                 crate::quest_trace::Operation::Accept,
             )
         });
