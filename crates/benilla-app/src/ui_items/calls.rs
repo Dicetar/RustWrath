@@ -29,6 +29,8 @@ pub(crate) struct ItemSteps<'w, 's> {
     /// Absent in a world with no merchant window, whose repair clicks are dropped.
     merchant: Option<Res<'w, crate::ui_merchant::MerchantOpen>>,
     purse: Option<crate::ui_merchant::RepairPurse<'w, 's>>,
+    /// Resident interaction diagnostics; item/equip producers record local boundaries here.
+    trace: Option<Res<'w, crate::quest_trace::Source>>,
 }
 
 impl ItemSteps<'_, '_> {
@@ -102,6 +104,7 @@ impl ItemSteps<'_, '_> {
             equip_sound,
             merchant,
             purse,
+            trace,
             ..
         } = self;
         let store = self_q.iter().next();
@@ -206,13 +209,21 @@ impl ItemSteps<'_, '_> {
             // `AutoEquipCursorItem` past its question: the call cleared the cursor, keeping the
             // pickup's lock but an arrow's (`0x5e1577`, `0x5e1711`).
             ItemCall::AutoEquip { bag, slot } => {
+                use crate::quest_trace::Operation;
+                let interaction = trace.as_ref().map(|s| s.begin(None, None, Operation::Equip));
+                let record = |stage| {
+                    if let Some(t) = &interaction {
+                        t.record(stage);
+                    }
+                };
                 let Some((bag_index, wire_slot)) = wire_pos(bag, slot) else {
+                    record(crate::quest_trace::Stage::GuardRefused);
                     debug!("ui_items: autoequip ({bag}, {slot}) out of range — ignored");
                     return;
                 };
                 let slot0 = u8::try_from(slot.saturating_sub(1)).unwrap_or(0);
                 let guid = store.and_then(|s| slot_guid(&s.0, bag, slot0, objects));
-                send_auto_equip(script, objects, items, net, bag_index, wire_slot, guid);
+                send_auto_equip(script, objects, items, net, bag_index, wire_slot, guid, interaction);
             }
             // The question the call raised (`0x5e16c6`), filed though the slot moved since: the
             // item is on the cursor, and the answer re-judges the slot.
@@ -245,6 +256,7 @@ impl ItemSteps<'_, '_> {
                     net,
                     store,
                     answer,
+                    trace.as_ref().map(|s| s.begin(None, None, crate::quest_trace::Operation::Equip)),
                 );
             }
             // The host hands this one to the item use, which holds the cast ladder.
@@ -269,6 +281,7 @@ fn answer_pending_equip(
     net: &NetCommands,
     store: Option<&ObjectStore>,
     answer: benilla_ui::script::PendingEquipAnswer,
+    interaction: Option<crate::quest_trace::Interaction>,
 ) {
     use crate::ui_bind_confirm::PendingEquip;
     let Some(rec) = gate.equips.take(answer.index) else {
@@ -341,6 +354,7 @@ fn answer_pending_equip(
                 bag_index,
                 wire_slot,
                 Some(guid),
+                interaction.clone(),
             );
             // The re-issue's `SetCursorItem` and send clear play their pair inside the answer
             // (`0x494c4a`, `0x49520a`), after the held item's own clear.

@@ -28,7 +28,17 @@ pub(crate) fn send_auto_equip(
     bag_index: u8,
     slot: u8,
     guid: Option<u64>,
+    interaction: Option<crate::quest_trace::Interaction>,
 ) {
+    let record = |result: Result<(), crossbeam_channel::SendError<ClientCommand>>| {
+        if let Some(t) = &interaction {
+            t.record(if result.is_ok() {
+                crate::quest_trace::Stage::ChannelAdmitted
+            } else {
+                crate::quest_trace::Stage::ChannelDisconnected
+            });
+        }
+    };
     let ammo = guid.and_then(|guid| {
         let entry = objects.object(guid)?.object_entry()?;
         // The class getter only reads (`0x5d9f30`).
@@ -37,15 +47,13 @@ pub(crate) fn send_auto_equip(
     });
     if let Some((guid, entry)) = ammo {
         debug!("ui_items: set ammo entry {entry} (wire {bag_index}/{slot})");
-        let _ = commands.0.send(ClientCommand::SetAmmo { entry });
+        record(commands.0.send(ClientCommand::SetAmmo { entry }));
         if script.item_locked(guid) {
             script.unlock_item(guid);
         }
     } else {
         debug!("ui_items: autoequip wire {bag_index}/{slot}");
-        let _ = commands
-            .0
-            .send(ClientCommand::AutoEquipItem { bag_index, slot });
+        record(commands.0.send(ClientCommand::AutoEquipItem { bag_index, slot }));
     }
 }
 

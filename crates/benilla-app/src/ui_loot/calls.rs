@@ -78,6 +78,8 @@ pub(crate) struct LootSteps<'w, 's> {
     errors: Res<'w, UiErrorKeys>,
     chat: Res<'w, crate::ui_chat::ChatLog>,
     cfg: Res<'w, LootConfig>,
+    /// Resident interaction diagnostics; loot producers record local boundaries here.
+    trace: Option<Res<'w, crate::quest_trace::Source>>,
 }
 
 impl LootSteps<'_, '_> {
@@ -168,7 +170,17 @@ impl LootSteps<'_, '_> {
     /// whether a window is open or not: the dispatcher asks for no source, only the active player
     /// (`0x4c27ad`, `0x4c27b6`).
     fn take(&mut self, script: &mut UiScript, row: u32) {
+        use crate::quest_trace::{Operation, Stage};
+        let trace = self.trace.as_ref().map(|s| {
+            s.begin(None, None, Operation::Loot)
+        });
+        let record = |trace: &Option<crate::quest_trace::Interaction>, stage| {
+            if let Some(t) = trace {
+                t.record(stage);
+            }
+        };
         if self.objects.player().is_none() {
+            record(&trace, Stage::GuardRefused);
             return;
         }
         match self.loot.window.action_at(row) {
@@ -176,7 +188,17 @@ impl LootSteps<'_, '_> {
                 // `CMSG_LOOT_MONEY` while the player's loot target is held (`0x4c2847` →
                 // `0x5ea8c6`). The coin sound is the coinage watcher's (`crate::sound`).
                 if self.latch.0.is_some() {
-                    let _ = self.net.0.send(ClientCommand::LootMoney);
+                    let result = self.net.0.send(ClientCommand::LootMoney);
+                    record(
+                        &trace,
+                        if result.is_ok() {
+                            Stage::ChannelAdmitted
+                        } else {
+                            Stage::ChannelDisconnected
+                        },
+                    );
+                } else {
+                    record(&trace, Stage::GuardRefused);
                 }
                 // The money cell to -1 (`0x4c2858`) and `LOOT_SLOT_CLEARED` 1 (`0x4c2862`), whose
                 // listeners read the coin row gone.
@@ -196,7 +218,10 @@ impl LootSteps<'_, '_> {
             Some(LootAction::Item {
                 slot_type: slot_type::ROLL_ONGOING,
                 ..
-            }) => self.errors.push(UiError::key("ERR_LOOT_ROLL_PENDING")),
+            }) => {
+                record(&trace, Stage::GuardRefused);
+                self.errors.push(UiError::key("ERR_LOOT_ROLL_PENDING"))
+            }
             // A master-loot row opens the candidate list (`0x4c28c4`-`0x4c28d1`), whose anchor the
             // row's `<OnClick>` has already stashed.
             Some(LootAction::Item {
@@ -216,28 +241,42 @@ impl LootSteps<'_, '_> {
                     self.loot.then.push(Then::StoreBind { row });
                     return;
                 }
-                self.store(wire_slot, display_id);
+                self.store(wire_slot, display_id, trace.clone());
             }
-            None => {}
+            None => {
+                record(&trace, Stage::GuardRefused);
+            }
         }
     }
 
     /// The item's sound and `CMSG_AUTOSTORE_LOOT_ITEM` with its wire slot (`0x4c2926`,
     /// `0x4c2936`), before any answer.
-    fn store(&mut self, wire_slot: u8, display_id: u32) {
+    fn store(&mut self, wire_slot: u8, display_id: u32, interaction: Option<crate::quest_trace::Interaction>) {
         self.pickup
             .write(crate::sound::LootPickupSound { display_id });
-        let _ = self
+        let result = self
             .net
             .0
             .send(ClientCommand::AutostoreLootItem { slot: wire_slot });
+        if let Some(t) = &interaction {
+            t.record(if result.is_ok() {
+                crate::quest_trace::Stage::ChannelAdmitted
+            } else {
+                crate::quest_trace::Stage::ChannelDisconnected
+            });
+        }
     }
 
     /// `0x4c2790(slot, 1)`, `LootSlot`: only the pending row (`0x4c27c0`), and only while it holds
     /// an item (`0x4c27d9`); the send clears the stash (`0x4c281a`), so a doubled accept cannot
     /// loot twice.
     fn confirm(&mut self, row: u32) {
+        use crate::quest_trace::Operation;
+        let trace = self.trace.as_ref().map(|s| s.begin(None, None, Operation::Loot));
         if self.objects.player().is_none() || self.loot.pending_bind_confirm != Some(row) {
+            if let Some(t) = &trace {
+                t.record(crate::quest_trace::Stage::GuardRefused);
+            }
             return;
         }
         let Some(LootAction::Item {
@@ -248,7 +287,7 @@ impl LootSteps<'_, '_> {
         else {
             return;
         };
-        self.store(wire_slot, display_id);
+        self.store(wire_slot, display_id, trace.clone());
         self.loot.pending_bind_confirm = None;
     }
 

@@ -214,6 +214,14 @@ pub(crate) enum SessionPhase {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum CastEdge {
+    /// A client-local spell request entered the cast ladder.
+    Requested,
+    /// The cast ladder refused the request locally before any packet.
+    LocalRefusal { reason: u8 },
+    /// The request passed local guards and reached the Wrath command producer.
+    Admitted,
+    /// A local cancel (move/esc) requested cancellation of an in-flight cast/channel.
+    CancelRequested,
     Started,
     Delayed,
     Launched,
@@ -233,6 +241,10 @@ pub(crate) enum Operation {
     RequestReward,
     ChooseReward,
     Observed,
+    Loot,
+    Equip,
+    Buy,
+    Sell,
 }
 
 #[derive(Debug)]
@@ -1102,7 +1114,11 @@ impl History {
                                 }
                                 None
                             }
-                            Operation::Observed => None,
+                            Operation::Observed
+                            | Operation::Loot
+                            | Operation::Equip
+                            | Operation::Buy
+                            | Operation::Sell => None,
                         }
                     })
                     .unwrap_or_default()

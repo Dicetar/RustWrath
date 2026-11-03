@@ -393,6 +393,9 @@ pub(crate) fn use_action(
                                 bag_index,
                                 wire_slot,
                                 Some(guid),
+                                ladder.trace.as_ref().map(|s| {
+                                    s.begin(None, None, crate::quest_trace::Operation::Equip)
+                                }),
                             );
                             // The set and the send's clear both land inside the call
                             // (`0x494c4a`, `0x49520a`), so the pair plays here.

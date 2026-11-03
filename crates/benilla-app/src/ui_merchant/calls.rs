@@ -21,6 +21,8 @@ pub(crate) struct MerchantSteps<'w, 's> {
     net: Res<'w, NetCommands>,
     self_q: Query<'w, 's, (&'static ObjectStore, &'static Guid), With<SelfPlayer>>,
     purse: RepairPurse<'w, 's>,
+    /// Resident interaction diagnostics; merchant producers record local boundaries here.
+    trace: Option<Res<'w, crate::quest_trace::Source>>,
 }
 
 impl MerchantSteps<'_, '_> {
@@ -39,13 +41,26 @@ impl MerchantSteps<'_, '_> {
 
     /// Apply one merchant call; the close is the host's ([`MerchantCall::Close`]).
     pub(crate) fn apply(&mut self, script: &mut UiScript, call: MerchantCall) {
+        use crate::quest_trace::{Operation, Stage};
+        let op = match &call {
+            MerchantCall::Sell { .. } => Operation::Sell,
+            _ => Operation::Buy,
+        };
+        let trace = self.trace.as_ref().map(|s| s.begin(None, None, op));
+        let record = |trace: &Option<crate::quest_trace::Interaction>, stage| {
+            if let Some(t) = trace {
+                t.record(stage);
+            }
+        };
         let Self {
             open,
             net,
             self_q,
             purse,
+            trace: _,
         } = self;
         let Some(open) = open.as_deref() else {
+            record(&trace, Stage::GuardRefused);
             debug!("ui_merchant: no merchant window in this world; {call:?} dropped");
             return;
         };
@@ -57,29 +72,47 @@ impl MerchantSteps<'_, '_> {
             // (`0x4fb93c` → `0x5e1e90`), the quantity a byte.
             MerchantCall::Buy { row, quantity } => {
                 let (Some(vendor), Some(_)) = (open.vendor, me) else {
+                    record(&trace, Stage::GuardRefused);
                     return;
                 };
                 let Some(item) = open.row_at(row).filter(|it| it.slot != 0) else {
+                    record(&trace, Stage::GuardRefused);
                     debug!("ui_merchant: BuyMerchantItem({row}) out of range — ignored");
                     return;
                 };
                 let count = quantity.clamp(1, u32::from(u8::MAX)) as u8;
                 debug!("ui_merchant: buy row {row} (entry {} ×{count})", item.entry);
-                let _ = net.0.send(ClientCommand::BuyItem {
+                let result = net.0.send(ClientCommand::BuyItem {
                     vendor,
                     entry: item.entry,
                     count,
                 });
+                record(
+                    &trace,
+                    if result.is_ok() {
+                        Stage::ChannelAdmitted
+                    } else {
+                        Stage::ChannelDisconnected
+                    },
+                );
             }
             // The vendor cell as it stands, never tested, so 0 with none (`0x4fb799`).
             MerchantCall::Sell { item_guid, count } => {
                 let vendor = open.vendor.unwrap_or(0);
                 debug!("ui_merchant: cursor sell of {item_guid:#x} ×{count} to {vendor:#x}");
-                let _ = net.0.send(ClientCommand::SellItem {
+                let result = net.0.send(ClientCommand::SellItem {
                     vendor,
                     item_guid,
                     count,
                 });
+                record(
+                    &trace,
+                    if result.is_ok() {
+                        Stage::ChannelAdmitted
+                    } else {
+                        Stage::ChannelDisconnected
+                    },
+                );
             }
             // With a vendor, a player and an item in the slot the list names (`0x4fb9b5`,
             // `0x4fb9fc`): the absolute slot, 69 to 80 (`0x4fba02`).
@@ -121,13 +154,21 @@ impl MerchantSteps<'_, '_> {
                 };
                 let bag_guid = bag_guid.unwrap_or(me.0);
                 debug!("ui_merchant: bag buy entry {entry} → bag {bag_guid:#x}");
-                let _ = net.0.send(ClientCommand::BuyItemInSlot {
+                let result = net.0.send(ClientCommand::BuyItemInSlot {
                     vendor,
                     entry,
                     bag_guid,
                     bag_slot: 0xFF,
                     count: 1,
                 });
+                record(
+                    &trace,
+                    if result.is_ok() {
+                        Stage::ChannelAdmitted
+                    } else {
+                        Stage::ChannelDisconnected
+                    },
+                );
             }
             // The slot's list names the container (`0x4f9f32`): the player's guid for the
             // player's own array (`BAG_PLAYER_INVENTORY`), the bag's for an equipped or a bank
@@ -156,13 +197,21 @@ impl MerchantSteps<'_, '_> {
                     return;
                 };
                 debug!("ui_merchant: slot buy entry {entry} → bag {bag_guid:#x} slot {bag_slot}");
-                let _ = net.0.send(ClientCommand::BuyItemInSlot {
+                let result = net.0.send(ClientCommand::BuyItemInSlot {
                     vendor,
                     entry,
                     bag_guid,
                     bag_slot,
                     count: 1,
                 });
+                record(
+                    &trace,
+                    if result.is_ok() {
+                        Stage::ChannelAdmitted
+                    } else {
+                        Stage::ChannelDisconnected
+                    },
+                );
             }
             // The close core needs the latch, which the host lends beside this.
             MerchantCall::Close => {}
