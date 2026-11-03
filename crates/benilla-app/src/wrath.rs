@@ -182,6 +182,10 @@ pub enum WrathFeedEvent {
         phase: Phase,
         session_epoch: u64,
         world_generation: u64,
+        /// The login attempt that produced this phase; `None` when unavailable.
+        login_generation: Option<u64>,
+        /// The authoritative map once a world is established; coarse numeric only.
+        map_id: Option<u32>,
     },
     /// A world scope changed: the mapped entity set and pending publications for the old
     /// scope are invalid from this event on (issue 22 clears its entity map here).
@@ -193,6 +197,8 @@ pub enum WrathFeedEvent {
     /// scope active when it is drained.
     SessionEnded {
         result: Result<(), String>,
+        /// The protocol end kind the worker computed: clean logout vs lost link.
+        end: benilla_protocol::SessionEnd,
         session_epoch: u64,
         world_generation: u64,
     },
@@ -1012,12 +1018,18 @@ impl WrathControl {
                     parked,
                     Some(publisher_retire),
                 );
+                let end = if result.is_ok() {
+                    benilla_protocol::SessionEnd::LoggedOut
+                } else {
+                    benilla_protocol::SessionEnd::Lost
+                };
                 if let Ok(mut q) = feed.events.lock() {
                     if q.len() >= WRATH_EVENT_CAPACITY {
                         q.pop_front();
                     }
                     q.push_back(WrathFeedEvent::SessionEnded {
                         result: result.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")),
+                        end,
                         session_epoch: feed.last_session_epoch.load(Ordering::SeqCst),
                         world_generation: feed.last_world_generation.load(Ordering::SeqCst),
                     });
@@ -4205,17 +4217,41 @@ fn wrath_dispatch_events(world: &mut World) {
                 ))
         {
             if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
-                use crate::quest_trace::{DomainEvent as D, Stage};
+                use crate::quest_trace::{DomainEvent as D, LoginMilestone, Stage};
+                let login_milestone = match &event.event {
+                    SessionEvent::LoginStage { stage } => Some(match stage {
+                        benilla_protocol::LoginStage::Connecting => LoginMilestone::Connecting,
+                        benilla_protocol::LoginStage::Authenticating => {
+                            LoginMilestone::Authenticating
+                        }
+                        benilla_protocol::LoginStage::Handshaking => LoginMilestone::Handshaking,
+                        benilla_protocol::LoginStage::WorldConnected => {
+                            LoginMilestone::WorldConnected
+                        }
+                    }),
+                    SessionEvent::RealmList { failed, .. } => Some(if *failed {
+                        LoginMilestone::RealmListFailed
+                    } else {
+                        LoginMilestone::RealmListReceived
+                    }),
+                    SessionEvent::WorldAuthenticated { .. } => {
+                        Some(LoginMilestone::WorldAuthenticated)
+                    }
+                    SessionEvent::CharacterList { .. } => Some(LoginMilestone::RosterReceived),
+                    SessionEvent::RosterFailed { .. } => Some(LoginMilestone::RosterFailed),
+                    SessionEvent::LoginQueued { .. } => Some(LoginMilestone::LoginQueued),
+                    SessionEvent::LoginFailed { refusal, .. } => Some(if refusal.is_some() {
+                        LoginMilestone::LoginRefused
+                    } else {
+                        LoginMilestone::LoginFailed
+                    }),
+                    SessionEvent::CharActionResult { .. } => Some(LoginMilestone::CharacterAction),
+                    SessionEvent::CharacterLoginFailed { result } => {
+                        Some(LoginMilestone::CharacterLoginFailed { result: *result })
+                    }
+                    _ => None,
+                };
                 let kind = match &event.event {
-                    SessionEvent::LoginStage { .. } => Some(D::LoginProgress),
-                    SessionEvent::RealmList { .. } => Some(D::RealmList),
-                    SessionEvent::WorldAuthenticated { .. } => Some(D::WorldAuthenticated),
-                    SessionEvent::CharacterList { .. } => Some(D::Roster),
-                    SessionEvent::RosterFailed { .. } => Some(D::RosterFailed),
-                    SessionEvent::LoginQueued { .. } => Some(D::LoginQueued),
-                    SessionEvent::LoginFailed { .. } => Some(D::LoginFailed),
-                    SessionEvent::CharActionResult { .. } => Some(D::CharacterAction),
-                    SessionEvent::CharacterLoginFailed { .. } => Some(D::CharacterLoginFailed),
                     SessionEvent::QuestComplete(_) => Some(D::QuestComplete),
                     SessionEvent::QuestObjectiveKill { .. } | SessionEvent::QuestObjectiveItem { .. }
                     | SessionEvent::QuestObjectivesComplete { .. } => Some(D::QuestObjective),
@@ -4244,16 +4280,28 @@ fn wrath_dispatch_events(world: &mut World) {
                     | SessionEvent::LootReleaseResponse { guid, .. } => Some(*guid),
                     _ => None,
                 };
+                // Forced/terminal events (epoch 0) have no reliable producer scope; record them
+                // as unknown rather than borrowing the scope active at drain time.
+                let scope = if event.force
+                    || (event.session_epoch == 0 && event.world_generation == 0)
+                {
+                    None
+                } else {
+                    Some((event.session_epoch, event.world_generation))
+                };
+                if let Some(milestone) = login_milestone {
+                    // The attempt id comes from the wrapper that produced the event, not from
+                    // whichever attempt happens to be newest when the trace is drained.
+                    trace.observe(
+                        scope,
+                        None,
+                        Stage::LoginMilestone {
+                            attempt: event.login_generation,
+                            milestone,
+                        },
+                    );
+                }
                 if let Some(event_kind) = kind {
-                    // Forced/terminal events (epoch 0) have no reliable producer scope; record
-                    // them as unknown rather than borrowing the scope active at drain time.
-                    let scope = if event.force
-                        || (event.session_epoch == 0 && event.world_generation == 0)
-                    {
-                        None
-                    } else {
-                        Some((event.session_epoch, event.world_generation))
-                    };
                     trace.observe_with_npc(
                         scope,
                         None,
@@ -4413,19 +4461,76 @@ fn wrath_net_drain(
         }
         drained += 1;
         if let Some(trace) = &trace {
-            use crate::quest_trace::{SessionPhase, Stage};
+            use crate::quest_trace::{SessionEndKind, SessionPhase, Stage};
             let stage = match &event {
-                WrathFeedEvent::Phase { phase, .. } => Some(Stage::SessionPhase {
-                    phase: match phase {
-                        Phase::CharacterSelection => SessionPhase::CharacterSelection,
-                        Phase::EnteringWorld => SessionPhase::EnteringWorld,
-                        Phase::InWorld => SessionPhase::InWorld,
-                        Phase::TransferPending => SessionPhase::TransferPending,
-                        Phase::Loading => SessionPhase::Loading,
+                WrathFeedEvent::Phase {
+                    phase,
+                    session_epoch,
+                    world_generation,
+                    login_generation,
+                    map_id,
+                } => {
+                    // Record only an actual transition: a duplicate or older phase event is
+                    // not a new milestone, and the state guard below applies the same rule.
+                    let older = scope_is_older(
+                        view.session_epoch,
+                        view.world_generation,
+                        *session_epoch,
+                        *world_generation,
+                    );
+                    let same_scope = view.session_epoch == *session_epoch
+                        && view.world_generation == *world_generation;
+                    if older || (same_scope && view.phase == Some(*phase)) {
+                        None
+                    } else {
+                        Some(Stage::SessionPhase {
+                            phase: match phase {
+                                Phase::CharacterSelection => SessionPhase::CharacterSelection,
+                                Phase::EnteringWorld => SessionPhase::EnteringWorld,
+                                Phase::InWorld => SessionPhase::InWorld,
+                                Phase::TransferPending => SessionPhase::TransferPending,
+                                Phase::Loading => SessionPhase::Loading,
+                            },
+                            attempt: *login_generation,
+                            map_id: *map_id,
+                        })
+                    }
+                }
+                WrathFeedEvent::WorldTransfer {
+                    session_epoch,
+                    world_generation,
+                    map_id,
+                } => {
+                    let older = scope_is_older(
+                        view.session_epoch,
+                        view.world_generation,
+                        *session_epoch,
+                        *world_generation,
+                    );
+                    let same_scope = view.session_epoch == *session_epoch
+                        && view.world_generation == *world_generation;
+                    if older || same_scope {
+                        None
+                    } else {
+                        Some(Stage::WorldTransfer {
+                            map_id: Some(*map_id),
+                            from: if view.session_epoch == 0 && view.world_generation == 0 {
+                                None
+                            } else {
+                                Some((view.session_epoch, view.world_generation))
+                            },
+                            to: Some((*session_epoch, *world_generation)),
+                            retired_local: 0,
+                            retired_written: 0,
+                        })
+                    }
+                }
+                WrathFeedEvent::SessionEnded { end, .. } => Some(Stage::SessionEnded {
+                    kind: match end {
+                        benilla_protocol::SessionEnd::LoggedOut => SessionEndKind::LoggedOut,
+                        benilla_protocol::SessionEnd::Lost => SessionEndKind::Lost,
                     },
                 }),
-                WrathFeedEvent::WorldTransfer { .. } => Some(Stage::WorldTransfer),
-                WrathFeedEvent::SessionEnded { result, .. } => Some(Stage::SessionEnded { failed: result.is_err() }),
                 _ => None,
             };
             if let Some(stage) = stage {
@@ -4604,7 +4709,7 @@ fn wrath_net_drain(
             WrathFeedEvent::ExportSkipped(reason) => {
                 debug!("wrath export skipped: {reason}");
             }
-            WrathFeedEvent::SessionEnded { result, session_epoch, world_generation } => {
+            WrathFeedEvent::SessionEnded { result, end: _, session_epoch, world_generation } => {
                 control.ended = true;
                 control.terminal_ready = true;
                 // The entry message may still be in the Bevy message queue; the view already
@@ -6625,6 +6730,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
     let started = std::time::Instant::now();
 
@@ -7036,6 +7143,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
     world.send(benilla_protocol_wrath::opcode::CMSG_PLAYER_LOGIN, &guid.to_le_bytes())?;
 
@@ -7464,6 +7573,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
             publisher.retire_all();
             return Ok(());
@@ -7558,6 +7669,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
         }
     }
@@ -7572,6 +7685,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
                 publisher.retire_all();
                 return Ok(());

@@ -57,12 +57,22 @@ pub(crate) enum Stage {
     ScriptError { vm_session: u64, row_seq: u64, occurrences: u32 },
     ScriptLoadError { vm_session: u64, row_seq: u64, occurrences: u32 },
     ScriptWarning { vm_session: u64, row_seq: u64, occurrences: u32 },
-    UiReload { vm_session: u64 },
+    UiReload { old_vm_session: Option<u64>, old_reload_generation: Option<u64>, new_reload_generation: Option<u64> },
+    /// The new VM reported its identity after a reload load attempt. This is separate evidence
+    /// from [`Stage::UiReload`]: the reload request may have run while the load itself failed.
+    UiReloadLoaded { vm_session: Option<u64>, reload_generation: Option<u64> },
     ScriptRowsLost { vm_session: u64, count: u64 },
     ScriptRowsEvicted { vm_session: u64, count: u64 },
-    SessionPhase { phase: SessionPhase },
-    SessionEnded { failed: bool },
-    WorldTransfer,
+    SessionPhase { phase: SessionPhase, attempt: Option<u64>, map_id: Option<u32> },
+    SessionEnded { kind: SessionEndKind },
+    WorldTransfer {
+        map_id: Option<u32>,
+        from: Option<(u64, u64)>,
+        to: Option<(u64, u64)>,
+        retired_local: u64,
+        retired_written: u64,
+    },
+    LoginMilestone { attempt: Option<u64>, milestone: LoginMilestone },
     ReplicaRevision { revision: u64 },
     NativeEventsLost { count: u64 },
     Cast { spell_id: Option<u32>, attempt: Option<u64>, edge: CastEdge },
@@ -263,6 +273,33 @@ pub(crate) enum SessionPhase {
     InWorld,
     TransferPending,
     Loading,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum SessionEndKind {
+    LoggedOut,
+    Lost,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum LoginMilestone {
+    Connecting,
+    Authenticating,
+    Handshaking,
+    WorldConnected,
+    RealmListReceived,
+    RealmListFailed,
+    WorldAuthenticated,
+    RosterReceived,
+    RosterFailed,
+    LoginQueued,
+    /// The server refused the login (a realmd/world auth result byte was present).
+    LoginRefused,
+    /// The login failed without a server refusal category: a dial/transport failure, or a
+    /// worker failure whose refusal code was not carried in the event.
+    LoginFailed,
+    CharacterAction,
+    CharacterLoginFailed { result: u8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -565,11 +602,13 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         | Stage::ScriptLoadError { .. }
         | Stage::ScriptWarning { .. }
         | Stage::UiReload { .. }
+        | Stage::UiReloadLoaded { .. }
         | Stage::ScriptRowsLost { .. }
         | Stage::ScriptRowsEvicted { .. } => Some("lua_diagnostic_counts"),
         Stage::SessionPhase { .. }
         | Stage::SessionEnded { .. }
-        | Stage::WorldTransfer
+        | Stage::WorldTransfer { .. }
+        | Stage::LoginMilestone { .. }
         | Stage::ReplicaRevision { .. }
         | Stage::NativeEventsLost { .. }
         | Stage::DomainEvent {
@@ -797,6 +836,12 @@ impl Source {
 
     pub(crate) fn advance_reload_generation(&self) {
         self.0.reload_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// The current reload generation, without advancing it. A reload records the old value
+    /// before disposal and the new value after the replacement VM reports its session.
+    pub(crate) fn reload_generation(&self) -> u64 {
+        self.0.reload_generation.load(Ordering::Acquire)
     }
 
     pub(crate) fn observe(
@@ -1203,7 +1248,12 @@ impl History {
         (evidence, truncated)
     }
 
-    fn retire_scope(&mut self, retired_scope: Option<(u64, u64)>, terminal_stage: Stage, seq: u64) {
+    fn retire_scope(
+        &mut self,
+        retired_scope: Option<(u64, u64)>,
+        terminal_stage: Stage,
+        seq: u64,
+    ) -> (u64, u64) {
         let mut remaining = VecDeque::with_capacity(self.open_interactions.len());
         let mut retired = Vec::new();
         while let Some(open) = self.open_interactions.pop_front() {
@@ -1220,11 +1270,14 @@ impl History {
         }
         self.open_interactions = remaining;
         let gaps = self.has_telemetry_gaps();
+        let mut retired_local = 0u64;
+        let mut retired_written = 0u64;
         for open in retired {
             let (evidence, truncated) =
                 self.collect_interaction_evidence(open.subject.interaction, seq);
             match open.state {
                 OpenState::Written { .. } => {
+                    retired_written = retired_written.saturating_add(1);
                     self.push_incident(
                         open.subject,
                         IncidentOutcome::WriteUnconfirmed,
@@ -1235,6 +1288,7 @@ impl History {
                     );
                 }
                 OpenState::Local => {
+                    retired_local = retired_local.saturating_add(1);
                     self.push_incident(
                         open.subject,
                         IncidentOutcome::LocalRefusal,
@@ -1250,6 +1304,7 @@ impl History {
                 }
             }
         }
+        (retired_local, retired_written)
     }
 }
 
@@ -1604,6 +1659,8 @@ impl History {
                             Stage::Delivery(CommandDelivery::Written)
                         );
                         let within_window = candidate.subject.scope == Some(scope)
+                            && candidate.subject.reload_generation
+                                == event.subject.reload_generation
                             && candidate.elapsed_ms <= event.elapsed_ms
                             && event.elapsed_ms.saturating_sub(candidate.elapsed_ms) <= 30_000;
                         if !written || !within_window {
@@ -1703,7 +1760,10 @@ impl History {
                         let same_scope_and_window = event.subject.scope.is_some()
                             && later.subject.scope == event.subject.scope
                             && later.elapsed_ms >= event.elapsed_ms
-                            && later.elapsed_ms.saturating_sub(event.elapsed_ms) <= 30_000;
+                            && later.elapsed_ms.saturating_sub(event.elapsed_ms) <= 30_000
+                            && (!is_panel_stage(later.stage)
+                                || later.subject.reload_generation
+                                    == event.subject.reload_generation);
                         if !same_scope_and_window {
                             return None;
                         }
@@ -2040,6 +2100,196 @@ impl History {
             }
         }
         output
+    }
+
+    /// Bounded inspector summary of the login/session/world/reload chain.
+    ///
+    /// The lines are derived from the same retained ring as the export, so a reader can correlate
+    /// them with the event rows. Missing milestones are named as unknown rather than assigned to
+    /// the newest attempt, and any loss makes a negative conclusion explicitly unverified.
+    #[allow(dead_code)] // the export/coverage owner reads this accessor
+    pub(crate) fn session_transition_summaries(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let gaps = self.has_telemetry_gaps();
+
+        let login = self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+            Stage::LoginMilestone { attempt, milestone } => Some((attempt, milestone)),
+            _ => None,
+        });
+        match login {
+            Some((attempt, milestone)) => out.push(format!(
+                "login attempt {:?}: last milestone {:?}",
+                attempt, milestone
+            )),
+            None => out.push("login attempt: unknown (no retained login milestone)".to_string()),
+        }
+        if let Some((phase, attempt, map_id)) =
+            self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+                Stage::SessionPhase {
+                    phase,
+                    attempt,
+                    map_id,
+                } => Some((phase, attempt, map_id)),
+                _ => None,
+            })
+        {
+            out.push(format!(
+                "last session phase: {:?} (attempt {:?}, map {:?})",
+                phase, attempt, map_id
+            ));
+        }
+        if let Some(scope) = self
+            .entries
+            .iter()
+            .filter_map(|(_, event)| event.subject.scope)
+            .max()
+        {
+            // The highest observed scope, not the last ingested one: a delayed old event must
+            // not make a retired scope look current.
+            out.push(format!(
+                "most recent scope: epoch {}, world generation {}",
+                scope.0, scope.1
+            ));
+        }
+
+        let failure = self.entries.iter().rev().find_map(|(_, event)| {
+            let (category, attempt) = match event.stage {
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::LoginRefused,
+                } => ("login refusal", attempt),
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::LoginFailed,
+                } => ("login failure without a refusal category", attempt),
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::RosterFailed,
+                } => ("roster failure", attempt),
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::CharacterLoginFailed { .. },
+                } => ("character-login refusal", attempt),
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::RealmListFailed,
+                } => ("realm-list failure", attempt),
+                Stage::SessionEnded {
+                    kind: SessionEndKind::Lost,
+                } => ("session end (lost link)", None),
+                _ => return None,
+            };
+            Some((category, attempt))
+        });
+        match failure {
+            Some((category, attempt)) => out.push(format!(
+                "last failure: {category} (attempt {:?})",
+                attempt
+            )),
+            None => out.push("last failure: none retained".to_string()),
+        }
+        let last_end = self
+            .entries
+            .iter()
+            .filter_map(|(_, event)| match event.stage {
+                Stage::SessionEnded { kind } => {
+                    Some((event.subject.scope.unwrap_or((0, 0)), kind))
+                }
+                _ => None,
+            })
+            .max_by_key(|(scope, _)| *scope)
+            .map(|(_, kind)| kind);
+        if let Some(kind) = last_end {
+            out.push(format!("last session end: {:?}", kind));
+        }
+
+        let transfer = self
+            .entries
+            .iter()
+            .filter_map(|(_, event)| match event.stage {
+                Stage::WorldTransfer {
+                    map_id,
+                    from,
+                    to,
+                    retired_local,
+                    retired_written,
+                } => Some((to.unwrap_or((0, 0)), (from, to, map_id, retired_local, retired_written))),
+                _ => None,
+            })
+            .max_by_key(|(to, _)| *to)
+            .map(|(_, transfer)| transfer);
+        match transfer {
+            Some((from, to, map_id, retired_local, retired_written)) => out.push(format!(
+                "last transfer: {:?} -> {:?}, map {:?}, retired local={} written={}",
+                from, to, map_id, retired_local, retired_written
+            )),
+            None => out.push("last transfer: none retained".to_string()),
+        }
+
+        match self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+            Stage::UiReload {
+                old_vm_session,
+                old_reload_generation,
+                new_reload_generation,
+            } => Some((old_vm_session, old_reload_generation, new_reload_generation)),
+            _ => None,
+        }) {
+            Some((old_vm_session, old_generation, new_generation)) => out.push(format!(
+                "last reload: old VM {:?}, generation {:?} -> {:?}",
+                old_vm_session, old_generation, new_generation
+            )),
+            None => out.push("last reload: none retained".to_string()),
+        }
+        if let Some((vm_session, reload_generation)) =
+            self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+                Stage::UiReloadLoaded {
+                    vm_session,
+                    reload_generation,
+                } => Some((vm_session, reload_generation)),
+                _ => None,
+            })
+        {
+            out.push(format!(
+                "VM after reload attempt: session {:?}, generation {:?} (load result separate)",
+                vm_session, reload_generation
+            ));
+        }
+
+        let current_reload = self.source.0.reload_generation.load(Ordering::Acquire);
+        let superseded_projections = self
+            .entries
+            .iter()
+            .filter(|(_, event)| {
+                matches!(event.stage, Stage::JournalProjection)
+                    && event.subject.reload_generation < current_reload
+            })
+            .count();
+        if superseded_projections > 0 {
+            out.push(format!(
+                "superseded projections from older VM generations: {superseded_projections}"
+            ));
+        }
+        let stale_pending = self
+            .open_interactions
+            .iter()
+            .filter(|open| open.subject.reload_generation < current_reload)
+            .count();
+        if stale_pending > 0 {
+            out.push(format!(
+                "pending actions from older VM generations: {stale_pending} (stale, not resent)"
+            ));
+        }
+        if gaps {
+            out.push(format!(
+                "telemetry gaps: evicted={}, dropped={}, tracking_lost={}, source_gaps={}; negative conclusions unverified",
+                self.evicted,
+                self.source.0.dropped.load(Ordering::Relaxed),
+                self.interaction_tracking_lost,
+                self.source_gaps
+            ));
+        }
+        out.truncate(12);
+        out
     }
 
     pub(crate) fn export_status(&self) -> &'static str {
@@ -3106,7 +3356,7 @@ pub(crate) fn drain(mut history: ResMut<History>) {
 
 pub(crate) fn drain_history(history: &mut History) {
     for _ in 0..64 {
-        let Ok(event) = history.incoming.try_recv() else { break };
+        let Ok(mut event) = history.incoming.try_recv() else { break };
         history.received += 1;
         let seq = history.received;
         if matches!(event.stage,
@@ -3173,14 +3423,15 @@ pub(crate) fn drain_history(history: &mut History) {
             | Stage::DomainEvent {
                 event: DomainEvent::PlayerDisconnected,
             } => {
-                history.retire_scope(None, event.stage, seq);
+                let ended_scope = event.subject.scope;
+                let _ = history.retire_scope(ended_scope, event.stage, seq);
             }
-            Stage::WorldTransfer
+            Stage::WorldTransfer { .. }
             | Stage::DomainEvent {
                 event: DomainEvent::Worldport,
             } => {
                 // WorldTransfer carries the new world_generation in event.subject.scope;
-                // retire any open interaction from an older scope in the same session.
+                // retire only interactions from a strictly older scope in the same session.
                 let new_scope = event.subject.scope;
                 let stale_scopes: Vec<_> = history
                     .open_interactions
@@ -3194,8 +3445,23 @@ pub(crate) fn drain_history(history: &mut History) {
                         }
                     })
                     .collect();
+                let mut retired_local = 0u64;
+                let mut retired_written = 0u64;
                 for stale in stale_scopes {
-                    history.retire_scope(stale, event.stage, seq);
+                    let (local, written) = history.retire_scope(stale, event.stage, seq);
+                    retired_local = retired_local.saturating_add(local);
+                    retired_written = retired_written.saturating_add(written);
+                }
+                // Replace the placeholder counts with the bounded summary of what this
+                // transfer actually retired; one event, not one per interaction.
+                if let Stage::WorldTransfer { map_id, from, to, .. } = event.stage {
+                    event.stage = Stage::WorldTransfer {
+                        map_id,
+                        from,
+                        to,
+                        retired_local,
+                        retired_written,
+                    };
                 }
             }
             _ => {}
@@ -3219,6 +3485,13 @@ pub(crate) fn drain_history(history: &mut History) {
                     if open.subject.scope != event.subject.scope
                         || event.elapsed_ms < elapsed_ms
                         || event.elapsed_ms.saturating_sub(elapsed_ms) > 30_000
+                    {
+                        return None;
+                    }
+                    // A panel is a VM presentation fact. An action admitted in an older VM
+                    // generation is superseded, not matched to the replacement VM's panel.
+                    if is_panel_stage(event.stage)
+                        && open.subject.reload_generation != event.subject.reload_generation
                     {
                         return None;
                     }
@@ -3381,7 +3654,7 @@ pub(crate) fn drain_history(history: &mut History) {
             )),
             Stage::SocketReadFailed | Stage::SocketWriteFailed | Stage::AssetFailure { .. }
             | Stage::ReducerRejected { .. } | Stage::GameplayRejected { .. }
-            | Stage::SessionEnded { failed: true } | Stage::ScriptError { .. }
+            | Stage::SessionEnded { kind: SessionEndKind::Lost } | Stage::ScriptError { .. }
             | Stage::ScriptLoadError { .. } => Some((
                 IncidentOutcome::ObservedFailure,
                 IncidentConfidence::Exact,
@@ -3565,7 +3838,7 @@ mod tests {
             source.begin_with_npc(Some((1, 1)), Some(783), Some(0x1111), Operation::Accept);
         old_accept.record(Stage::Delivery(CommandDelivery::Written));
         // World transfer to generation 2 retires the old scope's open write as unverified.
-        source.observe(Some((1, 2)), None, Stage::WorldTransfer);
+        source.observe(Some((1, 2)), None, Stage::WorldTransfer { map_id: None, from: None, to: None, retired_local: 0, retired_written: 0 });
         // A slot addition in the new world (1, 2) must not match the (1, 1) write.
         source.observe(Some((1, 2)), Some(783), Stage::QuestSlotAdded);
         drain_all(&mut history);
@@ -3610,7 +3883,7 @@ mod tests {
         source.observe(Some((1, 1)), Some(783), Stage::JournalProjection);
 
         // Simulate /reload: advance reload generation and start VM session 11.
-        source.observe(Some((1, 1)), None, Stage::UiReload { vm_session: 10 });
+        source.observe(Some((1, 1)), None, Stage::UiReload { old_vm_session: Some(10), old_reload_generation: Some(0), new_reload_generation: Some(1) });
         source.advance_reload_generation();
         source.capture_script_counts(
             Some((1, 1)),
