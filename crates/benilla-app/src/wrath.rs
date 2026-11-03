@@ -117,6 +117,10 @@ pub struct WrathOutbound {
     /// Replaceable motion: under queue pressure only these may be dropped, never a cast, quest,
     /// loot or logout command (ADR-0001's admission rule).
     pub movement: bool,
+    /// Monotonic per-run sequence for movement entries only.
+    pub movement_seq: Option<u64>,
+    /// When this outbound entry was admitted to the queue, for bounded queue-age evidence.
+    pub enqueued_at: Option<std::time::Instant>,
     pub(crate) receipt: Option<crate::net::CommandReceipt>,
     pub(crate) trace: Option<crate::quest_trace::Interaction>,
     /// Whether the carried trace scope is enforced across the async transport boundary.
@@ -3997,6 +4001,8 @@ fn wrath_tap_commands(
                         opcode,
                         payload,
                         movement: false,
+                        movement_seq: None,
+                        enqueued_at: None,
                         receipt: receipt.clone(),
                         trace: cmd_trace.clone(),
                         enforce_scope,
@@ -5852,7 +5858,23 @@ fn wrath_apply_world(world: &mut World) {
                                 if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
                                     let scope = world.get_resource::<WrathWorldView>()
                                         .map(|v| (v.session_epoch, v.world_generation));
-                                    trace.observe(scope, None, crate::quest_trace::Stage::MovementCorrectionApplied);
+                                    let distance = current.distance(bevy);
+                                    let distance_bucket = if distance <= 0.5 {
+                                        0
+                                    } else if distance <= 2.0 {
+                                        1
+                                    } else if distance <= 5.0 {
+                                        2
+                                    } else {
+                                        3
+                                    };
+                                    let (movement_seq, ambiguous) = trace.movement_written_seq_unambiguous();
+                                    trace.clear_movement_writes_since_correction();
+                                    trace.observe(scope, None, crate::quest_trace::Stage::MovementCorrectionApplied {
+                                        distance_bucket,
+                                        movement_seq,
+                                        ambiguous,
+                                    });
                                 }
                             }
                         }
@@ -6346,10 +6368,16 @@ fn wrath_stream_movement(
                 trace.note_movement_coalesced();
             }
         }
+        if let Some(trace) = &trace {
+            trace.note_movement_admitted();
+        }
+        let movement_seq = trace.as_ref().map(|t| t.mint_movement_sequence());
         queue.push_back(WrathOutbound {
             opcode,
             payload,
             movement: true,
+            movement_seq,
+            enqueued_at: Some(std::time::Instant::now()),
             receipt: None,
             trace: None,
             enforce_scope: false,
@@ -7085,6 +7113,15 @@ pub fn run_session_with_cancel(
                     continue;
                 }
                 let result = world.send(command.opcode, &command.payload);
+                if command.movement {
+                    if let Some(seq) = command.movement_seq {
+                        if result.is_ok() {
+                            if let Some(trace) = &feed.trace {
+                                trace.note_movement_written(seq);
+                            }
+                        }
+                    }
+                }
                 if diagnostic_outbound(command.opcode) {
                     if let Some(ix) = &command.trace {
                         ix.record(crate::quest_trace::Stage::Outbound {
@@ -7749,6 +7786,8 @@ mod tests {
             opcode: 1,
             payload: vec![1],
             movement: false,
+            movement_seq: None,
+            enqueued_at: None,
             receipt: None,
             trace: None,
         }])));

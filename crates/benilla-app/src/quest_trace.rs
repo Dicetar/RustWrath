@@ -72,13 +72,42 @@ pub(crate) enum Stage {
         stolen: u64,
         copies_dropped: u64,
     },
-    AudioHealth { over_full_scale_samples: u64, nonfinite_samples: u64, voices_refused: u64 },
-    MovementCorrectionApplied,
-    MovementPressure { coalesced: u64, refused: u64 },
+    AudioHealth {
+        over_full_scale_samples: u64,
+        nonfinite_samples: u64,
+        voices_refused: u64,
+        cycles: u64,
+        underruns: u64,
+        underrun_ms: u64,
+        overloads: u64,
+        last_overload_ago_ms: u64,
+        lead_min_ms: Option<i64>,
+        ring_min_ms: Option<i64>,
+        io_wall_max_ms: u64,
+        render_wall_max_ms: u64,
+        cycle_ms: u64,
+        chunk_ms: u64,
+        peak_load_percent: u32,
+    },
+    MovementCorrectionApplied {
+        distance_bucket: u8,
+        movement_seq: Option<u64>,
+        ambiguous: bool,
+    },
+    MovementPressure {
+        baseline: bool,
+        admitted: u64,
+        coalesced: u64,
+        refused: u64,
+        written: u64,
+        queue_depth: u64,
+        oldest_age_ms: u64,
+    },
     SceneSummary { world_cameras: u32, animated_rigs: u32 },
     FrameWindow { frames: u32, mean_us: u64, max_us: u64 },
     AssetFailure { family: AssetFamily, cause: AssetFailure },
     AssetEventsLost { count: u64 },
+    AssetWindow { failures: u64, missed: u64, window_ms: u64 },
     PacketReceived { opcode: u16 },
     ReducerAccepted { opcode: u16 },
     ReducerRejected { opcode: u16 },
@@ -204,13 +233,23 @@ pub(crate) enum DomainEvent {
 
 #[cfg(feature = "hotpatch")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum HotpatchReason {
+    Publication,
+    Evaluation,
+    Retention,
+    Frame,
+    Unknown,
+}
+
+#[cfg(feature = "hotpatch")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum PatchEvent {
-    CandidateStaged,
-    PublicationRejected,
-    CandidateRejected,
-    Activated { digest: Option<[u8; 20]> },
-    FrameFailed,
-    RetentionFailed,
+    CandidateStaged { attempt: u64 },
+    PublicationRejected { attempt: Option<u64>, reason: HotpatchReason },
+    CandidateRejected { attempt: Option<u64>, reason: HotpatchReason },
+    Activated { attempt: Option<u64>, digest: Option<[u8; 20]> },
+    FrameFailed { attempt: Option<u64>, reason: HotpatchReason },
+    RetentionFailed { attempt: Option<u64>, reason: HotpatchReason },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -265,8 +304,13 @@ struct Ingress {
     reload_generation: AtomicU64,
     update_packets_seen: AtomicU64,
     update_packets_sampled_out: AtomicU64,
+    movement_sequence: AtomicU64,
+    movement_admitted: AtomicU64,
     movement_coalesced: AtomicU64,
     movement_refused: AtomicU64,
+    movement_written: AtomicU64,
+    movement_last_written_seq: AtomicU64,
+    movement_writes_since_correction: AtomicU64,
     npc_aliases: Mutex<(VecDeque<(u64, u32)>, u32)>,
     origin: Instant,
     #[cfg(feature = "dev")]
@@ -464,12 +508,12 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
                 | DomainEvent::LootReleased,
         } => Some("loot_and_vendor_events"),
         Stage::AudioMixer { .. } | Stage::AudioHealth { .. } => Some("audio_mixer_state"),
-        Stage::MovementCorrectionApplied | Stage::MovementPressure { .. } => {
+        Stage::MovementCorrectionApplied { .. } | Stage::MovementPressure { .. } => {
             Some("movement_queue_and_corrections")
         }
         Stage::SceneSummary { .. } => Some("scene_camera_and_rig_counts"),
         Stage::FrameWindow { .. } => Some("frame_intervals"),
-        Stage::AssetFailure { .. } | Stage::AssetEventsLost { .. } => {
+        Stage::AssetFailure { .. } | Stage::AssetEventsLost { .. } | Stage::AssetWindow { .. } => {
             Some("asset_load_failure_categories")
         }
         #[cfg(feature = "hotpatch")]
@@ -522,12 +566,51 @@ impl Source {
             .unwrap_or(0)
     }
 
+    pub(crate) fn mint_movement_sequence(&self) -> u64 {
+        self.0.movement_sequence.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub(crate) fn note_movement_admitted(&self) {
+        self.0.movement_admitted.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn note_movement_coalesced(&self) {
         self.0.movement_coalesced.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn note_movement_refused(&self) {
         self.0.movement_refused.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_movement_written(&self, seq: u64) {
+        self.0.movement_written.fetch_add(1, Ordering::Relaxed);
+        self.0.movement_last_written_seq.store(seq, Ordering::Relaxed);
+        self.0.movement_writes_since_correction.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn movement_written_seq_unambiguous(&self) -> (Option<u64>, bool) {
+        let seq = self.0.movement_last_written_seq.load(Ordering::Relaxed);
+        let writes = self.0.movement_writes_since_correction.load(Ordering::Relaxed);
+        if seq == 0 {
+            (None, true)
+        } else if writes <= 1 {
+            (Some(seq), false)
+        } else {
+            (None, true)
+        }
+    }
+
+    pub(crate) fn clear_movement_writes_since_correction(&self) {
+        self.0.movement_writes_since_correction.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn movement_counters(&self) -> (u64, u64, u64, u64) {
+        (
+            self.0.movement_admitted.load(Ordering::Relaxed),
+            self.0.movement_coalesced.load(Ordering::Relaxed),
+            self.0.movement_refused.load(Ordering::Relaxed),
+            self.0.movement_written.load(Ordering::Relaxed),
+        )
     }
 
     /// Sample high-volume object-update packet metadata without sampling state changes.
@@ -1445,6 +1528,168 @@ impl History {
         self.source_gaps
     }
 
+    /// Recent one-second movement pressure events (bounded).
+    pub(crate) fn movement_pressure(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(seq, event)| match event.stage {
+                Stage::MovementPressure {
+                    baseline,
+                    admitted,
+                    coalesced,
+                    refused,
+                    written,
+                    queue_depth,
+                    oldest_age_ms,
+                } => Some(format!(
+                    "#{seq} movement pressure: baseline={baseline} admitted={admitted} coalesced={coalesced} refused={refused} written={written} queue_depth={queue_depth} oldest_age_ms={oldest_age_ms}"
+                )),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+    pub(crate) fn one_second_movement_pressure(&self) -> Vec<String> {
+        self.movement_pressure()
+    }
+    pub(crate) fn movement_pressure_events(&self) -> Vec<String> {
+        self.movement_pressure()
+    }
+
+    /// Movement correction attribution. Unambiguous only when a single movement write followed
+    /// the previous correction; otherwise the attribution is ambiguous.
+    pub(crate) fn movement_correction_attribution(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(seq, event)| match event.stage {
+                Stage::MovementCorrectionApplied {
+                    distance_bucket,
+                    movement_seq,
+                    ambiguous,
+                } => Some(format!(
+                    "#{seq} movement correction: distance_bucket={distance_bucket} movement_seq={movement_seq:?} ambiguous={ambiguous} (attribution is unambiguous only when a single movement write followed the previous correction)"
+                )),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+    pub(crate) fn movement_corrections(&self) -> Vec<String> {
+        self.movement_correction_attribution()
+    }
+
+    /// Recent audio output health windows (bounded). `cycles == 0` means no stream, not health.
+    pub(crate) fn audio_output_health(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(seq, event)| match event.stage {
+                Stage::AudioHealth {
+                    cycles,
+                    underruns,
+                    overloads,
+                    lead_min_ms,
+                    ring_min_ms,
+                    ..
+                } => Some(format!(
+                    "#{seq} audio output: cycles={cycles} (no_stream={}) underruns={underruns} overloads={overloads} lead_min_ms={:?} ring_min_ms={:?}",
+                    cycles == 0,
+                    lead_min_ms,
+                    ring_min_ms,
+                )),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+    pub(crate) fn audio_output(&self) -> Vec<String> {
+        self.audio_output_health()
+    }
+
+    /// Recent asset per-window summaries (bounded).
+    pub(crate) fn asset_window_summary(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(seq, event)| match event.stage {
+                Stage::AssetWindow { failures, missed, window_ms } => Some(format!(
+                    "#{seq} asset window: observed_failures={failures} missed_events={missed} window_ms={window_ms} (Bevy untyped asset-failure messages only)"
+                )),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+    pub(crate) fn asset_window(&self) -> Vec<String> {
+        self.asset_window_summary()
+    }
+
+    #[cfg(feature = "hotpatch")]
+    pub(crate) fn hotpatch_attempt_correlation(&self) -> Vec<String> {
+        // Correlate candidate staging to terminal events by attempt id within retained entries.
+        let mut out = Vec::new();
+        for (_, event) in self.entries.iter().rev() {
+            if let Stage::Hotpatch {
+                event: PatchEvent::CandidateStaged { attempt },
+            } = event.stage
+            {
+                let terminals: Vec<Stage> = self
+                    .entries
+                    .iter()
+                    .filter_map(|(_, later)| {
+                        let att = match later.stage {
+                            Stage::Hotpatch {
+                                event: PatchEvent::Activated { attempt: a, .. },
+                            } => *a,
+                            Stage::Hotpatch {
+                                event: PatchEvent::CandidateRejected { attempt: a, .. },
+                            } => *a,
+                            Stage::Hotpatch {
+                                event: PatchEvent::FrameFailed { attempt: a, .. },
+                            } => *a,
+                            Stage::Hotpatch {
+                                event: PatchEvent::RetentionFailed { attempt: a, .. },
+                            } => *a,
+                            _ => None,
+                        };
+                        if att == Some(attempt) {
+                            Some(later.stage)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let terminal_count = terminals.len();
+                let terminal = terminals.into_iter().last();
+                let earlier = if terminal_count > 1 {
+                    " (earlier terminal evidence exists)"
+                } else {
+                    ""
+                };
+                let line = match terminal {
+                    Some(Stage::Hotpatch {
+                        event: PatchEvent::Activated { digest, .. },
+                    }) => format!("attempt {attempt}: activated (digest={digest:?}){earlier}"),
+                    Some(Stage::Hotpatch { event }) => {
+                        format!("attempt {attempt}: {:?}{earlier}", event)
+                    }
+                    None => format!("attempt {attempt}: no terminal event retained (ambiguous/unresolved)"),
+                };
+                out.push(line);
+                if out.len() >= 8 {
+                    break;
+                }
+            }
+        }
+        out
+    }
+    #[cfg(feature = "hotpatch")]
+    pub(crate) fn hotpatch_attempts(&self) -> Vec<String> {
+        self.hotpatch_attempt_correlation()
+    }
+
     pub(crate) fn sampled_updates(&self) -> u64 {
         self.source.0.update_packets_sampled_out.load(Ordering::Relaxed)
     }
@@ -1822,8 +2067,13 @@ pub(crate) fn new_pair() -> (Source, History) {
         reload_generation: AtomicU64::new(0),
         update_packets_seen: AtomicU64::new(0),
         update_packets_sampled_out: AtomicU64::new(0),
+        movement_sequence: AtomicU64::new(0),
+        movement_admitted: AtomicU64::new(0),
         movement_coalesced: AtomicU64::new(0),
         movement_refused: AtomicU64::new(0),
+        movement_written: AtomicU64::new(0),
+        movement_last_written_seq: AtomicU64::new(0),
+        movement_writes_since_correction: AtomicU64::new(0),
         npc_aliases: Mutex::new((VecDeque::with_capacity(MAX_NPC_ALIASES), 0)),
         origin: Instant::now(),
         #[cfg(feature = "dev")]
@@ -1874,15 +2124,20 @@ fn poll_asset_failures(
     source: Res<Source>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
     events: Option<Res<Messages<bevy::asset::UntypedAssetLoadFailedEvent>>>,
+    time: Res<Time>,
     mut cursor: Local<bevy::ecs::message::MessageCursor<bevy::asset::UntypedAssetLoadFailedEvent>>,
+    mut window: Local<(f64, u64, u64)>,
 ) {
     let Some(events) = events else { return };
     let scope = view.as_ref().map(|v| (v.session_epoch, v.world_generation));
-    let missed = cursor.missed_messages(&events);
-    if missed > 0 {
-        source.observe(scope, None, Stage::AssetEventsLost { count: missed as u64 });
+    let now = time.elapsed_secs_f64();
+    if window.0 == 0.0 {
+        window.0 = now;
     }
+    let missed = cursor.missed_messages(&events);
+    let mut failures_this = 0u64;
     for failure in cursor.read(&events) {
+        failures_this += 1;
         let extension = failure.path.path().extension().and_then(|s| s.to_str()).unwrap_or("");
         let family = if extension.eq_ignore_ascii_case("m2") || extension.eq_ignore_ascii_case("skin") {
             AssetFamily::Model
@@ -1911,6 +2166,22 @@ fn poll_asset_failures(
             _ => AssetFailure::Other,
         };
         source.observe(scope, None, Stage::AssetFailure { family, cause });
+    }
+    if missed > 0 {
+        source.observe(scope, None, Stage::AssetEventsLost { count: missed as u64 });
+    }
+    window.1 = window.1.saturating_add(failures_this);
+    window.2 = window.2.saturating_add(missed as u64);
+    if now - window.0 >= 1.0 {
+        let window_ms = ((now - window.0) * 1000.0).round() as u64;
+        source.observe(scope, None, Stage::AssetWindow {
+            failures: window.1,
+            missed: window.2,
+            window_ms: window_ms.max(1),
+        });
+        window.0 = now;
+        window.1 = 0;
+        window.2 = 0;
     }
 }
 
@@ -1969,8 +2240,9 @@ fn poll_scene(
 fn poll_movement(
     source: Res<Source>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
+    input: Option<Res<crate::wrath::WrathInput>>,
     time: Res<Time>,
-    mut last: Local<Option<(u64, u64)>>,
+    mut last: Local<Option<(u64, u64, u64, u64, u64, u64)>>,
     mut next_poll: Local<f64>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -1978,14 +2250,66 @@ fn poll_movement(
         return;
     }
     *next_poll = now + 1.0;
-    let current = (
-        source.0.movement_coalesced.load(Ordering::Relaxed),
-        source.0.movement_refused.load(Ordering::Relaxed),
-    );
-    if *last != Some(current) {
+    let (admitted, coalesced, refused, written) = source.movement_counters();
+    // Queue depth and oldest movement age are read from the live outbox without changing it.
+    let mut queue_depth = 0u64;
+    let mut oldest_age_ms = 0u64;
+    if let Some(input) = input.as_ref() {
+        if let Ok(queue) = input.0.lock() {
+            let mut oldest: Option<std::time::Instant> = None;
+            for entry in queue.iter() {
+                if entry.movement {
+                    queue_depth += 1;
+                    if let Some(enqueued) = entry.enqueued_at {
+                        oldest = Some(match oldest {
+                            Some(current) if current <= enqueued => current,
+                            _ => enqueued,
+                        });
+                    }
+                }
+            }
+            if let Some(oldest) = oldest {
+                oldest_age_ms = oldest.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            }
+        }
+    }
+    let current = (admitted, coalesced, refused, written, queue_depth, oldest_age_ms);
+    if let Some(previous) = *last {
+        let deltas = (
+            admitted.saturating_sub(previous.0),
+            coalesced.saturating_sub(previous.1),
+            refused.saturating_sub(previous.2),
+            written.saturating_sub(previous.3),
+        );
+        let depth_changed = queue_depth != previous.4;
+        if deltas.0 > 0 || deltas.1 > 0 || deltas.2 > 0 || deltas.3 > 0 || depth_changed {
+            *last = Some(current);
+            source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
+                Stage::MovementPressure {
+                    baseline: false,
+                    admitted: deltas.0,
+                    coalesced: deltas.1,
+                    refused: deltas.2,
+                    written: deltas.3,
+                    queue_depth,
+                    oldest_age_ms,
+                });
+        } else {
+            *last = Some(current);
+        }
+    } else {
         *last = Some(current);
+        // First sample: emit baseline deltas (current counts) so evidence exists.
         source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
-            Stage::MovementPressure { coalesced: current.0, refused: current.1 });
+            Stage::MovementPressure {
+                baseline: true,
+                admitted: 0,
+                coalesced: 0,
+                refused: 0,
+                written: 0,
+                queue_depth,
+                oldest_age_ms,
+            });
     }
 }
 
@@ -2011,14 +2335,18 @@ fn poll_audio(
         output.copies_dropped,
     );
     if *last != Some(current) {
+        let previous = *last;
         *last = Some(current);
+        let denied_delta = current.2.saturating_sub(previous.map_or(0, |p| p.2));
+        let stolen_delta = current.3.saturating_sub(previous.map_or(0, |p| p.3));
+        let copies_delta = current.4.saturating_sub(previous.map_or(0, |p| p.4));
         let scope = view.as_ref().map(|v| (v.session_epoch, v.world_generation));
         source.observe(scope, None, Stage::AudioMixer {
             present: current.0,
             voices: current.1,
-            denied: current.2,
-            stolen: current.3,
-            copies_dropped: current.4,
+            denied: denied_delta,
+            stolen: stolen_delta,
+            copies_dropped: copies_delta,
         });
     }
 }
@@ -2103,7 +2431,7 @@ pub(crate) fn drain_history(history: &mut History) {
             history.source_gaps = history.source_gaps.saturating_add(1);
         }
         #[cfg(feature = "hotpatch")]
-        if let Stage::Hotpatch { event: PatchEvent::Activated { digest } } = event.stage {
+        if let Stage::Hotpatch { event: PatchEvent::Activated { digest, .. } } = event.stage {
             history.last_observed_patch_digest = digest;
         }
 
@@ -2374,9 +2702,13 @@ pub(crate) fn drain_history(history: &mut History) {
                 IncidentConfidence::Exact,
                 event.subject,
             )),
-            Stage::AudioHealth { nonfinite_samples, voices_refused, .. }
-                if nonfinite_samples > 0 || voices_refused > 0 =>
-            {
+            Stage::AudioHealth {
+                nonfinite_samples,
+                voices_refused,
+                underruns,
+                overloads,
+                ..
+            } if nonfinite_samples > 0 || voices_refused > 0 || underruns > 0 || overloads > 0 =>
                 Some((
                     IncidentOutcome::ObservedFailure,
                     IncidentConfidence::Exact,
@@ -2392,10 +2724,10 @@ pub(crate) fn drain_history(history: &mut History) {
             #[cfg(feature = "hotpatch")]
             Stage::Hotpatch {
                 event:
-                    PatchEvent::PublicationRejected
-                    | PatchEvent::CandidateRejected
-                    | PatchEvent::FrameFailed
-                    | PatchEvent::RetentionFailed,
+                    PatchEvent::PublicationRejected { .. }
+                    | PatchEvent::CandidateRejected { .. }
+                    | PatchEvent::FrameFailed { .. }
+                    | PatchEvent::RetentionFailed { .. },
             } => Some((
                 IncidentOutcome::ObservedFailure,
                 IncidentConfidence::Exact,
