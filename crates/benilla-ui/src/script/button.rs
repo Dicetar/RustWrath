@@ -1273,6 +1273,9 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
     if !fire {
         return;
     }
+    lua.app_data_mut::<Model>()
+        .expect("model app_data")
+        .last_handler_invoked = true;
     let btn = match lua.create_string(button) {
         Ok(s) => Value::String(s),
         Err(_) => return,

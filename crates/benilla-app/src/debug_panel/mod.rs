@@ -363,6 +363,10 @@ fn debug_panel_ui(
                             for line in history.ui_error_correlations() {
                                 ui.label(line);
                             }
+                            #[cfg(feature = "dev")]
+                            for line in history.ui_click_correlations() {
+                                ui.label(line);
+                            }
                             for line in history.recent() {
                                 ui.label(line);
                             }

@@ -95,6 +95,16 @@ pub(crate) enum Stage {
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
     },
+    UiClick {
+        button: UiButton,
+        target: UiTarget,
+        consumed: bool,
+        visible: Option<bool>,
+        clipped: bool,
+        handler_invoked: bool,
+        egui_pointer_over_last_sample: Option<bool>,
+        vm_session: u64,
+    },
     DomainEvent { event: DomainEvent },
     #[cfg(feature = "hotpatch")]
     Hotpatch { event: PatchEvent },
@@ -751,6 +761,45 @@ impl History {
             };
             Some(if gaps { format!("{result}; trace has gaps") } else { result })
         }).take(8).collect()
+    }
+
+    /// Summarize recent UI clicks without claiming causality for later gameplay refusals.
+    #[cfg(feature = "dev")]
+    pub(crate) fn ui_click_correlations(&self) -> Vec<String> {
+        let gaps = self.has_telemetry_gaps();
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(_, event)| match event.stage {
+                Stage::UiClick {
+                    button,
+                    target,
+                    consumed,
+                    visible,
+                    clipped,
+                    handler_invoked,
+                    vm_session,
+                    ..
+                } => {
+                    let visibility = match visible {
+                        Some(true) => "visible",
+                        Some(false) => "not effectively visible",
+                        None => "visibility unknown",
+                    };
+                    let line = format!(
+                        "UI click {:?} on {:?}: consumed={} visible={} clipped={} handler_invoked={} vm={}",
+                        button, target, consumed, visibility, clipped, handler_invoked, vm_session
+                    );
+                    Some(if gaps {
+                        format!("{line}; trace has gaps")
+                    } else {
+                        line
+                    })
+                }
+                _ => None,
+            })
+            .take(8)
+            .collect()
     }
 
     pub(crate) fn recent_incidents(&self) -> impl Iterator<Item = String> + '_ {
