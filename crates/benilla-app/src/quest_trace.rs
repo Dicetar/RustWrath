@@ -3474,8 +3474,6 @@ impl History {
                     std::fs::create_dir_all(&directory)?;
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-                    let path = directory.join(format!("interaction-{timestamp}.jsonl"));
-                    let temporary = directory.join(format!("interaction-{timestamp}.tmp"));
                     let file_hash = std::env::current_exe().ok().and_then(|executable| {
                         let mut file = std::fs::File::open(executable).ok()?;
                         let mut digest = Sha1::new();
@@ -3530,12 +3528,22 @@ impl History {
                         text.push_str(&serde_json::to_string(&(sequence, event))?);
                         text.push('\n');
                     }
-                    let mut file = std::fs::OpenOptions::new().write(true)
-                        .create_new(true).open(&temporary)?;
+                    let mut file = tempfile::NamedTempFile::new_in(&directory)?;
                     file.write_all(text.as_bytes())?;
-                    file.sync_all()?;
-                    drop(file);
-                    std::fs::rename(&temporary, &path)?;
+                    file.as_file().sync_all()?;
+                    let mut path = directory.join(format!("interaction-{timestamp}.jsonl"));
+                    let mut suffix = 0_u64;
+                    loop {
+                        match file.persist_noclobber(&path) {
+                            Ok(_) => break,
+                            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                                file = error.file;
+                                suffix += 1;
+                                path = directory.join(format!("interaction-{timestamp}-{suffix}.jsonl"));
+                            }
+                            Err(error) => return Err(error.error.into()),
+                        }
+                    }
                     info!("quest diagnostics saved to {}", path.display());
                     Ok(())
                 })();
