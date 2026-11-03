@@ -464,16 +464,22 @@ impl SelfCancel<'_> {
     /// sends its cancel again (`0x6e6eb4`).
     fn cancel_inflight(&mut self, failed: bool, why: &str) {
         let self_e = self.self_entity();
-        let spell_id = inflight(&self.pending, &self.queued_melee, &self.ground).map(|s| s.spell_id());
+        let wire_spell = (!self.ground.active())
+            .then(|| inflight(&self.pending, &self.queued_melee, &self.ground).map(|s| s.spell_id()))
+            .flatten();
         let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
-        if let (Some(trace), Some(spell)) = (self.trace.as_deref(), spell_id) {
-            let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
-            ix.record(crate::quest_trace::Stage::Cast {
-                spell_id: Some(spell),
-                attempt: None,
-                edge: crate::quest_trace::CastEdge::CancelRequested,
-            });
-        }
+        let cancel_trace = match (self.trace.as_deref(), wire_spell) {
+            (Some(trace), Some(spell)) => {
+                let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
+                ix.record(crate::quest_trace::Stage::Cast {
+                    spell_id: Some(spell),
+                    attempt: None,
+                    edge: crate::quest_trace::CastEdge::CancelRequested,
+                });
+                Some(ix)
+            }
+            _ => None,
+        };
         let Self {
             pending,
             queued_melee,
@@ -493,13 +499,14 @@ impl SelfCancel<'_> {
             net,
             tutorials: tutorials.as_deref(),
         }
-        .cancel_reaping(
+        .cancel_reaping_traced(
             failed,
             true,
             super::REASON_ERROR,
             spells.as_deref(),
             self_e,
             edits,
+            cancel_trace,
         );
         if *crate::net::CAST_TRACE {
             info!("cast-trace: LOCAL self-cancel — {popped:?} ({why})");
@@ -586,18 +593,19 @@ impl SelfCancel<'_> {
                         info!("cast-trace: LOCAL channel self-cancel — spell {spell_id}, CMSG_CANCEL_CHANNELLING");
                     }
                     let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
-                    if let Some(trace) = self.trace.as_deref() {
+                    let cancel_trace = self.trace.as_deref().map(|trace| {
                         let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
                         ix.record(crate::quest_trace::Stage::Cast {
                             spell_id: Some(spell_id),
                             attempt: None,
                             edge: crate::quest_trace::CastEdge::CancelRequested,
                         });
-                    }
+                        ix
+                    });
                     let _ = self
                         .net
                         .0
-                        .send(ClientCommand::CancelChannelling { spell_id, trace: None });
+                        .send(ClientCommand::CancelChannelling { spell_id, trace: cancel_trace });
                 }
             }
         }
