@@ -1112,7 +1112,6 @@ impl History {
                 ui_clicks: cap(self.ui_click_correlations(), 8),
                 recent: cap(self.recent().map(|line| line.to_string()).collect(), 16),
             });
-            self.inspector_last_build = Instant::now();
         }
         self.inspector_snapshot.as_ref().unwrap()
     }
