@@ -7,6 +7,8 @@
 
 #![allow(dead_code)]
 
+use std::fmt;
+
 use anyhow::Result;
 
 use crate::cast_failure;
@@ -14,12 +16,167 @@ use crate::cast_failure;
 mod movement;
 pub use movement::{MonsterFacing, MonsterMove};
 
+/// The largest undecoded-byte count reported with a typed decode failure.
+///
+/// The count is a length only: no packet body, server text, path, credential or GUID is
+/// carried by [`DecodeError`] or by the diagnostic value the app records.
+const MAX_REPORTED_REMAINING: usize = 4096;
+
+/// Closed decoder families the Wrath gameplay parser can name for one rejected opcode.
+///
+/// The app records this value instead of a decoder function name or an error message, so a
+/// rejected packet can be attributed without exporting source or server text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum DecoderFamily {
+    QuestDetails,
+    QuestOffer,
+    QuestProgress,
+    QuestTemplate,
+    Loot,
+    Vendor,
+    Spell,
+    Other,
+}
+
+/// Closed coarse reason for a rejected gameplay decode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum DecodeFailure {
+    /// The packet ended before a required field.
+    Truncated,
+    /// A record parsed but bytes remained after its last field.
+    TrailingBytes,
+    /// A NUL-terminated string had no terminating NUL before the packet ended.
+    UnterminatedString,
+    /// A declared count is outside the layout's fixed bound.
+    InvalidCount,
+    /// A field value violates the packet's own contract.
+    InvalidValue,
+    /// The decoder failed but this source cannot classify why.
+    Other,
+}
+
+/// A typed gameplay decode failure. The variant is closed; `detail` stays a static local
+/// description and never carries packet bytes or server text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DecodeError {
+    reason: DecodeFailure,
+    /// Bounded count of bytes not consumed by the decoder, when it is meaningful.
+    remaining: Option<u32>,
+    detail: &'static str,
+    /// An optional numeric field value that made the packet invalid (never text).
+    value: Option<u32>,
+}
+
+impl DecodeError {
+    fn new(reason: DecodeFailure, remaining: Option<usize>, detail: &'static str) -> Self {
+        Self {
+            reason,
+            remaining: remaining
+                .map(|count| count.min(MAX_REPORTED_REMAINING) as u32),
+            detail,
+            value: None,
+        }
+    }
+
+    fn with_value(mut self, value: u32) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    fn truncated(remaining: usize) -> Self {
+        Self::new(DecodeFailure::Truncated, Some(remaining), "payload cut short")
+    }
+
+    fn unterminated(remaining: usize) -> Self {
+        Self::new(DecodeFailure::UnterminatedString, Some(remaining), "unterminated string")
+    }
+
+    fn trailing(remaining: usize) -> Self {
+        Self::new(DecodeFailure::TrailingBytes, Some(remaining), "trailing bytes after record")
+    }
+
+    fn invalid_count(detail: &'static str) -> Self {
+        Self::new(DecodeFailure::InvalidCount, None, detail)
+    }
+
+    fn invalid_value(detail: &'static str) -> Self {
+        Self::new(DecodeFailure::InvalidValue, None, detail)
+    }
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.value {
+            Some(value) => write!(f, "{}: {value}", self.detail),
+            None => f.write_str(self.detail),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+/// Classify one gameplay decode failure without exposing its free-form message.
+///
+/// A failure the reader did not type returns [`DecodeFailure::Other`] rather than a guess.
+pub fn classify_decode_failure(error: &anyhow::Error) -> DecodeFailure {
+    error
+        .downcast_ref::<DecodeError>()
+        .map(|failure| failure.reason)
+        .unwrap_or(DecodeFailure::Other)
+}
+
+/// The bounded undecoded-byte count at the failure point, when the decoder reported one.
+///
+/// This is only a length. It never identifies or carries the bytes themselves.
+pub fn decode_remaining_bytes(error: &anyhow::Error) -> Option<u32> {
+    error
+        .downcast_ref::<DecodeError>()
+        .and_then(|failure| failure.remaining)
+}
+
+/// The closed decoder family that owns one opcode the gameplay parser translates.
+///
+/// An opcode outside the families below stays [`DecoderFamily::Other`]; this is a classification
+/// boundary, not a claim that the opcode has no decoder.
+pub fn decoder_family(opcode: u16) -> DecoderFamily {
+    use crate::opcode::*;
+    match opcode {
+        SMSG_QUESTGIVER_QUEST_DETAILS => DecoderFamily::QuestDetails,
+        SMSG_QUESTGIVER_REQUEST_ITEMS => DecoderFamily::QuestProgress,
+        SMSG_QUESTGIVER_OFFER_REWARD => DecoderFamily::QuestOffer,
+        SMSG_QUEST_QUERY_RESPONSE => DecoderFamily::QuestTemplate,
+        SMSG_LOOT_RESPONSE
+        | SMSG_LOOT_RELEASE_RESPONSE
+        | SMSG_LOOT_REMOVED
+        | SMSG_LOOT_MONEY_NOTIFY
+        | SMSG_LOOT_CLEAR_MONEY
+        | SMSG_LOOT_START_ROLL
+        | SMSG_LOOT_ROLL
+        | SMSG_LOOT_ROLL_WON
+        | SMSG_LOOT_ALL_PASSED => DecoderFamily::Loot,
+        SMSG_LIST_INVENTORY | SMSG_BUY_ITEM | SMSG_BUY_FAILED | SMSG_SELL_ITEM => {
+            DecoderFamily::Vendor
+        }
+        SMSG_CAST_FAILED
+        | SMSG_SPELL_START
+        | SMSG_SPELL_GO
+        | SMSG_SPELL_FAILED_OTHER
+        | SMSG_SPELL_DELAYED
+        | SMSG_SPELL_COOLDOWN
+        | MSG_CHANNEL_START
+        | MSG_CHANNEL_UPDATE => DecoderFamily::Spell,
+        _ => DecoderFamily::Other,
+    }
+}
+
 /// AzerothCore MiscHandler.cpp HandleRealmSplitOpcode; 12340 CGlueMgr::OnRealmSplitMsg
 /// (0x004D8200) forwards these three fields as SERVER_SPLIT_NOTICE.
 pub fn parse_realm_split(payload: &[u8]) -> Result<(u32, u32, String)> {
     let mut r = Reader::new(payload);
     let reply = (r.u32()?, r.u32()?, r.cstring()?);
-    anyhow::ensure!(r.remaining() == 0, "trailing realm split bytes");
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
     Ok(reply)
 }
 
@@ -1456,7 +1613,11 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_NPC_TEXT_UPDATE => read_npc_text(body),
         SMSG_LOOT_RESPONSE => read_loot_response(body),
         SMSG_LOOT_RELEASE_RESPONSE => read_loot_release(body),
-        SMSG_LOOT_REMOVED => body.first().copied().ok_or_else(|| anyhow::anyhow!("payload cut short")).map(|slot| ServerEvent::LootRemoved { slot }),
+        SMSG_LOOT_REMOVED => body
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow::Error::from(DecodeError::truncated(0)))
+            .map(|slot| ServerEvent::LootRemoved { slot }),
         SMSG_LOOT_MONEY_NOTIFY => u32_body(body).map(|amount| ServerEvent::LootMoney { amount }),
         SMSG_LOOT_CLEAR_MONEY => Ok(ServerEvent::LootClearMoney),
         SMSG_LOOT_START_ROLL => read_loot_start_roll(body),
@@ -1682,30 +1843,23 @@ fn read_area_trigger_message(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let length = r.u32()? as usize;
     if length == 0 {
-        return Err(anyhow::anyhow!("area trigger message length is zero"));
+        return Err(DecodeError::invalid_value("area trigger message length is zero").into());
     }
     if length > r.remaining() {
-        return Err(anyhow::anyhow!(
-            "area trigger message length {length} exceeds remaining {}",
-            r.remaining()
-        ));
+        return Err(DecodeError::truncated(r.remaining()).into());
     }
     let bytes = r.take(length)?;
     if bytes.last() != Some(&0) {
-        return Err(anyhow::anyhow!(
-            "area trigger message is not NUL-terminated"
-        ));
+        return Err(DecodeError::unterminated(length).into());
     }
     if bytes[..length - 1].contains(&0) {
-        return Err(anyhow::anyhow!(
-            "area trigger message contains an embedded NUL"
-        ));
+        return Err(DecodeError::invalid_value(
+            "area trigger message contains an embedded NUL",
+        )
+        .into());
     }
     if r.remaining() != 0 {
-        return Err(anyhow::anyhow!(
-            "area trigger message has {} trailing byte(s)",
-            r.remaining()
-        ));
+        return Err(DecodeError::trailing(r.remaining()).into());
     }
     Ok(ServerEvent::AreaTriggerMessage {
         text: String::from_utf8_lossy(&bytes[..length - 1]).into_owned(),
@@ -2030,7 +2184,13 @@ fn read_periodic_aura(b: &[u8]) -> Result<ServerEvent> {
                 amount: r.u32()?,
                 multiplier: r.f32()?,
             },
-            other => anyhow::bail!("SMSG_PERIODICAURALOG: unknown aura type {other}"),
+            other => {
+                return Err(DecodeError::invalid_value(
+                    "SMSG_PERIODICAURALOG: unknown aura type",
+                )
+                .with_value(other)
+                .into())
+            }
         };
         ticks.push(tick);
     }
@@ -2377,10 +2537,9 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     let stats_count = r.u32()?;
     // Build 12340 ItemStats_C has ten stat slots (AzerothCore MAX_ITEM_PROTO_STATS).
     // Clamping the count would reinterpret excess stat bytes as the following fields.
-    anyhow::ensure!(
-        stats_count <= 10,
-        "item stat count {stats_count} exceeds 12340 limit 10"
-    );
+    if stats_count > 10 {
+        return Err(DecodeError::invalid_count("item stat count exceeds 12340 limit 10").into());
+    }
     let mut stats = Vec::with_capacity(stats_count as usize);
     for _ in 0..stats_count {
         let stat_type = r.u32()?;
@@ -2698,10 +2857,7 @@ fn read_initial_spells(b: &[u8]) -> Result<ServerEvent> {
         });
     }
     if r.remaining() != 0 {
-        anyhow::bail!(
-            "{} bytes after the initial-spells cooldown tail are not a complete entry",
-            r.remaining()
-        );
+        return Err(DecodeError::trailing(r.remaining()).into());
     }
     Ok(ServerEvent::InitialSpells {
         spells,
@@ -2855,7 +3011,7 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
         let _delay = r.u32()?;
     }
     if r.at != b.len() {
-        anyhow::bail!("quest details left {} bytes", b.len() - r.at);
+        return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(ServerEvent::QuestDetails(QuestDetails {
         extra, npc, quest_id, title, details, objectives,
@@ -2915,7 +3071,7 @@ fn read_quest_offer(b: &[u8]) -> Result<ServerEvent> {
     let _unknown = r.u32()?;
     extra.reputation = read_quest_reputation(&mut r)?;
     if r.at != b.len() {
-        anyhow::bail!("quest offer left {} bytes", b.len() - r.at);
+        return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(ServerEvent::QuestOffer(QuestOfferReward {
         extra, npc, quest_id, title, offer_text, auto_finish: auto_finish as u32,
@@ -3017,7 +3173,7 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
         text: std::mem::take(&mut texts[i]),
     });
     if r.at != b.len() {
-        anyhow::bail!("quest template left {} bytes (at {} of {})", b.len() - r.at, r.at, b.len());
+        return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(QuestTemplate {
         quest_id, method, level, zone_or_sort, quest_type, suggested_players, xp_difficulty, rep_objective_faction,
@@ -3187,8 +3343,15 @@ impl<'a> Reader<'a> {
         self.p.len().saturating_sub(self.at)
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let s = self.p.get(self.at..self.at + n).ok_or_else(|| anyhow::anyhow!("payload cut short"))?;
-        self.at += n;
+        let end = self
+            .at
+            .checked_add(n)
+            .ok_or_else(|| DecodeError::truncated(self.remaining()))?;
+        let s = self
+            .p
+            .get(self.at..end)
+            .ok_or_else(|| DecodeError::truncated(self.remaining()))?;
+        self.at = end;
         Ok(s)
     }
     fn u8(&mut self) -> Result<u8> {
@@ -3211,7 +3374,10 @@ impl<'a> Reader<'a> {
     }
     fn cstring(&mut self) -> Result<String> {
         let rest = &self.p[self.at..];
-        let end = rest.iter().position(|&b| b == 0).ok_or_else(|| anyhow::anyhow!("unterminated string"))?;
+        let end = rest
+            .iter()
+            .position(|&b| b == 0)
+            .ok_or_else(|| DecodeError::unterminated(rest.len()))?;
         let s = String::from_utf8_lossy(&rest[..end]).into_owned();
         self.at += end + 1;
         Ok(s)

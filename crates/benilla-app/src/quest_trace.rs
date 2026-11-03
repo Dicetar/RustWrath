@@ -9,6 +9,7 @@ use std::{
 };
 
 use bevy::prelude::*;
+use benilla_protocol_wrath::gameplay::{DecodeFailure, DecoderFamily};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "dev")]
@@ -165,7 +166,14 @@ pub(crate) enum Stage {
     ReducerAccepted { opcode: u16 },
     ReducerRejected { opcode: u16 },
     GameplayDecoded { opcode: u16 },
-    GameplayRejected { opcode: u16 },
+    /// A gameplay decoder rejected the packet body. `decoder` and `reason` are closed values and
+    /// `remaining_bytes` is a length only; no body bytes, server text or decoder message is kept.
+    GameplayRejected {
+        opcode: u16,
+        decoder: DecoderFamily,
+        reason: DecodeFailure,
+        remaining_bytes: Option<u32>,
+    },
     SocketReadFailed,
     SocketWriteFailed,
     Outbound { opcode: u32, state: OutboundState },
@@ -1419,6 +1427,95 @@ struct CastCandidate {
     consumed: bool,
 }
 
+/// How one native cast edge maps onto the retained written local casts.
+///
+/// The local interaction id, the wire cast count and the native `attempt_serial` are distinct
+/// identifier spaces. `candidate` is the single local write the edge can be attributed to;
+/// `considered` names every retained local interaction that could plausibly explain the edge so
+/// an ambiguous or conflicting edge can be reported without choosing one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CastAttribution {
+    confidence: IncidentConfidence,
+    /// Index into [`History::cast_candidates`] for the unique match.
+    candidate: Option<usize>,
+    /// First plausible candidate, used as the incident subject when the edge is ambiguous.
+    first: Option<usize>,
+    /// Non-zero local interaction ids that could explain the edge.
+    considered: Vec<u64>,
+}
+
+impl CastAttribution {
+    fn none(confidence: IncidentConfidence) -> Self {
+        Self {
+            confidence,
+            candidate: None,
+            first: None,
+            considered: Vec::new(),
+        }
+    }
+}
+
+fn cast_confidence_rank(confidence: IncidentConfidence) -> u8 {
+    match confidence {
+        IncidentConfidence::Exact => 5,
+        IncidentConfidence::Strong => 4,
+        IncidentConfidence::Heuristic => 3,
+        IncidentConfidence::Ambiguous => 2,
+        IncidentConfidence::Unverified => 1,
+        IncidentConfidence::Unmatched => 0,
+    }
+}
+
+fn cast_confidence_label(confidence: IncidentConfidence) -> &'static str {
+    match confidence {
+        IncidentConfidence::Exact => "exact",
+        IncidentConfidence::Strong => "strong",
+        IncidentConfidence::Heuristic => "heuristic",
+        IncidentConfidence::Ambiguous => "ambiguous",
+        IncidentConfidence::Unverified => "unverified",
+        IncidentConfidence::Unmatched => "unmatched",
+    }
+}
+
+/// `wire` is a wire cast count, never the local interaction id.
+fn cast_wire_label(wire: Option<u32>) -> String {
+    wire.map_or_else(|| "unknown".to_string(), |wire| wire.to_string())
+}
+
+/// The native attempt serial, or an explicit unknown/multiple reading. Never the action id.
+fn cast_attempt_label(attempts: &[u64]) -> String {
+    match attempts {
+        [] => "unknown".to_string(),
+        [attempt] => attempt.to_string(),
+        _ => "multiple".to_string(),
+    }
+}
+
+fn cast_interaction_list(interactions: &[u64]) -> String {
+    interactions
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether a cast stage is a native (server/worker-observed) edge rather than a local request,
+/// admission, cancel or refusal. Only these edges are evidence about the server's outcome.
+fn is_native_cast_edge(edge: CastEdge) -> bool {
+    matches!(
+        edge,
+        CastEdge::Started
+            | CastEdge::Delayed
+            | CastEdge::Launched
+            | CastEdge::Failed { .. }
+            | CastEdge::Interrupted { .. }
+            | CastEdge::ChannelStarted
+            | CastEdge::ChannelUpdated
+            | CastEdge::ChannelEnded
+            | CastEdge::ScopeInvalidated
+    )
+}
+
 fn same_script_row(a: Stage, b: Stage) -> bool {
     match (a, b) {
         (
@@ -1747,26 +1844,23 @@ impl History {
         });
     }
 
-    /// Correlate one native cast edge against written local casts in the same scope.
+    /// Match one native cast edge against written local casts in the same scope.
     ///
     /// Exact: the same wire cast count on both sides. Strong: exactly one written cast of the
     /// same spell in the window, with its admitted wire count and no conflicting native count.
     /// Heuristic: exactly one candidate but the authoritative count is missing on the local side
-    /// (item uses). Ambiguous: more than one eligible candidate. Unmatched: none. Terminal
-    /// failures consume a uniquely matched candidate; continuation edges (`Started`, `Delayed`,
-    /// channel updates) never do.
-    fn correlate_cast_edge(
-        &mut self,
-        event: &Event,
-        consume: bool,
-    ) -> (IncidentConfidence, Subject) {
+    /// (item uses). Ambiguous: more than one eligible candidate. Unmatched: none. This is a
+    /// read-only query: [`Self::correlate_cast_edge`] consumes the unique match for a terminal
+    /// failure. `include_consumed` is used by the inspector so a terminal edge that already
+    /// consumed its candidate still names that local action.
+    fn cast_attribution(&self, event: &Event, include_consumed: bool) -> CastAttribution {
         let Stage::Cast {
             spell_id: Some(spell),
             wire_cast_count: native_count,
             ..
         } = event.stage
         else {
-            return (IncidentConfidence::Unmatched, event.subject);
+            return CastAttribution::none(IncidentConfidence::Unmatched);
         };
         let scope = event.subject.scope;
         let window_ms = 30_000u64;
@@ -1777,7 +1871,7 @@ impl History {
             .iter()
             .enumerate()
             .filter(|(_, candidate)| {
-                !candidate.consumed
+                (include_consumed || !candidate.consumed)
                     && candidate.subject.scope == scope
                     && candidate.spell_id == spell
                     && candidate.written_elapsed_ms <= event.elapsed_ms
@@ -1785,8 +1879,18 @@ impl History {
             .map(|(index, _)| index)
             .collect();
         if all.is_empty() {
-            return (IncidentConfidence::Unmatched, event.subject);
+            return CastAttribution::none(IncidentConfidence::Unmatched);
         }
+        let interactions = |indices: &[usize]| -> Vec<u64> {
+            let mut ids: Vec<u64> = indices
+                .iter()
+                .map(|&index| self.cast_candidates[index].subject.interaction)
+                .filter(|&interaction| interaction != 0)
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        };
 
         // Exact match on the authoritative wire count.
         if let Some(wanted) = native_count {
@@ -1797,21 +1901,28 @@ impl History {
                 .collect();
             if exact.len() == 1 {
                 let index = exact[0];
-                let subject = self.cast_candidates[index].subject;
-                if consume {
-                    self.cast_candidates[index].consumed = true;
-                }
-                return (IncidentConfidence::Exact, subject);
+                return CastAttribution {
+                    confidence: IncidentConfidence::Exact,
+                    candidate: Some(index),
+                    first: Some(index),
+                    considered: interactions(&exact),
+                };
             }
             if exact.len() > 1 {
                 // Duplicate counts: the count cannot decide which local interaction owns the edge.
-                return (IncidentConfidence::Ambiguous, self.cast_candidates[exact[0]].subject);
+                return CastAttribution {
+                    confidence: IncidentConfidence::Ambiguous,
+                    candidate: None,
+                    first: Some(exact[0]),
+                    considered: interactions(&exact),
+                };
             }
         }
 
         // No exact count match. Spell/scope/time fallback only.
-        let mut eligible: Vec<usize> = all
-            .into_iter()
+        let within_window: Vec<usize> = all
+            .iter()
+            .copied()
             .filter(|&index| {
                 event
                     .elapsed_ms
@@ -1819,37 +1930,68 @@ impl History {
                     <= window_ms
             })
             .collect();
+        let mut eligible = within_window.clone();
         if native_count.is_some() {
             // A count present on both sides that differs is a conflict, not evidence.
             eligible.retain(|&index| self.cast_candidates[index].wire_cast_count.is_none());
         }
 
         if eligible.is_empty() {
-            return (IncidentConfidence::Unmatched, event.subject);
+            // Keep the conflicting same-spell writes visible as considered candidates; they are
+            // explicitly not a unique match.
+            return CastAttribution {
+                confidence: IncidentConfidence::Unmatched,
+                candidate: None,
+                first: None,
+                considered: interactions(&within_window),
+            };
         }
         if eligible.len() == 1 {
             let index = eligible[0];
-            let subject = self.cast_candidates[index].subject;
             // A local admission count plus a unique spell/scope/time is a strong lead when the
             // native edge omits the count (channel continuations). Without any local count the
             // item-use case is only heuristic.
             let local_count_present = self.cast_candidates[index].wire_cast_count.is_some();
-            if consume {
-                self.cast_candidates[index].consumed = true;
-            }
-            return (
-                if local_count_present {
+            return CastAttribution {
+                confidence: if local_count_present {
                     IncidentConfidence::Strong
                 } else {
                     IncidentConfidence::Heuristic
                 },
-                subject,
-            );
+                candidate: Some(index),
+                first: Some(index),
+                considered: interactions(&eligible),
+            };
         }
-        (
-            IncidentConfidence::Ambiguous,
-            self.cast_candidates[eligible[0]].subject,
-        )
+        CastAttribution {
+            confidence: IncidentConfidence::Ambiguous,
+            candidate: None,
+            first: Some(eligible[0]),
+            considered: interactions(&eligible),
+        }
+    }
+
+    /// Correlate one native cast edge against written local casts in the same scope.
+    ///
+    /// Terminal failures consume a uniquely matched candidate; continuation edges (`Started`,
+    /// `Delayed`, channel updates) never do.
+    fn correlate_cast_edge(
+        &mut self,
+        event: &Event,
+        consume: bool,
+    ) -> (IncidentConfidence, Subject) {
+        let attribution = self.cast_attribution(event, false);
+        if consume {
+            if let Some(index) = attribution.candidate {
+                self.cast_candidates[index].consumed = true;
+            }
+        }
+        let subject = attribution
+            .candidate
+            .or(attribution.first)
+            .map(|index| self.cast_candidates[index].subject)
+            .unwrap_or(event.subject);
+        (attribution.confidence, subject)
     }
 
     /// Close a written cast that never received native evidence inside the observation window.
@@ -1894,98 +2036,110 @@ impl History {
         }
     }
 
-    /// Bounded inspector lines for the most recent cast/channel chains. Each line names the
-    /// requested spell, the wire cast count where admitted, the native attempt when present,
-    /// the terminal edge and the correlation confidence/ambiguity. It never claims a successful
-    /// cast from a socket write alone.
+    /// Bounded inspector lines for the most recent cast/channel chains. Each line names the local
+    /// action the native edge was attributed to, the requested spell, the wire cast count, the
+    /// native attempt and the terminal edge. The local action id, the wire count and the native
+    /// attempt stay distinct: a native-only chain never claims action 0.
+    ///
+    /// A chain is anchored by its non-zero local interaction when the edge can be attributed to
+    /// one. Two rapid same-spell casts stay ambiguous unless an authoritative wire count uniquely
+    /// matches one local write; newest-event adjacency is never used.
     pub(crate) fn cast_correlations(&self) -> Vec<String> {
         let gaps = self.has_telemetry_gaps();
-        let mut groups: Vec<((Option<(u64, u64)>, Option<u32>, Option<u32>), Vec<&Event>, u64)> =
-            Vec::new();
+
+        #[derive(PartialEq, Eq)]
+        enum ChainKey {
+            Local(u64),
+            Native {
+                scope: Option<(u64, u64)>,
+                spell: Option<u32>,
+                attempt: Option<u64>,
+                wire: Option<u32>,
+            },
+        }
+
+        struct Chain<'a> {
+            key: ChainKey,
+            events: Vec<&'a Event>,
+            last_seq: u64,
+            last_elapsed_ms: u64,
+        }
+
+        let mut chains: Vec<Chain> = Vec::new();
         for (seq, event) in &self.entries {
             let Stage::Cast {
                 spell_id,
                 wire_cast_count,
+                attempt,
                 ..
             } = event.stage
             else {
                 continue;
             };
-            // Channel and cancel edges carry no wire count. Join them to an admitted cast only
-            // when exactly one admitted count of that spell/scope is in the window; two rapid
-            // same-spell casts deliberately stay unresolved rather than taking the newest.
-            let effective_wire = wire_cast_count.or_else(|| {
-                // A local interaction's own admission is authoritative even when two casts of
-                // the same spell overlap; never guess by adjacency.
-                if let Some(wire) = self.entries.iter().find_map(|(_, prior)| {
-                    if prior.subject.interaction != event.subject.interaction {
-                        return None;
-                    }
-                    match prior.stage {
-                        Stage::Cast {
-                            wire_cast_count: Some(wire),
-                            edge: CastEdge::Admitted,
-                            ..
-                        } => Some(wire),
-                        _ => None,
-                    }
-                }) {
-                    return Some(wire);
-                }
-                let spell = spell_id?;
-                let mut counts: Vec<u32> = self
-                    .entries
-                    .iter()
-                    .filter_map(|(_, prior)| match prior.stage {
-                        Stage::Cast {
-                            spell_id: Some(prior_spell),
-                            wire_cast_count: Some(count),
-                            edge: CastEdge::Admitted,
-                            ..
-                        } if prior_spell == spell
-                            && prior.subject.scope == event.subject.scope
-                            && prior.elapsed_ms <= event.elapsed_ms
-                            && event.elapsed_ms.saturating_sub(prior.elapsed_ms) <= 30_000 =>
-                        {
-                            Some(count)
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                counts.sort_unstable();
-                counts.dedup();
-                if counts.len() == 1 {
-                    counts.first().copied()
-                } else {
-                    None
-                }
-            });
-            let key = (event.subject.scope, spell_id, effective_wire);
-            if let Some(index) = groups
-                .iter()
-                .position(|(existing, _, _)| *existing == key)
-            {
-                groups[index].1.push(event);
-                groups[index].2 = groups[index].2.max(*seq);
+            let key = if event.subject.interaction != 0 {
+                ChainKey::Local(event.subject.interaction)
             } else {
-                groups.push((key, vec![event], *seq));
+                // A native edge joins the local chain it can be attributed to. When no unique
+                // local write exists it keeps its own bounded chain, so the line can say the
+                // local action was not retained instead of printing interaction 0.
+                match self.cast_attribution(event, true).candidate {
+                    Some(index) => ChainKey::Local(self.cast_candidates[index].subject.interaction),
+                    None => ChainKey::Native {
+                        scope: event.subject.scope,
+                        spell: spell_id,
+                        attempt,
+                        wire: wire_cast_count,
+                    },
+                }
+            };
+            let existing = chains.iter().position(|chain| {
+                chain.key == key
+                    && match &key {
+                        ChainKey::Local(_) => true,
+                        // A native-only chain with no attempt/wire is bounded by the same
+                        // observation window; a later same-spell cast is a new chain.
+                        ChainKey::Native { .. } => {
+                            event.elapsed_ms.saturating_sub(chain.last_elapsed_ms) <= 30_000
+                        }
+                    }
+            });
+            match existing {
+                Some(index) => {
+                    chains[index].events.push(event);
+                    chains[index].last_seq = *seq;
+                    chains[index].last_elapsed_ms = event.elapsed_ms;
+                }
+                None => chains.push(Chain {
+                    key,
+                    events: vec![event],
+                    last_seq: *seq,
+                    last_elapsed_ms: event.elapsed_ms,
+                }),
             }
         }
-        groups.sort_by_key(|(_, _, last_seq)| std::cmp::Reverse(*last_seq));
-        groups
+        chains.sort_by_key(|chain| std::cmp::Reverse(chain.last_seq));
+        chains
             .into_iter()
             .take(8)
-            .map(|(key, events, _)| {
-                let (scope, spell, wire) = key;
-                let last = events.last().expect("a group has at least one event");
-                let (edge, attempt, last_interaction) = match last.stage {
-                    Stage::Cast {
-                        edge,
-                        attempt,
-                        ..
-                    } => (format!("{edge:?}"), attempt, last.subject.interaction),
-                    _ => ("?".to_string(), None, last.subject.interaction),
+            .map(|chain| {
+                let scope = match &chain.key {
+                    ChainKey::Local(_) => chain.events.last().and_then(|event| event.subject.scope),
+                    ChainKey::Native { scope, .. } => *scope,
                 };
+                let spell = match &chain.key {
+                    ChainKey::Local(_) => chain.events.iter().find_map(|event| match event.stage {
+                        Stage::Cast { spell_id, .. } => spell_id,
+                        _ => None,
+                    }),
+                    ChainKey::Native { spell, .. } => *spell,
+                };
+                let events = chain.events;
+                let last = events.last().expect("a chain has at least one event");
+                let edge = match last.stage {
+                    Stage::Cast { edge, .. } => format!("{edge:?}"),
+                    _ => "?".to_string(),
+                };
+
                 let mut interactions: Vec<u64> = events
                     .iter()
                     .filter_map(|event| match event.stage {
@@ -1998,8 +2152,14 @@ impl History {
                     })
                     .filter(|&interaction| interaction != 0)
                     .collect();
+                if let ChainKey::Local(interaction) = &chain.key {
+                    // The written candidate can outlive its local events in `cast_candidates`;
+                    // keep naming it rather than falling back to "unknown".
+                    interactions.push(*interaction);
+                }
                 interactions.sort_unstable();
                 interactions.dedup();
+
                 let mut attempts: Vec<u64> = events
                     .iter()
                     .filter_map(|event| match event.stage {
@@ -2012,60 +2172,105 @@ impl History {
                     .collect();
                 attempts.sort_unstable();
                 attempts.dedup();
-                let channel_or_cancel = events.iter().any(|event| {
-                    matches!(
-                        event.stage,
-                        Stage::Cast {
-                            edge: CastEdge::CancelRequested
-                                | CastEdge::ChannelStarted
-                                | CastEdge::ChannelUpdated
-                                | CastEdge::ChannelEnded,
-                            ..
-                        }
-                    )
-                });
-                let admitted_count_candidates = self
-                    .entries
+
+                let mut wires: Vec<u32> = events
                     .iter()
-                    .filter(|(_, prior)| {
-                        matches!(
-                            prior.stage,
-                            Stage::Cast {
-                                spell_id: Some(prior_spell),
-                                wire_cast_count: Some(_),
-                                edge: CastEdge::Admitted,
-                                ..
-                            } if Some(prior_spell) == spell
-                                && prior.subject.scope == scope
-                                && prior.elapsed_ms <= last.elapsed_ms
-                                && last.elapsed_ms.saturating_sub(prior.elapsed_ms) <= 30_000
-                        )
+                    .filter_map(|event| match event.stage {
+                        Stage::Cast {
+                            wire_cast_count: Some(wire),
+                            ..
+                        } => Some(wire),
+                        _ => None,
                     })
-                    .count();
+                    .collect();
+                wires.sort_unstable();
+                wires.dedup();
+                let wire = if wires.len() == 1 {
+                    wires.first().copied()
+                } else {
+                    None
+                };
+
+                let native_events: Vec<&Event> = events
+                    .iter()
+                    .copied()
+                    .filter(|event| {
+                        event.subject.interaction == 0
+                            && matches!(
+                                event.stage,
+                                Stage::Cast { edge, .. } if is_native_cast_edge(edge)
+                            )
+                    })
+                    .collect();
+                let has_native = !native_events.is_empty();
+                let attributions: Vec<CastAttribution> = native_events
+                    .iter()
+                    .map(|event| self.cast_attribution(*event, true))
+                    .collect();
+                let mut considered: Vec<u64> = attributions
+                    .iter()
+                    .flat_map(|attribution| attribution.considered.iter().copied())
+                    .collect();
+                considered.sort_unstable();
+                considered.dedup();
+
                 let ambiguous = interactions.len() > 1
                     || attempts.len() > 1
-                    || (wire.is_none() && channel_or_cancel && admitted_count_candidates > 1);
-                let has_native = !attempts.is_empty()
-                    || events
+                    || wires.len() > 1
+                    || attributions
                         .iter()
-                        .any(|event| event.subject.interaction == 0);
+                        .any(|attribution| attribution.confidence == IncidentConfidence::Ambiguous);
+
                 let confidence = if !has_native {
-                    "unmatched"
-                } else if wire.is_some() && interactions.len() == 1 && attempt.is_some() {
-                    "exact"
-                } else if !ambiguous && interactions.len() == 1 {
-                    "strong"
+                    // A local write without native evidence is explicitly unverified, never a
+                    // claimed cast outcome.
+                    IncidentConfidence::Unverified
                 } else if ambiguous {
-                    "ambiguous"
+                    IncidentConfidence::Ambiguous
+                } else if interactions.len() == 1 {
+                    attributions
+                        .iter()
+                        .map(|attribution| attribution.confidence)
+                        .max_by_key(|confidence| cast_confidence_rank(*confidence))
+                        .unwrap_or(IncidentConfidence::Unmatched)
                 } else {
-                    "unmatched"
+                    // Native evidence with no retained local interaction (or an unresolvable
+                    // set) stays unverified: the action is not known.
+                    IncidentConfidence::Unverified
                 };
+
+                let action = match interactions.as_slice() {
+                    [interaction] => format!("action {interaction}"),
+                    [] if !considered.is_empty()
+                        && confidence == IncidentConfidence::Ambiguous =>
+                    {
+                        format!(
+                            "action ambiguous (candidates {})",
+                            cast_interaction_list(&considered)
+                        )
+                    }
+                    [] if !considered.is_empty() => format!(
+                        "action unknown (no unique local write; candidates {})",
+                        cast_interaction_list(&considered)
+                    ),
+                    [] if has_native => "action unknown (local action not retained)".to_string(),
+                    [] => "action unknown (no local action)".to_string(),
+                    candidates => format!(
+                        "action ambiguous (candidates {})",
+                        cast_interaction_list(candidates)
+                    ),
+                };
+
                 let mut line = format!(
-                    "Cast spell {spell:?} wire={wire:?} attempt={attempt:?} scope={scope:?}: {edge} \
-                     confidence={confidence} {} (interaction {:?})",
-                    if ambiguous { "ambiguous" } else { "single" },
-                    last_interaction,
+                    "Cast {action} spell={} wire={} attempt={} scope={scope:?}: {edge} confidence={}",
+                    spell.map_or_else(|| "unknown".to_string(), |spell| spell.to_string()),
+                    cast_wire_label(wire),
+                    cast_attempt_label(&attempts),
+                    cast_confidence_label(confidence),
                 );
+                if !has_native {
+                    line.push_str("; no native evidence retained");
+                }
                 if events.iter().any(|event| {
                     matches!(
                         event.stage,
@@ -2076,24 +2281,20 @@ impl History {
                         }
                     )
                 }) {
-                    line.push_str("; wire count unavailable");
+                    line.push_str("; local wire count unavailable");
                 }
                 if wire.is_some()
-                    && events.iter().any(|event| {
+                    && native_events.iter().any(|event| {
                         matches!(
                             event.stage,
                             Stage::Cast {
                                 wire_cast_count: None,
-                                edge: CastEdge::CancelRequested
-                                    | CastEdge::ChannelStarted
-                                    | CastEdge::ChannelUpdated
-                                    | CastEdge::ChannelEnded,
                                 ..
                             }
                         )
                     })
                 {
-                    line.push_str("; wire count inferred by scope/spell/time");
+                    line.push_str("; native wire count unavailable");
                 }
                 if gaps {
                     line.push_str("; trace has gaps");
@@ -2513,9 +2714,16 @@ impl History {
             let missing = incident.evidence.iter().any(|seq| {
                 !self.entries.iter().any(|(retained, _)| retained == seq)
             });
+            // Interaction 0 means the producer retained no local action (a native or server
+            // observation). Say that instead of presenting action 0 as an identity.
+            let action = if incident.subject.interaction == 0 {
+                "Action unknown".to_string()
+            } else {
+                format!("Action {}", incident.subject.interaction)
+            };
             format!(
-                "Action {} {:?} (npc {:?}, quest {:?}, item {:?}, count {:?}, slot {:?}): {:?} [{:?}] {:?} (evidence {:?}{}{}{})",
-                incident.subject.interaction,
+                "{} {:?} (npc {:?}, quest {:?}, item {:?}, count {:?}, slot {:?}): {:?} [{:?}] {:?} (evidence {:?}{}{}{})",
+                action,
                 incident.subject.operation,
                 incident.subject.npc_alias,
                 incident.subject.quest,
@@ -2622,8 +2830,10 @@ impl History {
             .collect()
     }
 
-    /// Native cast evidence for one written local cast interaction. Multiple distinct wire counts
-    /// for the same spell in the window stay ambiguous; a single chain reports its latest edge.
+    /// Native cast evidence for one written local cast interaction. The native edge is only
+    /// attributed to this action when [`Self::cast_attribution`] uniquely matches it; two rapid
+    /// same-spell casts with no authoritative wire count stay ambiguous instead of borrowing the
+    /// newest native edge.
     fn cast_native_summary(&self, event: &Event) -> Option<String> {
         if matches!(
             event.stage,
@@ -2632,6 +2842,11 @@ impl History {
                 ..
             }
         ) {
+            return None;
+        }
+        let interaction = event.subject.interaction;
+        if interaction == 0 {
+            // Native-only evidence is not a local action; never present it as one.
             return None;
         }
         let spell = self.entries.iter().find_map(|(_, prior)| {
@@ -2689,8 +2904,9 @@ impl History {
                         candidate.stage,
                         Stage::Cast {
                             spell_id: Some(edge_spell),
+                            edge,
                             ..
-                        } if edge_spell == spell
+                        } if edge_spell == spell && is_native_cast_edge(edge)
                     )
             })
             .collect();
@@ -2699,9 +2915,37 @@ impl History {
                 "; cast spell {spell} wire {local_wire:?}: no native evidence yet (unverified)"
             ));
         }
-        let mut wires: Vec<u32> = native
+        let mut matched: Vec<(&Event, IncidentConfidence)> = Vec::new();
+        let mut ambiguous_edges = 0usize;
+        for candidate in native {
+            let attribution = self.cast_attribution(candidate, true);
+            match attribution.candidate {
+                Some(index)
+                    if self.cast_candidates[index].subject.interaction == interaction =>
+                {
+                    matched.push((candidate, attribution.confidence));
+                }
+                // The edge belongs to a different local action (or none); never borrow it.
+                Some(_) => {}
+                None if attribution.confidence == IncidentConfidence::Ambiguous => {
+                    ambiguous_edges += 1;
+                }
+                None => {}
+            }
+        }
+        if matched.is_empty() {
+            if ambiguous_edges > 0 {
+                return Some(format!(
+                    "; cast spell {spell} wire {local_wire:?}: native evidence ambiguous; no local action assigned"
+                ));
+            }
+            return Some(format!(
+                "; cast spell {spell} wire {local_wire:?}: no native evidence for this action (unverified)"
+            ));
+        }
+        let mut wires: Vec<u32> = matched
             .iter()
-            .filter_map(|candidate| match candidate.stage {
+            .filter_map(|(candidate, _)| match candidate.stage {
                 Stage::Cast {
                     wire_cast_count: Some(wire),
                     ..
@@ -2711,16 +2955,28 @@ impl History {
             .collect();
         wires.sort_unstable();
         wires.dedup();
-        if wires.len() > 1 {
+        let mut attempts: Vec<u64> = matched
+            .iter()
+            .filter_map(|(candidate, _)| match candidate.stage {
+                Stage::Cast {
+                    attempt: Some(attempt),
+                    ..
+                } => Some(attempt),
+                _ => None,
+            })
+            .collect();
+        attempts.sort_unstable();
+        attempts.dedup();
+        if wires.len() > 1 || attempts.len() > 1 {
             return Some(format!(
-                "; cast spell {spell} wire {local_wire:?}: {} native wire counts (ambiguous)",
-                wires.len()
+                "; cast spell {spell} wire {local_wire:?}: {} matched native edges (ambiguous)",
+                matched.len()
             ));
         }
-        let latest = native
-            .iter()
-            .max_by_key(|candidate| candidate.elapsed_ms)
-            .expect("native is non-empty");
+        let (latest, confidence) = matched
+            .into_iter()
+            .max_by_key(|(candidate, _)| candidate.elapsed_ms)
+            .expect("matched is non-empty");
         let (edge, native_wire, attempt) = match latest.stage {
             Stage::Cast {
                 edge,
@@ -2731,7 +2987,8 @@ impl History {
             _ => return None,
         };
         Some(format!(
-            "; cast spell {spell} wire {local_wire:?}/{native_wire:?} attempt {attempt:?}: {edge:?}"
+            "; cast spell {spell} wire {local_wire:?}/{native_wire:?} attempt {attempt:?}: {edge:?} ({})",
+            cast_confidence_label(confidence)
         ))
     }
 
@@ -5643,7 +5900,12 @@ mod tests {
         source.observe(
             Some((1, 1)),
             None,
-            Stage::GameplayRejected { opcode: 0x0188 },
+            Stage::GameplayRejected {
+                opcode: 0x0188,
+                decoder: DecoderFamily::QuestDetails,
+                reason: DecodeFailure::TrailingBytes,
+                remaining_bytes: Some(3),
+            },
         );
         drain_all(&mut history);
 
@@ -5653,7 +5915,15 @@ mod tests {
         }));
         assert!(history.incidents.iter().any(|inc| {
             inc.outcome == IncidentOutcome::ObservedFailure
-                && matches!(inc.terminal_stage, Stage::GameplayRejected { opcode: 0x0188 })
+                && matches!(
+                    inc.terminal_stage,
+                    Stage::GameplayRejected {
+                        opcode: 0x0188,
+                        decoder: DecoderFamily::QuestDetails,
+                        reason: DecodeFailure::TrailingBytes,
+                        remaining_bytes: Some(3),
+                    }
+                )
         }));
     }
 

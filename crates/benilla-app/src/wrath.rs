@@ -7647,10 +7647,16 @@ pub fn run_session_with_cancel(
                 if let Some(parsed) = gameplay::parse(p.opcode, &p.payload) {
                     if traced {
                         if let Some(trace) = &feed.trace {
-                            let stage = if parsed.is_ok() {
-                                crate::quest_trace::Stage::GameplayDecoded { opcode: p.opcode }
-                            } else {
-                                crate::quest_trace::Stage::GameplayRejected { opcode: p.opcode }
+                            let stage = match &parsed {
+                                Ok(_) => crate::quest_trace::Stage::GameplayDecoded {
+                                    opcode: p.opcode,
+                                },
+                                Err(error) => crate::quest_trace::Stage::GameplayRejected {
+                                    opcode: p.opcode,
+                                    decoder: gameplay::decoder_family(p.opcode),
+                                    reason: gameplay::classify_decode_failure(error),
+                                    remaining_bytes: gameplay::decode_remaining_bytes(error),
+                                },
                             };
                             trace.observe(scope, None, stage);
                         }
