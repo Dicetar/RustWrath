@@ -109,6 +109,23 @@ attempts. These summaries are evidence pointers; they do not claim visible pixel
 audibility, movement feel, or a successful server outcome without the corresponding
 authoritative observation.
 
+Cast chains name the local action a native cast edge was attributed to. An exact or strong
+match prints that action's non-zero local id; the native attempt serial and the wire cast
+count are printed separately, so neither is confused with the action. Two rapid same-spell
+casts stay `ambiguous` unless one authoritative wire count uniquely matches a local write;
+newest-event adjacency is never used. A native edge with no retained local write is
+`unverified` and prints `action unknown (local action not retained)`, never an exact action
+and never interaction 0.
+
+A rejected gameplay decode records the opcode, a closed decoder family and a closed coarse
+reason (`Truncated`, `TrailingBytes`, `UnterminatedString`, `InvalidCount`, `InvalidValue`,
+`Other`), plus an optional bounded undecoded-byte count that is a length only. The decoder's
+free-form message and the packet body are not recorded, so `SMSG_QUESTGIVER_QUEST_DETAILS`
+(`0x188`) identifies the decoder as `QuestDetails` and the reason as `TrailingBytes` without
+exporting quest text, title text or any body bytes. The fields live in the incident's
+`terminal_stage`, so they still identify the decoder and reason after the evidence rows are
+evicted.
+
 Export is user-initiated, runs off the frame thread, writes to a temporary file, and
 renames with `create_new(true)` so an existing report is never overwritten. Unknown
 schema versions are rejected by `validate_snapshot_header` before row decoding. Raw

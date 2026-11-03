@@ -708,6 +708,7 @@ dependencies = [
  "benilla-srp",
  "flate2",
  "hmac",
+ "serde",
  "sha1",
  "thiserror 2.0.18",
 ]
