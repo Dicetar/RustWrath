@@ -1485,10 +1485,18 @@ impl History {
             )),
             None => out.push("last failure: none retained".to_string()),
         }
-        if let Some(kind) = self.entries.iter().rev().find_map(|(_, event)| match event.stage {
-            Stage::SessionEnded { kind } => Some(kind),
-            _ => None,
-        }) {
+        let last_end = self
+            .entries
+            .iter()
+            .filter_map(|(_, event)| match event.stage {
+                Stage::SessionEnded { kind } => {
+                    Some((event.subject.scope.unwrap_or((0, 0)), kind))
+                }
+                _ => None,
+            })
+            .max_by_key(|(scope, _)| *scope)
+            .map(|(_, kind)| kind);
+        if let Some(kind) = last_end {
             out.push(format!("last session end: {:?}", kind));
         }
 

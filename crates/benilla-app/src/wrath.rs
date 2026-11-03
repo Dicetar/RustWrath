@@ -4447,35 +4447,66 @@ fn wrath_net_drain(
             let stage = match &event {
                 WrathFeedEvent::Phase {
                     phase,
+                    session_epoch,
+                    world_generation,
                     login_generation,
                     map_id,
-                    ..
-                } => Some(Stage::SessionPhase {
-                    phase: match phase {
-                        Phase::CharacterSelection => SessionPhase::CharacterSelection,
-                        Phase::EnteringWorld => SessionPhase::EnteringWorld,
-                        Phase::InWorld => SessionPhase::InWorld,
-                        Phase::TransferPending => SessionPhase::TransferPending,
-                        Phase::Loading => SessionPhase::Loading,
-                    },
-                    attempt: *login_generation,
-                    map_id: *map_id,
-                }),
+                } => {
+                    // Record only an actual transition: a duplicate or older phase event is
+                    // not a new milestone, and the state guard below applies the same rule.
+                    let older = scope_is_older(
+                        view.session_epoch,
+                        view.world_generation,
+                        *session_epoch,
+                        *world_generation,
+                    );
+                    let same_scope = view.session_epoch == *session_epoch
+                        && view.world_generation == *world_generation;
+                    if older || (same_scope && view.phase == Some(*phase)) {
+                        None
+                    } else {
+                        Some(Stage::SessionPhase {
+                            phase: match phase {
+                                Phase::CharacterSelection => SessionPhase::CharacterSelection,
+                                Phase::EnteringWorld => SessionPhase::EnteringWorld,
+                                Phase::InWorld => SessionPhase::InWorld,
+                                Phase::TransferPending => SessionPhase::TransferPending,
+                                Phase::Loading => SessionPhase::Loading,
+                            },
+                            attempt: *login_generation,
+                            map_id: *map_id,
+                        })
+                    }
+                }
                 WrathFeedEvent::WorldTransfer {
                     session_epoch,
                     world_generation,
                     map_id,
-                } => Some(Stage::WorldTransfer {
-                    map_id: Some(*map_id),
-                    from: if view.session_epoch == 0 && view.world_generation == 0 {
+                } => {
+                    let older = scope_is_older(
+                        view.session_epoch,
+                        view.world_generation,
+                        *session_epoch,
+                        *world_generation,
+                    );
+                    let same_scope = view.session_epoch == *session_epoch
+                        && view.world_generation == *world_generation;
+                    if older || same_scope {
                         None
                     } else {
-                        Some((view.session_epoch, view.world_generation))
-                    },
-                    to: Some((*session_epoch, *world_generation)),
-                    retired_local: 0,
-                    retired_written: 0,
-                }),
+                        Some(Stage::WorldTransfer {
+                            map_id: Some(*map_id),
+                            from: if view.session_epoch == 0 && view.world_generation == 0 {
+                                None
+                            } else {
+                                Some((view.session_epoch, view.world_generation))
+                            },
+                            to: Some((*session_epoch, *world_generation)),
+                            retired_local: 0,
+                            retired_written: 0,
+                        })
+                    }
+                }
                 WrathFeedEvent::SessionEnded { end, .. } => Some(Stage::SessionEnded {
                     kind: match end {
                         benilla_protocol::SessionEnd::LoggedOut => SessionEndKind::LoggedOut,
