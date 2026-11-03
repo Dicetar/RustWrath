@@ -1296,8 +1296,8 @@ pub(super) fn writer_loop(
                     ClientCommand::WorldportAck => w.worldport_ack(),
                     ClientCommand::SetSelection { guid } => w.set_selection(guid),
                     ClientCommand::CancelAutoRepeat => w.cancel_auto_repeat(),
-                    ClientCommand::CancelCast { spell_id } => w.cancel_cast(spell_id),
-                    ClientCommand::CancelChannelling { spell_id } => w.cancel_channelling(spell_id),
+                    ClientCommand::CancelCast { spell_id, .. } => w.cancel_cast(spell_id),
+                    ClientCommand::CancelChannelling { spell_id, .. } => w.cancel_channelling(spell_id),
                     ClientCommand::Chat {
                         kind,
                         target,
@@ -1395,16 +1395,17 @@ pub(super) fn writer_loop(
                         slot,
                         count,
                     } => w.destroy_item(bag_index, slot, count),
-                    ClientCommand::CastSpell { spell_id, target } => w.cast_spell(spell_id, target),
+                    ClientCommand::CastSpell { spell_id, target, .. } => w.cast_spell(spell_id, target),
                     ClientCommand::CastSpellCorpse {
                         spell_id,
                         target,
                         corpse_guid,
+                        ..
                     } => w.cast_spell_corpse(spell_id, target, corpse_guid),
-                    ClientCommand::CastSpellAtDest { spell_id, dest } => {
+                    ClientCommand::CastSpellAtDest { spell_id, dest, .. } => {
                         w.cast_spell_at_dest(spell_id, dest)
                     }
-                    ClientCommand::CastSpellAtSource { spell_id, src } => {
+                    ClientCommand::CastSpellAtSource { spell_id, src, .. } => {
                         w.cast_spell_at_source(spell_id, src)
                     }
                     ClientCommand::CancelAura { spell_id } => w.cancel_aura(spell_id),
@@ -1423,6 +1424,7 @@ pub(super) fn writer_loop(
                         caster_guid,
                         spell_id,
                         target,
+                        ..
                     } => w.pet_cast_spell(caster_guid, spell_id, target),
                     ClientCommand::PetSetAction { pet_guid, entries } => {
                         w.pet_set_action(pet_guid, &entries)
@@ -1592,14 +1594,15 @@ pub(super) fn writer_loop(
                     ClientCommand::PageTextQuery { page_id, guid } => {
                         w.page_text_query(page_id, guid)
                     }
-                    ClientCommand::CastSpellGameObject { spell_id, go_guid } => {
+                    ClientCommand::CastSpellGameObject { spell_id, go_guid, .. } => {
                         w.cast_spell_gameobject(spell_id, go_guid)
                     }
                     ClientCommand::CastSpellItem {
                         spell_id,
                         item_guid,
+                        ..
                     } => w.cast_spell_item(spell_id, item_guid),
-                    ClientCommand::CastSpellTradeItem { spell_id, slot } => {
+                    ClientCommand::CastSpellTradeItem { spell_id, slot, .. } => {
                         w.cast_spell_trade_item(spell_id, slot)
                     }
                     ClientCommand::LootMasterGive { guid, slot, target } => {
@@ -2044,3 +2047,4 @@ mod rtt_tests {
             .is_some_and(|t| std::sync::Arc::ptr_eq(t, &traffic)));
     }
 }
+

@@ -429,6 +429,8 @@ pub(crate) struct SelfCancel<'w> {
     /// The reap and the auto-repeat clear, applied after the pass.
     edits: Res<'w, crate::creature_anim::UnitEdits>,
     ground: ResMut<'w, super::targeting::SpellTargeting>,
+    trace: Option<Res<'w, crate::quest_trace::Source>>,
+    wrath_view: Option<Res<'w, crate::wrath::WrathWorldView>>,
 }
 
 impl SelfCancel<'_> {
@@ -462,6 +464,16 @@ impl SelfCancel<'_> {
     /// sends its cancel again (`0x6e6eb4`).
     fn cancel_inflight(&mut self, failed: bool, why: &str) {
         let self_e = self.self_entity();
+        let spell_id = inflight(&self.pending, &self.queued_melee, &self.ground).map(|s| s.spell_id());
+        let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
+        if let (Some(trace), Some(spell)) = (self.trace.as_deref(), spell_id) {
+            let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
+            ix.record(crate::quest_trace::Stage::Cast {
+                spell_id: Some(spell),
+                attempt: None,
+                edge: crate::quest_trace::CastEdge::CancelRequested,
+            });
+        }
         let Self {
             pending,
             queued_melee,
@@ -573,10 +585,19 @@ impl SelfCancel<'_> {
                     if *crate::net::CAST_TRACE {
                         info!("cast-trace: LOCAL channel self-cancel — spell {spell_id}, CMSG_CANCEL_CHANNELLING");
                     }
+                    let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
+                    if let Some(trace) = self.trace.as_deref() {
+                        let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
+                        ix.record(crate::quest_trace::Stage::Cast {
+                            spell_id: Some(spell_id),
+                            attempt: None,
+                            edge: crate::quest_trace::CastEdge::CancelRequested,
+                        });
+                    }
                     let _ = self
                         .net
                         .0
-                        .send(ClientCommand::CancelChannelling { spell_id });
+                        .send(ClientCommand::CancelChannelling { spell_id, trace: None });
                 }
             }
         }
@@ -1025,10 +1046,10 @@ mod tests {
             let sent = |rx: &crossbeam_channel::Receiver<crate::net::ClientCommand>| {
                 rx.try_iter()
                     .filter_map(|c| match c {
-                        crate::net::ClientCommand::CancelCast { spell_id } => {
+                        crate::net::ClientCommand::CancelCast { spell_id, .. } => {
                             Some(("cast", spell_id))
                         }
-                        crate::net::ClientCommand::CancelChannelling { spell_id } => {
+                        crate::net::ClientCommand::CancelChannelling { spell_id, .. } => {
                             Some(("channel", spell_id))
                         }
                         _ => None,
@@ -1634,3 +1655,4 @@ mod tests {
         assert_eq!(ch.current(t0), None);
     }
 }
+

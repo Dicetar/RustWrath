@@ -147,6 +147,10 @@ impl ScriptCastPermit {
 /// way into [`send_spell_cast`], for every caster surface.
 #[derive(SystemParam)]
 pub(crate) struct CastLadder<'w, 's> {
+    /// Resident interaction diagnostics; combat/cast producers record local boundaries here.
+    pub(crate) trace: Option<Res<'w, crate::quest_trace::Source>>,
+    /// World scope for diagnostic identities.
+    pub(crate) wrath_view: Option<Res<'w, crate::wrath::WrathWorldView>>,
     /// Absent in a world that never applies script calls.
     permit: Option<ResMut<'w, ScriptCastPermit>>,
     pub(crate) commands: Res<'w, NetCommands>,
@@ -275,6 +279,15 @@ impl CastLadder<'_, '_> {
     /// A refusal of the client's own through `ReportCastFailure 0x6e1a00`: its line, then its
     /// tail.
     pub(crate) fn report_local(&mut self, fail: CastFail) {
+        let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
+        if let Some(trace) = self.trace.as_deref() {
+            let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
+            ix.record(crate::quest_trace::Stage::Cast {
+                spell_id: Some(fail.spell_id),
+                attempt: None,
+                edge: crate::quest_trace::CastEdge::LocalRefusal { reason: fail.reason },
+            });
+        }
         let reaches = reaches_tail(&fail, self.spells.as_deref(), &self.items, &self.commands);
         self.core().report(fail, false, reaches);
     }
@@ -331,30 +344,35 @@ impl CastLadder<'_, '_> {
         commit: CastCommit,
         bound: TargetedBind,
     ) {
+        let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
+        let cmd_trace = self.trace.as_deref().map(|t| t.begin(scope, None, crate::quest_trace::Operation::Observed));
         let cmd = match commit {
             // The same targets block under either opcode; the spell side has one builder per bind.
             CastCommit::Spell => match bound {
-                TargetedBind::Dest(dest) => ClientCommand::CastSpellAtDest { spell_id, dest },
-                TargetedBind::Source(src) => ClientCommand::CastSpellAtSource { spell_id, src },
+                TargetedBind::Dest(dest) => ClientCommand::CastSpellAtDest { spell_id, dest, trace: cmd_trace.clone() },
+                TargetedBind::Source(src) => ClientCommand::CastSpellAtSource { spell_id, src, trace: cmd_trace.clone() },
                 TargetedBind::Item(item_guid) => ClientCommand::CastSpellItem {
                     spell_id,
                     item_guid,
+                    trace: cmd_trace.clone(),
                 },
                 TargetedBind::TradeItem(slot) => {
-                    ClientCommand::CastSpellTradeItem { spell_id, slot }
+                    ClientCommand::CastSpellTradeItem { spell_id, slot, trace: cmd_trace.clone() }
                 }
                 // The right-click OPEN_LOCK packet: `BindTarget`'s GameObject arm fills both.
                 TargetedBind::Object(go_guid) => {
-                    ClientCommand::CastSpellGameObject { spell_id, go_guid }
+                    ClientCommand::CastSpellGameObject { spell_id, go_guid, trace: cmd_trace.clone() }
                 }
                 TargetedBind::Unit(unit_guid) => ClientCommand::CastSpell {
                     spell_id,
                     target: Some(unit_guid),
+                    trace: cmd_trace.clone(),
                 },
                 TargetedBind::Corpse(corpse_guid, target) => ClientCommand::CastSpellCorpse {
                     spell_id,
                     target,
                     corpse_guid,
+                    trace: cmd_trace.clone(),
                 },
             },
             CastCommit::Item {
@@ -369,11 +387,13 @@ impl CastLadder<'_, '_> {
                 spell_id,
                 item_guid: commit.item_guid(),
                 target: bound.block(),
+                trace: cmd_trace.clone(),
             },
             CastCommit::Pet { caster } => ClientCommand::PetCastSpell {
                 caster_guid: caster,
                 spell_id,
                 target: bound.block(),
+                trace: cmd_trace.clone(),
             },
         };
         let now = Instant::now();
@@ -544,6 +564,8 @@ impl CastLadder<'_, '_> {
                 attack: self.unit_attack.as_deref_mut(),
             },
             &self.known,
+            self.trace.as_deref().cloned(),
+            self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
         );
     }
 }
@@ -688,15 +710,35 @@ fn send_spell_cast(
     stop_word: &mut crate::creature_anim::AttackStopInFlight,
     unit: UnitCaster<'_>,
     known: &KnownReads,
+    trace: Option<crate::quest_trace::Source>,
+    scope: Option<(u64, u64)>,
 ) {
     // A refusal through the reporter, then the attempt's `xor al,al` exit.
     macro_rules! refuse {
         ($fail:expr) => {{
-            refuse(core, spells, items, commands, $fail);
+            let __fail = $fail;
+            if let Some(ix) = &cast_trace_interaction {
+                ix.record(crate::quest_trace::Stage::Cast {
+                    spell_id: Some(spell_id),
+                    attempt: None,
+                    edge: crate::quest_trace::CastEdge::LocalRefusal { reason: __fail.reason },
+                });
+            }
+            refuse(core, spells, items, commands, __fail);
             return;
         }};
     }
     let now = Instant::now();
+    let cast_trace_interaction = trace.as_ref().map(|t| {
+        t.begin(scope, None, crate::quest_trace::Operation::Observed)
+    });
+    if let Some(ix) = &cast_trace_interaction {
+        ix.record(crate::quest_trace::Stage::Cast {
+            spell_id: Some(spell_id),
+            attempt: None,
+            edge: crate::quest_trace::CastEdge::Requested,
+        });
+    }
     let def = spells.and_then(|s| s.catalog.get(spell_id));
     // TryCast's first branch (`6e4bce`, ahead of every gate): an `Effect[0] == TRADE_SKILL` cast
     // never reaches the wire; the crafting window opens instead.
@@ -963,7 +1005,7 @@ fn send_spell_cast(
                     debug!("ui_action: the not-ready refusal cancels the wand repeat {cached}");
                     let _ = commands
                         .0
-                        .send(ClientCommand::CancelCast { spell_id: cached });
+                        .send(ClientCommand::CancelCast { spell_id: cached, trace: cast_trace_interaction.clone() });
                     let self_e = self_player.single().ok().map(|(e, _)| e);
                     crate::creature_anim::cancel_auto_repeat_local(
                         self_e,
@@ -1160,7 +1202,7 @@ fn send_spell_cast(
             debug!("ui_action: cast {spell_id} cancels the running wand repeat {cached}");
             let _ = commands
                 .0
-                .send(ClientCommand::CancelCast { spell_id: cached });
+                .send(ClientCommand::CancelCast { spell_id: cached, trace: cast_trace_interaction.clone() });
             let self_e = self_player.single().ok().map(|(e, _)| e);
             crate::creature_anim::cancel_auto_repeat_local(self_e, auto_repeat, edits, core);
         }
@@ -1170,13 +1212,14 @@ fn send_spell_cast(
     let _ = commands.0.send(match commit {
         CastCommit::Spell => match (explicit_object, item_target) {
             // A lock opener bound by its click; `BindTarget`'s GameObject arm fills the block.
-            (Some(go_guid), _) => ClientCommand::CastSpellGameObject { spell_id, go_guid },
+            (Some(go_guid), _) => ClientCommand::CastSpellGameObject { spell_id, go_guid, trace: cast_trace_interaction.clone() },
             // The item leg, bound by the main-hand auto-pick.
             (None, Some(item_guid)) => ClientCommand::CastSpellItem {
                 spell_id,
                 item_guid,
+                trace: cast_trace_interaction.clone(),
             },
-            (None, None) => ClientCommand::CastSpell { spell_id, target },
+            (None, None) => ClientCommand::CastSpell { spell_id, target, trace: cast_trace_interaction.clone() },
         },
         CastCommit::Item {
             bag_index,
@@ -1196,6 +1239,7 @@ fn send_spell_cast(
                 (None, None, Some(unit)) => UseItemTarget::Unit(unit),
                 (None, None, None) => UseItemTarget::SelfImplicit,
             },
+            trace: cast_trace_interaction.clone(),
         },
         CastCommit::Pet { caster } => ClientCommand::PetCastSpell {
             caster_guid: caster,
@@ -1206,6 +1250,7 @@ fn send_spell_cast(
                 (None, None, Some(unit)) => UseItemTarget::Unit(unit),
                 (None, None, None) => UseItemTarget::SelfImplicit,
             },
+            trace: cast_trace_interaction.clone(),
         },
     });
     if let Some(caster) = commit.unit_caster() {
@@ -1786,7 +1831,7 @@ mod tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(ClientCommand::CastSpellGameObject { spell_id, go_guid })
+                Ok(ClientCommand::CastSpellGameObject { spell_id, go_guid, .. })
                     if spell_id == OPENING && go_guid == CHEST
             ),
             "the first click commits as a GameObject-targeted cast and arms the one inflight id"
@@ -2149,7 +2194,7 @@ mod tests {
             "then the send's StopAttack"
         );
         assert!(
-            matches!(rx.try_recv(), Ok(ClientCommand::CancelCast { spell_id }) if spell_id == RAPTOR_STRIKE),
+            matches!(rx.try_recv(), Ok(ClientCommand::CancelCast { spell_id, .. }) if spell_id == RAPTOR_STRIKE),
             "whose tail cancels the queued strike by id"
         );
         assert!(rx.try_recv().is_err(), "and nothing else");
@@ -3214,3 +3259,4 @@ mod tests {
         ));
     }
 }
+

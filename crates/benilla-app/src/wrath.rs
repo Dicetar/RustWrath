@@ -118,6 +118,7 @@ pub struct WrathOutbound {
     /// loot or logout command (ADR-0001's admission rule).
     pub movement: bool,
     pub(crate) receipt: Option<crate::net::CommandReceipt>,
+    pub(crate) trace: Option<crate::quest_trace::Interaction>,
 }
 
 /// A translated gameplay reply tagged with the source session and world scope. The app rejects
@@ -1861,6 +1862,7 @@ fn wrath_wm_action_intake(
                 commands.push(ClientCommand::CastSpell {
                     spell_id: *spell_id,
                     target: *target,
+                    trace: None,
                 });
             }
             ActionIntent::CastCancel => {
@@ -1876,7 +1878,7 @@ fn wrath_wm_action_intake(
                         spell_id: channel.spell_id,
                     });
                 } else if let Some(spell_id) = actions.last_cast_spell {
-                    commands.push(ClientCommand::CancelCast { spell_id });
+                    commands.push(ClientCommand::CancelCast { spell_id, .. });
                 } else {
                     refused = Some("no client-known cast to cancel".to_owned());
                 }
@@ -3250,6 +3252,20 @@ fn wrath_tap_commands(
     while let Ok(command) = receiver.try_recv() {
         let opening = matches!(&command, ClientCommand::GossipHello { .. } | ClientCommand::QuestgiverHello { .. } | ClientCommand::QuestgiverOpenTracked { .. });
         let scope = Some((view.session_epoch, view.world_generation));
+        let cmd_trace = match &command {
+            ClientCommand::CastSpell { trace, .. }
+            | ClientCommand::CastSpellCorpse { trace, .. }
+            | ClientCommand::CastSpellAtDest { trace, .. }
+            | ClientCommand::CastSpellAtSource { trace, .. }
+            | ClientCommand::CastSpellGameObject { trace, .. }
+            | ClientCommand::CastSpellItem { trace, .. }
+            | ClientCommand::CastSpellTradeItem { trace, .. }
+            | ClientCommand::UseItem { trace, .. }
+            | ClientCommand::PetCastSpell { trace, .. }
+            | ClientCommand::CancelCast { trace, .. }
+            | ClientCommand::CancelChannelling { trace, .. } => trace.clone(),
+            _ => None,
+        };
         if opening {
             if let Some(trace) = &trace {
                 trace.observe(scope, None, crate::quest_trace::Stage::OpenCommandDequeued);
@@ -3357,7 +3373,7 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_ATTACKSTOP,
                 gameplay::attack_stop(),
             )),
-            ClientCommand::CastSpell { spell_id, target } => {
+            ClientCommand::CastSpell { spell_id, target, .. } => {
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3684,7 +3700,7 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_SET_ACTIONBAR_TOGGLES,
                 gameplay::set_action_bar_toggles(toggles),
             )),
-            ClientCommand::CancelCast { spell_id } => {
+            ClientCommand::CancelCast { spell_id, .. } => {
                 let self_guid = view.player_guid;
                 view.note_cancel_requested(self_guid, spell_id);
                 Some((
@@ -3692,7 +3708,7 @@ fn wrath_tap_commands(
                     gameplay::cancel_cast(spell_id),
                 ))
             }
-            ClientCommand::CancelChannelling { spell_id } => {
+            ClientCommand::CancelChannelling { spell_id, .. } => {
                 let self_guid = view.player_guid;
                 view.note_cancel_requested(self_guid, spell_id);
                 Some((
@@ -3724,7 +3740,7 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BANK_ITEM,
                 gameplay::autostore_bank_item(wrath_bank_bag(bag), slot),
             )),
-            ClientCommand::CastSpellGameObject { spell_id, go_guid } => {
+            ClientCommand::CastSpellGameObject { spell_id, go_guid, .. } => {
                 let count = view.next_cast_count;
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
@@ -3732,7 +3748,7 @@ fn wrath_tap_commands(
                     gameplay::cast_spell_gameobject(count, spell_id, go_guid),
                 ))
             }
-            ClientCommand::CastSpellItem { spell_id, item_guid } => {
+            ClientCommand::CastSpellItem { spell_id, item_guid, .. } => {
                 let count = view.next_cast_count;
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
@@ -3740,7 +3756,7 @@ fn wrath_tap_commands(
                     gameplay::cast_spell_item(count, spell_id, item_guid),
                 ))
             }
-            ClientCommand::CastSpellTradeItem { spell_id, slot } => {
+            ClientCommand::CastSpellTradeItem { spell_id, slot, .. } => {
                 let count = view.next_cast_count;
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
@@ -3752,6 +3768,7 @@ fn wrath_tap_commands(
                 spell_id,
                 target,
                 corpse_guid,
+                ..
             } => {
                 use benilla_protocol::messages::CorpseTarget;
                 let count = view.next_cast_count;
@@ -3766,7 +3783,7 @@ fn wrath_tap_commands(
                     ),
                 ))
             }
-            ClientCommand::CastSpellAtDest { spell_id, dest } => {
+            ClientCommand::CastSpellAtDest { spell_id, dest, .. } => {
                 let count = view.next_cast_count;
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
@@ -3774,7 +3791,7 @@ fn wrath_tap_commands(
                     gameplay::cast_spell_at_dest(count, spell_id, dest),
                 ))
             }
-            ClientCommand::CastSpellAtSource { spell_id, src } => {
+            ClientCommand::CastSpellAtSource { spell_id, src, .. } => {
                 let count = view.next_cast_count;
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
@@ -3914,6 +3931,7 @@ fn wrath_tap_commands(
                         payload,
                         movement: false,
                         receipt: receipt.clone(),
+                        trace: cmd_trace.clone(),
                     });
                     if let Some(receipt) = receipt.as_ref() {
                         receipt.report(crate::net::CommandDelivery::OutboxAdmitted);
@@ -3928,7 +3946,13 @@ fn wrath_tap_commands(
                     if opcode == benilla_protocol_wrath::opcode::CMSG_CAST_SPELL {
                         let spell_id = payload.get(4..8).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
                         let attempt = payload.get(0..4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-                        if let Some(trace) = &trace {
+                        if let Some(ix) = &cmd_trace {
+                            ix.record(crate::quest_trace::Stage::Cast {
+                                spell_id,
+                                attempt: attempt.map(|a| a as u64),
+                                edge: crate::quest_trace::CastEdge::Admitted,
+                            });
+                        } else if let Some(trace) = &trace {
                             trace.observe(scope, None, crate::quest_trace::Stage::Cast {
                                 spell_id,
                                 attempt: attempt.map(|a| a as u64),
@@ -6917,7 +6941,16 @@ pub fn run_session_with_cancel(
                 }
                 let result = world.send(command.opcode, &command.payload);
                 if diagnostic_outbound(command.opcode) {
-                    if let Some(trace) = &feed.trace {
+                    if let Some(ix) = &command.trace {
+                        ix.record(crate::quest_trace::Stage::Outbound {
+                            opcode: command.opcode,
+                            state: if result.is_ok() {
+                                crate::quest_trace::OutboundState::Written
+                            } else {
+                                crate::quest_trace::OutboundState::WriteFailed
+                            },
+                        });
+                    } else if let Some(trace) = &feed.trace {
                         trace.observe(Some((session.epoch(), session.world_generation())), None,
                             crate::quest_trace::Stage::Outbound {
                                 opcode: command.opcode,
@@ -6930,7 +6963,9 @@ pub fn run_session_with_cancel(
                     }
                 }
                 if result.is_err() {
-                    if let Some(trace) = &feed.trace {
+                    if let Some(ix) = &command.trace {
+                        ix.record(crate::quest_trace::Stage::SocketWriteFailed);
+                    } else if let Some(trace) = &feed.trace {
                         trace.observe(Some((session.epoch(), session.world_generation())), None,
                             crate::quest_trace::Stage::SocketWriteFailed);
                     }
@@ -7558,6 +7593,7 @@ mod tests {
             payload: vec![1],
             movement: false,
             receipt: None,
+            trace: None,
         }])));
         world.insert_resource(WrathInput(Arc::clone(&outbox)));
 
@@ -7662,6 +7698,7 @@ mod command_tap_tests {
         tx.send(ClientCommand::CastSpell {
             spell_id: 133,
             target: Some(0x22),
+            trace: None,
         })
         .unwrap();
         tx.send(ClientCommand::GossipSelectOption {
@@ -7840,3 +7877,5 @@ mod command_tap_tests {
         assert!(control.park_commands.is_none());
     }
 }
+
+
