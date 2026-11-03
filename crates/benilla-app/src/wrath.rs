@@ -3943,10 +3943,14 @@ fn wrath_tap_commands(
                         receipt.report(crate::net::CommandDelivery::OutboxAdmitted);
                     }
                     if diagnostic_outbound(opcode) {
-                        if let Some(trace) = &trace {
-                            trace.observe(scope, None, crate::quest_trace::Stage::Outbound {
-                                opcode, state: crate::quest_trace::OutboundState::Queued,
-                            });
+                        let stage = crate::quest_trace::Stage::Outbound {
+                            opcode,
+                            state: crate::quest_trace::OutboundState::Queued,
+                        };
+                        if let Some(ix) = &cmd_trace {
+                            ix.record(stage);
+                        } else if let Some(trace) = &trace {
+                            trace.observe(scope, None, stage);
                         }
                     }
                     if let Some(spell_id) = admitted_spell {
@@ -3980,10 +3984,14 @@ fn wrath_tap_commands(
                         ));
                     }
                     if diagnostic_outbound(opcode) {
-                        if let Some(trace) = &trace {
-                            trace.observe(scope, None, crate::quest_trace::Stage::Outbound {
-                                opcode, state: crate::quest_trace::OutboundState::Refused,
-                            });
+                        let stage = crate::quest_trace::Stage::Outbound {
+                            opcode,
+                            state: crate::quest_trace::OutboundState::Refused,
+                        };
+                        if let Some(ix) = &cmd_trace {
+                            ix.record(stage);
+                        } else if let Some(trace) = &trace {
+                            trace.observe(scope, None, stage);
                         }
                     }
                     if opening {
@@ -3999,10 +4007,14 @@ fn wrath_tap_commands(
                     ));
                 }
                 if diagnostic_outbound(opcode) {
-                    if let Some(trace) = &trace {
-                        trace.observe(scope, None, crate::quest_trace::Stage::Outbound {
-                            opcode, state: crate::quest_trace::OutboundState::Refused,
-                        });
+                    let stage = crate::quest_trace::Stage::Outbound {
+                        opcode,
+                        state: crate::quest_trace::OutboundState::Refused,
+                    };
+                    if let Some(ix) = &cmd_trace {
+                        ix.record(stage);
+                    } else if let Some(trace) = &trace {
+                        trace.observe(scope, None, stage);
                     }
                 }
                 if opening {
@@ -4011,6 +4023,8 @@ fn wrath_tap_commands(
                     }
                 }
             }
+        } else if let Some(ix) = &cmd_trace {
+            ix.record(crate::quest_trace::Stage::GuardRefused);
         }
     }
 }

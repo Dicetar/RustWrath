@@ -1063,10 +1063,27 @@ impl History {
                 Stage::NoWorld => "no active world connection",
                 Stage::AlreadyPending | Stage::TrackingCapacity => "local tracking is busy",
                 Stage::ChannelDisconnected => "command channel disconnected",
-                Stage::Delivery(CommandDelivery::Rejected(_)) => "rejected before socket write",
-                Stage::Delivery(CommandDelivery::WriteFailed) => "socket write failed; outcome unknown",
-                Stage::Delivery(CommandDelivery::Written) => "sent; server outcome unconfirmed",
-                Stage::Delivery(CommandDelivery::OutboxAdmitted) => "queued; socket write unconfirmed",
+                Stage::Delivery(CommandDelivery::Rejected(_))
+                | Stage::Outbound {
+                    state: OutboundState::Refused,
+                    ..
+                } => "rejected before socket write",
+                Stage::Delivery(CommandDelivery::WriteFailed)
+                | Stage::Outbound {
+                    state: OutboundState::WriteFailed,
+                    ..
+                }
+                | Stage::SocketWriteFailed => "socket write failed; outcome unknown",
+                Stage::Delivery(CommandDelivery::Written)
+                | Stage::Outbound {
+                    state: OutboundState::Written,
+                    ..
+                } => "sent; server outcome unconfirmed",
+                Stage::Delivery(CommandDelivery::OutboxAdmitted)
+                | Stage::Outbound {
+                    state: OutboundState::Queued,
+                    ..
+                } => "queued; socket write unconfirmed",
                 Stage::ChannelAdmitted
                 | Stage::Encoded
                 | Stage::Cast {
@@ -2148,7 +2165,15 @@ pub(crate) fn drain_history(history: &mut History) {
                 | Stage::TrackingCapacity
                 | Stage::ChannelDisconnected
                 | Stage::Delivery(CommandDelivery::Rejected(_))
-                | Stage::Delivery(CommandDelivery::WriteFailed) => {
+                | Stage::Delivery(CommandDelivery::WriteFailed)
+                | Stage::Outbound {
+                    state:
+                        OutboundState::Written
+                        | OutboundState::Refused
+                        | OutboundState::WriteFailed,
+                    ..
+                }
+                | Stage::SocketWriteFailed => {
                     history
                         .open_interactions
                         .retain(|open| open.subject.interaction != event.subject.interaction);
@@ -2282,12 +2307,20 @@ pub(crate) fn drain_history(history: &mut History) {
             | Stage::AlreadyPending
             | Stage::TrackingCapacity
             | Stage::ChannelDisconnected
-            | Stage::Delivery(CommandDelivery::Rejected(_)) => Some((
+            | Stage::Delivery(CommandDelivery::Rejected(_))
+            | Stage::Outbound {
+                state: OutboundState::Refused,
+                ..
+            } => Some((
                 IncidentOutcome::LocalRefusal,
                 IncidentConfidence::Exact,
                 event.subject,
             )),
-            Stage::Delivery(CommandDelivery::WriteFailed) => Some((
+            Stage::Delivery(CommandDelivery::WriteFailed)
+            | Stage::Outbound {
+                state: OutboundState::WriteFailed,
+                ..
+            } => Some((
                 IncidentOutcome::WriteUnconfirmed,
                 IncidentConfidence::Unverified,
                 event.subject,
