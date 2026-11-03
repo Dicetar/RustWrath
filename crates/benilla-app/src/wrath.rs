@@ -5838,22 +5838,7 @@ fn wrath_apply_world(world: &mut World) {
                                 if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
                                     let scope = world.get_resource::<WrathWorldView>()
                                         .map(|v| (v.session_epoch, v.world_generation));
-                                    let current = world
-                                         .get_resource::<crate::player::Player>()
-                                         .map_or(Vec3::ZERO, |p| p.pos);
-                                     let bevy = wow_to_bevy([pose.x, pose.y, pose.z]);
-                                     let dist = current.distance(bevy);
-                                     let bucket = if dist < 2.0 { 0 }
-                                         else if dist < 5.0 { 1 }
-                                         else if dist < 10.0 { 2 }
-                                         else if dist < 25.0 { 3 }
-                                         else { 4 };
-                                     let seq = trace.last_movement_sequence();
-                                     trace.note_movement_corrected();
-                                     trace.observe(scope, None, crate::quest_trace::Stage::MovementCorrectionApplied {
-                                         distance_bucket: bucket,
-                                         movement_sequence: if seq == 0 { None } else { Some(seq) },
-                                     });
+                                    trace.observe(scope, None, crate::quest_trace::Stage::MovementCorrectionApplied);
                                 }
                             }
                         }
@@ -6347,7 +6332,6 @@ fn wrath_stream_movement(
                 trace.note_movement_coalesced();
             }
         }
-        let depth_after = queue.len() + 1;
         queue.push_back(WrathOutbound {
             opcode,
             payload,
@@ -6355,9 +6339,6 @@ fn wrath_stream_movement(
             receipt: None,
             trace: None,
         });
-        if let Some(trace) = &trace {
-            trace.note_movement_admitted(depth_after);
-        }
     } else if let Some(trace) = &trace {
         trace.note_movement_refused();
     }
@@ -7132,12 +7113,6 @@ pub fn run_session_with_cancel(
                     } else {
                         crate::net::CommandDelivery::WriteFailed
                     });
-                }
-                // Movement write accounting.
-                if command.movement && result.is_ok() {
-                    if let Some(trace) = &feed.trace {
-                        trace.note_movement_written();
-                    }
                 }
                 result?;
                 // A cancel request is client authority state recorded when the command
