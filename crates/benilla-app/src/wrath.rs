@@ -3256,9 +3256,9 @@ fn wrath_tap_commands(
     while let Ok(raw_command) = receiver.try_recv() {
         // Unwrap the shared transport-identity envelope exactly once before matching the inner
         // command. Its trace and scope flag are carried alongside the existing per-variant traces.
-        let (env_trace, env_enforce_scope, command) = match raw_command {
-            ClientCommand::Tracked { trace, enforce_scope, command } => (trace, enforce_scope, *command),
-            other => (None, false, other),
+        let (env_trace, env_enforce_scope, from_tracked, command) = match raw_command {
+            ClientCommand::Tracked { trace, enforce_scope, command } => (trace, enforce_scope, true, *command),
+            other => (None, false, false, other),
         };
         let opening = matches!(&command, ClientCommand::GossipHello { .. } | ClientCommand::QuestgiverHello { .. } | ClientCommand::QuestgiverOpenTracked { .. });
         let scope = Some((view.session_epoch, view.world_generation));
@@ -3295,12 +3295,15 @@ fn wrath_tap_commands(
             | ClientCommand::QuestgiverChooseRewardTracked { receipt, .. } => receipt.enforce_scope,
             _ => false,
         };
-        // Named default rule: a carried trace scope is enforced even when no explicit flag is set,
-        // so trace-only commands without an envelope are still protected. An explicit false with a
-        // carried scope is treated as "default true" under this rule.
-        let enforce_scope = env_enforce_scope
-            || receipt_enforce
-            || primary_trace.as_ref().and_then(|t| t.scope()).is_some();
+        // Scope rule:
+        // - a `Tracked` envelope uses its explicit flag;
+        // - a receipt's flag governs its own trace;
+        // - a per-variant (non-envelope) trace with a carried scope defaults to enforced.
+        let enforce_scope = if from_tracked {
+            env_enforce_scope || receipt_enforce
+        } else {
+            receipt_enforce || primary_trace.as_ref().and_then(|t| t.scope()).is_some()
+        };
         if opening {
             if let Some(trace) = &trace {
                 trace.observe(scope, None, crate::quest_trace::Stage::OpenCommandDequeued);
@@ -7053,6 +7056,7 @@ pub fn run_session_with_cancel(
                                 ),
                             ));
                         }
+                    }
                     }
                 }
                 if let Some(receipt) = &command.receipt {
