@@ -264,6 +264,7 @@ pub(crate) enum HotpatchReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum PatchEvent {
     CandidateStaged { attempt: u64 },
+    CandidateWithdrawn { attempt: u64 },
     PublicationRejected { attempt: Option<u64>, reason: HotpatchReason },
     CandidateRejected { attempt: Option<u64>, reason: HotpatchReason },
     Activated { attempt: Option<u64>, digest: Option<[u8; 20]> },
@@ -3084,17 +3085,14 @@ impl History {
                     .filter_map(|(_, later)| {
                         let att = match later.stage {
                             Stage::Hotpatch {
+                                event: PatchEvent::CandidateWithdrawn { attempt },
+                            } => Some(attempt),
+                            Stage::Hotpatch {
                                 event: PatchEvent::Activated { attempt: a, .. },
-                            } => *a,
+                            } => a,
                             Stage::Hotpatch {
                                 event: PatchEvent::CandidateRejected { attempt: a, .. },
-                            } => *a,
-                            Stage::Hotpatch {
-                                event: PatchEvent::FrameFailed { attempt: a, .. },
-                            } => *a,
-                            Stage::Hotpatch {
-                                event: PatchEvent::RetentionFailed { attempt: a, .. },
-                            } => *a,
+                            } => a,
                             _ => None,
                         };
                         if att == Some(attempt) {

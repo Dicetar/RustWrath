@@ -29,6 +29,9 @@ fn capture_hotpatch_events(
                 HotpatchEvent::CandidateStaged { attempt } => {
                     PatchEvent::CandidateStaged { attempt }
                 }
+                HotpatchEvent::CandidateWithdrawn { attempt } => {
+                    PatchEvent::CandidateWithdrawn { attempt }
+                }
                 HotpatchEvent::PublicationRejected { attempt, reason } => {
                     PatchEvent::PublicationRejected {
                         attempt,

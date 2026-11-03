@@ -25,6 +25,7 @@ pub enum HotpatchReason {
 #[derive(Message, Clone, Copy, Debug)]
 pub enum HotpatchEvent {
     CandidateStaged { attempt: PatchAttemptId },
+    CandidateWithdrawn { attempt: PatchAttemptId },
     PublicationRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
     CandidateRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
     Activated { attempt: Option<PatchAttemptId>, digest: Option<[u8; 20]> },
@@ -117,7 +118,13 @@ fn poll(
         return;
     }
     runtime.next_poll = now + 1.0;
-    match runtime.host.poll() {
+    let result = runtime.host.poll();
+    if matches!(&result, Ok(true)) || !runtime.host.has_pending() {
+        if let Some(attempt) = runtime.candidate_attempt.take() {
+            events.write(HotpatchEvent::CandidateWithdrawn { attempt });
+        }
+    }
+    match result {
         Ok(true) => {
             runtime.refresh = true;
             runtime.last_error = None;

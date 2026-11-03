@@ -133,8 +133,17 @@ impl Host {
     pub fn poll(&mut self) -> Result<bool> {
         let text = match std::fs::read_to_string(self.root.join("ready.toml")) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                // A staged DLL may be invoked later, after a rig becomes available.
+                // Only keep it staged while its publication can still be observed.
+                self.pending = None;
+                self.observed = None;
+                return if error.kind() == std::io::ErrorKind::NotFound {
+                    Ok(false)
+                } else {
+                    Err(error.into())
+                };
+            }
         };
         if self.observed.as_ref() == Some(&text) {
             return Ok(false);
@@ -162,6 +171,10 @@ impl Host {
 
     pub fn has_module(&self) -> bool {
         self.active.is_some() || self.pending.is_some()
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
     }
     pub fn revision(&self) -> Option<&str> {
         self.active.as_ref().map(|m| m.revision.as_str())
