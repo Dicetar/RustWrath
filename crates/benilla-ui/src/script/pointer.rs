@@ -148,7 +148,7 @@ impl UiScript {
                 && !model.nameplates.vetoes(fh)
                 && model
                     .frame_rect(fh)
-                    .is_some_and(|r| point_in_rect(hit_rect(model, fh, r), x, y));
+                    .is_some_and(|r| point_in_rect(hit_rect(&model, fh, r), x, y));
             let hit = contains_rect && frame_contains(&model, fh, x, y);
             if contains_rect && !hit && clipped.get().is_none() {
                 clipped.set(Some(fh));
@@ -717,6 +717,7 @@ impl UiScript {
             // The release raises the click flag around slot `+0x98` or `+0x94` (`0x779352`-`0x7793b8`).
             let _click = protected::raise(&self.lua, protected::Event::Click);
             if double {
+                self.model_mut().last_handler_invoked = true;
                 if let Err(e) =
                     event::fire_widget_handler(&self.lua, id, "OnDoubleClick", vec![btn.clone()])
                 {

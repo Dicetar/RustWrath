@@ -54,3 +54,4 @@ __pycache__/
 /.aistudio/
 public/*.bundle
 public/*.patch
+public/assets/aistudio/*.png

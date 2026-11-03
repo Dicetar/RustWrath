@@ -369,6 +369,7 @@ fn debug_panel_ui(
                                 ui.label(line);
                             }
                             for line in &snapshot.slots {
+
                                 ui.label(line);
                             }
                             for line in &snapshot.turn_ins {

@@ -70,6 +70,7 @@ impl MerchantSteps<'_, '_> {
             | MerchantCall::RepairAll => Some(Operation::Buy),
             MerchantCall::Close => None,
         };
+
         let record = |trace: &Option<crate::quest_trace::Interaction>, stage| {
             if let Some(t) = trace {
                 t.record(stage);

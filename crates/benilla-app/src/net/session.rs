@@ -122,7 +122,38 @@ fn on_login_edge(
     trace: Option<Res<crate::quest_trace::Source>>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
 ) {
-    let trace_event = ev.clone();
+    let legacy_stage = if view.is_none() {
+        use crate::quest_trace::{DomainEvent as D, Stage};
+        match &ev {
+            SessionEvent::LoginStage { .. } => Some(Stage::DomainEvent {
+                event: D::LoginProgress,
+            }),
+            SessionEvent::WorldAuthenticated { .. } => Some(Stage::DomainEvent {
+                event: D::WorldAuthenticated,
+            }),
+            SessionEvent::RosterFailed { .. } => Some(Stage::DomainEvent {
+                event: D::RosterFailed,
+            }),
+            SessionEvent::LoginQueued { .. } => Some(Stage::DomainEvent {
+                event: D::LoginQueued,
+            }),
+            SessionEvent::LoginFailed { .. } => Some(Stage::DomainEvent {
+                event: D::LoginFailed,
+            }),
+            SessionEvent::RealmList { .. } => Some(Stage::DomainEvent {
+                event: D::RealmList,
+            }),
+            SessionEvent::CharacterLoginFailed { .. } => Some(Stage::DomainEvent {
+                event: D::CharacterLoginFailed,
+            }),
+            SessionEvent::CharActionResult { .. } => Some(Stage::DomainEvent {
+                event: D::CharacterAction,
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    };
     match ev {
         SessionEvent::LoginStage { stage } => login_stage(stage, &mut e.login_stages),
         SessionEvent::WorldAuthenticated {

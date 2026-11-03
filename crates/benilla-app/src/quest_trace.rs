@@ -2682,14 +2682,35 @@ impl History {
                 continue;
             }
             let status = match event.stage {
-                Stage::GuardRefused => "blocked by a local guard",
+                Stage::GuardRefused
+                | Stage::Cast {
+                    edge: CastEdge::LocalRefusal { .. },
+                    ..
+                } => "blocked by a local guard",
                 Stage::NoWorld => "no active world connection",
                 Stage::AlreadyPending | Stage::TrackingCapacity => "local tracking is busy",
                 Stage::ChannelDisconnected => "command channel disconnected",
-                Stage::Delivery(CommandDelivery::Rejected(_)) => "rejected before socket write",
-                Stage::Delivery(CommandDelivery::WriteFailed) => "socket write failed; outcome unknown",
-                Stage::Delivery(CommandDelivery::Written) => "sent; server outcome unconfirmed",
-                Stage::Delivery(CommandDelivery::OutboxAdmitted) => "queued; socket write unconfirmed",
+                Stage::Delivery(CommandDelivery::Rejected(_))
+                | Stage::Outbound {
+                    state: OutboundState::Refused,
+                    ..
+                } => "rejected before socket write",
+                Stage::Delivery(CommandDelivery::WriteFailed)
+                | Stage::Outbound {
+                    state: OutboundState::WriteFailed,
+                    ..
+                }
+                | Stage::SocketWriteFailed => "socket write failed; outcome unknown",
+                Stage::Delivery(CommandDelivery::Written)
+                | Stage::Outbound {
+                    state: OutboundState::Written,
+                    ..
+                } => "sent; server outcome unconfirmed",
+                Stage::Delivery(CommandDelivery::OutboxAdmitted)
+                | Stage::Outbound {
+                    state: OutboundState::Queued,
+                    ..
+                } => "queued; socket write unconfirmed",
                 Stage::ChannelAdmitted | Stage::Encoded => "command admitted; delivery unconfirmed",
                 Stage::Cast { edge, .. } => match edge {
                     CastEdge::Requested => "cast requested; delivery unconfirmed",
@@ -3866,6 +3887,7 @@ impl History {
         let slot_correlations = self.slot_correlations();
         let turn_in_correlations = self.turn_in_correlations();
         let ui_correlations = self.ui_error_correlations();
+        let ui_click_correlations = self.ui_click_correlations();
         let cast_chains = self.cast_correlations();
         let loot_vendor = self.loot_vendor_correlations();
         let quest_ui = self.quest_ui_correlations();
@@ -3934,6 +3956,7 @@ impl History {
                         "slot_correlations": slot_correlations,
                         "turn_in_correlations": turn_in_correlations,
                         "ui_error_correlations": ui_correlations,
+                        "ui_click_correlations": ui_click_correlations,
                         "cast_correlations": cast_chains,
                         "loot_vendor_correlations": loot_vendor,
                         "quest_ui_correlations": quest_ui,
@@ -4376,7 +4399,16 @@ pub(crate) fn drain_history(history: &mut History) {
         // Track bounded open interactions for lifecycle retirement and server outcome correlation.
         if event.subject.interaction != 0 {
             match event.stage {
-                Stage::Intent => {
+                Stage::Intent
+                    if matches!(
+                        event.subject.operation,
+                        Operation::Open
+                            | Operation::Select
+                            | Operation::Accept
+                            | Operation::RequestReward
+                            | Operation::ChooseReward
+                    ) =>
+                {
                     if !history
                         .open_interactions
                         .iter()
@@ -4394,25 +4426,60 @@ pub(crate) fn drain_history(history: &mut History) {
                     }
                 }
                 Stage::Delivery(CommandDelivery::Written) => {
-                    if let Some(open) = history
-                        .open_interactions
-                        .iter_mut()
-                        .find(|open| open.subject.interaction == event.subject.interaction)
-                    {
-                        open.state = OpenState::Written {
-                            seq,
-                            elapsed_ms: event.elapsed_ms,
-                        };
+                    if matches!(
+                        event.subject.operation,
+                        Operation::Open
+                            | Operation::Select
+                            | Operation::Accept
+                            | Operation::RequestReward
+                            | Operation::ChooseReward
+                    ) {
+                        if let Some(open) = history
+                            .open_interactions
+                            .iter_mut()
+                            .find(|open| open.subject.interaction == event.subject.interaction)
+                        {
+                            open.state = OpenState::Written {
+                                seq,
+                                elapsed_ms: event.elapsed_ms,
+                            };
+                        }
+                    } else {
+                        history
+                            .open_interactions
+                            .retain(|open| open.subject.interaction != event.subject.interaction);
                     }
                     history.note_written_cast(&event);
                 }
+                Stage::ChannelAdmitted
+                    if matches!(
+                        event.subject.operation,
+                        Operation::Loot | Operation::Equip | Operation::Buy | Operation::Sell
+                    ) =>
+                {
+                    history
+                        .open_interactions
+                        .retain(|open| open.subject.interaction != event.subject.interaction);
+                }
                 Stage::GuardRefused
+                | Stage::Cast {
+                    edge: CastEdge::LocalRefusal { .. },
+                    ..
+                }
                 | Stage::NoWorld
                 | Stage::AlreadyPending
                 | Stage::TrackingCapacity
                 | Stage::ChannelDisconnected
                 | Stage::Delivery(CommandDelivery::Rejected(_))
                 | Stage::Delivery(CommandDelivery::WriteFailed)
+                | Stage::Outbound {
+                    state:
+                        OutboundState::Written
+                        | OutboundState::Refused
+                        | OutboundState::WriteFailed,
+                    ..
+                }
+                | Stage::SocketWriteFailed
                 | Stage::Cast {
                     edge: CastEdge::LocalRefusal { .. } | CastEdge::CancelRequested,
                     ..
@@ -4717,12 +4784,20 @@ pub(crate) fn drain_history(history: &mut History) {
             }
             Stage::GuardRefused | Stage::NoWorld | Stage::AlreadyPending
             | Stage::TrackingCapacity | Stage::ChannelDisconnected
-            | Stage::Delivery(CommandDelivery::Rejected(_)) => Some((
+            | Stage::Delivery(CommandDelivery::Rejected(_))
+            | Stage::Outbound {
+                state: OutboundState::Refused,
+                ..
+            } => Some((
                 IncidentOutcome::LocalRefusal,
                 IncidentConfidence::Exact,
                 event.subject,
             )),
-            Stage::Delivery(CommandDelivery::WriteFailed) => Some((
+            Stage::Delivery(CommandDelivery::WriteFailed)
+            | Stage::Outbound {
+                state: OutboundState::WriteFailed,
+                ..
+            } => Some((
                 IncidentOutcome::WriteUnconfirmed,
                 IncidentConfidence::Unverified,
                 event.subject,

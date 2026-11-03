@@ -147,7 +147,7 @@ impl CastCore<'_> {
     /// `StartMeleeAttack`'s reads the caster's precast spell (`0x5ecc56`-`0x5ecc85`). What it
     /// popped is returned for the caller's local teardown.
     pub(crate) fn cancel(&mut self, failed: bool, send: bool, reason: u8) -> Option<Inflight> {
-        self.cancel_for_caster(failed, send, reason).0
+        self.cancel_for_caster(failed, send, reason, None).0
     }
 
     /// [`Self::cancel`], and whether the record's caster was the active player
@@ -157,6 +157,7 @@ impl CastCore<'_> {
         failed: bool,
         send: bool,
         reason: u8,
+        trace: Option<crate::quest_trace::Interaction>,
     ) -> (Option<Inflight>, bool) {
         let slot = self.slot();
         if self.ground.active() {
@@ -165,7 +166,7 @@ impl CastCore<'_> {
         } else if let (Some(top), true) = (slot, send) {
             let _ = self.net.0.send(ClientCommand::CancelCast {
                 spell_id: top.spell_id(),
-                trace: None,
+                trace,
             });
         }
         self.pop(slot);
@@ -199,8 +200,21 @@ impl CastCore<'_> {
         player: Option<Entity>,
         edits: &crate::creature_anim::UnitEdits,
     ) -> Option<Inflight> {
+        self.cancel_reaping_traced(failed, send, reason, spells, player, edits, None)
+    }
+
+    pub(crate) fn cancel_reaping_traced(
+        &mut self,
+        failed: bool,
+        send: bool,
+        reason: u8,
+        spells: Option<&crate::ui_action::Spells>,
+        player: Option<Entity>,
+        edits: &crate::creature_anim::UnitEdits,
+        trace: Option<crate::quest_trace::Interaction>,
+    ) -> Option<Inflight> {
         let record = self.pending.record_spell();
-        let (slot, caster) = self.cancel_for_caster(failed, send, reason);
+        let (slot, caster) = self.cancel_for_caster(failed, send, reason, trace);
         let kept = spells
             .and_then(|s| s.catalog.get(record))
             .is_some_and(|d| d.attributes_ex & ATTR_EX_NOT_REAPED != 0);

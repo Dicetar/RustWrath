@@ -224,6 +224,7 @@ fn apply_pose(
         &mut runtime.output,
     );
     if let Some(error) = runtime.host.take_rejection() {
+        runtime.refresh = false;
         events.write(HotpatchEvent::CandidateRejected {
             attempt: runtime.candidate_attempt,
             reason: HotpatchReason::Evaluation,

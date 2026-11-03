@@ -255,6 +255,7 @@ impl QuestGiver {
         self.npc = Some(npc);
         self.view = Some(view);
         self.panels = self.panels.wrapping_add(1);
+        self.pending_selection = None;
         // `0x500bd0` clears the already-acted latch (`0x500d91`) and the chosen reward
         // (`0x500d8c`) on every panel publish.
         self.acted = false;
@@ -276,6 +277,7 @@ impl QuestGiver {
     /// the panel verbs, and the feed shows nothing with the cell zero.
     pub(crate) fn clear(&mut self) {
         self.npc = None;
+        self.pending_selection = None;
     }
 
     pub(crate) fn set_status(&mut self, npc: u64, status: u32) {
@@ -341,7 +343,9 @@ impl QuestGiver {
 
     pub(crate) fn clear_session(&mut self) {
         self.clear();
+        self.pending_selection = None;
         self.retire_pending();
+        self.delivery_error = None;
         self.statuses.clear();
         self.messages.clear();
         self.close_on_cancel = 0;
