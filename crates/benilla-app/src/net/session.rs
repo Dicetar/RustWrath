@@ -175,37 +175,43 @@ fn on_login_edge(
     // tagged scope, so skip here to avoid duplicate events.
     if view.is_none() {
         if let Some(trace) = trace.as_ref() {
-            use crate::quest_trace::{DomainEvent as D, Stage};
+            use crate::quest_trace::{LoginMilestone as L, Stage};
             let scope = None;
-            let stage = match trace_event {
-                SessionEvent::LoginStage { .. } => Some(Stage::DomainEvent {
-                    event: D::LoginProgress,
+            let milestone = match trace_event {
+                SessionEvent::LoginStage { stage } => Some(match stage {
+                    benilla_protocol::LoginStage::Connecting => L::Connecting,
+                    benilla_protocol::LoginStage::Authenticating => L::Authenticating,
+                    benilla_protocol::LoginStage::Handshaking => L::Handshaking,
+                    benilla_protocol::LoginStage::WorldConnected => L::WorldConnected,
                 }),
-                SessionEvent::WorldAuthenticated { .. } => Some(Stage::DomainEvent {
-                    event: D::WorldAuthenticated,
+                SessionEvent::WorldAuthenticated { .. } => Some(L::WorldAuthenticated),
+                SessionEvent::RosterFailed { .. } => Some(L::RosterFailed),
+                SessionEvent::LoginQueued { .. } => Some(L::LoginQueued),
+                SessionEvent::LoginFailed { refusal, .. } => Some(if refusal.is_some() {
+                    L::LoginRefused
+                } else {
+                    L::LoginFailed
                 }),
-                SessionEvent::RosterFailed { .. } => Some(Stage::DomainEvent {
-                    event: D::RosterFailed,
+                SessionEvent::RealmList { failed, .. } => Some(if failed {
+                    L::RealmListFailed
+                } else {
+                    L::RealmListReceived
                 }),
-                SessionEvent::LoginQueued { .. } => Some(Stage::DomainEvent {
-                    event: D::LoginQueued,
-                }),
-                SessionEvent::LoginFailed { .. } => Some(Stage::DomainEvent {
-                    event: D::LoginFailed,
-                }),
-                SessionEvent::RealmList { .. } => Some(Stage::DomainEvent {
-                    event: D::RealmList,
-                }),
-                SessionEvent::CharacterLoginFailed { .. } => Some(Stage::DomainEvent {
-                    event: D::CharacterLoginFailed,
-                }),
-                SessionEvent::CharActionResult { .. } => Some(Stage::DomainEvent {
-                    event: D::CharacterAction,
-                }),
+                SessionEvent::CharacterLoginFailed { result } => {
+                    Some(L::CharacterLoginFailed { result })
+                }
+                SessionEvent::CharActionResult { .. } => Some(L::CharacterAction),
                 _ => None,
             };
-            if let Some(stage) = stage {
-                trace.observe(scope, None, stage);
+            if let Some(milestone) = milestone {
+                trace.observe(
+                    scope,
+                    None,
+                    Stage::LoginMilestone {
+                        attempt: None,
+                        milestone,
+                    },
+                );
             }
         }
     }
@@ -230,10 +236,15 @@ fn on_character_list(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge, trac
         );
         if view.is_none() {
             if let Some(trace) = trace.as_ref() {
-                use crate::quest_trace::{DomainEvent as D, Stage};
-                trace.observe(None, None, Stage::DomainEvent {
-                    event: D::Roster,
-                });
+                use crate::quest_trace::{LoginMilestone, Stage};
+                trace.observe(
+                    None,
+                    None,
+                    Stage::LoginMilestone {
+                        attempt: None,
+                        milestone: LoginMilestone::RosterReceived,
+                    },
+                );
             }
         }
     }
@@ -444,7 +455,17 @@ fn on_transfer(In(ev): In<SessionEvent>, mut e: Edges, trace: Option<Res<crate::
             if view.is_none() {
                 if let Some(trace) = trace.as_ref() {
                     use crate::quest_trace::Stage;
-                    trace.observe(None, None, Stage::WorldTransfer);
+                    trace.observe(
+                        None,
+                        None,
+                        Stage::WorldTransfer {
+                            map_id: Some(map_id),
+                            from: None,
+                            to: None,
+                            retired_local: 0,
+                            retired_written: 0,
+                        },
+                    );
                 }
             }
         }

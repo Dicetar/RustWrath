@@ -118,6 +118,15 @@ struct PendingQuestSelection {
 }
 
 impl QuestGiver {
+    /// A Lua reload replaces the VM that owned these presentation expectations. The transport
+    /// receipts stay with the recorder as evidence; the old VM's pending accept/selection is
+    /// stale and must not be treated as current or resent by the new VM.
+    pub(crate) fn supersede_pending_on_reload(&mut self) {
+        self.pending_selection = None;
+        self.pending_accepts.clear();
+        self.delivery_error = None;
+    }
+
     fn poll_accepts(&mut self) -> Vec<Shown> {
         use crate::net::{CommandDelivery, CommandRefusal};
         let mut errors = Vec::new();

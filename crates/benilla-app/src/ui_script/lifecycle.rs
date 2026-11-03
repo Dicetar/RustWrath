@@ -1152,18 +1152,37 @@ pub(crate) fn run_pending_reload(world: &mut World) {
         return;
     }
     info!("ui_script: ReloadUI — ending the UI session and building a new one");
-    if let Some(trace) = world.get_resource::<crate::quest_trace::Source>().cloned() {
-        let scope = world.get_resource::<crate::wrath::WrathWorldView>()
-            .map(|v| (v.session_epoch, v.world_generation));
+    let reload_trace = world.get_resource::<crate::quest_trace::Source>().cloned();
+    let reload_scope = world
+        .get_resource::<crate::wrath::WrathWorldView>()
+        .map(|v| (v.session_epoch, v.world_generation));
+    if let Some(trace) = reload_trace.clone() {
         let rows = crate::script_calls::with_hosted_vm(world, |script| {
             script.map(|script| (script.session(), script.diagnostic_counters()))
         });
+        let old_vm_session = rows.as_ref().map(|(vm_session, _)| *vm_session);
         if let (Some((vm_session, rows)), Some(mut cursor)) =
             (rows, world.get_resource_mut::<crate::quest_trace::ScriptCursor>())
         {
-            trace.capture_script_counts(scope, &mut cursor, vm_session, &rows);
+            trace.capture_script_counts(reload_scope, &mut cursor, vm_session, &rows);
         }
-        trace.observe(scope, None, crate::quest_trace::Stage::UiReload);
+        // Recorded before disposal: the old VM's rows, session and generation are the evidence
+        // that a later projection must not borrow.
+        let old_generation = trace.reload_generation();
+        trace.observe(
+            reload_scope,
+            None,
+            crate::quest_trace::Stage::UiReload {
+                old_vm_session,
+                old_reload_generation: Some(old_generation),
+                new_reload_generation: Some(old_generation.saturating_add(1)),
+            },
+        );
+    }
+    // The old VM's pending quest presentation is superseded. Transport receipts remain the
+    // recorder's evidence; they are not cancelled and never resent by the replacement VM.
+    if let Some(mut giver) = world.get_resource_mut::<crate::ui_quest::QuestGiver>() {
+        giver.supersede_pending_on_reload();
     }
     // A boot VM, never the glue's: the reload builds no glue (`0x495664` then `0x495669`), and the
     // load replaces this VM at once.
@@ -1173,6 +1192,21 @@ pub(crate) fn run_pending_reload(world: &mut World) {
     }
     install_boot_vm(world);
     load_ingame_ui_seated(world, LoadSeat::Live);
+    // Separate evidence: the VM now installed reports its own session. A reload that ran does
+    // not by itself prove the new VM loaded successfully.
+    if let Some(trace) = reload_trace {
+        let vm_session = world
+            .get_non_send_resource::<UiScript>()
+            .map(UiScript::session);
+        trace.observe(
+            reload_scope,
+            None,
+            crate::quest_trace::Stage::UiReloadLoaded {
+                vm_session,
+                reload_generation: Some(trace.reload_generation()),
+            },
+        );
+    }
     // `UI_Init` ends by re-entering the world-enter cascade (`0x490168`), its sends included, but
     // only with the active player set (`0x490166 je`): our own player's entity exists. Not
     // `SetActiveMover`, which only the player's create runs.
