@@ -2103,7 +2103,16 @@ pub(crate) fn drain_history(history: &mut History) {
         // Track bounded open interactions for lifecycle retirement and server outcome correlation.
         if event.subject.interaction != 0 {
             match event.stage {
-                Stage::Intent => {
+                Stage::Intent
+                    if matches!(
+                        event.subject.operation,
+                        Operation::Open
+                            | Operation::Select
+                            | Operation::Accept
+                            | Operation::RequestReward
+                            | Operation::ChooseReward
+                    ) =>
+                {
                     if !history
                         .open_interactions
                         .iter()

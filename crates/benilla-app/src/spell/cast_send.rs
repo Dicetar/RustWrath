@@ -345,7 +345,15 @@ impl CastLadder<'_, '_> {
         bound: TargetedBind,
     ) {
         let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
-        let cmd_trace = self.trace.as_deref().map(|t| t.begin(scope, None, crate::quest_trace::Operation::Observed));
+        let cmd_trace = self.trace.as_deref().map(|t| {
+            let ix = t.begin(scope, None, crate::quest_trace::Operation::Observed);
+            ix.record(crate::quest_trace::Stage::Cast {
+                spell_id: Some(spell_id),
+                attempt: None,
+                edge: crate::quest_trace::CastEdge::Requested,
+            });
+            ix
+        });
         let cmd = match commit {
             // The same targets block under either opcode; the spell side has one builder per bind.
             CastCommit::Spell => match bound {
@@ -765,6 +773,9 @@ fn send_spell_cast(
     // awaiting its click, ahead of the IsTargeting leg.
     if core.slot().map(Inflight::spell_id) == Some(spell_id) {
         debug!("ui_action: cast {spell_id} suppressed — already in flight");
+        if let Some(ix) = &cast_trace_interaction {
+            ix.record(crate::quest_trace::Stage::AlreadyPending);
+        }
         return;
     }
     // TryCast's IsTargeting leg (`6e4d62`): a new press while the cursor is up cancels it with its
@@ -1136,7 +1147,12 @@ fn send_spell_cast(
                 None => CastFail::local(spell_id, r.reason),
             }),
             // A learn rung reports nothing: the attempt's `xor al,al` exit alone (`0x60988e`).
-            None => return,
+            None => {
+                if let Some(ix) = &cast_trace_interaction {
+                    ix.record(crate::quest_trace::Stage::GuardRefused);
+                }
+                return;
+            }
         }
     }
     // Every rung passed: the attempt fills the pending record with the spell (`0x6e4f88`) and its
@@ -1168,6 +1184,13 @@ fn send_spell_cast(
     // signals once more as it leaves (`0x6e5069`).
     if let Some(reason) = deferred_refusal {
         debug!("ui_action: cast {spell_id} refused locally — the cast-arm tail ({reason:#x})");
+        if let Some(ix) = &cast_trace_interaction {
+            ix.record(crate::quest_trace::Stage::Cast {
+                spell_id: Some(spell_id),
+                attempt: None,
+                edge: crate::quest_trace::CastEdge::LocalRefusal { reason },
+            });
+        }
         refuse(
             core,
             spells,
