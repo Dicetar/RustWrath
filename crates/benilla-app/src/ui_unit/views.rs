@@ -864,7 +864,16 @@ pub(crate) struct ViewSources<'w, 's> {
     index: Option<Res<'w, GuidIndex>>,
     interact: Option<Res<'w, crate::ui_session::InteractNpc>>,
     all: Query<'w, 's, &'static ObjectStore>,
-    self_q: Query<'w, 's, (Entity, &'static Guid), With<SelfPlayer>>,
+    self_q: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static Guid,
+            Option<&'static crate::wrath::WrathPlayerRaw>,
+        ),
+        With<SelfPlayer>,
+    >,
     /// What the group tokens read beside the roster: the faction table and the area names.
     factions: Option<Res<'w, crate::target::Factions>>,
     areas: Option<Res<'w, crate::area::AreaTableRes>>,
@@ -924,12 +933,12 @@ fn fire_unit_views(
             };
             let entries = log.take();
             let seats = Seats {
-                me: self_q.iter().next().map(|(e, g)| (g.0, Some(e))),
+                me: self_q.iter().next().map(|(e, g, _)| (g.0, Some(e))),
                 target: selection.guid.map(|g| (g, selection.target)),
                 npc: npc_seat,
             };
             let live_store = |guid: u64| by_guid(guid).and_then(|e| all.get(e).ok());
-            let me = self_q.iter().next().and_then(|(e, _)| all.get(e).ok());
+            let me = self_q.iter().next().and_then(|(e, _, _)| all.get(e).ok());
             let pet = crate::ui_unit::pet_token_guid(me);
             let readable = readable_guids(script, &seats, &group, pet, &live_store);
             views.rewind(entries, seats, readable, live, by_guid, &group.stats, start);
@@ -984,7 +993,8 @@ fn fire_unit_views(
             let live = entity.and_then(|e| all.get(e).ok());
             Some((scratch_as_of(scratch, guid, live)?, guid))
         };
-        let me = self_q.iter().next().and_then(|(e, g)| held(g.0, Some(e)));
+        let self_row = self_q.iter().next();
+        let me = self_row.and_then(|(e, g, _)| held(g.0, Some(e)));
         let src = TokenSources {
             tables,
             names,
@@ -995,7 +1005,7 @@ fn fire_unit_views(
         };
         let stores = TokenStores {
             me,
-            raw: None,
+            raw: self_row.and_then(|(_, _, raw)| raw),
             target: selection
                 .target
                 .zip(selection.guid)
@@ -1010,7 +1020,7 @@ fn fire_unit_views(
         // The four tokens when one of their units moved: ours, the target, its target, the NPC.
         let hop = stores.target.and_then(|(s, _)| s.0.unit_target());
         let tokens_moved = [
-            self_q.iter().next().map(|(_, g)| g.0),
+            self_row.map(|(_, g, _)| g.0),
             selection.guid,
             hop,
             npc_seat.map(|(g, _)| g),

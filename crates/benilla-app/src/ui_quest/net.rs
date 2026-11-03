@@ -57,6 +57,7 @@ pub(super) fn world_enter_reset(quest: &mut QuestGiver) {
     quest.pools = super::QuestPools::default();
     // And the panel kind (`0x500afc`).
     quest.view = None;
+    quest.pending_selection = None;
 }
 
 fn on_giver_status(In(ev): In<SessionEvent>, mut quest: ResMut<QuestGiver>) {
