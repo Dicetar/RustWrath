@@ -56,7 +56,17 @@ Get-ChildItem "$env:LOCALAPPDATA\\benilla\\Logs\\InteractionDiagnostics\\interac
     Get-Content $_.FullName -TotalCount 1 | ConvertFrom-Json |
       Select-Object schema, version, executable_file_sha1, received, dropped, evicted,
         action_summaries, panel_correlations, slot_correlations, turn_in_correlations
-  }`;
+  }
+`;
+
+const WORKSTATION_SYNC_COMMAND = `# 1. Download incremental bundle from AI Studio:
+Invoke-WebRequest -Uri "https://ais-dev-6ka6gupz3derq2bsqr676m-988859543909.europe-west2.run.app/main-incremental.bundle" -OutFile "main-incremental.bundle"
+
+# 2. Pull commits into main:
+git pull ./main-incremental.bundle main
+
+# 3. Publish to GitHub origin main:
+git push origin main`;
 
 const LEDGER_ROWS = [
   {
@@ -140,6 +150,29 @@ export default function App() {
           </span>
         </div>
       </header>
+
+      {/* GitHub & Workstation Sync Banner */}
+      <section className="bg-sky-950/40 border border-sky-600/40 rounded-lg p-5 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-sky-300 flex items-center gap-2">
+              <span>⚡</span> Fast Workstation & GitHub Push
+            </h2>
+            <p className="text-stone-300 text-xs mt-0.5">
+              Run this in PowerShell on <code className="text-sky-200">D:\Projects\project-b-client</code> to pull all 37 AI Studio commits directly into <code className="text-sky-200">main</code> and push to GitHub:
+            </p>
+          </div>
+          <button
+            onClick={() => copyText('sync', WORKSTATION_SYNC_COMMAND)}
+            className="py-1.5 px-3.5 rounded bg-sky-500 hover:bg-sky-400 text-stone-950 font-semibold text-xs transition cursor-pointer self-start sm:self-auto"
+          >
+            {copiedId === 'sync' ? '✓ Copied PowerShell Sync!' : 'Copy Sync & Push Commands'}
+          </button>
+        </div>
+        <pre className="bg-stone-950/90 p-3 rounded border border-stone-800 text-sky-200 font-mono text-xs overflow-x-auto whitespace-pre-wrap leading-relaxed">
+          {WORKSTATION_SYNC_COMMAND}
+        </pre>
+      </section>
 
       <section className="bg-stone-900/90 rounded-lg p-6 border border-stone-800 space-y-4">
         <h2 className="text-lg font-semibold text-amber-300">
