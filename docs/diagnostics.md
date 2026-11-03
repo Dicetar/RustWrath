@@ -67,6 +67,7 @@ The export and inspector expose `producer_drops`, `sampled_out`, `sampling_inter
 `sampling`, `uninstrumented`, plus `event_driven_reporting`).
 
 Object-update sampling reports seen/sampled/sampled-out counts with interval 64;
+`sampling_denominator` is the total packets seen, so the rate is sampled/denominator.
 movement reports coalesced/refused counts. An absent sampled packet is not evidence
 that the server sent no update.
 

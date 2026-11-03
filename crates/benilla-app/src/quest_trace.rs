@@ -413,7 +413,6 @@ pub(crate) fn validate_snapshot_header(line: &str) -> Result<u32, SnapshotVersio
 /// not turn "zero retained observations" into a healthy reading: absence of an event is
 /// never proof that the corresponding condition did not occur.
 #[derive(Clone, Debug, Serialize)]
-#[derive(Clone, Debug, Serialize)]
 pub(crate) struct SamplingCoverage {
     pub object_update_packets_seen: u64,
     pub object_update_packets_sampled: u64,
@@ -436,6 +435,7 @@ pub(crate) struct DiagnosticCoverage {
     pub sampling: SamplingCoverage,
 }
 
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct DiagnosticVectorEvidence {
     pub vector: String,
     pub instrumentation_available: bool,
@@ -882,8 +882,6 @@ pub(crate) struct History {
     last_observed_patch_digest: Option<[u8; 20]>,
     #[cfg(feature = "dev")]
     inspector_snapshot: Option<InspectorSnapshot>,
-    #[cfg(feature = "dev")]
-    inspector_last_build: Instant,
 }
 
 impl History {
@@ -1072,10 +1070,21 @@ impl History {
                     || snapshot.sampled_updates != self.sampled_updates()
             })
             .unwrap_or(true);
-        if self.inspector_snapshot.is_none() || stale {
+        let periodic = self
+            .inspector_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.built_at.elapsed() >= Duration::from_millis(250))
+            .unwrap_or(true);
+        if self.inspector_snapshot.is_none() || stale || periodic {
             let truncate = |line: String| -> String {
                 if line.len() > 240 {
-                    line[..240].to_string()
+                    let mut boundary = 240;
+                    while boundary > 0 && !line.is_char_boundary(boundary) {
+                        boundary -= 1;
+                    }
+                    let mut truncated = line;
+                    truncated.truncate(boundary);
+                    truncated
                 } else {
                     line
                 }
@@ -1511,6 +1520,7 @@ impl History {
         let evicted = self.evicted;
         let interaction_tracking_lost = self.interaction_tracking_lost;
         let sampled_out_total = self.sampled_updates();
+        let update_packets_seen = self.update_packets_seen();
         let mut out = Vec::with_capacity(DIAGNOSTIC_VECTOR_NAMES.len());
         for &vector in DIAGNOSTIC_VECTOR_NAMES {
             let available = if vector == "hotpatch" {
@@ -1551,7 +1561,7 @@ impl History {
                 limiting_factors.push("uninstrumented".to_string());
             }
             let (sampled_out, sampling_interval, sampling_denominator) = if vector == "allowlisted_packets" {
-                (Some(sampled_out_total), Some(64u64), Some(64u64))
+                (Some(sampled_out_total), Some(64u64), Some(update_packets_seen))
             } else {
                 (None, None, None)
             };
@@ -1602,6 +1612,9 @@ impl History {
         let mut instrumented_paths = Vec::new();
         let mut compiled_out_paths = Vec::new();
         for vector in &vectors {
+            if vector.vector == "unclassified" {
+                continue;
+            }
             if vector.instrumentation_available {
                 instrumented_paths.push(vector.vector.clone());
             } else {
@@ -1618,9 +1631,17 @@ impl History {
         DiagnosticCoverage {
             instrumented_paths,
             compiled_out_paths,
-            event_driven_paths: vectors.iter().map(|v| v.vector.clone()).collect(),
+            event_driven_paths: vectors
+                .iter()
+                .filter(|v| v.instrumentation_available && v.vector != "unclassified")
+                .map(|v| v.vector.clone())
+                .collect(),
             sampled_paths: vec!["allowlisted_packets".to_string()],
-            paths_with_producer_loss_counters: vectors.iter().map(|v| v.vector.clone()).collect(),
+            paths_with_producer_loss_counters: vectors
+                .iter()
+                .filter(|v| v.instrumentation_available && v.vector != "unclassified")
+                .map(|v| v.vector.clone())
+                .collect(),
             not_yet_instrumented,
             hotpatch_compiled: cfg!(feature = "hotpatch"),
             export_and_inspector_compiled: cfg!(feature = "dev"),
@@ -2042,8 +2063,6 @@ pub(crate) fn new_pair() -> (Source, History) {
         last_observed_patch_digest: None,
         #[cfg(feature = "dev")]
         inspector_snapshot: None,
-        #[cfg(feature = "dev")]
-        inspector_last_build: Instant::now(),
     };
     (source, history)
 }
