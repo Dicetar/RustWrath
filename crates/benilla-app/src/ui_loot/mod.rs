@@ -1504,7 +1504,15 @@ fn end_open<X: bevy::ecs::system::SystemParam + 'static>(
         return;
     }
     vm.turn(|script, (mut steps, _)| {
-        let closed = close_on_move_start(&mut steps.loot, &mut steps.latch, &steps.net);
+        let scope = steps.trace_scope();
+        let trace = steps.trace.as_deref();
+        let closed = close_on_move_start(
+            &mut steps.loot,
+            &mut steps.latch,
+            &steps.net,
+            trace,
+            scope,
+        );
         if closed.is_some() {
             steps.dead.after_close(closed);
             if let Some(script) = script {
@@ -1652,11 +1660,37 @@ pub(crate) fn close_interaction(
     loot: &mut LootState,
     latch: &mut LootLatch,
     release: Option<&NetCommands>,
+    trace: Option<&crate::quest_trace::Source>,
+    scope: Option<(u64, u64)>,
 ) -> Option<u64> {
     let source = loot.source()?;
     latch.clear_for(source);
     if let Some(commands) = release {
-        let _ = commands.0.send(ClientCommand::LootRelease { guid: source });
+        let interaction = trace.map(|trace| {
+            trace.begin_with_details(
+                scope,
+                None,
+                Some(source),
+                None,
+                None,
+                None,
+                crate::quest_trace::Operation::Loot,
+            )
+        });
+        let command = match &interaction {
+            Some(interaction) => {
+                ClientCommand::tracked(Some(interaction.clone()), true, ClientCommand::LootRelease { guid: source })
+            }
+            None => ClientCommand::LootRelease { guid: source },
+        };
+        let result = commands.0.send(command);
+        if let Some(interaction) = &interaction {
+            interaction.record(if result.is_ok() {
+                crate::quest_trace::Stage::ChannelAdmitted
+            } else {
+                crate::quest_trace::Stage::ChannelDisconnected
+            });
+        }
     }
     // An item source unlocks twice, each with its `ITEM_LOCK_CHANGED`: the close's own
     // `UnlockItem` (`0x48f2bd`), then the frame teardown's (`0x4c1d36`). A move-start close, the
@@ -1681,7 +1715,15 @@ pub(crate) fn close_loot_on_leave_world(mut vm: VmWith<(LootSteps<'static, 'stat
             }
             return None;
         }
-        let closed = close_interaction(&mut steps.loot, &mut steps.latch, Some(&steps.net))?;
+        let scope = steps.trace_scope();
+        let trace = steps.trace.as_deref();
+        let closed = close_interaction(
+            &mut steps.loot,
+            &mut steps.latch,
+            Some(&steps.net),
+            trace,
+            scope,
+        )?;
         if let Some(script) = script {
             unlock_closed_source(script, &mut steps.loot, &steps.objects);
         }
@@ -1791,6 +1833,8 @@ fn close_on_move_start(
     loot: &mut LootState,
     latch: &mut LootLatch,
     commands: &NetCommands,
+    trace: Option<&crate::quest_trace::Source>,
+    scope: Option<(u64, u64)>,
 ) -> Option<u64> {
     use benilla_protocol::guid;
     use benilla_protocol::messages::loot_type;
@@ -1802,7 +1846,7 @@ fn close_on_move_start(
         return None;
     }
     debug!("ui_loot: movement started with {source:#x} open — release");
-    close_interaction(loot, latch, Some(commands))
+    close_interaction(loot, latch, Some(commands), trace, scope)
 }
 
 /// The closes the drain takes: the movement start's and the precast end's at rest.
@@ -1817,7 +1861,15 @@ type OwedCloses = (
 fn drain_loot(mut vm: VmWith<(LootSteps<'static, 'static>, OwedCloses)>) {
     vm.turn(|script, (mut steps, (mut move_start, mut at_rest))| {
         if std::mem::take(&mut move_start.0) {
-            let closed = close_on_move_start(&mut steps.loot, &mut steps.latch, &steps.net);
+            let scope = steps.trace_scope();
+            let trace = steps.trace.as_deref();
+            let closed = close_on_move_start(
+                &mut steps.loot,
+                &mut steps.latch,
+                &steps.net,
+                trace,
+                scope,
+            );
             steps.dead.after_close(closed);
         }
         // After the move-start close, which it subsumes: whichever runs first, a window either
@@ -1829,7 +1881,15 @@ fn drain_loot(mut vm: VmWith<(LootSteps<'static, 'static>, OwedCloses)>) {
                     None => steps.loot.owe_sweep(),
                 }
             } else {
-                let closed = close_interaction(&mut steps.loot, &mut steps.latch, Some(&steps.net));
+                let scope = steps.trace_scope();
+                let trace = steps.trace.as_deref();
+                let closed = close_interaction(
+                    &mut steps.loot,
+                    &mut steps.latch,
+                    Some(&steps.net),
+                    trace,
+                    scope,
+                );
                 steps.dead.after_close(closed);
             }
         }

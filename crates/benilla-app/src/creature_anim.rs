@@ -509,7 +509,13 @@ impl AttackSeam<'_, '_> {
             self.loot.owe_sweep();
             return;
         }
-        crate::ui_loot::close_interaction(&mut self.loot, &mut self.loot_latch, Some(&self.net));
+        crate::ui_loot::close_interaction(
+            &mut self.loot,
+            &mut self.loot_latch,
+            Some(&self.net),
+            None,
+            None,
+        );
     }
 
     /// The selection release's pet leg (`0x493910`): `0x5ee5a0` asked of the player
