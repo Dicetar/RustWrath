@@ -55,12 +55,13 @@ pub(crate) enum Stage {
     ScriptError { vm_session: u64, row_seq: u64, occurrences: u32 },
     ScriptLoadError { vm_session: u64, row_seq: u64, occurrences: u32 },
     ScriptWarning { vm_session: u64, row_seq: u64, occurrences: u32 },
-    UiReload,
+    UiReload { old_vm_session: Option<u64>, old_reload_generation: Option<u64>, new_reload_generation: Option<u64> },
     ScriptRowsLost { vm_session: u64, count: u64 },
     ScriptRowsEvicted { vm_session: u64, count: u64 },
-    SessionPhase { phase: SessionPhase },
-    SessionEnded { failed: bool },
-    WorldTransfer,
+    SessionPhase { phase: SessionPhase, attempt: Option<u64> },
+    SessionEnded { kind: SessionEndKind },
+    WorldTransfer { map_id: Option<u32>, from: Option<(u64, u64)>, to: Option<(u64, u64)> },
+    LoginMilestone { attempt: Option<u64>, milestone: LoginMilestone },
     ReplicaRevision { revision: u64 },
     NativeEventsLost { count: u64 },
     Cast { spell_id: Option<u32>, attempt: Option<u64>, edge: CastEdge },
@@ -220,6 +221,29 @@ pub(crate) enum SessionPhase {
     InWorld,
     TransferPending,
     Loading,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum SessionEndKind {
+    LoggedOut,
+    Lost,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum LoginMilestone {
+    Connecting,
+    Authenticating,
+    Handshaking,
+    WorldConnected,
+    RealmListReceived,
+    RealmListFailed,
+    WorldAuthenticated,
+    RosterReceived,
+    RosterFailed,
+    LoginQueued,
+    LoginFailed,
+    CharacterAction,
+    CharacterLoginFailed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -417,12 +441,13 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         Stage::ScriptError { .. }
         | Stage::ScriptLoadError { .. }
         | Stage::ScriptWarning { .. }
-        | Stage::UiReload
+        | Stage::UiReload { .. }
         | Stage::ScriptRowsLost { .. }
         | Stage::ScriptRowsEvicted { .. } => Some("lua_diagnostic_counts"),
         Stage::SessionPhase { .. }
         | Stage::SessionEnded { .. }
-        | Stage::WorldTransfer
+        | Stage::WorldTransfer { .. }
+        | Stage::LoginMilestone { .. }
         | Stage::ReplicaRevision { .. }
         | Stage::NativeEventsLost { .. }
         | Stage::DomainEvent {
@@ -2162,7 +2187,7 @@ pub(crate) fn drain_history(history: &mut History) {
             } => {
                 history.retire_scope(None, event.stage, seq);
             }
-            Stage::WorldTransfer
+            Stage::WorldTransfer { .. }
             | Stage::DomainEvent {
                 event: DomainEvent::Worldport,
             } => {
@@ -2368,7 +2393,7 @@ pub(crate) fn drain_history(history: &mut History) {
             )),
             Stage::SocketReadFailed | Stage::SocketWriteFailed | Stage::AssetFailure { .. }
             | Stage::ReducerRejected { .. } | Stage::GameplayRejected { .. }
-            | Stage::SessionEnded { failed: true } | Stage::ScriptError { .. }
+            | Stage::SessionEnded { kind: SessionEndKind::Lost } | Stage::ScriptError { .. }
             | Stage::ScriptLoadError { .. } => Some((
                 IncidentOutcome::ObservedFailure,
                 IncidentConfidence::Exact,
@@ -2548,7 +2573,7 @@ mod tests {
             source.begin_with_npc(Some((1, 1)), Some(783), Some(0x1111), Operation::Accept);
         old_accept.record(Stage::Delivery(CommandDelivery::Written));
         // World transfer to generation 2 retires the old scope's open write as unverified.
-        source.observe(Some((1, 2)), None, Stage::WorldTransfer);
+        source.observe(Some((1, 2)), None, Stage::WorldTransfer { map_id: None, from: None, to: None });
         // A slot addition in the new world (1, 2) must not match the (1, 1) write.
         source.observe(Some((1, 2)), Some(783), Stage::QuestSlotAdded);
         drain_all(&mut history);
@@ -2593,7 +2618,7 @@ mod tests {
         source.observe(Some((1, 1)), Some(783), Stage::JournalProjection);
 
         // Simulate /reload: advance reload generation and start VM session 11.
-        source.observe(Some((1, 1)), None, Stage::UiReload);
+        source.observe(Some((1, 1)), None, Stage::UiReload { old_vm_session: Some(10), old_reload_generation: Some(0), new_reload_generation: Some(1) });
         source.advance_reload_generation();
         source.capture_script_counts(
             Some((1, 1)),
