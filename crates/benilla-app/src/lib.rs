@@ -11,6 +11,7 @@
 // instrument calls goes unused, and a `cfg` per item would spread seam knowledge into gameplay
 // modules. Dev builds warn normally.
 #![cfg_attr(not(feature = "dev"), allow(dead_code))]
+#![recursion_limit = "256"]
 
 /// The realtime-audio allocation tripwire: in debug builds an allocation inside `sound::output`'s
 /// `no_alloc` scopes (the output IO callback, the render pass) aborts the process; release builds

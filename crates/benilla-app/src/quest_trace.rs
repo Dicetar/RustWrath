@@ -5004,8 +5004,7 @@ pub(crate) fn drain_history(history: &mut History) {
                     IncidentOutcome::ObservedFailure,
                     IncidentConfidence::Exact,
                     event.subject,
-                ))
-            }
+                )),
             Stage::NativeEventsLost { .. } | Stage::ScriptRowsLost { .. }
             | Stage::ScriptRowsEvicted { .. } | Stage::AssetEventsLost { .. } => Some((
                 IncidentOutcome::TelemetryGap,

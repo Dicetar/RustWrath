@@ -292,7 +292,7 @@ fn debug_panel_ui(
     ping: Res<crate::net::PingShared>,
     dropped: Res<crate::net::DroppedOpcodes>,
     mut weather_state: Option<ResMut<benilla_world::weather::WeatherState>>,
-    (mut world, quest_trace, wrath_input, net_offline): (
+    (mut world, mut quest_trace, wrath_input, net_offline): (
         WorldReadout,
         Option<ResMut<crate::quest_trace::History>>,
         Option<Res<crate::wrath::WrathInput>>,

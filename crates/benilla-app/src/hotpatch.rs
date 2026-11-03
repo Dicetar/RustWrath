@@ -25,7 +25,7 @@ fn capture_hotpatch_events(
     use benilla_hotpatch_bevy::HotpatchReason as BevyReason;
     for event in events.read() {
         if let Some(trace) = &trace {
-            let event = match event {
+            let event = match *event {
                 HotpatchEvent::CandidateStaged { attempt } => {
                     PatchEvent::CandidateStaged { attempt }
                 }

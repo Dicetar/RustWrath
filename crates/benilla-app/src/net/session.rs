@@ -154,6 +154,53 @@ fn on_login_edge(
     } else {
         None
     };
+    if let (Some(trace), Some(stage)) = (trace.as_ref(), legacy_stage) {
+        trace.observe(None, None, stage);
+    }
+    // Legacy-mode session milestones: Wrath mode records these in the shared dispatcher with
+    // tagged scope, so skip here to avoid duplicate events.
+    if view.is_none() {
+        if let Some(trace) = trace.as_ref() {
+            use crate::quest_trace::{LoginMilestone as L, Stage};
+            let scope = None;
+            let milestone = match &ev {
+                SessionEvent::LoginStage { stage } => Some(match stage {
+                    benilla_protocol::LoginStage::Connecting => L::Connecting,
+                    benilla_protocol::LoginStage::Authenticating => L::Authenticating,
+                    benilla_protocol::LoginStage::Handshaking => L::Handshaking,
+                    benilla_protocol::LoginStage::WorldConnected => L::WorldConnected,
+                }),
+                SessionEvent::WorldAuthenticated { .. } => Some(L::WorldAuthenticated),
+                SessionEvent::RosterFailed { .. } => Some(L::RosterFailed),
+                SessionEvent::LoginQueued { .. } => Some(L::LoginQueued),
+                SessionEvent::LoginFailed { refusal, .. } => Some(if refusal.is_some() {
+                    L::LoginRefused
+                } else {
+                    L::LoginFailed
+                }),
+                SessionEvent::RealmList { failed, .. } => Some(if *failed {
+                    L::RealmListFailed
+                } else {
+                    L::RealmListReceived
+                }),
+                SessionEvent::CharacterLoginFailed { result } => {
+                    Some(L::CharacterLoginFailed { result: *result })
+                }
+                SessionEvent::CharActionResult { .. } => Some(L::CharacterAction),
+                _ => None,
+            };
+            if let Some(milestone) = milestone {
+                trace.observe(
+                    scope,
+                    None,
+                    Stage::LoginMilestone {
+                        attempt: None,
+                        milestone,
+                    },
+                );
+            }
+        }
+    }
     match ev {
         SessionEvent::LoginStage { stage } => login_stage(stage, &mut e.login_stages),
         SessionEvent::WorldAuthenticated {
@@ -202,50 +249,7 @@ fn on_login_edge(
         }
         _ => {}
     }
-    // Legacy-mode session milestones: Wrath mode records these in the shared dispatcher with
-    // tagged scope, so skip here to avoid duplicate events.
-    if view.is_none() {
-        if let Some(trace) = trace.as_ref() {
-            use crate::quest_trace::{LoginMilestone as L, Stage};
-            let scope = None;
-            let milestone = match trace_event {
-                SessionEvent::LoginStage { stage } => Some(match stage {
-                    benilla_protocol::LoginStage::Connecting => L::Connecting,
-                    benilla_protocol::LoginStage::Authenticating => L::Authenticating,
-                    benilla_protocol::LoginStage::Handshaking => L::Handshaking,
-                    benilla_protocol::LoginStage::WorldConnected => L::WorldConnected,
-                }),
-                SessionEvent::WorldAuthenticated { .. } => Some(L::WorldAuthenticated),
-                SessionEvent::RosterFailed { .. } => Some(L::RosterFailed),
-                SessionEvent::LoginQueued { .. } => Some(L::LoginQueued),
-                SessionEvent::LoginFailed { refusal, .. } => Some(if refusal.is_some() {
-                    L::LoginRefused
-                } else {
-                    L::LoginFailed
-                }),
-                SessionEvent::RealmList { failed, .. } => Some(if failed {
-                    L::RealmListFailed
-                } else {
-                    L::RealmListReceived
-                }),
-                SessionEvent::CharacterLoginFailed { result } => {
-                    Some(L::CharacterLoginFailed { result })
-                }
-                SessionEvent::CharActionResult { .. } => Some(L::CharacterAction),
-                _ => None,
-            };
-            if let Some(milestone) = milestone {
-                trace.observe(
-                    scope,
-                    None,
-                    Stage::LoginMilestone {
-                        attempt: None,
-                        milestone,
-                    },
-                );
-            }
-        }
-    }
+
 }
 
 fn on_character_list(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge, trace: Option<Res<crate::quest_trace::Source>>, view: Option<Res<crate::wrath::WrathWorldView>>) {

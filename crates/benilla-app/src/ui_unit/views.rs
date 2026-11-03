@@ -1050,7 +1050,7 @@ fn fire_unit_views(
             live_me: self_q
                 .iter()
                 .next()
-                .and_then(|(e, g)| Some((g.0, all.get(e).ok()?))),
+                .and_then(|(e, g, _)| Some((g.0, all.get(e).ok()?))),
             group: &group,
             tables,
             names,

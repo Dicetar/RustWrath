@@ -474,7 +474,7 @@ impl SelfCancel<'_> {
             // cast by scope/spell/time only when that match is unique. With no active attempt
             // the target is explicitly unknown: never invent a spell or wire count.
             ix.record(crate::quest_trace::Stage::Cast {
-                spell_id,
+                spell_id: wire_spell,
                 attempt: None,
                 wire_cast_count: None,
                 edge: crate::quest_trace::CastEdge::CancelRequested,

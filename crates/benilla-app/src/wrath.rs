@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use bevy::prelude::*;
 use benilla_world::schedule::WorldStage;
 use benilla_world::world_map::CurrentMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -5921,8 +5921,8 @@ fn wrath_apply_world(world: &mut World) {
                                             scope,
                                             Some(slot.quest_id),
                                             crate::quest_trace::Stage::QuestSlotProgressed {
-                                                counters: slot.counters,
-                                                state: slot.state,
+                                                counters: slot.counters.map(u16::from),
+                                                state: u32::from(slot.state),
                                             },
                                         );
                                     }

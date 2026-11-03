@@ -351,6 +351,7 @@ impl CastLadder<'_, '_> {
             ix.record(crate::quest_trace::Stage::Cast {
                 spell_id: Some(spell_id),
                 attempt: None,
+                wire_cast_count: None,
                 edge: crate::quest_trace::CastEdge::Requested,
             });
             ix
@@ -1191,6 +1192,7 @@ fn send_spell_cast(
             ix.record(crate::quest_trace::Stage::Cast {
                 spell_id: Some(spell_id),
                 attempt: None,
+                wire_cast_count: None,
                 edge: crate::quest_trace::CastEdge::LocalRefusal { reason },
             });
         }
