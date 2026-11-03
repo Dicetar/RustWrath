@@ -143,6 +143,7 @@ impl Host {
         // candidate so that reverting after a failed replacement re-processes the prior manifest.
         self.pending = None;
         self.observed = None;
+        self.rejection = None;
         let publication: Publication = toml::from_str(&text)?;
         if self.active.as_ref().is_some_and(|m| {
             !publication.revision.is_empty()
