@@ -123,4 +123,25 @@ including frame failure followed by a restored predecessor (attempt and digest, 
 `unknown`), an explicit no-predecessor fallback, rejection, withdrawal, and unresolved
 matches when a restore event was lost. Trust policy and memory isolation are not claimed.
 
+### Evidence-class retention (additive to v1)
+
+Retained rows are classified into `action`, `health`, `protocol` and `unclassified`
+independent of their diagnostic vector. Periodic health rows (frame, asset, scene,
+replica, movement pressure, audio, UI frame visibility) are capped at 256 of the 1024
+retained rows and reclaimed before action/protocol evidence while retained health exceeds
+a 64-row reserve. An incoming health row reclaims an older health row, so periodic traffic
+never displaces action evidence while any health row is retained; action pressure reclaims
+health down to the reserve, then its own oldest row. This protects the action chain that
+explains an incident while still exposing health loss in dedicated counters rather than
+suppressing health producers. `dropped` is the classified
+ingress loss sum, so the per-class counters reconcile with the global counters including
+`unclassified`, and health-only churn does not turn an action conclusion into a telemetry
+gap by itself. Incidents keep their bounded `evidence` sequence references and add up to
+eight self-contained `evidence_notes` (`seq`, `elapsed_ms`, `class`, `stage`) resolved
+before eviction, with `evidence_notes_truncated` when older notes are dropped. The opening
+and terminal notes stay readable in the inspector and saved report after their rows leave
+the ring. All fields are additive to schema `rustwrath.interaction-diagnostics.v1`,
+version 1; readers that only know `evidence` and `missing_event_sequences` are unaffected.
+
+
 After approval, D01 owns types and version rejection, D02 owns storage/lifecycle, D03 owns correlation, D04/D05 own outbound and inbound hooks, D06 owns the VM bridge, and D07 owns export. Focused unit tests in `crates/benilla-app/src/quest_trace.rs` cover full ingress without blocking gameplay, exact local-refusal evidence chains, duplicate same-NPC clicks, stale-world scope retirement and isolation, repeated Lua rows and projection superseding across reload, partial socket writes and malformed quest packets, and NPC alias export privacy plus version rejection. Runtime execution and gameplay acceptance remain pending.
