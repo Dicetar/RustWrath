@@ -94,6 +94,7 @@ pub(crate) enum Stage {
         consumed: bool,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
+        ui_dispatch_id: u64,
     },
     UiClick {
         button: UiButton,
@@ -104,6 +105,7 @@ pub(crate) enum Stage {
         handler_invoked: bool,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
+        ui_dispatch_id: u64,
     },
     DomainEvent { event: DomainEvent },
     #[cfg(feature = "hotpatch")]
@@ -250,11 +252,29 @@ pub(crate) enum Operation {
     Accept,
     RequestReward,
     ChooseReward,
+    Confirm,
+    Abandon,
+    Share,
     Observed,
     Loot,
     Equip,
     Buy,
     Sell,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiDispatchToken {
+    pub id: u64,
+    pub elapsed_ms: u64,
+    pub scope: Option<(u64, u64)>,
+    pub vm_session: u64,
+    pub reload_generation: u64,
+    pub button: UiButton,
+    pub target: UiTarget,
+    pub consumed: bool,
+    pub visible: Option<bool>,
+    pub clipped: bool,
+    pub handler_invoked: bool,
 }
 
 #[derive(Debug)]
@@ -268,6 +288,8 @@ struct Ingress {
     movement_coalesced: AtomicU64,
     movement_refused: AtomicU64,
     npc_aliases: Mutex<(VecDeque<(u64, u32)>, u32)>,
+    ui_dispatch_counter: AtomicU64,
+    ui_dispatches: Mutex<VecDeque<UiDispatchToken>>,
     origin: Instant,
     #[cfg(feature = "dev")]
     run_id: String,
@@ -299,6 +321,7 @@ struct Subject {
     npc_alias: Option<u32>,
     operation: Operation,
     reload_generation: u64,
+    ui_dispatch_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -616,6 +639,7 @@ impl Source {
                 npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
                 operation: Operation::Observed,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
+                ui_dispatch_id: None,
             },
         };
         trace.record(stage);
@@ -646,10 +670,136 @@ impl Source {
                 npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
                 operation,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
+                ui_dispatch_id: self.plausible_ui_dispatch(scope),
             },
         };
         trace.record(Stage::Intent);
         trace
+    }
+}
+
+impl Source {
+    pub(crate) fn record_ui_press(
+        &self,
+        scope: Option<(u64, u64)>,
+        button: UiButton,
+        target: UiTarget,
+        consumed: bool,
+        egui_pointer_over_last_sample: Option<bool>,
+        vm_session: u64,
+    ) -> u64 {
+        let id = self.0.ui_dispatch_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let reload_generation = self.0.reload_generation.load(Ordering::Acquire);
+        let elapsed_ms = self.0.origin.elapsed().as_millis() as u64;
+        let token = UiDispatchToken {
+            id,
+            elapsed_ms,
+            scope,
+            vm_session,
+            reload_generation,
+            button,
+            target,
+            consumed,
+            visible: None,
+            clipped: false,
+            handler_invoked: consumed,
+        };
+        if let Ok(mut guard) = self.0.ui_dispatches.lock() {
+            if guard.len() >= 8 {
+                guard.pop_front();
+            }
+            guard.push_back(token);
+        }
+        self.observe(scope, None, Stage::UiPress {
+            button,
+            target,
+            consumed,
+            egui_pointer_over_last_sample,
+            vm_session,
+            ui_dispatch_id: id,
+        });
+        id
+    }
+
+    pub(crate) fn record_ui_click(
+        &self,
+        scope: Option<(u64, u64)>,
+        button: UiButton,
+        target: UiTarget,
+        consumed: bool,
+        visible: Option<bool>,
+        clipped: bool,
+        handler_invoked: bool,
+        egui_pointer_over_last_sample: Option<bool>,
+        vm_session: u64,
+    ) -> u64 {
+        let id = self.0.ui_dispatch_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let reload_generation = self.0.reload_generation.load(Ordering::Acquire);
+        let elapsed_ms = self.0.origin.elapsed().as_millis() as u64;
+        let token = UiDispatchToken {
+            id,
+            elapsed_ms,
+            scope,
+            vm_session,
+            reload_generation,
+            button,
+            target,
+            consumed,
+            visible,
+            clipped,
+            handler_invoked,
+        };
+        if let Ok(mut guard) = self.0.ui_dispatches.lock() {
+            if guard.len() >= 8 {
+                guard.pop_front();
+            }
+            guard.push_back(token);
+        }
+        self.observe(scope, None, Stage::UiClick {
+            button,
+            target,
+            consumed,
+            visible,
+            clipped,
+            handler_invoked,
+            egui_pointer_over_last_sample,
+            vm_session,
+            ui_dispatch_id: id,
+        });
+        id
+    }
+
+    pub(crate) fn plausible_ui_dispatch(&self, scope: Option<(u64, u64)>) -> Option<u64> {
+        let now = self.0.origin.elapsed().as_millis() as u64;
+        let current_rg = self.0.reload_generation.load(Ordering::Acquire);
+        let guard = self.0.ui_dispatches.lock().ok()?;
+        let candidates: Vec<u64> = guard
+            .iter()
+            .filter(|t| {
+                t.scope == scope
+                    && t.reload_generation == current_rg
+                    && t.elapsed_ms <= now
+                    && now.saturating_sub(t.elapsed_ms) <= 2_000
+                    && t.visible == Some(true)
+                    && !t.clipped
+                    && t.consumed
+                    && t.handler_invoked
+            })
+            .map(|t| t.id)
+            .collect();
+        if candidates.len() == 1 {
+            Some(candidates[0])
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn recent_ui_dispatches(&self) -> Vec<UiDispatchToken> {
+        self.0
+            .ui_dispatches
+            .lock()
+            .map(|g| g.iter().copied().collect())
+            .unwrap_or_default()
     }
 }
 
