@@ -157,7 +157,7 @@ pub(crate) enum Stage {
         oldest_age_ms: u64,
     },
     SceneSummary { world_cameras: u32, animated_rigs: u32 },
-    FrameWindow { frames: u32, mean_us: u64, max_us: u64 },
+    FrameWindow { frames: u32, mean_us: u64, max_us: u64, window_ms: u64 },
     AssetFailure { family: AssetFamily, cause: AssetFailure },
     AssetEventsLost { count: u64 },
     AssetWindow { failures: u64, missed: u64, window_ms: u64 },
@@ -405,6 +405,27 @@ pub(crate) const DIAGNOSTIC_VECTOR_NAMES: &[&str] = &[
     "unclassified",
 ];
 
+/// Number of named diagnostic vectors, including `unclassified`.  Kept as a separate const so
+/// fixed-size per-vector counters derive from the same registry that names the vectors.
+pub(crate) const DIAGNOSTIC_VECTOR_COUNT: usize = DIAGNOSTIC_VECTOR_NAMES.len();
+
+/// Bounded retained-event ring capacity (oldest entries are evicted first).
+pub(crate) const RETAINED_CAPACITY: usize = 1024;
+
+/// Maximum bytes in one inspector/export summary line.
+const SNAPSHOT_LINE_BYTES: usize = 240;
+
+/// Asset failure/missed summaries are emitted at most once per second while a real condition is
+/// accumulating, plus a slow zero-value heartbeat so a healthy vector still has a denominator.
+const ASSET_SCAN_WINDOW_SECS: f64 = 1.0;
+const ASSET_HEARTBEAT_SECS: f64 = 30.0;
+
+/// Frame intervals are aggregated over five seconds; mean/max are preserved for the window.
+const FRAME_WINDOW_SECS: f64 = 5.0;
+
+/// Replica revision changes are coalesced to the latest revision at most once per five seconds.
+const REPLICA_WINDOW_SECS: f64 = 5.0;
+
 /// Map a vector name to its index in `DIAGNOSTIC_VECTOR_NAMES`.
 pub(crate) fn diagnostic_vector_index(name: &str) -> usize {
     match name {
@@ -583,6 +604,8 @@ pub(crate) struct DiagnosticCoverage {
     pub event_driven_paths: Vec<String>,
     pub sampled_paths: Vec<String>,
     pub paths_with_producer_loss_counters: Vec<String>,
+    /// Vectors whose retained observations were actually evicted from the ring.
+    pub paths_with_retained_evictions: Vec<String>,
     pub not_yet_instrumented: Vec<String>,
     pub hotpatch_compiled: bool,
     pub export_and_inspector_compiled: bool,
@@ -595,6 +618,9 @@ pub(crate) struct DiagnosticVectorEvidence {
     pub instrumentation_available: bool,
     pub retained_observations: u64,
     pub latest_retained_sequence: Option<u64>,
+    /// Events of this vector that were dropped from the retained ring by capacity eviction.
+    /// Only vectors that actually lost retained observations carry a nonzero value.
+    pub retained_evictions: u64,
     pub producer_drops: u64,
     pub sampled_out: Option<u64>,
     pub sampling_interval: Option<u64>,
@@ -1380,6 +1406,8 @@ pub(crate) struct InspectorSnapshot {
     pub assets: Vec<String>,
     pub hotpatch: Vec<String>,
     pub recent: Vec<String>,
+    /// Bounded retention pressure and per-vector eviction summary.
+    pub retention: Vec<String>,
 }
 
 #[derive(Resource)]
@@ -1395,6 +1423,9 @@ pub(crate) struct History {
     incidents_evicted: u64,
     received: u64,
     evicted: u64,
+    /// Retained-ring evictions attributed to each vector, indexed by `DIAGNOSTIC_VECTOR_NAMES`.
+    /// The sum (including `unclassified`) must equal `evicted`.
+    retained_evictions: [u64; DIAGNOSTIC_VECTOR_COUNT],
     source_gaps: u64,
     #[cfg(feature = "hotpatch")]
     last_observed_patch_digest: Option<[u8; 20]>,
@@ -2187,6 +2218,7 @@ impl History {
                     }
                 },
                 recent: cap(self.recent().map(|line| line.to_string()).collect(), 16),
+                retention: cap(self.retention_summary(), 8),
             });
         }
         self.inspector_snapshot.as_ref().unwrap()
@@ -3324,7 +3356,6 @@ impl History {
     /// supplies the exported event rows.  Classification goes through `vector_for_stage`
     /// so both export paths agree.
     pub(crate) fn diagnostic_vectors(&self) -> Vec<DiagnosticVectorEvidence> {
-        let evicted = self.evicted;
         let interaction_tracking_lost = self.interaction_tracking_lost;
         let sampled_out_total = self.sampled_updates();
         let update_packets_seen = self.update_packets_seen();
@@ -3350,6 +3381,7 @@ impl History {
             if vector == "quest_interactions" && interaction_tracking_lost > 0 {
                 source_specific_loss = true;
             }
+            let retained_evictions = self.retained_evictions[diagnostic_vector_index(vector)];
             let producer_drops = self.source.producer_drops_for_vector(vector);
             let mut limiting_factors = vec!["event_driven_reporting".to_string()];
             if vector == "allowlisted_packets" {
@@ -3361,7 +3393,8 @@ impl History {
             if producer_drops > 0 {
                 limiting_factors.push("producer_drop".to_string());
             }
-            if evicted > 0 {
+            // Retained eviction is a per-vector fact, never inferred from the global counter.
+            if retained_evictions > 0 {
                 limiting_factors.push("retained_eviction".to_string());
             }
             if !available {
@@ -3377,6 +3410,7 @@ impl History {
                 instrumentation_available: available,
                 retained_observations,
                 latest_retained_sequence,
+                retained_evictions,
                 producer_drops,
                 sampled_out,
                 sampling_interval,
@@ -3387,6 +3421,108 @@ impl History {
             out.push(value);
         }
         out
+    }
+
+    /// Bounded retention-pressure summary for the inspector and export header.
+    ///
+    /// Lines are capped in count and byte length.  Per-vector evictions are listed only for
+    /// vectors that actually lost retained observations; the printed sum is checked against the
+    /// global counter so a reader can verify the invariant.  Zero retained observations is not a
+    /// healthy reading, so that caveat is always present.
+    pub(crate) fn retention_summary(&self) -> Vec<String> {
+        const MAX_LINES: usize = 8;
+        const MAX_EVICTION_LINES: usize = 4;
+        fn bound(mut line: String) -> String {
+            if line.len() > SNAPSHOT_LINE_BYTES {
+                let mut boundary = SNAPSHOT_LINE_BYTES;
+                while boundary > 0 && !line.is_char_boundary(boundary) {
+                    boundary -= 1;
+                }
+                line.truncate(boundary);
+            }
+            line
+        }
+
+        let first = self.entries.front().map(|(seq, _)| *seq);
+        let highest = self.entries.back().map(|(seq, _)| *seq);
+        let (received, evicted, dropped) = self.counters();
+        let mut lines = Vec::with_capacity(MAX_LINES);
+        lines.push(format!(
+            "retention: retained seq {:?}..{:?} of {RETAINED_CAPACITY}; received={received} evicted={evicted} dropped={dropped} source_gaps={}",
+            first, highest, self.source_gaps
+        ));
+
+        let mut vector_entries = Vec::new();
+        let mut vector_sum = 0u64;
+        for (index, &vector) in DIAGNOSTIC_VECTOR_NAMES.iter().enumerate() {
+            let count = self.retained_evictions[index];
+            if count > 0 {
+                vector_sum = vector_sum.saturating_add(count);
+                vector_entries.push(format!("{vector}={count}"));
+            }
+        }
+        let mut packed = Vec::new();
+        let mut current =
+            format!("retained_evictions (sum={vector_sum}, global_evicted={evicted}):");
+        if vector_entries.is_empty() {
+            current.push_str(" none");
+            packed.push(current);
+        } else {
+            for entry in vector_entries {
+                if !current.ends_with(':') && current.len() + 1 + entry.len() > SNAPSHOT_LINE_BYTES {
+                    packed.push(current);
+                    if packed.len() >= MAX_EVICTION_LINES - 1 {
+                        packed.push(
+                            "retained_evictions (further nonzero vectors omitted; sum above is complete)"
+                                .to_string(),
+                        );
+                        current.clear();
+                        break;
+                    }
+                    current = "retained_evictions (cont.):".to_string();
+                }
+                current.push(' ');
+                current.push_str(&entry);
+            }
+            if !current.is_empty() {
+                packed.push(current);
+            }
+        }
+        packed.truncate(MAX_EVICTION_LINES);
+        lines.extend(packed);
+
+        let mut retained_by_vector = [0u64; DIAGNOSTIC_VECTOR_COUNT];
+        for (_, event) in &self.entries {
+            let vector = vector_for_stage(&event.stage).unwrap_or("unclassified");
+            let index = diagnostic_vector_index(vector);
+            retained_by_vector[index] = retained_by_vector[index].saturating_add(1);
+        }
+        let mut ranked: Vec<(usize, u64)> = retained_by_vector
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, count)| *count > 0)
+            .collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let top: Vec<String> = ranked
+            .iter()
+            .take(4)
+            .map(|(index, count)| format!("{}={count}", DIAGNOSTIC_VECTOR_NAMES[*index]))
+            .collect();
+        lines.push(format!(
+            "high-volume retained: {}",
+            if top.is_empty() { "none".to_string() } else { top.join(" ") }
+        ));
+        lines.push(
+            "cadence: asset=failure/missed or 30s heartbeat; frame=5s aggregate; replica=5s coalesced; ui_press/click, scene, movement, audio, script=change-driven"
+                .to_string(),
+        );
+        lines.push(
+            "zero retained observations is not proof that no event occurred (absence_not_proof=true)"
+                .to_string(),
+        );
+        lines.truncate(MAX_LINES);
+        lines.into_iter().map(bound).collect()
     }
 
     pub(crate) fn source_gaps(&self) -> u64 {
@@ -3608,6 +3744,11 @@ impl History {
             paths_with_producer_loss_counters: vectors
                 .iter()
                 .filter(|v| v.instrumentation_available && v.vector != "unclassified")
+                .map(|v| v.vector.clone())
+                .collect(),
+            paths_with_retained_evictions: vectors
+                .iter()
+                .filter(|v| v.retained_evictions > 0)
                 .map(|v| v.vector.clone())
                 .collect(),
             not_yet_instrumented,
@@ -3878,6 +4019,7 @@ impl History {
         let movement_refused = self.movement_refused();
         let coverage = self.coverage();
         let diagnostic_vectors = self.diagnostic_vectors();
+        let retention_summary = self.retention_summary();
         let first_sequence = self.entries.front().map(|(seq, _)| *seq);
         let highest_sequence = self.entries.back().map(|(seq, _)| *seq);
         let npc_aliases_assigned = self.source.npc_alias_count();
@@ -3937,6 +4079,8 @@ impl History {
                         "received": received,
                         "first_retained_sequence": first_sequence,
                         "highest_retained_sequence": highest_sequence,
+                        "retained_capacity": RETAINED_CAPACITY,
+                        "retention_summary": retention_summary,
                         "evicted": evicted,
                         "dropped": dropped,
                         "interaction_tracking_lost": interaction_tracking_lost,
@@ -4057,7 +4201,7 @@ pub(crate) fn new_pair() -> (Source, History) {
     let history = History {
         source: source.clone(),
         incoming,
-        entries: VecDeque::with_capacity(1024),
+        entries: VecDeque::with_capacity(RETAINED_CAPACITY),
         incidents: VecDeque::with_capacity(64),
         open_interactions: VecDeque::with_capacity(MAX_OPEN_INTERACTIONS),
         cast_candidates: VecDeque::with_capacity(MAX_OPEN_INTERACTIONS),
@@ -4065,6 +4209,7 @@ pub(crate) fn new_pair() -> (Source, History) {
         incidents_evicted: 0,
         received: 0,
         evicted: 0,
+        retained_evictions: [0; DIAGNOSTIC_VECTOR_COUNT],
         source_gaps: 0,
         #[cfg(feature = "hotpatch")]
         last_observed_patch_digest: None,
@@ -4082,19 +4227,28 @@ pub(crate) fn install(app: &mut App) {
         .add_systems(Last, (poll_script_diagnostics, poll_replica, poll_audio, poll_movement, poll_scene, poll_frame_time, poll_asset_failures, drain).chain());
 }
 
+#[derive(Default)]
+struct AssetWindowState {
+    scan_start: f64,
+    last_emit: f64,
+    failures: u64,
+    missed: u64,
+}
+
 fn poll_asset_failures(
     source: Res<Source>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
     events: Option<Res<Messages<bevy::asset::UntypedAssetLoadFailedEvent>>>,
     time: Res<Time>,
     mut cursor: Local<bevy::ecs::message::MessageCursor<bevy::asset::UntypedAssetLoadFailedEvent>>,
-    mut window: Local<(f64, u64, u64)>,
+    mut window: Local<AssetWindowState>,
 ) {
     let Some(events) = events else { return };
     let scope = view.as_ref().map(|v| (v.session_epoch, v.world_generation));
     let now = time.elapsed_secs_f64();
-    if window.0 == 0.0 {
-        window.0 = now;
+    if window.scan_start == 0.0 {
+        window.scan_start = now;
+        window.last_emit = now;
     }
     let missed = cursor.missed_messages(&events);
     let mut failures_this = 0u64;
@@ -4132,18 +4286,25 @@ fn poll_asset_failures(
     if missed > 0 {
         source.observe(scope, None, Stage::AssetEventsLost { count: missed as u64 });
     }
-    window.1 = window.1.saturating_add(failures_this);
-    window.2 = window.2.saturating_add(missed as u64);
-    if now - window.0 >= 1.0 {
-        let window_ms = ((now - window.0) * 1000.0).round() as u64;
+    window.failures = window.failures.saturating_add(failures_this);
+    window.missed = window.missed.saturating_add(missed as u64);
+    let elapsed = now - window.scan_start;
+    // A real failure or missed-event burst is coalesced into at most one window per scan
+    // interval, so the exact count survives without one event per failure.  The surviving
+    // zero-value heartbeat only supplies a denominator for a healthy vector.
+    let condition_due = (window.failures > 0 || window.missed > 0) && elapsed >= ASSET_SCAN_WINDOW_SECS;
+    let heartbeat_due = now - window.last_emit >= ASSET_HEARTBEAT_SECS;
+    if condition_due || heartbeat_due {
+        let window_ms = (elapsed * 1000.0).round() as u64;
         source.observe(scope, None, Stage::AssetWindow {
-            failures: window.1,
-            missed: window.2,
+            failures: window.failures,
+            missed: window.missed,
             window_ms: window_ms.max(1),
         });
-        window.0 = now;
-        window.1 = 0;
-        window.2 = 0;
+        window.failures = 0;
+        window.missed = 0;
+        window.scan_start = now;
+        window.last_emit = now;
     }
 }
 
@@ -4166,10 +4327,12 @@ fn poll_frame_time(
     window.sum_us = window.sum_us.saturating_add(micros);
     window.max_us = window.max_us.max(micros);
     let now = time.elapsed_secs_f64();
-    if now - window.start >= 1.0 {
-        let mean_us = window.sum_us / u64::from(window.frames);
+    if now - window.start >= FRAME_WINDOW_SECS {
+        let window_ms = ((now - window.start) * 1000.0).round().max(1.0) as u64;
+        let frames = window.frames.max(1);
+        let mean_us = window.sum_us / u64::from(frames);
         source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
-            Stage::FrameWindow { frames: window.frames, mean_us, max_us: window.max_us });
+            Stage::FrameWindow { frames, mean_us, max_us: window.max_us, window_ms });
         *window = FrameWindow { start: now, ..Default::default() };
     }
 }
@@ -4192,6 +4355,7 @@ fn poll_scene(
         cameras.iter().count().min(u32::MAX as usize) as u32,
         rigs.iter().count().min(u32::MAX as usize) as u32,
     );
+    // Already change-driven: the poll only decides whether a real count change occurred.
     if *last != Some(current) {
         *last = Some(current);
         source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
@@ -4236,6 +4400,7 @@ fn poll_movement(
         }
     }
     let current = (admitted, coalesced, refused, written, queue_depth, oldest_age_ms);
+    // Already change-driven: the one-second poll emits only a nonzero delta or queue-depth change.
     if let Some(previous) = *last {
         let deltas = (
             admitted.saturating_sub(previous.0),
@@ -4313,26 +4478,41 @@ fn poll_audio(
     }
 }
 
+#[derive(Default)]
+struct ReplicaWindow {
+    observed: Option<(u64, u64, u64)>,
+    emitted: Option<(u64, u64, u64)>,
+    next_poll: f64,
+    last_emit: f64,
+}
+
 fn poll_replica(
     source: Res<Source>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
     time: Res<Time>,
-    mut last: Local<Option<(u64, u64, u64)>>,
-    mut next_poll: Local<f64>,
+    mut window: Local<ReplicaWindow>,
 ) {
     let Some(view) = view else { return };
     if view.phase.is_none() {
-        *last = None;
+        window.observed = None;
+        window.emitted = None;
         return;
     }
     let now = time.elapsed_secs_f64();
-    if now < *next_poll {
+    if now < window.next_poll {
         return;
     }
-    *next_poll = now + 1.0;
+    window.next_poll = now + 1.0;
     let current = (view.session_epoch, view.world_generation, view.state_revision);
-    if *last != Some(current) {
-        *last = Some(current);
+    if window.observed != Some(current) {
+        window.observed = Some(current);
+    }
+    // Revisions are monotonic.  A change is still reported after every coalescing window, so
+    // the latest revision and its progress remain visible without one event per revision.
+    let due = window.emitted.is_none() || now - window.last_emit >= REPLICA_WINDOW_SECS;
+    if window.observed != window.emitted && due {
+        window.emitted = window.observed;
+        window.last_emit = now;
         source.observe(Some((current.0, current.1)), None,
             Stage::ReplicaRevision { revision: current.2 });
     }
@@ -5055,9 +5235,26 @@ pub(crate) fn drain_history(history: &mut History) {
                 );
             }
         }
-        if history.entries.len() == 1024 {
-            history.entries.pop_front();
-            history.evicted += 1;
+        if history.entries.len() == RETAINED_CAPACITY {
+            if let Some((_, evicted_event)) = history.entries.pop_front() {
+                // Classify the evicted event through the same registry used at ingress.  An
+                // event that cannot be attributed lands in `unclassified`, never outside the
+                // total, so per-vector counts always sum to the global evicted counter.
+                let vector = vector_for_stage(&evicted_event.stage).unwrap_or("unclassified");
+                let index = diagnostic_vector_index(vector);
+                history.retained_evictions[index] =
+                    history.retained_evictions[index].saturating_add(1);
+                history.evicted = history.evicted.saturating_add(1);
+                debug_assert_eq!(
+                    history
+                        .retained_evictions
+                        .iter()
+                        .copied()
+                        .fold(0u64, u64::saturating_add),
+                    history.evicted,
+                    "per-vector retained evictions must sum to the global evicted count"
+                );
+            }
         }
         history.entries.push_back((seq, event));
     }
