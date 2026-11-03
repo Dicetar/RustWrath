@@ -121,14 +121,14 @@ export default function App() {
               WoW 3.3.5a (12340)
             </span>
             <span className="px-2.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-mono text-xs">
-              wotlk@86f0975a + Q03/Q04/G03/H00
+              main@cbc8a717 (wotlk merged)
             </span>
           </div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-stone-100 mt-2">
             RustWrath — Engineering Execution & Verification Console
           </h1>
           <p className="text-stone-400 text-sm mt-1">
-            Synchronized with <code className="text-emerald-300">origin/wotlk (86f0975a)</code> · Extended with G03, H00, Q03 & Q04 source and unit tests
+            Active branch is now <code className="text-emerald-300">main</code> (tracking <code className="text-stone-300">origin/main</code>) · <code className="text-amber-300">wotlk</code> fully merged
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">
