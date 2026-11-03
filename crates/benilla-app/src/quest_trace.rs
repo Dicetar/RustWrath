@@ -669,6 +669,10 @@ impl Interaction {
 
     /// Explicit transport delivery recorder; transport code must use this instead of
     /// constructing `Stage::Delivery` ad hoc.
+    ///
+    /// Contract: one interaction must receive exactly one terminal delivery event. If a
+    /// trace-only envelope wraps a receipt-bearing command, the receipt remains the
+    /// authority and the envelope trace must not emit a second terminal.
     pub(crate) fn record_delivery(&self, delivery: crate::net::CommandDelivery) {
         self.record(Stage::Delivery(delivery));
     }

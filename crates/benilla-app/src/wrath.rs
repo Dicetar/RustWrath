@@ -119,6 +119,8 @@ pub struct WrathOutbound {
     pub movement: bool,
     pub(crate) receipt: Option<crate::net::CommandReceipt>,
     pub(crate) trace: Option<crate::quest_trace::Interaction>,
+    /// Whether the carried trace scope is enforced across the async transport boundary.
+    pub(crate) enforce_scope: bool,
 }
 
 /// A translated gameplay reply tagged with the source session and world scope. The app rejects
@@ -3293,8 +3295,12 @@ fn wrath_tap_commands(
             | ClientCommand::QuestgiverChooseRewardTracked { receipt, .. } => receipt.enforce_scope,
             _ => false,
         };
-        let enforce_scope = env_enforce_scope || receipt_enforce;
-        let _ = enforce_scope;
+        // Named default rule: a carried trace scope is enforced even when no explicit flag is set,
+        // so trace-only commands without an envelope are still protected. An explicit false with a
+        // carried scope is treated as "default true" under this rule.
+        let enforce_scope = env_enforce_scope
+            || receipt_enforce
+            || primary_trace.as_ref().and_then(|t| t.scope()).is_some();
         if opening {
             if let Some(trace) = &trace {
                 trace.observe(scope, None, crate::quest_trace::Stage::OpenCommandDequeued);
@@ -3383,10 +3389,11 @@ fn wrath_tap_commands(
             }
             command => (command, None),
         };
-        // Generic trace scope check: a carried trace scope is enforced even when the receipt-level
-        // flag is false (e.g. QuestgiverOpenTracked) or for trace-only commands.
-        if let Some(ix) = &primary_trace {
-            if let Some((se, wg)) = ix.scope() {
+        // Generic trace scope check: enforced only when `enforce_scope` is true (defaulted true for
+        // a carried scope per the named rule above).
+        if enforce_scope {
+            if let Some(ix) = &primary_trace {
+                if let Some((se, wg)) = ix.scope() {
                 if !view.entered_world
                     || view.session_epoch != se
                     || view.world_generation != wg
@@ -3405,6 +3412,7 @@ fn wrath_tap_commands(
                     continue;
                 }
             }
+        }
         }
         let count = view.next_cast_count;
         let packet = match command {
@@ -3988,10 +3996,13 @@ fn wrath_tap_commands(
                         movement: false,
                         receipt: receipt.clone(),
                         trace: cmd_trace.clone(),
+                        enforce_scope,
                     });
                     if let Some(receipt) = receipt.as_ref() {
                         receipt.report(crate::net::CommandDelivery::OutboxAdmitted);
-                        // Record on a distinct trace-only interaction without duplicating the receipt's.
+                        // One interaction must receive exactly one terminal delivery event: the receipt
+                        // remains the authority, so a distinct envelope trace records only when its
+                        // interaction differs from the receipt's.
                         if let Some(pt) = &primary_trace {
                             let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
                             if pt.interaction_id() != receipt_ix {
@@ -6338,6 +6349,7 @@ fn wrath_stream_movement(
             movement: true,
             receipt: None,
             trace: None,
+            enforce_scope: false,
         });
     } else if let Some(trace) = &trace {
         trace.note_movement_refused();
@@ -7025,10 +7037,10 @@ pub fn run_session_with_cancel(
                         continue;
                     }
                 }
-                // Generic trace scope check: any carried trace scope (including receipt traces whose
-                // receipt-level flag is false, and trace-only commands) is enforced before write.
+                // Generic trace scope check: enforced only when the carried flag says so.
                 let mut stale_trace = false;
-                if let Some(ix) = &command.trace {
+                if command.enforce_scope {
+                    if let Some(ix) = &command.trace {
                     if let Some((se, wg)) = ix.scope() {
                         if se != session.epoch()
                             || wg != session.world_generation()
@@ -7052,10 +7064,14 @@ pub fn run_session_with_cancel(
                                     || session.phase() != Phase::InWorld
                                 {
                                     stale_trace = true;
-                                    // Reuse the receipt report path as authority for this interaction.
-                                    receipt.report(crate::net::CommandDelivery::Rejected(
-                                        crate::net::CommandRefusal::ScopeChanged,
-                                    ));
+                                    // Reuse the receipt report path as authority for this interaction,
+                                    // unless the same interaction was already recorded via command.trace.
+                                    let cmd_ix = command.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                                    if cmd_ix == 0 || cmd_ix != ix.interaction_id() {
+                                        receipt.report(crate::net::CommandDelivery::Rejected(
+                                            crate::net::CommandRefusal::ScopeChanged,
+                                        ));
+                                    }
                                 }
                             }
                         }
