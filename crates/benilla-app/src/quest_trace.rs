@@ -73,8 +73,15 @@ pub(crate) enum Stage {
         copies_dropped: u64,
     },
     AudioHealth { over_full_scale_samples: u64, nonfinite_samples: u64, voices_refused: u64 },
-    MovementCorrectionApplied,
-    MovementPressure { coalesced: u64, refused: u64 },
+    MovementCorrectionApplied { distance_bucket: u8, movement_sequence: Option<u64> },
+    MovementPressure {
+        queue_depth: u64,
+        admitted: u64,
+        coalesced: u64,
+        refused: u64,
+        written: u64,
+        corrected: u64,
+    },
     SceneSummary { world_cameras: u32, animated_rigs: u32 },
     FrameWindow { frames: u32, mean_us: u64, max_us: u64 },
     AssetFailure { family: AssetFamily, cause: AssetFailure },
@@ -267,6 +274,11 @@ struct Ingress {
     update_packets_sampled_out: AtomicU64,
     movement_coalesced: AtomicU64,
     movement_refused: AtomicU64,
+    movement_admitted: AtomicU64,
+    movement_written: AtomicU64,
+    movement_corrected: AtomicU64,
+    movement_sequence: AtomicU64,
+    movement_queue_depth: AtomicU64,
     npc_aliases: Mutex<(VecDeque<(u64, u32)>, u32)>,
     origin: Instant,
     #[cfg(feature = "dev")]
@@ -464,7 +476,7 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
                 | DomainEvent::LootReleased,
         } => Some("loot_and_vendor_events"),
         Stage::AudioMixer { .. } | Stage::AudioHealth { .. } => Some("audio_mixer_state"),
-        Stage::MovementCorrectionApplied | Stage::MovementPressure { .. } => {
+        Stage::MovementCorrectionApplied { .. } | Stage::MovementPressure { .. } => {
             Some("movement_queue_and_corrections")
         }
         Stage::SceneSummary { .. } => Some("scene_camera_and_rig_counts"),
@@ -488,6 +500,17 @@ pub(crate) fn is_source_specific_loss_stage(stage: &Stage) -> bool {
             | Stage::ScriptRowsEvicted { .. }
             | Stage::AssetEventsLost { .. }
     )
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct MovementEvidence {
+    pub queue_depth: u64,
+    pub admitted: u64,
+    pub coalesced: u64,
+    pub refused: u64,
+    pub written: u64,
+    pub corrected: u64,
+    pub last_sequence: u64,
 }
 
 impl Source {
@@ -528,6 +551,40 @@ impl Source {
 
     pub(crate) fn note_movement_refused(&self) {
         self.0.movement_refused.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_movement_admitted(&self, queue_depth: usize) {
+        self.0.movement_admitted.fetch_add(1, Ordering::Relaxed);
+        let _seq = self.0.movement_sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        self.0.movement_queue_depth.store(queue_depth as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_movement_written(&self) {
+        self.0.movement_written.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_movement_corrected(&self) {
+        self.0.movement_corrected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn last_movement_sequence(&self) -> u64 {
+        self.0.movement_sequence.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn movement_queue_depth(&self) -> u64 {
+        self.0.movement_queue_depth.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn movement_evidence(&self) -> MovementEvidence {
+        MovementEvidence {
+            queue_depth: self.0.movement_queue_depth.load(Ordering::Relaxed),
+            admitted: self.0.movement_admitted.load(Ordering::Relaxed),
+            coalesced: self.0.movement_coalesced.load(Ordering::Relaxed),
+            refused: self.0.movement_refused.load(Ordering::Relaxed),
+            written: self.0.movement_written.load(Ordering::Relaxed),
+            corrected: self.0.movement_corrected.load(Ordering::Relaxed),
+            last_sequence: self.0.movement_sequence.load(Ordering::Relaxed),
+        }
     }
 
     /// Sample high-volume object-update packet metadata without sampling state changes.
@@ -665,6 +722,22 @@ impl Interaction {
         if ingress.events.try_send(event).is_err() {
             ingress.dropped.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Explicit transport delivery recorder; transport code must use this instead of
+    /// constructing `Stage::Delivery` ad hoc.
+    pub(crate) fn record_delivery(&self, delivery: crate::net::CommandDelivery) {
+        self.record(Stage::Delivery(delivery));
+    }
+
+    /// The interaction's scope, exposed for stale-scope checks without making `Subject`
+    /// public across the crate boundary. Returns `None` when no scope was carried.
+    pub(crate) fn scope(&self) -> Option<(u64, u64)> {
+        self.subject.scope
+    }
+
+    pub(crate) fn interaction_id(&self) -> u64 {
+        self.subject.interaction
     }
 }
 
@@ -1332,6 +1405,30 @@ impl History {
         (self.received, self.evicted, self.source.0.dropped.load(Ordering::Relaxed))
     }
 
+    /// Delivery counts across retained entries (admitted, written, rejected, write-failed).
+    pub(crate) fn delivery_counts(&self) -> (u64, u64, u64, u64) {
+        let mut admitted = 0u64;
+        let mut written = 0u64;
+        let mut rejected = 0u64;
+        let mut failed = 0u64;
+        for (_, event) in &self.entries {
+            if let Stage::Delivery(delivery) = event.stage {
+                match delivery {
+                    crate::net::CommandDelivery::OutboxAdmitted => admitted = admitted.saturating_add(1),
+                    crate::net::CommandDelivery::Written => written = written.saturating_add(1),
+                    crate::net::CommandDelivery::Rejected(_) => rejected = rejected.saturating_add(1),
+                    crate::net::CommandDelivery::WriteFailed => failed = failed.saturating_add(1),
+                }
+            }
+        }
+        (admitted, written, rejected, failed)
+    }
+
+    /// Movement evidence snapshot (delegates to the source).
+    pub(crate) fn movement_evidence(&self) -> MovementEvidence {
+        self.source.movement_evidence()
+    }
+
     /// Additive per-vector evidence summary derived from the same bounded snapshot that
     /// supplies the exported event rows.  Classification goes through `vector_for_stage`
     /// so both export paths agree.
@@ -1785,6 +1882,11 @@ pub(crate) fn new_pair() -> (Source, History) {
         update_packets_sampled_out: AtomicU64::new(0),
         movement_coalesced: AtomicU64::new(0),
         movement_refused: AtomicU64::new(0),
+        movement_admitted: AtomicU64::new(0),
+        movement_written: AtomicU64::new(0),
+        movement_corrected: AtomicU64::new(0),
+        movement_sequence: AtomicU64::new(0),
+        movement_queue_depth: AtomicU64::new(0),
         npc_aliases: Mutex::new((VecDeque::with_capacity(MAX_NPC_ALIASES), 0)),
         origin: Instant::now(),
         #[cfg(feature = "dev")]
@@ -1931,7 +2033,7 @@ fn poll_movement(
     source: Res<Source>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
     time: Res<Time>,
-    mut last: Local<Option<(u64, u64)>>,
+    mut last: Local<Option<(u64, u64, u64, u64, u64, u64, u64)>>,
     mut next_poll: Local<f64>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -1939,14 +2041,27 @@ fn poll_movement(
         return;
     }
     *next_poll = now + 1.0;
+    let evidence = source.movement_evidence();
     let current = (
-        source.0.movement_coalesced.load(Ordering::Relaxed),
-        source.0.movement_refused.load(Ordering::Relaxed),
+        evidence.queue_depth,
+        evidence.admitted,
+        evidence.coalesced,
+        evidence.refused,
+        evidence.written,
+        evidence.corrected,
+        evidence.last_sequence,
     );
     if *last != Some(current) {
         *last = Some(current);
         source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
-            Stage::MovementPressure { coalesced: current.0, refused: current.1 });
+            Stage::MovementPressure {
+                queue_depth: evidence.queue_depth,
+                admitted: evidence.admitted,
+                coalesced: evidence.coalesced,
+                refused: evidence.refused,
+                written: evidence.written,
+                corrected: evidence.corrected,
+            });
     }
 }
 

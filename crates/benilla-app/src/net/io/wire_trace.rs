@@ -154,6 +154,7 @@ fn skip_line_with(opcode: u16, reason: &str, body: &[u8], reveal: bool) -> Strin
 pub(super) fn dropped(cmd: &crate::net::ClientCommand) -> String {
     use crate::net::ClientCommand as C;
     match cmd {
+        C::Tracked { command, .. } => return dropped(command.as_ref()),
         C::JoinChannel { name, .. } => {
             format!("JoinChannel {{ name: {name:?}, password: {REDACTED} }}")
         }

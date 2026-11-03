@@ -1229,6 +1229,10 @@ pub(super) fn writer_loop(
                     }
                     continue;
                 };
+                let cmd = match cmd {
+                    ClientCommand::Tracked { command, .. } => *command,
+                    other => other,
+                };
                 let result = match cmd {
                     ClientCommand::Move {
                         kind,
