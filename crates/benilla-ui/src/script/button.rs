@@ -1273,14 +1273,23 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
     if !fire {
         return;
     }
-    lua.app_data_mut::<Model>()
-        .expect("model app_data")
-        .last_handler_invoked = true;
     let btn = match lua.create_string(button) {
         Ok(s) => Value::String(s),
         Err(_) => return,
     };
     let wrath = lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335;
+    let invoked = if wrath {
+        ["PreClick", "OnClick", "PostClick"]
+            .into_iter()
+            .any(|script| event::has_widget_handler(lua, id, script))
+    } else {
+        event::has_widget_handler(lua, id, "OnClick")
+    } || take_loot.is_some();
+    if invoked {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .last_handler_invoked = true;
+    }
     if wrath {
         let arguments = vec![btn, Value::Boolean(down)];
         for script in ["PreClick", "OnClick", "PostClick"] {
