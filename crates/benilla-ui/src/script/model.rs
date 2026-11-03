@@ -369,6 +369,12 @@ pub(crate) struct Model {
     /// double-click state. It has no button identity (left then right makes a double), is zeroed
     /// when a double fires, and nothing else clears it, not hide, disable or the cursor leaving.
     pub(crate) last_click: HashMap<FrameHandle, f64>,
+    /// The UI frame hit by the most recent input-router hit test, if any.
+    pub(crate) last_ui_hit: Option<u32>,
+    /// The UI frame whose rect contained the point but whose effective hit clip excluded it.
+    pub(crate) last_ui_clipped: Option<u32>,
+    /// Whether the most recent click dispatch invoked a Lua handler.
+    pub(crate) last_handler_invoked: bool,
 
     /// Frames the last resolve resized, `(id, width, height)` in layout units, owed `OnSizeChanged`
     /// outside it.
@@ -1476,6 +1482,9 @@ impl Model {
             mouse_down_on: HashMap::new(),
             mouse_capture: None,
             last_click: HashMap::new(),
+            last_ui_hit: None,
+            last_ui_clipped: None,
+            last_handler_invoked: false,
             pending_size_changed: Vec::new(),
             content_writes: Vec::new(),
             layout_force: Vec::new(),

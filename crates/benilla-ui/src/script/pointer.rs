@@ -125,7 +125,7 @@ impl UiScript {
     /// first frame whose probe takes the point, and whether a `Minimap` was probed and missed it,
     /// which then drops its blip (`0x4eb0c0`). A frame that takes the hit ends the sweep, so a
     /// window over the Minimap keeps it from the sweep's probe; a held capture is probed anyway.
-    fn hover_walk(&self, x: f32, y: f32) -> (Option<FrameHandle>, bool) {
+    fn hover_walk(&self, x: f32, y: f32) -> (Option<FrameHandle>, bool, Option<FrameHandle>) {
         let model = self.model_ref();
         let sorted = order::pick_order(&model.arena);
         let blip_held = model.minimap_blip.is_some();
@@ -135,6 +135,7 @@ impl UiScript {
                     is_minimap_handle(&model, c) && !frame_contains(&model, c, x, y)
                 }),
         );
+        let clipped = std::cell::Cell::new(None);
         let hit = order::hit_test(&sorted, |fh| {
             // In the mouse index. The chat frame takes no mouse (`[+0xcc] = 0`): its links are
             // Button children of their own ([`super::hyperlink`]), so a chat window hits only over
@@ -143,13 +144,21 @@ impl UiScript {
             // The nameplate's `+0x3c` veto (`0x7cba30`), not its mouse-enabled bit: while a
             // ground-targeted spell is armed a plate refuses the hit before its rect is tested,
             // so the reticle is placed through it.
-            let hit = indexed && !model.nameplates.vetoes(fh) && frame_contains(&model, fh, x, y);
+            let contains_rect = indexed
+                && !model.nameplates.vetoes(fh)
+                && model
+                    .frame_rect(fh)
+                    .is_some_and(|r| point_in_rect(hit_rect(model, fh, r), x, y));
+            let hit = contains_rect && frame_contains(&model, fh, x, y);
+            if contains_rect && !hit && clipped.get().is_none() {
+                clipped.set(Some(fh));
+            }
             if blip_held && indexed && !hit && is_minimap_handle(&model, fh) {
                 minimap_missed.set(true);
             }
             hit
         });
-        (hit, minimap_missed.get())
+        (hit, minimap_missed.get(), clipped.get())
     }
 
     /// [`Self::hit_test_frame`] as a frame id, the id the app and the Lua bindings use.
@@ -189,7 +198,7 @@ impl UiScript {
         }
         // A drag-active EditBox extends its selection on every move (`0x77a860`).
         editbox::drag_update(&self.lua, x, y);
-        let (new_handle, minimap_missed) = self.hover_walk(x, y);
+        let (new_handle, minimap_missed, _) = self.hover_walk(x, y);
         let new_id = new_handle.and_then(|h| self.model_ref().frame_to_id.get(&h).copied());
         // The Minimap's probe runs in the sweep, ahead of the leave and the enter.
         if minimap_missed {
@@ -353,7 +362,15 @@ impl UiScript {
                 return true;
             }
         }
-        let hit_id = self.hit_test(x, y);
+        let (hit_handle, _, clipped_handle) = self.hover_walk(x, y);
+        let hit_id = hit_handle.and_then(|h| self.model_ref().frame_to_id.get(&h).copied());
+        let clipped_id = clipped_handle.and_then(|h| self.model_ref().frame_to_id.get(&h).copied());
+        {
+            let mut model = self.model_mut();
+            model.last_ui_hit = hit_id;
+            model.last_ui_clipped = clipped_id;
+            model.last_handler_invoked = false;
+        }
         // ── The press target: the capture, else the hover ──────────────────────────────────────
         //
         // The press handler `0x7662c0` takes `root+0x80` first (`0x76637f`) and the hover

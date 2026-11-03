@@ -1314,6 +1314,38 @@ impl UiScript {
             .any(|(_, f)| f.name.as_deref() == Some(name) && f.effective_visible)
     }
 
+    /// The global name of the frame the input router's most recent hit test resolved to, if any.
+    pub fn last_hit_name(&self) -> Option<String> {
+        let id = self.last_hit_id()?;
+        let model = self.model_ref();
+        let fh = model.id_to_frame.get(&id).copied()?;
+        model.arena.frame(fh)?.name.clone()
+    }
+
+    /// The id of the frame the input router's most recent hit test resolved to, if any.
+    pub fn last_hit_id(&self) -> Option<u32> {
+        self.model_ref().last_ui_hit
+    }
+
+    /// The effective visibility of the frame the input router's most recent hit test resolved to.
+    pub fn last_hit_effective_visible(&self) -> Option<bool> {
+        let id = self.last_hit_id()?;
+        let model = self.model_ref();
+        let fh = model.id_to_frame.get(&id).copied()?;
+        model.arena.frame(fh).map(|f| f.effective_visible)
+    }
+
+    /// Whether the most recent hit-test miss was caused by a frame whose rect contained the point
+    /// but whose effective hit clip excluded it.
+    pub fn last_hit_clipped(&self) -> bool {
+        self.model_ref().last_ui_clipped.is_some()
+    }
+
+    /// Whether the most recent click dispatch invoked a Lua handler.
+    pub fn last_handler_invoked(&self) -> bool {
+        self.model_ref().last_handler_invoked
+    }
+
     /// The named frame's effective visibility, or None when the frame does not exist.
     pub fn frame_visibility(&self, name: &str) -> Option<bool> {
         let model = self.model_ref();

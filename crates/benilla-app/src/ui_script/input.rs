@@ -278,9 +278,9 @@ pub(super) fn feed_ui_input(
                         click_consumed.0 = true;
                     }
                     // A press the UI consumed is not the world's, hovered frame or not.
-                    let target = diagnostics.0.as_ref().map(|_| script.hit_test_name(x, y));
                     let consumed = script.mouse_button(x, y, name, true);
                     press_consumed.0 |= consumed;
+                    let target = diagnostics.0.as_ref().map(|_| script.last_hit_name());
                     if let (Some(trace), Some(target)) = (&diagnostics.0, target) {
                         use crate::quest_trace::{Stage, UiButton, UiTarget};
                         let target = match target.as_deref() {
@@ -314,7 +314,44 @@ pub(super) fn feed_ui_input(
                     }
                 }
                 if buttons.just_released(btn) {
-                    script.mouse_button(x, y, name, false);
+                    let consumed = script.mouse_button(x, y, name, false);
+                    if diagnostics.0.is_some() {
+                        use crate::quest_trace::{Stage, UiButton, UiTarget};
+                        let target = script.last_hit_name();
+                        let target = match target.as_deref() {
+                            None => UiTarget::NoNamedFrame,
+                            Some(name) if name.starts_with("QuestLog") => UiTarget::QuestLog,
+                            Some(name) if name.starts_with("Quest") => UiTarget::Quest,
+                            Some(name) if name.starts_with("Merchant") => UiTarget::Merchant,
+                            Some(name) if name.starts_with("Loot") => UiTarget::Loot,
+                            Some(name) if name.starts_with("SpellBook") => UiTarget::SpellBook,
+                            Some(name) if name.starts_with("Character") => UiTarget::Character,
+                            Some("WorldFrame") => UiTarget::World,
+                            Some(_) => UiTarget::Other,
+                        };
+                        let button = match btn {
+                            MouseButton::Left => UiButton::Left,
+                            MouseButton::Right => UiButton::Right,
+                            MouseButton::Middle => UiButton::Middle,
+                            MouseButton::Forward => UiButton::Forward,
+                            MouseButton::Back => UiButton::Back,
+                            _ => continue,
+                        };
+                        let scope = diagnostics.1.as_ref()
+                            .map(|v| (v.session_epoch, v.world_generation));
+                        if let Some(trace) = &diagnostics.0 {
+                            trace.observe(scope, None, Stage::UiClick {
+                                button,
+                                target,
+                                consumed,
+                                visible: script.last_hit_effective_visible(),
+                                clipped: script.last_hit_clipped(),
+                                handler_invoked: script.last_handler_invoked(),
+                                egui_pointer_over_last_sample: diagnostics.2.as_ref().map(|over| over.0),
+                                vm_session: script.session(),
+                            });
+                        }
+                    }
                 }
             }
         } else if !synthetic {
