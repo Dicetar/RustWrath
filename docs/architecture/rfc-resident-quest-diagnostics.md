@@ -83,7 +83,12 @@ The UI observer also records whether the stock questgiver, quest-log, merchant, 
 spellbook, character and game-menu frames are missing, hidden or effectively visible.
 Effective visibility is UI model state, not proof of successful layout, hit testing,
 occlusion handling or rendered pixels. The hotpatch activation event includes the verified
-active module's content digest when available.
+active module's content digest when available. A bounded restore outcome follows each
+active-module frame failure: `RestoredPrevious` names the failed attempt, the restored
+attempt when retained and the restored module's digest or `unknown`; `RestoreUnavailable`
+means no retained predecessor existed. A restored module that fails again reports another
+bounded outcome, so one boolean never collapses repeated failures. Loader error text and
+paths stay in the local log and are not recorded.
 Physical UI presses record button, a coarse allowlisted target category, VM identity and
 whether the UI reported consuming the press. No coordinates, arbitrary frame names or
 keyboard input are retained. A missing named hit can also mean an unnamed frame. Input
@@ -112,5 +117,10 @@ The debug panel can save a bounded allowlisted JSONL snapshot on a background th
 The inspector summarizes the most recent local action boundary and displays refusal reasons. Raw 64-bit NPC GUIDs are mapped to bounded run-local numeric aliases (`npc_alias`) so raw GUIDs never enter the recorder ring or exported snapshots. Slot additions, observed panels (`GreetingPanel`, `DetailPanel`, `ProgressPanel`, `RewardPanel`, `GossipMenu`) and explicit quest-ID failure events are matched by quest, NPC alias, scope and a provisional 30-second observation window. Server refusals lacking a quest ID (`SMSG_QUESTLOG_FULL`, `SMSG_QUESTGIVER_QUEST_INVALID`) are heuristically matched against eligible written quest actions in the same scope and NPC alias within the window. Asynchronous quest template landings (`SMSG_QUEST_QUERY_RESPONSE`) also emit `JournalProjection` and `JournalRowInModel` observations so first-time uncached quest accepts complete projection evaluation. On Lua `/reload`, projections from an older VM generation are marked superseded until a fresh projection occurs in the new VM. On disconnect or world transfer, open interactions in the retired scope are closed as `LocalRefusal` (if not yet written) or `WriteUnconfirmed` with `Unverified` confidence (if already written to the socket).
 
 The host retains up to 64 loss-aware incidents with `IncidentConfidence` (`Exact`, `Strong`, `Heuristic`, `Ambiguous`, `Unverified`, `Unmatched`), telemetry-gap flags, and up to eight event sequence references. Duplicate same-NPC `Open` or `Accept` writes resolved by a single panel or slot delta record `AmbiguousServerOutcome`. The export includes `"version": 1`, `"highest_retained_sequence"`, `"interaction_tracking_lost"`, `"npc_aliases_assigned"`, `"panel_correlations"`, the retained sequence range, per-vector `retained_evictions` whose sum equals the global `evicted` count, a bounded `retention_summary`, recent bounded summaries and the last observed hotpatch content digest, and `validate_snapshot_header` rejects unknown schema names or versions before decoding records. Confirmed visible pixel rendering, inbound packet-to-action wire attribution without server IDs, and target-client runtime validation remain pending.
+
+Hotpatch attempt correlation shows each retained attempt's latest bounded terminal,
+including frame failure followed by a restored predecessor (attempt and digest, or
+`unknown`), an explicit no-predecessor fallback, rejection, withdrawal, and unresolved
+matches when a restore event was lost. Trust policy and memory isolation are not claimed.
 
 After approval, D01 owns types and version rejection, D02 owns storage/lifecycle, D03 owns correlation, D04/D05 own outbound and inbound hooks, D06 owns the VM bridge, and D07 owns export. Focused unit tests in `crates/benilla-app/src/quest_trace.rs` cover full ingress without blocking gameplay, exact local-refusal evidence chains, duplicate same-NPC clicks, stale-world scope retirement and isolation, repeated Lua rows and projection superseding across reload, partial socket writes and malformed quest packets, and NPC alias export privacy plus version rejection. Runtime execution and gameplay acceptance remain pending.

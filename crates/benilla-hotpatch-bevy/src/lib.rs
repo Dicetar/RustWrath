@@ -1,15 +1,19 @@
 //! Sample after pose edits, compose the patched frame, then restore the next frame's input.
-use benilla_hotpatch::Host;
+use benilla_hotpatch::{Host, RestoreOutcome};
 use benilla_hotpatch_abi::{BoneLocal, RigSpan};
 use benilla_world::rig_anim::{AnimParked, PoseModulePass, RigPose};
 use bevy::prelude::*;
-use std::path::PathBuf;
+use std::{collections::VecDeque, path::PathBuf};
 
 /// Optional diagnostic target. It does not grant a module access to gameplay state.
 #[derive(Component)]
 pub struct HotpatchProbeTarget;
 
 pub type PatchAttemptId = u64;
+
+/// Activation history bound. The host retains the active module plus three predecessors, so a
+/// small ring is enough to map a restored digest back to its original attempt id.
+const MAX_ACTIVATION_HISTORY: usize = 8;
 
 /// Coarse hotpatch failure reason. Free-form loader errors remain in the local log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +34,18 @@ pub enum HotpatchEvent {
     CandidateRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
     Activated { attempt: Option<PatchAttemptId>, digest: Option<[u8; 20]> },
     FrameFailed { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
+    /// A failed active module was replaced by a retained predecessor that is now active again.
+    ///
+    /// `restored_attempt` is the predecessor's original activation attempt when it is still
+    /// retained by the adapter; `None` means unknown, never a fabricated id. `digest` is the
+    /// restored module's verified content identity, or `None` when unavailable.
+    RestoredPrevious {
+        failed_attempt: Option<PatchAttemptId>,
+        restored_attempt: Option<PatchAttemptId>,
+        digest: Option<[u8; 20]>,
+    },
+    /// The failed active module had no retained predecessor; the baseline pose is active again.
+    RestoreUnavailable { failed_attempt: Option<PatchAttemptId> },
     RetentionFailed { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
 }
 
@@ -73,6 +89,8 @@ impl Plugin for HotpatchPlugin {
             next_attempt: 1,
             candidate_attempt: None,
             active_attempt: None,
+            restored_attempt: None,
+            activations: VecDeque::new(),
         })
         .add_systems(Update, poll)
         .add_systems(PostUpdate, apply_pose.in_set(PoseModulePass))
@@ -99,6 +117,10 @@ struct Runtime {
     next_attempt: u64,
     candidate_attempt: Option<u64>,
     active_attempt: Option<u64>,
+    /// Attempt that is becoming active because it was restored, consumed by the next activation.
+    restored_attempt: Option<u64>,
+    /// Bounded digest→attempt map of observed activations, used only to label restored modules.
+    activations: VecDeque<(Option<[u8; 20]>, PatchAttemptId)>,
 }
 
 fn report(runtime: &mut Runtime, error: String) {
@@ -106,6 +128,41 @@ fn report(runtime: &mut Runtime, error: String) {
         warn!("hotpatch: {error}");
     }
     runtime.last_error = Some(error);
+}
+
+fn digest_from_hex(hex: &str) -> Option<[u8; 20]> {
+    if hex.len() != 40 {
+        return None;
+    }
+    let mut bytes = [0; 20];
+    for (output, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+        let high = (pair[0] as char).to_digit(16)?;
+        let low = (pair[1] as char).to_digit(16)?;
+        *output = ((high << 4) | low) as u8;
+    }
+    Some(bytes)
+}
+
+/// Recover the original activation attempt for a restored module. Unknown stays `None` rather
+/// than borrowing the failed attempt's id.
+fn attempt_for_digest(runtime: &Runtime, digest: Option<[u8; 20]>) -> Option<PatchAttemptId> {
+    let digest = digest?;
+    runtime
+        .activations
+        .iter()
+        .rev()
+        .find_map(|(known, attempt)| (*known == Some(digest)).then_some(*attempt))
+}
+
+fn remember_activation(
+    runtime: &mut Runtime,
+    digest: Option<[u8; 20]>,
+    attempt: PatchAttemptId,
+) {
+    if runtime.activations.len() == MAX_ACTIVATION_HISTORY {
+        runtime.activations.pop_front();
+    }
+    runtime.activations.push_back((digest, attempt));
 }
 
 fn poll(
@@ -232,16 +289,52 @@ fn apply_pose(
         runtime.candidate_attempt = None;
         report(runtime, error);
     }
-    let active_failed = if let Some(error) = runtime.host.take_active_failure() {
-        events.write(HotpatchEvent::FrameFailed {
-            attempt: runtime.active_attempt.take(),
-            reason: HotpatchReason::Frame,
-        });
+    // Restore identity is per evaluation; never carry a stale restore into a later activation.
+    runtime.restored_attempt = None;
+    let restore_outcomes = runtime.host.take_restore_outcomes();
+    // Free-form host errors stay local; only the bounded outcomes below reach the recorder.
+    if let Some(error) = runtime.host.take_active_failure() {
         report(runtime, error);
-        true
-    } else {
-        false
-    };
+    }
+    let active_failed = !restore_outcomes.is_empty();
+    for outcome in restore_outcomes {
+        match outcome {
+            RestoreOutcome::Restored {
+                failed_digest,
+                restored_digest,
+            } => {
+                let failed_attempt = match runtime.active_attempt {
+                    Some(attempt) => Some(attempt),
+                    None => attempt_for_digest(runtime, failed_digest),
+                };
+                let restored_attempt = attempt_for_digest(runtime, restored_digest);
+                events.write(HotpatchEvent::FrameFailed {
+                    attempt: failed_attempt,
+                    reason: HotpatchReason::Frame,
+                });
+                events.write(HotpatchEvent::RestoredPrevious {
+                    failed_attempt,
+                    restored_attempt,
+                    digest: restored_digest,
+                });
+                runtime.active_attempt = restored_attempt;
+                runtime.restored_attempt = restored_attempt;
+            }
+            RestoreOutcome::Unavailable { failed_digest } => {
+                let failed_attempt = match runtime.active_attempt {
+                    Some(attempt) => Some(attempt),
+                    None => attempt_for_digest(runtime, failed_digest),
+                };
+                events.write(HotpatchEvent::FrameFailed {
+                    attempt: failed_attempt,
+                    reason: HotpatchReason::Frame,
+                });
+                events.write(HotpatchEvent::RestoreUnavailable { failed_attempt });
+                runtime.active_attempt = None;
+                runtime.restored_attempt = None;
+            }
+        }
+    }
     match result {
         Ok(true) => {
             for (span, entity) in runtime.spans.iter().zip(&runtime.entities) {
@@ -261,25 +354,21 @@ fn apply_pose(
             runtime.refresh = active_failed;
             let revision = runtime.host.revision().map(str::to_owned);
             let active_digest = runtime.host.digest().map(str::to_owned);
+            let restored_attempt = runtime.restored_attempt.take();
             if revision != runtime.reported_revision || active_digest != runtime.reported_digest {
-                let digest = active_digest.as_deref().and_then(|hex| {
-                    if hex.len() != 40 {
-                        return None;
-                    }
-                    let mut bytes = [0; 20];
-                    for (output, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
-                        let high = (pair[0] as char).to_digit(16)?;
-                        let low = (pair[1] as char).to_digit(16)?;
-                        *output = ((high << 4) | low) as u8;
-                    }
-                    Some(bytes)
-                });
-                events.write(HotpatchEvent::Activated {
-                    attempt: runtime.candidate_attempt,
-                    digest,
-                });
-                runtime.active_attempt = runtime.candidate_attempt;
+                let digest = active_digest.as_deref().and_then(digest_from_hex);
+                // A restored predecessor activates under its original attempt id; a staged
+                // candidate activates under the attempt created when it was published.
+                let attempt = match runtime.candidate_attempt {
+                    Some(attempt) => Some(attempt),
+                    None => restored_attempt,
+                };
+                events.write(HotpatchEvent::Activated { attempt, digest });
+                runtime.active_attempt = attempt;
                 runtime.candidate_attempt = None;
+                if let Some(attempt) = attempt {
+                    remember_activation(runtime, digest, attempt);
+                }
                 info!(
                     "hotpatch: pose module activated {} rigs={} bones={}",
                     revision.as_deref().unwrap_or("none"),
