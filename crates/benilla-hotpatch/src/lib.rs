@@ -148,17 +148,16 @@ impl Host {
         if self.observed.as_ref() == Some(&text) {
             return Ok(false);
         }
-        // A superseded staged candidate is no longer represented in the host. If the
-        // replacement fails and the manifest reverts, the old text must be staged again.
-        if self.pending.take().is_some() {
-            self.observed = None;
-        }
+        // Any changed manifest invalidates the previous observation and any superseded staged
+        // candidate so that reverting after a failed replacement re-processes the prior manifest.
+        self.pending = None;
+        self.observed = None;
         let publication: Publication = toml::from_str(&text)?;
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|m| m.digest == publication.sha1)
-        {
+        if self.active.as_ref().is_some_and(|m| {
+            !publication.revision.is_empty()
+                && m.digest == publication.sha1
+                && m.filename == publication.library
+        }) {
             self.observed = Some(text);
             return Ok(false);
         }
@@ -190,6 +189,9 @@ impl Host {
     /// Only this host's digest-named artifacts are collected. A publisher uses the same lock;
     /// the active library, three predecessors and the current publication stay pinned.
     pub fn collect_retired(&self) -> Result<usize> {
+        let Some(observed) = self.observed.as_deref() else {
+            return Ok(0);
+        };
         let root = match self.root.canonicalize() {
             Ok(root) => root,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -206,18 +208,23 @@ impl Host {
             Err(error) => return Err(error.into()),
         };
         let result = (|| {
-            let mut pinned: std::collections::HashSet<String> = self
+            let Ok(text) = std::fs::read_to_string(root.join("ready.toml")) else {
+                return Ok(0);
+            };
+            if text != observed {
+                return Ok(0);
+            }
+            let Ok(publication) = toml::from_str::<Publication>(&text) else {
+                return Ok(0);
+            };
+            let pinned: std::collections::HashSet<String> = self
                 .previous
                 .iter()
                 .chain(self.active.iter())
                 .chain(self.pending.iter())
                 .map(|m| m.filename.clone())
+                .chain(std::iter::once(publication.library))
                 .collect();
-            if let Ok(text) = std::fs::read_to_string(root.join("ready.toml")) {
-                if let Ok(publication) = toml::from_str::<Publication>(&text) {
-                    pinned.insert(publication.library);
-                }
-            }
             let mut removed = 0;
             for entry in std::fs::read_dir(&root)? {
                 let entry = entry?;
