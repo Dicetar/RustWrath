@@ -1126,6 +1126,7 @@ impl History {
                     clipped,
                     handler_invoked,
                     vm_session,
+                    ui_dispatch_id,
                     ..
                 } => {
                     let visibility = match visible {
@@ -1134,8 +1135,9 @@ impl History {
                         None => "visibility unknown",
                     };
                     let line = format!(
-                        "UI click {:?} on {:?}: consumed={} visible={} clipped={} handler_invoked={} vm={}",
-                        button, target, consumed, visibility, clipped, handler_invoked, vm_session
+                        "UI click {:?} on {:?}: consumed={} visible={} clipped={} handler_invoked={} vm={} dispatch={}",
+                        button, target, consumed, visibility, clipped, handler_invoked, vm_session,
+                        ui_dispatch_id
                     );
                     Some(if gaps {
                         format!("{line}; trace has gaps")
@@ -1237,6 +1239,8 @@ impl History {
                 .count();
             let wording = if !eligible {
                 "not a plausible cause (hidden, clipped, unconsumed, handler not invoked, or old VM/reload)"
+            } else if candidates == 0 {
+                "unverified: the source click is not retained in the event window"
             } else if candidates > 1 {
                 "ambiguous: multiple candidate clicks in the two-second window"
             } else {
