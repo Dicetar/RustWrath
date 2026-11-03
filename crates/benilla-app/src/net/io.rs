@@ -1229,7 +1229,14 @@ pub(super) fn writer_loop(
                     }
                     continue;
                 };
+                let cmd = match cmd {
+                    ClientCommand::Tracked { command, .. } => *command,
+                    other => other,
+                };
+                // `ClientCommand::Tracked` is unwrapped above; this arm is unreachable but required
+                // for exhaustiveness after the new variant.
                 let result = match cmd {
+                    ClientCommand::Tracked { .. } => continue,
                     ClientCommand::Move {
                         kind,
                         flags,

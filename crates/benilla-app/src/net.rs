@@ -2340,8 +2340,30 @@ pub(crate) enum ClientCommand {
         total_cost: u32,
         nodes: Vec<u32>,
     },
+    /// Shared transport identity envelope (see module docs). Carries an existing diagnostic
+    /// interaction and an explicit scope-enforcement flag around any inner command without
+    /// changing that command's payload or behavior. The tap unwraps it exactly once.
+    Tracked {
+        trace: Option<crate::quest_trace::Interaction>,
+        enforce_scope: bool,
+        command: Box<ClientCommand>,
+    },
 }
 
+impl ClientCommand {
+    /// Wrap any command in the shared transport-identity envelope.
+    pub(crate) fn tracked(
+        trace: Option<crate::quest_trace::Interaction>,
+        enforce_scope: bool,
+        command: ClientCommand,
+    ) -> Self {
+        Self::Tracked {
+            trace,
+            enforce_scope,
+            command: Box::new(command),
+        }
+    }
+}
 /// The realm list (`CMD_REALM_LIST`); the IO thread waits for a [`RealmRequest`]. `failed` is a
 /// query that got no answer (`REALM_LIST_FAILED`), `realms` then the list last held.
 #[derive(Message)]

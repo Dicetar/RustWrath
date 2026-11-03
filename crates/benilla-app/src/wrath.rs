@@ -119,6 +119,8 @@ pub struct WrathOutbound {
     pub movement: bool,
     pub(crate) receipt: Option<crate::net::CommandReceipt>,
     pub(crate) trace: Option<crate::quest_trace::Interaction>,
+    /// Whether the carried trace scope is enforced across the async transport boundary.
+    pub(crate) enforce_scope: bool,
 }
 
 /// A translated gameplay reply tagged with the source session and world scope. The app rejects
@@ -3251,7 +3253,13 @@ fn wrath_tap_commands(
 ) {
     let Some(mut tap) = tap else { return };
     let Some(receiver) = tap.0.as_mut() else { return };
-    while let Ok(command) = receiver.try_recv() {
+    while let Ok(raw_command) = receiver.try_recv() {
+        // Unwrap the shared transport-identity envelope exactly once before matching the inner
+        // command. Its trace and scope flag are carried alongside the existing per-variant traces.
+        let (env_trace, env_enforce_scope, from_tracked, command) = match raw_command {
+            ClientCommand::Tracked { trace, enforce_scope, command } => (trace, enforce_scope, true, *command),
+            other => (None, false, false, other),
+        };
         let opening = matches!(&command, ClientCommand::GossipHello { .. } | ClientCommand::QuestgiverHello { .. } | ClientCommand::QuestgiverOpenTracked { .. });
         let scope = Some((view.session_epoch, view.world_generation));
         let cmd_trace = match &command {
@@ -3267,6 +3275,34 @@ fn wrath_tap_commands(
             | ClientCommand::CancelCast { trace, .. }
             | ClientCommand::CancelChannelling { trace, .. } => trace.clone(),
             _ => None,
+        };
+        let cmd_trace = cmd_trace.or(env_trace.clone());
+        // Receipt trace for quest tracked variants, used by the generic trace scope path.
+        let receipt_trace = match &command {
+            ClientCommand::QuestgiverAcceptTracked { receipt }
+            | ClientCommand::QuestgiverSelectTracked { receipt, .. }
+            | ClientCommand::QuestgiverOpenTracked { receipt, .. }
+            | ClientCommand::QuestgiverRequestRewardTracked { receipt }
+            | ClientCommand::QuestgiverChooseRewardTracked { receipt, .. } => receipt.trace.clone(),
+            _ => None,
+        };
+        let primary_trace = cmd_trace.clone().or(receipt_trace.clone());
+        let receipt_enforce = match &command {
+            ClientCommand::QuestgiverAcceptTracked { receipt }
+            | ClientCommand::QuestgiverSelectTracked { receipt, .. }
+            | ClientCommand::QuestgiverOpenTracked { receipt, .. }
+            | ClientCommand::QuestgiverRequestRewardTracked { receipt }
+            | ClientCommand::QuestgiverChooseRewardTracked { receipt, .. } => receipt.enforce_scope,
+            _ => false,
+        };
+        // Scope rule:
+        // - a `Tracked` envelope uses its explicit flag;
+        // - a receipt's flag governs its own trace;
+        // - a per-variant (non-envelope) trace with a carried scope defaults to enforced.
+        let enforce_scope = if from_tracked {
+            env_enforce_scope || receipt_enforce
+        } else {
+            receipt_enforce || primary_trace.as_ref().and_then(|t| t.scope()).is_some()
         };
         if opening {
             if let Some(trace) = &trace {
@@ -3356,6 +3392,31 @@ fn wrath_tap_commands(
             }
             command => (command, None),
         };
+        // Generic trace scope check: enforced only when `enforce_scope` is true (defaulted true for
+        // a carried scope per the named rule above).
+        if enforce_scope {
+            if let Some(ix) = &primary_trace {
+                if let Some((se, wg)) = ix.scope() {
+                if !view.entered_world
+                    || view.session_epoch != se
+                    || view.world_generation != wg
+                {
+                    if let Some(receipt) = receipt.as_ref() {
+                        receipt.report(crate::net::CommandDelivery::Rejected(
+                            crate::net::CommandRefusal::ScopeChanged,
+                        ));
+                    } else {
+                        ix.record(crate::quest_trace::Stage::Delivery(
+                            crate::net::CommandDelivery::Rejected(
+                                crate::net::CommandRefusal::ScopeChanged,
+                            ),
+                        ));
+                    }
+                    continue;
+                }
+            }
+        }
+        }
         let count = view.next_cast_count;
         let packet = match command {
             ClientCommand::SetSelection { guid } => {
@@ -3923,7 +3984,7 @@ fn wrath_tap_commands(
             _ => None,
         };
         if let Some((opcode, payload)) = packet {
-            if let Some(trace) = receipt.as_ref().and_then(|r| r.trace.as_ref()) {
+            if let Some(trace) = &primary_trace {
                 trace.record(crate::quest_trace::Stage::Encoded);
             }
             if let Ok(mut queue) = input.0.lock() {
@@ -3938,9 +3999,21 @@ fn wrath_tap_commands(
                         movement: false,
                         receipt: receipt.clone(),
                         trace: cmd_trace.clone(),
+                        enforce_scope,
                     });
                     if let Some(receipt) = receipt.as_ref() {
                         receipt.report(crate::net::CommandDelivery::OutboxAdmitted);
+                        // One interaction must receive exactly one terminal delivery event: the receipt
+                        // remains the authority, so a distinct envelope trace records only when its
+                        // interaction differs from the receipt's.
+                        if let Some(pt) = &primary_trace {
+                            let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                            if pt.interaction_id() != receipt_ix {
+                                pt.record_delivery(crate::net::CommandDelivery::OutboxAdmitted);
+                            }
+                        }
+                    } else if let Some(pt) = &primary_trace {
+                        pt.record_delivery(crate::net::CommandDelivery::OutboxAdmitted);
                     }
                     if diagnostic_outbound(opcode) {
                         if let Some(trace) = &trace {
@@ -3978,6 +4051,18 @@ fn wrath_tap_commands(
                         receipt.report(crate::net::CommandDelivery::Rejected(
                             crate::net::CommandRefusal::OutboxFull,
                         ));
+                        if let Some(pt) = &primary_trace {
+                            let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                            if pt.interaction_id() != receipt_ix {
+                                pt.record_delivery(crate::net::CommandDelivery::Rejected(
+                                    crate::net::CommandRefusal::OutboxFull,
+                                ));
+                            }
+                        }
+                    } else if let Some(pt) = &primary_trace {
+                        pt.record_delivery(crate::net::CommandDelivery::Rejected(
+                            crate::net::CommandRefusal::OutboxFull,
+                        ));
                     }
                     if diagnostic_outbound(opcode) {
                         if let Some(trace) = &trace {
@@ -3995,6 +4080,18 @@ fn wrath_tap_commands(
             } else {
                 if let Some(receipt) = receipt.as_ref() {
                     receipt.report(crate::net::CommandDelivery::Rejected(
+                        crate::net::CommandRefusal::Unavailable,
+                    ));
+                    if let Some(pt) = &primary_trace {
+                        let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                        if pt.interaction_id() != receipt_ix {
+                            pt.record_delivery(crate::net::CommandDelivery::Rejected(
+                                crate::net::CommandRefusal::Unavailable,
+                            ));
+                        }
+                    }
+                } else if let Some(pt) = &primary_trace {
+                    pt.record_delivery(crate::net::CommandDelivery::Rejected(
                         crate::net::CommandRefusal::Unavailable,
                     ));
                 }
@@ -6255,6 +6352,7 @@ fn wrath_stream_movement(
             movement: true,
             receipt: None,
             trace: None,
+            enforce_scope: false,
         });
     } else if let Some(trace) = &trace {
         trace.note_movement_refused();
@@ -6924,6 +7022,7 @@ pub fn run_session_with_cancel(
                 .map(|mut queue| queue.drain(..).collect())
                 .unwrap_or_default();
             for command in pending {
+                // Cancel handling for receipt-level scope.
                 if let Some(receipt) = command.receipt.as_ref() {
                     if receipt.enforce_scope && cancel.load(Ordering::SeqCst) {
                         receipt.report(crate::net::CommandDelivery::Rejected(
@@ -6940,6 +7039,50 @@ pub fn run_session_with_cancel(
                         ));
                         continue;
                     }
+                }
+                // Generic trace scope check: enforced only when the carried flag says so.
+                let mut stale_trace = false;
+                if command.enforce_scope {
+                    if let Some(ix) = &command.trace {
+                    if let Some((se, wg)) = ix.scope() {
+                        if se != session.epoch()
+                            || wg != session.world_generation()
+                            || session.phase() != Phase::InWorld
+                        {
+                            stale_trace = true;
+                            ix.record(crate::quest_trace::Stage::Delivery(
+                                crate::net::CommandDelivery::Rejected(
+                                    crate::net::CommandRefusal::ScopeChanged,
+                                ),
+                            ));
+                        }
+                    }
+                    }
+                }
+                if let Some(receipt) = &command.receipt {
+                    if !receipt.enforce_scope {
+                        if let Some(ix) = &receipt.trace {
+                            if let Some((se, wg)) = ix.scope() {
+                                if se != session.epoch()
+                                    || wg != session.world_generation()
+                                    || session.phase() != Phase::InWorld
+                                {
+                                    stale_trace = true;
+                                    // Reuse the receipt report path as authority for this interaction,
+                                    // unless the same interaction was already recorded via command.trace.
+                                    let cmd_ix = command.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                                    if cmd_ix == 0 || cmd_ix != ix.interaction_id() {
+                                        receipt.report(crate::net::CommandDelivery::Rejected(
+                                            crate::net::CommandRefusal::ScopeChanged,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if stale_trace {
+                    continue;
                 }
                 let result = world.send(command.opcode, &command.payload);
                 if diagnostic_outbound(command.opcode) {
@@ -6970,6 +7113,18 @@ pub fn run_session_with_cancel(
                     } else if let Some(trace) = &feed.trace {
                         trace.observe(Some((session.epoch(), session.world_generation())), None,
                             crate::quest_trace::Stage::SocketWriteFailed);
+                    }
+                }
+                // Delivery outcome records on trace-bearing commands (defect #2 fix), unless the
+                // same interaction is already reported through the receipt path.
+                let receipt_ix = command.receipt.as_ref().and_then(|r| r.trace.as_ref()).map(|t| t.interaction_id()).unwrap_or(0);
+                if let Some(ix) = &command.trace {
+                    if receipt_ix == 0 || ix.interaction_id() != receipt_ix {
+                        if result.is_ok() {
+                            ix.record_delivery(crate::net::CommandDelivery::Written);
+                        } else {
+                            ix.record_delivery(crate::net::CommandDelivery::WriteFailed);
+                        }
                     }
                 }
                 if let Some(receipt) = command.receipt.as_ref() {

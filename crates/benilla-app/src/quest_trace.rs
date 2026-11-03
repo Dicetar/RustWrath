@@ -666,6 +666,26 @@ impl Interaction {
             ingress.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    /// Explicit transport delivery recorder; transport code must use this instead of
+    /// constructing `Stage::Delivery` ad hoc.
+    ///
+    /// Contract: one interaction must receive exactly one terminal delivery event. If a
+    /// trace-only envelope wraps a receipt-bearing command, the receipt remains the
+    /// authority and the envelope trace must not emit a second terminal.
+    pub(crate) fn record_delivery(&self, delivery: crate::net::CommandDelivery) {
+        self.record(Stage::Delivery(delivery));
+    }
+
+    /// The interaction's scope, exposed for stale-scope checks without making `Subject`
+    /// public across the crate boundary. Returns `None` when no scope was carried.
+    pub(crate) fn scope(&self) -> Option<(u64, u64)> {
+        self.subject.scope
+    }
+
+    pub(crate) fn interaction_id(&self) -> u64 {
+        self.subject.interaction
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1330,6 +1350,25 @@ impl History {
 
     pub(crate) fn counters(&self) -> (u64, u64, u64) {
         (self.received, self.evicted, self.source.0.dropped.load(Ordering::Relaxed))
+    }
+
+    /// Delivery counts across retained entries (admitted, written, rejected, write-failed).
+    pub(crate) fn delivery_counts(&self) -> (u64, u64, u64, u64) {
+        let mut admitted = 0u64;
+        let mut written = 0u64;
+        let mut rejected = 0u64;
+        let mut failed = 0u64;
+        for (_, event) in &self.entries {
+            if let Stage::Delivery(delivery) = event.stage {
+                match delivery {
+                    crate::net::CommandDelivery::OutboxAdmitted => admitted = admitted.saturating_add(1),
+                    crate::net::CommandDelivery::Written => written = written.saturating_add(1),
+                    crate::net::CommandDelivery::Rejected(_) => rejected = rejected.saturating_add(1),
+                    crate::net::CommandDelivery::WriteFailed => failed = failed.saturating_add(1),
+                }
+            }
+        }
+        (admitted, written, rejected, failed)
     }
 
     /// Additive per-vector evidence summary derived from the same bounded snapshot that
