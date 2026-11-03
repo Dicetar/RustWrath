@@ -2071,6 +2071,7 @@ impl History {
                 spell_id,
                 wire_cast_count,
                 attempt,
+                edge,
                 ..
             } = event.stage
             else {
@@ -2078,7 +2079,7 @@ impl History {
             };
             let key = if event.subject.interaction != 0 {
                 ChainKey::Local(event.subject.interaction)
-            } else {
+            } else if is_native_cast_edge(edge) {
                 // A native edge joins the local chain it can be attributed to. When no unique
                 // local write exists it keeps its own bounded chain, so the line can say the
                 // local action was not retained instead of printing interaction 0.
@@ -2090,6 +2091,15 @@ impl History {
                         attempt,
                         wire: wire_cast_count,
                     },
+                }
+            } else {
+                // A local request/admission/cancel whose action id was not retained is not
+                // native outcome evidence and is not attributed to a different action.
+                ChainKey::Native {
+                    scope: event.subject.scope,
+                    spell: spell_id,
+                    attempt,
+                    wire: wire_cast_count,
                 }
             };
             let existing = chains.iter().position(|chain| {
