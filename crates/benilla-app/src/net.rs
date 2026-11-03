@@ -1661,6 +1661,13 @@ pub(crate) enum ClientCommand {
         receipt: CommandReceipt,
         gossip: bool,
     },
+    QuestgiverRequestRewardTracked {
+        receipt: CommandReceipt,
+    },
+    QuestgiverChooseRewardTracked {
+        receipt: CommandReceipt,
+        choice: u32,
+    },
     /// `CMSG_QUESTGIVER_COMPLETE_QUEST`; answered by `SMSG_QUESTGIVER_REQUEST_ITEMS`, or
     /// `OFFER_REWARD` with no required items.
     QuestgiverComplete {

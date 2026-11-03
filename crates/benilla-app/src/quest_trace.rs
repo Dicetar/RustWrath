@@ -39,9 +39,16 @@ pub(crate) enum Stage {
     ProgressPanel,
     RewardPanel,
     QuestSlotAdded,
+    QuestSlotProgressed { counters: [u16; 4], state: u32 },
     QuestSlotRemoved,
     JournalProjection,
     JournalRowInModel,
+    JournalTemplatePending,
+    JournalTemplateRefused,
+    QuestCompletePacket { xp: u32, money: u32, reward_items: u32 },
+    PlayerXpChanged { delta: u32 },
+    PlayerMoneyChanged { delta: i64 },
+    RewardItemPushed { item_id: u32, count: u32 },
     ServerQuestInvalid { reason: u32 },
     ServerQuestLogFull,
     ServerQuestFailed { reason: u32 },
@@ -223,6 +230,8 @@ pub(crate) enum Operation {
     Open,
     Select,
     Accept,
+    RequestReward,
+    ChooseReward,
     Observed,
 }
 
@@ -791,7 +800,10 @@ impl History {
                                     && candidate.subject.npc_alias == npc_alias
                             }
                             Stage::DetailPanel | Stage::ProgressPanel | Stage::RewardPanel => {
-                                (candidate.subject.operation == Operation::Select
+                                ((candidate.subject.operation == Operation::Select
+                                    || (matches!(event.stage, Stage::RewardPanel)
+                                        && candidate.subject.operation
+                                            == Operation::RequestReward))
                                     && quest.is_some()
                                     && candidate.subject.quest == quest
                                     && (npc_alias.is_none()
@@ -1044,6 +1056,52 @@ impl History {
                                 }
                                 None
                             }
+                            Operation::RequestReward => {
+                                if event.subject.quest.is_some()
+                                    && later.subject.quest == event.subject.quest
+                                    && matches!(
+                                        later.stage,
+                                        Stage::RewardPanel | Stage::ServerQuestFailed { .. }
+                                    )
+                                {
+                                    return match later.stage {
+                                        Stage::RewardPanel => {
+                                            Some("; reward panel observed (possible match)".into())
+                                        }
+                                        Stage::ServerQuestFailed { reason } => Some(format!(
+                                            "; server reported quest failure {reason} (possible match)"
+                                        )),
+                                        _ => None,
+                                    };
+                                }
+                                None
+                            }
+                            Operation::ChooseReward => {
+                                if event.subject.quest.is_some()
+                                    && later.subject.quest == event.subject.quest
+                                    && matches!(
+                                        later.stage,
+                                        Stage::QuestCompletePacket { .. }
+                                            | Stage::QuestSlotRemoved
+                                            | Stage::ServerQuestFailed { .. }
+                                    )
+                                {
+                                    return match later.stage {
+                                        Stage::QuestCompletePacket { .. } => Some(
+                                            "; turn-in packet observed (awaiting/checking reward deltas)"
+                                                .into(),
+                                        ),
+                                        Stage::QuestSlotRemoved => {
+                                            Some("; quest slot removed (possible match)".into())
+                                        }
+                                        Stage::ServerQuestFailed { reason } => Some(format!(
+                                            "; server reported quest failure {reason} (possible match)"
+                                        )),
+                                        _ => None,
+                                    };
+                                }
+                                None
+                            }
                             Operation::Observed => None,
                         }
                     })
@@ -1141,12 +1199,48 @@ impl History {
                     && later.subject.reload_generation == active_reload
                     && later.elapsed_ms >= event.elapsed_ms
             });
+            let template_refused = self.entries.iter().any(|(_, later)| {
+                matches!(later.stage, Stage::JournalTemplateRefused)
+                    && later.subject.scope == Some(scope)
+                    && later.subject.quest == Some(quest)
+                    && later.elapsed_ms >= event.elapsed_ms
+            });
+            let template_pending = !row
+                && !template_refused
+                && self.entries.iter().any(|(_, later)| {
+                    matches!(later.stage, Stage::JournalTemplatePending)
+                        && later.subject.scope == Some(scope)
+                        && later.subject.quest == Some(quest)
+                        && later.subject.reload_generation == active_reload
+                        && later.elapsed_ms >= event.elapsed_ms
+                });
             let row_status = if row {
                 "; row exists in journal model"
+            } else if template_refused {
+                "; quest template refused by server"
+            } else if template_pending {
+                "; awaiting quest template"
             } else if projected_in_active_vm && !incomplete {
                 "; journal mismatch (projected without row in model)"
             } else {
                 "; row in journal model unverified"
+            };
+            let latest_progress = self.entries.iter().rev().find_map(|(_, later)| {
+                if later.subject.scope == Some(scope)
+                    && later.subject.quest == Some(quest)
+                    && later.elapsed_ms >= event.elapsed_ms
+                {
+                    if let Stage::QuestSlotProgressed { counters, state } = later.stage {
+                        return Some((counters, state));
+                    }
+                }
+                None
+            });
+            let progress_status = match latest_progress {
+                Some((counters, state)) => {
+                    format!("; objective progress counters={counters:?} state={state}")
+                }
+                None => String::new(),
             };
             let result = match candidates.as_slice() {
                 [id] => format!("Quest {quest}: slot observed after action {id} (possible match; {projection})"),
@@ -1154,11 +1248,119 @@ impl History {
                 _ => format!("Quest {quest}: slot observed, {} matching writes (ambiguous); {projection}", candidates.len()),
             };
             Some(if incomplete {
-                format!("{result}{row_status}; trace has gaps")
+                format!("{result}{row_status}{progress_status}; trace has gaps")
             } else {
-                format!("{result}{row_status}")
+                format!("{result}{row_status}{progress_status}")
             })
         }).take(8).collect()
+    }
+
+    /// Correlate `SMSG_QUESTGIVER_QUEST_COMPLETE` against `ChooseReward` writes and asynchronous
+    /// state deltas (`QuestSlotRemoved`, `PlayerXpChanged`, `PlayerMoneyChanged`, `RewardItemPushed`).
+    /// Never claim turn-in completion from `SMSG_QUESTGIVER_QUEST_COMPLETE` alone.
+    pub(crate) fn turn_in_correlations(&self) -> Vec<String> {
+        let incomplete = self.has_telemetry_gaps();
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(_, event)| {
+                let Stage::QuestCompletePacket {
+                    xp,
+                    money,
+                    reward_items,
+                } = event.stage
+                else {
+                    return None;
+                };
+                let quest = event.subject.quest?;
+                let scope = event.subject.scope?;
+                let candidates: Vec<_> = self
+                    .entries
+                    .iter()
+                    .filter_map(|(_, candidate)| {
+                        (candidate.subject.operation == Operation::ChooseReward
+                            && candidate.subject.scope == Some(scope)
+                            && candidate.subject.quest == Some(quest)
+                            && candidate.elapsed_ms <= event.elapsed_ms
+                            && event.elapsed_ms.saturating_sub(candidate.elapsed_ms) <= 30_000
+                            && matches!(
+                                candidate.stage,
+                                Stage::Delivery(CommandDelivery::Written)
+                            ))
+                        .then_some(candidate.subject.interaction)
+                    })
+                    .collect();
+
+                let in_delta_window = |other: &Event| {
+                    other.subject.scope == Some(scope)
+                        && other.elapsed_ms.abs_diff(event.elapsed_ms) <= 5_000
+                };
+                let slot_removed = self.entries.iter().any(|(_, other)| {
+                    in_delta_window(other)
+                        && other.subject.quest == Some(quest)
+                        && matches!(other.stage, Stage::QuestSlotRemoved)
+                });
+                let xp_observed = xp == 0
+                    || self.entries.iter().any(|(_, other)| {
+                        in_delta_window(other)
+                            && matches!(other.stage, Stage::PlayerXpChanged { delta } if delta > 0)
+                    });
+                let money_observed = money == 0
+                    || self.entries.iter().any(|(_, other)| {
+                        in_delta_window(other)
+                            && matches!(
+                                other.stage,
+                                Stage::PlayerMoneyChanged { delta } if delta > 0
+                            )
+                    });
+                let items_pushed = self
+                    .entries
+                    .iter()
+                    .filter(|(_, other)| {
+                        in_delta_window(other)
+                            && matches!(other.stage, Stage::RewardItemPushed { count, .. } if count > 0)
+                    })
+                    .count() as u32;
+                let items_observed = items_pushed >= reward_items;
+
+                let mut missing = Vec::new();
+                if !slot_removed {
+                    missing.push("quest slot removal");
+                }
+                if !xp_observed {
+                    missing.push("player XP delta");
+                }
+                if !money_observed {
+                    missing.push("player money delta");
+                }
+                if !items_observed {
+                    missing.push("reward item push");
+                }
+
+                let action_part = match candidates.as_slice() {
+                    [id] => format!("after action {id} (possible match)"),
+                    [] => "without a retained ChooseReward write in 30s".to_string(),
+                    many => format!("{} matching ChooseReward writes (ambiguous)", many.len()),
+                };
+                let delta_part = if missing.is_empty() {
+                    format!(
+                        "turn-in deltas verified (slot removed, xp={xp}, money={money}, items={items_pushed}/{reward_items})"
+                    )
+                } else {
+                    format!(
+                        "incomplete turn-in projection (packet received; missing: {})",
+                        missing.join(", ")
+                    )
+                };
+                let summary = format!("Quest {quest} turn-in {action_part}: {delta_part}");
+                Some(if incomplete {
+                    format!("{summary}; trace has gaps")
+                } else {
+                    summary
+                })
+            })
+            .take(8)
+            .collect()
     }
 
     /// Save an allowlisted snapshot away from the frame thread.
@@ -1196,6 +1398,7 @@ impl History {
         let action_summaries = self.action_summaries();
         let panel_correlations = self.panel_correlations();
         let slot_correlations = self.slot_correlations();
+        let turn_in_correlations = self.turn_in_correlations();
         let ui_correlations = self.ui_error_correlations();
         let spawn = std::thread::Builder::new()
             .name("interaction-diagnostics-export".into())
@@ -1263,6 +1466,7 @@ impl History {
                         "action_summaries": action_summaries,
                         "panel_correlations": panel_correlations,
                         "slot_correlations": slot_correlations,
+                        "turn_in_correlations": turn_in_correlations,
                         "ui_error_correlations": ui_correlations,
                     }).to_string();
                     text.push('\n');
@@ -1673,9 +1877,13 @@ pub(crate) fn drain_history(history: &mut History) {
             _ => {}
         }
 
-        // Resolve open interactions when a matching panel or quest-slot addition arrives,
+        // Resolve open interactions when a matching panel, quest-slot addition, or turn-in packet arrives,
         // and emit an AmbiguousServerOutcome incident if multiple prior writes match.
-        if matches!(event.stage, Stage::QuestSlotAdded) || is_panel_stage(event.stage) {
+        if matches!(
+            event.stage,
+            Stage::QuestSlotAdded | Stage::QuestCompletePacket { .. }
+        ) || is_panel_stage(event.stage)
+        {
             let matching_indices: Vec<usize> = history
                 .open_interactions
                 .iter()
@@ -1696,6 +1904,11 @@ pub(crate) fn drain_history(history: &mut History) {
                                 && event.subject.quest.is_some()
                                 && open.subject.quest == event.subject.quest
                         }
+                        Stage::QuestCompletePacket { .. } => {
+                            open.subject.operation == Operation::ChooseReward
+                                && event.subject.quest.is_some()
+                                && open.subject.quest == event.subject.quest
+                        }
                         Stage::GreetingPanel
                         | Stage::DomainEvent {
                             event: DomainEvent::GossipMenu,
@@ -1705,7 +1918,9 @@ pub(crate) fn drain_history(history: &mut History) {
                                 && open.subject.npc_alias == event.subject.npc_alias
                         }
                         Stage::DetailPanel | Stage::ProgressPanel | Stage::RewardPanel => {
-                            (open.subject.operation == Operation::Select
+                            ((open.subject.operation == Operation::Select
+                                || (matches!(event.stage, Stage::RewardPanel)
+                                    && open.subject.operation == Operation::RequestReward))
                                 && event.subject.quest.is_some()
                                 && open.subject.quest == event.subject.quest)
                                 || (open.subject.operation == Operation::Open
@@ -1779,12 +1994,19 @@ pub(crate) fn drain_history(history: &mut History) {
                             candidate.subject.quest == event.subject.quest
                                 && matches!(
                                     candidate.subject.operation,
-                                    Operation::Accept | Operation::Select
+                                    Operation::Accept
+                                        | Operation::Select
+                                        | Operation::RequestReward
+                                        | Operation::ChooseReward
                                 )
                         } else {
                             matches!(
                                 candidate.subject.operation,
-                                Operation::Accept | Operation::Select | Operation::Open
+                                Operation::Accept
+                                    | Operation::Select
+                                    | Operation::Open
+                                    | Operation::RequestReward
+                                    | Operation::ChooseReward
                             ) && (event.subject.npc_alias.is_none()
                                 || candidate.subject.npc_alias.is_none()
                                 || candidate.subject.npc_alias == event.subject.npc_alias)
@@ -2153,5 +2375,121 @@ mod tests {
                 "unknown.schema".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn q03_objective_progress_and_delayed_template_distinguish_awaiting_template_from_row_mismatch()
+    {
+        let (source, mut history) = new_pair();
+        let scope = Some((1, 1));
+        let npc = 0xF130_0000_0000_0077;
+
+        // Quest 783: slot added, projected while template is still pending -> must report awaiting template, not mismatch.
+        let accept = source.begin_with_npc(scope, Some(783), Some(npc), Operation::Accept);
+        accept.record(Stage::Delivery(CommandDelivery::Written));
+        source.observe(scope, Some(783), Stage::QuestSlotAdded);
+        source.observe(scope, Some(783), Stage::JournalProjection);
+        source.observe(scope, Some(783), Stage::JournalTemplatePending);
+        source.observe(
+            scope,
+            Some(783),
+            Stage::QuestSlotProgressed {
+                counters: [4, 0, 0, 0],
+                state: 0,
+            },
+        );
+        drain_all(&mut history);
+
+        #[cfg(feature = "dev")]
+        {
+            let slots = history.slot_correlations();
+            assert!(
+                slots.iter().any(|line| {
+                    line.contains("Quest 783")
+                        && line.contains("awaiting quest template")
+                        && line.contains("counters=[4, 0, 0, 0]")
+                }),
+                "pending template must be reported as awaiting template with objective counters: {slots:?}"
+            );
+        }
+
+        // Now SMSG_QUEST_QUERY_RESPONSE lands and the row appears in the journal model.
+        source.observe(scope, Some(783), Stage::JournalProjection);
+        source.observe(scope, Some(783), Stage::JournalRowInModel);
+        drain_all(&mut history);
+
+        #[cfg(feature = "dev")]
+        {
+            let slots = history.slot_correlations();
+            assert!(
+                slots.iter().any(|line| {
+                    line.contains("Quest 783") && line.contains("row exists in journal model")
+                }),
+                "once template lands and row is in model, slot correlation must confirm row: {slots:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn q04_turn_in_requires_asynchronous_slot_removal_and_reward_deltas_not_packet_alone() {
+        let (source, mut history) = new_pair();
+        let scope = Some((2, 1));
+        let npc = 0xF130_0000_0000_0088;
+
+        let choose = source.begin_with_npc(scope, Some(7), Some(npc), Operation::ChooseReward);
+        choose.record(Stage::Delivery(CommandDelivery::Written));
+        // SMSG_QUESTGIVER_QUEST_COMPLETE arrives expecting xp=250, money=125, reward_items=1,
+        // before the UPDATE_OBJECT / SMSG_ITEM_PUSH_RESULT deltas have landed.
+        source.observe_with_npc(
+            scope,
+            Some(7),
+            Some(npc),
+            Stage::QuestCompletePacket {
+                xp: 250,
+                money: 125,
+                reward_items: 1,
+            },
+        );
+        drain_all(&mut history);
+
+        #[cfg(feature = "dev")]
+        {
+            let turn_ins = history.turn_in_correlations();
+            assert!(
+                turn_ins.iter().any(|line| {
+                    line.contains("Quest 7 turn-in")
+                        && line.contains("incomplete turn-in projection")
+                        && line.contains("quest slot removal")
+                }),
+                "SMSG_QUESTGIVER_QUEST_COMPLETE alone must never claim complete turn-in: {turn_ins:?}"
+            );
+        }
+
+        // Now the asynchronous UPDATE_OBJECT and SMSG_ITEM_PUSH_RESULT deltas arrive in the same scope.
+        source.observe(scope, Some(7), Stage::QuestSlotRemoved);
+        source.observe(scope, None, Stage::PlayerXpChanged { delta: 250 });
+        source.observe(scope, None, Stage::PlayerMoneyChanged { delta: 125 });
+        source.observe(
+            scope,
+            None,
+            Stage::RewardItemPushed {
+                item_id: 60,
+                count: 1,
+            },
+        );
+        drain_all(&mut history);
+
+        #[cfg(feature = "dev")]
+        {
+            let turn_ins = history.turn_in_correlations();
+            assert!(
+                turn_ins.iter().any(|line| {
+                    line.contains("Quest 7 turn-in")
+                        && line.contains("turn-in deltas verified")
+                        && line.contains("items=1/1")
+                }),
+                "once slot removal, XP, money, and item push arrive, turn-in is verified: {turn_ins:?}"
+            );
+        }
     }
 }

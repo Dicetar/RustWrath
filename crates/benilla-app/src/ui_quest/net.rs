@@ -98,6 +98,8 @@ fn on_complete(
     mut lines: ResMut<QuestLines>,
     quest_log: Res<QuestLog>,
     net_commands: Res<NetCommands>,
+    wrath: Option<Res<crate::wrath::WrathWorldView>>,
+    trace: Option<Res<crate::quest_trace::Source>>,
     mut commands: Commands,
 ) {
     if let SessionEvent::QuestComplete(c) = ev {
@@ -105,6 +107,25 @@ fn on_complete(
         let chained = quest_log
             .template(c.quest_id, Ask::Event(&net_commands))
             .is_some_and(|t| t.next_quest_in_chain != 0);
+        if let Some(trace) = &trace {
+            let scope = wrath.as_ref().map(|v| (v.session_epoch, v.world_generation));
+            let reward_items = c
+                .items
+                .iter()
+                .filter(|&&(item_id, count)| item_id != 0 && count != 0)
+                .count() as u32
+                + u32::from(quest.chosen_reward != 0);
+            trace.observe_with_npc(
+                scope,
+                Some(c.quest_id),
+                quest.npc,
+                crate::quest_trace::Stage::QuestCompletePacket {
+                    xp: c.xp,
+                    money: c.money,
+                    reward_items,
+                },
+            );
+        }
         quest_complete(c, &mut quest, &mut lines);
         if !chained {
             crate::ui_session::queue(&mut commands, close_without_report);

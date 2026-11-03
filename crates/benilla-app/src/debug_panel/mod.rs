@@ -357,6 +357,9 @@ fn debug_panel_ui(
                             for line in history.slot_correlations() {
                                 ui.label(line);
                             }
+                            for line in history.turn_in_correlations() {
+                                ui.label(line);
+                            }
                             for line in history.ui_error_correlations() {
                                 ui.label(line);
                             }

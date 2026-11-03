@@ -3272,6 +3272,43 @@ fn wrath_tap_commands(
                 };
                 (command, Some(receipt))
             }
+            ClientCommand::QuestgiverRequestRewardTracked { receipt } => {
+                if !view.entered_world
+                    || receipt.session_epoch != view.session_epoch
+                    || receipt.world_generation != view.world_generation
+                {
+                    receipt.report(crate::net::CommandDelivery::Rejected(
+                        crate::net::CommandRefusal::ScopeChanged,
+                    ));
+                    continue;
+                }
+                (
+                    ClientCommand::QuestgiverRequestReward {
+                        npc: receipt.npc,
+                        quest: receipt.quest,
+                    },
+                    Some(receipt),
+                )
+            }
+            ClientCommand::QuestgiverChooseRewardTracked { receipt, choice } => {
+                if !view.entered_world
+                    || receipt.session_epoch != view.session_epoch
+                    || receipt.world_generation != view.world_generation
+                {
+                    receipt.report(crate::net::CommandDelivery::Rejected(
+                        crate::net::CommandRefusal::ScopeChanged,
+                    ));
+                    continue;
+                }
+                (
+                    ClientCommand::QuestgiverChooseReward {
+                        npc: receipt.npc,
+                        quest: receipt.quest,
+                        choice,
+                    },
+                    Some(receipt),
+                )
+            }
             command => (command, None),
         };
         let count = view.next_cast_count;
@@ -4035,6 +4072,16 @@ fn wrath_dispatch_events(world: &mut World) {
                         None,
                         npc,
                         Stage::DomainEvent { event: event_kind },
+                    );
+                }
+                if let SessionEvent::ItemPushResult(push) = &event.event {
+                    trace.observe(
+                        Some((event.session_epoch, event.world_generation)),
+                        None,
+                        Stage::RewardItemPushed {
+                            item_id: push.item_entry,
+                            count: push.count,
+                        },
                     );
                 }
             }
@@ -5259,21 +5306,76 @@ fn wrath_apply_world(world: &mut World) {
                 let quest_slots_changed =
                     wrath_slots.is_some_and(|slots| old_slots != Some(slots));
                 if *guid == player_guid {
-                    if let (Some(old), Some(new), Some(trace)) = (
-                        old_slots,
-                        wrath_slots,
-                        world.get_resource::<crate::quest_trace::Source>(),
-                    ) {
-                        let scope = world.get_resource::<WrathWorldView>()
-                            .map(|v| (v.session_epoch, v.world_generation));
-                        for slot in &new.0 {
-                            if slot.quest_id != 0 && !old.0.iter().any(|s| s.quest_id == slot.quest_id) {
-                                trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::QuestSlotAdded);
+                    let old_raw = world.get::<WrathPlayerRaw>(entity);
+                    let old_xp = old_raw.and_then(|r| r.0.get(634).copied());
+                    let new_xp = player_raw.as_ref().and_then(|r| r.get(634).copied());
+                    let old_money = old_raw.and_then(|r| r.0.get(1170).copied());
+                    let new_money = player_raw.as_ref().and_then(|r| r.get(1170).copied());
+                    let scope = world
+                        .get_resource::<WrathWorldView>()
+                        .map(|v| (v.session_epoch, v.world_generation));
+                    if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
+                        if let (Some(old), Some(new)) = (old_slots, wrath_slots) {
+                            for slot in &new.0 {
+                                if slot.quest_id == 0 {
+                                    continue;
+                                }
+                                match old.0.iter().find(|s| s.quest_id == slot.quest_id) {
+                                    None => {
+                                        trace.observe(
+                                            scope,
+                                            Some(slot.quest_id),
+                                            crate::quest_trace::Stage::QuestSlotAdded,
+                                        );
+                                    }
+                                    Some(prev)
+                                        if prev.counters != slot.counters
+                                            || prev.state != slot.state =>
+                                    {
+                                        trace.observe(
+                                            scope,
+                                            Some(slot.quest_id),
+                                            crate::quest_trace::Stage::QuestSlotProgressed {
+                                                counters: slot.counters,
+                                                state: slot.state,
+                                            },
+                                        );
+                                    }
+                                    Some(_) => {}
+                                }
+                            }
+                            for slot in &old.0 {
+                                if slot.quest_id != 0
+                                    && !new.0.iter().any(|s| s.quest_id == slot.quest_id)
+                                {
+                                    trace.observe(
+                                        scope,
+                                        Some(slot.quest_id),
+                                        crate::quest_trace::Stage::QuestSlotRemoved,
+                                    );
+                                }
                             }
                         }
-                        for slot in &old.0 {
-                            if slot.quest_id != 0 && !new.0.iter().any(|s| s.quest_id == slot.quest_id) {
-                                trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::QuestSlotRemoved);
+                        if let (Some(prev_xp), Some(curr_xp)) = (old_xp, new_xp) {
+                            if curr_xp != prev_xp {
+                                trace.observe(
+                                    scope,
+                                    None,
+                                    crate::quest_trace::Stage::PlayerXpChanged {
+                                        delta: curr_xp.saturating_sub(prev_xp),
+                                    },
+                                );
+                            }
+                        }
+                        if let (Some(prev_money), Some(curr_money)) = (old_money, new_money) {
+                            if curr_money != prev_money {
+                                trace.observe(
+                                    scope,
+                                    None,
+                                    crate::quest_trace::Stage::PlayerMoneyChanged {
+                                        delta: i64::from(curr_money) - i64::from(prev_money),
+                                    },
+                                );
                             }
                         }
                     }

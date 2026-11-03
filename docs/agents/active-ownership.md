@@ -41,29 +41,30 @@ newer reservation or kill another owner's process to acquire the slot.
 
 ## Current evidence and continuation
 
-- D00 default-on recording approved by owner on 2026-11-03, with D01–D07 correlation and
-  lifecycle continuation added in `crates/benilla-app/src/quest_trace.rs`,
-  `target/click.rs`, `ui_quest/{mod,net,verbs}.rs`, `ui_quest_log.rs`, `wrath.rs`, and
-  `debug_panel/mod.rs`. See
+- D00 default-on recording approved by owner on 2026-11-03, with D01–D07 and Q00–Q04
+  correlation and lifecycle continuation added in `crates/benilla-app/src/quest_trace.rs`,
+  `target/click.rs`, `ui_quest/{mod,net,verbs}.rs`, `ui_quest_log.rs`, `wrath.rs`, `net.rs`,
+  `net/io.rs`, and `debug_panel/mod.rs`. See
   [resident quest diagnostics](../architecture/rfc-resident-quest-diagnostics.md).
-  Source now includes run-local `npc_alias` redaction, `Open`/`Select`/`Accept` panel and
-  quest-less server-refusal correlation (`ServerQuestLogFull`, `ServerQuestInvalid`),
-  scope retirement on disconnect/world transfer, reload-aware journal projection
-  evaluation (including async `SMSG_QUEST_QUERY_RESPONSE` template landings), loss-aware
-  `IncidentConfidence` and `AmbiguousServerOutcome` incidents, `SnapshotV1` header version
-  validation, and 7 focused acceptance unit tests in `quest_trace::tests`. Visible pixel
-  rendering and target-client runtime validation remain open. No build/client slot acquired.
+  Source now includes run-local `npc_alias` redaction, `Open`/`Select`/`Accept`/`RequestReward`/`ChooseReward`
+  panel and server-refusal correlation (`ServerQuestLogFull`, `ServerQuestInvalid`, `ServerQuestFailed`),
+  scope retirement on disconnect/world transfer, reload-aware journal projection evaluation
+  (distinguishing `JournalTemplatePending` / `JournalTemplateRefused` from `JournalRowInModel`
+  mismatches), `QuestSlotProgressed` objective counter tracking (Q03), asynchronous turn-in
+  delta correlation across `QuestCompletePacket`, `QuestSlotRemoved`, `PlayerXpChanged`,
+  `PlayerMoneyChanged`, and `RewardItemPushed` (Q04), `SnapshotV1` header version validation,
+  and 9 focused acceptance unit tests in `quest_trace::tests`. Visible pixel rendering and
+  target-client runtime validation remain open (Q05).
 
-- Codex six-task batch (2026-11-03): G01–G06 source/design deliverables prepared;
-  editing finished, no Cargo/client slot acquired. Existing dirty changes preserved.
-  Tests/build/CI/runtime acceptance unrun. Batch evidence and exact remaining checks:
+- Codex six-task batch (2026-11-03): G01–G06 source/design deliverables prepared; G03 focused
+  unit test `item_info_rejects_oversized_stat_count_without_cursor_desync` added in
+  `crates/benilla-protocol-wrath/src/gameplay.rs`. Batch evidence and exact checks:
   `.scratch/project-b/handoffs/2026-11-03-g01-g06-batch.md`.
 
-- Codex V3 continuation (2026-11-03): G00 baseline recorded and H00 manifest retry
-  source repair prepared in `crates/benilla-hotpatch/src/lib.rs`; no build/client slot
-  acquired. Source editing finished; tests/build/runtime acceptance unrun. See
-  `.scratch/project-b/handoffs/2026-11-03-v3-admission-h00.md`. Admission found no
-  cargo/rustc/benilla process; historical reservations above remain preserved.
+- Codex V3 continuation (2026-11-03): G00 baseline recorded and H00 manifest retry source
+  repair + focused unit test `poll_retries_unchanged_manifest_after_transient_load_failure`
+  in `crates/benilla-hotpatch/src/lib.rs`. Live same-PID A→B→A runtime swap remains open (H01).
+  See `.scratch/project-b/handoffs/2026-11-03-v3-admission-h00.md`.
 
 - Astra recovery: cached self-position deduplication in `wrath.rs` and ordinary pose correction
   no longer requests mover handover in `player/state.rs`. Two focused `self_pose_` tests pass;

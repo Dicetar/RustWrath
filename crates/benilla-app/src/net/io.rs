@@ -1625,7 +1625,9 @@ pub(super) fn writer_loop(
                     }
                     ClientCommand::QuestgiverAcceptTracked { receipt }
                     | ClientCommand::QuestgiverSelectTracked { receipt, .. }
-                    | ClientCommand::QuestgiverOpenTracked { receipt, .. } => {
+                    | ClientCommand::QuestgiverOpenTracked { receipt, .. }
+                    | ClientCommand::QuestgiverRequestRewardTracked { receipt }
+                    | ClientCommand::QuestgiverChooseRewardTracked { receipt, .. } => {
                         receipt.report(crate::net::CommandDelivery::Rejected(
                             crate::net::CommandRefusal::UnsupportedMode,
                         ));

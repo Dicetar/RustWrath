@@ -3779,4 +3779,123 @@ mod tests {
             other => panic!("unexpected event: {other:?}"),
         }
     }
+
+    fn build_item_info_payload(
+        entry: u32,
+        stats_count_header: u32,
+        stats: &[(u32, i32)],
+        bag_family: u32,
+    ) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&entry.to_le_bytes());
+        b.extend_from_slice(&2u32.to_le_bytes()); // class
+        b.extend_from_slice(&7u32.to_le_bytes()); // subclass
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // sound_override_subclass
+        b.extend_from_slice(b"Worn Shortsword\0\0\0\0"); // 4 cstrings
+        b.extend_from_slice(&1542u32.to_le_bytes()); // display_info_id
+        b.extend_from_slice(&1u32.to_le_bytes()); // quality
+        b.extend_from_slice(&0u32.to_le_bytes()); // flags
+        b.extend_from_slice(&0u32.to_le_bytes()); // flags2
+        b.extend_from_slice(&35u32.to_le_bytes()); // buy_price
+        b.extend_from_slice(&7u32.to_le_bytes()); // sell_price
+        b.extend_from_slice(&21u32.to_le_bytes()); // inventory_type
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // allowable_class
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // allowable_race
+        b.extend_from_slice(&2u32.to_le_bytes()); // item_level
+        b.extend_from_slice(&1u32.to_le_bytes()); // required_level
+        for _ in 0..6 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // required_skill..required_rep_rank
+        }
+        b.extend_from_slice(&0i32.to_le_bytes()); // max_count
+        b.extend_from_slice(&1i32.to_le_bytes()); // stackable
+        b.extend_from_slice(&0u32.to_le_bytes()); // container_slots
+        b.extend_from_slice(&stats_count_header.to_le_bytes());
+        for &(stat_type, stat_val) in stats {
+            b.extend_from_slice(&stat_type.to_le_bytes());
+            b.extend_from_slice(&stat_val.to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // scaling_distribution
+        b.extend_from_slice(&0u32.to_le_bytes()); // scaling_value
+        for i in 0..2 {
+            let (min, max) = if i == 0 { (1.0f32, 3.0f32) } else { (0.0, 0.0) };
+            b.extend_from_slice(&min.to_le_bytes());
+            b.extend_from_slice(&max.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // armor
+        for _ in 0..6 {
+            b.extend_from_slice(&0i32.to_le_bytes()); // resistances
+        }
+        b.extend_from_slice(&1900u32.to_le_bytes()); // delay_ms
+        b.extend_from_slice(&0u32.to_le_bytes()); // ammo_type
+        b.extend_from_slice(&0.0f32.to_le_bytes()); // ranged_mod_range
+        for _ in 0..5 {
+            for _ in 0..6 {
+                b.extend_from_slice(&0u32.to_le_bytes()); // 5 spell slots * 6 dwords
+            }
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // bonding
+        b.extend_from_slice(b"Starter blade\0"); // description
+        for _ in 0..14 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // page_text..map (14 dwords)
+        }
+        b.extend_from_slice(&bag_family.to_le_bytes()); // trailing sentinel
+        b
+    }
+
+    #[test]
+    fn item_info_rejects_oversized_stat_count_without_cursor_desync() {
+        // 0 stats: trailing bag_family sentinel must align and parse accurately.
+        let zero_stats = build_item_info_payload(25, 0, &[], 0xCAFE_1234);
+        match read_item_info(&zero_stats).expect("0 stats should parse") {
+            ServerEvent::ItemInfo {
+                entry,
+                info: Some(info),
+            } => {
+                assert_eq!(entry, 25);
+                assert!(info.stats.is_empty());
+                assert_eq!(info.bag_family, 0xCAFE_1234);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // 10 stats (12340 MAX_ITEM_PROTO_STATS limit): all 10 stats and trailing bag_family align.
+        let ten_pairs: Vec<(u32, i32)> = (1..=10).map(|i| (i, i as i32 * 2)).collect();
+        let ten_stats = build_item_info_payload(49623, 10, &ten_pairs, 0xBEEF_5678);
+        match read_item_info(&ten_stats).expect("10 stats should parse") {
+            ServerEvent::ItemInfo {
+                entry,
+                info: Some(info),
+            } => {
+                assert_eq!(entry, 49623);
+                assert_eq!(info.stats, ten_pairs);
+                assert_eq!(info.bag_family, 0xBEEF_5678);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // 11 and 64 stats: must reject immediately rather than clamping and desyncing the cursor.
+        for bad_count in [11u32, 64u32] {
+            let pairs: Vec<(u32, i32)> = (0..bad_count).map(|i| (3, i as i32 + 1)).collect();
+            let oversized = build_item_info_payload(99999, bad_count, &pairs, 0x1111_2222);
+            let err = read_item_info(&oversized).expect_err("oversized stats_count must fail");
+            assert!(
+                err.to_string().contains("exceeds 12340 limit 10"),
+                "unexpected error for stats_count={bad_count}: {err:#}"
+            );
+        }
+
+        // Truncated stat block (header claims 4 stats, payload truncated mid-stats): must fail.
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(&25u32.to_le_bytes());
+        truncated.extend_from_slice(&2u32.to_le_bytes());
+        truncated.extend_from_slice(&7u32.to_le_bytes());
+        truncated.extend_from_slice(&(-1i32).to_le_bytes());
+        truncated.extend_from_slice(b"Truncated\0\0\0\0");
+        for _ in 0..17 {
+            truncated.extend_from_slice(&0u32.to_le_bytes());
+        }
+        truncated.extend_from_slice(&4u32.to_le_bytes()); // claims 4 stats, 0 follow
+        assert!(read_item_info(&truncated).is_err());
+    }
 }

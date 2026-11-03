@@ -350,21 +350,61 @@ impl QuestVerbs<'_, '_> {
     /// active player; then `CMSG_QUESTGIVER_REQUEST_REWARD` (`0x50159f`) and the latch
     /// (`0x5015a4`).
     fn complete(&mut self) {
+        use crate::quest_trace::{Operation, Stage};
+        let quest = self.giver.as_ref().and_then(|giver| match &giver.view {
+            Some(QuestView::Progress(p)) => Some(p.quest_id),
+            _ => None,
+        });
+        let npc_for_trace = self.giver.as_ref().and_then(|giver| giver.npc);
+        let trace = self.trace.as_ref().map(|source| {
+            source.begin_with_npc(
+                self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                quest,
+                npc_for_trace,
+                Operation::RequestReward,
+            )
+        });
+        let record = |stage| {
+            if let Some(trace) = &trace {
+                trace.record(stage);
+            }
+        };
         let player = self.objects.player().is_some();
         let Some(giver) = self.giver.as_deref_mut() else {
+            record(Stage::GuardRefused);
             return;
         };
         let Some(QuestView::Progress(p)) = giver.view.as_ref() else {
+            record(Stage::GuardRefused);
             return;
         };
         if giver.acted || !player {
+            record(Stage::GuardRefused);
             return;
         }
         let (npc, quest) = (giver.npc.unwrap_or(0), p.quest_id);
-        let _ = self
-            .net
-            .0
-            .send(ClientCommand::QuestgiverRequestReward { npc, quest });
+        let command = if let (Some(trace), Some(view)) = (&trace, self.wrath.as_ref()) {
+            let (results, _receiver) = crossbeam_channel::bounded(2);
+            ClientCommand::QuestgiverRequestRewardTracked {
+                receipt: crate::net::CommandReceipt {
+                    trace: Some(trace.clone()),
+                    enforce_scope: true,
+                    session_epoch: view.session_epoch,
+                    world_generation: view.world_generation,
+                    npc,
+                    quest,
+                    results,
+                },
+            }
+        } else {
+            ClientCommand::QuestgiverRequestReward { npc, quest }
+        };
+        let result = self.net.0.send(command);
+        record(if result.is_ok() {
+            Stage::ChannelAdmitted
+        } else {
+            Stage::ChannelDisconnected
+        });
         giver.acted = true;
     }
 
@@ -375,14 +415,36 @@ impl QuestVerbs<'_, '_> {
     /// `CMSG_QUESTGIVER_CHOOSE_REWARD` with the choice, a negative one as 0 (`0x501627`-`0x501638`),
     /// and the latch (`0x501643`).
     fn reward(&mut self, script: &mut UiScript, choice: i32) {
+        use crate::quest_trace::{Operation, Stage};
+        let quest = self.giver.as_ref().and_then(|giver| match &giver.view {
+            Some(QuestView::Reward(o)) => Some(o.quest_id),
+            _ => None,
+        });
+        let npc_for_trace = self.giver.as_ref().and_then(|giver| giver.npc);
+        let trace = self.trace.as_ref().map(|source| {
+            source.begin_with_npc(
+                self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                quest,
+                npc_for_trace,
+                Operation::ChooseReward,
+            )
+        });
+        let record = |stage| {
+            if let Some(trace) = &trace {
+                trace.record(stage);
+            }
+        };
         let player = self.objects.player().is_some();
         let Some(giver) = self.giver.as_deref_mut() else {
+            record(Stage::GuardRefused);
             return;
         };
         let Some(QuestView::Reward(o)) = giver.view.as_ref() else {
+            record(Stage::GuardRefused);
             return;
         };
         if !player || giver.acted {
+            record(Stage::GuardRefused);
             return;
         }
         let (npc, quest) = (giver.npc.unwrap_or(0), o.quest_id);
@@ -393,15 +455,39 @@ impl QuestVerbs<'_, '_> {
                 .and_then(|i| o.choices.get(i))
                 .map(|it| it.item_id)
             else {
+                record(Stage::GuardRefused);
                 script.raise_in_call(INVALID_REWARD);
                 return;
             };
             giver.chosen_reward = item;
         }
-        let _ = self.net.0.send(ClientCommand::QuestgiverChooseReward {
-            npc,
-            quest,
-            choice: choice.max(0) as u32,
+        let choice_idx = choice.max(0) as u32;
+        let command = if let (Some(trace), Some(view)) = (&trace, self.wrath.as_ref()) {
+            let (results, _receiver) = crossbeam_channel::bounded(2);
+            ClientCommand::QuestgiverChooseRewardTracked {
+                receipt: crate::net::CommandReceipt {
+                    trace: Some(trace.clone()),
+                    enforce_scope: true,
+                    session_epoch: view.session_epoch,
+                    world_generation: view.world_generation,
+                    npc,
+                    quest,
+                    results,
+                },
+                choice: choice_idx,
+            }
+        } else {
+            ClientCommand::QuestgiverChooseReward {
+                npc,
+                quest,
+                choice: choice_idx,
+            }
+        };
+        let result = self.net.0.send(command);
+        record(if result.is_ok() {
+            Stage::ChannelAdmitted
+        } else {
+            Stage::ChannelDisconnected
         });
         giver.acted = true;
     }

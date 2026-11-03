@@ -891,6 +891,9 @@ pub(crate) fn feed_quest_log(
                     .map(|v| (v.session_epoch, v.world_generation));
                 for slot in slot_views.iter().filter(|slot| slot.quest_id != 0) {
                     trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalProjection);
+                    if quest_log.templates.get(slot.quest_id).is_none() {
+                        trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalTemplatePending);
+                    }
                     if script.quest_log_index(slot.quest_id) != 0 {
                         trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalRowInModel);
                     }
@@ -926,7 +929,7 @@ pub(crate) fn feed_quest_log(
         }
         let refused_ids = std::mem::take(&mut quest_log.refused);
         let refused_any = !refused_ids.is_empty();
-        for id in refused_ids {
+        for &id in &refused_ids {
             script.refuse_quest_record(id);
         }
         let held_now: Vec<(u32, QuestRecordView)> = asks
@@ -946,12 +949,28 @@ pub(crate) fn feed_quest_log(
                     .wrath_view
                     .as_ref()
                     .map(|v| (v.session_epoch, v.world_generation));
+                for &id in &refused_ids {
+                    trace.observe(
+                        scope,
+                        Some(id),
+                        crate::quest_trace::Stage::JournalTemplateRefused,
+                    );
+                }
                 for slot in current_slots.iter().filter(|slot| slot.quest_id != 0) {
                     trace.observe(
                         scope,
                         Some(slot.quest_id),
                         crate::quest_trace::Stage::JournalProjection,
                     );
+                    if quest_log.templates.get(slot.quest_id).is_none()
+                        && !refused_ids.contains(&slot.quest_id)
+                    {
+                        trace.observe(
+                            scope,
+                            Some(slot.quest_id),
+                            crate::quest_trace::Stage::JournalTemplatePending,
+                        );
+                    }
                     if script.quest_log_index(slot.quest_id) != 0 {
                         trace.observe(
                             scope,
@@ -1010,6 +1029,35 @@ pub(crate) fn feed_quest_log(
                 }
             }
             memo.prior = Some(now);
+            if slots_moved && !seat {
+                if let Some(trace) = &reads.quest_trace {
+                    let scope = reads
+                        .wrath_view
+                        .as_ref()
+                        .map(|v| (v.session_epoch, v.world_generation));
+                    for slot in current_slots.iter().filter(|slot| slot.quest_id != 0) {
+                        trace.observe(
+                            scope,
+                            Some(slot.quest_id),
+                            crate::quest_trace::Stage::JournalProjection,
+                        );
+                        if quest_log.templates.get(slot.quest_id).is_none() {
+                            trace.observe(
+                                scope,
+                                Some(slot.quest_id),
+                                crate::quest_trace::Stage::JournalTemplatePending,
+                            );
+                        }
+                        if script.quest_log_index(slot.quest_id) != 0 {
+                            trace.observe(
+                                scope,
+                                Some(slot.quest_id),
+                                crate::quest_trace::Stage::JournalRowInModel,
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // The held counts the item lines read (`0x622130`), current before the field notices fire.

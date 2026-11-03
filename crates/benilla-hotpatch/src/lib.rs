@@ -386,4 +386,52 @@ mod tests {
         };
         assert!(spawn.valid());
     }
+
+    #[test]
+    fn poll_retries_unchanged_manifest_after_transient_load_failure() {
+        let unique = format!(
+            "rustwrath-hotpatch-h00-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+
+        let mut host = Host::new(root.clone());
+        // No ready.toml yet -> Ok(false).
+        assert_eq!(host.poll().expect("missing ready.toml is non-fatal"), false);
+
+        // Write ready.toml before the referenced DLL exists on disk.
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let dll_name = format!("pose-{digest}.dll");
+        let manifest = format!(
+            "revision = \"rev-a\"\nlibrary = \"{dll_name}\"\nsha1 = \"{digest}\"\n"
+        );
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+
+        // First poll fails because the DLL is not yet present; observed must NOT be latched.
+        let first_err = host.poll().expect_err("missing DLL should fail poll");
+        assert!(
+            host.observed.is_none(),
+            "failed poll must not latch observed manifest text: {first_err:#}"
+        );
+
+        // Second poll with identical ready.toml must retry (not return Ok(false)).
+        // Write the DLL file with placeholder bytes so we prove the retry advances to SHA-1 check.
+        std::fs::write(root.join(&dll_name), b"not-matching-sha1").expect("write dll");
+        let second_err = host
+            .poll()
+            .expect_err("retry should reach digest verification");
+        assert!(
+            second_err
+                .to_string()
+                .contains("module digest differs from publication"),
+            "second poll should retry and reach digest check, got: {second_err:#}"
+        );
+        assert!(host.observed.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
