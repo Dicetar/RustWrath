@@ -379,6 +379,7 @@ fn pet_casts(sent: &[ClientCommand]) -> Vec<(u64, u32, benilla_protocol::message
                 caster_guid,
                 spell_id,
                 target,
+                ..
             } => Some((*caster_guid, *spell_id, *target)),
             _ => None,
         })

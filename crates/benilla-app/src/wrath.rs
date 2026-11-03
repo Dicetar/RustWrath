@@ -3928,6 +3928,10 @@ fn wrath_tap_commands(
             }
             if let Ok(mut queue) = input.0.lock() {
                 if queue.len() < WRATH_OUTBOX_CAP {
+                    // The Wrath encoder writes one cast-count byte before the spell ID.
+                    let admitted_spell = (opcode == benilla_protocol_wrath::opcode::CMSG_CAST_SPELL)
+                        .then(|| payload.get(1..5)?.try_into().ok().map(u32::from_le_bytes))
+                        .flatten();
                     queue.push_back(WrathOutbound {
                         opcode,
                         payload,
@@ -3945,21 +3949,16 @@ fn wrath_tap_commands(
                             });
                         }
                     }
-                    if opcode == benilla_protocol_wrath::opcode::CMSG_CAST_SPELL {
-                        let spell_id = payload.get(4..8).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-                        let attempt = payload.get(0..4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+                    if let Some(spell_id) = admitted_spell {
+                        let stage = crate::quest_trace::Stage::Cast {
+                            spell_id: Some(spell_id),
+                            attempt: None,
+                            edge: crate::quest_trace::CastEdge::Admitted,
+                        };
                         if let Some(ix) = &cmd_trace {
-                            ix.record(crate::quest_trace::Stage::Cast {
-                                spell_id,
-                                attempt: attempt.map(|a| a as u64),
-                                edge: crate::quest_trace::CastEdge::Admitted,
-                            });
+                            ix.record(stage);
                         } else if let Some(trace) = &trace {
-                            trace.observe(scope, None, crate::quest_trace::Stage::Cast {
-                                spell_id,
-                                attempt: attempt.map(|a| a as u64),
-                                edge: crate::quest_trace::CastEdge::Admitted,
-                            });
+                            trace.observe(scope, None, stage);
                         }
                     }
                     if opening {
@@ -4390,7 +4389,7 @@ fn wrath_net_drain(
             continue;
         }
         match event {
-            WrathFeedEvent::Phase { phase, .. } => view.phase = Some(*phase),
+            WrathFeedEvent::Phase { phase, .. } => view.phase = Some(phase),
             WrathFeedEvent::WorldTransfer { world_generation, map_id, .. } => {
                 // Same-frame teardown: old-scope entities are gone before Input runs. An intent
                 // admitted against the retired world can never be answered by the new one, so it
