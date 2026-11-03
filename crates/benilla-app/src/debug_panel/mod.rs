@@ -292,7 +292,7 @@ fn debug_panel_ui(
     ping: Res<crate::net::PingShared>,
     dropped: Res<crate::net::DroppedOpcodes>,
     mut weather_state: Option<ResMut<benilla_world::weather::WeatherState>>,
-    (mut world, quest_trace): (WorldReadout, Option<Res<crate::quest_trace::History>>),
+    (mut world, quest_trace): (WorldReadout, Option<ResMut<crate::quest_trace::History>>),
 ) -> Result {
     if !debug.open {
         return Ok(());
@@ -332,7 +332,7 @@ fn debug_panel_ui(
                 // Room for the pinned footer: three lines, as a wider font wraps the hotkey map.
                 .max_height(panel_h - 56.0)
                 .show(ui, |ui| {
-                    if let Some(history) = quest_trace.as_ref() {
+                    if let Some(history) = quest_trace.as_mut() {
                         ui.collapsing("Interaction diagnostics", |ui| {
                             let (received, evicted, dropped) = history.counters();
                             ui.label(format!("{received} recorded · {evicted} evicted · {dropped} dropped"));
@@ -345,29 +345,30 @@ fn debug_panel_ui(
                                 }
                             }
                             ui.label(history.export_status());
-                            for line in history.recent_incidents() {
+                            let snapshot = history.inspector_snapshot();
+                            for line in &snapshot.incidents {
                                 ui.label(line);
                             }
-                            for line in history.action_summaries() {
+                            for line in &snapshot.actions {
                                 ui.label(line);
                             }
-                            for line in history.panel_correlations() {
+                            for line in &snapshot.panels {
                                 ui.label(line);
                             }
-                            for line in history.slot_correlations() {
+                            for line in &snapshot.slots {
                                 ui.label(line);
                             }
-                            for line in history.turn_in_correlations() {
+                            for line in &snapshot.turn_ins {
                                 ui.label(line);
                             }
-                            for line in history.ui_error_correlations() {
+                            for line in &snapshot.ui_errors {
                                 ui.label(line);
                             }
                             #[cfg(feature = "dev")]
-                            for line in history.ui_click_correlations() {
+                            for line in &snapshot.ui_clicks {
                                 ui.label(line);
                             }
-                            for line in history.recent() {
+                            for line in &snapshot.recent {
                                 ui.label(line);
                             }
                         });
