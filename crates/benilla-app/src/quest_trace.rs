@@ -1269,8 +1269,13 @@ impl History {
                 let ambiguous = interactions.len() > 1
                     || attempts.len() > 1
                     || (wire.is_none() && channel_or_cancel && admitted_count_candidates > 1);
-                let confidence = if wire.is_some() && interactions.len() == 1 && attempt.is_some()
-                {
+                let has_native = !attempts.is_empty()
+                    || events
+                        .iter()
+                        .any(|event| event.subject.interaction == 0);
+                let confidence = if !has_native {
+                    "unmatched"
+                } else if wire.is_some() && interactions.len() == 1 && attempt.is_some() {
                     "exact"
                 } else if !ambiguous && interactions.len() == 1 {
                     "strong"
