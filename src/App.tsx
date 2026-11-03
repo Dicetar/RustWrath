@@ -59,19 +59,18 @@ Get-ChildItem "$env:LOCALAPPDATA\\benilla\\Logs\\InteractionDiagnostics\\interac
   }
 `;
 
-const WORKSTATION_SYNC_COMMAND = `# Option A: If downloaded to your Downloads folder:
-git bundle verify "$HOME\\Downloads\\main-incremental.bundle"
-git pull "$HOME\\Downloads\\main-incremental.bundle" main
-git push origin main
-Remove-Item "$HOME\\Downloads\\main-incremental.bundle"
-
-# Option B: If saved directly in D:\\Projects\\project-b-client:
-# git bundle verify .\\main-incremental.bundle
-# git pull .\\main-incremental.bundle main
-# git push origin main
-# Remove-Item .\\main-incremental.bundle`;
+const WORKSTATION_SYNC_COMMAND = `# From D:\\Projects\\project-b-client:
+git fetch origin
+git pull origin main`;
 
 const LEDGER_ROWS = [
+  {
+    pkg: 'H02',
+    title: 'Specify Revision Trust & Capability Gate Contract in ADR-0002',
+    status: 'S (Delivered)',
+    gap: 'Owner Review & H03 Implementation',
+    files: 'docs/architecture/adr-0002-live-client-modules.md',
+  },
   {
     pkg: 'D00–D07, Q00–Q02',
     title: 'Resident Interaction Flight Recorder, NPC Alias Redaction & Scope Retirement',
@@ -159,20 +158,13 @@ export default function App() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-sky-300 flex items-center gap-2">
-              <span>⚡</span> Fast Workstation & GitHub Push
+              <span>⚡</span> Workstation Synchronization
             </h2>
             <p className="text-stone-300 text-xs mt-0.5">
-              Download the bundle via your browser (PowerShell <code className="text-amber-300">Invoke-WebRequest</code> gets blocked by Google Cloud Run login without cookies). Then run the pull command below:
+              All merged commits and packages are synchronized on branch <code className="text-emerald-300">main</code>. Pull directly from GitHub on your Windows workstation:
             </p>
           </div>
           <div className="flex items-center gap-2.5 self-start sm:self-auto">
-            <a
-              href="/main-incremental.bundle"
-              download="main-incremental.bundle"
-              className="py-1.5 px-3.5 rounded bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-semibold text-xs transition inline-flex items-center gap-1.5 shadow"
-            >
-              <span>📥</span> Download Bundle (1.4MB)
-            </a>
             <button
               onClick={() => copyText('sync', WORKSTATION_SYNC_COMMAND)}
               className="py-1.5 px-3.5 rounded bg-sky-500 hover:bg-sky-400 text-stone-950 font-semibold text-xs transition cursor-pointer"
