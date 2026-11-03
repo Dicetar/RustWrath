@@ -70,7 +70,8 @@ impl Plugin for HotpatchPlugin {
             next_probe: 0.0,
             sample: None,
             next_attempt: 1,
-            current_attempt: None,
+            candidate_attempt: None,
+            active_attempt: None,
         })
         .add_systems(Update, poll)
         .add_systems(PostUpdate, apply_pose.in_set(PoseModulePass))
@@ -95,7 +96,8 @@ struct Runtime {
     next_probe: f64,
     sample: Option<(Entity, usize)>,
     next_attempt: u64,
-    current_attempt: Option<u64>,
+    candidate_attempt: Option<u64>,
+    active_attempt: Option<u64>,
 }
 
 fn report(runtime: &mut Runtime, error: String) {
@@ -121,7 +123,7 @@ fn poll(
             runtime.last_error = None;
             let attempt = runtime.next_attempt;
             runtime.next_attempt = runtime.next_attempt.saturating_add(1);
-            runtime.current_attempt = Some(attempt);
+            runtime.candidate_attempt = Some(attempt);
             events.write(HotpatchEvent::CandidateStaged { attempt });
         }
         Ok(false) => {}
@@ -140,7 +142,7 @@ fn poll(
         let message = format!("artifact retention: {error:#}");
         if runtime.last_error.as_ref() != Some(&message) {
             events.write(HotpatchEvent::RetentionFailed {
-                attempt: runtime.current_attempt,
+                attempt: None,
                 reason: HotpatchReason::Retention,
             });
         }
@@ -216,9 +218,10 @@ fn apply_pose(
     );
     if let Some(error) = runtime.host.take_rejection() {
         events.write(HotpatchEvent::CandidateRejected {
-            attempt: runtime.current_attempt,
+            attempt: runtime.candidate_attempt,
             reason: HotpatchReason::Evaluation,
         });
+        runtime.candidate_attempt = None;
         report(runtime, error);
     }
     match result {
@@ -254,9 +257,11 @@ fn apply_pose(
                     Some(bytes)
                 });
                 events.write(HotpatchEvent::Activated {
-                    attempt: runtime.current_attempt,
+                    attempt: runtime.candidate_attempt,
                     digest,
                 });
+                runtime.active_attempt = runtime.candidate_attempt;
+                runtime.candidate_attempt = None;
                 info!(
                     "hotpatch: pose module activated {} rigs={} bones={}",
                     revision.as_deref().unwrap_or("none"),
@@ -274,7 +279,7 @@ fn apply_pose(
             let message = format!("pose frame unchanged: {error:#}");
             if runtime.last_error.as_ref() != Some(&message) {
                 events.write(HotpatchEvent::FrameFailed {
-                    attempt: runtime.current_attempt,
+                    attempt: runtime.active_attempt,
                     reason: HotpatchReason::Frame,
                 });
             }

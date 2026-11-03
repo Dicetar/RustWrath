@@ -80,7 +80,7 @@ pub(crate) enum Stage {
         underruns: u64,
         underrun_ms: u64,
         overloads: u64,
-        overload_ms: u64,
+        last_overload_ago_ms: u64,
         lead_min_ms: Option<i64>,
         ring_min_ms: Option<i64>,
         io_wall_max_ms: u64,
@@ -95,6 +95,7 @@ pub(crate) enum Stage {
         ambiguous: bool,
     },
     MovementPressure {
+        baseline: bool,
         admitted: u64,
         coalesced: u64,
         refused: u64,
@@ -1495,6 +1496,7 @@ impl History {
             .rev()
             .filter_map(|(seq, event)| match event.stage {
                 Stage::MovementPressure {
+                    baseline,
                     admitted,
                     coalesced,
                     refused,
@@ -1502,7 +1504,7 @@ impl History {
                     queue_depth,
                     oldest_age_ms,
                 } => Some(format!(
-                    "#{seq} movement pressure: admitted={admitted} coalesced={coalesced} refused={refused} written={written} queue_depth={queue_depth} oldest_age_ms={oldest_age_ms}"
+                    "#{seq} movement pressure: baseline={baseline} admitted={admitted} coalesced={coalesced} refused={refused} written={written} queue_depth={queue_depth} oldest_age_ms={oldest_age_ms}"
                 )),
                 _ => None,
             })
@@ -1514,6 +1516,29 @@ impl History {
     }
     pub(crate) fn movement_pressure_events(&self) -> Vec<String> {
         self.movement_pressure()
+    }
+
+    /// Movement correction attribution. Unambiguous only when a single movement write followed
+    /// the previous correction; otherwise the attribution is ambiguous.
+    pub(crate) fn movement_correction_attribution(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(seq, event)| match event.stage {
+                Stage::MovementCorrectionApplied {
+                    distance_bucket,
+                    movement_seq,
+                    ambiguous,
+                } => Some(format!(
+                    "#{seq} movement correction: distance_bucket={distance_bucket} movement_seq={movement_seq:?} ambiguous={ambiguous} (attribution is unambiguous only when a single movement write followed the previous correction)"
+                )),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+    pub(crate) fn movement_corrections(&self) -> Vec<String> {
+        self.movement_correction_attribution()
     }
 
     /// Recent audio output health windows (bounded). `cycles == 0` means no stream, not health.
@@ -1571,33 +1596,46 @@ impl History {
                 event: PatchEvent::CandidateStaged { attempt },
             } = event.stage
             {
-                let terminal = self.entries.iter().find_map(|(_, later)| {
-                    let att = match later.stage {
-                        Stage::Hotpatch {
-                            event: PatchEvent::Activated { attempt, .. },
-                        } => *attempt,
-                        Stage::Hotpatch {
-                            event: PatchEvent::CandidateRejected { attempt, .. },
-                        } => *attempt,
-                        Stage::Hotpatch {
-                            event: PatchEvent::FrameFailed { attempt, .. },
-                        } => *attempt,
-                        Stage::Hotpatch {
-                            event: PatchEvent::RetentionFailed { attempt, .. },
-                        } => *attempt,
-                        _ => None,
-                    };
-                    if att == Some(attempt) {
-                        Some(later.stage)
-                    } else {
-                        None
-                    }
-                });
+                let terminals: Vec<Stage> = self
+                    .entries
+                    .iter()
+                    .filter_map(|(_, later)| {
+                        let att = match later.stage {
+                            Stage::Hotpatch {
+                                event: PatchEvent::Activated { attempt: a, .. },
+                            } => *a,
+                            Stage::Hotpatch {
+                                event: PatchEvent::CandidateRejected { attempt: a, .. },
+                            } => *a,
+                            Stage::Hotpatch {
+                                event: PatchEvent::FrameFailed { attempt: a, .. },
+                            } => *a,
+                            Stage::Hotpatch {
+                                event: PatchEvent::RetentionFailed { attempt: a, .. },
+                            } => *a,
+                            _ => None,
+                        };
+                        if att == Some(attempt) {
+                            Some(later.stage)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let terminal_count = terminals.len();
+                let terminal = terminals.into_iter().last();
+                let earlier = if terminal_count > 1 {
+                    " (earlier terminal evidence exists)"
+                } else {
+                    ""
+                };
                 let line = match terminal {
                     Some(Stage::Hotpatch {
                         event: PatchEvent::Activated { digest, .. },
-                    }) => format!("attempt {attempt}: activated (digest={digest:?})"),
-                    Some(Stage::Hotpatch { event }) => format!("attempt {attempt}: {:?}", event),
+                    }) => format!("attempt {attempt}: activated (digest={digest:?}){earlier}"),
+                    Some(Stage::Hotpatch { event }) => {
+                        format!("attempt {attempt}: {:?}{earlier}", event)
+                    }
                     None => format!("attempt {attempt}: no terminal event retained (ambiguous/unresolved)"),
                 };
                 out.push(line);
@@ -2209,6 +2247,7 @@ fn poll_movement(
             *last = Some(current);
             source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
                 Stage::MovementPressure {
+                    baseline: false,
                     admitted: deltas.0,
                     coalesced: deltas.1,
                     refused: deltas.2,
@@ -2224,10 +2263,11 @@ fn poll_movement(
         // First sample: emit baseline deltas (current counts) so evidence exists.
         source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
             Stage::MovementPressure {
-                admitted,
-                coalesced,
-                refused,
-                written,
+                baseline: true,
+                admitted: 0,
+                coalesced: 0,
+                refused: 0,
+                written: 0,
                 queue_depth,
                 oldest_age_ms,
             });
