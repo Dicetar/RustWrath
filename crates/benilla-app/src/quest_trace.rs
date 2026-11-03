@@ -5414,46 +5414,19 @@ pub(crate) fn drain_history(history: &mut History) {
                     }
                 }
                 Stage::Delivery(CommandDelivery::Written) => {
-                    if matches!(
-                        event.subject.operation,
-                        Operation::Open
-                            | Operation::Select
-                            | Operation::Accept
-                            | Operation::RequestReward
-                            | Operation::ChooseReward
-                    ) {
-                        if let Some(open) = history
-                            .open_interactions
-                            .iter_mut()
-                            .find(|open| open.subject.interaction == event.subject.interaction)
-                        {
-                            open.state = OpenState::Written {
-                                seq,
-                                elapsed_ms: event.elapsed_ms,
-                            };
-                        }
-                    } else {
-                        history
-                            .open_interactions
-                            .retain(|open| open.subject.interaction != event.subject.interaction);
+                    if let Some(open) = history
+                        .open_interactions
+                        .iter_mut()
+                        .find(|open| open.subject.interaction == event.subject.interaction)
+                    {
+                        open.state = OpenState::Written {
+                            seq,
+                            elapsed_ms: event.elapsed_ms,
+                        };
                     }
                     history.note_written_cast(&event);
                 }
-                Stage::ChannelAdmitted
-                    if matches!(
-                        event.subject.operation,
-                        Operation::Loot | Operation::Equip | Operation::Buy | Operation::Sell
-                    ) =>
-                {
-                    history
-                        .open_interactions
-                        .retain(|open| open.subject.interaction != event.subject.interaction);
-                }
                 Stage::GuardRefused
-                | Stage::Cast {
-                    edge: CastEdge::LocalRefusal { .. },
-                    ..
-                }
                 | Stage::NoWorld
                 | Stage::AlreadyPending
                 | Stage::TrackingCapacity
@@ -5461,10 +5434,7 @@ pub(crate) fn drain_history(history: &mut History) {
                 | Stage::Delivery(CommandDelivery::Rejected(_))
                 | Stage::Delivery(CommandDelivery::WriteFailed)
                 | Stage::Outbound {
-                    state:
-                        OutboundState::Written
-                        | OutboundState::Refused
-                        | OutboundState::WriteFailed,
+                    state: OutboundState::Refused | OutboundState::WriteFailed,
                     ..
                 }
                 | Stage::SocketWriteFailed
