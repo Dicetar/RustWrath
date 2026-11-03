@@ -63,7 +63,7 @@ pub(crate) enum Stage {
     WorldTransfer,
     ReplicaRevision { revision: u64 },
     NativeEventsLost { count: u64 },
-    Cast { spell_id: Option<u32>, attempt: Option<u64>, edge: CastEdge },
+    Cast { spell_id: Option<u32>, attempt: Option<u64>, wire_cast_count: Option<u32>, edge: CastEdge },
     InventoryFailure { reason: u8 },
     AudioMixer {
         present: bool,
