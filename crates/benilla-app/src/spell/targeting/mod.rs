@@ -1012,6 +1012,7 @@ mod tests {
                     Ok(ClientCommand::CastSpell {
                         spell_id: HEAL,
                         target: Some(ALLY),
+                        ..
                     })
                 ),
                 "{token} binds the ally"
