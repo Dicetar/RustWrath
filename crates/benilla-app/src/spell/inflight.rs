@@ -466,11 +466,15 @@ impl SelfCancel<'_> {
         let self_e = self.self_entity();
         let spell_id = inflight(&self.pending, &self.queued_melee, &self.ground).map(|s| s.spell_id());
         let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
-        if let (Some(trace), Some(spell)) = (self.trace.as_deref(), spell_id) {
+        if let Some(trace) = self.trace.as_deref() {
             let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
+            // The cancel carries a new local interaction; the recorder joins it to the written
+            // cast by scope/spell/time only when that match is unique. With no active attempt
+            // the target is explicitly unknown: never invent a spell or wire count.
             ix.record(crate::quest_trace::Stage::Cast {
-                spell_id: Some(spell),
+                spell_id,
                 attempt: None,
+                wire_cast_count: None,
                 edge: crate::quest_trace::CastEdge::CancelRequested,
             });
         }
@@ -586,18 +590,22 @@ impl SelfCancel<'_> {
                         info!("cast-trace: LOCAL channel self-cancel — spell {spell_id}, CMSG_CANCEL_CHANNELLING");
                     }
                     let scope = self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation));
-                    if let Some(trace) = self.trace.as_deref() {
+                    let cancel_trace = if let Some(trace) = self.trace.as_deref() {
                         let ix = trace.begin(scope, None, crate::quest_trace::Operation::Observed);
                         ix.record(crate::quest_trace::Stage::Cast {
                             spell_id: Some(spell_id),
                             attempt: None,
+                            wire_cast_count: None,
                             edge: crate::quest_trace::CastEdge::CancelRequested,
                         });
-                    }
-                    let _ = self
-                        .net
-                        .0
-                        .send(ClientCommand::CancelChannelling { spell_id, trace: None });
+                        Some(ix)
+                    } else {
+                        None
+                    };
+                    let _ = self.net.0.send(ClientCommand::CancelChannelling {
+                        spell_id,
+                        trace: cancel_trace,
+                    });
                 }
             }
         }

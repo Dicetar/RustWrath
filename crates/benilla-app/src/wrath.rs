@@ -1705,6 +1705,7 @@ fn wrath_wm_action_intake(
     mut actions: ResMut<WrathWmActions>,
     view: Res<WrathWorldView>,
     net: Option<Res<NetCommands>>,
+    trace: Option<Res<crate::quest_trace::Source>>,
 ) {
     let Some(net) = net else { return };
     let Some(phase) = view.phase else { return };
@@ -1853,6 +1854,34 @@ fn wrath_wm_action_intake(
             }
             _ => None,
         };
+        if matches!(&request.intent, ActionIntent::CastCancel) {
+            // Record the local cancel request before admission can reject it. The resolved
+            // mirror supplies the identity when one exists; otherwise the target is unknown.
+            if let Some(trace) = trace.as_deref() {
+                let (spell_id, wire_cast_count) =
+                    if let Some(cast) = view.casting(view.player_guid) {
+                        (
+                            Some(cast.identity.spell_id),
+                            cast.identity.cast_count.map(u32::from),
+                        )
+                    } else if let Some(channel) = view.channeling(view.player_guid) {
+                        (Some(channel.spell_id), None)
+                    } else {
+                        (None, None)
+                    };
+                let ix = trace.begin(
+                    Some((view.session_epoch, view.world_generation)),
+                    None,
+                    crate::quest_trace::Operation::Observed,
+                );
+                ix.record(crate::quest_trace::Stage::Cast {
+                    spell_id,
+                    attempt: None,
+                    wire_cast_count,
+                    edge: crate::quest_trace::CastEdge::CancelRequested,
+                });
+            }
+        }
         if let Some(reason) = observed_refusal {
             actions.refused += 1;
             actions.answer(
@@ -1877,15 +1906,32 @@ fn wrath_wm_action_intake(
             ActionIntent::AttackStop => commands.push(ClientCommand::AttackStop),
             ActionIntent::Cast { spell_id, target } => {
                 actions.last_cast_spell = Some(*spell_id);
+                // Give a WM-dispatched cast the same local interaction as a UI press; the tap
+                // adds the wire count and the native drain supplies the outcome.
+                let cast_trace = trace.as_deref().map(|trace| {
+                    let ix = trace.begin(
+                        Some((view.session_epoch, view.world_generation)),
+                        None,
+                        crate::quest_trace::Operation::Observed,
+                    );
+                    ix.record(crate::quest_trace::Stage::Cast {
+                        spell_id: Some(*spell_id),
+                        attempt: None,
+                        wire_cast_count: None,
+                        edge: crate::quest_trace::CastEdge::Requested,
+                    });
+                    ix
+                });
                 commands.push(ClientCommand::CastSpell {
                     spell_id: *spell_id,
                     target: *target,
-                    trace: None,
+                    trace: cast_trace,
                 });
             }
             ActionIntent::CastCancel => {
                 // Cancel what the resolved mirror says is actually running, so the command
-                // owner reaches the same attempt the observation reported.
+                // owner reaches the same attempt the observation reported. The cancel request
+                // itself was recorded above, before admission could reject it.
                 if let Some(cast) = view.casting(view.player_guid) {
                     actions.last_cast_spell = Some(cast.identity.spell_id);
                     commands.push(ClientCommand::CancelCast {
@@ -3446,6 +3492,9 @@ fn wrath_tap_commands(
         }
         }
         let count = view.next_cast_count;
+        // The wire cast count actually used by a CMSG_CAST_SPELL arm, when one encodes. It is
+        // distinct from the native attempt serial and the local interaction id.
+        let mut admitted_wire_count: Option<u8> = None;
         let packet = match command {
             ClientCommand::SetSelection { guid } => {
                 if guid != 0 && !view.entities.contains_key(&guid) {
@@ -3465,6 +3514,7 @@ fn wrath_tap_commands(
                 gameplay::attack_stop(),
             )),
             ClientCommand::CastSpell { spell_id, target, .. } => {
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3833,6 +3883,7 @@ fn wrath_tap_commands(
             )),
             ClientCommand::CastSpellGameObject { spell_id, go_guid, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3841,6 +3892,7 @@ fn wrath_tap_commands(
             }
             ClientCommand::CastSpellItem { spell_id, item_guid, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3849,6 +3901,7 @@ fn wrath_tap_commands(
             }
             ClientCommand::CastSpellTradeItem { spell_id, slot, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3863,6 +3916,7 @@ fn wrath_tap_commands(
             } => {
                 use benilla_protocol::messages::CorpseTarget;
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3876,6 +3930,7 @@ fn wrath_tap_commands(
             }
             ClientCommand::CastSpellAtDest { spell_id, dest, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3884,6 +3939,7 @@ fn wrath_tap_commands(
             }
             ClientCommand::CastSpellAtSource { spell_id, src, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -4056,6 +4112,7 @@ fn wrath_tap_commands(
                         let stage = crate::quest_trace::Stage::Cast {
                             spell_id: Some(spell_id),
                             attempt: None,
+                            wire_cast_count: admitted_wire_count.map(u32::from),
                             edge: crate::quest_trace::CastEdge::Admitted,
                         };
                         if let Some(ix) = &cmd_trace {
@@ -4813,6 +4870,11 @@ fn wrath_net_drain(
                         Some(Stage::Cast {
                             spell_id: resolved.event.identity.map(|id| id.spell_id),
                             attempt: resolved.event.attempt_serial,
+                            wire_cast_count: resolved
+                                .event
+                                .identity
+                                .and_then(|id| id.cast_count)
+                                .map(u32::from),
                             edge,
                         })
                     }
