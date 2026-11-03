@@ -59,14 +59,17 @@ Get-ChildItem "$env:LOCALAPPDATA\\benilla\\Logs\\InteractionDiagnostics\\interac
   }
 `;
 
-const WORKSTATION_SYNC_COMMAND = `# 1. Download incremental bundle from AI Studio:
-Invoke-WebRequest -Uri "https://ais-dev-6ka6gupz3derq2bsqr676m-988859543909.europe-west2.run.app/main-incremental.bundle" -OutFile "main-incremental.bundle"
+const WORKSTATION_SYNC_COMMAND = `# Option A: If downloaded to your Downloads folder:
+git bundle verify "$HOME\\Downloads\\main-incremental.bundle"
+git pull "$HOME\\Downloads\\main-incremental.bundle" main
+git push origin main
+Remove-Item "$HOME\\Downloads\\main-incremental.bundle"
 
-# 2. Pull commits into main:
-git pull ./main-incremental.bundle main
-
-# 3. Publish to GitHub origin main:
-git push origin main`;
+# Option B: If saved directly in D:\\Projects\\project-b-client:
+# git bundle verify .\\main-incremental.bundle
+# git pull .\\main-incremental.bundle main
+# git push origin main
+# Remove-Item .\\main-incremental.bundle`;
 
 const LEDGER_ROWS = [
   {
@@ -159,15 +162,24 @@ export default function App() {
               <span>⚡</span> Fast Workstation & GitHub Push
             </h2>
             <p className="text-stone-300 text-xs mt-0.5">
-              Run this in PowerShell on <code className="text-sky-200">D:\Projects\project-b-client</code> to pull all 37 AI Studio commits directly into <code className="text-sky-200">main</code> and push to GitHub:
+              Download the bundle via your browser (PowerShell <code className="text-amber-300">Invoke-WebRequest</code> gets blocked by Google Cloud Run login without cookies). Then run the pull command below:
             </p>
           </div>
-          <button
-            onClick={() => copyText('sync', WORKSTATION_SYNC_COMMAND)}
-            className="py-1.5 px-3.5 rounded bg-sky-500 hover:bg-sky-400 text-stone-950 font-semibold text-xs transition cursor-pointer self-start sm:self-auto"
-          >
-            {copiedId === 'sync' ? '✓ Copied PowerShell Sync!' : 'Copy Sync & Push Commands'}
-          </button>
+          <div className="flex items-center gap-2.5 self-start sm:self-auto">
+            <a
+              href="/main-incremental.bundle"
+              download="main-incremental.bundle"
+              className="py-1.5 px-3.5 rounded bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-semibold text-xs transition inline-flex items-center gap-1.5 shadow"
+            >
+              <span>📥</span> Download Bundle (1.4MB)
+            </a>
+            <button
+              onClick={() => copyText('sync', WORKSTATION_SYNC_COMMAND)}
+              className="py-1.5 px-3.5 rounded bg-sky-500 hover:bg-sky-400 text-stone-950 font-semibold text-xs transition cursor-pointer"
+            >
+              {copiedId === 'sync' ? '✓ Copied PowerShell Sync!' : 'Copy PowerShell Commands'}
+            </button>
+          </div>
         </div>
         <pre className="bg-stone-950/90 p-3 rounded border border-stone-800 text-sky-200 font-mono text-xs overflow-x-auto whitespace-pre-wrap leading-relaxed">
           {WORKSTATION_SYNC_COMMAND}
