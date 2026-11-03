@@ -3350,6 +3350,18 @@ fn wrath_tap_commands(
                 (command, Some(receipt))
             }
             ClientCommand::QuestgiverOpenTracked { receipt, gossip } => {
+                // The transport-core scope contract covers the open arm too: a right-click open
+                // written after a session/world transfer must be refused once, not forwarded as
+                // an old-world greeting in the new world.
+                if !view.entered_world
+                    || receipt.session_epoch != view.session_epoch
+                    || receipt.world_generation != view.world_generation
+                {
+                    receipt.report(crate::net::CommandDelivery::Rejected(
+                        crate::net::CommandRefusal::ScopeChanged,
+                    ));
+                    continue;
+                }
                 let command = if gossip {
                     ClientCommand::GossipHello { guid: receipt.npc }
                 } else {

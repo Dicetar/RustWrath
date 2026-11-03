@@ -41,6 +41,8 @@ pub(crate) enum Stage {
     QuestSlotAdded,
     QuestSlotProgressed { counters: [u16; 4], state: u32 },
     QuestSlotRemoved,
+    AbandonSlot { slot: u8 },
+    ServerQuestShareResult { msg: u32 },
     JournalProjection,
     JournalRowInModel,
     JournalTemplatePending,
@@ -55,7 +57,7 @@ pub(crate) enum Stage {
     ScriptError { vm_session: u64, row_seq: u64, occurrences: u32 },
     ScriptLoadError { vm_session: u64, row_seq: u64, occurrences: u32 },
     ScriptWarning { vm_session: u64, row_seq: u64, occurrences: u32 },
-    UiReload,
+    UiReload { vm_session: u64 },
     ScriptRowsLost { vm_session: u64, count: u64 },
     ScriptRowsEvicted { vm_session: u64, count: u64 },
     SessionPhase { phase: SessionPhase },
@@ -123,6 +125,7 @@ pub(crate) enum Stage {
         consumed: bool,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
+        ui_dispatch_id: u64,
     },
     UiClick {
         button: UiButton,
@@ -133,6 +136,7 @@ pub(crate) enum Stage {
         handler_invoked: bool,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
+        ui_dispatch_id: u64,
     },
     DomainEvent { event: DomainEvent },
     #[cfg(feature = "hotpatch")]
@@ -289,6 +293,9 @@ pub(crate) enum Operation {
     Accept,
     RequestReward,
     ChooseReward,
+    Confirm,
+    Abandon,
+    Share,
     Observed,
     Loot,
     Equip,
@@ -343,6 +350,21 @@ pub(crate) fn diagnostic_vector_index(name: &str) -> usize {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiDispatchToken {
+    pub id: u64,
+    pub elapsed_ms: u64,
+    pub scope: Option<(u64, u64)>,
+    pub vm_session: u64,
+    pub reload_generation: u64,
+    pub button: UiButton,
+    pub target: UiTarget,
+    pub consumed: bool,
+    pub visible: Option<bool>,
+    pub clipped: bool,
+    pub handler_invoked: bool,
+}
+
 #[derive(Debug)]
 struct Ingress {
     events: Sender<Event>,
@@ -361,6 +383,8 @@ struct Ingress {
     movement_last_written_seq: AtomicU64,
     movement_writes_since_correction: AtomicU64,
     npc_aliases: Mutex<(VecDeque<(u64, u32)>, u32)>,
+    ui_dispatch_counter: AtomicU64,
+    ui_dispatches: Mutex<VecDeque<UiDispatchToken>>,
     origin: Instant,
     #[cfg(feature = "dev")]
     run_id: String,
@@ -392,6 +416,7 @@ struct Subject {
     npc_alias: Option<u32>,
     operation: Operation,
     reload_generation: u64,
+    ui_dispatch_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -513,6 +538,8 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         | Stage::QuestSlotAdded
         | Stage::QuestSlotProgressed { .. }
         | Stage::QuestSlotRemoved
+        | Stage::AbandonSlot { .. }
+        | Stage::ServerQuestShareResult { .. }
         | Stage::JournalProjection
         | Stage::JournalRowInModel
         | Stage::JournalTemplatePending
@@ -537,7 +564,7 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         Stage::ScriptError { .. }
         | Stage::ScriptLoadError { .. }
         | Stage::ScriptWarning { .. }
-        | Stage::UiReload
+        | Stage::UiReload { .. }
         | Stage::ScriptRowsLost { .. }
         | Stage::ScriptRowsEvicted { .. } => Some("lua_diagnostic_counts"),
         Stage::SessionPhase { .. }
@@ -797,6 +824,7 @@ impl Source {
                 npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
                 operation: Operation::Observed,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
+                ui_dispatch_id: None,
             },
         };
         trace.record(stage);
@@ -827,10 +855,138 @@ impl Source {
                 npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
                 operation,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
+                ui_dispatch_id: self.plausible_ui_dispatch(scope),
             },
         };
         trace.record(Stage::Intent);
         trace
+    }
+}
+
+impl Source {
+    pub(crate) fn record_ui_press(
+        &self,
+        scope: Option<(u64, u64)>,
+        button: UiButton,
+        target: UiTarget,
+        consumed: bool,
+        egui_pointer_over_last_sample: Option<bool>,
+        vm_session: u64,
+    ) -> u64 {
+        let id = self.0.ui_dispatch_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let reload_generation = self.0.reload_generation.load(Ordering::Acquire);
+        let elapsed_ms = self.0.origin.elapsed().as_millis() as u64;
+        let token = UiDispatchToken {
+            id,
+            elapsed_ms,
+            scope,
+            vm_session,
+            reload_generation,
+            button,
+            target,
+            consumed,
+            visible: None,
+            clipped: false,
+            handler_invoked: consumed,
+        };
+        if let Ok(mut guard) = self.0.ui_dispatches.lock() {
+            if guard.len() >= 8 {
+                guard.pop_front();
+            }
+            guard.push_back(token);
+        }
+        self.observe(scope, None, Stage::UiPress {
+            button,
+            target,
+            consumed,
+            egui_pointer_over_last_sample,
+            vm_session,
+            ui_dispatch_id: id,
+        });
+        id
+    }
+
+    pub(crate) fn record_ui_click(
+        &self,
+        scope: Option<(u64, u64)>,
+        button: UiButton,
+        target: UiTarget,
+        consumed: bool,
+        visible: Option<bool>,
+        clipped: bool,
+        handler_invoked: bool,
+        egui_pointer_over_last_sample: Option<bool>,
+        vm_session: u64,
+    ) -> u64 {
+        let id = self.0.ui_dispatch_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let reload_generation = self.0.reload_generation.load(Ordering::Acquire);
+        let elapsed_ms = self.0.origin.elapsed().as_millis() as u64;
+        let token = UiDispatchToken {
+            id,
+            elapsed_ms,
+            scope,
+            vm_session,
+            reload_generation,
+            button,
+            target,
+            consumed,
+            visible,
+            clipped,
+            handler_invoked,
+        };
+        if let Ok(mut guard) = self.0.ui_dispatches.lock() {
+            if guard.len() >= 8 {
+                guard.pop_front();
+            }
+            guard.push_back(token);
+        }
+        self.observe(scope, None, Stage::UiClick {
+            button,
+            target,
+            consumed,
+            visible,
+            clipped,
+            handler_invoked,
+            egui_pointer_over_last_sample,
+            vm_session,
+            ui_dispatch_id: id,
+        });
+        id
+    }
+
+    pub(crate) fn plausible_ui_dispatch(&self, scope: Option<(u64, u64)>) -> Option<u64> {
+        let now = self.0.origin.elapsed().as_millis() as u64;
+        let current_rg = self.0.reload_generation.load(Ordering::Acquire);
+        let guard = self.0.ui_dispatches.lock().ok()?;
+        let current_vm = guard.iter().map(|t| t.vm_session).max().unwrap_or(0);
+        let candidates: Vec<u64> = guard
+            .iter()
+            .filter(|t| {
+                t.scope == scope
+                    && t.reload_generation == current_rg
+                    && t.vm_session == current_vm
+                    && t.elapsed_ms <= now
+                    && now.saturating_sub(t.elapsed_ms) <= 2_000
+                    && t.visible == Some(true)
+                    && !t.clipped
+                    && t.consumed
+                    && t.handler_invoked
+            })
+            .map(|t| t.id)
+            .collect();
+        if candidates.len() == 1 {
+            Some(candidates[0])
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn recent_ui_dispatches(&self) -> Vec<UiDispatchToken> {
+        self.0
+            .ui_dispatches
+            .lock()
+            .map(|g| g.iter().copied().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -1107,16 +1263,53 @@ impl History {
                 Stage::ScriptError { vm_session, row_seq, .. } => (vm_session, row_seq),
                 _ => return None,
             };
-            let candidates = self.entries.iter().filter(|(_, earlier)| {
-                matches!(earlier.stage, Stage::UiPress { vm_session: vm, .. } if vm == vm_session)
-                    && earlier.subject.scope == event.subject.scope
-                    && earlier.elapsed_ms <= event.elapsed_ms
-                    && event.elapsed_ms.saturating_sub(earlier.elapsed_ms) <= 2_000
-            }).count();
-            let result = match candidates {
-                0 => format!("UI error {row_seq}: no retained press within two seconds"),
-                1 => format!("UI error {row_seq}: one nearby press (possible association)"),
-                _ => format!("UI error {row_seq}: {candidates} nearby presses (ambiguous)"),
+            let mut presses = 0usize;
+            let mut clicks: Vec<(bool, Option<bool>, bool, bool)> = Vec::new();
+            for (_, earlier) in self.entries.iter() {
+                if earlier.subject.scope != event.subject.scope
+                    || earlier.elapsed_ms > event.elapsed_ms
+                    || event.elapsed_ms.saturating_sub(earlier.elapsed_ms) > 2_000
+                {
+                    continue;
+                }
+                match earlier.stage {
+                    Stage::UiPress { vm_session: vm, .. } if vm == vm_session => presses += 1,
+                    Stage::UiClick {
+                        vm_session: vm,
+                        consumed,
+                        visible,
+                        clipped,
+                        handler_invoked,
+                        ..
+                    } if vm == vm_session => {
+                        clicks.push((consumed, visible, clipped, handler_invoked));
+                    }
+                    _ => {}
+                }
+            }
+            let total = presses + clicks.len();
+            let result = if total == 0 {
+                format!("UI error {row_seq}: no retained press or click within two seconds")
+            } else if total == 1 && clicks.len() == 1 {
+                let (consumed, visible, clipped, handler_invoked) = clicks[0];
+                let visibility = match visible {
+                    Some(true) => "visible",
+                    Some(false) => "not effectively visible",
+                    None => "visibility unknown",
+                };
+                if visible == Some(true) && !clipped && consumed && handler_invoked {
+                    format!(
+                        "UI error {row_seq}: one nearby click (consumed, {visibility}, unclipped, handler invoked; possible association)"
+                    )
+                } else {
+                    format!(
+                        "UI error {row_seq}: one nearby click (consumed={consumed}, {visibility}, clipped={clipped}, handler_invoked={handler_invoked}; not a plausible cause)"
+                    )
+                }
+            } else if total == 1 {
+                format!("UI error {row_seq}: one nearby press (possible association)")
+            } else {
+                format!("UI error {row_seq}: {total} nearby presses/clicks (ambiguous; no causal claim)")
             };
             Some(if gaps { format!("{result}; trace has gaps") } else { result })
         }).take(8).collect()
@@ -1138,6 +1331,7 @@ impl History {
                     clipped,
                     handler_invoked,
                     vm_session,
+                    ui_dispatch_id,
                     ..
                 } => {
                     let visibility = match visible {
@@ -1146,8 +1340,9 @@ impl History {
                         None => "visibility unknown",
                     };
                     let line = format!(
-                        "UI click {:?} on {:?}: consumed={} visible={} clipped={} handler_invoked={} vm={}",
-                        button, target, consumed, visibility, clipped, handler_invoked, vm_session
+                        "UI click {:?} on {:?}: consumed={} visible={} clipped={} handler_invoked={} vm={} dispatch={}",
+                        button, target, consumed, visibility, clipped, handler_invoked, vm_session,
+                        ui_dispatch_id
                     );
                     Some(if gaps {
                         format!("{line}; trace has gaps")
@@ -1217,6 +1412,152 @@ impl History {
             });
         }
         self.inspector_snapshot.as_ref().unwrap()
+    }
+
+    /// Bounded quest/UI summary for the inspector: recent quest interactions with their last
+    /// milestone, the most recent UI dispatch token under the 2-second visibility/consumption
+    /// rules, and the latest journal projection/row with the reload generation.
+    ///
+    /// Causality is never claimed. A token is either a `possible association` (exactly one
+    /// eligible click in the window), `ambiguous` (more than one), or explicitly not a plausible
+    /// cause (hidden, clipped, unconsumed, handler not invoked, old VM, or old reload generation).
+    pub(crate) fn quest_ui_correlations(&self) -> Vec<String> {
+        let gaps = self.has_telemetry_gaps();
+        let mut lines = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (_, event) in self.entries.iter().rev() {
+            let id = event.subject.interaction;
+            if id == 0 || !seen.insert(id) {
+                continue;
+            }
+            let operation = event.subject.operation;
+            if !matches!(
+                operation,
+                Operation::Open
+                    | Operation::Select
+                    | Operation::Accept
+                    | Operation::RequestReward
+                    | Operation::ChooseReward
+                    | Operation::Confirm
+                    | Operation::Abandon
+                    | Operation::Share
+            ) {
+                continue;
+            }
+            let incident = self
+                .incidents
+                .iter()
+                .rev()
+                .find(|incident| incident.subject.interaction == id);
+            let (outcome, confidence) = incident.map_or_else(
+                || ("in progress/unconfirmed".to_string(), "Unverified".to_string()),
+                |incident| {
+                    (
+                        format!("{:?}", incident.outcome),
+                        format!("{:?}", incident.confidence),
+                    )
+                },
+            );
+            let gap = gaps || incident.is_some_and(|incident| incident.telemetry_gap);
+            lines.push(format!(
+                "Quest action {id} {operation:?} (npc {:?}, quest {:?}): last milestone {:?}; outcome {outcome} [{confidence}]; dispatch {:?}{}",
+                event.subject.npc_alias,
+                event.subject.quest,
+                event.stage,
+                event.subject.ui_dispatch_id,
+                if gap { "; trace has gaps" } else { "" },
+            ));
+            if lines.len() == 8 {
+                break;
+            }
+        }
+
+        let dispatches = self.source.recent_ui_dispatches();
+        if let Some(token) = dispatches.iter().rev().next() {
+            let current_rg = self
+                .source
+                .0
+                .reload_generation
+                .load(Ordering::Acquire);
+            let eligible = token.reload_generation == current_rg
+                && token.visible == Some(true)
+                && !token.clipped
+                && token.consumed
+                && token.handler_invoked;
+            let candidates = self
+                .entries
+                .iter()
+                .filter(|(_, earlier)| {
+                    matches!(
+                        earlier.stage,
+                        Stage::UiClick {
+                            vm_session: vm,
+                            ..
+                        } if vm == token.vm_session
+                    ) && earlier.subject.scope == token.scope
+                        && earlier.subject.reload_generation == current_rg
+                        && earlier.elapsed_ms <= token.elapsed_ms
+                        && token.elapsed_ms.saturating_sub(earlier.elapsed_ms) <= 2_000
+                })
+                .count();
+            let wording = if !eligible {
+                "not a plausible cause (hidden, clipped, unconsumed, handler not invoked, or old VM/reload)"
+            } else if candidates == 0 {
+                "unverified: the source click is not retained in the event window"
+            } else if candidates > 1 {
+                "ambiguous: multiple candidate clicks in the two-second window"
+            } else {
+                "possible association"
+            };
+            lines.push(format!(
+                "UI dispatch {}: button {:?} target {:?} consumed={} visible={:?} clipped={} handler_invoked={} vm={} reload={}; {wording}{}",
+                token.id,
+                token.button,
+                token.target,
+                token.consumed,
+                token.visible,
+                token.clipped,
+                token.handler_invoked,
+                token.vm_session,
+                token.reload_generation,
+                if gaps { "; trace has gaps" } else { "" },
+            ));
+        } else {
+            lines.push("UI dispatch antecedent: no retained press/click token".to_string());
+        }
+
+        let current_rg = self
+            .source
+            .0
+            .reload_generation
+            .load(Ordering::Acquire);
+        if let Some((_, event)) = self.entries.iter().rev().find(|(_, event)| {
+            matches!(
+                event.stage,
+                Stage::JournalProjection
+                    | Stage::JournalRowInModel
+                    | Stage::JournalTemplatePending
+                    | Stage::JournalTemplateRefused
+            )
+        }) {
+            lines.push(format!(
+                "Journal: quest {:?} {:?} in reload generation {} (current {}{})",
+                event.subject.quest,
+                event.stage,
+                event.subject.reload_generation,
+                current_rg,
+                if event.subject.reload_generation < current_rg {
+                    "; old VM projection superseded"
+                } else {
+                    ""
+                },
+            ));
+        } else {
+            lines.push(format!(
+                "Journal: no retained projection or row (reload generation {current_rg})"
+            ));
+        }
+        lines
     }
 
     pub(crate) fn recent_incidents(&self) -> impl Iterator<Item = String> + '_ {
@@ -1577,6 +1918,105 @@ impl History {
                                         )),
                                         _ => None,
                                     };
+                                }
+                                None
+                            }
+                            Operation::Confirm => {
+                                if later.subject.quest == event.subject.quest
+                                    && matches!(later.stage, Stage::QuestSlotAdded)
+                                {
+                                    let matches = self
+                                        .entries
+                                        .iter()
+                                        .filter(|(_, candidate)| {
+                                            candidate.subject.operation == Operation::Confirm
+                                                && candidate.subject.scope == later.subject.scope
+                                                && candidate.subject.quest == later.subject.quest
+                                                && matches!(
+                                                    candidate.stage,
+                                                    Stage::Delivery(CommandDelivery::Written)
+                                                )
+                                                && candidate.elapsed_ms <= later.elapsed_ms
+                                                && later
+                                                    .elapsed_ms
+                                                    .saturating_sub(candidate.elapsed_ms)
+                                                    <= 30_000
+                                        })
+                                        .count();
+                                    return Some(format!(
+                                        "; quest slot added ({})",
+                                        if matches > 1 {
+                                            "ambiguous"
+                                        } else {
+                                            "possible match"
+                                        }
+                                    ));
+                                }
+                                None
+                            }
+                            Operation::Abandon => {
+                                if matches!(later.stage, Stage::QuestSlotRemoved) {
+                                    let matches = self
+                                        .entries
+                                        .iter()
+                                        .filter(|(_, candidate)| {
+                                            candidate.subject.operation == Operation::Abandon
+                                                && candidate.subject.scope == later.subject.scope
+                                                && matches!(
+                                                    candidate.stage,
+                                                    Stage::Delivery(CommandDelivery::Written)
+                                                )
+                                                && candidate.elapsed_ms <= later.elapsed_ms
+                                                && later
+                                                    .elapsed_ms
+                                                    .saturating_sub(candidate.elapsed_ms)
+                                                    <= 30_000
+                                        })
+                                        .count();
+                                    return Some(format!(
+                                        "; quest slot removed ({})",
+                                        if matches > 1 {
+                                            "ambiguous"
+                                        } else {
+                                            "possible match"
+                                        }
+                                    ));
+                                }
+                                None
+                            }
+                            Operation::Share => {
+                                if let Stage::ServerQuestShareResult { msg } = later.stage {
+                                    if later.subject.scope == event.subject.scope
+                                        && later.elapsed_ms.saturating_sub(event.elapsed_ms)
+                                            <= 30_000
+                                    {
+                                        let matches = self
+                                            .entries
+                                            .iter()
+                                            .filter(|(_, candidate)| {
+                                                candidate.subject.operation == Operation::Share
+                                                    && candidate.subject.scope
+                                                        == later.subject.scope
+                                                    && matches!(
+                                                        candidate.stage,
+                                                        Stage::Delivery(CommandDelivery::Written)
+                                                    )
+                                                    && candidate.elapsed_ms <= later.elapsed_ms
+                                                    && later
+                                                        .elapsed_ms
+                                                        .saturating_sub(candidate.elapsed_ms)
+                                                        <= 30_000
+                                            })
+                                            .count();
+                                        return Some(format!(
+                                            "; share result {msg} ({})",
+                                            if matches > 1 {
+                                                "ambiguous"
+                                            } else {
+                                                "possible match; no quest ID"
+                                            }
+                                        ));
+                                    }
                                 }
                                 None
                             }
@@ -2316,6 +2756,8 @@ pub(crate) fn new_pair() -> (Source, History) {
         movement_last_written_seq: AtomicU64::new(0),
         movement_writes_since_correction: AtomicU64::new(0),
         npc_aliases: Mutex::new((VecDeque::with_capacity(MAX_NPC_ALIASES), 0)),
+        ui_dispatch_counter: AtomicU64::new(1),
+        ui_dispatches: Mutex::new(VecDeque::with_capacity(8)),
         origin: Instant::now(),
         #[cfg(feature = "dev")]
         run_id: format!("{:x}-{:x}",
@@ -3168,7 +3610,7 @@ mod tests {
         source.observe(Some((1, 1)), Some(783), Stage::JournalProjection);
 
         // Simulate /reload: advance reload generation and start VM session 11.
-        source.observe(Some((1, 1)), None, Stage::UiReload);
+        source.observe(Some((1, 1)), None, Stage::UiReload { vm_session: 10 });
         source.advance_reload_generation();
         source.capture_script_counts(
             Some((1, 1)),

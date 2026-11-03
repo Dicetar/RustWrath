@@ -1155,15 +1155,20 @@ pub(crate) fn run_pending_reload(world: &mut World) {
     if let Some(trace) = world.get_resource::<crate::quest_trace::Source>().cloned() {
         let scope = world.get_resource::<crate::wrath::WrathWorldView>()
             .map(|v| (v.session_epoch, v.world_generation));
-        let rows = crate::script_calls::with_hosted_vm(world, |script| {
+        let captured = crate::script_calls::with_hosted_vm(world, |script| {
             script.map(|script| (script.session(), script.diagnostic_counters()))
         });
-        if let (Some((vm_session, rows)), Some(mut cursor)) =
-            (rows, world.get_resource_mut::<crate::quest_trace::ScriptCursor>())
+        let vm_session = captured.as_ref().map_or(0, |(session, _)| *session);
+        if let (Some((_, rows)), Some(mut cursor)) =
+            (captured.as_ref(), world.get_resource_mut::<crate::quest_trace::ScriptCursor>())
         {
-            trace.capture_script_counts(scope, &mut cursor, vm_session, &rows);
+            trace.capture_script_counts(scope, &mut cursor, vm_session, rows);
         }
-        trace.observe(scope, None, crate::quest_trace::Stage::UiReload);
+        trace.observe(
+            scope,
+            None,
+            crate::quest_trace::Stage::UiReload { vm_session },
+        );
     }
     // A boot VM, never the glue's: the reload builds no glue (`0x495664` then `0x495669`), and the
     // load replaces this VM at once.
