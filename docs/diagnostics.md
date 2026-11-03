@@ -73,6 +73,12 @@ that the server sent no update.
 
 The inspector uses a cached, bounded snapshot refreshed at most once per 250 ms or
 material ring change; it does not rescan the retained ring on every egui pass.
+The snapshot and export also carry bounded cast/channel chains, loot/vendor/equipment
+correlations, quest/UI dispatch correlations, login/world/reload transitions, movement
+pressure and corrections, audio output health, asset failure windows, and hotpatch
+attempts. These summaries are evidence pointers; they do not claim visible pixels,
+audibility, movement feel, or a successful server outcome without the corresponding
+authoritative observation.
 
 Export is user-initiated, runs off the frame thread, writes to a temporary file, and
 renames with `create_new(true)` so an existing report is never overwritten. Unknown
