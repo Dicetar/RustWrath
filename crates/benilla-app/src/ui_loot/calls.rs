@@ -429,7 +429,11 @@ impl LootSteps<'_, '_> {
                 self.loot.then.push(Then::SweepRest { row, flag });
                 return;
             }
-            self.store(wire_slot, display_id);
+            self.store(
+                wire_slot,
+                display_id,
+                self.trace.as_ref().map(|s| s.begin(None, None, crate::quest_trace::Operation::Loot)),
+            );
         }
         self.sweep_end(script, flag);
     }

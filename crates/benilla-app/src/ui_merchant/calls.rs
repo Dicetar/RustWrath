@@ -43,10 +43,12 @@ impl MerchantSteps<'_, '_> {
     pub(crate) fn apply(&mut self, script: &mut UiScript, call: MerchantCall) {
         use crate::quest_trace::{Operation, Stage};
         let op = match &call {
-            MerchantCall::Sell { .. } => Operation::Sell,
-            _ => Operation::Buy,
+            MerchantCall::Sell { .. } => Some(Operation::Sell),
+            MerchantCall::Buy { .. } | MerchantCall::BuyIntoBag { .. }
+            | MerchantCall::BuyInSlot { .. } => Some(Operation::Buy),
+            MerchantCall::Buyback(_) | MerchantCall::RepairAll | MerchantCall::Close => None,
         };
-        let trace = self.trace.as_ref().map(|s| s.begin(None, None, op));
+        let trace = self.trace.as_ref().zip(op).map(|(s, op)| s.begin(None, None, op));
         let record = |trace: &Option<crate::quest_trace::Interaction>, stage| {
             if let Some(t) = trace {
                 t.record(stage);
@@ -150,6 +152,7 @@ impl MerchantSteps<'_, '_> {
             // (`0x4c7c7d`), slot `0xFF` so the server picks, count the fixed 1 (`0x4c7e9c`).
             MerchantCall::BuyIntoBag { bag_guid, entry } => {
                 let (Some(vendor), Some((_, me))) = (open.vendor, me_pair) else {
+                    record(&trace, Stage::GuardRefused);
                     return;
                 };
                 let bag_guid = bag_guid.unwrap_or(me.0);
@@ -175,9 +178,11 @@ impl MerchantSteps<'_, '_> {
             // bag; the count is the fixed 1.
             MerchantCall::BuyInSlot { bag, slot, entry } => {
                 let (Some(vendor), Some((store, guid))) = (open.vendor, me_pair) else {
+                    record(&trace, Stage::GuardRefused);
                     return;
                 };
                 let Some((bag_index, bag_slot)) = crate::ui_items::wire_pos_in_target(script.target(), bag, slot) else {
+                    record(&trace, Stage::GuardRefused);
                     debug!(
                         "ui_merchant: slot buy to an unaddressable slot ({bag}, {slot}) — ignored"
                     );
@@ -193,6 +198,7 @@ impl MerchantSteps<'_, '_> {
                     store.0.player_inv_slot(bag_index).filter(|g| *g != 0)
                 };
                 let Some(bag_guid) = bag_guid else {
+                    record(&trace, Stage::GuardRefused);
                     debug!("ui_merchant: slot buy into an absent bag {bag} — ignored");
                     return;
                 };

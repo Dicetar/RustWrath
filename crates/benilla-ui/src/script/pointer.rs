@@ -158,7 +158,7 @@ impl UiScript {
             }
             hit
         });
-        (hit, minimap_missed.get(), clipped.get())
+        (hit, minimap_missed.get(), if hit.is_some() { None } else { clipped.get() })
     }
 
     /// [`Self::hit_test_frame`] as a frame id, the id the app and the Lua bindings use.

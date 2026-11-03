@@ -257,6 +257,9 @@ impl ScriptItemUse<'_, '_> {
                     bag_index,
                     wire_slot,
                     Some(c.guid),
+                    ladder.trace.as_ref().map(|s| {
+                        s.begin(None, None, crate::quest_trace::Operation::Equip)
+                    }),
                 );
                 equip_sound.write(crate::sound::AutoEquipSound {
                     display_id: c.display_info_id,
