@@ -367,19 +367,9 @@ pub(crate) fn validate_snapshot_header(line: &str) -> Result<u32, SnapshotVersio
 pub(crate) struct DiagnosticVectorEvidence {
     pub vector: String,
     pub instrumentation_available: bool,
-    pub available: bool,
     pub retained_observations: u64,
-    pub retained_count: u64,
-    pub retained: u64,
-    pub count: u64,
-    pub observations: u64,
     pub latest_retained_sequence: Option<u64>,
-    pub latest_sequence: Option<u64>,
-    pub latest: Option<u64>,
-    pub latest_retained_event_sequence: Option<u64>,
     pub limiting_factors: Vec<String>,
-    pub limitations: Vec<String>,
-    pub limits: Vec<String>,
     pub absence_not_proof: bool,
 }
 
@@ -387,18 +377,6 @@ pub(crate) struct DiagnosticVectorEvidence {
 ///
 /// This is the single classification site used by both the in-memory summary and the
 /// JSONL export, so an event can never be counted under two different vectors.
-pub(crate) fn diagnostic_vector(stage: &Stage) -> Option<&'static str> {
-    diagnostic_vector_for_stage(stage)
-}
-
-pub(crate) fn diagnostic_vector_for_stage(stage: &Stage) -> Option<&'static str> {
-    classify_diagnostic_vector(stage)
-}
-
-pub(crate) fn classify_diagnostic_vector(stage: &Stage) -> Option<&'static str> {
-    vector_for_stage(stage)
-}
-
 pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
     match stage {
         Stage::Intent
@@ -435,7 +413,7 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
             event: DomainEvent::GossipMenu,
         } => Some("quest_panel_correlation"),
         Stage::UiFrame { .. } => Some("ui_frame_state"),
-        Stage::UiPress { .. } => Some("ui_pointer_categories"),
+        Stage::UiPress { .. } | Stage::UiClick { .. } => Some("ui_pointer_categories"),
         Stage::ScriptError { .. }
         | Stage::ScriptLoadError { .. }
         | Stage::ScriptWarning { .. }
@@ -1355,24 +1333,8 @@ impl History {
     }
 
     /// Additive per-vector evidence summary derived from the same bounded snapshot that
-    /// supplies the exported event rows.  Classification goes through `diagnostic_vector`
+    /// supplies the exported event rows.  Classification goes through `vector_for_stage`
     /// so both export paths agree.
-    pub(crate) fn diagnostic_vector_summary(&self) -> Vec<DiagnosticVectorEvidence> {
-        self.diagnostic_vector_evidence()
-    }
-
-    pub(crate) fn diagnostic_vector_evidence(&self) -> Vec<DiagnosticVectorEvidence> {
-        self.vector_evidence_summary()
-    }
-
-    pub(crate) fn vector_evidence_summary(&self) -> Vec<DiagnosticVectorEvidence> {
-        self.diagnostic_vector_coverage()
-    }
-
-    pub(crate) fn diagnostic_vector_coverage(&self) -> Vec<DiagnosticVectorEvidence> {
-        self.diagnostic_vectors()
-    }
-
     pub(crate) fn diagnostic_vectors(&self) -> Vec<DiagnosticVectorEvidence> {
         const VECTORS: &[&str] = &[
             "quest_interactions",
@@ -1406,7 +1368,7 @@ impl History {
             let mut latest_retained_sequence = None;
             let mut source_specific_loss = false;
             for (seq, event) in &self.entries {
-                if diagnostic_vector(&event.stage) == Some(vector) {
+                if vector_for_stage(&event.stage) == Some(vector) {
                     retained_observations = retained_observations.saturating_add(1);
                     latest_retained_sequence = Some(*seq);
                     if is_source_specific_loss_stage(&event.stage) {
@@ -1430,19 +1392,9 @@ impl History {
             let value = DiagnosticVectorEvidence {
                 vector: vector.to_string(),
                 instrumentation_available: available,
-                available,
                 retained_observations,
-                retained_count: retained_observations,
-                retained: retained_observations,
-                count: retained_observations,
-                observations: retained_observations,
                 latest_retained_sequence,
-                latest_sequence: latest_retained_sequence,
-                latest: latest_retained_sequence,
-                latest_retained_event_sequence: latest_retained_sequence,
                 limiting_factors: limiting_factors.clone(),
-                limitations: limiting_factors.clone(),
-                limits: limiting_factors,
                 absence_not_proof: true,
             };
             out.push(value);
@@ -1707,7 +1659,7 @@ impl History {
         #[cfg(not(feature = "hotpatch"))]
         let last_observed_patch_digest: Option<[u8; 20]> = None;
         let sampled_updates = self.sampled_updates();
-        let diagnostic_vectors = self.diagnostic_vector_summary();
+        let diagnostic_vectors = self.diagnostic_vectors();
         let first_sequence = self.entries.front().map(|(seq, _)| *seq);
         let highest_sequence = self.entries.back().map(|(seq, _)| *seq);
         let npc_aliases_assigned = self.source.npc_alias_count();
@@ -1787,13 +1739,7 @@ impl History {
                         "slot_correlations": slot_correlations,
                         "turn_in_correlations": turn_in_correlations,
                         "ui_error_correlations": ui_correlations,
-                        "diagnostic_vectors": diagnostic_vectors.clone(),
-                        "diagnostic_vector_evidence": diagnostic_vectors.clone(),
-                        "diagnostic_vector_coverage": diagnostic_vectors.clone(),
-                        "diagnostic_vector_summary": diagnostic_vectors.clone(),
-                        "vector_evidence": diagnostic_vectors.clone(),
-                        "vector_evidence_summary": diagnostic_vectors.clone(),
-                        "per_vector_evidence": diagnostic_vectors,
+                        "diagnostic_vectors": diagnostic_vectors,
                     }).to_string();
                     text.push('\n');
                     for (sequence, event) in rows {
