@@ -79,14 +79,64 @@ pub(crate) struct LootSteps<'w, 's> {
     chat: Res<'w, crate::ui_chat::ChatLog>,
     cfg: Res<'w, LootConfig>,
     /// Resident interaction diagnostics; loot producers record local boundaries here.
-    trace: Option<Res<'w, crate::quest_trace::Source>>,
+    pub(super) trace: Option<Res<'w, crate::quest_trace::Source>>,
+    /// Current Wrath scope; a loot interaction must carry it so an old world's reply can never
+    /// be attributed to the new one.
+    wrath: Option<Res<'w, crate::wrath::WrathWorldView>>,
 }
 
 impl LootSteps<'_, '_> {
+    pub(super) fn trace_scope(&self) -> Option<(u64, u64)> {
+        self.wrath
+            .as_ref()
+            .map(|view| (view.session_epoch, view.world_generation))
+    }
+
+    /// Start a loot interaction with the current scope and a numeric item/slot subject.
+    fn begin_loot(
+        &self,
+        source: Option<u64>,
+        item: Option<u32>,
+        count: Option<u32>,
+        slot: Option<u32>,
+    ) -> Option<crate::quest_trace::Interaction> {
+        self.trace.as_ref().map(|trace| {
+            trace.begin_with_details(
+                self.trace_scope(),
+                None,
+                source,
+                item,
+                count,
+                slot,
+                crate::quest_trace::Operation::Loot,
+            )
+        })
+    }
+
+    /// Wrap a command in the shared transport-identity envelope when a trace exists, so the tap
+    /// and writer record admission, encoding, refusal and the terminal write against it.
+    fn tracked(
+        trace: &Option<crate::quest_trace::Interaction>,
+        command: ClientCommand,
+    ) -> ClientCommand {
+        match trace {
+            Some(trace) => ClientCommand::tracked(Some((*trace).clone()), true, command),
+            None => command,
+        }
+    }
+
     /// A stand state change's loot close inside its call, `0x48f200(1, 1, 0)` at `0x5f07d5`: the
     /// movement start's close ([`super::LootMoveStart`]), its release sent now.
     pub(crate) fn close_for_stand(&mut self) {
-        let closed = super::close_on_move_start(&mut self.loot, &mut self.latch, &self.net);
+        let scope = self.trace_scope();
+        let trace = self.trace.as_deref();
+        let closed = super::close_on_move_start(
+            &mut self.loot,
+            &mut self.latch,
+            &self.net,
+            trace,
+            scope,
+        );
         self.dead.after_close(closed);
     }
 
@@ -131,7 +181,16 @@ impl LootSteps<'_, '_> {
     /// `SetOptOutOfLoot`: the client's pass-on-loot preference goes out as
     /// `CMSG_OPT_OUT_OF_LOOT` (0x409, `GroupHandler.cpp:1082`: one u32 flag).
     fn opt_out_of_loot(&mut self, pass: bool) {
-        let _ = self.net.0.send(ClientCommand::OptOutOfLoot { pass });
+        let trace = self.begin_loot(None, None, None, None);
+        let command = Self::tracked(&trace, ClientCommand::OptOutOfLoot { pass });
+        let result = self.net.0.send(command);
+        if let Some(trace) = &trace {
+            trace.record(if result.is_ok() {
+                crate::quest_trace::Stage::ChannelAdmitted
+            } else {
+                crate::quest_trace::Stage::ChannelDisconnected
+            });
+        }
     }
 
     /// `OpenItem 0x5edc80` from its `SetAutoLoot` (`0x5edcb6`) on, the call having chosen the
@@ -156,39 +215,62 @@ impl LootSteps<'_, '_> {
     /// guid that is no item object, `0x495407`), and `CMSG_OPEN_ITEM` goes out.
     fn send_open_item(&mut self, script: &mut UiScript, open: OpenItem) {
         debug!("ui_loot: open item {:#x}", open.guid);
+        let item = self
+            .objects
+            .object(open.guid)
+            .and_then(|fields| fields.object_entry());
+        let trace = self.begin_loot(
+            Some(open.guid),
+            item,
+            Some(1),
+            Some(u32::from(open.slot)),
+        );
         self.latch.0 = Some(open.guid);
         if self.objects.object(open.guid).is_some_and(|f| f.is_item()) {
             script.lock_item(open.guid);
         }
-        let _ = self.net.0.send(ClientCommand::OpenItem {
-            bag_index: open.bag_index,
-            slot: open.slot,
-        });
+        let command = Self::tracked(
+            &trace,
+            ClientCommand::OpenItem {
+                bag_index: open.bag_index,
+                slot: open.slot,
+            },
+        );
+        let result = self.net.0.send(command);
+        if let Some(trace) = &trace {
+            trace.record(if result.is_ok() {
+                crate::quest_trace::Stage::ChannelAdmitted
+            } else {
+                crate::quest_trace::Stage::ChannelDisconnected
+            });
+        }
     }
 
     /// `0x4c2790(slot, 0)`, a row's own click (`0x4c1867`), on the window's cells as they stand,
     /// whether a window is open or not: the dispatcher asks for no source, only the active player
     /// (`0x4c27ad`, `0x4c27b6`).
     fn take(&mut self, script: &mut UiScript, row: u32) {
-        use crate::quest_trace::{Operation, Stage};
-        let trace = self.trace.as_ref().map(|s| {
-            s.begin(None, None, Operation::Loot)
-        });
-        let record = |trace: &Option<crate::quest_trace::Interaction>, stage| {
-            if let Some(t) = trace {
-                t.record(stage);
+        use crate::quest_trace::{Interaction, Stage};
+        let record = |trace: &Option<Interaction>, stage| {
+            if let Some(trace) = trace {
+                trace.record(stage);
             }
         };
+        let source = self.loot.source();
         if self.objects.player().is_none() {
+            let trace = self.begin_loot(source, None, None, Some(row));
             record(&trace, Stage::GuardRefused);
             return;
         }
-        match self.loot.window.action_at(row) {
+        let action = self.loot.window.action_at(row);
+        match action {
             Some(LootAction::Money) => {
+                let trace = self.begin_loot(source, None, None, Some(row));
                 // `CMSG_LOOT_MONEY` while the player's loot target is held (`0x4c2847` →
                 // `0x5ea8c6`). The coin sound is the coinage watcher's (`crate::sound`).
                 if self.latch.0.is_some() {
-                    let result = self.net.0.send(ClientCommand::LootMoney);
+                    let command = Self::tracked(&trace, ClientCommand::LootMoney);
+                    let result = self.net.0.send(command);
                     record(
                         &trace,
                         if result.is_ok() {
@@ -219,6 +301,7 @@ impl LootSteps<'_, '_> {
                 slot_type: slot_type::ROLL_ONGOING,
                 ..
             }) => {
+                let trace = self.begin_loot(source, None, None, Some(row));
                 record(&trace, Stage::GuardRefused);
                 self.errors.push(UiError::key("ERR_LOOT_ROLL_PENDING"))
             }
@@ -227,23 +310,36 @@ impl LootSteps<'_, '_> {
             Some(LootAction::Item {
                 slot_type: slot_type::MASTER,
                 ..
-            }) => script.fire_event("OPEN_MASTER_LOOT_LIST", vec![]),
+            }) => {
+                let trace = self.begin_loot(source, None, None, Some(row));
+                // The list is a local UI step; no take packet leaves here.
+                record(&trace, Stage::GuardRefused);
+                script.fire_event("OPEN_MASTER_LOOT_LIST", vec![]);
+            }
             Some(LootAction::Item {
                 wire_slot,
                 display_id,
                 item_id,
                 ..
             }) => {
+                let trace = self.begin_loot(
+                    source,
+                    Some(item_id),
+                    Some(1),
+                    Some(u32::from(wire_slot)),
+                );
                 // Bind on pickup and uncommon or better (`0x4c28f2`, `0x4c28fb`): the confirm,
                 // whose listeners run before the stash takes the row (`0x4c290f`, `0x4c2917`).
                 if bind_confirm_required(&self.items, item_id) {
+                    record(&trace, Stage::GuardRefused);
                     script.fire_event("LOOT_BIND_CONFIRM", vec![ScriptValue::Int(i64::from(row))]);
                     self.loot.then.push(Then::StoreBind { row });
                     return;
                 }
-                self.store(wire_slot, display_id, trace.clone());
+                self.store(wire_slot, display_id, trace);
             }
             None => {
+                let trace = self.begin_loot(source, None, None, Some(row));
                 record(&trace, Stage::GuardRefused);
             }
         }
@@ -254,10 +350,11 @@ impl LootSteps<'_, '_> {
     fn store(&mut self, wire_slot: u8, display_id: u32, interaction: Option<crate::quest_trace::Interaction>) {
         self.pickup
             .write(crate::sound::LootPickupSound { display_id });
-        let result = self
-            .net
-            .0
-            .send(ClientCommand::AutostoreLootItem { slot: wire_slot });
+        let command = Self::tracked(
+            &interaction,
+            ClientCommand::AutostoreLootItem { slot: wire_slot },
+        );
+        let result = self.net.0.send(command);
         if let Some(t) = &interaction {
             t.record(if result.is_ok() {
                 crate::quest_trace::Stage::ChannelAdmitted
@@ -271,23 +368,35 @@ impl LootSteps<'_, '_> {
     /// an item (`0x4c27d9`); the send clears the stash (`0x4c281a`), so a doubled accept cannot
     /// loot twice.
     fn confirm(&mut self, row: u32) {
-        use crate::quest_trace::Operation;
-        let trace = self.trace.as_ref().map(|s| s.begin(None, None, Operation::Loot));
+        let action = self.loot.window.action_at(row);
+        let (item_id, wire_slot, display_id) = match action {
+            Some(LootAction::Item {
+                item_id,
+                wire_slot,
+                display_id,
+                ..
+            }) => (Some(item_id), Some(wire_slot), Some(display_id)),
+            _ => (None, None, None),
+        };
+        let trace = self.begin_loot(
+            self.loot.source(),
+            item_id,
+            Some(1),
+            wire_slot.map(u32::from).or(Some(row)),
+        );
         if self.objects.player().is_none() || self.loot.pending_bind_confirm != Some(row) {
             if let Some(t) = &trace {
                 t.record(crate::quest_trace::Stage::GuardRefused);
             }
             return;
         }
-        let Some(LootAction::Item {
-            wire_slot,
-            display_id,
-            ..
-        }) = self.loot.window.action_at(row)
-        else {
+        let (Some(wire_slot), Some(display_id)) = (wire_slot, display_id) else {
+            if let Some(t) = &trace {
+                t.record(crate::quest_trace::Stage::GuardRefused);
+            }
             return;
         };
-        self.store(wire_slot, display_id, trace.clone());
+        self.store(wire_slot, display_id, trace);
         self.loot.pending_bind_confirm = None;
     }
 
@@ -307,7 +416,15 @@ impl LootSteps<'_, '_> {
         if failed {
             self.errors.push(UiError::key("ERR_LOOT_NO_UI"));
         }
-        let closed = close_interaction(&mut self.loot, &mut self.latch, Some(&self.net));
+        let scope = self.trace_scope();
+        let trace = self.trace.as_deref();
+        let closed = close_interaction(
+            &mut self.loot,
+            &mut self.latch,
+            Some(&self.net),
+            trace,
+            scope,
+        );
         self.dead.after_close(closed);
         self.loot.then.push(Then::Announce);
         self.loot.then.push(Then::Unlocks);
@@ -318,12 +435,17 @@ impl LootSteps<'_, '_> {
     fn give_master(&mut self, slot: u32, candidate: u32) {
         let window = &self.loot.window;
         let Some(guid) = window.source else {
+            let trace = self.begin_loot(None, None, None, Some(slot));
+            if let Some(trace) = &trace {
+                trace.record(crate::quest_trace::Stage::GuardRefused);
+            }
             return;
         };
         let (
             Some(LootAction::Item {
                 wire_slot,
                 slot_type,
+                item_id,
                 ..
             }),
             Some(target),
@@ -332,18 +454,43 @@ impl LootSteps<'_, '_> {
             window.master_candidate(candidate, &self.group),
         )
         else {
+            let trace = self.begin_loot(Some(guid), None, None, Some(slot));
+            if let Some(trace) = &trace {
+                trace.record(crate::quest_trace::Stage::GuardRefused);
+            }
             debug!("ui_loot: GiveMasterLoot({slot}, {candidate}) unresolvable — ignored");
             return;
         };
         if slot_type != slot_type::MASTER {
+            let trace = self.begin_loot(Some(guid), Some(item_id), Some(1), Some(slot));
+            if let Some(trace) = &trace {
+                trace.record(crate::quest_trace::Stage::GuardRefused);
+            }
             return;
         }
         debug!("ui_loot: master-give row {slot} (wire slot {wire_slot}) to {target:#x}");
-        let _ = self.net.0.send(ClientCommand::LootMasterGive {
-            guid,
-            slot: wire_slot,
-            target,
-        });
+        let trace = self.begin_loot(
+            Some(guid),
+            Some(item_id),
+            Some(1),
+            Some(u32::from(wire_slot)),
+        );
+        let command = Self::tracked(
+            &trace,
+            ClientCommand::LootMasterGive {
+                guid,
+                slot: wire_slot,
+                target,
+            },
+        );
+        let result = self.net.0.send(command);
+        if let Some(trace) = &trace {
+            trace.record(if result.is_ok() {
+                crate::quest_trace::Stage::ChannelAdmitted
+            } else {
+                crate::quest_trace::Stage::ChannelDisconnected
+            });
+        }
     }
 
     /// The copier's end (`0x4c1ea8`-`0x4c1ee6`, the cache callback's `0x4c2afe`-`0x4c2b37`): the
@@ -389,7 +536,16 @@ impl LootSteps<'_, '_> {
         let window = &self.loot.window;
         if window.coin_slot {
             if self.latch.0.is_some() {
-                let _ = self.net.0.send(ClientCommand::LootMoney);
+                let trace = self.begin_loot(self.loot.source(), None, None, None);
+                let command = Self::tracked(&trace, ClientCommand::LootMoney);
+                let result = self.net.0.send(command);
+                if let Some(trace) = &trace {
+                    trace.record(if result.is_ok() {
+                        crate::quest_trace::Stage::ChannelAdmitted
+                    } else {
+                        crate::quest_trace::Stage::ChannelDisconnected
+                    });
+                }
             }
             let grouped = self.group.party_slots().next().is_some_and(|m| m.guid != 0)
                 || self.group.raid_held();
@@ -429,11 +585,14 @@ impl LootSteps<'_, '_> {
                 self.loot.then.push(Then::SweepRest { row, flag });
                 return;
             }
-            self.store(
-                wire_slot,
-                display_id,
-                self.trace.as_ref().map(|s| s.begin(None, None, crate::quest_trace::Operation::Loot)),
+            let source = self.loot.source();
+            let trace = self.begin_loot(
+                source,
+                Some(item_id),
+                Some(1),
+                Some(u32::from(wire_slot)),
             );
+            self.store(wire_slot, display_id, trace);
         }
         self.sweep_end(script, flag);
     }

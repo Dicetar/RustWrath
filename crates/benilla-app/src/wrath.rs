@@ -4273,6 +4273,17 @@ fn wrath_dispatch_events(world: &mut World) {
                     event.world_generation,
                 ))
         {
+            // The buy reply names a vendor row slot, not an entry. Resolve it from the same
+            // 12340 stock the buy packet addressed; absent stock keeps the item unknown.
+            let vendor_buy_entry = match &event.event {
+                SessionEvent::VendorBuyResult { vendor, slot, .. } => world
+                    .get_resource::<WrathWorldView>()
+                    .and_then(|view| view.vendor.as_ref())
+                    .filter(|(guid, _)| *guid == *vendor)
+                    .and_then(|(_, rows)| rows.iter().find(|row| row.slot == *slot))
+                    .map(|row| row.entry),
+                _ => None,
+            };
             if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
                 use crate::quest_trace::{DomainEvent as D, LoginMilestone, Stage};
                 let login_milestone = match &event.event {
@@ -4366,15 +4377,153 @@ fn wrath_dispatch_events(world: &mut World) {
                         Stage::DomainEvent { event: event_kind },
                     );
                 }
-                if let SessionEvent::ItemPushResult(push) = &event.event {
-                    trace.observe(
-                        Some((event.session_epoch, event.world_generation)),
+                // Numeric, privacy-safe inbound evidence. Raw GUIDs (source, item, vendor,
+                // seller) are used only to derive the run-local alias; no GUID, name, message or
+                // packet body enters the recorder.
+                match &event.event {
+                    SessionEvent::LootResponse { guid, .. } => trace.observe_with_subject(
+                        scope,
                         None,
-                        Stage::RewardItemPushed {
-                            item_id: push.item_entry,
-                            count: push.count,
+                        Some(*guid),
+                        None,
+                        None,
+                        None,
+                        Stage::LootResponseOpened,
+                    ),
+                    SessionEvent::LootError { guid, error } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*guid),
+                        None,
+                        None,
+                        None,
+                        Stage::LootErrorObserved { reason: *error },
+                    ),
+                    SessionEvent::LootRemoved { slot } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(u32::from(*slot)),
+                        Stage::LootSlotRemoved {
+                            slot: u32::from(*slot),
+                            item_id: None,
+                            count: None,
                         },
-                    );
+                    ),
+                    SessionEvent::LootMoneyNotify { amount } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        None,
+                        None,
+                        Some(*amount),
+                        None,
+                        Stage::LootMoneyNotify { amount: *amount },
+                    ),
+                    SessionEvent::LootClearMoney => {
+                        trace.observe_with_subject(scope, None, None, None, None, None, Stage::LootMoneyCleared)
+                    }
+                    SessionEvent::LootReleaseResponse { guid, .. } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*guid),
+                        None,
+                        None,
+                        None,
+                        Stage::LootReleasedObserved,
+                    ),
+                    SessionEvent::ItemPushResult(push) => {
+                        // Keep the quest reward semantics for the quest turn-in correlator, and
+                        // record the explicit non-quest item-push domain as well.
+                        trace.observe_with_subject(
+                            scope,
+                            None,
+                            None,
+                            Some(push.item_entry),
+                            Some(push.count),
+                            None,
+                            Stage::ItemPushResult {
+                                item_id: push.item_entry,
+                                count: push.count,
+                            },
+                        );
+                        trace.observe(
+                            scope,
+                            None,
+                            Stage::RewardItemPushed {
+                                item_id: push.item_entry,
+                                count: push.count,
+                            },
+                        );
+                    }
+                    SessionEvent::InventoryFailure { reason, .. } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Stage::InventoryFailure { reason: *reason },
+                    ),
+                    SessionEvent::VendorInventory { vendor, items } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*vendor),
+                        None,
+                        None,
+                        None,
+                        Stage::VendorInventoryObserved {
+                            vendor_alias: trace.npc_alias(*vendor),
+                            rows: items.len().min(u32::MAX as usize) as u32,
+                        },
+                    ),
+                    SessionEvent::VendorBuyResult {
+                        vendor,
+                        slot,
+                        purchase_count,
+                        ..
+                    } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*vendor),
+                        vendor_buy_entry,
+                        Some(*purchase_count),
+                        Some(*slot),
+                        Stage::VendorBuyResult {
+                            item_id: vendor_buy_entry,
+                            count: *purchase_count,
+                            slot: Some(*slot),
+                        },
+                    ),
+                    SessionEvent::VendorBuyFailed {
+                        vendor,
+                        item_entry,
+                        reason,
+                    } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*vendor),
+                        Some(*item_entry),
+                        None,
+                        None,
+                        Stage::VendorBuyFailedObserved {
+                            item_id: Some(*item_entry),
+                            reason: *reason,
+                        },
+                    ),
+                    SessionEvent::VendorSellFailed { vendor, reason, .. } => {
+                        trace.observe_with_subject(
+                            scope,
+                            None,
+                            Some(*vendor),
+                            None,
+                            None,
+                            None,
+                            Stage::VendorSellFailedObserved { reason: *reason },
+                        )
+                    }
+                    _ => {}
                 }
             }
             deliver.push(event.event);
@@ -6305,6 +6454,71 @@ fn wrath_apply_world(world: &mut World) {
                             notices.write(crate::field_watch::FieldNotice::Global {
                                 id: crate::field_watch::id::PLAYER_MONEY,
                             });
+                        }
+                    }
+                }
+                // Equipment-slot evidence: the descriptor update moved one of the player's
+                // nineteen equipment guids. Record the numeric slot and the item entry (never the
+                // guid), so an equip can be distinguished from a bare item push.
+                let mut changed_slots: Vec<u8> = moved
+                    .iter()
+                    .filter_map(|&(idx, _, _)| {
+                        let base = benilla_protocol::field::FIELD_PLAYER_INV_SLOT_HEAD;
+                        ((base..base + 38).contains(&idx) && (idx - base) % 2 == 0)
+                            .then(|| ((idx - base) / 2) as u8)
+                            .filter(|slot| *slot < 19)
+                    })
+                    .collect();
+                changed_slots.sort_unstable();
+                changed_slots.dedup();
+                if !changed_slots.is_empty() {
+                    if let Some(trace) =
+                        world.get_resource::<crate::quest_trace::Source>()
+                    {
+                        let scope = world
+                            .get_resource::<WrathWorldView>()
+                            .map(|v| (v.session_epoch, v.world_generation));
+                        let mut entries: Vec<(u8, u64)> = Vec::new();
+                        if let Some(entity) =
+                            world.resource::<GuidIndex>().0.get(guid).copied()
+                        {
+                            if let Some(store) = world.get::<crate::net::ObjectStore>(entity)
+                            {
+                                for slot in &changed_slots {
+                                    entries.push((
+                                        *slot,
+                                        store.0.player_inv_slot(*slot).unwrap_or(0),
+                                    ));
+                                }
+                            }
+                        }
+                        for (slot, item_guid) in entries {
+                            let item_id = if item_guid == 0 {
+                                0
+                            } else {
+                                world
+                                    .resource::<GuidIndex>()
+                                    .0
+                                    .get(&item_guid)
+                                    .and_then(|entity| {
+                                        world
+                                            .get::<crate::net::ObjectStore>(*entity)
+                                            .and_then(|store| store.0.object_entry())
+                                    })
+                                    .unwrap_or(0)
+                            };
+                            trace.observe_with_subject(
+                                scope,
+                                None,
+                                None,
+                                Some(item_id),
+                                Some(1),
+                                Some(u32::from(slot)),
+                                crate::quest_trace::Stage::EquipmentSlotChanged {
+                                    item_id,
+                                    slot: u32::from(slot),
+                                },
+                            );
                         }
                     }
                 }

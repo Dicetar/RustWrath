@@ -82,6 +82,42 @@ pub(crate) enum Stage {
         edge: CastEdge,
     },
     InventoryFailure { reason: u8 },
+    /// A loot slot's authoritative removal (`SMSG_LOOT_REMOVED`). The item id is known only when
+    /// the producer still holds the window row; the wire event itself carries the slot alone.
+    LootSlotRemoved {
+        slot: u32,
+        item_id: Option<u32>,
+        count: Option<u32>,
+    },
+    /// `SMSG_LOOT_MONEY_NOTIFY`: the amount is server-reported.
+    LootMoneyNotify { amount: u32 },
+    /// `SMSG_LOOT_CLEAR_MONEY`: the amount is not carried, only the bounded fact.
+    LootMoneyCleared,
+    /// A loot refusal. `reason` is the protocol's numeric loot error, never its message text.
+    LootErrorObserved { reason: u8 },
+    /// `SMSG_LOOT_RESPONSE` opened a loot window on a source.
+    LootResponseOpened,
+    /// `SMSG_LOOT_RELEASE_RESPONSE`: the server released the loot interaction.
+    LootReleasedObserved,
+    /// A non-quest item push (`SMSG_ITEM_PUSH_RESULT`), kept distinct from the quest-only
+    /// `RewardItemPushed` semantics.
+    ItemPushResult { item_id: u32, count: u32 },
+    /// `SMSG_LIST_INVENTORY`: a vendor alias and the bounded row count, never the rows.
+    VendorInventoryObserved { vendor_alias: Option<u32>, rows: u32 },
+    /// `SMSG_BUY_ITEM` for a vendor row. The protocol event names the row slot, not the entry.
+    VendorBuyResult {
+        item_id: Option<u32>,
+        count: u32,
+        slot: Option<u32>,
+    },
+    /// `SMSG_BUY_FAILED` with its numeric `buy_result` reason.
+    VendorBuyFailedObserved { item_id: Option<u32>, reason: u8 },
+    /// `SMSG_SELL_ITEM`'s numeric refusal reason. The item identity is a raw GUID on the wire and
+    /// is deliberately not recorded.
+    VendorSellFailedObserved { reason: u8 },
+    /// An observed equipment-slot move. Recorded only where the source exposes a numeric item
+    /// entry alongside the slot; the wire update alone carries no item entry.
+    EquipmentSlotChanged { item_id: u32, slot: u32 },
     AudioMixer {
         present: bool,
         voices: u32,
@@ -457,6 +493,12 @@ struct Subject {
     scope: Option<(u64, u64)>,
     quest: Option<u32>,
     npc_alias: Option<u32>,
+    /// Numeric item entry / template id. Never a raw item GUID.
+    item: Option<u32>,
+    /// Item count or quantity where the producer knows it.
+    count: Option<u32>,
+    /// Loot wire slot, vendor row slot or equipment slot index where relevant.
+    slot: Option<u32>,
     operation: Operation,
     reload_generation: u64,
     ui_dispatch_id: Option<u64>,
@@ -641,10 +683,22 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         | Stage::Outbound { .. } => Some("allowlisted_packets"),
         Stage::Cast { .. } => Some("casts"),
         Stage::InventoryFailure { .. }
+        | Stage::ItemPushResult { .. }
+        | Stage::EquipmentSlotChanged { .. }
         | Stage::DomainEvent {
             event: DomainEvent::InventoryFailure | DomainEvent::ItemReceived,
         } => Some("inventory_failures"),
-        Stage::DomainEvent {
+        Stage::LootSlotRemoved { .. }
+        | Stage::LootMoneyNotify { .. }
+        | Stage::LootMoneyCleared
+        | Stage::LootErrorObserved { .. }
+        | Stage::LootResponseOpened
+        | Stage::LootReleasedObserved
+        | Stage::VendorInventoryObserved { .. }
+        | Stage::VendorBuyResult { .. }
+        | Stage::VendorBuyFailedObserved { .. }
+        | Stage::VendorSellFailedObserved { .. }
+        | Stage::DomainEvent {
             event: DomainEvent::VendorList
                 | DomainEvent::VendorBuy
                 | DomainEvent::VendorBuyFailed
@@ -873,6 +927,39 @@ impl Source {
                 scope,
                 quest,
                 npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
+                item: None,
+                count: None,
+                slot: None,
+                operation: Operation::Observed,
+                reload_generation: self.0.reload_generation.load(Ordering::Acquire),
+                ui_dispatch_id: None,
+            },
+        };
+        trace.record(stage);
+    }
+
+    /// Observe inbound evidence with a numeric subject: an item entry, count and slot. The NPC is
+    /// still mapped to a run-local alias; raw GUIDs never reach the ring.
+    pub(crate) fn observe_with_subject(
+        &self,
+        scope: Option<(u64, u64)>,
+        quest: Option<u32>,
+        npc: Option<u64>,
+        item: Option<u32>,
+        count: Option<u32>,
+        slot: Option<u32>,
+        stage: Stage,
+    ) {
+        let trace = Interaction {
+            source: self.clone(),
+            subject: Subject {
+                interaction: 0,
+                scope,
+                quest,
+                npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
+                item,
+                count,
+                slot,
                 operation: Operation::Observed,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
                 ui_dispatch_id: None,
@@ -897,6 +984,23 @@ impl Source {
         npc: Option<u64>,
         operation: Operation,
     ) -> Interaction {
+        self.begin_with_details(scope, quest, npc, None, None, None, operation)
+    }
+
+    /// Start a user-originated interaction carrying the numeric subject used for later
+    /// correlation: item entry, count and slot. `npc` is the loot/vendor source GUID, mapped to a
+    /// run-local alias here.
+    #[allow(clippy::too_many_arguments)] // scope + quest + source + numeric subject + operation
+    pub(crate) fn begin_with_details(
+        &self,
+        scope: Option<(u64, u64)>,
+        quest: Option<u32>,
+        npc: Option<u64>,
+        item: Option<u32>,
+        count: Option<u32>,
+        slot: Option<u32>,
+        operation: Operation,
+    ) -> Interaction {
         let trace = Interaction {
             source: self.clone(),
             subject: Subject {
@@ -904,6 +1008,9 @@ impl Source {
                 scope,
                 quest,
                 npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
+                item,
+                count,
+                slot,
                 operation,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
                 ui_dispatch_id: self.plausible_ui_dispatch(scope),
@@ -1162,6 +1269,80 @@ fn same_script_row(a: Stage, b: Stage) -> bool {
     }
 }
 
+/// An exact key comparison only when both sides carry it. A missing key is not an exact match.
+fn slot_matches(action: Option<u32>, evidence: Option<u32>) -> bool {
+    match (action, evidence) {
+        (Some(a), Some(e)) => a == e,
+        _ => true,
+    }
+}
+
+fn item_matches(action: Option<u32>, evidence: Option<u32>) -> bool {
+    match (action, evidence) {
+        (Some(a), Some(e)) => a == e,
+        // A known action item with unidentified evidence (or the reverse) stays eligible but can
+        // never earn exact confidence; the time window and duplicate count decide.
+        _ => true,
+    }
+}
+
+fn alias_matches(action: Option<u32>, evidence: Option<u32>) -> bool {
+    match (action, evidence) {
+        (Some(a), Some(e)) => a == e,
+        _ => true,
+    }
+}
+
+/// Human label for the numeric inbound evidence, plus whether the evidence itself carries an
+/// authoritative numeric identity strong enough for `strong` confidence.
+fn loot_vendor_evidence_label(stage: &Stage) -> Option<(String, bool)> {
+    Some(match stage {
+        Stage::LootSlotRemoved { .. } => ("loot slot removed".to_owned(), true),
+        Stage::LootMoneyNotify { .. } => ("loot money notified".to_owned(), true),
+        Stage::LootMoneyCleared => ("loot money cleared".to_owned(), true),
+        Stage::LootErrorObserved { reason } => {
+            (format!("server reported loot error {reason}"), false)
+        }
+        Stage::LootResponseOpened => ("loot window observed".to_owned(), false),
+        Stage::LootReleasedObserved => ("loot release observed".to_owned(), false),
+        Stage::ItemPushResult { .. } => ("item push observed".to_owned(), true),
+        Stage::VendorInventoryObserved { .. } => ("vendor inventory observed".to_owned(), false),
+        Stage::VendorBuyResult { item_id, slot, .. } => (
+            "vendor buy result observed".to_owned(),
+            item_id.is_some() || slot.is_some(),
+        ),
+        Stage::VendorBuyFailedObserved { reason, .. } => {
+            (format!("server reported buy failure {reason}"), false)
+        }
+        Stage::VendorSellFailedObserved { reason } => {
+            (format!("server reported sell failure {reason}"), false)
+        }
+        Stage::EquipmentSlotChanged { .. } => ("equipment slot change observed".to_owned(), true),
+        Stage::InventoryFailure { reason } => {
+            (format!("server reported inventory failure {reason}"), false)
+        }
+        Stage::DomainEvent { event: DomainEvent::LootError } => {
+            ("server reported loot error".to_owned(), false)
+        }
+        Stage::DomainEvent { event: DomainEvent::VendorBuyFailed } => {
+            ("server reported buy failure".to_owned(), false)
+        }
+        Stage::DomainEvent { event: DomainEvent::VendorSellFailed } => {
+            ("server reported sell failure".to_owned(), false)
+        }
+        Stage::DomainEvent { event: DomainEvent::InventoryFailure } => {
+            ("server reported inventory failure".to_owned(), false)
+        }
+        _ => return None,
+    })
+}
+
+/// A refusal carries its own authoritative numeric subject only for the vendor buy failure, whose
+/// `item_entry` the server sends. Loot errors and sell failures do not carry an item entry.
+fn candidate_subject_is_authoritative(stage: Stage) -> bool {
+    matches!(stage, Stage::VendorBuyFailedObserved { item_id: Some(_), .. })
+}
+
 fn is_panel_stage(stage: Stage) -> bool {
     matches!(
         stage,
@@ -1189,6 +1370,15 @@ pub(crate) struct InspectorSnapshot {
     pub turn_ins: Vec<String>,
     pub ui_errors: Vec<String>,
     pub ui_clicks: Vec<String>,
+    pub cast_chains: Vec<String>,
+    pub loot_vendor: Vec<String>,
+    pub quest_ui: Vec<String>,
+    pub session: Vec<String>,
+    pub movement: Vec<String>,
+    pub movement_corrections: Vec<String>,
+    pub audio: Vec<String>,
+    pub assets: Vec<String>,
+    pub hotpatch: Vec<String>,
     pub recent: Vec<String>,
 }
 
@@ -1745,6 +1935,84 @@ impl History {
     }
 }
 
+/// Whether one written loot/equip/buy/sell action's numeric subject can explain an inbound
+/// evidence event. Matching is deliberately conservative: an absent key never earns exact
+/// confidence, and a raw GUID or an item name is never consulted.
+fn loot_vendor_evidence_matches_action(action: &Subject, evidence: &Event) -> bool {
+    let stage_item = match &evidence.stage {
+        Stage::LootSlotRemoved { item_id, .. }
+        | Stage::VendorBuyResult { item_id, .. }
+        | Stage::VendorBuyFailedObserved { item_id, .. } => *item_id,
+        Stage::ItemPushResult { item_id, .. } => Some(*item_id),
+        Stage::EquipmentSlotChanged { item_id, .. } => Some(*item_id),
+        _ => None,
+    };
+    match (action.operation, &evidence.stage) {
+        (Operation::Loot, Stage::LootSlotRemoved { slot, .. }) => {
+            slot_matches(action.slot, Some(*slot))
+                && item_matches(action.item, stage_item)
+        }
+        (Operation::Loot, Stage::LootMoneyNotify { .. } | Stage::LootMoneyCleared) => true,
+        (Operation::Loot, Stage::LootErrorObserved { .. }) => {
+            alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Loot, Stage::LootResponseOpened | Stage::LootReleasedObserved) => {
+            alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Loot, Stage::ItemPushResult { item_id, .. }) => {
+            item_matches(action.item, Some(*item_id))
+        }
+        // An item push says the item arrived, not that it occupies an equipment slot. Only a
+        // slot change (or an inventory refusal) is equipment evidence.
+        // The action's `slot` is the source bag slot, not the destination equipment slot, so
+        // only the item entry can be compared here.
+        (Operation::Equip, Stage::EquipmentSlotChanged { item_id, .. }) => {
+            item_matches(action.item, Some(*item_id))
+        }
+        (Operation::Equip, Stage::InventoryFailure { .. }) => true,
+        (Operation::Buy, Stage::VendorBuyResult { item_id, slot, .. }) => {
+            item_matches(action.item, *item_id)
+                && slot_matches(action.slot, *slot)
+                && alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Buy, Stage::VendorBuyFailedObserved { item_id, .. }) => {
+            item_matches(action.item, *item_id)
+                && alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Buy, Stage::InventoryFailure { .. }) => true,
+        (Operation::Sell, Stage::VendorSellFailedObserved { .. }) => {
+            alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Sell, Stage::InventoryFailure { .. }) => true,
+        (
+            Operation::Loot,
+            Stage::DomainEvent {
+                event: DomainEvent::LootError,
+            },
+        ) => true,
+        (
+            Operation::Buy,
+            Stage::DomainEvent {
+                event: DomainEvent::VendorBuyFailed,
+            },
+        ) => true,
+        (
+            Operation::Sell,
+            Stage::DomainEvent {
+                event: DomainEvent::VendorSellFailed,
+            },
+        ) => true,
+        (
+            Operation::Loot | Operation::Equip | Operation::Buy | Operation::Sell,
+            Stage::DomainEvent {
+                event: DomainEvent::InventoryFailure,
+            },
+        ) => true,
+        _ => false,
+    }
+}
+
+
 #[cfg(feature = "dev")]
 impl History {
     /// A time-window association is a lead, not proof that a press caused a script error.
@@ -1900,6 +2168,24 @@ impl History {
                 turn_ins: cap(self.turn_in_correlations(), 8),
                 ui_errors: cap(self.ui_error_correlations(), 8),
                 ui_clicks: cap(self.ui_click_correlations(), 8),
+                cast_chains: cap(self.cast_correlations(), 8),
+                loot_vendor: cap(self.loot_vendor_correlations(), 8),
+                quest_ui: cap(self.quest_ui_correlations(), 8),
+                session: cap(self.session_transition_summaries(), 8),
+                movement: cap(self.movement_pressure(), 8),
+                movement_corrections: cap(self.movement_correction_attribution(), 8),
+                audio: cap(self.audio_output_health(), 8),
+                assets: cap(self.asset_window_summary(), 8),
+                hotpatch: {
+                    #[cfg(feature = "hotpatch")]
+                    {
+                        cap(self.hotpatch_attempt_correlation(), 8)
+                    }
+                    #[cfg(not(feature = "hotpatch"))]
+                    {
+                        Vec::new()
+                    }
+                },
                 recent: cap(self.recent().map(|line| line.to_string()).collect(), 16),
             });
         }
@@ -2058,11 +2344,14 @@ impl History {
                 !self.entries.iter().any(|(retained, _)| retained == seq)
             });
             format!(
-                "Action {} {:?} (npc {:?}, quest {:?}): {:?} [{:?}] {:?} (evidence {:?}{}{}{})",
+                "Action {} {:?} (npc {:?}, quest {:?}, item {:?}, count {:?}, slot {:?}): {:?} [{:?}] {:?} (evidence {:?}{}{}{})",
                 incident.subject.interaction,
                 incident.subject.operation,
                 incident.subject.npc_alias,
                 incident.subject.quest,
+                incident.subject.item,
+                incident.subject.count,
+                incident.subject.slot,
                 incident.outcome,
                 incident.confidence,
                 incident.terminal_stage,
@@ -2274,6 +2563,113 @@ impl History {
         Some(format!(
             "; cast spell {spell} wire {local_wire:?}/{native_wire:?} attempt {attempt:?}: {edge:?}"
         ))
+    }
+
+    /// Written actions in the same scope that could explain `evidence`. More than one makes the
+    /// attribution ambiguous even when each individual subject looks exact.
+    fn eligible_loot_vendor_writes(&self, evidence: &Event, operation: Operation) -> usize {
+        self.entries
+            .iter()
+            .filter(|(_, candidate)| {
+                candidate.subject.operation == operation
+                    && candidate.subject.scope.is_some()
+                    && candidate.subject.scope == evidence.subject.scope
+                    && candidate.elapsed_ms <= evidence.elapsed_ms
+                    && evidence.elapsed_ms.saturating_sub(candidate.elapsed_ms) <= 30_000
+                    && matches!(candidate.stage, Stage::Delivery(CommandDelivery::Written))
+                    && loot_vendor_evidence_matches_action(&candidate.subject, evidence)
+            })
+            .count()
+    }
+
+    /// Evidence summary for one written loot/equip/buy/sell action. `exact` is reserved for a
+    /// carried item/slot identity (or an authoritative refusal carrying the item); a bare
+    /// time-window match is heuristic.
+    fn loot_vendor_action_evidence(&self, action: &Event, evidence: &Event) -> Option<String> {
+        let (label, mut exact) = loot_vendor_evidence_label(&evidence.stage)?;
+        // An item push says the item arrived; it does not prove the loot row was removed.
+        if action.subject.operation == Operation::Loot
+            && matches!(evidence.stage, Stage::ItemPushResult { .. })
+        {
+            exact = false;
+        }
+        let matches = self.eligible_loot_vendor_writes(evidence, action.subject.operation);
+        let confidence = if matches > 1 {
+            "ambiguous"
+        } else if exact {
+            "strong"
+        } else {
+            "heuristic"
+        };
+        Some(format!("; {label} ({confidence})"))
+    }
+
+    /// Bounded inspector lines for user-originated loot, equipment and merchant actions: the last
+    /// written milestone plus the strongest matching server evidence, or an explicit uncertainty.
+    #[allow(dead_code)] // integrated by the inspector/export owner
+    pub(crate) fn loot_vendor_correlations(&self) -> Vec<String> {
+        let gaps = self.has_telemetry_gaps();
+        let mut seen = std::collections::HashSet::new();
+        let mut output = Vec::new();
+        for (_, event) in self.entries.iter().rev() {
+            let subject = event.subject;
+            if subject.interaction == 0
+                || !matches!(
+                    subject.operation,
+                    Operation::Loot | Operation::Equip | Operation::Buy | Operation::Sell
+                )
+                || !matches!(event.stage, Stage::Delivery(CommandDelivery::Written))
+                || !seen.insert(subject.interaction)
+            {
+                continue;
+            }
+            let candidate = self.entries.iter().rev().find(|(_, later)| {
+                later.subject.scope.is_some()
+                    && later.subject.scope == subject.scope
+                    && later.elapsed_ms >= event.elapsed_ms
+                    && later.elapsed_ms.saturating_sub(event.elapsed_ms) <= 30_000
+                    && loot_vendor_evidence_matches_action(&subject, later)
+            });
+            let line = match candidate {
+                Some((_, later)) => {
+                    let (label, _) = loot_vendor_evidence_label(&later.stage)
+                        .unwrap_or(("server evidence observed".to_owned(), false));
+                    let matches = self.eligible_loot_vendor_writes(later, subject.operation);
+                    let confidence = if matches > 1 {
+                        "ambiguous"
+                    } else {
+                        "possible match"
+                    };
+                    format!(
+                        "Action {} {:?} (npc {:?}, item {:?}, count {:?}, slot {:?}): {label} ({confidence})",
+                        subject.interaction,
+                        subject.operation,
+                        subject.npc_alias,
+                        subject.item,
+                        subject.count,
+                        subject.slot,
+                    )
+                }
+                None => format!(
+                    "Action {} {:?} (npc {:?}, item {:?}, count {:?}, slot {:?}): sent; no matching server evidence in 30s (unverified)",
+                    subject.interaction,
+                    subject.operation,
+                    subject.npc_alias,
+                    subject.item,
+                    subject.count,
+                    subject.slot,
+                ),
+            };
+            output.push(if gaps {
+                format!("{line}; trace has gaps")
+            } else {
+                line
+            });
+            if output.len() == 8 {
+                break;
+            }
+        }
+        output
     }
 
     pub(crate) fn action_summaries(&self) -> Vec<String> {
@@ -2654,11 +3050,10 @@ impl History {
                                 }
                                 None
                             }
-                            Operation::Observed
-                            | Operation::Loot
-                            | Operation::Equip
-                            | Operation::Buy
-                            | Operation::Sell => None,
+                            Operation::Loot | Operation::Equip | Operation::Buy | Operation::Sell => {
+                                self.loot_vendor_action_evidence(event, later)
+                            }
+                            Operation::Observed => None,
                         }
                     })
                     .unwrap_or_default()
@@ -2667,8 +3062,13 @@ impl History {
             };
             let cast_evidence = self.cast_native_summary(event).unwrap_or_default();
             output.push(format!(
-                "Action {id} {:?} (npc {:?}, quest {:?}): {status}{reason}{server_evidence}{cast_evidence}{suffix}",
-                event.subject.operation, event.subject.npc_alias, event.subject.quest
+                "Action {id} {:?} (npc {:?}, quest {:?}, item {:?}, count {:?}, slot {:?}): {status}{reason}{server_evidence}{cast_evidence}{suffix}",
+                event.subject.operation,
+                event.subject.npc_alias,
+                event.subject.quest,
+                event.subject.item,
+                event.subject.count,
+                event.subject.slot,
             ));
             if output.len() == 8 {
                 break;
@@ -3169,9 +3569,10 @@ impl History {
         let not_yet_instrumented = vec![
             "visible_pixels".to_string(),
             "frame_occlusion_owner".to_string(),
-            "audio_output".to_string(),
+            "audio_audibility".to_string(),
             "movement_causality".to_string(),
             "asset_dependency_revisions".to_string(),
+            "hotpatch_trust_and_rollback".to_string(),
         ];
         DiagnosticCoverage {
             instrumented_paths,
@@ -3465,6 +3866,18 @@ impl History {
         let slot_correlations = self.slot_correlations();
         let turn_in_correlations = self.turn_in_correlations();
         let ui_correlations = self.ui_error_correlations();
+        let cast_chains = self.cast_correlations();
+        let loot_vendor = self.loot_vendor_correlations();
+        let quest_ui = self.quest_ui_correlations();
+        let session = self.session_transition_summaries();
+        let movement = self.movement_pressure();
+        let movement_corrections = self.movement_correction_attribution();
+        let audio = self.audio_output_health();
+        let assets = self.asset_window_summary();
+        #[cfg(feature = "hotpatch")]
+        let hotpatch = self.hotpatch_attempt_correlation();
+        #[cfg(not(feature = "hotpatch"))]
+        let hotpatch: Vec<String> = Vec::new();
         let spawn = std::thread::Builder::new()
             .name("interaction-diagnostics-export".into())
             .spawn(move || {
@@ -3521,6 +3934,15 @@ impl History {
                         "slot_correlations": slot_correlations,
                         "turn_in_correlations": turn_in_correlations,
                         "ui_error_correlations": ui_correlations,
+                        "cast_correlations": cast_chains,
+                        "loot_vendor_correlations": loot_vendor,
+                        "quest_ui_correlations": quest_ui,
+                        "session_transition_summaries": session,
+                        "movement_pressure": movement,
+                        "movement_correction_attribution": movement_corrections,
+                        "audio_output_health": audio,
+                        "asset_window_summaries": assets,
+                        "hotpatch_attempts": hotpatch,
                         "diagnostic_vectors": diagnostic_vectors,
                     }).to_string();
                     text.push('\n');
@@ -4180,6 +4602,75 @@ pub(crate) fn drain_history(history: &mut History) {
                 }
             }
         }
+        // Loot, vendor-buy and equipment observations are authoritative outcomes for a written
+        // action, but they only resolve it when exactly one written action can explain them. A
+        // duplicate same-subject write stays ambiguous. An equip's item push is NOT authoritative:
+        // it says the item arrived, not that it occupied an equipment slot.
+        if matches!(
+            event.stage,
+            Stage::LootSlotRemoved { .. }
+                | Stage::LootMoneyNotify { .. }
+                | Stage::LootMoneyCleared
+                | Stage::LootResponseOpened
+                | Stage::LootReleasedObserved
+                | Stage::VendorBuyResult { .. }
+                | Stage::EquipmentSlotChanged { .. }
+        ) {
+            let operation = match event.stage {
+                Stage::LootSlotRemoved { .. }
+                | Stage::LootMoneyNotify { .. }
+                | Stage::LootMoneyCleared
+                | Stage::LootResponseOpened
+                | Stage::LootReleasedObserved => Some(Operation::Loot),
+                Stage::VendorBuyResult { .. } => Some(Operation::Buy),
+                Stage::EquipmentSlotChanged { .. } => Some(Operation::Equip),
+                _ => None,
+            };
+            if let Some(operation) = operation {
+                let matching_indices: Vec<usize> = history
+                    .open_interactions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, open)| {
+                        let OpenState::Written { elapsed_ms, .. } = open.state else {
+                            return None;
+                        };
+                        if open.subject.operation != operation
+                            || open.subject.scope != event.subject.scope
+                            || event.elapsed_ms < elapsed_ms
+                            || event.elapsed_ms.saturating_sub(elapsed_ms) > 30_000
+                        {
+                            return None;
+                        }
+                        loot_vendor_evidence_matches_action(&open.subject, &event)
+                            .then_some(idx)
+                    })
+                    .collect();
+                if matching_indices.len() > 1 {
+                    let mut evidence: Vec<u64> = matching_indices
+                        .iter()
+                        .filter_map(|&idx| match history.open_interactions[idx].state {
+                            OpenState::Written { seq: write_seq, .. } => Some(write_seq),
+                            OpenState::Local => None,
+                        })
+                        .collect();
+                    evidence.push(seq);
+                    let first_subject = history.open_interactions[matching_indices[0]].subject;
+                    history.push_incident(
+                        first_subject,
+                        IncidentOutcome::AmbiguousServerOutcome,
+                        IncidentConfidence::Ambiguous,
+                        event.stage,
+                        evidence,
+                        false,
+                    );
+                }
+                for idx in matching_indices.into_iter().rev() {
+                    history.open_interactions.remove(idx);
+                }
+            }
+        }
+
         let gaps = history.has_telemetry_gaps();
         let outcome = match event.stage {
             Stage::Cast {
@@ -4305,21 +4796,120 @@ pub(crate) fn drain_history(history: &mut History) {
                 ))
             }
             Stage::InventoryFailure { .. }
+            | Stage::LootErrorObserved { .. }
+            | Stage::VendorBuyFailedObserved { .. }
+            | Stage::VendorSellFailedObserved { .. }
             | Stage::DomainEvent {
                 event:
                     DomainEvent::LootError
                     | DomainEvent::VendorBuyFailed
                     | DomainEvent::VendorSellFailed
                     | DomainEvent::InventoryFailure,
-            } => Some((
-                IncidentOutcome::ServerReportedFailure,
-                if gaps {
-                    IncidentConfidence::Unverified
-                } else {
-                    IncidentConfidence::Heuristic
-                },
-                event.subject,
-            )),
+            } => {
+                let operation = match event.stage {
+                    Stage::LootErrorObserved { .. }
+                    | Stage::DomainEvent {
+                        event: DomainEvent::LootError,
+                    } => Some(Operation::Loot),
+                    Stage::VendorBuyFailedObserved { .. }
+                    | Stage::DomainEvent {
+                        event: DomainEvent::VendorBuyFailed,
+                    } => Some(Operation::Buy),
+                    Stage::VendorSellFailedObserved { .. }
+                    | Stage::DomainEvent {
+                        event: DomainEvent::VendorSellFailed,
+                    } => Some(Operation::Sell),
+                    _ => None,
+                };
+                let candidates: Vec<Subject> = match operation {
+                    Some(operation) => history
+                        .entries
+                        .iter()
+                        .filter_map(|(_, candidate)| {
+                            let written = matches!(
+                                candidate.stage,
+                                Stage::Delivery(CommandDelivery::Written)
+                            );
+                            let in_window = candidate.subject.scope.is_some()
+                                && candidate.subject.scope == event.subject.scope
+                                && candidate.subject.operation == operation
+                                && candidate.elapsed_ms <= event.elapsed_ms
+                                && event.elapsed_ms.saturating_sub(candidate.elapsed_ms)
+                                    <= 30_000;
+                            (written
+                                && in_window
+                                && loot_vendor_evidence_matches_action(
+                                    &candidate.subject,
+                                    &event,
+                                ))
+                            .then_some(candidate.subject)
+                        })
+                        .collect(),
+                    None => history
+                        .entries
+                        .iter()
+                        .filter_map(|(_, candidate)| {
+                            let written = matches!(
+                                candidate.stage,
+                                Stage::Delivery(CommandDelivery::Written)
+                            );
+                            let in_window = candidate.subject.scope.is_some()
+                                && candidate.subject.scope == event.subject.scope
+                                && matches!(
+                                    candidate.subject.operation,
+                                    Operation::Loot
+                                        | Operation::Equip
+                                        | Operation::Buy
+                                        | Operation::Sell
+                                )
+                                && candidate.elapsed_ms <= event.elapsed_ms
+                                && event.elapsed_ms.saturating_sub(candidate.elapsed_ms)
+                                    <= 30_000;
+                            (written
+                                && in_window
+                                && loot_vendor_evidence_matches_action(
+                                    &candidate.subject,
+                                    &event,
+                                ))
+                            .then_some(candidate.subject)
+                        })
+                        .collect(),
+                };
+                for subject in &candidates {
+                    history
+                        .open_interactions
+                        .retain(|open| open.subject.interaction != subject.interaction);
+                }
+                let (confidence, attributed_subject) = match candidates.as_slice() {
+                    [subject] => {
+                        let exact = candidate_subject_is_authoritative(event.stage);
+                        (
+                            if gaps {
+                                IncidentConfidence::Unverified
+                            } else if exact {
+                                IncidentConfidence::Strong
+                            } else {
+                                IncidentConfidence::Heuristic
+                            },
+                            *subject,
+                        )
+                    }
+                    [] => (
+                        if gaps {
+                            IncidentConfidence::Unverified
+                        } else {
+                            IncidentConfidence::Heuristic
+                        },
+                        event.subject,
+                    ),
+                    many => (IncidentConfidence::Ambiguous, many[0]),
+                };
+                Some((
+                    IncidentOutcome::ServerReportedFailure,
+                    confidence,
+                    attributed_subject,
+                ))
+            }
             Stage::SocketReadFailed | Stage::SocketWriteFailed | Stage::AssetFailure { .. }
             | Stage::ReducerRejected { .. } | Stage::GameplayRejected { .. }
             | Stage::SessionEnded { kind: SessionEndKind::Lost } | Stage::ScriptError { .. }

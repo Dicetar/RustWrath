@@ -100,7 +100,7 @@ impl QuestVerbs<'_, '_> {
     ) {
         let command = match (trace, self.wrath.as_ref()) {
             (Some(trace), Some(_)) => {
-                ClientCommand::tracked(Some(trace.clone()), true, command)
+                ClientCommand::tracked(Some((*trace).clone()), true, command)
             }
             _ => command,
         };
@@ -264,7 +264,7 @@ impl QuestVerbs<'_, '_> {
             });
             ClientCommand::QuestgiverSelectTracked {
                 receipt: crate::net::CommandReceipt {
-                    trace: Some(trace.clone()),
+                    trace: Some((*trace).clone()),
                     enforce_scope: true,
                     session_epoch: view.session_epoch,
                     world_generation: view.world_generation,
@@ -482,7 +482,7 @@ impl QuestVerbs<'_, '_> {
             let (results, _receiver) = crossbeam_channel::bounded(2);
             ClientCommand::QuestgiverRequestRewardTracked {
                 receipt: crate::net::CommandReceipt {
-                    trace: Some(trace.clone()),
+                    trace: Some((*trace).clone()),
                     enforce_scope: true,
                     session_epoch: view.session_epoch,
                     world_generation: view.world_generation,
@@ -561,7 +561,7 @@ impl QuestVerbs<'_, '_> {
             let (results, _receiver) = crossbeam_channel::bounded(2);
             ClientCommand::QuestgiverChooseRewardTracked {
                 receipt: crate::net::CommandReceipt {
-                    trace: Some(trace.clone()),
+                    trace: Some((*trace).clone()),
                     enforce_scope: true,
                     session_epoch: view.session_epoch,
                     world_generation: view.world_generation,

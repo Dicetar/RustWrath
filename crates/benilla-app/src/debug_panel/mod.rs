@@ -368,6 +368,33 @@ fn debug_panel_ui(
                             for line in &snapshot.ui_clicks {
                                 ui.label(line);
                             }
+                            for line in &snapshot.cast_chains {
+                                ui.label(line);
+                            }
+                            for line in &snapshot.loot_vendor {
+                                ui.label(line);
+                            }
+                            for line in &snapshot.quest_ui {
+                                ui.label(line);
+                            }
+                            for line in &snapshot.session {
+                                ui.label(line);
+                            }
+                            for line in &snapshot.movement {
+                                ui.label(line);
+                            }
+                            for line in &snapshot.movement_corrections {
+                                ui.label(line);
+                            }
+                            for line in &snapshot.audio {
+                                ui.label(line);
+                            }
+                            for line in &snapshot.assets {
+                                ui.label(line);
+                            }
+                            for line in &snapshot.hotpatch {
+                                ui.label(line);
+                            }
                             for line in &snapshot.recent {
                                 ui.label(line);
                             }
