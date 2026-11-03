@@ -104,8 +104,28 @@ mod net {
             .net_handler(K::Disconnected, on_session_end);
     }
 
-    fn on_push_result(In(ev): In<SessionEvent>, mut share: ResMut<QuestShare>) {
+    fn on_push_result(
+        In(ev): In<SessionEvent>,
+        mut share: ResMut<QuestShare>,
+        trace: Option<Res<crate::quest_trace::Source>>,
+        view: Option<Res<crate::wrath::WrathWorldView>>,
+    ) {
         if let SessionEvent::QuestPushResult { member, msg } = ev {
+            // The share result carries no quest id in the 12340 packet. Record the verdict
+            // against the current scope so a preceding `Share` write can be correlated only
+            // when it is unique in that scope.
+            if let Some(trace) = trace.as_ref() {
+                let scope = view
+                    .as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation));
+                trace.observe(
+                    scope,
+                    None,
+                    crate::quest_trace::Stage::ServerQuestShareResult {
+                        msg: u32::from(msg.0),
+                    },
+                );
+            }
             quest_push_result(member, msg, &mut share);
         }
     }

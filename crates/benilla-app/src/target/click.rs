@@ -1080,7 +1080,7 @@ impl Dispatch<'_, '_> {
                     ClientCommand::QuestgiverOpenTracked {
                         receipt: crate::net::CommandReceipt {
                             trace: Some(trace.clone()),
-                            enforce_scope: false,
+                            enforce_scope: true,
                             session_epoch: view.session_epoch,
                             world_generation: view.world_generation,
                             npc: guid,

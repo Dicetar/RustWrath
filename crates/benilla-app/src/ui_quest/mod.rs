@@ -332,6 +332,7 @@ impl QuestGiver {
 
     pub(crate) fn clear_session(&mut self) {
         self.clear();
+        self.retire_pending();
         self.statuses.clear();
         self.messages.clear();
         self.close_on_cancel = 0;
@@ -340,6 +341,16 @@ impl QuestGiver {
         self.view = None;
         self.pools = QuestPools::default();
         self.item_waits.clear();
+    }
+
+    /// Drop in-flight receipts and any delivery error when the world or session that owned them
+    /// goes away. The quest recorder retires the matching interactions separately; without this,
+    /// a pending accept could keep polling and later print a stale "still pending" error in a
+    /// world it no longer belongs to.
+    pub(crate) fn retire_pending(&mut self) {
+        self.pending_accepts.clear();
+        self.pending_selection = None;
+        self.delivery_error = None;
     }
 
     /// Spend the waits whose item record answered: how many brought a record, each its own
@@ -419,6 +430,9 @@ impl Plugin for UiQuestPlugin {
 /// its report set, so a shared quest is declined to its sharer.
 fn close_quest_on_leave_world(world: &mut World) {
     close_core(world, true);
+    // World transfers retire the receipts too: an accept/selection queued in the old world must
+    // not surface a delayed pending error in the new one.
+    world.resource_mut::<QuestGiver>().retire_pending();
 }
 
 /// The giver's cell `[0xbe0810]`, which an item's or a GameObject's guid fills as well as an
