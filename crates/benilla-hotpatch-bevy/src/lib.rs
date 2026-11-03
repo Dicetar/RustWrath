@@ -9,6 +9,17 @@ use std::path::PathBuf;
 #[derive(Component)]
 pub struct HotpatchProbeTarget;
 
+/// Structured host milestones. Free-form loader errors remain in the local log.
+#[derive(Message, Clone, Copy, Debug)]
+pub enum HotpatchEvent {
+    CandidateStaged,
+    PublicationRejected,
+    CandidateRejected,
+    Activated { digest: Option<[u8; 20]> },
+    FrameFailed,
+    RetentionFailed,
+}
+
 pub struct HotpatchPlugin {
     root: PathBuf,
     probe: bool,
@@ -30,11 +41,13 @@ impl Plugin for HotpatchPlugin {
             "hotpatch: watching {} (pose ABI 1; trusted local modules)",
             self.root.display()
         );
-        app.insert_resource(Runtime {
+        app.add_message::<HotpatchEvent>()
+        .insert_resource(Runtime {
             host: Host::new(self.root.clone()),
             next_poll: 0.0,
             last_error: None,
             reported_revision: None,
+            reported_digest: None,
             refresh: false,
             restore_pending: false,
             bones: Vec::new(),
@@ -57,6 +70,7 @@ struct Runtime {
     next_poll: f64,
     last_error: Option<String>,
     reported_revision: Option<String>,
+    reported_digest: Option<String>,
     refresh: bool,
     restore_pending: bool,
     bones: Vec<BoneLocal>,
@@ -75,19 +89,37 @@ fn report(runtime: &mut Runtime, error: String) {
     runtime.last_error = Some(error);
 }
 
-fn poll(time: Res<Time>, mut runtime: ResMut<Runtime>) {
+fn poll(
+    time: Res<Time>,
+    mut runtime: ResMut<Runtime>,
+    mut events: MessageWriter<HotpatchEvent>,
+) {
     let now = time.elapsed_secs_f64();
     if now < runtime.next_poll {
         return;
     }
     runtime.next_poll = now + 1.0;
     match runtime.host.poll() {
-        Ok(true) => runtime.refresh = true,
+        Ok(true) => {
+            runtime.refresh = true;
+            runtime.last_error = None;
+            events.write(HotpatchEvent::CandidateStaged);
+        }
         Ok(false) => {}
-        Err(error) => report(&mut runtime, format!("{error:#}")),
+        Err(error) => {
+            let message = format!("{error:#}");
+            if runtime.last_error.as_ref() != Some(&message) {
+                events.write(HotpatchEvent::PublicationRejected);
+            }
+            report(&mut runtime, message);
+        }
     }
     if let Err(error) = runtime.host.collect_retired() {
-        report(&mut runtime, format!("artifact retention: {error:#}"));
+        let message = format!("artifact retention: {error:#}");
+        if runtime.last_error.as_ref() != Some(&message) {
+            events.write(HotpatchEvent::RetentionFailed);
+        }
+        report(&mut runtime, message);
     }
 }
 
@@ -96,6 +128,7 @@ fn apply_pose(
     time: Res<Time>,
     roots_changed: Query<(), Or<(Changed<Transform>, Changed<GlobalTransform>)>>,
     mut rigs: Query<(Entity, &mut RigPose, Has<HotpatchProbeTarget>), Without<AnimParked>>,
+    mut events: MessageWriter<HotpatchEvent>,
 ) {
     if !runtime.host.has_module() {
         return;
@@ -157,6 +190,7 @@ fn apply_pose(
         &mut runtime.output,
     );
     if let Some(error) = runtime.host.take_rejection() {
+        events.write(HotpatchEvent::CandidateRejected);
         report(runtime, error);
     }
     match result {
@@ -177,7 +211,21 @@ fn apply_pose(
             runtime.restore_pending = true;
             runtime.refresh = false;
             let revision = runtime.host.revision().map(str::to_owned);
-            if revision != runtime.reported_revision {
+            let active_digest = runtime.host.digest().map(str::to_owned);
+            if revision != runtime.reported_revision || active_digest != runtime.reported_digest {
+                let digest = active_digest.as_deref().and_then(|hex| {
+                    if hex.len() != 40 {
+                        return None;
+                    }
+                    let mut bytes = [0; 20];
+                    for (output, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+                        let high = (pair[0] as char).to_digit(16)?;
+                        let low = (pair[1] as char).to_digit(16)?;
+                        *output = ((high << 4) | low) as u8;
+                    }
+                    Some(bytes)
+                });
+                events.write(HotpatchEvent::Activated { digest });
                 info!(
                     "hotpatch: pose module activated {} rigs={} bones={}",
                     revision.as_deref().unwrap_or("none"),
@@ -185,13 +233,18 @@ fn apply_pose(
                     runtime.bones.len()
                 );
                 runtime.reported_revision = revision;
+                runtime.reported_digest = active_digest;
                 runtime.last_error = None;
             }
         }
         Ok(false) => {}
         Err(error) => {
             runtime.refresh = false;
-            report(runtime, format!("pose frame unchanged: {error:#}"));
+            let message = format!("pose frame unchanged: {error:#}");
+            if runtime.last_error.as_ref() != Some(&message) {
+                events.write(HotpatchEvent::FrameFailed);
+            }
+            report(runtime, message);
         }
     }
 }

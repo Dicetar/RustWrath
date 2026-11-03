@@ -1024,4 +1024,18 @@ pub(crate) const REGISTERED: &[Registered] = &[
         "0",
         "3.3.5a 12340 InterfaceOptions: Show dispellable debuffs",
     ),
+    // 12340 GameUI_CVar.cpp: stock options/tracker readers. Registration retains their
+    // settings; it does not establish backend support for every optional display.
+    ours("scriptErrors", "0", "GameUI_CVar.cpp:481"),
+    ours("fctSpellMechanicsOther", "0", "GameUI_CVar.cpp:550"),
+    ours("secureAbilityToggle", "1", "GameUI_CVar.cpp:527"),
+    ours("ShowClassColorInNameplate", "0", "GameUI_CVar.cpp:648"),
+    ours("fctPeriodicEnergyGains", "0", "GameUI_CVar.cpp:545"),
+    ours("trackerFilter", "7", "GameUI_CVar.cpp:507"),
+    ours("showCastableBuffs", "0", "GameUI_CVar.cpp:568"),
+    ours("threatPlaySounds", "1", "GameUI_CVar.cpp:645"),
+    ours("advancedWorldMap", "0", "GameUI_CVar.cpp:503"),
+    ours("UnitNameFriendlyPetName", "1", "PlayerName_CVar.cpp:40"),
+    ours("showRaidRange", "0", "GameUI_CVar.cpp:561"),
+    ours("chatMouseScroll", "1", "GameUI_CVar.cpp:524"),
 ];

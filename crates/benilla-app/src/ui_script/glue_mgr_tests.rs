@@ -44,6 +44,36 @@ fn failed(refusal: Option<LoginRefusal>) -> LoginFailedMessage {
     }
 }
 
+/// `OnRealmSplitMsg`'s `"%d%d%s"`: the unsigned wire fields are read as signed `int`, so the
+/// query echo `0xFFFFFFFF` becomes -1 while a positive realm/state pair is unchanged.
+#[test]
+fn realm_split_notice_signs_its_two_integer_fields() {
+    assert_eq!(
+        realm_split_event_args(u32::MAX, 0, "01/01/01"),
+        vec![
+            ScriptValue::Number(-1.0),
+            ScriptValue::Number(0.0),
+            ScriptValue::Str("01/01/01".into()),
+        ]
+    );
+    assert_eq!(
+        realm_split_event_args(7, 2, "12/31/99"),
+        vec![
+            ScriptValue::Number(7.0),
+            ScriptValue::Number(2.0),
+            ScriptValue::Str("12/31/99".into()),
+        ]
+    );
+    assert_eq!(
+        realm_split_event_args(0x8000_0000, 3, ""),
+        vec![
+            ScriptValue::Number(f64::from(i32::MIN)),
+            ScriptValue::Number(3.0),
+            ScriptValue::Str(String::new()),
+        ]
+    );
+}
+
 /// `0x5b2c90`'s arms, after the handlers' clamp past `0x0f`: 0x0E is a success (`0x5b2cd4`), and
 /// a proof's 0x0A reports nothing (`0x5bada2`).
 #[test]

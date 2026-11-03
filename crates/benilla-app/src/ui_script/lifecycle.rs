@@ -74,6 +74,18 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("previewTalents", "0"),
     ("fctSpellMechanics", "0"),
     ("showDispelDebuffs", "0"),
+    ("scriptErrors", "0"),
+    ("fctSpellMechanicsOther", "0"),
+    ("secureAbilityToggle", "1"),
+    ("ShowClassColorInNameplate", "0"),
+    ("fctPeriodicEnergyGains", "0"),
+    ("trackerFilter", "7"),
+    ("showCastableBuffs", "0"),
+    ("threatPlaySounds", "1"),
+    ("advancedWorldMap", "0"),
+    ("UnitNameFriendlyPetName", "1"),
+    ("showRaidRange", "0"),
+    ("chatMouseScroll", "1"),
 ];
 
 pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {
@@ -1140,9 +1152,25 @@ pub(crate) fn run_pending_reload(world: &mut World) {
         return;
     }
     info!("ui_script: ReloadUI — ending the UI session and building a new one");
+    if let Some(trace) = world.get_resource::<crate::quest_trace::Source>().cloned() {
+        let scope = world.get_resource::<crate::wrath::WrathWorldView>()
+            .map(|v| (v.session_epoch, v.world_generation));
+        let rows = crate::script_calls::with_hosted_vm(world, |script| {
+            script.map(|script| (script.session(), script.diagnostic_counters()))
+        });
+        if let (Some((vm_session, rows)), Some(mut cursor)) =
+            (rows, world.get_resource_mut::<crate::quest_trace::ScriptCursor>())
+        {
+            trace.capture_script_counts(scope, &mut cursor, vm_session, &rows);
+        }
+        trace.observe(scope, None, crate::quest_trace::Stage::UiReload);
+    }
     // A boot VM, never the glue's: the reload builds no glue (`0x495664` then `0x495669`), and the
     // load replaces this VM at once.
     close_ui_session(world, ShutdownRoot::Reload);
+    if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
+        trace.advance_reload_generation();
+    }
     install_boot_vm(world);
     load_ingame_ui_seated(world, LoadSeat::Live);
     // `UI_Init` ends by re-entering the world-enter cascade (`0x490168`), its sends included, but

@@ -1286,6 +1286,7 @@ fn player_snapshot(
     group: &crate::ui_party::GroupState,
     factions: Option<&Factions>,
     guild: &crate::ui_guild::GuildState,
+    raw: Option<&crate::wrath::WrathPlayerRaw>,
 ) -> UnitState {
     // The unit's create looked its name up with a callback (`0x5dec12`); a frame asks only
     // a name the cache holds nothing for, as one invalidated since, and a refused one waits
@@ -1307,6 +1308,18 @@ fn player_snapshot(
     s.faction_group_localized = faction_group_localized(store, factions);
     // `GetGuildInfo`: the public guild fields (191/192) joined against the lazy guild cache.
     s.guild = crate::ui_guild::unit_guild(&store.0, guild, commands);
+    if let Some(raw) = raw {
+        let field = |index: u16| raw.0.get(index as usize).copied().unwrap_or(0);
+        s.combat_ratings = std::array::from_fn(|i| {
+            field(benilla_protocol_wrath::fields::PLAYER_FIELD_COMBAT_RATING_1 + i as u16)
+        });
+        s.known_titles = [
+            field(benilla_protocol_wrath::fields::PLAYER__FIELD_KNOWN_TITLES),
+            field(benilla_protocol_wrath::fields::PLAYER__FIELD_KNOWN_TITLES1),
+            field(benilla_protocol_wrath::fields::PLAYER__FIELD_KNOWN_TITLES2),
+        ];
+        s.chosen_title = field(benilla_protocol_wrath::fields::PLAYER_CHOSEN_TITLE);
+    }
     s
 }
 
@@ -1337,6 +1350,7 @@ pub(crate) struct LivePlayerSeat {
 pub(crate) fn live_player_seat(
     tables: SnapshotTables,
     self_q: Query<(&ObjectStore, &Guid), With<SelfPlayer>>,
+    raw_q: Query<&crate::wrath::WrathPlayerRaw, With<SelfPlayer>>,
     names: Res<NameCache>,
     commands: Res<NetCommands>,
     group: Res<crate::ui_party::GroupState>,
@@ -1354,6 +1368,7 @@ pub(crate) fn live_player_seat(
         &group,
         factions.as_deref(),
         &guild,
+        raw_q.iter().next(),
     );
     if let Some(me) = world.me() {
         state.is_pvp_ffa = pvp_free_for_all(&world.get(), &me);
@@ -1410,6 +1425,7 @@ fn feed_units(
     tables: SnapshotTables,
 
     self_q: Query<(&ObjectStore, &Guid), With<SelfPlayer>>,
+    raw_q: Query<&crate::wrath::WrathPlayerRaw, With<SelfPlayer>>,
     // `Option`, as `factions`, `interact` and `entered_world`: a UI-only harness lacks their
     // plugins, and a bare `Res` is a system-validation panic.
     index: Option<Res<crate::net::GuidIndex>>,
@@ -1505,6 +1521,7 @@ fn feed_units(
         };
         let token_stores = views::TokenStores {
             me: self_pair.and_then(|(s, g)| Some((at(g.0, Some(s))?, g.0))),
+            raw: raw_q.iter().next(),
             target: selection
                 .target
                 .zip(selection.guid)

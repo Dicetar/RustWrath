@@ -117,6 +117,7 @@ pub struct WrathOutbound {
     /// Replaceable motion: under queue pressure only these may be dropped, never a cast, quest,
     /// loot or logout command (ADR-0001's admission rule).
     pub movement: bool,
+    pub(crate) receipt: Option<crate::net::CommandReceipt>,
 }
 
 /// A translated gameplay reply tagged with the source session and world scope. The app rejects
@@ -224,6 +225,7 @@ impl WrathFeedEvent {
 #[derive(Clone)]
 pub struct WrathFeed {
     authenticated: Arc<AtomicBool>,
+    trace: Option<crate::quest_trace::Source>,
     account_expansion: Arc<std::sync::atomic::AtomicU8>,
     pub latest: WrathLatest,
     pub events: WrathEvents,
@@ -240,6 +242,7 @@ impl WrathFeed {
     fn new() -> Self {
         Self {
             authenticated: Arc::new(AtomicBool::new(false)),
+            trace: None,
             account_expansion: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             latest: Arc::new(Mutex::new(None)),
             events: Arc::new(Mutex::new(VecDeque::with_capacity(WRATH_EVENT_CAPACITY))),
@@ -468,9 +471,19 @@ pub(crate) enum WrathSessionStart {
     Parked { roster_asked: bool },
 }
 
+impl WrathSessionStart {
+    fn for_login_mode(self, interactive: bool) -> Self {
+        match self {
+            Self::Auto if interactive => Self::Parked { roster_asked: false },
+            mode => mode,
+        }
+    }
+}
+
 /// One ask a parked session serves from the select screen, in the order the app made it.
 #[derive(Clone, Debug)]
 pub(crate) enum WrathParkedCommand {
+    RealmSplit(u32),
     /// `GetCharacterListUpdate`: `CMSG_CHAR_ENUM` again on the parked link.
     Enumerate,
     /// Enter World the screen asked for: `CMSG_PLAYER_LOGIN` on the parked link.
@@ -813,6 +826,7 @@ impl WrathWmActions {
 #[derive(Resource)]
 pub struct WrathControl {
     pub config: Option<WrathSessionConfig>,
+    trace: Option<crate::quest_trace::Source>,
     worker: Option<std::thread::JoinHandle<()>>,
     /// A worker already signalled to stop. No replacement is admitted until this joins.
     retiring: Option<std::thread::JoinHandle<()>>,
@@ -892,6 +906,9 @@ impl WrathControl {
 
     fn start(&mut self, kind: WrathSessionStart) {
         let Some(mut config) = self.config.clone() else { return };
+        // Logout's terminal can drain before the app leaves InWorld. The interactive
+        // account must still wait for a new pick, never boot the first roster record.
+        let kind = kind.for_login_mode(config.login_generation.is_some());
         config.actions = self.wm_actions.clone();
         if self.shutdown || self.worker.is_some() || self.retiring.is_some() {
             return;
@@ -933,7 +950,8 @@ impl WrathControl {
                 })
             }
         };
-        let feed = WrathFeed::new();
+        let mut feed = WrathFeed::new();
+        feed.trace = self.trace.clone();
         self.feed = Some(feed.clone());
         self.last_error = None;
         self.ended = false;
@@ -1319,6 +1337,7 @@ impl Plugin for WrathNetPlugin {
         let commands: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
         app.insert_resource(WrathControl {
             config: self.config.clone(),
+            trace: None,
             worker: None,
             retiring: None,
             feed: None,
@@ -1345,6 +1364,9 @@ impl Plugin for WrathNetPlugin {
         .add_message::<crate::wrath_native::WrathCastEvent>()
         .add_message::<crate::wrath_native::WrathItemText>();
         if self.config.is_some() {
+            crate::quest_trace::install(app);
+            let trace = app.world().resource::<crate::quest_trace::Source>().clone();
+            app.world_mut().resource_mut::<WrathControl>().trace = Some(trace);
             app.insert_resource(WrathInput(commands));
             // The select screen's asks and Enters travel the stock `CharPick` channel, whose
             // reader is the stock IO thread. That thread never spawns for the Wrath session,
@@ -1602,6 +1624,9 @@ fn wrath_pick_admission(
             }
         };
         match request {
+            CharRequest::RealmSplit(state) if at_select => {
+                control.park_serve(false, WrathParkedCommand::RealmSplit(state));
+            }
             CharRequest::Enumerate => {
                 if at_select {
                     control.park_serve(true, WrathParkedCommand::Enumerate);
@@ -3191,10 +3216,64 @@ fn wrath_tap_commands(
     tap: Option<ResMut<NetCommandTap>>,
     mut view: ResMut<WrathWorldView>,
     input: ResMut<WrathInput>,
+    trace: Option<Res<crate::quest_trace::Source>>,
 ) {
     let Some(mut tap) = tap else { return };
     let Some(receiver) = tap.0.as_mut() else { return };
     while let Ok(command) = receiver.try_recv() {
+        let opening = matches!(&command, ClientCommand::GossipHello { .. } | ClientCommand::QuestgiverHello { .. } | ClientCommand::QuestgiverOpenTracked { .. });
+        let scope = Some((view.session_epoch, view.world_generation));
+        if opening {
+            if let Some(trace) = &trace {
+                trace.observe(scope, None, crate::quest_trace::Stage::OpenCommandDequeued);
+            }
+        }
+        let (command, receipt) = match command {
+            ClientCommand::QuestgiverAcceptTracked { receipt } => {
+                if !view.entered_world
+                    || receipt.session_epoch != view.session_epoch
+                    || receipt.world_generation != view.world_generation
+                {
+                    receipt.report(crate::net::CommandDelivery::Rejected(
+                        crate::net::CommandRefusal::ScopeChanged,
+                    ));
+                    continue;
+                }
+                (
+                    ClientCommand::QuestgiverAccept {
+                        npc: receipt.npc,
+                        quest: receipt.quest,
+                    },
+                    Some(receipt),
+                )
+            }
+            ClientCommand::QuestgiverSelectTracked { receipt, complete } => {
+                if !view.entered_world
+                    || receipt.session_epoch != view.session_epoch
+                    || receipt.world_generation != view.world_generation
+                {
+                    receipt.report(crate::net::CommandDelivery::Rejected(
+                        crate::net::CommandRefusal::ScopeChanged,
+                    ));
+                    continue;
+                }
+                let command = if complete {
+                    ClientCommand::QuestgiverComplete { npc: receipt.npc, quest: receipt.quest }
+                } else {
+                    ClientCommand::QuestgiverQuery { npc: receipt.npc, quest: receipt.quest }
+                };
+                (command, Some(receipt))
+            }
+            ClientCommand::QuestgiverOpenTracked { receipt, gossip } => {
+                let command = if gossip {
+                    ClientCommand::GossipHello { guid: receipt.npc }
+                } else {
+                    ClientCommand::QuestgiverHello { npc: receipt.npc }
+                };
+                (command, Some(receipt))
+            }
+            command => (command, None),
+        };
         let count = view.next_cast_count;
         let packet = match command {
             ClientCommand::SetSelection { guid } => {
@@ -3761,13 +3840,32 @@ fn wrath_tap_commands(
             _ => None,
         };
         if let Some((opcode, payload)) = packet {
+            if let Some(trace) = receipt.as_ref().and_then(|r| r.trace.as_ref()) {
+                trace.record(crate::quest_trace::Stage::Encoded);
+            }
             if let Ok(mut queue) = input.0.lock() {
                 if queue.len() < WRATH_OUTBOX_CAP {
                     queue.push_back(WrathOutbound {
                         opcode,
                         payload,
                         movement: false,
+                        receipt: receipt.clone(),
                     });
+                    if let Some(receipt) = receipt.as_ref() {
+                        receipt.report(crate::net::CommandDelivery::OutboxAdmitted);
+                    }
+                    if diagnostic_outbound(opcode) {
+                        if let Some(trace) = &trace {
+                            trace.observe(scope, None, crate::quest_trace::Stage::Outbound {
+                                opcode, state: crate::quest_trace::OutboundState::Queued,
+                            });
+                        }
+                    }
+                    if opening {
+                        if let Some(trace) = &trace {
+                            trace.observe(scope, None, crate::quest_trace::Stage::OpenOutboxAdmitted);
+                        }
+                    }
                 } else {
                     // The only way to fill this queue is a burst of uncapped actions or a
                     // session whose writer stopped draining; refuse visibly instead of hiding
@@ -3776,6 +3874,41 @@ fn wrath_tap_commands(
                         "wrath: outbox full ({}), refusing client opcode {opcode:#x}",
                         WRATH_OUTBOX_CAP
                     );
+                    if let Some(receipt) = receipt.as_ref() {
+                        receipt.report(crate::net::CommandDelivery::Rejected(
+                            crate::net::CommandRefusal::OutboxFull,
+                        ));
+                    }
+                    if diagnostic_outbound(opcode) {
+                        if let Some(trace) = &trace {
+                            trace.observe(scope, None, crate::quest_trace::Stage::Outbound {
+                                opcode, state: crate::quest_trace::OutboundState::Refused,
+                            });
+                        }
+                    }
+                    if opening {
+                        if let Some(trace) = &trace {
+                            trace.observe(scope, None, crate::quest_trace::Stage::OpenOutboxRefused);
+                        }
+                    }
+                }
+            } else {
+                if let Some(receipt) = receipt.as_ref() {
+                    receipt.report(crate::net::CommandDelivery::Rejected(
+                        crate::net::CommandRefusal::Unavailable,
+                    ));
+                }
+                if diagnostic_outbound(opcode) {
+                    if let Some(trace) = &trace {
+                        trace.observe(scope, None, crate::quest_trace::Stage::Outbound {
+                            opcode, state: crate::quest_trace::OutboundState::Refused,
+                        });
+                    }
+                }
+                if opening {
+                    if let Some(trace) = &trace {
+                        trace.observe(scope, None, crate::quest_trace::Stage::OpenOutboxRefused);
+                    }
                 }
             }
         }
@@ -3791,6 +3924,34 @@ const WRATH_MOVEMENT_QUEUE_CAP: usize = 64;
 /// Whether a tagged event belongs to a scope the view has already left. A newer event is kept:
 /// the digest that adopts its scope may still be in flight, and applying it against the previous
 /// scope is the existing packet-before-digest order rather than a stale replay.
+/// Outbound packet metadata allowed into the local recorder. Payloads are never copied.
+fn diagnostic_outbound(opcode: u32) -> bool {
+    use benilla_protocol_wrath::opcode::*;
+    matches!(
+        opcode,
+        CMSG_CAST_SPELL | CMSG_ATTACKSWING | CMSG_ATTACKSTOP | CMSG_LOOT
+            | CMSG_LOOT_MONEY | CMSG_LOOT_RELEASE | CMSG_LOOT_ROLL
+            | CMSG_AUTOSTORE_LOOT_ITEM | CMSG_LIST_INVENTORY | CMSG_SELL_ITEM
+            | CMSG_BUY_ITEM | CMSG_BUY_ITEM_IN_SLOT | CMSG_USE_ITEM | CMSG_AUTOEQUIP_ITEM
+    )
+}
+
+/// Packet metadata allowed into the local recorder. Payloads are never copied.
+fn diagnostic_opcode(opcode: u16) -> bool {
+    use benilla_protocol_wrath::opcode::*;
+    matches!(
+        opcode,
+        SMSG_UPDATE_OBJECT | SMSG_GOSSIP_MESSAGE | SMSG_GOSSIP_COMPLETE
+            | SMSG_QUESTGIVER_QUEST_LIST | SMSG_QUESTGIVER_QUEST_DETAILS
+            | SMSG_QUESTGIVER_REQUEST_ITEMS | SMSG_QUESTGIVER_OFFER_REWARD
+            | SMSG_QUESTGIVER_QUEST_INVALID | SMSG_QUESTGIVER_QUEST_FAILED
+            | SMSG_QUESTLOG_FULL | SMSG_QUEST_QUERY_RESPONSE
+            | SMSG_SPELL_START | SMSG_SPELL_GO | SMSG_CAST_FAILED
+            | SMSG_SPELL_FAILURE | SMSG_SPELL_FAILED_OTHER | SMSG_SPELL_DELAYED
+            | SMSG_INVENTORY_CHANGE_FAILURE | SMSG_LOOT_RESPONSE | SMSG_ITEM_PUSH_RESULT
+    )
+}
+
 fn scope_is_older(
     current_epoch: u64,
     current_world: u64,
@@ -3828,6 +3989,43 @@ fn wrath_dispatch_events(world: &mut World) {
                     event.world_generation,
                 ))
         {
+            if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
+                use crate::quest_trace::{DomainEvent as D, Stage};
+                let kind = match &event.event {
+                    SessionEvent::LoginStage { .. } => Some(D::LoginProgress),
+                    SessionEvent::RealmList { .. } => Some(D::RealmList),
+                    SessionEvent::WorldAuthenticated { .. } => Some(D::WorldAuthenticated),
+                    SessionEvent::CharacterList { .. } => Some(D::Roster),
+                    SessionEvent::RosterFailed { .. } => Some(D::RosterFailed),
+                    SessionEvent::LoginQueued { .. } => Some(D::LoginQueued),
+                    SessionEvent::LoginFailed { .. } => Some(D::LoginFailed),
+                    SessionEvent::CharActionResult { .. } => Some(D::CharacterAction),
+                    SessionEvent::CharacterLoginFailed { .. } => Some(D::CharacterLoginFailed),
+                    SessionEvent::QuestComplete(_) => Some(D::QuestComplete),
+                    SessionEvent::QuestObjectiveKill { .. } | SessionEvent::QuestObjectiveItem { .. }
+                    | SessionEvent::QuestObjectivesComplete { .. } => Some(D::QuestObjective),
+                    SessionEvent::GossipMenu { .. } => Some(D::GossipMenu),
+                    SessionEvent::VendorInventory { .. } => Some(D::VendorList),
+                    SessionEvent::VendorBuyResult { .. } => Some(D::VendorBuy),
+                    SessionEvent::VendorBuyFailed { .. } => Some(D::VendorBuyFailed),
+                    SessionEvent::VendorSellFailed { .. } => Some(D::VendorSellFailed),
+                    SessionEvent::LootResponse { .. } => Some(D::LootOpened),
+                    SessionEvent::LootError { .. } => Some(D::LootError),
+                    SessionEvent::LootRemoved { .. } => Some(D::LootRemoved),
+                    SessionEvent::LootMoneyNotify { .. } | SessionEvent::LootClearMoney => Some(D::LootMoney),
+                    SessionEvent::LootReleaseResponse { .. } => Some(D::LootReleased),
+                    SessionEvent::ItemPushResult(_) => Some(D::ItemReceived),
+                    SessionEvent::InventoryFailure { .. } => Some(D::InventoryFailure),
+                    SessionEvent::Connected { .. } => Some(D::PlayerConnected),
+                    SessionEvent::Disconnected { .. } => Some(D::PlayerDisconnected),
+                    SessionEvent::Worldport { .. } => Some(D::Worldport),
+                    _ => None,
+                };
+                if let Some(event_kind) = kind {
+                    trace.observe(Some((event.session_epoch, event.world_generation)), None,
+                        Stage::DomainEvent { event: event_kind });
+                }
+            }
             deliver.push(event.event);
         }
     }
@@ -3948,6 +4146,7 @@ fn wrath_net_drain(
     mut cast_events: MessageWriter<crate::wrath_native::WrathCastEvent>,
     mut item_text_events: MessageWriter<crate::wrath_native::WrathItemText>,
     clock: Option<Res<crate::ui_script::UiClock>>,
+    trace: Option<Res<crate::quest_trace::Source>>,
 ) {
     let ui_now_seconds = clock.as_ref().map(|clock| clock.ui_now);
     let (native, native_dropped) = control
@@ -3956,11 +4155,41 @@ fn wrath_net_drain(
         .map(|feed| (feed.take_native(), feed.take_native_dropped()))
         .unwrap_or_default();
     let mut drained = 0usize;
+    if native_dropped > 0 {
+        if let Some(trace) = &trace {
+            trace.observe(Some((view.session_epoch, view.world_generation)), None,
+                crate::quest_trace::Stage::NativeEventsLost { count: native_dropped });
+        }
+    }
     for event in control.take_events() {
         if drained >= WRATH_DRAIN_LIMIT {
             break;
         }
         drained += 1;
+        if let Some(trace) = &trace {
+            use crate::quest_trace::{SessionPhase, Stage};
+            let stage = match &event {
+                WrathFeedEvent::Phase(phase) => Some(Stage::SessionPhase {
+                    phase: match phase {
+                        Phase::CharacterSelection => SessionPhase::CharacterSelection,
+                        Phase::EnteringWorld => SessionPhase::EnteringWorld,
+                        Phase::InWorld => SessionPhase::InWorld,
+                        Phase::TransferPending => SessionPhase::TransferPending,
+                        Phase::Loading => SessionPhase::Loading,
+                    },
+                }),
+                WrathFeedEvent::WorldTransfer { .. } => Some(Stage::WorldTransfer),
+                WrathFeedEvent::SessionEnded(result) => Some(Stage::SessionEnded { failed: result.is_err() }),
+                _ => None,
+            };
+            if let Some(stage) = stage {
+                let generation = match &event {
+                    WrathFeedEvent::WorldTransfer { world_generation, .. } => *world_generation,
+                    _ => view.world_generation,
+                };
+                trace.observe(Some((view.session_epoch, generation)), None, stage);
+            }
+        }
         match event {
             WrathFeedEvent::Phase(phase) => view.phase = Some(phase),
             WrathFeedEvent::WorldTransfer { world_generation, map_id } => {
@@ -4146,6 +4375,36 @@ fn wrath_net_drain(
                 scope.world_generation,
             ) {
                 continue;
+            }
+            if let Some(trace) = &trace {
+                use crate::quest_trace::{CastEdge, Stage};
+                use crate::wrath_native::{WrathCastEventKind as Kind, WrathNativeFeedEvent};
+                let stage = match &event {
+                    WrathNativeFeedEvent::Cast(resolved) => {
+                        let edge = match &resolved.event.kind {
+                            Kind::Started { .. } => CastEdge::Started,
+                            Kind::Delayed { .. } => CastEdge::Delayed,
+                            Kind::Launched { .. } => CastEdge::Launched,
+                            Kind::Failed { reason } => CastEdge::Failed { reason: *reason },
+                            Kind::Interrupted { reason } => CastEdge::Interrupted { reason: *reason },
+                            Kind::ChannelStarted { .. } => CastEdge::ChannelStarted,
+                            Kind::ChannelUpdated { .. } => CastEdge::ChannelUpdated,
+                            Kind::ChannelEnded => CastEdge::ChannelEnded,
+                            Kind::ScopeInvalidated { .. } => CastEdge::ScopeInvalidated,
+                        };
+                        Some(Stage::Cast {
+                            spell_id: resolved.event.identity.map(|id| id.spell_id),
+                            attempt: resolved.event.attempt_serial,
+                            edge,
+                        })
+                    }
+                    WrathNativeFeedEvent::InventoryFailure { failure, .. } =>
+                        Some(Stage::InventoryFailure { reason: failure.reason }),
+                    WrathNativeFeedEvent::ItemText(_) => None,
+                };
+                if let Some(stage) = stage {
+                    trace.observe(Some((scope.session_epoch, scope.world_generation)), None, stage);
+                }
             }
             match event {
                 crate::wrath_native::WrathNativeFeedEvent::Cast(resolved) => {
@@ -4427,6 +4686,13 @@ pub(crate) struct WrathQuestSlots(
     pub u32, // PLAYER_FIELD_MAX_LEVEL
     pub u32, // Nonempty PLAYER_FIELD_DAILY_QUESTS_1 slots.
 );
+
+/// The active player's raw 3.3.5 field window, the source for the UI contracts the 1.12
+/// descriptor cannot carry: `PLAYER_FIELD_COMBAT_RATING_1` (1231..), `PLAYER_CHOSEN_TITLE`
+/// (321) and `PLAYER__FIELD_KNOWN_TITLES` (626/628/630). Kept beside the translated store so
+/// donor field indices stay untouched.
+#[derive(Component, Clone, PartialEq, Eq, Default)]
+pub(crate) struct WrathPlayerRaw(pub(crate) Vec<u32>);
 
 /// Map 12340's `PLAYER_QUEST_LOG_*` block: id, state, two count dwords (four 16-bit counts) and
 /// the deadline, five dwords a slot for twenty-five slots.
@@ -4795,6 +5061,10 @@ fn wrath_apply_world(world: &mut World) {
         let Some(remote) = entities.get(guid) else {
             continue;
         };
+        // The 3.3.5 player window keeps fields whose 1.12 equivalent has no slot (combat
+        // ratings, known titles, chosen title). The projection reads this component beside the
+        // translated 1.12 descriptor rather than inventing 1.12 indices for them.
+        let player_raw = remote.player_fields.clone();
         if matches!(
             remote.type_id,
             benilla_protocol_wrath::updates::type_id::ITEM
@@ -4976,6 +5246,26 @@ fn wrath_apply_world(world: &mut World) {
                 let old_slots = world.get::<WrathQuestSlots>(entity).copied();
                 let quest_slots_changed =
                     wrath_slots.is_some_and(|slots| old_slots != Some(slots));
+                if *guid == player_guid {
+                    if let (Some(old), Some(new), Some(trace)) = (
+                        old_slots,
+                        wrath_slots,
+                        world.get_resource::<crate::quest_trace::Source>(),
+                    ) {
+                        let scope = world.get_resource::<WrathWorldView>()
+                            .map(|v| (v.session_epoch, v.world_generation));
+                        for slot in &new.0 {
+                            if slot.quest_id != 0 && !old.0.iter().any(|s| s.quest_id == slot.quest_id) {
+                                trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::QuestSlotAdded);
+                            }
+                        }
+                        for slot in &old.0 {
+                            if slot.quest_id != 0 && !new.0.iter().any(|s| s.quest_id == slot.quest_id) {
+                                trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::QuestSlotRemoved);
+                            }
+                        }
+                    }
+                }
                 if old.as_ref().and_then(ObjectFields::object_entry) != fields.object_entry() {
                     if matches!(kind, EntityKind::Unit | EntityKind::Player) {
                         unit_name_lookups.push((*guid, fields.clone()));
@@ -4993,6 +5283,9 @@ fn wrath_apply_world(world: &mut World) {
                 ));
                 if let Some(slots) = wrath_slots {
                     world.entity_mut(entity).insert(slots);
+                }
+                if let Some(raw) = player_raw {
+                    world.entity_mut(entity).insert(WrathPlayerRaw(raw));
                 }
                 if quest_slots_changed && *guid == player_guid {
                     // The same two signals the 1.12 values block raises: the rebuild notice and
@@ -5187,16 +5480,30 @@ fn wrath_apply_world(world: &mut World) {
                             .get_resource::<crate::player::Player>()
                             .map_or(0, crate::player::Player::move_flags),
                     );
-                    if server_flags & MOVING == 0 && local_flags & MOVING == 0 {
+                    // A reduced snapshot retains the last pose across unrelated field updates.
+                    // Consume each new pose once, including while locally moving, so a later
+                    // health/aura update cannot replay an old correction after terrain settling.
+                    let fresh_pose = consume_wrath_position(world, entity, pose);
+                    if fresh_pose && server_flags & MOVING == 0 && local_flags & MOVING == 0 {
                         let bevy = wow_to_bevy([pose.x, pose.y, pose.z]);
                         let current = world
                             .get_resource::<crate::player::Player>()
                             .map_or(Vec3::ZERO, |p| p.pos);
                         if current.distance_squared(bevy) > 0.01 {
-                            if let Some(mut player) = world
+                            let applied = if let Some(mut player) = world
                                 .get_resource_mut::<crate::player::Player>()
                             {
                                 player.apply_server_pose(bevy, pose.o);
+                                true
+                            } else {
+                                false
+                            };
+                            if applied {
+                                if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
+                                    let scope = world.get_resource::<WrathWorldView>()
+                                        .map(|v| (v.session_epoch, v.world_generation));
+                                    trace.observe(scope, None, crate::quest_trace::Stage::MovementCorrectionApplied);
+                                }
                             }
                         }
                     }
@@ -5252,6 +5559,9 @@ fn wrath_apply_world(world: &mut World) {
                 }
                 if let Some(slots) = wrath_slots {
                     entity.insert(slots);
+                }
+                if let Some(raw) = player_raw {
+                    entity.insert(WrathPlayerRaw(raw));
                 }
                 if *guid == player_guid {
                     entity.insert((
@@ -5376,6 +5686,45 @@ fn wrath_apply_world(world: &mut World) {
             }
         }
         for (guid, kind, moved) in &field_diffs {
+            if matches!(kind, ObjectType::Unit | ObjectType::Player) {
+                for &(index, old, new) in moved {
+                    use benilla_protocol::field::{
+                        FIELD_UNIT_DYNAMIC_FLAGS, FIELD_UNIT_HEALTH, FIELD_UNIT_MAXHEALTH,
+                    };
+                    // The snapshot adapter bypasses the normal values-block watches. Feed
+                    // the UI explicitly; FieldChanged alone only reaches ECS consumers.
+                    let event = match index {
+                        FIELD_UNIT_HEALTH => Some(crate::field_watch::id::UNIT_HEALTH),
+                        FIELD_UNIT_MAXHEALTH => Some(crate::field_watch::id::UNIT_MAXHEALTH),
+                        _ => None,
+                    };
+                    if let Some(id) = event {
+                        if let Some(mut notices) =
+                            world.get_resource_mut::<crate::field_watch::NoticeLane>()
+                        {
+                            notices.write(crate::field_watch::FieldNotice::Signal {
+                                guid: *guid,
+                                id,
+                            });
+                        }
+                    }
+                    // Loot FX rescan on this edge, including when LOOTABLE is cleared.
+                    if index == FIELD_UNIT_DYNAMIC_FLAGS {
+                        let entity = world.resource::<GuidIndex>().0.get(guid).copied();
+                        if let Some(entity) = entity {
+                            let _ = world.write_message(FieldChanged {
+                                at: crate::lanes::stamp(),
+                                entity,
+                                guid: *guid,
+                                kind: *kind,
+                                index,
+                                old,
+                                new,
+                            });
+                        }
+                    }
+                }
+            }
             if *guid == player_guid && *kind == ObjectType::Player {
                 let inv_changed = moved.iter().any(|&(idx, _, _)| {
                     (benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR
@@ -5441,6 +5790,19 @@ fn wrath_apply_world(world: &mut World) {
             entities.len()
         );
     }
+}
+
+fn consume_wrath_position(
+    world: &mut World,
+    entity: Entity,
+    pose: benilla_protocol_wrath::updates::PositionSnapshot,
+) -> bool {
+    let stamp = WrathAppliedPosition(pose);
+    if world.get::<WrathAppliedPosition>(entity) == Some(&stamp) {
+        return false;
+    }
+    world.entity_mut(entity).insert(stamp);
+    true
 }
 
 fn default_speeds() -> MoveSpeeds {
@@ -5513,6 +5875,7 @@ fn wrath_stream_movement(
     self_guid: Option<Res<SelfGuid>>,
     input: Option<Res<WrathInput>>,
     mut local: Local<WrathMoveLocal>,
+    trace: Option<Res<crate::quest_trace::Source>>,
 ) {
     let Some(player) = player else {
         local.flags = None;
@@ -5623,15 +5986,24 @@ fn wrath_stream_movement(
             // Evict only replaceable motion. A queue full of real actions refuses this pose
             // instead of letting movement drop a cast, quest, loot or logout command.
             let Some(oldest_motion) = queue.iter().position(|entry| entry.movement) else {
+                if let Some(trace) = &trace {
+                    trace.note_movement_refused();
+                }
                 return;
             };
             let _ = queue.remove(oldest_motion);
+            if let Some(trace) = &trace {
+                trace.note_movement_coalesced();
+            }
         }
         queue.push_back(WrathOutbound {
             opcode,
             payload,
             movement: true,
+            receipt: None,
         });
+    } else if let Some(trace) = &trace {
+        trace.note_movement_refused();
     }
     local.last_send = Some(now);
 }
@@ -6175,6 +6547,11 @@ pub fn run_session_with_cancel(
                 "timeout waiting for character action response");
             for request in parked.try_iter() {
                 match request {
+                    WrathParkedCommand::RealmSplit(state) => {
+                        world.send(benilla_protocol_wrath::opcode::CMSG_REALM_SPLIT,
+                            &state.to_le_bytes())?;
+                        debug!("wrath: sent realm split choice={state}");
+                    }
                     WrathParkedCommand::Enumerate => {
                         world.send(benilla_protocol_wrath::opcode::CMSG_CHAR_ENUM, &[])?;
                     }
@@ -6215,6 +6592,11 @@ pub fn run_session_with_cancel(
                 break;
             }
             match world.recv() {
+                Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_REALM_SPLIT => {
+                    let reply = benilla_protocol_wrath::gameplay::parse_realm_split(&p.payload)?;
+                    info!("wrath: realm split choice={} state={} date={}", reply.0, reply.1, reply.2);
+                    send_glue(SessionEvent::RealmSplit { choice: reply.0, state: reply.1, date: reply.2 });
+                }
                 Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_ENUM => {
                     records = benilla_protocol_wrath::gameplay::parse_char_enum(&p.payload)?;
                     publish_roster(&records, RosterCause::Asked);
@@ -6276,7 +6658,51 @@ pub fn run_session_with_cancel(
                 .map(|mut queue| queue.drain(..).collect())
                 .unwrap_or_default();
             for command in pending {
-                world.send(command.opcode, &command.payload)?;
+                if let Some(receipt) = command.receipt.as_ref() {
+                    if receipt.enforce_scope && cancel.load(Ordering::SeqCst) {
+                        receipt.report(crate::net::CommandDelivery::Rejected(
+                            crate::net::CommandRefusal::Cancelled,
+                        ));
+                        continue;
+                    }
+                    if receipt.enforce_scope && (receipt.session_epoch != session.epoch()
+                        || receipt.world_generation != session.world_generation()
+                        || session.phase() != Phase::InWorld)
+                    {
+                        receipt.report(crate::net::CommandDelivery::Rejected(
+                            crate::net::CommandRefusal::ScopeChanged,
+                        ));
+                        continue;
+                    }
+                }
+                let result = world.send(command.opcode, &command.payload);
+                if diagnostic_outbound(command.opcode) {
+                    if let Some(trace) = &feed.trace {
+                        trace.observe(Some((session.epoch(), session.world_generation())), None,
+                            crate::quest_trace::Stage::Outbound {
+                                opcode: command.opcode,
+                                state: if result.is_ok() {
+                                    crate::quest_trace::OutboundState::Written
+                                } else {
+                                    crate::quest_trace::OutboundState::WriteFailed
+                                },
+                            });
+                    }
+                }
+                if result.is_err() {
+                    if let Some(trace) = &feed.trace {
+                        trace.observe(Some((session.epoch(), session.world_generation())), None,
+                            crate::quest_trace::Stage::SocketWriteFailed);
+                    }
+                }
+                if let Some(receipt) = command.receipt.as_ref() {
+                    receipt.report(if result.is_ok() {
+                        crate::net::CommandDelivery::Written
+                    } else {
+                        crate::net::CommandDelivery::WriteFailed
+                    });
+                }
+                result?;
                 // A cancel request is client authority state recorded when the command
                 // actually leaves, not when the UI asked for it. The authoritative terminal
                 // edge still decides the outcome; the export publishes only the request.
@@ -6311,8 +6737,43 @@ pub fn run_session_with_cancel(
             Ok(p) => {
                 let received_at = Instant::now();
                 last_server_response = received_at;
-                session.reduce(p.opcode, &p.payload, now_ms())?;
+                let eligible = diagnostic_opcode(p.opcode);
+                let traced = eligible
+                    && match &feed.trace {
+                        Some(trace) if p.opcode == benilla_protocol_wrath::opcode::SMSG_UPDATE_OBJECT =>
+                            trace.sample_update_packet(),
+                        Some(_) => true,
+                        None => false,
+                    };
+                let scope = Some((session.epoch(), session.world_generation()));
+                if traced {
+                    if let Some(trace) = &feed.trace {
+                        trace.observe(scope, None, crate::quest_trace::Stage::PacketReceived { opcode: p.opcode });
+                    }
+                }
+                let reduced = session.reduce(p.opcode, &p.payload, now_ms());
+                if eligible && (traced || reduced.is_err()) {
+                    if let Some(trace) = &feed.trace {
+                        let stage = if reduced.is_ok() {
+                            crate::quest_trace::Stage::ReducerAccepted { opcode: p.opcode }
+                        } else {
+                            crate::quest_trace::Stage::ReducerRejected { opcode: p.opcode }
+                        };
+                        trace.observe(scope, None, stage);
+                    }
+                }
+                reduced?;
                 if let Some(parsed) = gameplay::parse(p.opcode, &p.payload) {
+                    if traced {
+                        if let Some(trace) = &feed.trace {
+                            let stage = if parsed.is_ok() {
+                                crate::quest_trace::Stage::GameplayDecoded { opcode: p.opcode }
+                            } else {
+                                crate::quest_trace::Stage::GameplayRejected { opcode: p.opcode }
+                            };
+                            trace.observe(scope, None, stage);
+                        }
+                    }
                     match parsed {
                         Ok(event @ WrathGameplayEvent::Gossip { npc, menu_id, .. }) => {
                             feed.push_event(WrathFeedEvent::GossipMenu {
@@ -6507,7 +6968,13 @@ pub fn run_session_with_cancel(
                 }
             }
             Err(e) if benilla_protocol_wrath::world::is_idle(&e) => {}
-            Err(e) => return Err(e),
+            Err(e) => {
+                if let Some(trace) = &feed.trace {
+                    trace.observe(Some((session.epoch(), session.world_generation())), None,
+                        crate::quest_trace::Stage::SocketReadFailed);
+                }
+                return Err(e);
+            }
         }
         if logged_out {
             native.invalidate_scope();
@@ -6721,6 +7188,24 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn self_pose_is_not_replayed_by_unrelated_snapshots() {
+        use benilla_protocol_wrath::updates::PositionSnapshot;
+        let mut world = World::new();
+        let pose = PositionSnapshot { x: 1.0, y: 2.0, z: 3.0, o: 0.5 };
+        let entity = world.spawn(WrathAppliedPosition(pose)).id();
+        // Spawn already consumed this position. Health/aura snapshots retain it.
+        assert!(!consume_wrath_position(&mut world, entity, pose));
+        let newer = PositionSnapshot { x: 4.0, ..pose };
+        assert!(consume_wrath_position(&mut world, entity, newer));
+        assert!(!consume_wrath_position(&mut world, entity, newer));
+        // Returning to the same coordinates later is still a new position.
+        assert!(consume_wrath_position(&mut world, entity, pose));
+        // A replacement entity must not inherit the previous entity's receipt.
+        let replacement = world.spawn_empty().id();
+        assert!(consume_wrath_position(&mut world, replacement, pose));
+    }
+
     /// A self `SMSG_SPELL_GO` is 3.3.5's success answer: it must emit the 1.12 success result
     /// first, or the in-flight slot stays armed and every later press says 0x61. Another caster's
     /// GO never touches our slot.
@@ -6820,6 +7305,7 @@ mod tests {
             opcode: 1,
             payload: vec![1],
             movement: false,
+            receipt: None,
         }])));
         world.insert_resource(WrathInput(Arc::clone(&outbox)));
 
@@ -7008,6 +7494,15 @@ mod command_tap_tests {
         assert!(boot_character(&[], None).is_err());
     }
 
+    #[test]
+    fn interactive_restart_never_uses_the_boot_pick_during_logout_transition() {
+        assert!(matches!(WrathSessionStart::Auto.for_login_mode(true),
+            WrathSessionStart::Parked { roster_asked: false }));
+        assert!(matches!(WrathSessionStart::Auto.for_login_mode(false), WrathSessionStart::Auto));
+        assert!(matches!(WrathSessionStart::Parked { roster_asked: true }.for_login_mode(true),
+            WrathSessionStart::Parked { roster_asked: true }));
+    }
+
     /// The 3.3.5 record onto the 1.12 roster seam: the appearance bytes, position and the 19
     /// equipment slots carry over, the extra bag slots drop, and a wire level 0 is the fresh
     /// character's mark with the level pinned to 1.
@@ -7042,6 +7537,7 @@ mod command_tap_tests {
         (
             WrathControl {
                 config: None,
+                trace: None,
                 worker: None,
                 retiring: None,
                 feed: None,

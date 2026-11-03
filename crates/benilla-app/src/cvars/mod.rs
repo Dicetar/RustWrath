@@ -1740,6 +1740,26 @@ mod tests {
         // Enable flags: any nonzero is on, zero is off (the client's int-parse + != 0).
         apply(&mut app, "EnableMusic", "0");
         assert!(!res::<SoundConfig>(&app).music_enabled);
+        // The 3.3.5a spelling reaches the same gate; it does not rewrite the donor row.
+        apply(&mut app, "Sound_EnableMusic", "0");
+        assert!(!res::<SoundConfig>(&app).music_enabled);
+        apply(&mut app, "Sound_EnableMusic", "1");
+        assert!(res::<SoundConfig>(&app).music_enabled);
+        assert_eq!(res::<Cvars>(&app).get("EnableMusic"), Some("0"));
+        // `textureFilteringMode`'s six values, through the same `TexFilterSetting` the donor
+        // `trilinear`/`anisotropic` pair drives: 0 bilinear, 1 trilinear, 2..5 aniso 2/4/8/16.
+        for (mode, trilinear, aniso) in [
+            ("0", false, 1),
+            ("1", true, 1),
+            ("2", true, 2),
+            ("3", true, 4),
+            ("4", true, 8),
+            ("5", true, 16),
+        ] {
+            apply(&mut app, "textureFilteringMode", mode);
+            let tex = res::<benilla_assets::TexFilterSetting>(&app);
+            assert_eq!((tex.trilinear, tex.aniso), (trilinear, aniso), "mode {mode}");
+        }
         apply(&mut app, "mastersoundeffects", "1");
         assert!(res::<SoundConfig>(&app).enabled);
         apply(&mut app, "deselectonclick", "0");
@@ -3086,9 +3106,12 @@ mod tests {
         assert_eq!(
             strings,
             vec![
+                "accountList",
                 "accountName",
                 "gxApi",
                 "gxResolution",
+                "playerStatLeftDropdown",
+                "playerStatRightDropdown",
                 "realmList",
                 "realmName"
             ]
@@ -3523,6 +3546,87 @@ mod tests {
             ("gxCursor", "OptionsFrame.lua's Hardware Cursor box"),
             ("gxFixLag", "OptionsFrame.lua's Fix Input Lag box"),
             ("gxRefresh", "OptionsFrame.lua's refresh-rate dropdown"),
+            // 3.3.5a's stock panels read these through `OptionsPanelTemplates.lua`'s checkbox and
+            // cycle rows; the panel definition names each key. None has a host consumer yet.
+            ("Sound_NumChannels", "AudioOptionsPanels.lua:120's channel-count slider"),
+            ("showKeyring", "MainMenuBar.lua:243 reads it for the keyring button"),
+            ("autoQuestWatch", "InterfaceOptionsPanels.lua:787's quest-watch checkbox"),
+            ("questFadingDisable", "InterfaceOptionsPanels.lua:786's quest-fade checkbox"),
+            (
+                "playerStatLeftDropdown",
+                "PaperDollFrame.lua:161/164 read the paperdoll stat dropdown",
+            ),
+            (
+                "playerStatRightDropdown",
+                "PaperDollFrame.lua:161/166 read the paperdoll stat dropdown",
+            ),
+            ("xpBarText", "InterfaceOptionsPanels.lua:1132's XP-bar text checkbox"),
+            (
+                "alwaysCompareItems",
+                "GameUI_CVar.cpp:467's stock comparison-tooltip gate",
+            ),
+            ("extShadowQuality", "VideoOptionsPanels.lua:388's shadow-quality cycle"),
+            (
+                "gxStereoConvergence",
+                "VideoOptionsPanels.lua:558's stereo convergence slider",
+            ),
+            ("gxStereoEnabled", "VideoOptionsPanels.lua:557's stereo enable checkbox"),
+            (
+                "gxStereoSeparation",
+                "VideoOptionsPanels.lua:559's stereo separation slider",
+            ),
+            (
+                "Sound_ZoneMusicNoDelay",
+                "AudioOptionsPanels.lua:110's Loop Music checkbox",
+            ),
+            (
+                "Sound_EnableAmbience",
+                "AudioOptionsPanels.lua:104's ambience checkbox",
+            ),
+            ("Sound_EnableSFX", "AudioOptionsPanels.lua:105's sound-effects checkbox"),
+            ("Sound_EnableAllSound", "AudioOptionsPanels.lua:106's master-sound checkbox"),
+            ("windowResizeLock", "VideoOptionsPanels.lua:85's resize-lock checkbox"),
+            (
+                "autojoinPartyVoice",
+                "GameUI_CVar.cpp:604's stock voice option; no voice service here",
+            ),
+            (
+                "autojoinBGVoice",
+                "GameUI_CVar.cpp:605's stock voice option; no voice service here",
+            ),
+            ("environmentDetail", "VideoOptionsPanels.lua:384's environment-detail cycle"),
+            (
+                "groundEffectDensity",
+                "VideoOptionsPanels.lua:385's ground-effect-density slider",
+            ),
+            (
+                "groundEffectDist",
+                "VideoOptionsPanels.lua:386's ground-effect-distance slider",
+            ),
+            (
+                "Sound_EnableErrorSpeech",
+                "AudioOptionsPanels.lua:102's error-speech checkbox",
+            ),
+            (
+                "Sound_EnableEmoteSounds",
+                "AudioOptionsPanels.lua:108's emote-sound checkbox",
+            ),
+            (
+                "Sound_EnablePetSounds",
+                "AudioOptionsPanels.lua:109's pet-sound checkbox",
+            ),
+            (
+                "displayFreeBagSlots",
+                "MainMenuBar.lua's bag bar reads it to number the backpack button",
+            ),
+            (
+                "lootUnderMouse",
+                "LootFrame.lua's loot-under-mouse option",
+            ),
+            (
+                "accountList",
+                "GetSavedAccountList reads it on the login screen",
+            ),
         ];
         let app_src = crate::test_support::src_dir();
         let ui_src = app_src

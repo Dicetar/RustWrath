@@ -22,6 +22,8 @@ pub(crate) struct QuestVerbs<'w, 's> {
     /// Absent in a world with no questgiver window, which drops the panel verbs.
     giver: Option<ResMut<'w, QuestGiver>>,
     net: Res<'w, NetCommands>,
+    wrath: Option<Res<'w, crate::wrath::WrathWorldView>>,
+    trace: Option<Res<'w, crate::quest_trace::Source>>,
     objects: crate::net::Objects<'w, 's>,
 }
 
@@ -82,11 +84,52 @@ impl QuestVerbs<'_, '_> {
     /// row (`0x5012e3`, `0x5012f1`), else its `CMSG_QUESTGIVER_QUERY_QUEST` (`0x50130e`), to the
     /// giver's cell, 0 once closed, and the latch (`0x5012f6`, `0x501313`, `0x50136a`).
     fn select(&mut self, select: QuestSelect) {
+        use crate::quest_trace::{Operation, Stage};
+        let quest = self.giver.as_ref().and_then(|giver| {
+            let index = select.index.wrapping_sub(1) as usize;
+            if select.active {
+                giver.pools.active.get(index).copied()
+            } else {
+                giver.pools.available.get(index).map(|row| row.0)
+            }
+        });
+        let trace = self.trace.as_ref().map(|source| {
+            source.begin(
+                self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                quest,
+                Operation::Select,
+            )
+        });
+        let record = |stage| {
+            if let Some(trace) = &trace {
+                trace.record(stage);
+            }
+        };
         let player = self.objects.player().is_some();
         let Some(giver) = self.giver.as_deref_mut() else {
+            record(Stage::GuardRefused);
             return;
         };
         let pools = &giver.pools;
+        // One bounded diagnostic for the reported McBride row click: the row and pool the verb
+        // saw, whether the player/giver resolve, and the latch that can silently eat the click.
+        let panel = match giver.view.as_ref() {
+            Some(QuestView::Greeting(_)) => "greeting",
+            Some(QuestView::Detail(_)) => "detail",
+            Some(QuestView::Progress(_)) => "progress",
+            Some(QuestView::Reward(_)) => "reward",
+            None => "none",
+        };
+        debug!(
+            "ui_quest: select index={} active={} panel={panel} player={player} npc={:x?} \
+             acted={} available={} active_pool={}",
+            select.index,
+            select.active,
+            giver.npc,
+            giver.acted,
+            pools.available.len(),
+            pools.active.len(),
+        );
         let (count, row) = match select.active {
             true => (
                 pools.active.len(),
@@ -108,6 +151,7 @@ impl QuestVerbs<'_, '_> {
         let Some((quest, one_click)) =
             row.or((index == count && count < QuestPools::ROWS).then_some((0, false)))
         else {
+            record(Stage::GuardRefused);
             // Deviation: the row one past a full pool is read from the cells after it (`0xbe07e0`
             // and `0xbe0828` for the available pool, `0xbdf010` for the active one), which benilla
             // does not copy, so that select sends nothing and only sets the latch the send would.
@@ -117,15 +161,54 @@ impl QuestVerbs<'_, '_> {
             return;
         };
         if giver.acted || !player {
+            record(Stage::GuardRefused);
             return;
         }
         let npc = giver.npc.unwrap_or(0);
-        let command = if select.active || one_click {
+        let complete = select.active || one_click;
+        let mut pending = None;
+        let command = if let (Some(trace), Some(view)) = (&trace, self.wrath.as_ref()) {
+            if giver.pending_selection.is_some() {
+                record(Stage::AlreadyPending);
+                giver.delivery_error = Some("The previous quest selection is still being sent.".into());
+                return;
+            }
+            let (results, receiver) = crossbeam_channel::bounded(2);
+            pending = Some(super::PendingQuestSelection {
+                npc,
+                panel: giver.panels,
+                results: receiver,
+                started: std::time::Instant::now(),
+                stalled_reported: false,
+            });
+            ClientCommand::QuestgiverSelectTracked {
+                receipt: crate::net::CommandReceipt {
+                    trace: Some(trace.clone()),
+                    enforce_scope: true,
+                    session_epoch: view.session_epoch,
+                    world_generation: view.world_generation,
+                    npc,
+                    quest,
+                    results,
+                },
+                complete,
+            }
+        } else if complete {
             ClientCommand::QuestgiverComplete { npc, quest }
         } else {
             ClientCommand::QuestgiverQuery { npc, quest }
         };
-        let _ = self.net.0.send(command);
+        let result = self.net.0.send(command);
+        record(if result.is_ok() {
+            Stage::ChannelAdmitted
+        } else {
+            Stage::ChannelDisconnected
+        });
+        if result.is_err() && pending.is_some() {
+            giver.delivery_error = Some("Quest selection could not be sent. Check your connection and retry.".into());
+            return;
+        }
+        giver.pending_selection = pending;
         giver.acted = true;
     }
 
@@ -134,20 +217,96 @@ impl QuestVerbs<'_, '_> {
     /// closed (`0x5013c0`), the latch (`0x5013c9`), the close `0x501130(0,0)` (`0x5013d3`) and the
     /// Quest Log tutorial (`0x5013df`).
     fn accept(&mut self, script: &mut UiScript) -> Option<u64> {
+        use crate::quest_trace::Stage;
+        let trace = self.trace.as_ref().map(|source| {
+            let quest = self.giver.as_ref().and_then(|giver| match &giver.view {
+                Some(QuestView::Detail(d)) => Some(d.quest_id),
+                _ => None,
+            });
+            source.begin(
+                self.wrath.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                quest,
+                crate::quest_trace::Operation::Accept,
+            )
+        });
+        let record = |stage| {
+            if let Some(trace) = &trace {
+                trace.record(stage);
+            }
+        };
         let player = self.objects.player().is_some();
-        let giver = self.giver.as_deref_mut()?;
+        let Some(giver) = self.giver.as_deref_mut() else {
+            record(Stage::GuardRefused);
+            return None;
+        };
         let Some(QuestView::Detail(d)) = giver.view.as_ref() else {
+            record(Stage::GuardRefused);
             return None;
         };
         if !player || giver.acted {
+            record(Stage::GuardRefused);
             return None;
         }
         let (npc, quest) = (giver.npc.unwrap_or(0), d.quest_id);
         debug!("ui_quest: accept quest {quest} on {npc:#x}");
-        let _ = self
-            .net
-            .0
-            .send(ClientCommand::QuestgiverAccept { npc, quest });
+        if crate::wrath::selected_from_env() {
+            let Some(view) = self.wrath.as_ref().filter(|view| view.entered_world) else {
+                record(Stage::NoWorld);
+                giver.delivery_error =
+                    Some("Quest was not queued: no active world connection.".into());
+                return None;
+            };
+            if giver.pending_accepts.len() >= 16
+                || giver
+                    .pending_accepts
+                    .iter()
+                    .any(|p| p.npc == npc && p.quest == quest)
+            {
+                record(if giver.pending_accepts.len() >= 16 {
+                    Stage::TrackingCapacity
+                } else {
+                    Stage::AlreadyPending
+                });
+                giver.delivery_error = Some("Quest delivery is still pending. Check your journal before retrying.".into());
+                return None;
+            }
+            let (results, receiver) = crossbeam_channel::bounded(2);
+            let receipt = crate::net::CommandReceipt {
+                trace: trace.clone(),
+                enforce_scope: true,
+                session_epoch: view.session_epoch,
+                world_generation: view.world_generation,
+                npc,
+                quest,
+                results,
+            };
+            if self
+                .net
+                .0
+                .send(ClientCommand::QuestgiverAcceptTracked { receipt })
+                .is_err()
+            {
+                record(Stage::ChannelDisconnected);
+                giver.delivery_error =
+                    Some("Quest was not sent: the connection is unavailable.".into());
+                return None;
+            }
+            record(Stage::ChannelAdmitted);
+            info!(
+                "quest delivery: quest={quest} session={} world={} status=ChannelAdmitted",
+                view.session_epoch, view.world_generation
+            );
+            giver.pending_accepts.push(super::PendingQuestAccept {
+                quest,
+                npc,
+                results: receiver,
+                started: std::time::Instant::now(),
+                stalled_reported: false,
+            });
+        } else {
+            // Keep the donor command and its synchronous UI behavior unchanged.
+            let _ = self.net.0.send(ClientCommand::QuestgiverAccept { npc, quest });
+        }
         giver.acted = true;
         let closed = self.teardown(false);
         script.queue_tutorial_trigger(crate::tutorial::id::QUEST_LOG);

@@ -774,6 +774,8 @@ fn world(
                         // `ConnectToRealm` with the world up drops it first (`0x46b22b`).
                         Ok(ParkRequest::Realm(RealmRequest::Leave)) => Parked::Leave,
                         Ok(ParkRequest::Char(CharRequest::Enter(guid))) => Parked::Play(guid),
+                        // Wrath-only request; the donor VM never produces it.
+                        Ok(ParkRequest::Char(CharRequest::RealmSplit(_))) => Parked::StayPut,
                         // Select's Back: drop the parked session, return to the login park.
                         Ok(ParkRequest::Char(CharRequest::Abandon)) => Parked::Repark,
                         Ok(ParkRequest::Char(CharRequest::Create(create))) => {
@@ -1620,6 +1622,14 @@ pub(super) fn writer_loop(
                     }
                     ClientCommand::QuestgiverAccept { npc, quest } => {
                         w.questgiver_accept_quest(npc, quest)
+                    }
+                    ClientCommand::QuestgiverAcceptTracked { receipt }
+                    | ClientCommand::QuestgiverSelectTracked { receipt, .. }
+                    | ClientCommand::QuestgiverOpenTracked { receipt, .. } => {
+                        receipt.report(crate::net::CommandDelivery::Rejected(
+                            crate::net::CommandRefusal::UnsupportedMode,
+                        ));
+                        Ok(())
                     }
                     ClientCommand::QuestgiverComplete { npc, quest } => {
                         w.questgiver_complete_quest(npc, quest)

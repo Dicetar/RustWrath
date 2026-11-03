@@ -198,6 +198,7 @@ mod world_backdrop;
 mod world_console;
 mod world_state;
 mod wrath;
+mod quest_trace;
 mod wrath_native;
 mod world_state_ui;
 

@@ -33,13 +33,42 @@ Before reserving a slot, inspect processes and coordinate with the task owner. R
 
 | Resource | Owner | Task / command and evidence log | State |
 |---|---|---|---|
-| Cargo | Set when acquired | Record the exact command/log | Revalidate before use |
-| Client | Set when acquired | Record binary hash, run/log, selected character | Revalidate before use |
+| Cargo | Astra | `cargo build -p benilla --features hotpatch`; `.scratch/project-b/build-2026-11-02-astra-pose.log` | Passed; slot released |
+| Client | Astra / owner | Run `20261102-222346-059`, PID43304, SHA256 `1D853A073F916C1CBD952FA21E36ACB6BA960C29486B919CD2F6A7A13B3B43BC` | Owner entered Northshire as Firna; visible world/combat observed, do not interrupt or compete |
 
 Update the reservation when acquired and release it on completion. Do not overwrite a
 newer reservation or kill another owner's process to acquire the slot.
 
 ## Current evidence and continuation
+
+- D00 default-on recording approved by owner on 2026-11-03. See
+  [resident quest diagnostics](../architecture/rfc-resident-quest-diagnostics.md).
+  Source now includes selection and acceptance delivery evidence, panel and quest-slot
+  observations, journal model projection, periodic and reload-time Lua diagnostic counts,
+  bounded local incidents, and local JSONL export. The owner expanded scope to other
+  diagnostic vectors; source now includes UI frame state, allowlisted network boundaries,
+  casts, inventory/loot/vendor events, session transitions and hotpatch milestones.
+  Outcomes are heuristic. Visible rendering,
+  loss-aware server incidents, complete export identity and runtime validation remain open.
+  No build/client slot acquired.
+
+- Codex six-task batch (2026-11-03): G01–G06 source/design deliverables prepared;
+  editing finished, no Cargo/client slot acquired. Existing dirty changes preserved.
+  Tests/build/CI/runtime acceptance unrun. Batch evidence and exact remaining checks:
+  `.scratch/project-b/handoffs/2026-11-03-g01-g06-batch.md`.
+
+- Codex V3 continuation (2026-11-03): G00 baseline recorded and H00 manifest retry
+  source repair prepared in `crates/benilla-hotpatch/src/lib.rs`; no build/client slot
+  acquired. Source editing finished; tests/build/runtime acceptance unrun. See
+  `.scratch/project-b/handoffs/2026-11-03-v3-admission-h00.md`. Admission found no
+  cargo/rustc/benilla process; historical reservations above remain preserved.
+
+- Astra recovery: cached self-position deduplication in `wrath.rs` and ordinary pose correction
+  no longer requests mover handover in `player/state.rs`. Two focused `self_pose_` tests pass;
+  runtime acceptance pending. Detailed live handoff: `.scratch/project-b/handoffs/2026-11-02-astra-deepseek-live-handoff.md`.
+- DeepSeek support `call_24773bde2ded47c0a3423ea012d6e9b3` completed completion-matrix and
+  CVar-backend review; recovery receipt `call_b5c695e824dc4b9fae08f5e554546b1f` acknowledged.
+  DeepSeek is idle; no production source or build slot assigned to it yet.
 
 - Local `.scratch/project-b/handoffs/2026-11-02-next-batch.md`: prioritized work,
   known source changes, unproven behavior and acceptance order. Revalidate its baseline.

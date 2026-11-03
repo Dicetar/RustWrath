@@ -132,6 +132,7 @@ impl Plugin for NetPlugin {
             .add_message::<RosterFailedMessage>()
             .add_message::<AddonInfoMessage>()
             .add_message::<CharActionResultMessage>()
+            .add_message::<RealmSplitMessage>()
             .add_message::<CharRenameMessage>()
             .add_message::<CharacterLoginFailedMessage>()
             .add_message::<EnteredWorldMessage>()
@@ -557,6 +558,8 @@ impl<T> From<Sender<T>> for ParkSender<T> {
 
 /// One request to the IO thread parked at character select.
 pub(crate) enum CharRequest {
+    /// Wrath realm-split query/choice on the authenticated character-select link.
+    RealmSplit(u32),
     /// Log in as this character (`CMSG_PLAYER_LOGIN`).
     Enter(u64),
     /// Create a character (`CMSG_CHAR_CREATE`), then stay parked at select with the fresh roster.
@@ -941,6 +944,52 @@ impl ChatKind {
 /// interrupts a cast on a movement report whose position differs at all (`Player::SetPosition`).
 pub(crate) static CAST_TRACE: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("WOW_CAST_TRACE").is_ok());
+
+/// Local delivery evidence only; Written is not a server acknowledgement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub(crate) enum CommandDelivery {
+    OutboxAdmitted,
+    Written,
+    Rejected(CommandRefusal),
+    /// A socket error may follow a partial write; the server outcome is unknown.
+    WriteFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub(crate) enum CommandRefusal {
+    OutboxFull,
+    ScopeChanged,
+    Cancelled,
+    Unavailable,
+    UnsupportedMode,
+}
+
+/// One quest acceptance's bounded response route, carried with the command to its writer.
+#[derive(Debug, Clone)]
+pub(crate) struct CommandReceipt {
+    pub trace: Option<crate::quest_trace::Interaction>,
+    pub enforce_scope: bool,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub npc: u64,
+    pub quest: u32,
+    pub results: Sender<CommandDelivery>,
+}
+
+impl CommandReceipt {
+    pub(crate) fn report(&self, delivery: CommandDelivery) {
+        if let Some(trace) = &self.trace {
+            trace.record(crate::quest_trace::Stage::Delivery(delivery));
+        }
+        bevy::log::info!(
+            "quest delivery: quest={} session={} world={} status={delivery:?}",
+            self.quest, self.session_epoch, self.world_generation
+        );
+        // Exactly two results at most: admission and a terminal writer result.
+        // A closed UI receiver must never stall the networking thread.
+        let _ = self.results.try_send(delivery);
+    }
+}
 
 /// A message to the server through the write thread, carrying any pose it needs.
 #[derive(Debug, Clone)]
@@ -1599,6 +1648,18 @@ pub(crate) enum ClientCommand {
     QuestgiverAccept {
         npc: u64,
         quest: u32,
+    },
+    /// Wrath UI tracer action. Uses the same ordered channel as ordinary commands.
+    QuestgiverAcceptTracked {
+        receipt: CommandReceipt,
+    },
+    QuestgiverSelectTracked {
+        receipt: CommandReceipt,
+        complete: bool,
+    },
+    QuestgiverOpenTracked {
+        receipt: CommandReceipt,
+        gossip: bool,
     },
     /// `CMSG_QUESTGIVER_COMPLETE_QUEST`; answered by `SMSG_QUESTGIVER_REQUEST_ITEMS`, or
     /// `OFFER_REWARD` with no required items.
@@ -2308,6 +2369,13 @@ pub(crate) struct AddonInfoMessage {
 pub(crate) struct CharActionResultMessage {
     pub(crate) action: benilla_protocol::CharAction,
     pub(crate) code: u8,
+}
+
+#[derive(Message, Clone)]
+pub(crate) struct RealmSplitMessage {
+    pub(crate) choice: u32,
+    pub(crate) state: u32,
+    pub(crate) date: String,
 }
 
 /// `SMSG_CHAR_RENAME`: the result byte (0 success) and, when the reply carried them, the renamed

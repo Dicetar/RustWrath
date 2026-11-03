@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, field_count, loc_str, parse, u32_at};
-use crate::Chain;
+use crate::{Chain, Locale};
 
 const EXHAUSTION: &str = "DBFilesClient\\Exhaustion.dbc";
 
@@ -21,7 +21,7 @@ pub struct ExhaustionRow {
     pub factor: f32,
 }
 
-fn exhaustion_schema(fields: Option<u32>) -> Schema {
+fn exhaustion_schema(fields: Option<usize>) -> Schema {
     // 1.12 (5875) has 15 fields (8 locale columns); 3.3.5a (12340 `ExhaustionRec::Read`)
     // has 23 fields (16 locale columns).
     let locales = if fields == Some(23) { 16 } else { 8 };
@@ -39,7 +39,7 @@ fn exhaustion_schema(fields: Option<u32>) -> Schema {
     s
 }
 
-fn parse_exhaustion_bytes(bytes: &[u8], locale: usize) -> Result<Vec<ExhaustionRow>> {
+fn parse_exhaustion_bytes(bytes: &[u8], locale: Locale) -> Result<Vec<ExhaustionRow>> {
     let rs = parse(bytes, exhaustion_schema(field_count(bytes)), "Exhaustion")?;
     let mut rows = Vec::with_capacity(rs.records().len());
     for r in rs.records() {
@@ -100,7 +100,8 @@ mod tests {
         }
         dbc.extend_from_slice(strings);
 
-        let rows = parse_exhaustion_bytes(&dbc, 0).expect("23-field Exhaustion parses");
+        let rows = parse_exhaustion_bytes(&dbc, crate::Locale::from_index(0).unwrap())
+            .expect("23-field Exhaustion parses");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, 1);
         assert_eq!(rows[0].name, "Rested");

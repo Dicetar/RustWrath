@@ -14,6 +14,28 @@ use crate::cast_failure;
 mod movement;
 pub use movement::{MonsterFacing, MonsterMove};
 
+/// AzerothCore MiscHandler.cpp HandleRealmSplitOpcode; 12340 CGlueMgr::OnRealmSplitMsg
+/// (0x004D8200) forwards these three fields as SERVER_SPLIT_NOTICE.
+pub fn parse_realm_split(payload: &[u8]) -> Result<(u32, u32, String)> {
+    let mut r = Reader::new(payload);
+    let reply = (r.u32()?, r.u32()?, r.cstring()?);
+    anyhow::ensure!(r.remaining() == 0, "trailing realm split bytes");
+    Ok(reply)
+}
+
+#[test]
+fn realm_split_reply_preserves_server_state_and_rejects_truncation() {
+    let mut payload = u32::MAX.to_le_bytes().to_vec();
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(b"01/01/01\0");
+    assert_eq!(parse_realm_split(&payload).unwrap(), (u32::MAX, 0, "01/01/01".into()));
+    for end in 0..payload.len() {
+        assert!(parse_realm_split(&payload[..end]).is_err());
+    }
+    payload.push(0);
+    assert!(parse_realm_split(&payload).is_err());
+}
+
 /// `CMSG_SET_SELECTION` (`MiscHandler.cpp:543`): full `u64` GUID.
 pub fn logout_request() -> Vec<u8> {
     Vec::new()
@@ -2352,7 +2374,13 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     // 3.3.5 writes a variable stats block, then the fixed damage/resistance/spell blocks. The
     // 1.12 template keeps the same semantics with shorter fixed arrays; read each by its own
     // count rather than copying the whole 3.3.5 record.
-    let stats_count = r.u32()?.min(64);
+    let stats_count = r.u32()?;
+    // Build 12340 ItemStats_C has ten stat slots (AzerothCore MAX_ITEM_PROTO_STATS).
+    // Clamping the count would reinterpret excess stat bytes as the following fields.
+    anyhow::ensure!(
+        stats_count <= 10,
+        "item stat count {stats_count} exceeds 12340 limit 10"
+    );
     let mut stats = Vec::with_capacity(stats_count as usize);
     for _ in 0..stats_count {
         let stat_type = r.u32()?;

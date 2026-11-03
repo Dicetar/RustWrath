@@ -508,6 +508,7 @@ fn shipped_loot_pushed_to_center_by_merchant() {
 
     s.set_merchant(Some(MerchantState {
         items: vec![MerchantItem {
+                extended_cost: None,
             name: Some("Refreshing Spring Water".into()),
             texture: Some("Interface\\Icons\\INV_Drink_18".into()),
             price: 25,

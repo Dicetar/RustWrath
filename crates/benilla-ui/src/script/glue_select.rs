@@ -453,6 +453,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .unwrap_or_else(|| m.glue.create.race_file(2));
             lua.create_string(name)
         })?)?;
+    } else {
+        // CharacterSelect.lua calls this from the glue VM during a return from world. A vanilla
+        // glue VM still needs the global; the Human scene is the stock default.
+        g.set(
+            "GetSelectBackgroundModel",
+            lua.create_function(|_, _: MultiValue| Ok("Human"))?,
+        )?;
+    }
+
+    if model(lua).is_wrath() {
+        // 12340 0x004DE2E0 queries the server even when it reports a normal realm.
+        g.set("RequestRealmSplitInfo", lua.create_function(|lua, _: MultiValue| {
+            super::glue_core::queue(lua, super::GlueRequest::RealmSplit(u32::MAX));
+            Ok(())
+        })?)?;
+        g.set("SetRealmSplitState", lua.create_function(|lua, value: Value| {
+            let number = super::binding_abi::float_arg(lua, value,
+                "Usage: SetRealmSplitState(1 or 2)")?;
+            // The client narrows through a signed 64-bit integer before taking the low word.
+            // Non-finite and out-of-range conversion follows the x87 indefinite integer.
+            let integer = if number.is_finite() && number >= -9223372036854775808.0
+                && number < 9223372036854775808.0 { number as i64 } else { i64::MIN };
+            let state = integer as u32;
+            if state <= 2 {
+                super::glue_core::queue(lua, super::GlueRequest::RealmSplit(state));
+            }
+            Ok(())
+        })?)?;
     }
 
     // `0x4731c0`: a string or number (`0x6f3510`) or the usage error (`0x838720`); the global of
@@ -756,6 +784,49 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 mod tests {
     use super::*;
     use crate::script::UiScript;
+
+    #[test]
+    fn wrath_realm_split_requests_preserve_low_word() {
+        let mut s = UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap();
+        s.run("RequestRealmSplitInfo()").unwrap();
+        let mut states: Vec<u32> = s
+            .take_glue_requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                crate::script::GlueRequest::RealmSplit(state) => Some(state),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(states, [u32::MAX]);
+        states.clear();
+        // Each case in its own call, so a failed conversion cannot hide behind its neighbour.
+        // 4294967297 keeps the low word (1). The three out-of-range doubles take the x87
+        // indefinite integer (INT64_MIN), whose low word is 0, so they still pass `state <= 2`;
+        // -1 becomes 0xFFFFFFFF and is refused.
+        for (call, want) in [
+            ("SetRealmSplitState(1)", Some(1)),
+            ("SetRealmSplitState('2')", Some(2)),
+            ("SetRealmSplitState(3)", None),
+            ("SetRealmSplitState(1.9)", Some(1)),
+            ("SetRealmSplitState(4294967297)", Some(1)),
+            ("SetRealmSplitState(1e20)", Some(0)),
+            ("SetRealmSplitState(math.huge)", Some(0)),
+            ("SetRealmSplitState(-1e20)", Some(0)),
+            ("SetRealmSplitState(-1)", None),
+        ] {
+            s.run(call).unwrap();
+            let got = s
+                .take_glue_requests()
+                .into_iter()
+                .filter_map(|request| match request {
+                    crate::script::GlueRequest::RealmSplit(state) => Some(state),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(got, want.into_iter().collect::<Vec<_>>(), "{call}");
+        }
+        assert!(s.run("SetRealmSplitState('invalid')").is_err());
+    }
 
     #[test]
     fn wrath_glue_screenshot_contracts() {

@@ -3,6 +3,8 @@
 #![allow(dead_code)]
 
 pub const CMSG_CHAR_ENUM: u32 = 0x037;
+pub const CMSG_REALM_SPLIT: u32 = 0x38C;
+pub const SMSG_REALM_SPLIT: u16 = 0x38B;
 pub const CMSG_CHAR_CREATE: u32 = 0x036;
 pub const CMSG_CHAR_DELETE: u32 = 0x038;
 pub const SMSG_CHAR_CREATE: u16 = 0x03A;

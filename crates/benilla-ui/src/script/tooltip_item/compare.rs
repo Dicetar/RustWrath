@@ -110,6 +110,69 @@ fn equip_slots_for(inventory_type: u32) -> &'static [u32] {
 
 /// Register the two compare bindings into the GameTooltip kind method table.
 pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
+    // 12340 Script_SetHyperlinkCompareItem 0x00631B60, SetCompareItem 0x00631850.
+    m.set("SetHyperlinkCompareItem", lua.create_function(
+        |lua, (this, link, offset, _shift): (Table, Value, Value, Value)| {
+            let h = frame_handle_of(lua, &this)?;
+            let Some(link) = crate::script::binding_abi::optional_string(lua, &link) else {
+                let name = this.get::<mlua::Function>("GetName")?.call::<Option<String>>(this.clone())?
+                    .unwrap_or_else(|| "<unnamed>".to_string());
+                return Err(mlua::Error::runtime(format!("Usage: {name}:SetHyperlinkCompareItem(\"hyperlink\" [, offset, shiftButton])")));
+            };
+            let Some((item_id, _, _)) = super::hyperlink_item_fields(&link) else { return Ok(Value::Nil) };
+            if lua.app_data_ref::<Model>().expect("model app_data").unit("player").is_none() {
+                return Ok(Value::Nil);
+            }
+            let offset = lua.coerce_number(offset)?.map_or(0, |n| crate::script::binding_abi::ftol(n).wrapping_sub(1));
+            let Some(offered) = offered_view(lua, h, item_id) else { return Ok(Value::Nil) };
+            // `SetCompareItem`'s offset 2 is the scaling merchant preview: it needs
+            // `m_scalingStatValue`, the merchant guid and the 3.3.5 stat-scaling tables, none of
+            // which `ItemTemplateView` or `Model.merchant` projects. The reference also refuses
+            // it when the shift argument is set. Both paths answer 0 here; no blank tooltip is
+            // reported as success.
+            if offset == 2 { return Ok(Value::Nil); }
+            let slot = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let equipped = |slot: usize| model.inv_slot("player", slot).filter(|item| item.item_id != 0);
+                match offered.inventory_type {
+                    13 | 17 => {
+                        let main = equipped(16);
+                        let off = equipped(17);
+                        if let (Some(a), Some(b)) = (main.as_ref(), off.as_ref()) {
+                            if a.guid != b.guid && (a.guid != 0 || a.item_id != b.item_id) {
+                                Some(if offset == 0 { 17 } else { 16 })
+                            } else if offset == 0 { Some(16) } else { None }
+                        } else if offset == 0 {
+                            if main.is_some() { Some(16) } else if off.is_some() { Some(17) } else { None }
+                        } else { None }
+                    }
+                    21 => (offset == 0 && equipped(16).is_some()).then_some(16),
+                    14 | 22 | 23 => if offset != 0 { None } else if equipped(17).is_some() {
+                        Some(17)
+                    } else {
+                        equipped(16).filter(|item| item.inventory_type == Some(17)).map(|_| 16)
+                    },
+                    _ => {
+                        if offset < 0 { None } else {
+                            equip_slots_for(offered.inventory_type).iter().copied()
+                                .filter(|slot| equipped(*slot as usize).is_some())
+                                .nth(offset as usize).map(|slot| slot as usize)
+                        }
+                    }
+                }
+            };
+            let Some(slot) = slot else { return Ok(Value::Nil) };
+            {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                if let Ok(t) = crate::script::tooltip::tip_mut(&mut model, h) {
+                    t.equipped_header_armed = true;
+                }
+            }
+            this.get::<mlua::Function>("SetInventoryItem")?
+                .call::<mlua::MultiValue>((this.clone(), "player", slot))?;
+            Ok(Value::Integer(1))
+        }
+    )?)?;
     // GameTooltip:SetMerchantCompareItem(index [, offset]) (`0x536080`, method-table entry 43):
     // the shopping tooltip beside a vendor row. `offset` counts candidate slots, 1-based: set in
     // `0x809200[InventoryType]`, occupied, and holding an item of the offered class (never

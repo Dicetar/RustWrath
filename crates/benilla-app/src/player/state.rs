@@ -601,14 +601,13 @@ impl Player {
         super::move_trace::settle(resident, waited, self.pos);
     }
 
-    /// Adopt an authoritative server pose without inventing local motion. The next controller tick
-    /// reseats the camera and chases this facing from the server's value.
+    /// Adopt an authoritative correction without changing mover ownership. A reseat would read
+    /// the older body transform back into this pose and clear the mover's granted modes.
     pub(crate) fn apply_server_pose(&mut self, pos: Vec3, yaw: f32) {
         self.active = true;
         self.pos = pos;
         self.face_yaw = yaw;
         self.model_yaw = yaw;
-        self.reseat = true;
     }
 
     /// The movement flags as last streamed; the water foam tests `& 0xf` (translating) and `& 0x30`
@@ -981,6 +980,25 @@ mod move_mode_tests {
     };
     use crate::creature_anim::move_flags as f;
     use benilla_protocol::MoveMode;
+
+    #[test]
+    fn self_pose_correction_preserves_mover_ownership_and_modes() {
+        let mut player = Player::default();
+        player.active = true;
+        player.reseat = false;
+        player.modes.set(MoveMode::WaterWalk, true);
+        let pos = bevy::prelude::Vec3::new(4.0, 5.0, 6.0);
+        player.apply_server_pose(pos, 0.75);
+        assert_eq!(player.pos, pos);
+        assert_eq!(player.face_yaw, 0.75);
+        assert_eq!(player.model_yaw, 0.75);
+        assert!(!player.reseat, "a correction must not re-read the old body pose");
+        assert_eq!(player.modes.wire_flags(), f::WATER_WALKING);
+        // A real handover already requested elsewhere must still be honored.
+        player.reseat = true;
+        player.apply_server_pose(pos, 1.0);
+        assert!(player.reseat);
+    }
 
     #[test]
     fn each_granted_mode_rides_the_wire_word_as_its_own_bit() {

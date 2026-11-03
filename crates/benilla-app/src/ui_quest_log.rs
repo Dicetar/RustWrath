@@ -754,6 +754,8 @@ pub(crate) struct FeedMemo {
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct QuestLogReads<'w, 's> {
     xp: Option<Res<'w, QuestExperience>>,
+    quest_trace: Option<Res<'w, crate::quest_trace::Source>>,
+    wrath_view: Option<Res<'w, crate::wrath::WrathWorldView>>,
     titles: Option<Res<'w, crate::ui_quest::QuestTitles>>,
     self_q: Query<'w, 's, (&'static ObjectStore, &'static Guid), With<SelfPlayer>>,
     wrath_slots: Query<'w, 's, Option<&'static crate::wrath::WrathQuestSlots>, With<SelfPlayer>>,
@@ -884,6 +886,16 @@ pub(crate) fn feed_quest_log(
                 slot_views.iter().filter(|s| s.quest_id != 0).count()
             );
             script.quest_log_changed(slot_views);
+            if let Some(trace) = &reads.quest_trace {
+                let scope = reads.wrath_view.as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation));
+                for slot in slot_views.iter().filter(|slot| slot.quest_id != 0) {
+                    trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalProjection);
+                    if script.quest_log_index(slot.quest_id) != 0 {
+                        trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalRowInModel);
+                    }
+                }
+            }
             memo.prior = None;
             memo.subject = key;
         } else if (subject.is_some() && memo.subject != key)

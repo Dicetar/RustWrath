@@ -439,6 +439,8 @@ pub(super) struct TokenSources<'a, 'w, 's> {
 pub(super) struct TokenStores<'a> {
     /// Our own store and guid.
     pub(super) me: Option<(&'a ObjectStore, u64)>,
+    /// The 3.3.5 raw player window beside our translated store, when the Wrath path carries it.
+    pub(super) raw: Option<&'a crate::wrath::WrathPlayerRaw>,
     /// The selection's.
     pub(super) target: Option<(&'a ObjectStore, u64)>,
     /// The interaction NPC's.
@@ -490,6 +492,7 @@ pub(super) fn token_views<'a>(
             src.group,
             world.factions(),
             src.guild,
+            stores.raw,
         );
         if let Some(me) = world.me() {
             s.is_pvp_ffa = super::pvp_free_for_all(&world.get(), &me);
@@ -992,6 +995,7 @@ fn fire_unit_views(
         };
         let stores = TokenStores {
             me,
+            raw: None,
             target: selection
                 .target
                 .zip(selection.guid)

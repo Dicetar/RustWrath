@@ -139,18 +139,24 @@ impl Host {
         if self.observed.as_ref() == Some(&text) {
             return Ok(false);
         }
-        self.observed = Some(text.clone());
-        self.pending = None;
+        // A superseded staged candidate is no longer represented in the host. If the
+        // replacement fails and the manifest reverts, the old text must be staged again.
+        if self.pending.take().is_some() {
+            self.observed = None;
+        }
         let publication: Publication = toml::from_str(&text)?;
         if self
             .active
             .as_ref()
             .is_some_and(|m| m.digest == publication.sha1)
         {
+            self.observed = Some(text);
             return Ok(false);
         }
         let pending = Loaded::open(&self.root, publication)?;
         self.pending = Some(pending);
+        // Failed reads/loads must remain retryable without republishing ready.toml.
+        self.observed = Some(text);
         Ok(true)
     }
 
@@ -159,6 +165,10 @@ impl Host {
     }
     pub fn revision(&self) -> Option<&str> {
         self.active.as_ref().map(|m| m.revision.as_str())
+    }
+    /// Verified content identity of the currently active library.
+    pub fn digest(&self) -> Option<&str> {
+        self.active.as_ref().map(|m| m.digest.as_str())
     }
     pub fn take_rejection(&mut self) -> Option<String> {
         self.rejection.take()

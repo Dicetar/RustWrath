@@ -73,6 +73,17 @@ pub struct QuestTitleNames {
 }
 
 impl QuestTitleNames {
+    /// The largest CharTitles record id, the value `GetNumTitles` answers plus one
+    /// (`g_charTitlesDB.m_maxID + 1`, `0x005165E0`). Zero when the table is empty.
+    pub fn max_id(&self) -> u32 {
+        self.male
+            .keys()
+            .chain(self.female.keys())
+            .copied()
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn render(&self, id: u32, female: bool, player: &str) -> Option<String> {
         let (first, second) = if female { (&self.female, &self.male) } else { (&self.male, &self.female) };
         let format = first.get(&id).filter(|name| !name.is_empty()).or_else(|| second.get(&id))?;

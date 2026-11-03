@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
 use crate::dbc::{f32_at, field_count, loc_str, parse, u32_at};
-use crate::Chain;
+use crate::{Chain, Locale};
 
 const TAXI_NODES: &str = "DBFilesClient\\TaxiNodes.dbc";
 
@@ -61,7 +61,7 @@ impl TaxiNodes {
     }
 }
 
-fn schema(fields: Option<u32>) -> Schema {
+fn schema(fields: Option<usize>) -> Schema {
     // 1.12 (5875) has 16 fields (8 locale columns); 3.3.5a (12340 `TaxiNodesRec::Read`
     // `0x008B9E40`) has 24 fields (16 locale columns).
     let other_locales = if fields == Some(24) { 15 } else { 7 };
@@ -83,7 +83,7 @@ fn schema(fields: Option<u32>) -> Schema {
     s
 }
 
-fn parse_taxi_nodes_bytes(bytes: &[u8], locale: usize) -> Result<TaxiNodes> {
+fn parse_taxi_nodes_bytes(bytes: &[u8], locale: Locale) -> Result<TaxiNodes> {
     let fields = field_count(bytes);
     let (horde_col, alliance_col) = if fields == Some(24) { (22, 23) } else { (14, 15) };
     let rs = parse(bytes, schema(fields), "TaxiNodes")?;
@@ -159,7 +159,8 @@ mod tests {
         }
         dbc.extend_from_slice(strings);
 
-        let cat = parse_taxi_nodes_bytes(&dbc, 0).expect("24-field TaxiNodes parses");
+        let cat = parse_taxi_nodes_bytes(&dbc, crate::Locale::from_index(0).unwrap())
+            .expect("24-field TaxiNodes parses");
         let node = cat.get(2).expect("node 2");
         assert_eq!(node.name, "Stormwind, Elwynn");
         assert_eq!(node.mount_horde, 0);

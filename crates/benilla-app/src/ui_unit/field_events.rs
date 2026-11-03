@@ -26,6 +26,8 @@ pub(crate) struct FieldEventPushes;
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct NoticeFiring<'w, 's> {
     sink: crate::ui_action::MessageSink<'w>,
+    quest_trace: Option<Res<'w, crate::quest_trace::Source>>,
+    wrath_view: Option<Res<'w, crate::wrath::WrathWorldView>>,
     // The drunk watcher names the player it runs on (`0x609210`).
     names: Res<'w, crate::names::NameCache>,
     // The quest log's watcher reads the slots.
@@ -61,7 +63,18 @@ impl NoticeFiring<'_, '_> {
         if notice == FieldNotice::QuestLog {
             if let Some(store) = self.me.iter().next() {
                 let slots = self.me_slots.iter().next();
-                script.quest_log_changed(crate::ui_quest_log::slot_views_of(&store.0, slots));
+                let projected = crate::ui_quest_log::slot_views_of(&store.0, slots);
+                script.quest_log_changed(projected);
+                if let Some(trace) = &self.quest_trace {
+                    let scope = self.wrath_view.as_ref()
+                        .map(|v| (v.session_epoch, v.world_generation));
+                    for slot in projected.iter().filter(|slot| slot.quest_id != 0) {
+                        trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalProjection);
+                        if script.quest_log_index(slot.quest_id) != 0 {
+                            trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalRowInModel);
+                        }
+                    }
+                }
             }
             return false;
         }

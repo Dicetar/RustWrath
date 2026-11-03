@@ -104,6 +104,15 @@ impl DiagnosticLog {
 }
 
 impl super::UiScript {
+    /// Bounded diagnostic metadata for host observers, without cloning message text.
+    pub fn diagnostic_counters(&self) -> Vec<(u64, DiagnosticKind, u32)> {
+        self.model_ref()
+            .diagnostics
+            .rows()
+            .map(|row| (row.seq, row.kind, row.count))
+            .collect()
+    }
+
     /// Every retained row, oldest first, cloned out of the model.
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
         self.model_ref().diagnostics.rows().cloned().collect()

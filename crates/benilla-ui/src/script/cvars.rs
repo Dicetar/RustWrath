@@ -611,6 +611,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             match model.cvars.get(&name.to_ascii_lowercase()) {
                 Some(slot) => Ok(Value::String(lua.create_string(&slot.value)?)),
+                // Wrath 12340 0x004DDD10 also rejects unregistered names. Missing stock
+                // settings belong in the host registry, with their actual defaults.
                 None => Err(unknown_cvar(&name)),
             }
         })?,
@@ -631,12 +633,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        // `GetCVarMin`/`GetCVarMax` are 3.3.5 glue verbs (`0x004DDEA0`/`0x004DDF80`) with no 1.12
+        // counterpart (`reference/lua_globals.tsv` has only `GetCVar` and `GetCVarDefault`), so
+        // they live inside this target branch: a Wrath glue VM is built with the Wrath target
+        // (`ui_script::lifecycle`'s `glue_with_target`), and a vanilla one must not grow them.
         for (verb, maximum) in [("GetCVarMin", false), ("GetCVarMax", true)] {
             lua.globals().set(verb, lua.create_function(move |lua, args: mlua::MultiValue| {
-                let name = cvar_arg(args.front()).ok_or_else(|| mlua::Error::runtime(format!("Usage: {verb}(\"cvar\")")))?;
+                let name = cvar_arg(args.front()).ok_or_else(|| {
+                    mlua::Error::runtime(format!("Usage: {verb}(\"cvar\")"))
+                })?;
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 let key = name.to_ascii_lowercase();
-                if !model.cvars.contains_key(&key) { return Err(unknown_cvar(&name)); }
+                if !model.cvars.contains_key(&key) {
+                    return Err(unknown_cvar(&name));
+                }
                 // 12340 0x004DDEA0 / 0x004DDF80. Shadow maximum needs a host capability
                 // projection; leave that limit absent until the renderer supplies it.
                 Ok(match key.as_str() {

@@ -133,6 +133,8 @@ const CVAR_ACCOUNT_NAME_KEY: &str = "accountname";
 /// glue music and the browser. None of them is anything Lua reads back.
 #[derive(Clone, Debug)]
 pub enum GlueRequest {
+    /// Wrath 12340 0x004DE2E0 / 0x004DE250: CMSG_REALM_SPLIT, query or chosen state.
+    RealmSplit(u32),
     /// `PlayGlueMusic(file)` (`0x46ceb0` → `0x45aeb0`).
     PlayGlueMusic(String),
     /// `StopGlueMusic()` (`0x46cf00`): `0x45b050(1.0)`, a one-second fade.

@@ -185,6 +185,14 @@ pub struct UnitState {
     /// `PLAYER_BYTES_3` byte 3. The private lifetime highest rides
     /// [`HonorState`](super::HonorState); [`super::pvp`] converts to the `-4..=14` visual scale.
     pub pvp_rank: u8,
+    /// 3.3.5's `PLAYER_FIELD_COMBAT_RATING_1[25]`, one value per `GetCombatRating` index. The
+    /// whole block is the player descriptor's; another unit reads zeros.
+    pub combat_ratings: [u32; 25],
+    /// `PLAYER__FIELD_KNOWN_TITLES[3]`, the 192-bit known-title mask `IsTitleKnown` tests; zero
+    /// when the Wrath raw player window has not been projected.
+    pub known_titles: [u32; 3],
+    /// `PLAYER_CHOSEN_TITLE`, 0 for none.
+    pub chosen_title: u32,
     /// The city-protector title, `PLAYER_BYTES_3` byte 2 (0 none): `UnitPVPName` appends the
     /// `PVP_MEDAL<n>` line for a non-zero one (`0x6093ef`).
     pub pvp_medal: u8,

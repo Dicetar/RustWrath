@@ -1739,6 +1739,18 @@ fn status_text(code: u8) -> (Text, Option<u8>) {
     }
 }
 
+/// `CGlueMgr::OnRealmSplitMsg` (`0x004D8200`) signals `SERVER_SPLIT_NOTICE` through the
+/// `"%d%d%s"` format. The two fields are `uint32_t` in C, and `%d` reads them back as signed
+/// `int`, so the server's query echo `0xFFFFFFFF` reaches Lua as -1. The wire parser keeps them
+/// unsigned; this is the projection to the stock event, not a change to the packet.
+fn realm_split_event_args(choice: u32, state: u32, date: &str) -> Vec<ScriptValue> {
+    vec![
+        ScriptValue::Number(f64::from(choice as i32)),
+        ScriptValue::Number(f64::from(state as i32)),
+        ScriptValue::Str(date.to_string()),
+    ]
+}
+
 /// The login engine's messages the manager reads, as one parameter.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct LoginNews<'w, 's> {
@@ -1754,6 +1766,7 @@ pub(crate) struct LoginNews<'w, 's> {
     addon_infos: MessageReader<'w, 's, AddonInfoMessage>,
     addon_reply: Option<Res<'w, AddonInfoReply>>,
     char_actions: MessageReader<'w, 's, CharActionResultMessage>,
+    realm_split: MessageReader<'w, 's, crate::net::RealmSplitMessage>,
     renames: MessageReader<'w, 's, CharRenameMessage>,
     login_refusals: MessageReader<'w, 's, CharacterLoginFailedMessage>,
     /// What the login engine decided with no network message behind it.
@@ -1886,6 +1899,11 @@ pub(crate) fn drive_glue_mgr(
                 }
                 for request in s.take_glue_requests() {
                     match request {
+                        GlueRequest::RealmSplit(state) => {
+                            if let Some(pick) = asks.pick.as_deref() {
+                                let _ = pick.0.send(CharRequest::RealmSplit(state));
+                            }
+                        }
                         GlueRequest::PlayGlueMusic(file) => {
                             asks.music.write(crate::sound::GlueMusicRequest::Play(file));
                         }
@@ -2025,6 +2043,15 @@ pub(crate) fn drive_glue_mgr(
             }
             for msg in news.disconnects.read() {
                 mgr.on_disconnected(msg.end, msg.session_over);
+            }
+        }
+        if let Some(s) = script.as_deref_mut() {
+            for msg in news.realm_split.read() {
+                s.fire_event("SERVER_SPLIT_NOTICE", realm_split_event_args(
+                    msg.choice,
+                    msg.state,
+                    &msg.date,
+                ));
             }
         }
         // What the news raised runs out before the frame's arm, as the reference's network handlers

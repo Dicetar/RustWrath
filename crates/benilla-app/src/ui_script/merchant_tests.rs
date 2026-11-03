@@ -69,6 +69,7 @@ fn shipped_merchant_frame_drives_end_to_end() {
     s.set_merchant(Some(MerchantState {
         items: vec![
             MerchantItem {
+                extended_cost: None,
                 name: Some("Refreshing Spring Water".into()),
                 texture: Some("Interface\\Icons\\INV_Drink_18".into()),
                 price: 25,
@@ -80,6 +81,7 @@ fn shipped_merchant_frame_drives_end_to_end() {
                 max_stack: Some(1),
             },
             MerchantItem {
+                extended_cost: None,
                 name: Some("Linen Bandage".into()),
                 texture: Some("Interface\\Icons\\INV_Misc_Bandage_01".into()),
                 price: 100,
@@ -608,6 +610,7 @@ fn shipped_merchant_hover_scopes_highlight_and_anchors_item_tooltip() {
     s.set_merchant(Some(MerchantState {
         items: vec![
             MerchantItem {
+                extended_cost: None,
                 name: Some("Vendor Blade".into()),
                 texture: Some("Interface\\Icons\\INV_Sword_04".into()),
                 price: 8000,
@@ -632,6 +635,7 @@ fn shipped_merchant_hover_scopes_highlight_and_anchors_item_tooltip() {
                 max_stack: Some(1),
             },
             MerchantItem {
+                extended_cost: None,
                 name: Some("Chipped Buckler".into()),
                 texture: Some("Interface\\Icons\\INV_Shield_09".into()),
                 price: 124,
@@ -814,6 +818,7 @@ fn merchant_tabs_drive_buyback_page_and_repair_pair() {
     s.set_money(500);
 
     let buyback_item = |name: &str, price: u32| MerchantItem {
+                extended_cost: None,
         name: Some(name.into()),
         texture: Some("Interface\\Icons\\INV_Misc_Cape_01".into()),
         price,
@@ -826,6 +831,7 @@ fn merchant_tabs_drive_buyback_page_and_repair_pair() {
     };
     s.set_merchant(Some(MerchantState {
         items: vec![MerchantItem {
+                extended_cost: None,
             name: Some("Refreshing Spring Water".into()),
             texture: Some("Interface\\Icons\\INV_Drink_18".into()),
             price: 25,
@@ -974,6 +980,7 @@ fn shipped_merchant_frame_arms_the_buy_cursor_on_hover() {
     s.set_merchant(Some(MerchantState {
         items: vec![
             MerchantItem {
+                extended_cost: None,
                 name: Some("Refreshing Spring Water".into()),
                 texture: Some("Interface\\Icons\\INV_Drink_18".into()),
                 price: 25,
@@ -985,6 +992,7 @@ fn shipped_merchant_frame_arms_the_buy_cursor_on_hover() {
                 max_stack: Some(1),
             },
             MerchantItem {
+                extended_cost: None,
                 name: Some("Linen Bandage".into()),
                 texture: Some("Interface\\Icons\\INV_Misc_Bandage_01".into()),
                 price: 100,
@@ -1186,6 +1194,7 @@ fn ctrl_and_shift_on_a_vendor_row_preview_and_post_without_buying() {
     s.set_money(12_345);
     s.set_merchant(Some(MerchantState {
         items: vec![MerchantItem {
+                extended_cost: None,
             name: Some("Refreshing Spring Water".into()),
             texture: Some("Interface\\Icons\\INV_Drink_18".into()),
             price: 25,
@@ -1289,6 +1298,7 @@ fn shift_click_takes_one_bundle_and_splits_a_single() {
     s.set_merchant(Some(MerchantState {
         items: vec![
             MerchantItem {
+                extended_cost: None,
                 name: Some("Refreshing Spring Water".into()),
                 price: 25,
                 quantity: 5,
@@ -1298,6 +1308,7 @@ fn shift_click_takes_one_bundle_and_splits_a_single() {
                 ..Default::default()
             },
             MerchantItem {
+                extended_cost: None,
                 name: Some("Flask of Oil".into()),
                 price: 100,
                 quantity: 1,
