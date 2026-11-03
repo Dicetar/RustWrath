@@ -52,3 +52,5 @@ __pycache__/
 /dist/
 /.vite/
 /.aistudio/
+public/*.bundle
+public/*.patch
