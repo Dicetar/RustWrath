@@ -82,6 +82,12 @@ impl Plugin for NetPlugin {
         session::register(app);
         objects::register(app);
         crate::names::net::register(app);
+        // Install the resident diagnostics recorder before the IO thread can emit its first
+        // auth milestone, so login stages are observed in every mode (Wrath or stock). Wrath
+        // reuses this instance instead of installing a second one.
+        if !app.world().contains_resource::<crate::quest_trace::Source>() {
+            crate::quest_trace::install(app);
+        }
         app.insert_resource(NetEvents(handles.events))
             .insert_resource(NetEventSink(handles.events_out))
             .insert_resource(NetCommandTap(handles.command_tap))
@@ -1120,6 +1126,7 @@ pub(crate) enum ClientCommand {
         /// bag/slot item. `None` only where the caller has no item object (a test commit).
         item_guid: Option<u64>,
         target: benilla_protocol::messages::UseItemTarget,
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// `CMSG_OPEN_ITEM`: the server answers `SMSG_LOOT_RESPONSE` on the item's own guid; a wrapped
     /// gift instead changes entry in place with no window.
@@ -1191,23 +1198,27 @@ pub(crate) enum ClientCommand {
     CastSpell {
         spell_id: u32,
         target: Option<u64>,
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// `CMSG_CAST_SPELL` at a corpse: its bit and packed guid, a resurrection on a released player.
     CastSpellCorpse {
         spell_id: u32,
         target: benilla_protocol::messages::CorpseTarget,
         corpse_guid: u64,
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// `CMSG_CAST_SPELL` with `TARGET_FLAG_DEST_LOCATION`; `dest` in WoW coordinates.
     CastSpellAtDest {
         spell_id: u32,
         dest: [f32; 3],
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// `CMSG_CAST_SPELL` with `TARGET_FLAG_SOURCE_LOCATION` (`BindLocation 0x6e60f0`, bit 5);
     /// `src` in WoW coordinates.
     CastSpellAtSource {
         spell_id: u32,
         src: [f32; 3],
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// `CMSG_CANCEL_AURA`, by spell id, not slot; the removal returns as a `UNIT_FIELD_AURA` delta.
     CancelAura {
@@ -1242,6 +1253,7 @@ pub(crate) enum ClientCommand {
         caster_guid: u64,
         spell_id: u32,
         target: benilla_protocol::messages::UseItemTarget,
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// `CMSG_PET_SET_ACTION`: one or two `(position, word)` pairs. The bar's autocast toggle is
     /// one entry with bit 30 flipped.
@@ -1290,10 +1302,12 @@ pub(crate) enum ClientCommand {
     /// (`AbortCast 0x6e4940`).
     CancelCast {
         spell_id: u32,
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// `CMSG_CANCEL_CHANNELLING`; the server ignores the spell id the client writes.
     CancelChannelling {
         spell_id: u32,
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// `CMSG_SETSHEATHED` (0 stowed, 1 melee, 2 ranged); the client sends 1 on starting melee
     /// stowed (`0x5ecb70` to `0x611cf0`). Our own pose follows the `UNIT_FIELD_BYTES_2` echo.
@@ -1597,17 +1611,20 @@ pub(crate) enum ClientCommand {
     CastSpellGameObject {
         spell_id: u32,
         go_guid: u64,
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// An item-targeted cast (`TARGET_FLAG_ITEM` and a packed guid).
     CastSpellItem {
         spell_id: u32,
         item_guid: u64,
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// A cast at the partner's trade slot `slot` (`TARGET_FLAG_TRADE_ITEM`, the bind of
     /// `0x6e6900`).
     CastSpellTradeItem {
         spell_id: u32,
         slot: u8,
+        trace: Option<crate::quest_trace::Interaction>,
     },
     /// `CMSG_LOOT` on a unit; the server rejects a GameObject guid, which loots by `GameObjUse`.
     Loot {

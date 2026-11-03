@@ -168,15 +168,27 @@ pub struct WrathInput(pub WrathOutbox);
 /// What the IO thread publishes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WrathFeedEvent {
-    /// The replicated session phase changed (login, transfer boundary, logout).
-    Phase(Phase),
+    /// The replicated session phase changed (login, transfer boundary, logout). The tagged
+    /// scope travels with the event so a delayed phase never borrows the scope active when
+    /// it is drained.
+    Phase {
+        phase: Phase,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// A world scope changed: the mapped entity set and pending publications for the old
     /// scope are invalid from this event on (issue 22 clears its entity map here).
-    WorldTransfer { world_generation: u64, map_id: u32 },
+    WorldTransfer { session_epoch: u64, world_generation: u64, map_id: u32 },
     /// A producer export was refused with a reason â€” diagnostics for the debug panel.
     ExportSkipped(String),
-    /// The IO-thread session ended (Ok = clean logout; Err = failure reason).
-    SessionEnded(Result<(), String>),
+    /// The IO-thread session ended (Ok = clean logout; Err = failure reason). The scope is
+    /// captured by the worker before it exits so a delayed terminal event cannot borrow the
+    /// scope active when it is drained.
+    SessionEnded {
+        result: Result<(), String>,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// The current gossip menu's identity, needed by the 3.3.5 select-option message.
     GossipMenu {
         npc: u64,
@@ -212,10 +224,14 @@ pub enum WrathFeedEvent {
 }
 
 impl WrathFeedEvent {
-    fn from_session(event: LifeEvent) -> Self {
+    fn from_session(event: LifeEvent, session_epoch: u64) -> Self {
         match event {
             LifeEvent::WorldTransfer { world_generation, map_id } => {
-                Self::WorldTransfer { world_generation, map_id }
+                Self::WorldTransfer {
+                    session_epoch,
+                    world_generation,
+                    map_id,
+                }
             }
         }
     }
@@ -227,6 +243,8 @@ pub struct WrathFeed {
     authenticated: Arc<AtomicBool>,
     trace: Option<crate::quest_trace::Source>,
     account_expansion: Arc<std::sync::atomic::AtomicU8>,
+    last_session_epoch: Arc<AtomicU64>,
+    last_world_generation: Arc<AtomicU64>,
     pub latest: WrathLatest,
     pub events: WrathEvents,
     /// Native cast/channel/item-text/failure traffic on its own bounded queue so it cannot
@@ -244,6 +262,8 @@ impl WrathFeed {
             authenticated: Arc::new(AtomicBool::new(false)),
             trace: None,
             account_expansion: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            last_session_epoch: Arc::new(AtomicU64::new(0)),
+            last_world_generation: Arc::new(AtomicU64::new(0)),
             latest: Arc::new(Mutex::new(None)),
             events: Arc::new(Mutex::new(VecDeque::with_capacity(WRATH_EVENT_CAPACITY))),
             native: Arc::new(Mutex::new(VecDeque::with_capacity(
@@ -989,9 +1009,11 @@ impl WrathControl {
                     if q.len() >= WRATH_EVENT_CAPACITY {
                         q.pop_front();
                     }
-                    q.push_back(WrathFeedEvent::SessionEnded(
-                        result.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")),
-                    ));
+                    q.push_back(WrathFeedEvent::SessionEnded {
+                        result: result.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")),
+                        session_epoch: feed.last_session_epoch.load(Ordering::SeqCst),
+                        world_generation: feed.last_world_generation.load(Ordering::SeqCst),
+                    });
                 }
                 if let Some(sink) = events_out.filter(|_| !cancel.load(Ordering::SeqCst)) {
                     if config.login_generation.is_some() && result.is_err()
@@ -1364,7 +1386,9 @@ impl Plugin for WrathNetPlugin {
         .add_message::<crate::wrath_native::WrathCastEvent>()
         .add_message::<crate::wrath_native::WrathItemText>();
         if self.config.is_some() {
-            crate::quest_trace::install(app);
+            if !app.world().contains_resource::<crate::quest_trace::Source>() {
+                crate::quest_trace::install(app);
+            }
             let trace = app.world().resource::<crate::quest_trace::Source>().clone();
             app.world_mut().resource_mut::<WrathControl>().trace = Some(trace);
             app.insert_resource(WrathInput(commands));
@@ -1478,10 +1502,13 @@ fn wrath_session_ownership(
             control.restart_allowed = false;
             control.retry_at = None;
             if let Some(sink) = control.session_events_tx.as_ref() {
-                let _ = sink.send(WrathSessionEvent::forced(SessionEvent::Disconnected {
+                let generation = control.config.as_ref().and_then(|c| c.login_generation);
+                let event = WrathSessionEvent::forced(SessionEvent::Disconnected {
                     reason,
                     end: benilla_protocol::SessionEnd::Lost,
-                }));
+                })
+                .for_login(generation);
+                let _ = sink.send(event);
             }
         }
         if !control.ended {
@@ -3898,6 +3925,17 @@ fn wrath_tap_commands(
                             });
                         }
                     }
+                    if opcode == benilla_protocol_wrath::opcode::CMSG_CAST_SPELL {
+                        let spell_id = payload.get(4..8).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+                        let attempt = payload.get(0..4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+                        if let Some(trace) = &trace {
+                            trace.observe(scope, None, crate::quest_trace::Stage::Cast {
+                                spell_id,
+                                attempt: attempt.map(|a| a as u64),
+                                edge: crate::quest_trace::CastEdge::Admitted,
+                            });
+                        }
+                    }
                     if opening {
                         if let Some(trace) = &trace {
                             trace.observe(scope, None, crate::quest_trace::Stage::OpenOutboxAdmitted);
@@ -4067,8 +4105,17 @@ fn wrath_dispatch_events(world: &mut World) {
                     _ => None,
                 };
                 if let Some(event_kind) = kind {
+                    // Forced/terminal events (epoch 0) have no reliable producer scope; record
+                    // them as unknown rather than borrowing the scope active at drain time.
+                    let scope = if event.force
+                        || (event.session_epoch == 0 && event.world_generation == 0)
+                    {
+                        None
+                    } else {
+                        Some((event.session_epoch, event.world_generation))
+                    };
                     trace.observe_with_npc(
-                        Some((event.session_epoch, event.world_generation)),
+                        scope,
                         None,
                         npc,
                         Stage::DomainEvent { event: event_kind },
@@ -4228,7 +4275,7 @@ fn wrath_net_drain(
         if let Some(trace) = &trace {
             use crate::quest_trace::{SessionPhase, Stage};
             let stage = match &event {
-                WrathFeedEvent::Phase(phase) => Some(Stage::SessionPhase {
+                WrathFeedEvent::Phase { phase, .. } => Some(Stage::SessionPhase {
                     phase: match phase {
                         Phase::CharacterSelection => SessionPhase::CharacterSelection,
                         Phase::EnteringWorld => SessionPhase::EnteringWorld,
@@ -4238,20 +4285,87 @@ fn wrath_net_drain(
                     },
                 }),
                 WrathFeedEvent::WorldTransfer { .. } => Some(Stage::WorldTransfer),
-                WrathFeedEvent::SessionEnded(result) => Some(Stage::SessionEnded { failed: result.is_err() }),
+                WrathFeedEvent::SessionEnded { result, .. } => Some(Stage::SessionEnded { failed: result.is_err() }),
                 _ => None,
             };
             if let Some(stage) = stage {
-                let generation = match &event {
-                    WrathFeedEvent::WorldTransfer { world_generation, .. } => *world_generation,
-                    _ => view.world_generation,
+                let (epoch, generation, unknown) = match &event {
+                    WrathFeedEvent::Phase {
+                        session_epoch,
+                        world_generation,
+                        ..
+                    } => (*session_epoch, *world_generation, false),
+                    WrathFeedEvent::WorldTransfer {
+                        session_epoch,
+                        world_generation,
+                        ..
+                    } => (*session_epoch, *world_generation, false),
+                    WrathFeedEvent::SessionEnded {
+                        session_epoch,
+                        world_generation,
+                        ..
+                    } => (*session_epoch, *world_generation, false),
+                    _ => (view.session_epoch, view.world_generation, false),
                 };
-                trace.observe(Some((view.session_epoch, generation)), None, stage);
+                // A delayed terminal/phase event keeps its own captured scope; never borrow
+                // the scope that happens to be active when it is drained.
+                if unknown || (epoch == 0 && generation == 0) {
+                    trace.observe(None, None, stage);
+                } else {
+                    trace.observe(Some((epoch, generation)), None, stage);
+                }
             }
         }
+        // Guard state mutation before the first write: stale or duplicate feed events must not
+        // mutate the active view. A delayed terminal event is never allowed to end a newer session.
+        let apply_state = match &event {
+            WrathFeedEvent::Phase {
+                session_epoch,
+                world_generation,
+                ..
+            } => !scope_is_older(
+                view.session_epoch,
+                view.world_generation,
+                *session_epoch,
+                *world_generation,
+            ),
+            WrathFeedEvent::WorldTransfer {
+                session_epoch,
+                world_generation,
+                ..
+            } => {
+                !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    *session_epoch,
+                    *world_generation,
+                ) && (*session_epoch != view.session_epoch
+                    || *world_generation != view.world_generation)
+            }
+            WrathFeedEvent::SessionEnded {
+                session_epoch,
+                world_generation,
+                ..
+            } => {
+                if *session_epoch == 0 && *world_generation == 0 {
+                    view.session_epoch == 0 && view.world_generation == 0
+                } else {
+                    !scope_is_older(
+                        view.session_epoch,
+                        view.world_generation,
+                        *session_epoch,
+                        *world_generation,
+                    )
+                }
+            }
+            _ => true,
+        };
+        if !apply_state {
+            continue;
+        }
         match event {
-            WrathFeedEvent::Phase(phase) => view.phase = Some(phase),
-            WrathFeedEvent::WorldTransfer { world_generation, map_id } => {
+            WrathFeedEvent::Phase { phase, .. } => view.phase = Some(*phase),
+            WrathFeedEvent::WorldTransfer { world_generation, map_id, .. } => {
                 // Same-frame teardown: old-scope entities are gone before Input runs. An intent
                 // admitted against the retired world can never be answered by the new one, so it
                 // becomes Unknown here and is never replayed.
@@ -4350,7 +4464,7 @@ fn wrath_net_drain(
             WrathFeedEvent::ExportSkipped(reason) => {
                 debug!("wrath export skipped: {reason}");
             }
-            WrathFeedEvent::SessionEnded(result) => {
+            WrathFeedEvent::SessionEnded { result, session_epoch, world_generation } => {
                 control.ended = true;
                 control.terminal_ready = true;
                 // The entry message may still be in the Bevy message queue; the view already
@@ -6343,7 +6457,11 @@ pub fn run_session_with_cancel(
     // The single native cast/channel authority for this session; it resolves each wire fact
     // exactly once and feeds both presentation mirrors and the WM export.
     let mut native = crate::wrath_native::NativeCastState::default();
-    feed.push_event(WrathFeedEvent::Phase(session.phase()));
+    feed.push_event(WrathFeedEvent::Phase {
+        phase: session.phase(),
+        session_epoch: session.epoch(),
+        world_generation: session.world_generation(),
+    });
     let started = std::time::Instant::now();
 
     let (mut world, seed) =
@@ -6748,7 +6866,13 @@ pub fn run_session_with_cancel(
     };
     session.start_session(guid); // re-begin with the real full GUID; phase resets to selection
     session.note_player_login();
-    feed.push_event(WrathFeedEvent::Phase(session.phase()));
+    feed.last_session_epoch.store(session.epoch(), Ordering::SeqCst);
+    feed.last_world_generation.store(session.world_generation(), Ordering::SeqCst);
+    feed.push_event(WrathFeedEvent::Phase {
+        phase: session.phase(),
+        session_epoch: session.epoch(),
+        world_generation: session.world_generation(),
+    });
     world.send(benilla_protocol_wrath::opcode::CMSG_PLAYER_LOGIN, &guid.to_le_bytes())?;
 
     let deadline = config
@@ -6761,6 +6885,8 @@ pub fn run_session_with_cancel(
     let mut logged_out = false;
     feed.publish_digest(build_digest(&session)); // initial state (character selection)
     while deadline.is_none_or(|deadline| std::time::Instant::now() < deadline) {
+        feed.last_session_epoch.store(session.epoch(), Ordering::SeqCst);
+        feed.last_world_generation.store(session.world_generation(), Ordering::SeqCst);
         if cancel.load(Ordering::SeqCst) {
             native.invalidate_scope();
             publisher.retire_all();
@@ -7093,7 +7219,11 @@ pub fn run_session_with_cancel(
         if logged_out {
             native.invalidate_scope();
             session.finish_session();
-            feed.push_event(WrathFeedEvent::Phase(session.phase()));
+            feed.push_event(WrathFeedEvent::Phase {
+        phase: session.phase(),
+        session_epoch: session.epoch(),
+        world_generation: session.world_generation(),
+    });
             publisher.retire_all();
             return Ok(());
         }
@@ -7129,7 +7259,7 @@ pub fn run_session_with_cancel(
                 &mut publisher.publisher,
                 &mut publisher.retiring,
             )?;
-            feed.push_event(WrathFeedEvent::from_session(event));
+            feed.push_event(WrathFeedEvent::from_session(event, session.epoch()));
         }
         // Near teleport: acknowledge the server's order counter after landing (packed GUID +
         // u32 flags + u32 time â€” both read and unused server-side).
@@ -7183,7 +7313,11 @@ pub fn run_session_with_cancel(
             }
         }
         if session.phase() != phase_before {
-            feed.push_event(WrathFeedEvent::Phase(session.phase()));
+            feed.push_event(WrathFeedEvent::Phase {
+        phase: session.phase(),
+        session_epoch: session.epoch(),
+        world_generation: session.world_generation(),
+    });
         }
     }
 
@@ -7193,7 +7327,11 @@ pub fn run_session_with_cancel(
         match world.recv() {
             Ok(p) if p.opcode == 0x04D => {
                 session.finish_session();
-                feed.push_event(WrathFeedEvent::Phase(session.phase()));
+                feed.push_event(WrathFeedEvent::Phase {
+        phase: session.phase(),
+        session_epoch: session.epoch(),
+        world_generation: session.world_generation(),
+    });
                 publisher.retire_all();
                 return Ok(());
             }

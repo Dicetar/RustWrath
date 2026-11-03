@@ -116,7 +116,13 @@ pub(crate) struct Bridge<'w, 's> {
     transports: Query<'w, 's, &'static crate::transport::Transport>,
 }
 
-fn on_login_edge(In(ev): In<SessionEvent>, mut e: Edges) {
+fn on_login_edge(
+    In(ev): In<SessionEvent>,
+    mut e: Edges,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
+) {
+    let trace_event = ev.clone();
     match ev {
         SessionEvent::LoginStage { stage } => login_stage(stage, &mut e.login_stages),
         SessionEvent::WorldAuthenticated {
@@ -165,9 +171,47 @@ fn on_login_edge(In(ev): In<SessionEvent>, mut e: Edges) {
         }
         _ => {}
     }
+    // Legacy-mode session milestones: Wrath mode records these in the shared dispatcher with
+    // tagged scope, so skip here to avoid duplicate events.
+    if view.is_none() {
+        if let Some(trace) = trace.as_ref() {
+            use crate::quest_trace::{DomainEvent as D, Stage};
+            let scope = None;
+            let stage = match trace_event {
+                SessionEvent::LoginStage { .. } => Some(Stage::DomainEvent {
+                    event: D::LoginProgress,
+                }),
+                SessionEvent::WorldAuthenticated { .. } => Some(Stage::DomainEvent {
+                    event: D::WorldAuthenticated,
+                }),
+                SessionEvent::RosterFailed { .. } => Some(Stage::DomainEvent {
+                    event: D::RosterFailed,
+                }),
+                SessionEvent::LoginQueued { .. } => Some(Stage::DomainEvent {
+                    event: D::LoginQueued,
+                }),
+                SessionEvent::LoginFailed { .. } => Some(Stage::DomainEvent {
+                    event: D::LoginFailed,
+                }),
+                SessionEvent::RealmList { .. } => Some(Stage::DomainEvent {
+                    event: D::RealmList,
+                }),
+                SessionEvent::CharacterLoginFailed { .. } => Some(Stage::DomainEvent {
+                    event: D::CharacterLoginFailed,
+                }),
+                SessionEvent::CharActionResult { .. } => Some(Stage::DomainEvent {
+                    event: D::CharacterAction,
+                }),
+                _ => None,
+            };
+            if let Some(stage) = stage {
+                trace.observe(scope, None, stage);
+            }
+        }
+    }
 }
 
-fn on_character_list(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge) {
+fn on_character_list(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge, trace: Option<Res<crate::quest_trace::Source>>, view: Option<Res<crate::wrath::WrathWorldView>>) {
     if let SessionEvent::CharacterList {
         characters,
         realm,
@@ -184,10 +228,18 @@ fn on_character_list(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge) {
             &mut b.status,
             &mut e.char_lists,
         );
+        if view.is_none() {
+            if let Some(trace) = trace.as_ref() {
+                use crate::quest_trace::{DomainEvent as D, Stage};
+                trace.observe(None, None, Stage::DomainEvent {
+                    event: D::Roster,
+                });
+            }
+        }
     }
 }
 
-fn on_connected(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge) {
+fn on_connected(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge, trace: Option<Res<crate::quest_trace::Source>>, view: Option<Res<crate::wrath::WrathWorldView>>) {
     if let SessionEvent::Connected {
         self_guid: guid,
         name,
@@ -208,6 +260,14 @@ fn on_connected(In(ev): In<SessionEvent>, mut e: Edges, mut b: Bridge) {
             &mut b.names,
             &mut e.entered_world,
         );
+        if view.is_none() {
+            if let Some(trace) = trace.as_ref() {
+                use crate::quest_trace::{DomainEvent as D, Stage};
+                trace.observe(None, None, Stage::DomainEvent {
+                    event: D::PlayerConnected,
+                });
+            }
+        }
     }
 }
 
@@ -242,6 +302,8 @@ fn on_disconnected(
     mut b: Bridge,
     mut released: ResMut<super::objects::Released>,
     view_log: Option<ResMut<crate::ui_unit::views::ViewLog>>,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
 ) {
     if let SessionEvent::Disconnected { reason, end } = ev {
         log_teardown(view_log, &b);
@@ -262,6 +324,14 @@ fn on_disconnected(
             &mut e.transfer,
             &mut e.disconnects,
         );
+        if view.is_none() {
+            if let Some(trace) = trace.as_ref() {
+                use crate::quest_trace::{DomainEvent as D, Stage};
+                trace.observe(None, None, Stage::DomainEvent {
+                    event: D::PlayerDisconnected,
+                });
+            }
+        }
     }
 }
 
@@ -312,6 +382,8 @@ fn on_worldport(
     mut released: ResMut<super::objects::Released>,
     view_log: Option<ResMut<crate::ui_unit::views::ViewLog>>,
     player: Option<Res<crate::player::Player>>,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
 ) {
     if let SessionEvent::Worldport {
         map_id,
@@ -350,16 +422,32 @@ fn on_worldport(
         );
         // Loading a new world frees the released objects with the live ones (`0x467700`).
         released.clear();
+        if view.is_none() {
+            if let Some(trace) = trace.as_ref() {
+                use crate::quest_trace::{DomainEvent as D, Stage};
+                trace.observe(None, None, Stage::DomainEvent {
+                    event: D::Worldport,
+                });
+            }
+        }
     }
 }
 
-fn on_transfer(In(ev): In<SessionEvent>, mut e: Edges) {
+fn on_transfer(In(ev): In<SessionEvent>, mut e: Edges, trace: Option<Res<crate::quest_trace::Source>>, view: Option<Res<crate::wrath::WrathWorldView>>) {
     match ev {
         SessionEvent::TransferPending {
             map_id,
             transport_entry,
             from_map,
-        } => transfer_pending(map_id, transport_entry, from_map, &mut e.transfer),
+        } => {
+            transfer_pending(map_id, transport_entry, from_map, &mut e.transfer);
+            if view.is_none() {
+                if let Some(trace) = trace.as_ref() {
+                    use crate::quest_trace::Stage;
+                    trace.observe(None, None, Stage::WorldTransfer);
+                }
+            }
+        }
         SessionEvent::TransferAborted { reason } => transfer_aborted(reason, &mut e.transfer),
         _ => {}
     }
