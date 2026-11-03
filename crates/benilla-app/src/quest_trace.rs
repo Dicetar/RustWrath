@@ -1139,6 +1139,23 @@ impl History {
             // when exactly one admitted count of that spell/scope is in the window; two rapid
             // same-spell casts deliberately stay unresolved rather than taking the newest.
             let effective_wire = wire_cast_count.or_else(|| {
+                // A local interaction's own admission is authoritative even when two casts of
+                // the same spell overlap; never guess by adjacency.
+                if let Some(wire) = self.entries.iter().find_map(|(_, prior)| {
+                    if prior.subject.interaction != event.subject.interaction {
+                        return None;
+                    }
+                    match prior.stage {
+                        Stage::Cast {
+                            wire_cast_count: Some(wire),
+                            edge: CastEdge::Admitted,
+                            ..
+                        } => Some(wire),
+                        _ => None,
+                    }
+                }) {
+                    return Some(wire);
+                }
                 let spell = spell_id?;
                 let mut counts: Vec<u32> = self
                     .entries
@@ -1491,19 +1508,48 @@ impl History {
         ) {
             return None;
         }
-        let (spell, local_wire) = self.entries.iter().find_map(|(_, prior)| {
+        let spell = self.entries.iter().find_map(|(_, prior)| {
             if prior.subject.interaction != event.subject.interaction {
                 return None;
             }
             match prior.stage {
                 Stage::Cast {
                     spell_id: Some(spell),
-                    wire_cast_count,
                     ..
-                } => Some((spell, wire_cast_count)),
+                } => Some(spell),
                 _ => None,
             }
         })?;
+        let local_wire = self
+            .entries
+            .iter()
+            .find_map(|(_, prior)| {
+                if prior.subject.interaction != event.subject.interaction {
+                    return None;
+                }
+                match prior.stage {
+                    Stage::Cast {
+                        wire_cast_count: Some(wire),
+                        edge: CastEdge::Admitted,
+                        ..
+                    } => Some(wire),
+                    _ => None,
+                }
+            })
+            .or_else(|| {
+                self.entries.iter().find_map(|(_, prior)| {
+                    if prior.subject.interaction != event.subject.interaction {
+                        return None;
+                    }
+                    match prior.stage {
+                        Stage::Cast {
+                            wire_cast_count: Some(wire),
+                            ..
+                        } => Some(wire),
+                        _ => None,
+                    }
+                })
+            });
         let native: Vec<&Event> = self
             .entries
             .iter()
