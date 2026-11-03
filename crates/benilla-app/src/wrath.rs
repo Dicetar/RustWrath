@@ -7790,6 +7790,7 @@ mod tests {
             enqueued_at: None,
             receipt: None,
             trace: None,
+            enforce_scope: false,
         }])));
         world.insert_resource(WrathInput(Arc::clone(&outbox)));
 
