@@ -115,6 +115,7 @@ pub struct Host {
     pending: Option<Loaded>,
     previous: VecDeque<Loaded>,
     rejection: Option<String>,
+    active_failure: Option<String>,
 }
 
 impl Host {
@@ -126,6 +127,7 @@ impl Host {
             pending: None,
             previous: VecDeque::new(),
             rejection: None,
+            active_failure: None,
         }
     }
 
@@ -184,6 +186,10 @@ impl Host {
     }
     pub fn take_rejection(&mut self) -> Option<String> {
         self.rejection.take()
+    }
+
+    pub fn take_active_failure(&mut self) -> Option<String> {
+        self.active_failure.take()
     }
 
     /// Only this host's digest-named artifacts are collected. A publisher uses the same lock;
@@ -288,13 +294,22 @@ impl Host {
                 }
             }
         }
-        match &self.active {
-            Some(module) => {
-                module.evaluate(bones, rigs, seconds, output)?;
-                Ok(true)
+        while let Some(module) = self.active.take() {
+            match module.evaluate(bones, rigs, seconds, output) {
+                Ok(()) => {
+                    self.active = Some(module);
+                    return Ok(true);
+                }
+                Err(error) => {
+                    self.active_failure = Some(format!(
+                        "active module {} failed; restoring a previous module: {error:#}",
+                        module.revision
+                    ));
+                    self.active = self.previous.pop_back();
+                }
             }
-            None => Ok(false),
         }
+        Ok(false)
     }
 }
 

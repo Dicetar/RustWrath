@@ -231,6 +231,16 @@ fn apply_pose(
         runtime.candidate_attempt = None;
         report(runtime, error);
     }
+    let active_failed = if let Some(error) = runtime.host.take_active_failure() {
+        events.write(HotpatchEvent::FrameFailed {
+            attempt: runtime.active_attempt.take(),
+            reason: HotpatchReason::Frame,
+        });
+        report(runtime, error);
+        true
+    } else {
+        false
+    };
     match result {
         Ok(true) => {
             for (span, entity) in runtime.spans.iter().zip(&runtime.entities) {
@@ -247,7 +257,7 @@ fn apply_pose(
                 rig.pose_dirty = true;
             }
             runtime.restore_pending = true;
-            runtime.refresh = false;
+            runtime.refresh = active_failed;
             let revision = runtime.host.revision().map(str::to_owned);
             let active_digest = runtime.host.digest().map(str::to_owned);
             if revision != runtime.reported_revision || active_digest != runtime.reported_digest {
@@ -280,7 +290,16 @@ fn apply_pose(
                 runtime.last_error = None;
             }
         }
-        Ok(false) => {}
+        Ok(false) => {
+            if active_failed {
+                runtime.reported_revision = None;
+                runtime.reported_digest = None;
+                runtime.refresh = true;
+                for (_, mut rig, _) in &mut rigs {
+                    rig.pose_dirty = true;
+                }
+            }
+        }
         Err(error) => {
             runtime.refresh = false;
             let message = format!("pose frame unchanged: {error:#}");
