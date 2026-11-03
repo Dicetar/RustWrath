@@ -3538,6 +3538,7 @@ impl History {
                         format!("attempt {attempt}: {:?}{earlier}", event)
                     }
                     None => format!("attempt {attempt}: no terminal event retained (ambiguous/unresolved)"),
+                    Some(_) => format!("attempt {attempt}: unexpected terminal evidence (unresolved)"),
                 };
                 out.push(line);
                 if out.len() >= 8 {
