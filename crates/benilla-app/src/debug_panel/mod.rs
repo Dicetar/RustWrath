@@ -359,6 +359,9 @@ fn debug_panel_ui(
                             }
                             ui.label(history.export_status());
                             let snapshot = history.inspector_snapshot();
+                            for line in &snapshot.retention {
+                                ui.label(line);
+                            }
                             for line in &snapshot.incidents {
                                 ui.label(line);
                             }

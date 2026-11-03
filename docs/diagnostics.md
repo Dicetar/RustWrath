@@ -61,10 +61,27 @@ produced by source are listed under `not_yet_instrumented`. Every vector reports
 `absence_not_proof: true`; zero retained observations is not a healthy reading.
 
 Per-vector producer drops are attributed through `vector_for_stage` at ingress time.
-The export and inspector expose `producer_drops`, `sampled_out`, `sampling_interval`,
+Retained-ring evictions are attributed through the same registry at the actual `pop_front`
+eviction point; an event that cannot be classified is counted under `unclassified`, so the
+per-vector retained evictions sum to the global `evicted` counter. The export and inspector
+expose `producer_drops`, `retained_evictions`, `sampled_out`, `sampling_interval`,
 `sampling_denominator`, `retained_observations`, `latest_retained_sequence`, and
 `limiting_factors` (`producer_drop`, `retained_eviction`, `source_specific_loss`,
-`sampling`, `uninstrumented`, plus `event_driven_reporting`).
+`sampling`, `uninstrumented`, plus `event_driven_reporting`). `retained_eviction` appears
+only for a vector that actually lost retained observations, never merely because the global
+eviction counter is nonzero. Coverage lists those vectors under
+`paths_with_retained_evictions`.
+
+Periodic summaries are bounded and suppressed when they carry no evidence. Asset windows are
+emitted for a real failure or missed-event burst (coalesced to at most one window per second)
+and otherwise only as a 30-second zero-value heartbeat, so a healthy asset vector still has a
+denominator without flooding the ring. Frame intervals are aggregated over five seconds and
+carry the measured `window_ms`; replica revision changes are coalesced to the latest revision
+at most once per five seconds.
+Scene, movement, audio and script observations remain change-driven. The retention summary
+reports the retained sequence range, capacity, global loss counters, nonzero per-vector
+evictions, and the cadence of these producers; zero retained observations is never proof
+that no event occurred.
 
 Object-update sampling reports seen/sampled/sampled-out counts with interval 64;
 `sampling_denominator` is the total packets seen, so the rate is sampled/denominator.
