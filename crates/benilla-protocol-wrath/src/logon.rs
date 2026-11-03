@@ -2,7 +2,8 @@
 //! connection to the authserver. The SRP6 math is benilla-srp's, already pinned to the published
 //! WoW vectors; this module only supplies the 3.3.5 wire shapes.
 
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use benilla_srp::{NormalizedString, PublicKey, SrpClientChallenge};
@@ -14,14 +15,29 @@ pub struct Logon {
     pub session_key: [u8; 40],
     pub account: String,
     pub realms: Vec<RealmInfo>,
+    stream: TcpStream,
+}
+
+impl Logon {
+    pub fn refresh_realms(&mut self) -> Result<()> {
+        auth::write_realm_list_request(&mut self.stream)?;
+        self.realms = auth::read_realm_list(&mut self.stream)?;
+        Ok(())
+    }
 }
 
 /// Authenticate `account`/`password` against the authserver at `addr` (`host:port`).
 pub fn logon(addr: &str, account: &str, password: &str) -> Result<Logon> {
-    let mut stream = TcpStream::connect(addr).with_context(|| format!("connecting to {addr}"))?;
+    let timeout = Duration::from_secs(10);
+    let addresses = addr.to_socket_addrs().context("resolving auth server")?;
+    let mut stream = addresses.map(|a| TcpStream::connect_timeout(&a, timeout))
+        .find_map(Result::ok).with_context(|| format!("connecting to {addr}"))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
     let username_n = NormalizedString::new(account).context("normalizing account name")?;
     let account_upper = username_n.as_ref().to_string();
-    let password_n = NormalizedString::new(password).context("normalizing password")?;
+    let password_n = NormalizedString::new(password)
+        .map_err(|_| anyhow::anyhow!("password must be 1..=16 non-control ASCII characters"))?;
 
     auth::write_logon_challenge(&mut stream, username_n.as_ref())
         .context("sending logon challenge")?;
@@ -50,5 +66,5 @@ pub fn logon(addr: &str, account: &str, password: &str) -> Result<Logon> {
 
     auth::write_realm_list_request(&mut stream).context("requesting realm list")?;
     let realms = auth::read_realm_list(&mut stream).context("reading realm list")?;
-    Ok(Logon { session_key, account: account_upper, realms })
+    Ok(Logon { session_key, account: account_upper, realms, stream })
 }

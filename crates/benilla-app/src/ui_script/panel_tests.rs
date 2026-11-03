@@ -228,11 +228,13 @@ fn shipped_gossip_frame_renders_quest_rows_above_options() {
                 title: "Report to Goldshire".into(),
                 level: 5,
                 active: true,
+                complete: false,
             },
             GossipQuestRow {
                 title: "A Threat Within".into(),
                 level: 7,
                 active: false,
+                complete: false,
             },
         ],
         options: vec![GossipOptionView {
@@ -517,6 +519,7 @@ fn shipped_panel_slot_replaces_gossip_with_merchant() {
     // The vendor replaces gossip through the panel manager alone; no GOSSIP_CLOSED fires.
     s.set_merchant(Some(MerchantState {
         items: vec![MerchantItem {
+                extended_cost: None,
             name: Some("Refreshing Spring Water".into()),
             texture: Some("Interface\\Icons\\INV_Drink_18".into()),
             price: 25,
@@ -666,6 +669,7 @@ fn shipped_panel_slot_pushable_promotes_to_center() {
     // The center slot is TOPLEFT 384,-104 (`UIParent.lua:880`).
     s.set_merchant(Some(MerchantState {
         items: vec![MerchantItem {
+                extended_cost: None,
             name: Some("Refreshing Spring Water".into()),
             texture: Some("Interface\\Icons\\INV_Drink_18".into()),
             price: 25,

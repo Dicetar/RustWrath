@@ -23,8 +23,8 @@ pub const DEFAULT_PRODUCER_HEALTH_TTL: Duration = Duration::from_secs(15);
 const MAX_RESULTS_PER_TICK: usize = 32;
 
 /// The two ends of the same loopback seam for typed player actions. The worker forwards
-/// `requests` to the application and writes `results` back; both are bounded by the WM broker and
-/// the client adapter, never by an invented second bus.
+/// `requests` to the application and writes `results` back. The Wrath adapter currently creates
+/// unbounded channels here; broker limits and per-tick drains do not bound their retained backlog.
 #[derive(Clone)]
 pub struct ActionBridge {
     pub requests: crossbeam_channel::Sender<ActionRequest>,

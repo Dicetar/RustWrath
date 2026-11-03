@@ -168,13 +168,13 @@ impl PetFoodNames {
     }
 }
 
-fn family_schema() -> Schema {
+fn family_schema(fields: usize, name_field: usize, icon_field: usize) -> Schema {
     let mut s = Schema::new("CreatureFamily");
-    for i in 0..FAMILY_FIELDS {
+    for i in 0..fields {
         let ty = match i {
             // minScale and maxScale, the record's only floats.
             1 | 3 => FieldType::Float32,
-            FAMILY_NAME_FIELD | FAMILY_ICON_FIELD => FieldType::String,
+            i if i == name_field || i == icon_field => FieldType::String,
             // The other locale slots, all 0 in the shipped file, read as dwords.
             _ => FieldType::UInt32,
         };
@@ -183,9 +183,9 @@ fn family_schema() -> Schema {
     s
 }
 
-fn food_schema() -> Schema {
+fn food_schema(fields: usize) -> Schema {
     let mut s = Schema::new("ItemPetFood");
-    for i in 0..FOOD_FIELDS {
+    for i in 0..fields {
         let ty = if i == FOOD_NAME_FIELD {
             FieldType::String
         } else {
@@ -201,13 +201,22 @@ pub fn load_creature_families(chain: &mut Chain) -> Result<CreatureFamilies> {
     let bytes = chain
         .read_file(CREATURE_FAMILY)
         .with_context(|| format!("reading {CREATURE_FAMILY}"))?;
-    let rs = parse(&bytes, family_schema(), "CreatureFamily.dbc")?;
+    let (fields, name_field, icon_field) = if crate::dbc::field_count(&bytes) == Some(28) {
+        (28, 10, 27)
+    } else {
+        (FAMILY_FIELDS, FAMILY_NAME_FIELD, FAMILY_ICON_FIELD)
+    };
+    let rs = parse(
+        &bytes,
+        family_schema(fields, name_field, icon_field),
+        "CreatureFamily.dbc",
+    )?;
     let locale = chain.locale();
     let mut by_id = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
         // A nameless row is dropped: `UnitCreatureFamily` answers a word or nil, never "".
-        let Some(name) = loc_str(&rs, r, FAMILY_NAME_FIELD, locale).filter(|n| !n.is_empty())
+        let Some(name) = loc_str(&rs, r, name_field, locale).filter(|n| !n.is_empty())
         else {
             continue;
         };
@@ -215,7 +224,7 @@ pub fn load_creature_families(chain: &mut Chain) -> Result<CreatureFamilies> {
             id,
             CreatureFamily {
                 name,
-                icon: str_at(&rs, r, FAMILY_ICON_FIELD).unwrap_or_default(),
+                icon: str_at(&rs, r, icon_field).unwrap_or_default(),
                 pet_food_mask: u32_at(r, FAMILY_FOOD_MASK_FIELD).unwrap_or(0),
                 min_scale: f32_at(r, FAMILY_MIN_SCALE_FIELD).unwrap_or(1.0),
                 min_scale_level: u32_at(r, FAMILY_MIN_SCALE_LEVEL_FIELD).unwrap_or(0),
@@ -233,7 +242,12 @@ pub fn load_pet_food_names(chain: &mut Chain) -> Result<PetFoodNames> {
     let bytes = chain
         .read_file(ITEM_PET_FOOD)
         .with_context(|| format!("reading {ITEM_PET_FOOD}"))?;
-    let rs = parse(&bytes, food_schema(), "ItemPetFood.dbc")?;
+    let fields = if crate::dbc::field_count(&bytes) == Some(18) {
+        18
+    } else {
+        FOOD_FIELDS
+    };
+    let rs = parse(&bytes, food_schema(fields), "ItemPetFood.dbc")?;
     let locale = chain.locale();
     let mut by_id = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {

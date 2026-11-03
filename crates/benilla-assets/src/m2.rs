@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use benilla_formats::{
-    hand_grip_finger_poses, parse_m2_animations, parse_m2_attachments, parse_m2_bounds,
+    hand_grip_finger_poses, parse_m2_animations_with_external, parse_m2_attachments, parse_m2_bounds,
     parse_m2_collision_hull, parse_m2_global_sequence_bones, parse_m2_lights,
     parse_m2_particle_emitters, parse_m2_playable_animation_lookup, parse_m2_portrait_camera,
     parse_m2_render_submeshes, parse_m2_render_submeshes_with_skin, parse_m2_skeleton,
@@ -227,6 +227,25 @@ impl AssetLoader for M2ModelLoader {
         reader.read_to_end(&mut bytes).await?;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
 
+        // Read siblings through the same Bevy source as the model, recording loader dependencies.
+        // 12340 M2Shared::MakeAnimFileName (0x00835A20): stem + four-digit ID + variation.
+        let model_path = ctx.path().path().to_path_buf();
+        let stem = model_path.file_stem().unwrap_or_default().to_string_lossy();
+        let mut external = std::collections::HashMap::new();
+        let mut missing = 0;
+        for (id, variation) in benilla_formats::m2_external_animation_ids(&bytes) {
+            let sibling = model_path.with_file_name(format!("{stem}{id:04}-{variation:02}.anim"));
+            let source = ctx.path().source().clone_owned();
+            let path = bevy::asset::AssetPath::from(sibling).with_source(source);
+            match ctx.read_asset_bytes(path).await {
+                Ok(data) => { external.insert((id, variation), data); }
+                Err(_) => { missing += 1; }
+            }
+        }
+        if missing != 0 {
+            warn!("{}: {missing} external animations unavailable; those sequences are omitted", ctx.path());
+        }
+
         // The textures open as the model did (`0x71da64` pushes the model's own flag).
         let source = match ctx.path().source() {
             bevy::asset::io::AssetSourceId::Name(name) if &**name == crate::MPQ_LOOSE_SOURCE => {
@@ -237,13 +256,14 @@ impl AssetLoader for M2ModelLoader {
         // Creature skins fill at the spawn site, so no skin directory or list is passed. Wrath
         // models store geometry in a sibling `Foo00.skin`; the actor route uses LOD 0.
         let subs = if bytes.get(4..8) == Some(&264u32.to_le_bytes()) {
-            let path = ctx.path().path();
-            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let path = ctx.path().path().to_path_buf();
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
             let skin_path = path.with_file_name(format!("{stem}00.skin"));
-            let skin_bytes = crate::profile_source::read_profile_sync(source, &skin_path)
-                .ok_or_else(|| {
-                    std::io::Error::other(format!("missing companion skin {}", skin_path.display()))
-                })?;
+            let source = ctx.path().source().clone_owned();
+            let skin_asset = bevy::asset::AssetPath::from(skin_path.clone()).with_source(source);
+            let skin_bytes = ctx.read_asset_bytes(skin_asset).await.map_err(|e| {
+                std::io::Error::other(format!("reading companion skin {}: {e}", skin_path.display()))
+            })?;
             let skin = benilla_formats::parse_external_skin(&skin_bytes)
                 .map_err(|e| std::io::Error::other(format!("parsing skin: {e}")))?;
             parse_m2_render_submeshes_with_skin(&bytes, "", &[], Some(&skin)).map_err(to_io)?
@@ -425,7 +445,9 @@ impl AssetLoader for M2ModelLoader {
         );
         let pivots = skeleton_pivots(&skeleton_raw);
 
-        let sequences = parse_m2_animations(&bytes);
+        let sequences = parse_m2_animations_with_external(&bytes, |id, variation| {
+            external.get(&(id, variation)).cloned()
+        });
         let first_seq_span = sequences.first().map(|a| a.duration).filter(|d| *d > 0.0);
         let sequence_infos: Vec<M2SequenceInfo> = sequences
             .iter()

@@ -2,6 +2,12 @@
 
 ## Project B fork reference selection
 
+**Fork precedence:** [AGENTS.md](../AGENTS.md) and the [Project B workflow](agents/workflow.md)
+define the current target, coordination and authorized execution scope. The donor rules below
+describe the inherited 1.12 implementation and release process. Apply fidelity rules to the
+selected target; do not infer a full workspace verification requirement for routine repairs.
+The workflow's bounded checks and human-driven combat restrictions govern this checkout.
+
 For this repository's `wotlk` retarget, the target is 3.3.5a build 12340. Consult the preserved
 12340 decompilation before designing or repairing a target-specific mechanism:
 `D:/Projects/wowdecomp-reference`, pinned at `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`.
@@ -84,6 +90,11 @@ crate of its own or a fork, and benilla opens a piece of itself to such a crate 
   history, no stories.
 
 ## Gates
+
+The following is the donor's release-gate catalog, not a per-turn command list. Run only the
+checks authorized for the current task. A documentation-only change needs no Cargo/Clippy,
+client launch or server interaction. A targeted repair uses the bounded workflow; reserve
+full release gates for an explicitly assigned release/verification task. Report unrun checks.
 
 - **The land gates**: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
   -- -D warnings`, the workspace tests (`scripts/unit-tests.sh`: cargo-nextest where it is

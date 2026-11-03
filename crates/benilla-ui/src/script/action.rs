@@ -208,6 +208,8 @@ pub struct ActionUse {
     /// `UseAction`'s third argument, which only the self-cast bindings (`SELFACTIONBUTTON1`-`12`)
     /// pass, through `ActionButtonUp(id, 1)`.
     pub on_self: bool,
+    /// The Wrath unit argument resolved when the call ran; absent means the normal selection.
+    pub target_guid: Option<u64>,
     /// The item locks as the call read them. An item slot's use leg tests its copy's lock inside
     /// the call (`0x4e607b` → `0x5d8d32`), so the app, which finds the copy, tests it against
     /// these and not the locks a later call in the frame took or released.
@@ -399,6 +401,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // GetActionInfo(slot): the standard action-bar type and id (`"spell"`, `"item"` or `"macro"`).
+    // The client's action slot carries no spellbook subtype, so only the two stock consumers that
+    // need it are served here; an empty slot returns nothing and a non-number raises.
+    g.set(
+        "GetActionInfo",
+        lua.create_function(|lua, action: Value| {
+            let action = binding_abi::index_arg32(lua, action, "Usage: GetActionInfo(slot)")?;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let mut out = MultiValue::new();
+            if let Some(slot) = model.actions.get(&action) {
+                let (kind, id) = match macro_slot_id(slot.kind, slot.action) {
+                    Some(id) => ("macro", id),
+                    None if slot.kind == ACTION_KIND_ITEM => ("item", slot.action),
+                    None => ("spell", slot.action),
+                };
+                out.push_back(Value::String(lua.create_string(kind)?));
+                out.push_back(Value::Integer(i64::from(id)));
+            }
+            Ok(out)
+        })?,
+    )?;
+
     // GetActionText(slot): the macro's name, else nil. `0x4e7050` tests only
     // `raw & 0xf0000000 == 0x40000000`, so spell, item and empty slots all answer nil; a missing or
     // non-number slot raises `Usage: GetActionText(slot)` (`0x84bff4`); the slot is 1-based
@@ -428,10 +452,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // UseAction(action [, checkCursor [, onSelf]]): a nonzero `checkCursor` while the cursor holds
-    // a payload places it, as `PlaceAction` does; otherwise the press is queued with `onSelf`, the
-    // self-cast flag. FrameXML passes 1 from a click and 0 from a keybind; the binding's own test
-    // of it is untraced, and place-on-click is the reading that split implies.
+    // UseAction(action [, checkCursor [, onSelf]]) in 1.12 (`0x4e7140`), and
+    // UseAction(slot [, target [, button]]) in 12340 (`0x005AC000` -> `0x005ABBC0`).
     g.set(
         "UseAction",
         lua.create_function(|lua, (action, rest): (Value, MultiValue)| {
@@ -442,11 +464,42 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 action,
                 "Usage: UseAction(slot, [, checkCursor] [, onSelf])",
             )?;
-            // Both flags go through `GetBoolOrDefault` (`0x4e717e`, `0x4e716f`), default 0.
-            let check_cursor = bool_or_default(rest.front(), false);
-            let on_self = bool_or_default(rest.get(1), false);
             let may_cast = protected::gate(lua, Tag::CAST);
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let wrath = model.is_wrath();
+            let target_token = if wrath {
+                lua.coerce_string(rest.front().cloned().unwrap_or(Value::Nil))?
+                    .map(|value| value.to_string_lossy())
+            } else { None };
+            let target_guid = match target_token.as_deref() {
+                Some(token) => match model.unit(token).filter(|unit| unit.exists && unit.guid != 0) {
+                    Some(unit) => Some(unit.guid),
+                    None => return Ok(()),
+                },
+                None => None,
+            };
+            let (check_cursor, on_self) = if wrath {
+                // 12340 `Script_UseAction` (`0x005AC000`) & `CGActionBar::UseAction` (`0x005ABBC0`):
+                // arg 2 is the optional unit token (`"player"`, `"target"`, ...) and arg 3 is the
+                // mouse button; `button != nil` (from a click, not a keybind) places a held cursor
+                // payload unless the slot is a possession slot (`121..=132`).
+                let clicked = !matches!(rest.get(1), None | Some(Value::Nil));
+                let check_cursor =
+                    (clicked || !model.protected.events().binding) && !(121..=132).contains(&action);
+                let on_self = match rest.front() {
+                    Some(Value::String(s)) => s
+                        .to_str()
+                        .is_ok_and(|u| u.eq_ignore_ascii_case("player")),
+                    _ => false,
+                };
+                (check_cursor, on_self)
+            } else {
+                // Both flags go through `GetBoolOrDefault` (`0x4e717e`, `0x4e716f`), default 0.
+                (
+                    bool_or_default(rest.front(), false),
+                    bool_or_default(rest.get(1), false),
+                )
+            };
             if check_cursor && model.cursor.is_some() {
                 drop(model);
                 super::cursor::place_action(lua, action)?;
@@ -458,6 +511,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     super::ScriptCall::UseAction(ActionUse {
                         action,
                         on_self,
+                        target_guid,
                         item_locks,
                         may_cast,
                     }),
@@ -487,6 +541,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(i64::from(model.bonus_bar_offset))
         })?,
+    )?;
+
+    // GetMultiCastBarOffset(): the multi-cast bar's page offset. No multicast bar is installed,
+    // so 0 keeps the stock MultiCastActionButtons on the default page instead of paging on nil
+    // (`ActionButton.lua:146`).
+    g.set(
+        "GetMultiCastBarOffset",
+        lua.create_function(|_, ()| Ok(0i64))?,
     )?;
 
     // ChangeActionBarPage(): fires `ACTIONBAR_PAGE_CHANGED` synchronously and returns nothing
@@ -742,6 +804,46 @@ mod tests {
             s.eval::<String>("return GetActionText(1)").unwrap(),
             "Charge"
         );
+    }
+
+    #[test]
+    fn get_action_info_reads_the_slot_kind_and_id() {
+        let mut s = UiScript::new().unwrap();
+        s.keep_calls();
+        let slot = |kind, action| ActionSlot {
+            kind,
+            action,
+            ..Default::default()
+        };
+        s.set_action(1, Some(slot(super::ACTION_KIND_SPELL, 133)));
+        s.set_action(2, Some(slot(super::ACTION_KIND_ITEM, 117)));
+        s.set_action(3, Some(slot(super::ACTION_KIND_MACRO, 5)));
+        assert_eq!(
+            s.eval::<(String, i64)>("return GetActionInfo(1)").unwrap(),
+            ("spell".into(), 133)
+        );
+        assert_eq!(
+            s.eval::<(String, i64)>("return GetActionInfo(2)").unwrap(),
+            ("item".into(), 117)
+        );
+        assert_eq!(
+            s.eval::<(String, i64)>("return GetActionInfo(3)").unwrap(),
+            ("macro".into(), 5)
+        );
+        assert_eq!(
+            s.eval::<i64>("return table.getn({GetActionInfo(9)})")
+                .unwrap(),
+            0,
+            "an empty slot returns nothing"
+        );
+        let err = s.run("GetActionInfo()").unwrap_err().to_string();
+        assert!(err.contains("Usage: GetActionInfo(slot)"), "{err}");
+    }
+
+    #[test]
+    fn get_multi_cast_bar_offset_is_zero_without_a_multicast_bar() {
+        let s = UiScript::new().unwrap();
+        assert_eq!(s.eval::<i64>("return GetMultiCastBarOffset()").unwrap(), 0);
     }
 
     /// `GetActionAutocast` answers a pet spell's two bits only for a macro bound out of the pet's

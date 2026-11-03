@@ -441,6 +441,18 @@ impl SessionState {
                 changed |= self.world.apply_movement(guid, snapshot);
                 events.push(ChangeEvent::Moved { guid });
             }
+            opcode::SMSG_MONSTER_MOVE => {
+                if self.phase != Phase::Loading {
+                    if let Ok(Some(crate::gameplay::ServerEvent::MonsterMove(mv))) =
+                        crate::gameplay::decode_server(op, payload)
+                    {
+                        if self.world.apply_monster_move(&mv) {
+                            changed = true;
+                            events.push(ChangeEvent::Moved { guid: mv.guid });
+                        }
+                    }
+                }
+            }
             opcode::SMSG_DESTROY_OBJECT => {
                 // `Object.cpp:278-286`: full u64 GUID, u8 on-death flag.
                 let bytes: [u8; 8] = payload
@@ -538,7 +550,7 @@ impl SessionState {
     /// driver may retry a later export when state has moved on.
     pub fn export(
         &mut self,
-        exported_at_unix_ms: i64,
+        _exported_at_unix_ms: i64,
         client_uptime_ms: u64,
     ) -> Result<Option<SelfObservation>> {
         // A newer state always supersedes a retained snapshot (latest-only coalescing).

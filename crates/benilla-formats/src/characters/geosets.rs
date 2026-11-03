@@ -17,28 +17,45 @@ const REGION_BASES: [u16; 16] = [
     1, 101, 201, 301, 401, 501, 601, 702, 801, 901, 1001, 1101, 1201, 1301, 1401, 1501,
 ];
 
-/// The geosets a character shows: the selector's picks, plus every ID above 1700. `0x477520` first
-/// disables only 0..=1700 (`0x6a4`, through `0x7110d0`) and then enables its picks, and a model's
-/// submeshes start visible (`0x70ebd0` fills their flags with 1), so a higher ID stays shown.
+/// The geosets a character shows: the selector's picks, plus every ID above the client's managed
+/// range. `0x477520` disables only 0..=1700 on 1.12, while 12340's `GeosRenderPrep`
+/// (`0x4ED900`) disables 0..=2000 (`SetGeometryVisible(0, 2000, 0)`), then enables its picks; a
+/// model's submeshes start visible, so a higher ID stays shown. 3.3.5a adds the facial-jewelry
+/// (1601), eye-effect (1701) and belt (1801) groups inside that range, which must be selected
+/// explicitly rather than blanket-visible.
 #[derive(Debug)]
 pub struct VisibleGeosets {
     selected: Vec<u16>,
+    /// The highest id the client hides before applying its picks: 1700 on 1.12, 2000 on 12340.
+    managed_max: u16,
 }
 
 impl VisibleGeosets {
     /// Whether a model submesh survives the character compositor's geoset selection.
     pub fn contains(&self, geoset_id: &u16) -> bool {
-        *geoset_id > 1700 || self.selected.contains(geoset_id)
+        *geoset_id > self.managed_max || self.selected.contains(geoset_id)
     }
 }
+
+/// The geoset group layout of the client whose model is being drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GeosetVersion {
+    /// 1.12.1: 16 region bases, group 7 ear base 702, everything above 1700 unmanaged.
+    Vanilla112,
+    /// 3.3.5a build 12340: adds facial jewelry (1601), eye effects (1701) and a belt (1801);
+    /// everything above 2000 unmanaged.
+    Wrath335,
+}
+
 
 /// The customization → geoset tables, resolving an appearance to the set of visible geosets.
 pub struct CharacterGeosets {
     /// (race, sex, hairStyle) → hair `GeosetID` (group 0).
     hair: HashMap<(u8, u8, u8), u32>,
-    /// (race, sex, facialHair) → three geoset variations in file order, for groups 1, 3, 2
-    /// (`0x478660`).
-    facial: HashMap<(u8, u8, u8), [u32; 3]>,
+    /// (race, sex, facialHair) → five geoset variations in file order, for groups 1, 3, 2 and,
+    /// on 12340, facial jewelry (1600) and eye effects (1700) (`0x478660`). 1.12 rows carry the
+    /// last two as zero.
+    facial: HashMap<(u8, u8, u8), [u32; 5]>,
     /// HelmetGeosetVisData row id → five race bitmasks (`0x4799a0`): bit `1 << race` forces a hair,
     /// facial-hair or ear slot back to its group base under a helm.
     helmet_vis: HashMap<u32, [u32; 5]>,
@@ -58,12 +75,17 @@ pub struct EquipGeosets {
     /// Branch B6's gate `[cc+0xc]`: the tabard designer is open (setter `0x5e07fb`), so the body
     /// wears a previewable tabard over an empty tabard slot.
     pub tabard_preview: bool,
+    /// 12340 `GeosRenderPrep` (`0x4ED900`): show eye effect 1703 instead of the facial style's
+    /// `1700 + geoset[4]`. True for class 6 (Death Knight) or a face whose `CharSections` flags
+    /// carry `0x4`; the caller supplies it.
+    pub eye_glow: bool,
 }
 
+
 impl CharacterGeosets {
-    /// The geosets (`skinSectionId`s) this appearance draws, sorted and deduplicated: the naked
-    /// set, then the eight equipment branches B1–B8 of `0x477520`. Use
-    /// [`VisibleGeosets::contains`] to retain unmanaged IDs above 1700.
+    /// The 1.12 geosets (`skinSectionId`s) this appearance draws, sorted and deduplicated: the
+    /// naked set, then the eight equipment branches B1–B8 of `0x477520`. Kept for the donor path
+    /// and its tests; a 3.3.5a model uses [`Self::visible_geosets_for`].
     pub fn visible_geosets(
         &self,
         race: u8,
@@ -72,6 +94,31 @@ impl CharacterGeosets {
         facial_hair: u8,
         equip: &EquipGeosets,
     ) -> VisibleGeosets {
+        self.visible_geosets_for(
+            GeosetVersion::Vanilla112,
+            race,
+            sex,
+            hair_style,
+            facial_hair,
+            equip,
+        )
+    }
+
+    /// The geosets this appearance draws on `version`'s group layout. 1.12 keeps its 16 bases and
+    /// the >1700 rule; 12340 adds the facial-jewelry, eye-effect and belt groups (`ComponentData`
+    /// ctors: 1601, 1701, 1801) and hides through 2000. The eye group is the facial style's
+    /// `1700 + geoset[4]`, or 1703 when [`EquipGeosets::eye_glow`]; a belt item's
+    /// `geosetGroup[0]` replaces the 1801 base (`0x4ED900`).
+    pub fn visible_geosets_for(
+        &self,
+        version: GeosetVersion,
+        race: u8,
+        sex: u8,
+        hair_style: u8,
+        facial_hair: u8,
+        equip: &EquipGeosets,
+    ) -> VisibleGeosets {
+        let wrath = version == GeosetVersion::Wrath335;
         // The naked set: the region bases and geoset 0, the body.
         let mut set = REGION_BASES.to_vec();
         set.push(0);
@@ -80,11 +127,14 @@ impl CharacterGeosets {
             set[0] = g.max(1) as u16;
         }
         // Facial hair: `0x478660` adds 100/300/200 to the row's fields; no row keeps the bases.
-        if let Some(&[a, b, c]) = self.facial.get(&(race, sex, facial_hair)) {
+        // 12340's row also carries facial jewelry (col 6) and eye effects (col 7).
+        let facial = self.facial.get(&(race, sex, facial_hair));
+        if let Some(&[a, b, c, _, _]) = facial {
             set[1] = (a + 100) as u16;
             set[3] = (b + 300) as u16;
             set[2] = (c + 200) as u16;
         }
+
         // A helm's vis row (`0x4799a0`) forces slots back to their bases, the ears to 701, after
         // the customization; its slots {0,1,2,3,7} are disjoint from every equipment branch.
         if let Some(rows) = equip.helm_vis {
@@ -98,6 +148,20 @@ impl CharacterGeosets {
                     }
                 }
             }
+        }
+        if wrath {
+            // `ComponentData` ctor bases: facial jewelry 1601, eye effects 1701, belt 1801. The
+            // facial style replaces the first two with `1600 + geoset[3]` / `1700 + geoset[4]`
+            // (`0x478660`); `GeosRenderPrep` (`0x4ED900`) forces 1703 for a Death Knight or a
+            // face whose flags carry 0x4.
+            let jewelry = facial.map_or(1601, |v| (1600 + v[3]) as u16);
+            let mut eye = facial.map_or(1701, |v| (1700 + v[4]) as u16);
+            if equip.eye_glow {
+                eye = 1703;
+            }
+            set.push(jewelry);
+            set.push(eye);
+            set.push(1801);
         }
         // The equipment branches; `g(slot, sub)` is a non-zero geosetGroup, slots 0 shirt, 1 chest,
         // 2 belt, 3 pants, 4 boots, 5 wrist, 6 gloves, 7 tabard.
@@ -171,10 +235,21 @@ impl CharacterGeosets {
             disable(&mut set, 1500, 1599);
             set.push(1501 + v as u16);
         }
+        // 12340's belt branch (`0x4ED900`): an equipped belt's geosetGroup[0] replaces the 1801
+        // base. The base is already selected; hide the whole group first, as the reference does.
+        if wrath {
+            if let Some(v) = g(2, 0) {
+                disable(&mut set, 1800, 1899);
+                set.push(1801 + v as u16);
+            }
+        }
         // The client sets a flag per submesh (`0x7110d0`), so a repeated enable is a no-op there.
         set.sort_unstable();
         set.dedup();
-        VisibleGeosets { selected: set }
+        VisibleGeosets {
+            selected: set,
+            managed_max: if wrath { 2000 } else { 1700 },
+        }
     }
 
     /// Load the customization DBCs from the patch chain. A repeated `(race, sex, variation)` key
@@ -270,7 +345,8 @@ pub(crate) fn helmet_vis_schema() -> Schema {
 }
 
 /// CharacterFacialHairStyles.dbc: no ID column. 1.12 ships nine fields (three unused slots before
-/// the geosets); 12340 ships eight, the geosets directly after the variation.
+/// the geosets); 12340 ships eight, the geosets directly after the variation. 12340's last two
+/// geosets are facial jewelry (added to 1600) and eye effects (added to 1700).
 pub(crate) fn char_facial_hair_schema_for(wrath: bool) -> Schema {
     let names: &[&str] = if wrath {
         &[
@@ -280,8 +356,8 @@ pub(crate) fn char_facial_hair_schema_for(wrath: bool) -> Schema {
             "Geoset100",
             "Geoset300",
             "Geoset200",
-            "Unused6",
-            "Unused7",
+            "Geoset1600",
+            "Geoset1700",
         ]
     } else {
         &[
@@ -303,26 +379,40 @@ pub(crate) fn char_facial_hair_schema_for(wrath: bool) -> Schema {
     s
 }
 
-/// CharacterFacialHairStyles: `(race, sex, variation)` → `[Geoset100, Geoset300, Geoset200]`, the
-/// first row winning as the client's linear scans (`0x478740`) do. The file's own field count
-/// picks the layout: 1.12 ships nine columns with three unused ones before the geosets; 12340
-/// ships eight, the geosets right after the variation (the selected 3.3.5a data measures eight).
-fn parse_facial_hair_styles(bytes: &[u8]) -> Result<HashMap<(u8, u8, u8), [u32; 3]>> {
+/// CharacterFacialHairStyles: `(race, sex, variation)` → five geosets, the first row winning as
+/// the client's linear scans (`0x478740`) do. The file's own field count picks the layout: 1.12
+/// ships nine columns with three unused ones before the three geosets; 12340 ships eight, the
+/// geosets right after the variation and two more (facial jewelry, eye effects) at the end.
+fn parse_facial_hair_styles(bytes: &[u8]) -> Result<HashMap<(u8, u8, u8), [u32; 5]>> {
     let wrath = crate::dbc::field_count(bytes).is_some_and(|fields| fields < 9);
     let rs = parse(
         bytes,
         char_facial_hair_schema_for(wrath),
         "CharacterFacialHairStyles",
     )?;
-    let (g100, g300, g200) = if wrath { (3, 4, 5) } else { (6, 7, 8) };
+    let (g100, g300, g200, g1600, g1700) = if wrath {
+        (3, 4, 5, 6, 7)
+    } else {
+        (6, 7, 8, 6, 6)
+    };
     let mut m = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
-        // fields: RaceID, SexID, VariationID(facialHair), then the three geosets.
+        // fields: RaceID, SexID, VariationID(facialHair), then the geosets.
         if let (Some(race), Some(sex), Some(var)) = (u32_at(r, 0), u32_at(r, 1), u32_at(r, 2)) {
             let g = [
                 u32_at(r, g100).unwrap_or(0),
                 u32_at(r, g300).unwrap_or(0),
                 u32_at(r, g200).unwrap_or(0),
+                if wrath {
+                    u32_at(r, g1600).unwrap_or(0)
+                } else {
+                    0
+                },
+                if wrath {
+                    u32_at(r, g1700).unwrap_or(0)
+                } else {
+                    0
+                },
             ];
             m.entry((race as u8, sex as u8, var as u8)).or_insert(g);
         }
@@ -397,19 +487,20 @@ mod tests {
     }
 
     /// The facial-hair layout is the file's own: 12340's eight columns keep Geoset100/300/200 at
-    /// 3-5, 1.12's nine keep the same values at 6-8 after three unused slots. Both name human
-    /// male variation 1's shipped 1/2/1.
+    /// 3-5 and facial jewelry/eye effects at 6-7; 1.12's nine keep the three at 6-8 after three
+    /// unused slots, with no jewelry or eye group. Both name human male variation 1's shipped
+    /// 1/2/1; the 12340 row also carries jewelry 2 and eye effect 3.
     #[test]
     fn the_facial_hair_layout_follows_the_file_field_count() {
-        let wrath = dbc_rows(&[vec![1, 0, 1, 1, 2, 1, 0, 0]], 8);
+        let wrath = dbc_rows(&[vec![1, 0, 1, 1, 2, 1, 2, 3]], 8);
         assert_eq!(
             parse_facial_hair_styles(&wrath).unwrap().get(&(1, 0, 1)),
-            Some(&[1, 2, 1])
+            Some(&[1, 2, 1, 2, 3])
         );
         let vanilla = dbc_rows(&[vec![1, 0, 1, 0, 0, 0, 1, 2, 1]], 9);
         assert_eq!(
             parse_facial_hair_styles(&vanilla).unwrap().get(&(1, 0, 1)),
-            Some(&[1, 2, 1])
+            Some(&[1, 2, 1, 0, 0])
         );
     }
 
@@ -643,7 +734,7 @@ mod tests {
         let mut hair = HashMap::new();
         hair.insert((1, 0, 1), 5u32); // styled hair → geoset 5
         let mut facial = HashMap::new();
-        facial.insert((1, 0, 1), [2u32, 3, 4]); // styled facial → 102/303/204
+        facial.insert((1, 0, 1), [2u32, 3, 4, 0, 0]); // styled facial → 102/303/204
         let mut helmet_vis = HashMap::new();
         helmet_vis.insert(368, [u32::MAX; 5]); // a shipped row id, hiding everything
         helmet_vis.insert(245, [0u32; 5]); // a shipped row id, hiding nothing
@@ -698,7 +789,7 @@ mod tests {
         let mut hair = HashMap::new();
         hair.insert((1, 0, 1), 2u32);
         let mut facial = HashMap::new();
-        facial.insert((1, 0, 1), [1u32, 2, 1]);
+        facial.insert((1, 0, 1), [1u32, 2, 1, 0, 0]);
         let cg = CharacterGeosets {
             hair,
             facial,
@@ -773,5 +864,48 @@ mod tests {
         // Race 9 ships only sex-0 rows, so the goblin female keeps the region base, the same scalp.
         let f = cg.visible_geosets(9, 1, 0, 0, &EquipGeosets::default());
         assert!(f.contains(&1) && !f.contains(&2), "goblin female unchanged");
+    }
+
+    /// 12340 (`ComponentData.cpp:33-35`, `GeosRenderPrep` `0x4ED900`): facial-jewelry 1601,
+    /// eye-effect 1701 and belt 1801 are managed groups, the >2000 IDs stay unmanaged, the eye
+    /// card 1703 belongs only to a glowing face/Death Knight, and an equipped belt replaces 1801.
+    /// The 1.12 path keeps the donor >1700 blanket.
+    #[test]
+    fn wrath_eye_belt_and_high_groups_follow_12340() {
+        let mut facial = HashMap::new();
+        // Human female variation 0, the selected data's all-zero row.
+        facial.insert((1, 1, 0), [0u32, 0, 0, 0, 0]);
+        let cg = CharacterGeosets {
+            hair: HashMap::new(),
+            facial,
+            helmet_vis: HashMap::new(),
+        };
+        let base = EquipGeosets::default();
+        let set = cg.visible_geosets_for(GeosetVersion::Wrath335, 1, 1, 0, 0, &base);
+        assert!(
+            !set.contains(&1703),
+            "a non-glowing human eye card is not visible"
+        );
+        assert!(!set.contains(&1802), "no belt item, no belt variant");
+        assert!(set.contains(&2001), "above 2000 stays unmanaged");
+        assert!(set.contains(&1700), "facial eye 0 selects 1700");
+        assert!(set.contains(&1600), "facial jewelry 0 selects 1600");
+        assert!(set.contains(&1801), "the belt base is selected");
+
+        let glow = EquipGeosets {
+            eye_glow: true,
+            ..Default::default()
+        };
+        let set = cg.visible_geosets_for(GeosetVersion::Wrath335, 1, 1, 0, 0, &glow);
+        assert!(set.contains(&1703), "Death Knight/glowing face forces 1703");
+
+        let mut belt = EquipGeosets::default();
+        belt.bodyslots[2] = Some([1, 0, 0]);
+        let set = cg.visible_geosets_for(GeosetVersion::Wrath335, 1, 1, 0, 0, &belt);
+        assert!(set.contains(&1802) && !set.contains(&1801), "belt variant replaces the base");
+
+        // The donor path is unchanged: every ID above 1700 remains visible.
+        let set = cg.visible_geosets(1, 1, 0, 0, &base);
+        assert!(set.contains(&1703) && set.contains(&1802) && set.contains(&2001));
     }
 }

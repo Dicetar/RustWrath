@@ -381,6 +381,21 @@ pub(crate) fn on_cvar(
                 *benilla_assets::ANISO_RANGE.end(),
             )
         }
+        // `textureFilteringMode` (`Client.cpp:1108`, callback `WorldParam_CVar.cpp:114`): the
+        // 3.3.5 Video panel's dropdown. Its six modes are exactly the pairs
+        // `s_textureFilterModes`/`s_textureMaxAnisotropy` (`Client.cpp:247`, `:250`) index:
+        // 0 bilinear, 1 trilinear, 2..5 anisotropic 2/4/8/16. The reference applies the pair
+        // once at Client init (`Client.cpp:1124`), and the panel marks it restart-required.
+        // benilla's samplers bake the process policy at load (`benilla_assets::tex_filter`), so
+        // this writes the live knob for the next policy publish, not an already-built sampler.
+        "texturefilteringmode" => {
+            let mode = v.clamp(0.0, 5.0).trunc() as u32;
+            tex_filter.trilinear = mode >= 1;
+            tex_filter.aniso = match mode {
+                0 | 1 => 1,
+                n => 1 << (n - 1),
+            };
+        }
         // The panel's 0/1/2 is the density multiplier x1/x2/x3, clamped to the 1.12 slider's
         // range. `frillDensity` is the same knob, mirrored so `GetCVar` never answers two levels.
         "worlddetail" => {

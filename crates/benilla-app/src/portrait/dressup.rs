@@ -22,6 +22,8 @@ pub(crate) struct DressUpLook {
     pub(crate) display_id: u32,
     pub(crate) race: u8,
     pub(crate) sex: u8,
+    /// The live player's `UNIT_FIELD_BYTES_0` class; 6 (Death Knight) forces eye geoset 1703.
+    pub(crate) class: u8,
     pub(crate) skin: u8,
     pub(crate) face: u8,
     pub(crate) hair_style: u8,

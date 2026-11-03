@@ -32,8 +32,8 @@ mod characters;
 pub use characters::{
     equip_blits, equip_column, equip_region_candidates, equip_tex_dir, equip_tile, forearm_dressed,
     BlitSource, CharCreateCatalog, CharSections, CharacterGeosets, ChrRaceRow, CompositePlan,
-    DialRanges, EmblemLayer, EquipBlit, EquipGeosets, GuildEmblem, NameGenRow, StartOutfitItem,
-    VisibleGeosets,
+    DialRanges, EmblemLayer, EquipBlit, EquipGeosets, GeosetVersion, GuildEmblem, NameGenRow,
+    StartOutfitItem, VisibleGeosets,
 };
 mod camera_shakes;
 mod cinematics;
@@ -284,7 +284,8 @@ pub use models::{
     m2_owner_reach, m2_ribbon_emitter_count, m2_sequence_visible_textures,
     m2_texture_transform_count, non_separable_billboard_bones, owner_last_rung,
     owner_last_rung_bucket, parse_m2_animation_lookup, parse_m2_animation_summary,
-    parse_m2_animations, parse_m2_attachments, parse_m2_bounds, parse_m2_camera,
+    parse_m2_animations, parse_m2_animations_with_external, m2_external_animation_ids,
+    parse_m2_attachments, parse_m2_bounds, parse_m2_camera,
     parse_m2_cch_marker, parse_m2_collision_hull, parse_m2_event_markers,
     parse_m2_global_sequence_bones, parse_m2_lights, parse_m2_pane_cameras,
     parse_m2_playable_animation_lookup, parse_m2_portrait_camera, parse_m2_render_submeshes,
@@ -292,7 +293,8 @@ pub use models::{
     parse_wmo_fogs, parse_wmo_lights,
     parse_wmo_portals, parse_wmo_root, point_in_convex_volume, rotation_2x2, uv_transform,
     wmo_group_doodad_refs, wmo_group_fixed_colors, wmo_group_footprint_tris, wmo_group_header,
-    wmo_group_light_refs, wmo_group_liquid_mesh, wmo_group_raw_colors, wmo_group_submeshes,
+    wmo_group_light_refs, wmo_group_liquid_mesh, wmo_group_liquid_mesh_for_root,
+    wmo_group_raw_colors, wmo_group_submeshes,
     wmo_root_id, AlphaAnim, AlphaSeq, AnimEvent, Billboard, BillboardKind, BoneKeys, BoneScaleAnim,
     BoneSpin, CharSkinSlot, CollisionMesh, EmitterBoneLink, EventMarker, FogPolicy, FootprintTris,
     GlobalSeqBone, GlobalSeqChannel, GroundQuad, KeyAnim, M2AnimSummary, M2Attachment, M2Bounds,
@@ -501,6 +503,16 @@ pub fn blp_to_rgba(blp_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("BLP has no level 0"))?;
     Ok((level0.width, level0.height, level0.rgba))
+}
+
+/// Render level zero while preserving valid pixels ahead of a corrupt optional mip tail.
+/// Strict diagnostics remain available through `blp_to_rgba`.
+pub fn blp_to_rgba_base(blp_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let (decoded, _) = benilla_blp::decode_native_with_mip_fallback(blp_bytes)
+        .map_err(|e| anyhow::anyhow!("decoding BLP base: {e}"))?;
+    let level = decoded.mips.first().ok_or_else(|| anyhow::anyhow!("BLP has no level 0"))?;
+    let rgba = benilla_blp::decode_level(decoded.texels, level.width, level.height, &level.bytes);
+    Ok((level.width, level.height, rgba))
 }
 
 /// Read a texture from the chain by internal path (accepts `/` or `\`) and decode to RGBA8.

@@ -1739,9 +1739,22 @@ fn status_text(code: u8) -> (Text, Option<u8>) {
     }
 }
 
+/// `CGlueMgr::OnRealmSplitMsg` (`0x004D8200`) signals `SERVER_SPLIT_NOTICE` through the
+/// `"%d%d%s"` format. The two fields are `uint32_t` in C, and `%d` reads them back as signed
+/// `int`, so the server's query echo `0xFFFFFFFF` reaches Lua as -1. The wire parser keeps them
+/// unsigned; this is the projection to the stock event, not a change to the packet.
+fn realm_split_event_args(choice: u32, state: u32, date: &str) -> Vec<ScriptValue> {
+    vec![
+        ScriptValue::Number(f64::from(choice as i32)),
+        ScriptValue::Number(f64::from(state as i32)),
+        ScriptValue::Str(date.to_string()),
+    ]
+}
+
 /// The login engine's messages the manager reads, as one parameter.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct LoginNews<'w, 's> {
+    wrath: Option<Res<'w, crate::wrath::WrathControl>>,
     stages: MessageReader<'w, 's, LoginStageMessage>,
     failures: MessageReader<'w, 's, LoginFailedMessage>,
     queued: MessageReader<'w, 's, LoginQueuedMessage>,
@@ -1753,6 +1766,7 @@ pub(crate) struct LoginNews<'w, 's> {
     addon_infos: MessageReader<'w, 's, AddonInfoMessage>,
     addon_reply: Option<Res<'w, AddonInfoReply>>,
     char_actions: MessageReader<'w, 's, CharActionResultMessage>,
+    realm_split: MessageReader<'w, 's, crate::net::RealmSplitMessage>,
     renames: MessageReader<'w, 's, CharRenameMessage>,
     login_refusals: MessageReader<'w, 's, CharacterLoginFailedMessage>,
     /// What the login engine decided with no network message behind it.
@@ -1781,8 +1795,8 @@ pub(crate) struct GlueAsks<'w> {
 /// The four agreements' states off the CVar registry: the read `0x46a400` makes at `0x402b36`,
 /// before the first glue screen is set (`0x402b65`), so a returning player's login screen never
 /// sees them unaccepted.
-pub(crate) fn read_agreements(cvars: &crate::cvars::Cvars) -> [NoticeState; 4] {
-    let mut n = [NoticeState::default(); 4];
+pub(crate) fn read_agreements(cvars: &crate::cvars::Cvars) -> [NoticeState; 5] {
+    let mut n = [NoticeState::default(); 5];
     for notice in GlueNotice::ALL {
         if let Some(value) = cvars.get(notice.cvar()) {
             n[notice as usize] = NoticeState::from_cvar(value);
@@ -1826,6 +1840,9 @@ pub(crate) fn drive_glue_mgr(
         // A glue VM the glue build did not seat ([`seat_glue_build`]) is seated here.
         let mut fresh_vm = false;
         if let Some(s) = script.as_deref_mut() {
+            if let Some(wrath) = news.wrath.as_deref() {
+                s.set_glue_account_expansion(wrath.account_expansion());
+            }
             if shared.get().vm != Some(s.session()) {
                 seat_glue(
                     &shared,
@@ -1882,6 +1899,11 @@ pub(crate) fn drive_glue_mgr(
                 }
                 for request in s.take_glue_requests() {
                     match request {
+                        GlueRequest::RealmSplit(state) => {
+                            if let Some(pick) = asks.pick.as_deref() {
+                                let _ = pick.0.send(CharRequest::RealmSplit(state));
+                            }
+                        }
                         GlueRequest::PlayGlueMusic(file) => {
                             asks.music.write(crate::sound::GlueMusicRequest::Play(file));
                         }
@@ -2021,6 +2043,15 @@ pub(crate) fn drive_glue_mgr(
             }
             for msg in news.disconnects.read() {
                 mgr.on_disconnected(msg.end, msg.session_over);
+            }
+        }
+        if let Some(s) = script.as_deref_mut() {
+            for msg in news.realm_split.read() {
+                s.fire_event("SERVER_SPLIT_NOTICE", realm_split_event_args(
+                    msg.choice,
+                    msg.state,
+                    &msg.date,
+                ));
             }
         }
         // What the news raised runs out before the frame's arm, as the reference's network handlers
@@ -2187,6 +2218,13 @@ fn glue_character(c: &Character, names: &RosterNames) -> GlueCharacter {
         level: c.level,
         zone: names.areas.and_then(|a| a.name(c.zone)).map(str::to_string),
         file_string: text(names.create.and_then(|r| r.race_file(c.race))),
+        class_file_string: text(names.classes.and_then(|k| k.file(u32::from(c.class)))),
+        background_model: if c.class == 6 {
+            text(names.classes.and_then(|k| k.file(6)))
+        } else {
+            let race = match c.race { 7 => 3, 8 => 2, race => race };
+            text(names.create.and_then(|r| r.race_file(race)))
+        },
         gender: c.gender,
         flags: c.flags,
         // `0x5ec480`: the race row's display for the gender, then its model rows.

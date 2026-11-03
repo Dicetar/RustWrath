@@ -37,9 +37,16 @@ pub struct RigPose {
     pub anchors: Vec<(u16, Entity)>,
     /// `locals` changed since the last world pass; starts raised so the bind pose is written.
     pub pose_dirty: bool,
+    /// A non-finite animation local was replaced by the bind local; warn once per rig.
+    non_finite_warned: bool,
 }
 
 impl RigPose {
+    /// Whether camera movement requires this rig's billboard pose to be recomposed.
+    pub fn has_camera_billboards(&self) -> bool {
+        self.has_billboard
+    }
+
     /// The rig at bind pose, composed; anchors come from [`Self::anchor_for`].
     pub fn new(joints_root: Entity, skeleton: &ModelSkeleton) -> Self {
         let locals: Vec<Transform> = skeleton
@@ -66,15 +73,49 @@ impl RigPose {
                 .any(|j| j.billboard.is_some() || j.parent_arm.is_some()),
             anchors: Vec::new(),
             pose_dirty: true,
+            non_finite_warned: false,
         };
         rig.compose();
         rig
     }
 
-    /// Fold `locals` into `model`, the `flags & 0x7` arm included since the anchors are seated
-    /// from it; a model frame is a similarity, so this agrees with the world pass's arm. M2 bones
-    /// are parent-sorted; a malformed child whose parent follows it composes from the root.
+    /// Keep the local source valid for both model/world composition and external processors.
+    /// Invalid data uses this skeleton's real bind local, not a palette-row identity substitute.
+    pub fn sanitize_locals(&mut self) -> bool {
+        let mut repaired = false;
+        for i in 0..self.locals.len() {
+            let mut local = self.locals[i];
+            // A corrupt HD/talk animation key can make a bone local non-finite. Left alone it
+            // poisons the bone and every descendant, and the palette's per-joint bind-pose
+            // fallback then tears the mesh at the chain boundary. Use the bind local instead.
+            let norm = local.rotation.length_squared();
+            let valid = local.translation.is_finite()
+                && local.rotation.is_finite()
+                && local.scale.is_finite()
+                && norm.is_finite() && norm > 1e-12;
+            if !valid {
+                if !self.non_finite_warned {
+                    self.non_finite_warned = true;
+                    warn!("rig bone {i}: invalid animation local t={:?} r={:?} s={:?}; bind pose used", local.translation, local.rotation, local.scale);
+                }
+                local = Transform::from_translation(self.binds[i]);
+                repaired = true;
+            } else if (norm - 1.0).abs() > 1e-4 {
+                local.rotation = local.rotation.normalize();
+                repaired = true;
+            }
+            // Write it back: the world pass (`compose::rig_worlds`) composes `locals[i]` again,
+            // so a local-only guard would let the malformed transform re-enter the palette.
+            self.locals[i] = local;
+        }
+        self.pose_dirty |= repaired;
+        repaired
+    }
+
+    /// Fold sanitized locals into model space, including the parent arm. A malformed child
+    /// whose parent follows it composes from the root.
     pub(crate) fn compose(&mut self) {
+        self.sanitize_locals();
         for i in 0..self.locals.len() {
             let local = self.locals[i].compute_affine();
             let parent = match usize::try_from(self.parents[i]).ok().filter(|&p| p < i) {
@@ -811,5 +852,33 @@ mod tests {
         });
         step(&mut app, 0.1);
         assert_twins_equal(&mut app, &oj, ours);
+    }
+
+    /// A non-finite talk-animation local must fall back to the bind local at the source, before
+    /// it poisons the bone's descendants and tears the mesh.
+    #[test]
+    fn a_non_finite_animation_local_falls_back_to_the_bind_pose() {
+        let skeleton = ModelSkeleton {
+            joints: vec![benilla_assets::ModelJoint {
+                parent: -1,
+                local_translation: Vec3::new(1.0, 2.0, 3.0),
+                billboard: None,
+                parent_arm: None,
+            }],
+            ..Default::default()
+        };
+        let root = Entity::from_raw_u32(1).expect("valid entity");
+        let mut rig = RigPose::new(root, &skeleton);
+        rig.locals[0] = Transform::from_translation(Vec3::new(f32::NAN, 0.0, 0.0));
+        rig.compose();
+        assert!(rig.locals[0].translation.is_finite(), "the world pass reads locals");
+        assert!(
+            (rig.locals[0].translation - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-5,
+            "the sanitized local is the bind local"
+        );
+        assert!(rig.model[0].translation.is_finite());
+        assert!(
+            (rig.model[0].translation - bevy::math::Vec3A::new(1.0, 2.0, 3.0)).length() < 1e-5
+        );
     }
 }

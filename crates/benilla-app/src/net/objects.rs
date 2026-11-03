@@ -3,7 +3,7 @@
 //! [`Scene`] whose commands apply before the next event's, so a create's store and speeds are live
 //! components by the time the next block reads them. An `SMSG_UPDATE_OBJECT`'s blocks and its
 //! passes are [`update`]'s.
-use benilla_assets::coords::bevy_to_wow;
+use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
 use benilla_protocol::{
     EntityKind, MonsterMoveFacing, MoveSpeeds, ObjectFields, SpeedKind, SplineMode,
 };
@@ -924,20 +924,25 @@ fn monster_move(
         // The final facing (moveType 2/3/4) snaps the raw facing (`0x7c6f30`) and resets the
         // display smoother. A following path overrides it with the tangent each frame (`0x7c5490`),
         // so it sticks only on a stop. A deck packet's facing is the rider's `local_orientation`.
-        if transport.is_none() && !matches!(facing, MonsterMoveFacing::None) {
-            let target_pos = |g: u64| {
-                index
-                    .0
-                    .get(&g)
-                    .and_then(|&te| transforms.get(te).ok())
-                    .map(|t| bevy_to_wow(t.translation))
-            };
-            if let Some(orientation) = resolve_facing(facing, start, target_pos) {
-                if let Ok(mut t) = transforms.get_mut(e) {
-                    t.rotation = Quat::from_rotation_y(orientation);
-                    commands
-                        .entity(e)
-                        .remove::<crate::net::motion::DisplayFacing>();
+        if transport.is_none() {
+            if let Ok(mut t) = transforms.get_mut(e) {
+                t.translation = wow_to_bevy(start);
+            }
+            if !matches!(facing, MonsterMoveFacing::None) {
+                let target_pos = |g: u64| {
+                    index
+                        .0
+                        .get(&g)
+                        .and_then(|&te| transforms.get(te).ok())
+                        .map(|t| bevy_to_wow(t.translation))
+                };
+                if let Some(orientation) = resolve_facing(facing, start, target_pos) {
+                    if let Ok(mut t) = transforms.get_mut(e) {
+                        t.rotation = Quat::from_rotation_y(orientation);
+                        commands
+                            .entity(e)
+                            .remove::<crate::net::motion::DisplayFacing>();
+                    }
                 }
             }
         }

@@ -133,7 +133,7 @@ pub use kinds::{
     slider_set_value, ArmedSequence, ButtonState, ButtonVisualState, CharacterPane,
     ColorSelectState, CooldownState, CopyCamera, EditAction, EditBoxState, EditOutcome, EditUnit, FrameKind,
     InsertMode, InstalledCamera, KindState, KindUpdate, MessageFrameState, MessageLine, MinimapArt,
-    MinimapArtSlot, MinimapState, MinimapStatics, ModelFileFacts, ModelFog, ModelLight,
+    MinimapArtSlot, MinimapState, MinimapStatics, ModelEffects, ModelFileFacts, ModelFog, ModelLight,
     ModelPlayHead, ModelState, PaneArm, PaneCopy, RegionKind, ScrollFrameState,
     ScrollingMessageState, SequenceFacts, ShownWrites, SliderState, StatusBarState, TooltipAnchor,
     TooltipState, Viewport, ANIM_SHUFFLE_LEFT, ANIM_SHUFFLE_RIGHT, ANIM_STAND, MINIMAP_ARROW_SCALE,

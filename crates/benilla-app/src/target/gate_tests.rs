@@ -197,6 +197,7 @@ impl Fix {
             Held::Row => {
                 script.set_merchant(Some(MerchantState {
                     items: vec![MerchantItem {
+                extended_cost: None,
                         name: None,
                         texture: None,
                         price: 25,

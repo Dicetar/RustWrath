@@ -18,6 +18,11 @@ use super::{AnimParked, RigFrame, RigPose};
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PosePost;
 
+/// External presentation processors run after local pose edits and before any composition.
+/// Their caller must preserve the unpatched locals for the next evaluator frame.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PoseModulePass;
+
 /// Fold each pose-dirty rig into model space and re-seat its anchors, leaving `pose_dirty` for
 /// the world pass. A parked rig is skipped; its wake unparks it before this runs.
 fn compose_rig_models(
@@ -266,14 +271,16 @@ pub fn finalize_rig_worlds(
 pub fn plugin(app: &mut App) {
     app.configure_sets(
         PostUpdate,
-        PosePost
-            .after(bevy::app::AnimationSystems)
-            .before(bevy::transform::TransformSystems::Propagate),
+        (
+            PosePost.after(bevy::app::AnimationSystems),
+            PoseModulePass.after(PosePost)
+                .before(bevy::transform::TransformSystems::Propagate),
+        ),
     )
     .add_systems(
         PostUpdate,
         compose_rig_models
-            .after(PosePost)
+            .after(PoseModulePass)
             .before(bevy::transform::TransformSystems::Propagate),
     );
 }

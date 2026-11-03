@@ -145,7 +145,7 @@ const fn deviates(
 }
 
 /// A row the reference has no counterpart for.
-const fn ours(name: &'static str, default: &'static str, why: &'static str) -> Registered {
+pub(super) const fn ours(name: &'static str, default: &'static str, why: &'static str) -> Registered {
     Registered {
         name,
         default,
@@ -240,6 +240,61 @@ pub(crate) const REGISTERED: &[Registered] = &[
     // rate (`0x884060`), above 1500 MHz on a current x86 part, so those hosts register "50". It is
     // shipped (`sound::output::MIX_AHEAD_MS` is the same number, and a test holds the two together).
     same("SoundBufferSize", "50").latched(),
+    // 3.3.5's sound panel reads this name (`OptionsPanelTemplates.lua:210`); the 1.12 table has no
+    // row and a missing CVar raises, so the panel's OnLoad leaves a modal error over the login
+    // fields. One output device is the honest answer here.
+    ours(
+        "Sound_OutputDriverIndex",
+        "0",
+        "3.3.5's sound panel reads it; without the row its OnLoad raises a modal error over the \
+         login fields",
+    ),
+    // 12340 SoundInterface2_CVar.cpp: the stock slider reads the registered channel count.
+    // The mixer currently uses its own voice allocation; retaining this setting does not
+    // establish an applied mixer limit.
+    ours("Sound_NumChannels", "32", "SoundInterface2_CVar.cpp:159; mixer limit not yet wired"),
+    // 3.3.5-only names: the 1.12 catalog has no rows, so `Reference::Ours` records the absence and
+    // the row's `why` cites the 12340 register site. Every default below is that site's own
+    // string — the reference's default, not a benilla choice — and `GetCVar`/`GetCVarDefault`
+    // raise on any name still missing, as 0x004DDD10/0x004DDE10 do.
+    ours("showKeyring", "0", "GameUI_CVar.cpp:608"),
+    ours("autoQuestWatch", "1", "GameUI_CVar.cpp:489"),
+    ours("questFadingDisable", "1", "GameUI_CVar.cpp:488"),
+    ours("playerStatLeftDropdown", "", "GameUI_CVar.cpp:610; empty until the paperdoll writes it"),
+    ours("playerStatRightDropdown", "", "GameUI_CVar.cpp:611; empty until the paperdoll writes it"),
+    ours("xpBarText", "0", "GameUI_CVar.cpp:551"),
+    // The comparison-tooltip gate (`GameUI_CVar.cpp:467`, flags 0x10): the 3.3.5 tooltip reads it
+    // to decide whether a hover shows the worn item beside the offered one.
+    ours("alwaysCompareItems", "0", "GameUI_CVar.cpp:467; the stock tooltip's compare gate"),
+    ours("extShadowQuality", "0", "WorldParam_CVar.cpp:652"),
+    ours("gxStereoConvergence", "1", "ConsoleDevice_CVar.cpp:530"),
+    ours("gxStereoEnabled", "0", "ConsoleDevice_CVar.cpp:570"),
+    ours("gxStereoSeparation", "25", "ConsoleDevice_CVar.cpp:531"),
+    ours("Sound_EnableSFX", "1", "SoundInterface2_CVar.cpp:248"),
+    ours("Sound_EnableAllSound", "1", "SoundInterface2_CVar.cpp:252"),
+    // `EnableMusicHandler` (`SoundInterface2_CVar.cpp:225`) mutes the MUSIC channel group and
+    // stops the music streams on 0. benilla holds the gate in `SoundConfig::music_enabled`;
+    // `sound::on_cvar` accepts this 3.3.5 name beside 1.12's `EnableMusic` (`0x45739b`) without
+    // writing either registry row, so a persisted donor setting is never overwritten.
+    ours("Sound_EnableMusic", "1", "SoundInterface2_CVar.cpp:251; aliases `SoundConfig::music_enabled`"),
+    ours("windowResizeLock", "0", "ConsoleDevice_CVar.cpp:575"),
+    ours("autojoinPartyVoice", "1", "GameUI_CVar.cpp:604"),
+    ours("autojoinBGVoice", "0", "GameUI_CVar.cpp:605"),
+    ours("environmentDetail", "1.0", "WorldParam_CVar.cpp:650"),
+    ours("groundEffectDensity", "16", "WorldParam_CVar.cpp:646"),
+    ours("groundEffectDist", "70.0", "WorldParam_CVar.cpp:647"),
+    // `textureFilteringMode` (`Client.cpp:1108`, flags 1, callback
+    // `CWorldParam::TextureFilteringCallback` `WorldParam_CVar.cpp:114`): the Video panel's
+    // dropdown. The callback accepts 0..5 only, and the mode is applied once at Client init
+    // (`Client.cpp:1124`-`1126`) through `s_textureFilterModes`/`s_textureMaxAnisotropy`
+    // (`Client.cpp:247`/`:250`): bilinear at 0, trilinear at 1, anisotropic 2/4/8/16 at 2..5 —
+    // exactly the three values benilla's `TexFilterSetting` already reaches. `video::on_cvar`
+    // maps the six modes onto that setting; the policy itself publishes once at `CvarLoad`
+    // because samplers are baked at load, as the reference applies it once at Client init.
+    ours("textureFilteringMode", "1", "Client.cpp:1108; mapped to `TexFilterSetting`"),
+    ours("Sound_EnableErrorSpeech", "1", "SoundInterface2_CVar.cpp:250"),
+    ours("Sound_EnableEmoteSounds", "1", "SoundInterface2_CVar.cpp:258"),
+    ours("Sound_EnablePetSounds", "1", "SoundInterface2_CVar.cpp:263"),
     // benilla's own, not a 1.12 CVar. Deviation: the reference clips at full scale and has no
     // headroom mechanism (its SFX-bus duck `0x457960` is a sidechain armed only by server-pushed
     // voice lines); benilla limits because every SFX is mastered to full scale and overlapping
@@ -461,6 +516,23 @@ pub(crate) const REGISTERED: &[Registered] = &[
     same("EmoteSounds", "1"),
     // `SoundZoneMusicNoDelay` (`0x4578b3`): `next_track_time`'s immediate path.
     same("SoundZoneMusicNoDelay", "0"),
+    // 3.3.5a's spelling of the same switch (`SoundInterface2_CVar.cpp:259`), read by the
+    // Glue audio panel's Loop Music checkbox. `sound::on_cvar` accepts both; neither row writes
+    // the other, so a donor setting is preserved.
+    ours("Sound_ZoneMusicNoDelay", "0", "SoundInterface2_CVar.cpp:259; aliases `SoundZoneMusicNoDelay`"),
+    // `EnableAmbienceHandler` (`SoundInterface2_CVar.cpp:249`): the 3.3.5 spelling of 1.12's
+    // `EnableAmbience` (`0x460a9d`). Both write `SoundConfig::ambience_enabled`.
+    ours("Sound_EnableAmbience", "1", "SoundInterface2_CVar.cpp:249; aliases `EnableAmbience`"),
+    // `EnableReverbHandler` (`SoundInterface2_CVar.cpp:160`): 3.3.5's name for 1.12's
+    // `SoundReverb` (`0x4573be`); both write `SoundConfig::reverb`.
+    ours("Sound_EnableReverb", "0", "SoundInterface2_CVar.cpp:160; aliases `SoundReverb`"),
+    // The Glue audio panel's 3.3.5 spellings of the four donor volume rows and the listener
+    // switch (`SoundInterface2_CVar.cpp:253`-`:257`). The observers accept both spellings.
+    ours("Sound_MasterVolume", "1.0", "SoundInterface2_CVar.cpp:253; aliases `MasterVolume`"),
+    ours("Sound_SFXVolume", "1.0", "SoundInterface2_CVar.cpp:254; aliases `SoundVolume`"),
+    ours("Sound_MusicVolume", "0.4", "SoundInterface2_CVar.cpp:255; aliases `MusicVolume`"),
+    ours("Sound_AmbienceVolume", "0.6", "SoundInterface2_CVar.cpp:256; aliases `AmbienceVolume`"),
+    ours("Sound_ListenerAtCharacter", "1", "SoundInterface2_CVar.cpp:257; aliases `SoundListenerAtCharacter`"),
     // `assistAttack` (`0x48fc50`, record `[0xb4d8f8]`): `/assist` also starts the swing. The "3"
     // beside it is the next registration's, `minimapZoom`: stock `/assist` selects without
     // swinging.
@@ -527,6 +599,13 @@ pub(crate) const REGISTERED: &[Registered] = &[
     // origin to `surface + 2/9`. Ours: `benilla_world::collision::camera_filter` and
     // `player::camera_water`.
     same("cameraWaterCollision", "1"),
+    // 3.3.5a's bag and loot panels query these names (`MainMenuBarBagButtons.lua:132`,
+    // `LootFrame.lua:168`). The 1.12 table has no rows for them, and a missing CVar raises in
+    // GetCVar (`0x488c53`), aborting their OnLoad before the bag bar and loot buttons wire up.
+    // 3.3.5a-only names the selected `MainMenuBar.lua`/`LootFrame.lua` read; the 1.12 catalog
+    // has no rows for them, so their defaults cite the 12340 registration rather than a donor one.
+    ours("displayFreeBagSlots", "1", "12340 stock bag-bar toggle; no 1.12 row"),
+    ours("lootUnderMouse", "0", "12340 stock loot option; no 1.12 row"),
     // `cameraTerrainTilt` `[0xbe0fd4]` "0" (`0x50bcfd`), Follow Terrain: probe and staircase
     // `0x50d900`, arm `0x50dbc0`; ours is `player::camera_dynamics::TerrainTilt`.
     same("cameraTerrainTilt", "0"),
@@ -859,4 +938,104 @@ pub(crate) const REGISTERED: &[Registered] = &[
     same("readEULA", "0"),
     same("readScanning", "0"),
     same("readContest", "0"),
+    // 3.3.5a 12340 client CVars
+    ours(
+        "readTerminationWithoutNotice",
+        "0",
+        "3.3.5a 12340 agreement CVar: Status of the Termination without Notice notice",
+    ),
+    ours(
+        "accountList",
+        "",
+        "3.3.5a 12340 saved account list: List of wow accounts for saved Blizzard account",
+    ),
+    ours(
+        "g_accountUsesToken",
+        "0",
+        "3.3.5a 12340 token authenticator state: Saved whether uses authenticator",
+    ),
+    ours(
+        "alwaysShowActionBars",
+        "0",
+        "3.3.5a 12340 InterfaceOptions: Whether to always show action bar grid",
+    ),
+    ours(
+        "trackerSorting",
+        "0",
+        "3.3.5a 12340 GameUI_CVar.cpp:506: Objective tracker sorting mode",
+    ),
+    ours(
+        "stopAutoAttackOnTargetChange",
+        "0",
+        "3.3.5a 12340 InterfaceOptions: Stop auto-attacking when switching targets",
+    ),
+    ours(
+        "mapQuestDifficulty",
+        "0",
+        "3.3.5a 12340 WorldMapFrame: Color quest POIs by difficulty",
+    ),
+    ours(
+        "showPartyPets",
+        "1",
+        "3.3.5a 12340 InterfaceOptions: Show party pet frames",
+    ),
+    ours(
+        "lastTalkedToGM",
+        "",
+        "3.3.5a 12340 UIParent: Name of the last GM who whispered the player",
+    ),
+    ours(
+        "guildRecruitmentChannel",
+        "1",
+        "3.3.5a 12340 InterfaceOptions: Guild recruitment channel enabled",
+    ),
+    ours(
+        "showClock",
+        "1",
+        "3.3.5a 12340 TimeManager: Whether to show the minimap clock",
+    ),
+    ours(
+        "UnitNameFriendlyPlayerName",
+        "1",
+        "3.3.5a 12340 PlayerName_CVar.cpp:39: Show friendly player names",
+    ),
+    ours(
+        "showNewbieTips",
+        "1",
+        "3.3.5a 12340 InterfaceOptions: Show newbie tips in UI",
+    ),
+    ours(
+        "locale",
+        "enUS",
+        "3.3.5a 12340 InterfaceOptions: Game client locale",
+    ),
+    ours(
+        "previewTalents",
+        "0",
+        "3.3.5a 12340 TalentFrame: Talent preview mode",
+    ),
+    ours(
+        "fctSpellMechanics",
+        "0",
+        "3.3.5a 12340 CombatText: Floating combat text spell mechanics",
+    ),
+    ours(
+        "showDispelDebuffs",
+        "0",
+        "3.3.5a 12340 InterfaceOptions: Show dispellable debuffs",
+    ),
+    // 12340 GameUI_CVar.cpp: stock options/tracker readers. Registration retains their
+    // settings; it does not establish backend support for every optional display.
+    ours("scriptErrors", "0", "GameUI_CVar.cpp:481"),
+    ours("fctSpellMechanicsOther", "0", "GameUI_CVar.cpp:550"),
+    ours("secureAbilityToggle", "1", "GameUI_CVar.cpp:527"),
+    ours("ShowClassColorInNameplate", "0", "GameUI_CVar.cpp:648"),
+    ours("fctPeriodicEnergyGains", "0", "GameUI_CVar.cpp:545"),
+    ours("trackerFilter", "7", "GameUI_CVar.cpp:507"),
+    ours("showCastableBuffs", "0", "GameUI_CVar.cpp:568"),
+    ours("threatPlaySounds", "1", "GameUI_CVar.cpp:645"),
+    ours("advancedWorldMap", "0", "GameUI_CVar.cpp:503"),
+    ours("UnitNameFriendlyPetName", "1", "PlayerName_CVar.cpp:40"),
+    ours("showRaidRange", "0", "GameUI_CVar.cpp:561"),
+    ours("chatMouseScroll", "1", "GameUI_CVar.cpp:524"),
 ];

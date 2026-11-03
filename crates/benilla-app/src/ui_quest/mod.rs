@@ -16,6 +16,15 @@ use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 #[derive(Resource)]
 pub(crate) struct QuestTitles(pub(crate) benilla_formats::QuestTitleNames);
 
+/// Seed `GetNumTitles` from the CharTitles table the quest text already loads. The table is
+/// absent outside the Wrath target and when the install lacks the DBC; zero then hides the
+/// paperdoll title picker, the reference's own empty-catalog shape.
+pub(crate) fn seed_title_count(world: &World, script: &mut benilla_ui::script::UiScript) {
+    if let Some(titles) = world.get_resource::<QuestTitles>() {
+        script.set_title_count(titles.0.max_id().saturating_add(1));
+    }
+}
+
 fn load_quest_titles(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
     if !crate::wrath::selected_from_env() { return; }
     let Some(assets) = assets else { return; };
@@ -46,6 +55,9 @@ pub(crate) enum QuestView {
 /// The open questgiver window; the per-guid dialog statuses survive a close.
 #[derive(Resource, Default)]
 pub(crate) struct QuestGiver {
+    pending_accepts: Vec<PendingQuestAccept>,
+    pending_selection: Option<PendingQuestSelection>,
+    delivery_error: Option<String>,
     pub(crate) completed_fanfare: bool,
     /// The panel's source: an NPC, a GameObject, a quest-starter item or a sharing player.
     pub(crate) npc: Option<u64>,
@@ -87,6 +99,113 @@ pub(crate) struct QuestGiver {
     /// callbacks `0x5018c0`, which outlive the panel and fire `QUEST_ITEM_UPDATE` when their
     /// record lands (`0x5018fe`-`0x501903`), whatever the window shows then.
     item_waits: Vec<u32>,
+}
+
+struct PendingQuestAccept {
+    quest: u32,
+    npc: u64,
+    results: crossbeam_channel::Receiver<crate::net::CommandDelivery>,
+    started: std::time::Instant,
+    stalled_reported: bool,
+}
+
+struct PendingQuestSelection {
+    npc: u64,
+    panel: u64,
+    results: crossbeam_channel::Receiver<crate::net::CommandDelivery>,
+    started: std::time::Instant,
+    stalled_reported: bool,
+}
+
+impl QuestGiver {
+    fn poll_accepts(&mut self) -> Vec<Shown> {
+        use crate::net::{CommandDelivery, CommandRefusal};
+        let mut errors = Vec::new();
+        if let Some(error) = self.delivery_error.take() {
+            errors.push(error);
+        }
+        if let Some(mut pending) = self.pending_selection.take() {
+            let mut finished = false;
+            let mut refused = false;
+            loop {
+                match pending.results.try_recv() {
+                    Ok(CommandDelivery::OutboxAdmitted) => {}
+                    Ok(CommandDelivery::Written) => {
+                        finished = true;
+                        break;
+                    }
+                    Ok(CommandDelivery::Rejected(reason)) => {
+                        let message = match reason {
+                            CommandRefusal::OutboxFull => "Quest selection was not sent because the connection is busy. Please retry.",
+                            CommandRefusal::ScopeChanged | CommandRefusal::Cancelled => "Quest selection was cancelled as the world or session changed.",
+                            CommandRefusal::Unavailable | CommandRefusal::UnsupportedMode => "Quest selection could not be sent. Check your connection.",
+                        };
+                        errors.push(message.into());
+                        refused = true;
+                        finished = true;
+                        break;
+                    }
+                    Ok(CommandDelivery::WriteFailed)
+                    | Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        errors.push("Quest selection delivery could not be confirmed. Reopen the questgiver after checking your connection.".into());
+                        finished = true;
+                        break;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
+                }
+            }
+            if refused && self.npc == Some(pending.npc) && self.panels == pending.panel {
+                self.acted = false;
+            }
+            if !finished {
+                if !pending.stalled_reported
+                    && pending.started.elapsed() >= std::time::Duration::from_secs(10)
+                {
+                    errors.push("Quest selection has no delivery confirmation yet. Check your connection.".into());
+                    pending.stalled_reported = true;
+                }
+                self.pending_selection = Some(pending);
+            }
+        }
+        self.pending_accepts.retain_mut(|pending| {
+            let reason = loop {
+                match pending.results.try_recv() {
+                    Ok(CommandDelivery::OutboxAdmitted) => continue,
+                    Ok(CommandDelivery::Written) => return false,
+                    Ok(CommandDelivery::Rejected(reason)) => break match reason {
+                        CommandRefusal::OutboxFull => "was not queued: the connection is busy. Reopen the questgiver and retry.",
+                        CommandRefusal::ScopeChanged | CommandRefusal::Cancelled => "was cancelled because the world or session changed. Reopen the questgiver in the current world.",
+                        CommandRefusal::Unavailable | CommandRefusal::UnsupportedMode => "was not queued: the connection is unavailable. Reconnect and reopen the questgiver.",
+                    },
+                    Ok(CommandDelivery::WriteFailed) => break "could not be confirmed as sent. Check your quest journal after reconnecting before retrying.",
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => break "could not be confirmed as sent. Check your quest journal before retrying.",
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
+                        if !pending.stalled_reported
+                            && pending.started.elapsed() >= std::time::Duration::from_secs(10)
+                        {
+                            pending.stalled_reported = true;
+                            errors.push(format!(
+                                "Quest {} has no delivery confirmation yet; it may still be sent. Check your quest journal and connection.",
+                                pending.quest
+                            ));
+                        }
+                        // Keep the receipt and duplicate guard: this deadline cannot cancel
+                        // a command still owned by the channel or writer.
+                        return true;
+                    }
+                }
+            };
+            errors.push(format!("Quest {} {reason}", pending.quest));
+            false
+        });
+        errors
+            .into_iter()
+            .map(|text| {
+                warn!("quest delivery: {text}");
+                Shown::unkeyed(benilla_ui::messages::MsgKind::Error, text)
+            })
+            .collect()
+    }
 }
 
 /// The greeting's pools, the available quests (`0xbdfe60`, its count `0xbe0834`) with each row's
@@ -350,8 +469,23 @@ pub(crate) fn close_core(world: &mut World, report: bool) {
 /// (`0x500d74`), so a panel replacing the giver's own closes it, `QUEST_FINISHED` ahead of the new
 /// panel's event; then the cell (`0x500d86`).
 pub(crate) fn open_panel(world: &mut World, npc: u64, view: QuestView) {
+    let observation = world.get_resource::<crate::quest_trace::Source>().cloned().map(|trace| {
+        use crate::quest_trace::Stage;
+        let (quest, stage) = match &view {
+            QuestView::Greeting(_) => (None, Stage::GreetingPanel),
+            QuestView::Detail(detail) => (Some(detail.quest_id), Stage::DetailPanel),
+            QuestView::Progress(progress) => (Some(progress.quest_id), Stage::ProgressPanel),
+            QuestView::Reward(reward) => (Some(reward.quest_id), Stage::RewardPanel),
+        };
+        let scope = world.get_resource::<crate::wrath::WrathWorldView>()
+            .map(|v| (v.session_epoch, v.world_generation));
+        (trace, scope, quest, stage)
+    });
     crate::ui_session::register(world, npc);
     world.resource_mut::<QuestGiver>().open(npc, view);
+    if let Some((trace, scope, quest, stage)) = observation {
+        trace.observe_with_npc(scope, quest, Some(npc), stage);
+    }
 }
 
 /// A greeting row is active when its wire icon is 3 or 4 and available otherwise, never by the
@@ -477,12 +611,14 @@ fn snapshot_in_target(
             let mut active_titles = Vec::new();
             let mut available_titles = Vec::new();
             let mut active_levels = Vec::new();
+            let mut active_complete = Vec::new();
             let mut available_levels = Vec::new();
             let mut available_metadata = Vec::new();
             for q in &l.quests {
                 if row_is_active(q.icon) {
                     active_titles.push(q.title.clone());
                     active_levels.push(q.level);
+                    active_complete.push(q.icon == 4);
                 } else {
                     available_titles.push(q.title.clone());
                     available_levels.push(q.level);
@@ -495,6 +631,7 @@ fn snapshot_in_target(
                 active_titles,
                 available_titles,
                 active_levels,
+                active_complete,
                 available_levels,
                 available_metadata,
                 ..Default::default()
@@ -577,14 +714,11 @@ pub(crate) fn feed_quest(
             script.queue_sound_kit("QUESTCOMPLETED");
         }
         // Before the snapshot's early-out, so a refusal that closes the panel still prints.
-        let lines: Vec<Shown> = giver
-            .take_messages()
-            .into_iter()
-            .filter_map(|msg| {
-                let get = |key: &str| script.lua().globals().get::<String>(key).ok();
-                ui_error_text(&msg, &get).map(|text| Shown::keyed(msg.key, text))
-            })
-            .collect();
+        let mut lines = giver.poll_accepts();
+        lines.extend(giver.take_messages().into_iter().filter_map(|msg| {
+            let get = |key: &str| script.lua().globals().get::<String>(key).ok();
+            ui_error_text(&msg, &get).map(|text| Shown::keyed(msg.key, text))
+        }));
         show_messages(script, &mut sink, "ui_quest", lines);
         let player = crate::npc_text::player_identity(&self_q, &names, unit_names.get());
         // A panel's publish, or a window this VM has not shown, is the stock frame's getter calls.

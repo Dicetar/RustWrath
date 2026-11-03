@@ -15,7 +15,7 @@ fn script_kind(lua: &Lua, name: &str) -> Option<&'static str> {
     let extra: &[&'static str] = if lua.app_data_ref::<Model>().expect("model").target
         == crate::script::UiTarget::Wrath335 {
         &["OnTooltipSetItem", "OnTooltipSetUnit", "OnTooltipSetSpell", "OnAttributeChanged",
-          "PreClick", "PostClick", "OnEnable", "OnDisable"]
+          "PreClick", "PostClick", "OnEnable", "OnDisable", "OnMinMaxChanged"]
     } else { &[] };
     SCRIPT_KINDS.iter().chain(extra).copied().find(|kind| kind.eq_ignore_ascii_case(name))
 }

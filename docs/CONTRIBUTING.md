@@ -1,5 +1,18 @@
 # Contributing
 
+## RustWrath fork
+
+This checkout targets WoW 3.3.5a build 12340. Its canonical repository is
+[Dicetar/RustWrath](https://github.com/Dicetar/RustWrath); start with
+[AGENTS.md](../AGENTS.md) and [the working workflow](agents/workflow.md).
+Use the [repository guide](agents/repository.md) for the shared wotlk branch and publication.
+The donor contribution/release procedures below remain useful for 1.12 compatibility;
+they do not redirect this fork's issues upstream or authorize broad verification.
+
+Keep fixes focused and evidence explicit. Review source, compilation, focused cases and
+actual runtime results separately. Retain provenance and licensing boundaries. Current
+ticket ownership is per task, across crates, rather than a permanent agent partition.
+
 benilla is a faithful 1.12.1 client. It is the foundation people build on, not the place to get
 creative: a change is accepted when it makes benilla more like 1.12.1 or fixes a bug, with
 evidence from the reference, in one small piece, with the gates green. Everything else lives on

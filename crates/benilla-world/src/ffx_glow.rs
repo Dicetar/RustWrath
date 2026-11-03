@@ -160,6 +160,8 @@ pub enum GlueFfx {
     /// Character select, a ghost selection: the glue death pass, pinned at `*0x838570` = 0.15
     /// (`0x472fde`/`0x472fe9`).
     SelectGhost,
+    /// A Wrath ModelFFX's SetGlow value; bits preserve Eq on the retained pass state.
+    Custom { glow_bits: u32, ghost: bool },
 }
 
 impl GlueFfx {
@@ -167,6 +169,7 @@ impl GlueFfx {
     /// already-built record included (`0x472a6d`), so the scene changes on the click's frame.
     fn death(self) -> f32 {
         match self {
+            Self::Custom { ghost, .. } => f32::from(u8::from(ghost)),
             Self::SelectGhost => 1.0,
             Self::Shown | Self::SelectLiving => 0.0,
         }
@@ -178,6 +181,7 @@ impl GlueFfx {
     /// under a thousandth (38/255 against 0.15).
     fn glow(self) -> f32 {
         match self {
+            Self::Custom { glow_bits, .. } => f32::from_bits(glow_bits),
             // `*0x8380b4`, the widget's OnShow pin.
             Self::Shown => 0.30,
             // `*0x838574`, the select build's living arm.

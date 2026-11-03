@@ -75,6 +75,7 @@ fn catalog() -> GlueCreateCatalog {
             name_row(1, 1, "Ada"),
             name_row(2, 0, "Bob"),
         ],
+        ..Default::default()
     }
 }
 

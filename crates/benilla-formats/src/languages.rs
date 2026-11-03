@@ -11,15 +11,16 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, parse_with_trailing_fields, str_at, u32_at};
+use crate::dbc::{field_count, loc_str, parse, parse_with_trailing_fields, str_at, u32_at};
 use crate::Chain;
 
 const LANGUAGES: &str = "DBFilesClient\\Languages.dbc";
 const CHR_RACES: &str = "DBFilesClient\\ChrRaces.dbc";
 const LANGUAGE_WORDS: &str = "DBFilesClient\\LanguageWords.dbc";
 
-/// Locale columns in a 5875 `Name_lang` block.
-const LOCALES: usize = 8;
+/// Locale columns in a 5875 `Name_lang` block; 12340 expands `Name_lang` to 16 locale columns.
+const LOCALES_112: usize = 8;
+const LOCALES_335: usize = 16;
 
 /// Race id to its base language's name, in the locale's column.
 #[derive(Debug, Default, Clone)]
@@ -40,10 +41,10 @@ impl DefaultLanguages {
     }
 }
 
-fn languages_schema() -> Schema {
+fn languages_schema(locales: usize) -> Schema {
     let mut s = Schema::new("Languages");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    for i in 0..LOCALES {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -99,7 +100,12 @@ fn language_rows(chain: &mut Chain) -> Result<Vec<(u32, Option<String>)>> {
     let bytes = chain
         .read_file(LANGUAGES)
         .with_context(|| format!("reading {LANGUAGES}"))?;
-    let langs = parse(&bytes, languages_schema(), "Languages.dbc")?;
+    let locales = if field_count(&bytes) == Some(18) {
+        LOCALES_335
+    } else {
+        LOCALES_112
+    };
+    let langs = parse(&bytes, languages_schema(locales), "Languages.dbc")?;
     let locale = chain.locale();
     Ok(langs
         .records()

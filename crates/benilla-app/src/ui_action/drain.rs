@@ -252,7 +252,7 @@ pub(crate) struct ActionPress<'w, 's> {
 pub(crate) enum UseOutcome {
     Done,
     /// The Attack slot passed `TryCast`'s dead rung: the player's Attack ([`AttackPress`]) runs.
-    Attack,
+    Attack(Option<u64>),
     /// A macro slot: its lines run inside the press (`0x4e6098 call 0x4f1460`), once the caller
     /// has the VM's host back, so the calls they make apply line by line.
     Macro(u32),
@@ -292,7 +292,7 @@ pub(crate) fn use_action(
             if ladder.dead_refusal(SPELL_ATTACK, targeting.self_store.iter().next()) {
                 return UseOutcome::Done;
             }
-            return UseOutcome::Attack;
+            return UseOutcome::Attack(press.target_guid);
         }
         Some(b) if b.kind == ACTION_KIND_SPELL => {
             // A live `ActiveIconID` spell re-pressed cancels its aura (`0x4e55f0`, cancel
@@ -337,7 +337,8 @@ pub(crate) fn use_action(
             );
             ladder.send_spell(
                 b.action,
-                &targeting.context().self_bound(press.on_self),
+                &press.target_guid.map_or_else(|| targeting.context(), |guid| targeting.context_at_guid(guid))
+                    .self_bound(press.on_self),
                 press.on_self,
             );
         }
@@ -441,11 +442,12 @@ pub(crate) fn use_action(
                         is_charter: template.flags & benilla_protocol::messages::ITEM_FLAG_CHARTER
                             != 0,
                     },
-                    &targeting.context(),
+                    &press.target_guid.map_or_else(|| targeting.context(), |guid| targeting.context_at_guid(guid))
+                        .self_bound(press.on_self),
                     ladder,
                     script,
                     gate,
-                    false,
+                    press.on_self,
                     ui_errors,
                 );
             }

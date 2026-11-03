@@ -3,12 +3,34 @@
 //! carry no `(listfile)`, so resolution is by name hash.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use benilla_mpq::Archive;
 
 use crate::{Locale, VANILLA_BASE_ORDER};
+
+/// The 3.3.5a Wrath base archives, in ascending priority.
+pub const WRATH_BASE_ORDER: &[&str] = &[
+    "common.mpq",
+    "common-2.mpq",
+    "expansion.mpq",
+    "lichking.mpq",
+];
+
+/// The 3.3.5a Wrath locale base archive prefixes, in ascending priority.
+pub const WRATH_LOCALE_BASE_PREFIXES: &[&str] = &[
+    "locale",
+    "speech",
+    "expansion-locale",
+    "expansion-speech",
+    "lichking-locale",
+    "lichking-speech",
+];
+
+fn is_wrath_install(names: &[String]) -> bool {
+    names.iter().any(|n| n.eq_ignore_ascii_case("common.mpq"))
+}
 
 /// One entry from a chain listing: an internal path and its uncompressed size.
 pub struct ChainEntry {
@@ -69,18 +91,147 @@ impl Chain {
     /// missing files far downstream.
     pub fn open(path: &Path) -> Result<Self> {
         let mut archives = Vec::new();
+        let mut locale = Locale::default();
         if path.is_dir() {
-            let mut names: Vec<String> = std::fs::read_dir(path)
+            let entries: Vec<std::fs::DirEntry> = std::fs::read_dir(path)
                 .with_context(|| format!("listing {}", path.display()))?
-                .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    // `path().is_file()` follows symlinks (`read_dir`'s file_type doesn't).
-                    entry.path().is_file().then(|| entry.file_name())
-                })
-                .filter_map(|name| name.into_string().ok())
+                .filter_map(|e| e.ok())
                 .collect();
-            // read_dir order is arbitrary; sort so case-variant ties resolve deterministically.
+            let mut names: Vec<String> = entries
+                .iter()
+                .filter_map(|e| {
+                    e.path().is_file().then(|| e.file_name().into_string().ok())
+                })
+                .flatten()
+                .collect();
             names.sort();
+
+            if is_wrath_install(&names) {
+                let find_in_names = |want: &str| {
+                    names.iter().find(|n| n.eq_ignore_ascii_case(want)).cloned()
+                };
+
+                // 1. Base root archives (lowest priority)
+                for base in WRATH_BASE_ORDER {
+                    if let Some(matched) = find_in_names(base) {
+                        let mpq = path.join(&matched);
+                        archives.push(
+                            Archive::open(&mpq).with_context(|| format!("opening {}", mpq.display()))?,
+                        );
+                    }
+                }
+
+                // 2. Root patches: patch.mpq, then patch-*.mpq (sorted)
+                if let Some(p) = find_in_names("patch.mpq") {
+                    let mpq = path.join(&p);
+                    archives.push(
+                        Archive::open(&mpq).with_context(|| format!("opening {}", mpq.display()))?,
+                    );
+                }
+                let mut root_patches: Vec<String> = names
+                    .iter()
+                    .filter(|n| {
+                        let lower = n.to_ascii_lowercase();
+                        lower.starts_with("patch-")
+                            && lower.ends_with(".mpq")
+                            && !lower.ends_with(".disabled")
+                    })
+                    .cloned()
+                    .collect();
+                root_patches.sort_by_key(|n| n.to_ascii_lowercase());
+                for p in root_patches {
+                    let mpq = path.join(&p);
+                    archives.push(
+                        Archive::open(&mpq).with_context(|| format!("opening {}", mpq.display()))?,
+                    );
+                }
+
+                // 3. Discover locale directory and mount locale archives
+                let mut detected_locale: Option<(String, PathBuf)> = None;
+                for entry in &entries {
+                    if entry.path().is_dir() {
+                        let sub_name = entry.file_name().to_string_lossy().to_string();
+                        if let Ok(sub_entries) = std::fs::read_dir(entry.path()) {
+                            let has_loc = sub_entries.flatten().any(|se| {
+                                let sn = se.file_name().to_string_lossy().to_ascii_lowercase();
+                                sn.starts_with("locale-") && sn.ends_with(".mpq")
+                            });
+                            if has_loc {
+                                detected_locale = Some((sub_name, entry.path()));
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if let Some((loc_name, loc_dir)) = detected_locale {
+                    if loc_name.len() >= 4 {
+                        let b = loc_name.as_bytes();
+                        locale = Locale::from_language_country(&b[..2], &b[2..4]);
+                    }
+                    if let Ok(loc_entries) = std::fs::read_dir(&loc_dir) {
+                        let loc_files: Vec<String> = loc_entries
+                            .flatten()
+                            .filter_map(|e| e.path().is_file().then(|| e.file_name().into_string().ok()))
+                            .flatten()
+                            .collect();
+                        let find_loc = |want: &str| {
+                            loc_files.iter().find(|n| n.eq_ignore_ascii_case(want)).cloned()
+                        };
+
+                        // Locale base archives
+                        for base_prefix in WRATH_LOCALE_BASE_PREFIXES {
+                            let expected = format!("{base_prefix}-{loc_name}.mpq");
+                            if let Some(matched) = find_loc(&expected) {
+                                let mpq = loc_dir.join(&matched);
+                                archives.push(
+                                    Archive::open(&mpq)
+                                        .with_context(|| format!("opening {}", mpq.display()))?,
+                                );
+                            }
+                        }
+
+                        // Locale patches
+                        let expected_base_patch = format!("patch-{loc_name}.mpq");
+                        if let Some(matched) = find_loc(&expected_base_patch) {
+                            let mpq = loc_dir.join(&matched);
+                            archives.push(
+                                Archive::open(&mpq)
+                                    .with_context(|| format!("opening {}", mpq.display()))?,
+                            );
+                        }
+                        let mut loc_patches: Vec<String> = loc_files
+                            .iter()
+                            .filter(|n| {
+                                let lower = n.to_ascii_lowercase();
+                                lower.starts_with(&format!("patch-{}-", loc_name.to_ascii_lowercase()))
+                                    && lower.ends_with(".mpq")
+                                    && !lower.ends_with(".disabled")
+                            })
+                            .cloned()
+                            .collect();
+                        loc_patches.sort_by_key(|n| n.to_ascii_lowercase());
+                        for p in loc_patches {
+                            let mpq = loc_dir.join(&p);
+                            archives.push(
+                                Archive::open(&mpq)
+                                    .with_context(|| format!("opening {}", mpq.display()))?,
+                            );
+                        }
+                    }
+                }
+
+                if archives.is_empty() {
+                    bail!("no readable Wrath MPQs found in {}", path.display());
+                }
+
+                let mut chain = Self { archives, locale };
+                if chain.locale == Locale::default() {
+                    chain.locale = crate::wow_ini::client_locale(&chain);
+                }
+                return Ok(chain);
+            }
+
             for name in mount_order(&names) {
                 let mpq = path.join(&name);
                 archives.push(
@@ -97,7 +248,7 @@ impl Chain {
         }
         let mut chain = Self {
             archives,
-            locale: Locale::default(),
+            locale,
         };
         chain.locale = crate::wow_ini::client_locale(&chain);
         Ok(chain)
@@ -512,6 +663,13 @@ mod tests {
             mount_order(&dir),
             owned(&["DBC.mpq", "Model.MPQ", "PATCH.mpq"])
         );
+    }
+
+    #[test]
+    fn wrath_install_is_detected_from_common_mpq() {
+        assert!(is_wrath_install(&owned(&["common.MPQ", "expansion.MPQ"])));
+        assert!(is_wrath_install(&owned(&["Common.mpq"])));
+        assert!(!is_wrath_install(&owned(&["dbc.MPQ", "model.MPQ"])));
     }
 
     /// The WM patch replaces the human female model with a custom HD rig; the base read must

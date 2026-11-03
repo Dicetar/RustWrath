@@ -311,6 +311,21 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
 
     super::relations::register(lua, &["UnitReaction", "UnitIsEnemy", "UnitIsFriend"])?;
 
+    // UnitSelectionColor(unit) (`0x60DA00`): the stock TargetFrame reads it for the target bar;
+    // without it the frame's update aborts before the dead label is refreshed.
+    g.set(
+        "UnitSelectionColor",
+        lua.create_function(|lua, token: Value| {
+            let token = crate::script::binding_abi::string_arg(
+                lua,
+                token,
+                r#"Usage: UnitSelectionColor("unit")"#,
+            )?;
+            let c = super::relations::unit_selection_color(lua, &token)?;
+            Ok((c[0], c[1], c[2], c[3]))
+        })?,
+    )?;
+
     // UnitIsCivilian(unit): killing the unit would be dishonorable, the predicate `0x612550`. It
     // shares `is_civilian_kill` with the tooltip's civilian line and `UnitPVPName`, so all agree.
     g.set(

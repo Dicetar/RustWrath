@@ -292,7 +292,7 @@ fn debug_panel_ui(
     ping: Res<crate::net::PingShared>,
     dropped: Res<crate::net::DroppedOpcodes>,
     mut weather_state: Option<ResMut<benilla_world::weather::WeatherState>>,
-    mut world: WorldReadout,
+    (mut world, quest_trace): (WorldReadout, Option<Res<crate::quest_trace::History>>),
 ) -> Result {
     if !debug.open {
         return Ok(());
@@ -332,6 +332,42 @@ fn debug_panel_ui(
                 // Room for the pinned footer: three lines, as a wider font wraps the hotkey map.
                 .max_height(panel_h - 56.0)
                 .show(ui, |ui| {
+                    if let Some(history) = quest_trace.as_ref() {
+                        ui.collapsing("Interaction diagnostics", |ui| {
+                            let (received, evicted, dropped) = history.counters();
+                            ui.label(format!("{received} recorded · {evicted} evicted · {dropped} dropped"));
+                            ui.label(format!("{} upstream gap events", history.source_gaps()));
+                            ui.label(format!("{} object-update packet samples omitted", history.sampled_updates()));
+                            if ui.button("Save local report").clicked() {
+                                match history.export(*stamp) {
+                                    Ok(()) => info!("quest diagnostics export started"),
+                                    Err(error) => warn!("quest diagnostics export failed: {error}"),
+                                }
+                            }
+                            ui.label(history.export_status());
+                            for line in history.recent_incidents() {
+                                ui.label(line);
+                            }
+                            for line in history.action_summaries() {
+                                ui.label(line);
+                            }
+                            for line in history.panel_correlations() {
+                                ui.label(line);
+                            }
+                            for line in history.slot_correlations() {
+                                ui.label(line);
+                            }
+                            for line in history.turn_in_correlations() {
+                                ui.label(line);
+                            }
+                            for line in history.ui_error_correlations() {
+                                ui.label(line);
+                            }
+                            for line in history.recent() {
+                                ui.label(line);
+                            }
+                        });
+                    }
                     // Disjoint borrows of the sections so each can drive its own widgets.
                     let DebugState {
                         models: m,

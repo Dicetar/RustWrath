@@ -2,12 +2,13 @@
 //! once per process (`0x46e300`, from `CGlueMgr::Initialize`) out of every row whose column 1
 //! equals the client Region ([`crate::client_region`]), in file order: column 0 is the id a
 //! realm's wire category byte is matched against, and the row's localized name is the tab's
-//! label (`GetRealmCategories`, `0x46f238`).
+//! label (`GetRealmCategories`, `0x46f238`). Build 12340 instead keeps all 21-field rows;
+//! column 1 is a locale mask, and localized names start at column 4.
 
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{loc_str, parse, u32_at};
+use crate::dbc::{field_count, loc_str, parse, u32_at};
 use crate::Chain;
 
 const CFG_CATEGORIES: &str = "DBFilesClient\\Cfg_Categories.dbc";
@@ -21,13 +22,16 @@ pub struct RealmCategory {
     pub name: String,
 }
 
-/// `ID`, `Region`, eight locale names and their flags: the 11 columns × 0x2c bytes the loader
-/// (`0x5411b0`) gates on.
-fn cfg_categories_schema() -> Schema {
+/// The donor's 11-field schema or 12340's 21-field Cfg_CategoriesRec layout.
+fn cfg_categories_schema(wrath: bool) -> Schema {
     let mut s = Schema::new("Cfg_Categories");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    s.add_field(SchemaField::new("Region", FieldType::UInt32));
-    for i in 0..8 {
+    s.add_field(SchemaField::new(if wrath { "LocaleMask" } else { "Region" }, FieldType::UInt32));
+    if wrath {
+        s.add_field(SchemaField::new("CreateCharsetMask", FieldType::UInt32));
+        s.add_field(SchemaField::new("Flags", FieldType::UInt32));
+    }
+    for i in 0..if wrath { 16 } else { 8 } {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -35,22 +39,25 @@ fn cfg_categories_schema() -> Schema {
 }
 
 /// The categories of `region`, in file order (`0x46e3b1`: a row joins when its column 1 equals
-/// the Region). A Region no row names yields none.
+/// the Region). Build 12340 initializes every row and groups realms by their category IDs.
 pub fn load_realm_categories(chain: &mut Chain, region: u32) -> Result<Vec<RealmCategory>> {
     let bytes = chain
         .read_file(CFG_CATEGORIES)
         .with_context(|| format!("reading {CFG_CATEGORIES}"))?;
-    let rs = parse(&bytes, cfg_categories_schema(), "Cfg_Categories")?;
+    // 12340 Cfg_CategoriesRec: ID, LocaleMask, CreateCharsetMask, Flags, 16 names,
+    // NameFlags. CRealmList::Initialize (0x004DF580) retains every row; column 1 is not Region.
+    let wrath = field_count(&bytes) == Some(21);
+    let rs = parse(&bytes, cfg_categories_schema(wrath), "Cfg_Categories")?;
     let locale = chain.locale();
     Ok(rs
         .records()
         .iter()
-        .filter(|r| u32_at(r, 1) == Some(region))
+        .filter(|r| wrath || u32_at(r, 1) == Some(region))
         .filter_map(|r| {
             Some(RealmCategory {
                 id: u32_at(r, 0)?,
                 // An empty name is pushed as the empty string; only a missing row reads "UNKNOWN".
-                name: loc_str(&rs, r, 2, locale).unwrap_or_default(),
+                name: loc_str(&rs, r, if wrath { 4 } else { 2 }, locale).unwrap_or_default(),
             })
         })
         .collect())

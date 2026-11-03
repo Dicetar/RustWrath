@@ -16,6 +16,8 @@ use super::super::{DisplayModel, EntityPart, SkinComposites, SkinKey, SkinSectio
 pub(super) struct CharLook {
     pub(super) race: u8,
     pub(super) sex: u8,
+    /// `UNIT_FIELD_BYTES_0` class; 6 is the Death Knight, whose eyes are forced to geoset 1703.
+    pub(super) class: u8,
     /// skinColor: keys the composite and the extra-skin BLP (tauren fur, M2 type 8), which a baked
     /// NPC atlas does not cover.
     pub(super) skin: u8,
@@ -50,6 +52,9 @@ pub(super) fn resolve_char_look(
         return Some(CharLook {
             race: npc.race,
             sex: npc.sex,
+            // A display row has no class; a creature's eye glow would come from its face flags,
+            // which this path does not carry.
+            class: 0,
             skin: npc.skin,
             hair_style: npc.hair_style,
             hair_color: npc.hair_color,
@@ -67,6 +72,7 @@ pub(super) fn resolve_char_look(
         return Some(CharLook {
             race: look.race,
             sex: look.sex,
+            class: 0,
             skin: look.skin,
             hair_style: look.hair_style,
             hair_color: look.hair_color,
@@ -82,6 +88,7 @@ pub(super) fn resolve_char_look(
         return Some(CharLook {
             race: s.unit_race()?,
             sex: s.unit_gender()?,
+            class: s.unit_class().unwrap_or(0),
             skin: s.player_skin().unwrap_or(0),
             hair_style: s.player_hair_style().unwrap_or(0),
             hair_color: s.player_hair_color().unwrap_or(0),
@@ -158,9 +165,11 @@ pub(in crate::entities) fn equip_geosets(
     cloak: u32,
     helm: u32,
     tabard_preview: bool,
+    eye_glow: bool,
 ) -> benilla_formats::EquipGeosets {
     let mut eg = benilla_formats::EquipGeosets {
         tabard_preview,
+        eye_glow,
         ..Default::default()
     };
     if let Some(d) = displays {

@@ -16,7 +16,7 @@
 //! prints its state; they run too. The trailing address is
 //! the register site in `reference/cvars.tsv`.
 
-use super::table::{same, Registered};
+use super::table::{ours, same, Registered};
 
 pub(super) const INERT: &[Registered] = &[
     // ── The camera block ─────────────────────────────────────────────────────────────────────
@@ -264,4 +264,52 @@ pub(super) const INERT: &[Registered] = &[
     same("UnitNameRenderMode", "2"),        // 0x48fdc3
     same("violenceLevel", "2"),             // 0x6c5ae1
     same("waterLOD", "0").checked(benilla_ui::script::check_water_lod), // 0x688784
+
+    // ── 3.3.5a stock-interface names absent from the 1.12 catalog ───────────────────────────
+    // The selected Wrath FrameXML reads these at load and on panel updates. They are registered
+    // with their 12340 register-site defaults so the stock `GetCVar`/`SetCVar` calls resolve;
+    // the settings' backends are not claimed here. Where a reader exists in the client it is
+    // named; otherwise the consumer is the stock option table, whose checkbox/cycle reads the
+    // key and has no host implementation yet.
+    ours("autoDismountFlying", "0", "GameUI_CVar.cpp:461; Unit_C.cpp:4885 reads it, no flight path here"),
+    ours("autoQuestProgress", "1", "GameUI_CVar.cpp:490; InterfaceOptionsPanels.lua:788"),
+    ours("autoRangedCombat", "1", "GameUI_CVar.cpp:470; InterfaceOptionsPanels.lua:243"),
+    ours("buffDurations", "1", "GameUI_CVar.cpp:566; InterfaceOptionsPanels.lua:544"),
+    ours("equipmentManager", "0", "GameUI_CVar.cpp:468; InterfaceOptionsPanels.lua:1394"),
+    ours("hidePartyInRaid", "0", "GameUI_CVar.cpp:559; InterfaceOptionsPanels.lua:1144"),
+    ours("showTimestamps", "none", "GameUI_CVar.cpp:523; chat timestamp format, not implemented"),
+    ours("toastDuration", "4", "GameUI_CVar.cpp:577; Battle.net toast duration, no Battle.net here"),
+    ours("partyBackgroundOpacity", "0.5", "GameUI_CVar.cpp:558; PartyMemberFrame.lua:559"),
+    ours("watchFrameWidth", "0", "GameUI_CVar.cpp:505; WatchFrame.lua:278"),
+    ours("worldMapOpacity", "0", "GameUI_CVar.cpp:504; WorldMapFrame.lua:182"),
+    ours("targetOfTargetMode", "5", "GameUI_CVar.cpp:474; InterfaceOptionsPanels.lua:254"),
+    ours("threatWarning", "3", "GameUI_CVar.cpp:642; InterfaceOptionsPanels.lua:693"),
+    ours("displayWorldPVPObjectives", "1", "GameUI_CVar.cpp:485; InterfaceOptionsPanels.lua:607"),
+    ours("screenEdgeFlash", "1", "GameUI_CVar.cpp:482; PlayerFrame.lua:159"),
+    ours("removeChatDelay", "0", "GameUI_CVar.cpp:512; InterfaceOptionsPanels.lua:830"),
+    ours("lockActionBars", "1", "GameUI_CVar.cpp:525; InterfaceOptionsPanels.lua:893"),
+    ours("UnitNameNonCombatCreatureName", "0", "PlayerName_CVar.cpp:43; object-name callback, not projected"),
+    ours("combatTextFloatMode", "1", "GameUI_CVar.cpp:535; InterfaceOptionsPanels.lua:1040"),
+    ours("CombatHealing", "1", "GameUI_CVar.cpp:533; InterfaceOptionsPanels.lua:982"),
+    ours("statusTextPercentage", "0", "GameUI_CVar.cpp:556; InterfaceOptionsPanels.lua:1137"),
+    ours("showPartyBackground", "0", "GameUI_CVar.cpp:557; InterfaceOptionsPanels.lua:1143"),
+    ours("enableWoWMouse", "0", "InputControl.cpp:105; no SteelSeries device path"),
+    ours("showTutorials", "1", "GameUI_CVar.cpp:582; InterfaceOptionsPanels.lua:1401"),
+    ours("timeMgrAlarmEnabled", "0", "GameUI_CVar.cpp:632; UIParent.lua:481"),
+    ours("partyStatusText", "0", "GameUI_CVar.cpp:554; InterfaceOptionsPanels.lua:1135"),
+    ours("petStatusText", "0", "GameUI_CVar.cpp:553; InterfaceOptionsPanels.lua:1134"),
+    // 3.3.5a character-component texture depth; the Wrath character pipeline does not yet
+    // consume it.
+    ours("componentTextureLevel", "8", "CharacterComponent.cpp:205; component-texture mip depth"),
+    // 3.3.5a Video panel's projected-texture switch; no renderer consumer is projected.
+    ours("projectedTextures", "0", "WorldParam_CVar.cpp:653; no renderer consumer"),
+    // 3.3.5a sound-panel rows with no benilla backend (hardware mixing, HRTF, DSP effects).
+    ours("Sound_EnableHardware", "0", "SoundInterface2_CVar.cpp:169; hardware mixing absent"),
+    ours("Sound_EnableSoftwareHRTF", "0", "SoundInterface2_CVar.cpp:161; HRTF absent"),
+    ours("Sound_EnableDSPEffects", "1", "SoundInterface2_CVar.cpp:262; no DSP pipeline"),
+    ours("Sound_OutputQuality", "1", "SoundInterface2_CVar.cpp:158; mixer quality tiers absent"),
+    // 3.3.5a launcher/account rows with no in-client reader in this build.
+    ours("showToolsUI", "-1", "12340 launcher display CVar: show the launcher at start"),
+    ours("converted", "0", "12340 trial-to-retail conversion state"),
+    ours("accounttype", "", "12340 account type"),
 ];

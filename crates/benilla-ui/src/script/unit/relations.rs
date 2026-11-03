@@ -71,6 +71,35 @@ fn held(model: &Model, guid: u64) -> Option<u64> {
     (guid != 0 && rel.holds(guid)).then_some(guid)
 }
 
+/// `UnitSelectionColor(unit)` (`0x60DA00`): the selection highlight as `r, g, b, a`, the reaction
+/// color table at `0xBD0C94` when the unit is held; all zero for nobody. The stock TargetFrame
+/// reads it for the target bar; without the global its update dies there and leaves the previous
+/// target's state (a stale "Dead") on a live one.
+pub(super) fn unit_selection_color(lua: &Lua, token: &str) -> mlua::Result<[f64; 4]> {
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    let guid = guid_of(&model, token)?;
+    let Some(guid) = held(&model, guid) else {
+        return Ok([0.0; 4]);
+    };
+    let player = model
+        .unit("player")
+        .map_or(model.unit_guids.player, |unit| unit.guid);
+    let reaction = model
+        .unit_relations
+        .as_deref()
+        .and_then(|rel| rel.reaction(guid, player))
+        .unwrap_or(3);
+    // `s_reactionColors` (`0xBD0C94`): hostile red, unfriendly orange, neutral yellow, friendly
+    // green. The array holds BGRA in the binary; these are the RGB components it paints.
+    let (r, g, b) = match reaction {
+        0 | 1 => (1.0, 0.0, 0.0),
+        2 => (1.0, 0.5, 0.0),
+        3 => (1.0, 1.0, 0.0),
+        _ => (0.0, 1.0, 0.0),
+    };
+    Ok([r, g, b, 1.0])
+}
+
 /// `0x491900`: a nonzero guid that is the player, his pet, a party member or a party member's pet
 /// (`0x4e80a0`), or a raid member or a raid member's pet (`0x4bafd0`): the player or his pet, else
 /// a group row ([`UnitGuids::roster_token`]). It reads the group tables by guid, so a member out of
@@ -320,6 +349,36 @@ mod tests {
         assert_eq!(
             answer(&script(v), r#"UnitReaction("player", "target")"#),
             Some(8)
+        );
+    }
+
+    /// `UnitSelectionColor` (`0x60DA00`) paints the reaction table's RGB; a token naming no held
+    /// unit is transparent black, which the stock callers tolerate.
+    #[test]
+    fn unit_selection_color_is_the_reaction_color() {
+        for (rank, want) in [
+            (1u8, (1.0, 0.0, 0.0)),
+            (2, (1.0, 0.5, 0.0)),
+            (3, (1.0, 1.0, 0.0)),
+            (4, (0.0, 1.0, 0.0)),
+            (7, (0.0, 1.0, 0.0)),
+        ] {
+            let mut v = held(&[ME, FOE]);
+            v.reaction.insert((FOE, ME), rank);
+            let s = script(v);
+            assert_eq!(
+                s.eval::<(f64, f64, f64, f64)>(r#"return UnitSelectionColor("target")"#)
+                    .unwrap(),
+                (want.0, want.1, want.2, 1.0),
+                "rank {rank}"
+            );
+        }
+        let s = script(held(&[ME]));
+        assert_eq!(
+            s.eval::<(f64, f64, f64, f64)>(r#"return UnitSelectionColor("target")"#)
+                .unwrap(),
+            (0.0, 0.0, 0.0, 0.0),
+            "a target the host does not hold"
         );
     }
 

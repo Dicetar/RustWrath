@@ -205,6 +205,8 @@ pub enum SessionEvent {
     },
     /// `SMSG_CHAR_CREATE`/`_DELETE`'s raw `WorldResult`; on success a fresh roster comes first.
     CharActionResult { action: CharAction, code: u8 },
+    /// Wrath SMSG_REALM_SPLIT: echoed choice, authoritative state, and split date.
+    RealmSplit { choice: u32, state: u32, date: String },
     /// `SMSG_CHAR_RENAME`'s result byte and, on success, the renamed guid and new name; emitted
     /// by the IO thread at character select, never wire-decoded.
     CharRenamed {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::action::{ActionRequest, ActionResult};
 use crate::error::{Error, Result};
 use crate::health::SourceHealth;
-use crate::observation::{OBSERVATION_SCHEMA_VERSION, Observation};
+use crate::observation::Observation;
 
 /// Wire protocol name.
 pub const PROTOCOL_NAME: &str = "benilla.wm_native";

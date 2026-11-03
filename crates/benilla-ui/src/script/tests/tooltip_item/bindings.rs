@@ -6,6 +6,84 @@ use std::collections::HashMap;
 use super::script;
 use crate::script::*;
 
+#[test]
+fn hyperlink_compare_selects_worn_rings() {
+    let mut s = script();
+    s.run("GameTooltip = CreateFrame('GameTooltip', 'GameTooltip', nil, 'TestTooltipTemplate')").unwrap();
+    s.set_unit("player", Some(UnitState { exists: true, has_object: true, ..Default::default() }));
+    let mut inv: InventorySlots = Default::default();
+    inv[11] = Some(InvSlotView { item_id: 7000, name: Some("First ring".into()), ..Default::default() });
+    inv[12] = Some(InvSlotView { item_id: 7001, name: Some("Second ring".into()), ..Default::default() });
+    s.set_inventory_slots(inv);
+    for (id, name) in [(7000, "First ring"), (7001, "Second ring"), (7002, "Offered ring")] {
+        s.set_item_template(id, ItemTemplateView { name: name.into(), inventory_type: 11, ..Default::default() });
+    }
+    assert!(s.eval::<bool>("return GameTooltip:SetHyperlinkCompareItem('item:7002', 1) == 1").unwrap());
+    assert!(s.eval::<bool>("return GameTooltip:SetHyperlinkCompareItem('item:7002', 2) == 1").unwrap());
+    assert!(s.eval::<bool>("return GameTooltip:SetHyperlinkCompareItem('item:7002', 3) == nil").unwrap());
+    assert!(s.run("GameTooltip:SetHyperlinkCompareItem({})").is_err());
+}
+
+/// `SetCompareItem`'s dual-wield branch: both hands present and different answer the off hand
+/// for offset 0 and the main hand for a non-zero offset, and the ordinary `SetInventoryItem`
+/// render carries the `CURRENTLY_EQUIPPED` header the compare latch armed.
+#[test]
+fn hyperlink_compare_handles_dual_wield_and_the_equipped_header() {
+    let mut s = script();
+    s.run(
+        "local a = CreateFrame('Button', 'CTA'); a:SetPoint('CENTER', 0, 0); a:SetWidth(10); a:SetHeight(10); \
+         CT = CreateFrame('GameTooltip', 'CT', nil, 'TestTooltipTemplate'); CT:SetOwner(a, 'ANCHOR_RIGHT')",
+    )
+    .unwrap();
+    s.set_unit("player", Some(UnitState { exists: true, has_object: true, ..Default::default() }));
+    let mut inv: InventorySlots = Default::default();
+    inv[16] = Some(InvSlotView {
+        item_id: 7100,
+        guid: 0x7100,
+        name: Some("Main Blade".into()),
+        inventory_type: Some(13),
+        ..Default::default()
+    });
+    inv[17] = Some(InvSlotView {
+        item_id: 7101,
+        guid: 0x7101,
+        name: Some("Off Blade".into()),
+        inventory_type: Some(13),
+        ..Default::default()
+    });
+    s.set_inventory_slots(inv.clone());
+    for (id, name, inventory_type) in [
+        (7100, "Main Blade", 13),
+        (7101, "Off Blade", 13),
+        (7102, "Offered Blade", 13),
+    ] {
+        s.set_item_template(
+            id,
+            ItemTemplateView {
+                name: name.into(),
+                inventory_type,
+                ..Default::default()
+            },
+        );
+    }
+    let line = |s: &UiScript, n: u8| {
+        s.eval::<Option<String>>(&format!("return CTTextLeft{n} and CTTextLeft{n}:GetText()"))
+            .unwrap()
+    };
+    assert!(s.eval::<bool>("return CT:SetHyperlinkCompareItem('item:7102', 1) == 1").unwrap());
+    assert_eq!(line(&s, 1).as_deref(), Some("[CURRENTLY_EQUIPPED]"));
+    assert_eq!(line(&s, 2).as_deref(), Some("Off Blade"));
+    assert!(s.eval::<bool>("return CT:SetHyperlinkCompareItem('item:7102', 2) == 1").unwrap());
+    assert_eq!(line(&s, 2).as_deref(), Some("Main Blade"));
+    // A miss leaves the tooltip untouched and answers nil, never a success over stale content.
+    let before = line(&s, 2);
+    inv[16] = None;
+    inv[17] = None;
+    s.set_inventory_slots(inv);
+    assert!(s.eval::<bool>("return CT:SetHyperlinkCompareItem('item:7102', 1) == nil").unwrap());
+    assert_eq!(line(&s, 2), before);
+}
+
 /// The compare as 1.12.1 drives it, from the vendor row's `SetMerchantCompareItem`
 /// (`MerchantFrame.xml:63-80`): the worn item's ordinary tooltip under a gray
 /// `CURRENTLY_EQUIPPED` header (p5). Both callers pass p4 zero, so the name keeps its quality

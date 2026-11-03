@@ -438,6 +438,8 @@ mod tests {
             level: 1,
             zone: None,
             file_string: String::new(),
+            class_file_string: String::new(),
+            background_model: String::new(),
             gender: 0,
             flags: 0,
             model: false,

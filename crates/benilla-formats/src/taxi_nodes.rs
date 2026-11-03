@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, loc_str, parse, u32_at};
-use crate::Chain;
+use crate::dbc::{f32_at, field_count, loc_str, parse, u32_at};
+use crate::{Chain, Locale};
 
 const TAXI_NODES: &str = "DBFilesClient\\TaxiNodes.dbc";
 
@@ -61,7 +61,10 @@ impl TaxiNodes {
     }
 }
 
-fn schema() -> Schema {
+fn schema(fields: Option<usize>) -> Schema {
+    // 1.12 (5875) has 16 fields (8 locale columns); 3.3.5a (12340 `TaxiNodesRec::Read`
+    // `0x008B9E40`) has 24 fields (16 locale columns).
+    let other_locales = if fields == Some(24) { 15 } else { 7 };
     let mut s = Schema::new("TaxiNodes");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
     s.add_field(SchemaField::new("MapID", FieldType::UInt32));
@@ -72,7 +75,7 @@ fn schema() -> Schema {
     s.add_field(SchemaField::new_array(
         "NameOtherLocales",
         FieldType::String,
-        7,
+        other_locales,
     ));
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
     s.add_field(SchemaField::new("MountIdHorde", FieldType::UInt32));
@@ -80,13 +83,10 @@ fn schema() -> Schema {
     s
 }
 
-/// Read `TaxiNodes.dbc` off the patch chain into a [`TaxiNodes`] catalog.
-pub fn load_taxi_nodes(chain: &mut Chain) -> Result<TaxiNodes> {
-    let bytes = chain
-        .read_file(TAXI_NODES)
-        .context("reading TaxiNodes.dbc")?;
-    let rs = parse(&bytes, schema(), "TaxiNodes")?;
-    let locale = chain.locale();
+fn parse_taxi_nodes_bytes(bytes: &[u8], locale: Locale) -> Result<TaxiNodes> {
+    let fields = field_count(bytes);
+    let (horde_col, alliance_col) = if fields == Some(24) { (22, 23) } else { (14, 15) };
+    let rs = parse(bytes, schema(fields), "TaxiNodes")?;
     let rows = rs.records().iter().filter_map(|r| {
         let id = u32_at(r, 0)?;
         let (x, y, z) = (f32_at(r, 2)?, f32_at(r, 3)?, f32_at(r, 4)?);
@@ -95,11 +95,19 @@ pub fn load_taxi_nodes(chain: &mut Chain) -> Result<TaxiNodes> {
             map_id: u32_at(r, 1).unwrap_or(0),
             pos: [x, y, z],
             name: loc_str(&rs, r, 5, locale).unwrap_or_default(),
-            mount_horde: u32_at(r, 14).unwrap_or(0),
-            mount_alliance: u32_at(r, 15).unwrap_or(0),
+            mount_horde: u32_at(r, horde_col).unwrap_or(0),
+            mount_alliance: u32_at(r, alliance_col).unwrap_or(0),
         })
     });
     Ok(TaxiNodes::from_rows(rows))
+}
+
+/// Read `TaxiNodes.dbc` off the patch chain into a [`TaxiNodes`] catalog.
+pub fn load_taxi_nodes(chain: &mut Chain) -> Result<TaxiNodes> {
+    let bytes = chain
+        .read_file(TAXI_NODES)
+        .context("reading TaxiNodes.dbc")?;
+    parse_taxi_nodes_bytes(&bytes, chain.locale())
 }
 
 #[cfg(test)]
@@ -112,7 +120,7 @@ mod tests {
         let data = crate::wow_data_or_skip!();
         let mut chain = crate::open_chain(&data).expect("open chain");
         let cat = load_taxi_nodes(&mut chain).expect("load TaxiNodes");
-        assert_eq!(cat.len(), 85, "1.12 ships 85 taxi nodes");
+        assert!(cat.len() >= 85, "at least 85 taxi nodes");
 
         let stormwind = cat.get(2).expect("node 2 exists");
         assert_eq!(stormwind.name, "Stormwind, Elwynn");
@@ -126,5 +134,36 @@ mod tests {
         // The other end of the hop the `TaxiPath` test pins.
         let sentinel_hill = cat.get(4).expect("node 4 exists");
         assert_eq!(sentinel_hill.name, "Sentinel Hill, Westfall");
+    }
+
+    #[test]
+    fn wrath_24_field_taxi_nodes_schema_parses_mounts_after_16_locales() {
+        let strings = b"\0Stormwind, Elwynn\0";
+        let mut dbc = Vec::new();
+        dbc.extend_from_slice(b"WDBC");
+        dbc.extend_from_slice(&1u32.to_le_bytes()); // 1 record
+        dbc.extend_from_slice(&24u32.to_le_bytes()); // 24 fields (12340)
+        dbc.extend_from_slice(&(24u32 * 4).to_le_bytes()); // 96-byte record
+        dbc.extend_from_slice(&(strings.len() as u32).to_le_bytes());
+        let mut rec = [0u32; 24];
+        rec[0] = 2; // ID
+        rec[1] = 0; // MapID
+        rec[2] = (-8842.0f32).to_bits();
+        rec[3] = 488.5f32.to_bits();
+        rec[4] = 109.6f32.to_bits();
+        rec[5] = 1; // Name enUS offset
+        rec[22] = 0; // MountIdHorde
+        rec[23] = 541; // MountIdAlliance
+        for field in rec {
+            dbc.extend_from_slice(&field.to_le_bytes());
+        }
+        dbc.extend_from_slice(strings);
+
+        let cat = parse_taxi_nodes_bytes(&dbc, crate::Locale::from_index(0).unwrap())
+            .expect("24-field TaxiNodes parses");
+        let node = cat.get(2).expect("node 2");
+        assert_eq!(node.name, "Stormwind, Elwynn");
+        assert_eq!(node.mount_horde, 0);
+        assert_eq!(node.mount_alliance, 541);
     }
 }

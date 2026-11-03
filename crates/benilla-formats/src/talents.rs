@@ -138,20 +138,21 @@ impl TalentCatalog {
     }
 }
 
-fn talent_schema() -> Schema {
+fn talent_schema(fields: usize) -> Schema {
     let mut s = Schema::new("Talent");
-    for i in 0..TALENT_FIELDS {
+    for i in 0..fields {
         s.add_field(SchemaField::new(format!("F{i}"), FieldType::UInt32));
     }
     s
 }
 
-fn talent_tab_schema() -> Schema {
+fn talent_tab_schema(fields: usize) -> Schema {
     let mut s = Schema::new("TalentTab");
-    for i in 0..TALENT_TAB_FIELDS {
+    let bg_col = fields - 1;
+    for i in 0..fields {
         if i == COL_TT_NAME {
             s.add_field(SchemaField::new("NameEnUs", FieldType::String));
-        } else if i == COL_TT_BACKGROUND {
+        } else if i == bg_col {
             s.add_field(SchemaField::new("BackgroundFile", FieldType::String));
         } else {
             s.add_field(SchemaField::new(format!("F{i}"), FieldType::UInt32));
@@ -165,7 +166,14 @@ pub fn load_talent_catalog(chain: &mut Chain) -> Result<TalentCatalog> {
     let tab_bytes = chain
         .read_file(TALENT_TAB)
         .context("reading TalentTab.dbc")?;
-    let tab_set = parse(&tab_bytes, talent_tab_schema(), "TalentTab.dbc")?;
+    let tab_fields = if crate::dbc::field_count(&tab_bytes) == Some(24) {
+        24
+    } else {
+        TALENT_TAB_FIELDS
+    };
+    let shift = if tab_fields == 24 { 8 } else { 0 };
+    let bg_col = if tab_fields == 24 { 23 } else { COL_TT_BACKGROUND };
+    let tab_set = parse(&tab_bytes, talent_tab_schema(tab_fields), "TalentTab.dbc")?;
     let icons = load_spell_icon_map(chain)?;
     let locale = chain.locale();
     let mut tabs = Vec::new();
@@ -174,15 +182,20 @@ pub fn load_talent_catalog(chain: &mut Chain) -> Result<TalentCatalog> {
         tabs.push(TalentTabInfo {
             id,
             name: loc_str(&tab_set, r, COL_TT_NAME, locale).unwrap_or_default(),
-            race_mask: u32_at(r, COL_TT_RACE_MASK).unwrap_or(0),
-            class_mask: u32_at(r, COL_TT_CLASS_MASK).unwrap_or(0),
-            background: str_at(&tab_set, r, COL_TT_BACKGROUND).unwrap_or_default(),
-            icon: u32_at(r, COL_TT_SPELL_ICON).and_then(|id| icons.get(&id).cloned()),
+            race_mask: u32_at(r, COL_TT_RACE_MASK + shift).unwrap_or(0),
+            class_mask: u32_at(r, COL_TT_CLASS_MASK + shift).unwrap_or(0),
+            background: str_at(&tab_set, r, bg_col).unwrap_or_default(),
+            icon: u32_at(r, COL_TT_SPELL_ICON + shift).and_then(|id| icons.get(&id).cloned()),
         });
     }
 
     let t_bytes = chain.read_file(TALENT).context("reading Talent.dbc")?;
-    let t_set = parse(&t_bytes, talent_schema(), "Talent.dbc")?;
+    let t_fields = if crate::dbc::field_count(&t_bytes) == Some(23) {
+        23
+    } else {
+        TALENT_FIELDS
+    };
+    let t_set = parse(&t_bytes, talent_schema(t_fields), "Talent.dbc")?;
     let mut by_tab: HashMap<u32, Vec<Talent>> = HashMap::new();
     for r in t_set.records() {
         let Some(id) = u32_at(r, 0) else { continue };

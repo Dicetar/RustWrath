@@ -56,6 +56,7 @@ const WRATH_LOCALES: usize = 9;
 /// per-locale names.
 #[derive(Debug, Clone, Default)]
 struct Row {
+    expansion: u32,
     name: String,
     file: String,
     /// `CinematicSequenceID`.
@@ -81,6 +82,9 @@ pub struct LocalizedRaceLabel {
 pub struct ChrRaces(HashMap<u32, Row>);
 
 impl ChrRaces {
+    pub fn required_expansion(&self, race: u32) -> Option<u32> {
+        self.0.get(&race).map(|r| r.expansion)
+    }
     /// A table of `(id, name, file)` rows.
     pub fn from_rows<'a>(rows: impl IntoIterator<Item = (u32, &'a str, &'a str)>) -> Self {
         Self(
@@ -261,6 +265,7 @@ fn table_from_wrath(bytes: &[u8], locale_index: usize) -> Result<ChrRaces> {
                 name: names.get(locale_index).cloned().flatten().unwrap_or_default(),
                 file: str_at(&rs, r, WRATH_FILE_FIELD).unwrap_or_default(),
                 intro: u32_at(r, WRATH_INTRO_FIELD).unwrap_or(0),
+                expansion: u32_at(r, 68).unwrap_or(0),
                 names,
                 female_names,
                 male_names,

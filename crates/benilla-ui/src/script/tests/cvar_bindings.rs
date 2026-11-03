@@ -3,6 +3,88 @@
 
 use crate::script::UiScript;
 
+#[test]
+fn wrath_glue_rejects_unknown_cvars_instead_of_inventing_defaults() {
+    let s = UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.register_cvars([("Sound_NumChannels", "32")]);
+    assert_eq!(s.eval::<String>("return GetCVar('Sound_NumChannels')").unwrap(), "32");
+    for call in ["GetCVar", "GetCVarDefault", "GetCVarMin", "GetCVarMax"] {
+        assert!(s.run(&format!("{call}('missing-setting')")).unwrap_err().to_string()
+            .contains("Couldn't find CVar named 'missing-setting'"));
+    }
+}
+
+/// `GetCVarMin`/`GetCVarMax` are 3.3.5 glue verbs (`0x004DDEA0`/`0x004DDF80`) with no 1.12
+/// counterpart: `reference/lua_globals.tsv` holds only `GetCVar` and `GetCVarDefault`. The target
+/// therefore decides, not the VM kind — the app builds the Wrath glue VM with the Wrath target
+/// (`glue_with_target(selected_ui_target())`), and a vanilla glue VM must not grow them.
+#[test]
+fn the_cvar_limit_getters_are_wrath_only() {
+    for (label, s) in [
+        (
+            "wrath glue",
+            UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap(),
+        ),
+        (
+            "wrath in-game",
+            UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap(),
+        ),
+    ] {
+        s.register_cvars([("farclip", "350"), ("extShadowQuality", "0")]);
+        assert_eq!(
+            s.eval::<f64>("return GetCVarMin('farclip')").unwrap(),
+            177.0,
+            "{label}: 0x004DDEA0's farclip minimum"
+        );
+        assert_eq!(
+            s.eval::<f64>("return GetCVarMax('farclip')").unwrap(),
+            1277.0,
+            "{label}: 0x004DDF80's farclip maximum"
+        );
+        assert_eq!(
+            s.eval::<f64>("return GetCVarMin('extShadowQuality')").unwrap(),
+            0.0,
+            "{label}: the shadow floor the reference does answer"
+        );
+        // The shadow maximum needs a host capability projection; until then the limit is nil,
+        // which the stock `…MaxSafe` helpers tolerate. It is not a fabricated number.
+        assert!(
+            s.eval::<Option<f64>>("return GetCVarMax('extShadowQuality')")
+                .unwrap()
+                .is_none(),
+            "{label}: no invented shadow maximum"
+        );
+        // Strict: an unknown name still raises, never a synthesized limit.
+        assert!(
+            s.run("GetCVarMin('missing-setting')")
+                .unwrap_err()
+                .to_string()
+                .contains("Couldn't find CVar named 'missing-setting'"),
+            "{label}"
+        );
+    }
+    for (label, s) in [
+        ("vanilla glue", UiScript::new_glue().unwrap()),
+        ("vanilla in-game", UiScript::new().unwrap()),
+    ] {
+        assert_eq!(
+            s.eval::<String>("return type(GetCVarMin)").unwrap(),
+            "nil",
+            "{label}: 1.12 has no GetCVarMin"
+        );
+        assert_eq!(
+            s.eval::<String>("return type(GetCVarMax)").unwrap(),
+            "nil",
+            "{label}: 1.12 has no GetCVarMax"
+        );
+        assert_eq!(
+            s.eval::<String>("return type(GetCVar)").unwrap(),
+            "function",
+            "{label}: the 1.12 pair stays"
+        );
+    }
+}
+
 fn script_with(rows: &[(&str, &str)]) -> UiScript {
     let s = UiScript::new().unwrap();
     s.register_cvars(rows.iter().copied());

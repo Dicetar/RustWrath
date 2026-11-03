@@ -15,6 +15,9 @@ authors = ["sam <samuv.eth@gmail.com>"]
 [workspace.lints.clippy]
 too_many_arguments = "allow"
 
+[workspace.lints.rust]
+unexpected_cfgs = "allow"
+
 [workspace.dependencies]
 anyhow = "1.0.102"
 # bevy's default features spelled out without `audio`: `2d`, `3d` and `ui` each pull `bevy_audio`

@@ -38,6 +38,7 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::RealmList, on_login_edge)
         .net_handler(K::CharacterList, on_character_list)
         .net_handler(K::CharActionResult, on_login_edge)
+        .net_handler(K::RealmSplit, on_login_edge)
         .net_handler(K::CharRenamed, on_login_edge)
         .net_handler(K::CharacterLoginFailed, on_login_edge)
         .net_handler(K::CinematicTriggered, on_login_edge)
@@ -74,6 +75,7 @@ pub(crate) struct Edges<'w> {
     char_lists: MessageWriter<'w, CharListMessage>,
     realm_lists: MessageWriter<'w, RealmListMessage>,
     char_actions: MessageWriter<'w, CharActionResultMessage>,
+    realm_split: MessageWriter<'w, super::RealmSplitMessage>,
     char_renames: MessageWriter<'w, super::CharRenameMessage>,
     char_login_failures: MessageWriter<'w, CharacterLoginFailedMessage>,
     entered_world: MessageWriter<'w, EnteredWorldMessage>,
@@ -147,6 +149,9 @@ fn on_login_edge(In(ev): In<SessionEvent>, mut e: Edges) {
         }
         SessionEvent::CharActionResult { action, code } => {
             char_action_result(action, code, &mut e.char_actions)
+        }
+        SessionEvent::RealmSplit { choice, state, date } => {
+            e.realm_split.write(super::RealmSplitMessage { choice, state, date });
         }
         SessionEvent::CharRenamed { result, renamed } => {
             e.char_renames

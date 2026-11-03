@@ -351,7 +351,10 @@ pub use mail::{
     StationeryView,
 };
 pub use measure::TextMeasure;
-pub use merchant::{ItemStatsHead, MerchantCall, MerchantItem, MerchantState, RepairCosts};
+pub use merchant::{
+    ExtendedCostItemView, ExtendedCostView, ItemStatsHead, MerchantCall, MerchantItem, MerchantState,
+    RepairCosts,
+};
 pub(crate) use minimap::apply_model_attrs as apply_minimap_model_attrs;
 pub use minimap::{
     MinimapCall, MinimapRimArrow, CORPSE_ARROW as MINIMAP_CORPSE_ARROW,
@@ -752,6 +755,9 @@ fn install_framescript(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
 
     // `0x4587f0` (table `0x835a50`): `PlaySound`, `PlayMusic`, `PlaySoundFile`, `StopMusic`.
     sound::install(&lua)?;
+    if target == UiTarget::Wrath335 {
+        wrath_natives::install_frame_fallbacks(&lua)?;
+    }
     Ok(lua)
 }
 
@@ -1306,6 +1312,21 @@ impl UiScript {
             .arena
             .iter_frames()
             .any(|(_, f)| f.name.as_deref() == Some(name) && f.effective_visible)
+    }
+
+    /// The named frame's effective visibility, or None when the frame does not exist.
+    pub fn frame_visibility(&self, name: &str) -> Option<bool> {
+        let model = self.model_ref();
+        let mut found = false;
+        for (_, frame) in model.arena.iter_frames() {
+            if frame.name.as_deref() == Some(name) {
+                found = true;
+                if frame.effective_visible {
+                    return Some(true);
+                }
+            }
+        }
+        found.then_some(false)
     }
 
     /// The named frame's alpha byte as a fraction (`+0xc8`, which the walk `0x76a690` hands down

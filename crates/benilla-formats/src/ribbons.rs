@@ -187,7 +187,7 @@ fn visibility_by_anim(bytes: &[u8], vis_track: usize) -> Option<RibbonVisibility
 
 /// An M2's ribbon emitters; empty when it has none or is not a parseable M2.
 pub fn parse_m2_ribbon_emitters(bytes: &[u8]) -> Result<Vec<RibbonEmitterDef>> {
-    if bytes.len() < HDR_PTR + 4 || &bytes[0..4] != b"MD20" {
+    if bytes.len() < HDR_PTR + 4 || &bytes[0..4] != b"MD20" || le_u32(bytes, 4) == 264 {
         return Ok(Vec::new());
     }
     let textures: Vec<Option<String>> = match parse_m2(&mut Cursor::new(bytes)) {

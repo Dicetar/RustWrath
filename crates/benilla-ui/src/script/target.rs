@@ -20,6 +20,7 @@ impl UiTarget {
 
     pub(crate) fn events(self, vm: super::VmKind) -> impl Iterator<Item = &'static str> {
         let extra: &'static [&'static str] = match (self, vm) {
+            (Self::Wrath335, super::VmKind::Glue) => &["SERVER_SPLIT_NOTICE"],
             (Self::Wrath335, super::VmKind::InGame) => WRATH_INGAME_EVENTS,
             _ => &[],
         };

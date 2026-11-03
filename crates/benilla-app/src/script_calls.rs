@@ -608,7 +608,14 @@ impl CallHost for ScriptCallHost<'_, '_> {
                 match crate::ui_action::use_action(&mut appliers.action(), script, press) {
                     // The Attack slot is a cast, so the gate's tag 4 (the pick) is asked only
                     // after tag 2 passed, and so passes as well.
-                    crate::ui_action::UseOutcome::Attack => self.attack(script, &mut at, true),
+                    crate::ui_action::UseOutcome::Attack(target) => {
+                        if let Some(guid) = target.filter(|guid| Some(*guid) != at.selected) {
+                            let debt = self.appliers.select().start_attack(guid);
+                            self.settle_selection(script, &mut at, debt);
+                        } else {
+                            self.attack(script, &mut at, true);
+                        }
+                    }
                     crate::ui_action::UseOutcome::Macro(id) => {
                         tail = Some(Box::new(move |script: &mut UiScript| {
                             if !crate::ui_macro::run_macro(script, id) {

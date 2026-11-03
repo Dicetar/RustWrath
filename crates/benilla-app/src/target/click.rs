@@ -375,6 +375,8 @@ enum MeleeApproach {
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct Dispatch<'w, 's> {
     seam: crate::creature_anim::AttackSeam<'w, 's>,
+    quest_trace: Option<Res<'w, crate::quest_trace::Source>>,
+    wrath_view: Option<Res<'w, crate::wrath::WrathWorldView>>,
     /// The returns ahead of the select both attack-or-click entries make (`SelectTarget`,
     /// [`super::front`]).
     front: super::front::SelectFront<'w, 's>,
@@ -1061,7 +1063,43 @@ impl Dispatch<'_, '_> {
         match service_action(arm, guid, ghost, cursor_sale) {
             ServiceAction::Send(cmd) => {
                 debug!("right-click interact: {guid:#x} ({arm:?})");
-                let _ = self.seam.net.0.send(cmd);
+                let trace = if matches!(arm, ServiceArm::Gossip | ServiceArm::Questgiver) {
+                    self.quest_trace.as_ref().map(|source| {
+                        source.begin_with_npc(
+                            self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                            None,
+                            Some(guid),
+                            crate::quest_trace::Operation::Open,
+                        )
+                    })
+                } else {
+                    None
+                };
+                let cmd = if let (Some(trace), Some(view)) = (&trace, &self.wrath_view) {
+                    let (results, _receiver) = crossbeam_channel::bounded(2);
+                    ClientCommand::QuestgiverOpenTracked {
+                        receipt: crate::net::CommandReceipt {
+                            trace: Some(trace.clone()),
+                            enforce_scope: false,
+                            session_epoch: view.session_epoch,
+                            world_generation: view.world_generation,
+                            npc: guid,
+                            quest: 0,
+                            results,
+                        },
+                        gossip: matches!(arm, ServiceArm::Gossip),
+                    }
+                } else {
+                    cmd
+                };
+                let result = self.seam.net.0.send(cmd);
+                if let Some(trace) = trace {
+                    trace.record(if result.is_ok() {
+                        crate::quest_trace::Stage::ChannelAdmitted
+                    } else {
+                        crate::quest_trace::Stage::ChannelDisconnected
+                    });
+                }
             }
             ServiceAction::SellFromCursor(cmd) => {
                 debug!("right-click interact: {guid:#x} (vendor — selling the held item)");

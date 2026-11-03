@@ -657,6 +657,34 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 Ok((Some(name), Some(token)))
             })?,
         )?;
+        // `GameTooltip:IsUnit()`: the stock Wrath `OnTooltipSetUnit` handler's first test. It asks
+        // whether the tooltip still shows a live unit, so a tooltip whose token or guid went stale
+        // stops the handler instead of driving the unit lines. 1/nil, as the stock callers test it.
+        m.set(
+            "IsUnit",
+            lua.create_function(|lua, this: Table| {
+                let h = frame_handle_of(lua, &this)?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let frame = model
+                    .arena
+                    .frame(h)
+                    .ok_or_else(|| mlua::Error::runtime("not a GameTooltip"))?;
+                let KindState::Tooltip(t) = &frame.kind_state else {
+                    return Err(mlua::Error::runtime("not a GameTooltip"));
+                };
+                let live = frame.shown
+                    && t.unit_guid.zip(t.unit_token.as_ref()).is_some_and(|(guid, token)| {
+                        model
+                            .unit(token)
+                            .is_some_and(|u| u.exists && u.guid == guid)
+                    });
+                Ok(if live {
+                    mlua::Value::Integer(1)
+                } else {
+                    mlua::Value::Nil
+                })
+            })?,
+        )?;
     }
     // GameTooltip:SetUnit(token) → 1 or nil, which `UnitFrame_OnEnter` reads to arm its re-poll.
     m.set(

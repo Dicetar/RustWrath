@@ -3,6 +3,12 @@
 #![allow(dead_code)]
 
 pub const CMSG_CHAR_ENUM: u32 = 0x037;
+pub const CMSG_REALM_SPLIT: u32 = 0x38C;
+pub const SMSG_REALM_SPLIT: u16 = 0x38B;
+pub const CMSG_CHAR_CREATE: u32 = 0x036;
+pub const CMSG_CHAR_DELETE: u32 = 0x038;
+pub const SMSG_CHAR_CREATE: u16 = 0x03A;
+pub const SMSG_CHAR_DELETE: u16 = 0x03C;
 pub const SMSG_CHAR_ENUM: u16 = 0x03B;
 pub const CMSG_PLAYER_LOGIN: u32 = 0x03D;
 pub const SMSG_LOGIN_SETTIMESPEED: u16 = 0x042;
@@ -52,6 +58,8 @@ pub const MSG_MOVE_START_STRAFE_LEFT: u32 = 0x0B8;
 pub const MSG_MOVE_START_STRAFE_RIGHT: u32 = 0x0B9;
 pub const MSG_MOVE_STOP_STRAFE: u32 = 0x0BA;
 pub const MSG_MOVE_JUMP: u32 = 0x0BB;
+pub const SMSG_MONSTER_MOVE: u16 = 0x0DD;
+pub const SMSG_MONSTER_MOVE_TRANSPORT: u16 = 0x2AE;
 pub const MSG_MOVE_START_TURN_LEFT: u32 = 0x0BC;
 pub const MSG_MOVE_START_TURN_RIGHT: u32 = 0x0BD;
 pub const MSG_MOVE_STOP_TURN: u32 = 0x0BE;

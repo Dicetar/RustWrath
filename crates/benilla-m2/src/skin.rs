@@ -60,10 +60,13 @@ impl Skin {
 
 /// Decode a WotLK/Wrath external `.skin` profile (`SKIN` magic, file-relative M2Arrays).
 ///
-/// Section/batch records use the same 48/24-byte Wrath layouts as the external view. Shadow batches
-/// are not needed by the existing renderer-facing skin path and are left unread.
+/// In 12340 (`Engine/Source/Model2/M2Data.h:378`, `LoadSkinProfile` `0x0083CB40`),
+/// `M2SkinProfile` is 48 bytes (`0x30`): `m_magic` (`u32`), five 8-byte `M2Array` headers
+/// (`m_vertices`, `m_indices`, `m_bones`, `m_skinSections`, `m_batches`), and `m_boneCountMax`
+/// (`u32` at `+0x2c`). Particle-only / effect models (`ui-autocastbutton00.skin`, `*_smoke00.skin`)
+/// have 0 sections and 0 batches and are exactly 48 bytes on disk.
 pub fn parse_external_skin(bytes: &[u8]) -> Result<Skin> {
-    if bytes.len() < 56 || &bytes[0..4] != b"SKIN" {
+    if bytes.len() < 48 || &bytes[0..4] != b"SKIN" {
         return Err(Error::NotSkin);
     }
     let rd_arr = |o: usize| -> Result<(usize, usize)> {

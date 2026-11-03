@@ -1,0 +1,19 @@
+[package]
+name = "benilla-pose-module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reloadable pose postprocessor; reference native presentation module"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+passthrough = []
+lift-demo = []
+
+[dependencies]
+benilla-hotpatch-abi = { path = "../benilla-hotpatch-abi" }
+
+[lints]
+workspace = true

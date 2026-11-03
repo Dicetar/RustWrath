@@ -12,16 +12,18 @@ workspace = true
 # `dev` compiles in the instruments; the player build (`scripts/gates.sh`) has no defaults.
 default = ["dev"]
 # The asset, format and world crates default `dev` on, so they come in without it, forwarded here.
-dev = ["benilla-assets/dev", "benilla-formats/dev", "benilla-world/dev", "dep:bevy_egui"]
+dev = ["benilla-assets/dev", "benilla-formats/dev", "benilla-world/dev", "dep:bevy_egui", "dep:serde_json"]
 tracy = ["bevy/trace_tracy"]
 # Writes every system's per-run span to `trace-<ts>.json` in the cwd.
 trace_chrome = ["bevy/trace_chrome"]
 # Links Bevy as a shared library so an incremental rebuild relinks faster. The binary then starts
 # only through `cargo run`, which puts the toolchain's libstd on the loader path.
 bevy_dynamic_linking = ["bevy/dynamic_linking"]
+hotpatch = ["dev", "dep:benilla-hotpatch-bevy", "bevy/embedded_watcher"]
 
 [dependencies]
 anyhow.workspace = true
+benilla-hotpatch-bevy = { path = "../benilla-hotpatch-bevy", optional = true }
 # The EditBox clipboard, on the main thread as NSPasteboard requires; bevy_egui's 3.x.
 arboard = "3"
 benilla-ui = { path = "../benilla-ui" }
@@ -57,7 +59,9 @@ benilla-wm-native = { path = "../benilla-wm-native" }
 benilla-world = { path = "../benilla-world", default-features = false }
 # The CVar diff persisted in `benilla-config/config.toml`.
 serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
 toml = "0.8"
+sha1 = { workspace = true }
 # Collision for our kinematic character controller; 0.6 targets Bevy 0.18, 0.7 moves to 0.19.
 avian3d = "0.6"
 # Shapes and rasterizes `FontString` text standalone (`ui_text`), at bevy_text's own 0.16.

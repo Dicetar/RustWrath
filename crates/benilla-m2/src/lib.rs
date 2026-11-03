@@ -495,18 +495,25 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
     })
 }
 
-/// Parse the MD20 camera array (header `0x124`, stride `0x7c`) alone; the offset is absolute, as
-/// versions 256–263 agree up to it. A truncated table yields the records that fit.
+/// Parse the MD20 camera array. 12340 M2Data.h uses header 0x110, stride 0x64;
+/// versions 256–263 use header 0x124, stride 0x7c. A truncated table yields only whole records.
 pub fn parse_cameras(b: &[u8]) -> Vec<M2Camera> {
-    let (Some(count), Some(ofs)) = (b.u32_at(0x124), b.u32_at(0x128)) else {
+    let wrath = b.u32_at(4).is_some_and(|v| v >= 264);
+    let (header, stride, position, target, target_base, roll) = if wrath {
+        (0x110, 0x64, 0x24, 0x30, 0x44, 0x50)
+    } else {
+        (0x124, 0x7c, 0x2c, 0x38, 0x54, 0x60)
+    };
+    let (Some(count), Some(ofs)) = (b.u32_at(header), b.u32_at(header + 4)) else {
         return Vec::new();
     };
     let avail = b.len().saturating_sub(ofs as usize);
-    let mut out = Vec::with_capacity(capped(count as usize, 0x7c, avail));
-    for i in 0..count as usize {
-        let rec = ofs as usize + i * 0x7c;
+    let count = capped(count as usize, stride, avail);
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let rec = ofs as usize + i * stride;
         // A record is read whole or not at all.
-        if rec.checked_add(0x7c).is_none_or(|end| end > b.len()) {
+        if rec.checked_add(stride).is_none_or(|end| end > b.len()) {
             break;
         }
         let (Some(camera_type), Some(fov), Some(far_clip), Some(near_clip)) = (
@@ -518,8 +525,8 @@ pub fn parse_cameras(b: &[u8]) -> Vec<M2Camera> {
             break;
         };
         let (Some(position_base), Some(target_base)) = (
-            rd_c3(b, rec + 0x2c).map(|c| [c.x, c.y, c.z]),
-            rd_c3(b, rec + 0x54).map(|c| [c.x, c.y, c.z]),
+            rd_c3(b, rec + position).map(|c| [c.x, c.y, c.z]),
+            rd_c3(b, rec + target_base).map(|c| [c.x, c.y, c.z]),
         ) else {
             break;
         };
@@ -530,17 +537,18 @@ pub fn parse_cameras(b: &[u8]) -> Vec<M2Camera> {
             near_clip,
             positions: track_spline_vec3(b, rec + 0x10),
             position_base,
-            target: track_spline_vec3(b, rec + 0x38),
+            target: track_spline_vec3(b, rec + target),
             target_base,
-            roll: track_spline_f32(b, rec + 0x60),
+            roll: track_spline_f32(b, rec + roll),
         });
     }
     out
 }
 
-/// Parse the MD20 CameraLookup (header `0x12c`, `u16` each); see [`M2Model::camera_lookup`].
+/// Parse the MD20 CameraLookup (`0x118` in Wrath, `0x12c` in the donor; `u16` each).
 pub fn parse_camera_lookup(b: &[u8]) -> Vec<u16> {
-    let (Some(count), Some(ofs)) = (b.u32_at(0x12c), b.u32_at(0x130)) else {
+    let header = if b.u32_at(4).is_some_and(|v| v >= 264) { 0x118 } else { 0x12c };
+    let (Some(count), Some(ofs)) = (b.u32_at(header), b.u32_at(header + 4)) else {
         return Vec::new();
     };
     let avail = b.len().saturating_sub(ofs as usize);

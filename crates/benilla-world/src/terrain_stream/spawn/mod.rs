@@ -334,12 +334,15 @@ pub(super) fn spawn_loaded_placements(
                                 // Fogged only once a flood puts the group on the chain.
                                 interior_fog: vec![false; m.group_nav.len()],
                                 liquid_visited: vec![false; m.group_nav.len()],
-                                // MOGP `groupLiquid`: a room wholly submerged, with no liquid grid.
+                                // MOGP `groupLiquid`: a room wholly submerged when it carries no
+                                // MLIQ grid (`CMapObjGroup::QueryLiquid`, `0x007C8360`).
                                 flooded: m
                                     .group_nav
                                     .iter()
-                                    .map(|g| {
-                                        (g.group_liquid != benilla_formats::NO_GROUP_LIQUID)
+                                    .enumerate()
+                                    .map(|(gi, g)| {
+                                        (m.group_liquids.get(gi).and_then(Option::as_ref).is_none()
+                                            && g.group_liquid != benilla_formats::NO_GROUP_LIQUID)
                                             .then(|| {
                                                 benilla_formats::LiquidKind::from_nibble(
                                                     (g.group_liquid & 0xf) as u8,

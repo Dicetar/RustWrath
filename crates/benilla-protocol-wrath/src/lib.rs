@@ -28,6 +28,7 @@ pub mod logon;
 pub mod fields;
 pub mod gameplay;
 pub mod opcode;
+pub mod quest_poi;
 pub mod reducer;
 pub mod session;
 pub mod updates;

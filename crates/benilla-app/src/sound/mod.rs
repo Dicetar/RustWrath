@@ -326,20 +326,25 @@ pub(crate) struct SoundPlugin;
 pub(crate) fn on_cvar(ev: On<crate::cvars::CvarChanged>, mut sound: ResMut<SoundConfig>) {
     let v = ev.num();
     match ev.key().as_str() {
-        "mastervolume" => sound.master = v.clamp(0.0, 1.0),
-        "soundvolume" => sound.sfx = v.clamp(0.0, 1.0),
-        "musicvolume" => sound.music = v.clamp(0.0, 1.0),
-        "ambiencevolume" => sound.ambience = v.clamp(0.0, 1.0),
+        "mastervolume" | "sound_mastervolume" => sound.master = v.clamp(0.0, 1.0),
+        "soundvolume" | "sound_sfxvolume" => sound.sfx = v.clamp(0.0, 1.0),
+        "musicvolume" | "sound_musicvolume" => sound.music = v.clamp(0.0, 1.0),
+        "ambiencevolume" | "sound_ambiencevolume" => sound.ambience = v.clamp(0.0, 1.0),
         "mastersoundeffects" => sound.enabled = v != 0.0,
-        "enablemusic" => sound.music_enabled = v != 0.0,
-        "enableambience" => sound.ambience_enabled = v != 0.0,
+        // 3.3.5a's name for the same switch (`SoundInterface2_CVar.cpp:251`, callback
+        // `EnableMusicHandler` `:225`). The donor `EnableMusic` row stays the 1.12 spelling;
+        // neither row writes the other, so a persisted donor setting is never overwritten.
+        "enablemusic" | "sound_enablemusic" => sound.music_enabled = v != 0.0,
+        "enableambience" | "sound_enableambience" => sound.ambience_enabled = v != 0.0,
         "enableerrorspeech" => sound.error_speech = v != 0.0,
         "sound_enablesoundwhengameisinbg" => sound.background_sound = v != 0.0,
-        "soundreverb" => sound.reverb = v != 0.0,
+        "soundreverb" | "sound_enablereverb" => sound.reverb = v != 0.0,
         "soundoutputlimiter" => sound.limiter = v != 0.0,
-        "soundlisteneratcharacter" => sound.listener_at_character = v != 0.0,
+        "soundlisteneratcharacter" | "sound_listeneratcharacter" => {
+            sound.listener_at_character = v != 0.0
+        }
         "emotesounds" => sound.emote_sounds = v != 0.0,
-        "soundzonemusicnodelay" => sound.zone_music_no_delay = v != 0.0,
+        "soundzonemusicnodelay" | "sound_zonemusicnodelay" => sound.zone_music_no_delay = v != 0.0,
         _ => {}
     }
 }
@@ -524,6 +529,8 @@ fn poll_mix_health(
     mut since_report: Local<std::time::Duration>,
     mut last_refused: Local<u64>,
     mut peak_voices: Local<usize>,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
 ) {
     // A recording probe owns the meters: [`meter::MixLevel::take`] resets on read.
     if out.probe.is_some() {
@@ -549,6 +556,14 @@ fn poll_mix_health(
     report_output(window, peak);
     let new_refused = health.voices_refused - *last_refused;
     *last_refused = health.voices_refused;
+    if let Some(trace) = &trace {
+        trace.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
+            crate::quest_trace::Stage::AudioHealth {
+                over_full_scale_samples: level.over,
+                nonfinite_samples: level.nonfinite,
+                voices_refused: new_refused,
+            });
+    }
     if new_refused > 0 {
         warn!(
             "audio: {new_refused} 3D sound(s) never played — the spatial-voice arena was full. \

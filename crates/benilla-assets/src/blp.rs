@@ -7,7 +7,7 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use serde::{Deserialize, Serialize};
 
-use benilla_formats::blp_to_rgba;
+use benilla_formats::{blp_to_rgba, blp_to_rgba_base};
 
 use crate::gpu_blp::{for_upload, UploadChain};
 
@@ -77,7 +77,7 @@ impl AssetLoader for BlpImageLoader {
                 )
             }
             BlpVariant::Sprite => {
-                let (w, h, rgba) = blp_to_rgba(&bytes).map_err(to_io)?;
+                let (w, h, rgba) = blp_to_rgba_base(&bytes).map_err(to_io)?;
                 sprite_image(w, h, rgba)
             }
             BlpVariant::MapTile => {

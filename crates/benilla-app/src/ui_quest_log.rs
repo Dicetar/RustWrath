@@ -18,7 +18,7 @@ use crate::ui_items::{count_of, InventoryScope};
 use bevy::prelude::*;
 
 use benilla_protocol::messages::{
-    quest_flags, quest_slot_state, QuestTemplate, PLAYER_QUEST_LOG_SLOTS,
+    quest_flags, quest_slot_state, QuestTemplate,
 };
 use benilla_protocol::ObjectFields;
 use benilla_ui::script::{
@@ -754,6 +754,8 @@ pub(crate) struct FeedMemo {
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct QuestLogReads<'w, 's> {
     xp: Option<Res<'w, QuestExperience>>,
+    quest_trace: Option<Res<'w, crate::quest_trace::Source>>,
+    wrath_view: Option<Res<'w, crate::wrath::WrathWorldView>>,
     titles: Option<Res<'w, crate::ui_quest::QuestTitles>>,
     self_q: Query<'w, 's, (&'static ObjectStore, &'static Guid), With<SelfPlayer>>,
     wrath_slots: Query<'w, 's, Option<&'static crate::wrath::WrathQuestSlots>, With<SelfPlayer>>,
@@ -884,6 +886,19 @@ pub(crate) fn feed_quest_log(
                 slot_views.iter().filter(|s| s.quest_id != 0).count()
             );
             script.quest_log_changed(slot_views);
+            if let Some(trace) = &reads.quest_trace {
+                let scope = reads.wrath_view.as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation));
+                for slot in slot_views.iter().filter(|slot| slot.quest_id != 0) {
+                    trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalProjection);
+                    if quest_log.templates.get(slot.quest_id).is_none() {
+                        trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalTemplatePending);
+                    }
+                    if script.quest_log_index(slot.quest_id) != 0 {
+                        trace.observe(scope, Some(slot.quest_id), crate::quest_trace::Stage::JournalRowInModel);
+                    }
+                }
+            }
             memo.prior = None;
             memo.subject = key;
         } else if (subject.is_some() && memo.subject != key)
@@ -912,7 +927,9 @@ pub(crate) fn feed_quest_log(
             debug!("ui_quest_log: landing {} records", landed.len());
             script.land_quest_records(landed);
         }
-        for id in std::mem::take(&mut quest_log.refused) {
+        let refused_ids = std::mem::take(&mut quest_log.refused);
+        let refused_any = !refused_ids.is_empty();
+        for &id in &refused_ids {
             script.refuse_quest_record(id);
         }
         let held_now: Vec<(u32, QuestRecordView)> = asks
@@ -925,6 +942,44 @@ pub(crate) fn feed_quest_log(
         let records_landed = records_landed || !held_now.is_empty();
         if !held_now.is_empty() {
             script.land_quest_records(held_now);
+        }
+        if (records_landed || refused_any) && !seat {
+            if let Some(trace) = &reads.quest_trace {
+                let scope = reads
+                    .wrath_view
+                    .as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation));
+                for &id in &refused_ids {
+                    trace.observe(
+                        scope,
+                        Some(id),
+                        crate::quest_trace::Stage::JournalTemplateRefused,
+                    );
+                }
+                for slot in current_slots.iter().filter(|slot| slot.quest_id != 0) {
+                    trace.observe(
+                        scope,
+                        Some(slot.quest_id),
+                        crate::quest_trace::Stage::JournalProjection,
+                    );
+                    if quest_log.templates.get(slot.quest_id).is_none()
+                        && !refused_ids.contains(&slot.quest_id)
+                    {
+                        trace.observe(
+                            scope,
+                            Some(slot.quest_id),
+                            crate::quest_trace::Stage::JournalTemplatePending,
+                        );
+                    }
+                    if script.quest_log_index(slot.quest_id) != 0 {
+                        trace.observe(
+                            scope,
+                            Some(slot.quest_id),
+                            crate::quest_trace::Stage::JournalRowInModel,
+                        );
+                    }
+                }
+            }
         }
 
         // Every creature name that lands goes to the engine unprompted, as the reference's
@@ -974,6 +1029,35 @@ pub(crate) fn feed_quest_log(
                 }
             }
             memo.prior = Some(now);
+            if slots_moved && !seat {
+                if let Some(trace) = &reads.quest_trace {
+                    let scope = reads
+                        .wrath_view
+                        .as_ref()
+                        .map(|v| (v.session_epoch, v.world_generation));
+                    for slot in current_slots.iter().filter(|slot| slot.quest_id != 0) {
+                        trace.observe(
+                            scope,
+                            Some(slot.quest_id),
+                            crate::quest_trace::Stage::JournalProjection,
+                        );
+                        if quest_log.templates.get(slot.quest_id).is_none() {
+                            trace.observe(
+                                scope,
+                                Some(slot.quest_id),
+                                crate::quest_trace::Stage::JournalTemplatePending,
+                            );
+                        }
+                        if script.quest_log_index(slot.quest_id) != 0 {
+                            trace.observe(
+                                scope,
+                                Some(slot.quest_id),
+                                crate::quest_trace::Stage::JournalRowInModel,
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // The held counts the item lines read (`0x622130`), current before the field notices fire.
@@ -1421,10 +1505,10 @@ mod tests {
 
         /// The log's slots hold `log`, from slot 0, with no notice.
         fn write_log(&mut self, log: &[u32]) {
-            for slot in 0..PLAYER_QUEST_LOG_SLOTS {
-                let id = log.get(usize::from(slot)).copied().unwrap_or(0);
+            for slot in 0..QUEST_LOG_SLOTS {
+                let id = log.get(slot).copied().unwrap_or(0);
                 self.fields
-                    .insert(FIELD_PLAYER_QUEST_LOG_1_1 + 3 * u16::from(slot), id);
+                    .insert(FIELD_PLAYER_QUEST_LOG_1_1 + 3 * slot as u16, id);
             }
             self.write_store();
         }

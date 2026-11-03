@@ -11,24 +11,26 @@ use mlua::{Lua, MultiValue, Value};
 use super::binding_abi::{flag, s_str_to_int, string_arg};
 use super::{Model, ScriptValue};
 
-/// One of the four user agreements the login screen walks before it shows the login boxes
+/// One of the user agreements the login screen walks before it shows the login boxes
 /// (`AccountLogin_ShowUserAgreements`), each a CVar the glue manager reads once at startup
-/// (`0x46a400`): `readTOS`, `readEULA`, `readScanning`, `readContest`.
+/// (`0x46a400`): `readTOS`, `readEULA`, `readScanning`, `readContest`, `readTerminationWithoutNotice`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GlueNotice {
     Tos,
     Eula,
     Scanning,
     Contest,
+    TerminationWithoutNotice,
 }
 
 impl GlueNotice {
-    /// All four, in the glue manager's seeding order (`0x46a406`-`0x46a48e`).
-    pub const ALL: [GlueNotice; 4] = [
+    /// All agreements, in the glue manager's seeding order.
+    pub const ALL: [GlueNotice; 5] = [
         GlueNotice::Tos,
         GlueNotice::Eula,
         GlueNotice::Scanning,
         GlueNotice::Contest,
+        GlueNotice::TerminationWithoutNotice,
     ];
 
     fn index(self) -> usize {
@@ -43,6 +45,7 @@ impl GlueNotice {
             GlueNotice::Eula => "readEULA",
             GlueNotice::Scanning => "readScanning",
             GlueNotice::Contest => "readContest",
+            GlueNotice::TerminationWithoutNotice => "readTerminationWithoutNotice",
         }
     }
 }
@@ -67,16 +70,14 @@ impl NoticeState {
     }
 }
 
-/// The four agreements' flag pairs (`[0xb41df8]`-`[0xb41e14]`): C globals, which outlive the Lua
-/// state. The glue manager seeds them once (`0x46a400`) and seats the same cells in every glue VM
-/// it builds, so a rebuild (`0x46a7b0`) reads what the last one left and the accepts' stores
-/// (`0x46aef0` and its siblings) are the only writes after the seed.
+/// The agreements' flag pairs: C globals, which outlive the Lua state. The glue manager seeds them
+/// once and seats the same cells in every glue VM it builds.
 #[derive(Clone, Default)]
-pub struct GlueNotices(std::rc::Rc<std::cell::Cell<[NoticeState; 4]>>);
+pub struct GlueNotices(std::rc::Rc<std::cell::Cell<[NoticeState; 5]>>);
 
 impl GlueNotices {
     /// The cells seeded with `states`, in [`GlueNotice::ALL`] order.
-    pub fn new(states: [NoticeState; 4]) -> Self {
+    pub fn new(states: [NoticeState; 5]) -> Self {
         Self(std::rc::Rc::new(std::cell::Cell::new(states)))
     }
 
@@ -132,6 +133,8 @@ const CVAR_ACCOUNT_NAME_KEY: &str = "accountname";
 /// glue music and the browser. None of them is anything Lua reads back.
 #[derive(Clone, Debug)]
 pub enum GlueRequest {
+    /// Wrath 12340 0x004DE2E0 / 0x004DE250: CMSG_REALM_SPLIT, query or chosen state.
+    RealmSplit(u32),
     /// `PlayGlueMusic(file)` (`0x46ceb0` → `0x45aeb0`).
     PlayGlueMusic(String),
     /// `StopGlueMusic()` (`0x46cf00`): `0x45b050(1.0)`, a one-second fade.
@@ -532,6 +535,7 @@ pub fn launch_addon_url_allowed(url: &str) -> bool {
 /// The glue core's slots and queue in the VM's model.
 #[derive(Clone, Default)]
 pub(crate) struct GlueCore {
+    pub(super) account_expansion: u8,
     requests: Vec<GlueRequest>,
     /// The glue manager the verbs call in place, once the host has seated this VM.
     host: Option<std::rc::Rc<dyn GlueHost>>,
@@ -570,6 +574,10 @@ impl super::UiScript {
     /// Seat the glue manager the verbs call in place ([`GlueHost`]).
     pub fn set_glue_host(&mut self, host: std::rc::Rc<dyn GlueHost>) {
         self.model_mut().glue.host = Some(host);
+    }
+
+    pub fn set_glue_account_expansion(&mut self, expansion: u8) {
+        self.model_mut().glue.account_expansion = expansion;
     }
 
     /// Drain the manager calls made while no host was seated, for the host to run now.
@@ -833,6 +841,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             "ContestAccepted",
             "AcceptContest",
         ),
+        (
+            GlueNotice::TerminationWithoutNotice,
+            "ShowTerminationWithoutNoticeNotice",
+            "TerminationWithoutNoticeAccepted",
+            "AcceptTerminationWithoutNotice",
+        ),
     ] {
         g.set(
             show,
@@ -1047,6 +1061,268 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             })?,
         )?;
     }
+
+    // ── 3.3.5a 12340 Glue verbs ──────────────────────────────────────────────────────────────
+    g.set(
+        "IsShiftKeyDown",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(flag(model.modifiers.0))
+        })?,
+    )?;
+
+    g.set(
+        "GetUsesToken",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let on = model
+                .cvars
+                .get("g_accountusestoken")
+                .is_some_and(|c| s_str_to_int(&c.value) != 0);
+            Ok(flag(on))
+        })?,
+    )?;
+
+    g.set(
+        "SetUsesToken",
+        lua.create_function(|lua, uses: Value| {
+            let on = match uses {
+                Value::Boolean(b) => b,
+                Value::Integer(i) => i != 0,
+                Value::Number(n) => n != 0.0,
+                _ => return Err(mlua::Error::RuntimeError("Usage: SetUsesToken( 0 | 1 )".into())),
+            };
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            super::cvars::write_cvar(&mut model, "g_accountUsesToken", if on { "1".to_string() } else { "0".to_string() });
+            Ok(())
+        })?,
+    )?;
+
+    g.set(
+        "GetSavedAccountList",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let value = model
+                .cvars
+                .get("accountlist")
+                .map_or("", |c| c.value.as_str());
+            lua.create_string(value)
+        })?,
+    )?;
+
+    g.set(
+        "SetSavedAccountList",
+        lua.create_function(|lua, list: Value| {
+            let list = string_arg(lua, list, "Usage: SetSavedAccountList(\"accountList\")")?;
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            super::cvars::write_cvar(&mut model, "accountList", list);
+            Ok(())
+        })?,
+    )?;
+
+    g.set(
+        "QuitGameAndRunLauncher",
+        lua.create_function(|lua, _: MultiValue| {
+            call(lua, GlueCall::QuitGame);
+            Ok(())
+        })?,
+    )?;
+
+    g.set(
+        "PlayGlueAmbience",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "StopGlueAmbience",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "GetCreditsText",
+        lua.create_function(|lua, _: MultiValue| lua.create_string("credits.html"))?,
+    )?;
+
+    g.set(
+        "GetAccountExpansionLevel",
+        lua.create_function(|lua, ()| {
+            Ok(lua.app_data_ref::<Model>().expect("model").glue.account_expansion)
+        })?,
+    )?;
+
+    g.set(
+        "GetClientExpansionLevel",
+        lua.create_function(|lua, ()| {
+            let target = lua.app_data_ref::<Model>().expect("model").target;
+            Ok(match target {
+                super::UiTarget::Wrath335 => 3,
+                super::UiTarget::Vanilla112 => 1,
+            })
+        })?,
+    )?;
+
+    g.set(
+        "IsTrialAccount",
+        lua.create_function(|_, ()| Ok(Value::Nil))?,
+    )?;
+
+    // 12340 0x004DD440 reads SFile's trial mode. This host mounts full local MPQs;
+    // it has no streaming/trial archive source, independently of account entitlement.
+    g.set(
+        "IsStreamingTrial",
+        lua.create_function(|_, ()| Ok(false))?,
+    )?;
+
+    g.set(
+        "SurveyNotificationDone",
+        lua.create_function(|_, _: MultiValue| Ok(Value::Nil))?,
+    )?;
+
+    g.set(
+        "IsWindowsClient",
+        lua.create_function(|_, ()| Ok(flag(true)))?,
+    )?;
+
+    g.set(
+        "IsMacClient",
+        lua.create_function(|_, ()| Ok(flag(false)))?,
+    )?;
+
+    g.set(
+        "IsLinuxClient",
+        lua.create_function(|_, ()| Ok(flag(false)))?,
+    )?;
+
+    g.set(
+        "IsSystemSupported",
+        lua.create_function(|_, ()| Ok(flag(true)))?,
+    )?;
+
+    g.set(
+        "CancelLogin",
+        lua.create_function(|lua, _: MultiValue| {
+            call(lua, GlueCall::StatusDialogClick);
+            Ok(())
+        })?,
+    )?;
+
+    g.set(
+        "ScanDLLStart",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "ScanDLLContinueAnyway",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "IsScanDLLFinished",
+        lua.create_function(|_, ()| Ok(flag(true)))?,
+    )?;
+
+    g.set(
+        "PINEntered",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "TokenEntered",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "MatrixEntered",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "MatrixRevert",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "MatrixCommit",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "GetMatrixCoordinates",
+        lua.create_function(|_, _: MultiValue| Ok(Value::Nil))?,
+    )?;
+
+    g.set(
+        "GetNumGameAccounts",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
+
+    g.set(
+        "GetGameAccountInfo",
+        lua.create_function(|_, _: MultiValue| Ok(Value::Nil))?,
+    )?;
+
+    g.set(
+        "SetGameAccount",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "ReadyForAccountDataTimes",
+        lua.create_function(|_, ()| Ok(Value::Nil))?,
+    )?;
+
+    g.set(
+        "GetBillingTimeRemaining",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
+
+    g.set(
+        "GetBillingPlan",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
+
+    g.set(
+        "GetBillingTimeRested",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
+
+    g.set(
+        "StopAllSFX",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "GetChangedOptionWarnings",
+        lua.create_function(|_, ()| Ok(Value::Nil))?,
+    )?;
+
+    g.set(
+        "AcceptChangedOptionWarnings",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
+    g.set(
+        "ShowChangedOptionWarnings",
+        lua.create_function(|_, _: MultiValue| Ok(Value::Nil))?,
+    )?;
+
+    g.set(
+        "GetNumDeclensionSets",
+        lua.create_function(|_, _: MultiValue| Ok(0))?,
+    )?;
+
+    g.set(
+        "DeclineName",
+        lua.create_function(|_, _: MultiValue| Ok(Value::Nil))?,
+    )?;
+
+    // 12340 `Script_RequestRealmSplitInfo` (`0x004DE2E0`, `GlueScriptEvents_Scripts.cpp:1690`):
+    // called from `CharacterSelect_OnShow` (`CharacterSelect.lua`) and returns 0 values.
+    g.set(
+        "RequestRealmSplitInfo",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+
     Ok(())
 }
 
@@ -1271,7 +1547,7 @@ mod tests {
     #[test]
     fn the_agreements_answer_their_seeded_flags_and_accept_sets_them() {
         let mut s = UiScript::new_glue().unwrap();
-        s.register_cvars([("readEULA", "0")]);
+        s.register_cvars([("readEULA", "0"), ("readTerminationWithoutNotice", "0")]);
         s.set_glue_notice(
             GlueNotice::Eula,
             NoticeState {
@@ -1281,20 +1557,24 @@ mod tests {
         );
         s.set_glue_notice(GlueNotice::Tos, NoticeState::from_cvar("1"));
         let read = |s: &UiScript| {
-            s.eval::<(Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
-                "return EULAAccepted(), ShowEULANotice(), TOSAccepted(), ScanningAccepted()",
+            s.eval::<(Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+                "return EULAAccepted(), ShowEULANotice(), TOSAccepted(), ScanningAccepted(), TerminationWithoutNoticeAccepted()",
             )
             .unwrap()
         };
-        assert_eq!(read(&s), (None, Some(1), Some(1), None));
-        s.run("AcceptEULA()").unwrap();
+        assert_eq!(read(&s), (None, Some(1), Some(1), None, None));
+        s.run("AcceptEULA() AcceptTerminationWithoutNotice()").unwrap();
         assert_eq!(s.cvar("readEULA").as_deref(), Some("1"));
+        assert_eq!(s.cvar("readTerminationWithoutNotice").as_deref(), Some("1"));
         assert_eq!(
             s.take_cvar_changes(),
-            [("readEULA".to_string(), "1".to_string())],
+            [
+                ("readEULA".to_string(), "1".to_string()),
+                ("readTerminationWithoutNotice".to_string(), "1".to_string()),
+            ],
             "the write is the engine's, for the CVar sync to persist"
         );
-        assert_eq!(read(&s), (Some(1), None, Some(1), None));
+        assert_eq!(read(&s), (Some(1), None, Some(1), None, Some(1)));
         assert!(s.take_glue_requests().is_empty() && s.take_glue_calls().is_empty());
     }
 

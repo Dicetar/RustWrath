@@ -159,6 +159,11 @@ pub(super) fn feed_ui_input(
     // Carries the `wl_display` the Wayland clipboard backend needs, once winit has a surface.
     window: Query<(&Window, Option<&bevy::window::RawHandleWrapper>), With<PrimaryWindow>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    diagnostics: (
+        Option<Res<crate::quest_trace::Source>>,
+        Option<Res<crate::wrath::WrathWorldView>>,
+        Option<Res<super::EguiPointerOver>>,
+    ),
     mut pointer: PointerFeed,
     // One param for clippy's argument ceiling, with the pasteboard the clipboard chords use.
     mut kbd: (
@@ -273,7 +278,40 @@ pub(super) fn feed_ui_input(
                         click_consumed.0 = true;
                     }
                     // A press the UI consumed is not the world's, hovered frame or not.
-                    press_consumed.0 |= script.mouse_button(x, y, name, true);
+                    let target = diagnostics.0.as_ref().map(|_| script.hit_test_name(x, y));
+                    let consumed = script.mouse_button(x, y, name, true);
+                    press_consumed.0 |= consumed;
+                    if let (Some(trace), Some(target)) = (&diagnostics.0, target) {
+                        use crate::quest_trace::{Stage, UiButton, UiTarget};
+                        let target = match target.as_deref() {
+                            None => UiTarget::NoNamedFrame,
+                            Some(name) if name.starts_with("QuestLog") => UiTarget::QuestLog,
+                            Some(name) if name.starts_with("Quest") => UiTarget::Quest,
+                            Some(name) if name.starts_with("Merchant") => UiTarget::Merchant,
+                            Some(name) if name.starts_with("Loot") => UiTarget::Loot,
+                            Some(name) if name.starts_with("SpellBook") => UiTarget::SpellBook,
+                            Some(name) if name.starts_with("Character") => UiTarget::Character,
+                            Some("WorldFrame") => UiTarget::World,
+                            Some(_) => UiTarget::Other,
+                        };
+                        let button = match btn {
+                            MouseButton::Left => UiButton::Left,
+                            MouseButton::Right => UiButton::Right,
+                            MouseButton::Middle => UiButton::Middle,
+                            MouseButton::Forward => UiButton::Forward,
+                            MouseButton::Back => UiButton::Back,
+                            _ => continue,
+                        };
+                        let scope = diagnostics.1.as_ref()
+                            .map(|v| (v.session_epoch, v.world_generation));
+                        trace.observe(scope, None, Stage::UiPress {
+                            button,
+                            target,
+                            consumed,
+                            egui_pointer_over_last_sample: diagnostics.2.as_ref().map(|over| over.0),
+                            vm_session: script.session(),
+                        });
+                    }
                 }
                 if buttons.just_released(btn) {
                     script.mouse_button(x, y, name, false);

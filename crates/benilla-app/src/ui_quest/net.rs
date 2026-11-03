@@ -98,6 +98,8 @@ fn on_complete(
     mut lines: ResMut<QuestLines>,
     quest_log: Res<QuestLog>,
     net_commands: Res<NetCommands>,
+    wrath: Option<Res<crate::wrath::WrathWorldView>>,
+    trace: Option<Res<crate::quest_trace::Source>>,
     mut commands: Commands,
 ) {
     if let SessionEvent::QuestComplete(c) = ev {
@@ -105,6 +107,25 @@ fn on_complete(
         let chained = quest_log
             .template(c.quest_id, Ask::Event(&net_commands))
             .is_some_and(|t| t.next_quest_in_chain != 0);
+        if let Some(trace) = &trace {
+            let scope = wrath.as_ref().map(|v| (v.session_epoch, v.world_generation));
+            let reward_items = c
+                .items
+                .iter()
+                .filter(|&&(item_id, count)| item_id != 0 && count != 0)
+                .count() as u32
+                + u32::from(quest.chosen_reward != 0);
+            trace.observe_with_npc(
+                scope,
+                Some(c.quest_id),
+                quest.npc,
+                crate::quest_trace::Stage::QuestCompletePacket {
+                    xp: c.xp,
+                    money: c.money,
+                    reward_items,
+                },
+            );
+        }
         quest_complete(c, &mut quest, &mut lines);
         if !chained {
             crate::ui_session::queue(&mut commands, close_without_report);
@@ -149,8 +170,21 @@ fn on_failed(
     }
 }
 
-fn on_log_full(In(ev): In<SessionEvent>, mut quest: ResMut<QuestGiver>) {
+fn on_log_full(
+    In(ev): In<SessionEvent>,
+    mut quest: ResMut<QuestGiver>,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
+) {
     if let SessionEvent::QuestLogFull = ev {
+        if let Some(trace) = trace.as_ref() {
+            trace.observe_with_npc(
+                view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                None,
+                quest.npc,
+                crate::quest_trace::Stage::ServerQuestLogFull,
+            );
+        }
         quest_log_full(&mut quest);
     }
 }
@@ -159,8 +193,18 @@ fn on_giver_invalid(
     In(ev): In<SessionEvent>,
     mut quest: ResMut<QuestGiver>,
     mut commands: Commands,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
 ) {
     if let SessionEvent::QuestGiverInvalid { reason } = ev {
+        if let Some(trace) = trace.as_ref() {
+            trace.observe_with_npc(
+                view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                None,
+                quest.npc,
+                crate::quest_trace::Stage::ServerQuestInvalid { reason },
+            );
+        }
         quest_giver_invalid(reason, &mut quest);
         crate::ui_session::queue(&mut commands, close_without_report);
     }
@@ -173,8 +217,18 @@ fn on_giver_failed(
     script: Option<NonSend<benilla_ui::script::UiScript>>,
     net_commands: Res<NetCommands>,
     mut commands: Commands,
+    trace: Option<Res<crate::quest_trace::Source>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
 ) {
     if let SessionEvent::QuestGiverFailed { quest_id, reason } = ev {
+        if let Some(trace) = trace.as_ref() {
+            trace.observe_with_npc(
+                view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
+                Some(quest_id),
+                quest.npc,
+                crate::quest_trace::Stage::ServerQuestFailed { reason },
+            );
+        }
         let latched = script.is_some_and(|s| s.quest_log_latched(quest_id));
         quest_giver_failed(
             quest_id,

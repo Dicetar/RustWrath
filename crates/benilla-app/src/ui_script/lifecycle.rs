@@ -39,6 +39,10 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     // 12340 GameUI_CVar.cpp:647: stock spellbook rank-display preference.
     ("ShowAllSpellRanks", "1"),
     ("Sound_OutputDriverIndex", "0"),
+    // 12340 SoundInterface2_CVar.cpp / ConsoleDevice_CVar.cpp.
+    ("Sound_EnableAllSound", "1"),
+    ("gxStereoEnabled", "0"),
+    ("windowResizeLock", "0"),
     ("Sound_VoiceChatInputDriverIndex", "0"),
     ("Sound_VoiceChatOutputDriverIndex", "0"),
     ("VoiceChatMode", "0"),
@@ -54,6 +58,34 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     // independently confirmed, but the target castbar is part of the stock presentation.
     ("showTargetCastbar", "1"),
     ("showBattlefieldMinimap", "0"),
+    // 12340 GameUI_CVar.cpp:608: Whether or not the keyring is shown.
+    ("showKeyring", "0"),
+    ("alwaysShowActionBars", "0"),
+    ("trackerSorting", "0"),
+    ("stopAutoAttackOnTargetChange", "0"),
+    ("mapQuestDifficulty", "0"),
+    ("showPartyPets", "1"),
+    ("lastTalkedToGM", ""),
+    ("guildRecruitmentChannel", "1"),
+    ("showClock", "1"),
+    ("UnitNameFriendlyPlayerName", "1"),
+    ("showNewbieTips", "1"),
+    ("locale", "enUS"),
+    ("previewTalents", "0"),
+    ("fctSpellMechanics", "0"),
+    ("showDispelDebuffs", "0"),
+    ("scriptErrors", "0"),
+    ("fctSpellMechanicsOther", "0"),
+    ("secureAbilityToggle", "1"),
+    ("ShowClassColorInNameplate", "0"),
+    ("fctPeriodicEnergyGains", "0"),
+    ("trackerFilter", "7"),
+    ("showCastableBuffs", "0"),
+    ("threatPlaySounds", "1"),
+    ("advancedWorldMap", "0"),
+    ("UnitNameFriendlyPetName", "1"),
+    ("showRaidRange", "0"),
+    ("chatMouseScroll", "1"),
 ];
 
 pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {
@@ -104,8 +136,13 @@ fn install_glue_vm(world: &mut World, screen: &str) -> bool {
     // The CVar table before the load and the first screen, as the in-game build seeds its own:
     // this VM is born before `cvars::sync_cvars`'s per-VM seed, and the character screen's
     // `OnShow` names the realm `GetServerName` reads off `realmName` (`0x46d289`).
-    if let Some(cvars) = world.get_resource::<crate::cvars::Cvars>() {
+    if let Some(mut cvars) = world.get_resource_mut::<crate::cvars::Cvars>() {
+        if script.target() == UiTarget::Wrath335 {
+            register_wrath_cvars(&mut cvars);
+        }
         cvars.seed_vm(&mut script);
+    } else if script.target() == UiTarget::Wrath335 {
+        script.register_cvars(WRATH_UI_CVARS.iter().copied());
     }
     seed_agreements(world, &mut script);
     // Before the stock `Constants.lua` runs, as the client has its class labels before the UI.
@@ -618,6 +655,12 @@ fn load_ingame_ui_seated(world: &mut World, seat: LoadSeat) {
     crate::ui_tradeskill::seed_repeat(world, &mut script);
     crate::ui_unit::seed_default_language(world, &mut script);
     crate::ui_unit::seed_language_table(world, &mut script);
+    crate::ui_quest::seed_title_count(world, &mut script);
+    if script.target() == UiTarget::Wrath335 {
+        if let Some(wrath) = world.get_resource::<crate::wrath::WrathControl>() {
+            script.set_glue_account_expansion(wrath.account_expansion());
+        }
+    }
     // The world map's continent and zone lists: static DBC data in the reference, read at file
     // scope (Astrolabe builds its whole zone table from `GetMapContinents`/`GetMapZones` there).
     crate::ui_world_map::seed_world_map_catalog(world, &mut script);
@@ -1109,9 +1152,25 @@ pub(crate) fn run_pending_reload(world: &mut World) {
         return;
     }
     info!("ui_script: ReloadUI — ending the UI session and building a new one");
+    if let Some(trace) = world.get_resource::<crate::quest_trace::Source>().cloned() {
+        let scope = world.get_resource::<crate::wrath::WrathWorldView>()
+            .map(|v| (v.session_epoch, v.world_generation));
+        let rows = crate::script_calls::with_hosted_vm(world, |script| {
+            script.map(|script| (script.session(), script.diagnostic_counters()))
+        });
+        if let (Some((vm_session, rows)), Some(mut cursor)) =
+            (rows, world.get_resource_mut::<crate::quest_trace::ScriptCursor>())
+        {
+            trace.capture_script_counts(scope, &mut cursor, vm_session, &rows);
+        }
+        trace.observe(scope, None, crate::quest_trace::Stage::UiReload);
+    }
     // A boot VM, never the glue's: the reload builds no glue (`0x495664` then `0x495669`), and the
     // load replaces this VM at once.
     close_ui_session(world, ShutdownRoot::Reload);
+    if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
+        trace.advance_reload_generation();
+    }
     install_boot_vm(world);
     load_ingame_ui_seated(world, LoadSeat::Live);
     // `UI_Init` ends by re-entering the world-enter cascade (`0x490168`), its sends included, but
@@ -1741,6 +1800,7 @@ mod tests {
         };
         let mut accepted = crate::cvars::Cvars::with_value("readEULA", "1");
         accepted.set("readTOS", "1");
+        accepted.set("readTerminationWithoutNotice", "1");
         assert_eq!(
             screens(accepted),
             (false, true, true),
@@ -1776,6 +1836,7 @@ mod tests {
         setup_script(&mut world);
         let seeded = [
             accepted,
+            NoticeState::default(),
             NoticeState::default(),
             NoticeState::default(),
             NoticeState::default(),

@@ -144,9 +144,23 @@ fn track_read_sequences<V>(
     }
     let count = capped(tc.min(vc), 8, b.len().saturating_sub(to));
     let count = capped(count, 8, b.len().saturating_sub(vo));
+    let (seq_count, seq_ofs) = if b.len() >= 0x24 && b.get(0..4) == Some(b"MD20") {
+        (
+            b.u32_at(0x1c).unwrap_or(0) as usize,
+            b.u32_at(0x20).unwrap_or(0) as usize,
+        )
+    } else {
+        (0, 0)
+    };
     let mut keys = Vec::new();
     let mut ranges = Vec::with_capacity(count);
     for s in 0..count {
+        let external_seq = s < seq_count
+            && seq_ofs
+                .checked_add(s * 64 + 16)
+                .is_some_and(|end| end <= b.len())
+            && b.u32_at(seq_ofs + s * 64 + 12)
+                .is_some_and(|flags| flags & 0x20 == 0);
         let (Some((tn, ts)), Some((vn, vs))) = (
             b.u32_at(to + s * 8)
                 .zip(b.u32_at(to + s * 8 + 4)),
@@ -156,11 +170,13 @@ fn track_read_sequences<V>(
             break;
         };
         let start = keys.len() as u32;
-        keys.extend(read_keys(
-            tn.min(vn) as usize,
-            ts as usize,
-            vs as usize,
-        ));
+        if !external_seq {
+            keys.extend(read_keys(
+                tn.min(vn) as usize,
+                ts as usize,
+                vs as usize,
+            ));
+        }
         // `hi` is the slot's last key, inclusive like the file's own brackets: the consumers read
         // the window as `[lo, hi]`. A slot with no keys keeps `lo == hi` at the next key, the
         // bracket's forward hold; a trailing one lands past the end and is clamped below.

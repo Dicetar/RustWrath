@@ -12,6 +12,7 @@ use benilla_ui::script::{
 /// The catalogs the create screen's verbs and the roster's strings read.
 #[derive(SystemParam)]
 pub(crate) struct CreateSources<'w> {
+    pub(crate) races: Option<Res<'w, crate::chr_classes::ChrRaceTable>>,
     pub(crate) create: Option<Res<'w, crate::entities::CharCreate>>,
     pub(crate) classes: Option<Res<'w, crate::chr_classes::ChrClassTable>>,
     pub(crate) factions: Option<Res<'w, crate::target::Factions>>,
@@ -38,7 +39,7 @@ impl CreateSources<'_> {
 
     /// The verbs' catalog, empty without `ChrRaces`.
     pub(crate) fn catalog(&self) -> GlueCreateCatalog {
-        match &self.create {
+        let mut catalog = match &self.create {
             Some(create) => create_catalog(
                 &create.0,
                 self.classes.as_deref().map(|c| &c.0),
@@ -46,13 +47,15 @@ impl CreateSources<'_> {
                 self.creatures.as_deref(),
             ),
             None => GlueCreateCatalog::default(),
-        }
+        };
+        seat_race_expansions(&mut catalog, self.races.as_deref());
+        catalog
     }
 }
 
 /// The verbs' catalog off the world's resources, for the glue build that seats a VM.
 pub(crate) fn world_catalog(world: &World) -> GlueCreateCatalog {
-    match world.get_resource::<crate::entities::CharCreate>() {
+    let mut catalog = match world.get_resource::<crate::entities::CharCreate>() {
         Some(create) => create_catalog(
             &create.0,
             world
@@ -64,6 +67,16 @@ pub(crate) fn world_catalog(world: &World) -> GlueCreateCatalog {
             world.get_resource::<crate::entities::Creatures>(),
         ),
         None => GlueCreateCatalog::default(),
+    };
+    seat_race_expansions(&mut catalog, world.get_resource::<crate::chr_classes::ChrRaceTable>());
+    catalog
+}
+
+fn seat_race_expansions(catalog: &mut GlueCreateCatalog, races: Option<&crate::chr_classes::ChrRaceTable>) {
+    for row in &catalog.races {
+        if let Some(required) = races.and_then(|r| r.0.required_expansion(u32::from(row.id))) {
+            catalog.race_expansions.insert(row.id, required);
+        }
     }
 }
 
@@ -96,6 +109,16 @@ pub(crate) fn create_catalog(
     creatures: Option<&crate::entities::Creatures>,
 ) -> GlueCreateCatalog {
     let mut catalog = GlueCreateCatalog::default();
+    if let Some(classes) = classes {
+        for (id, name) in classes.names_by_id() {
+            let Ok(key) = u8::try_from(id) else { continue; };
+            catalog.classes.insert(key, GlueCreateClass {
+                name: name.to_owned(),
+                file: classes.file(id).unwrap_or_default().to_owned(),
+            });
+            catalog.class_expansions.insert(key, classes.required_expansion(id).unwrap_or(0));
+        }
+    }
     let Some(factions) = factions else {
         return catalog;
     };

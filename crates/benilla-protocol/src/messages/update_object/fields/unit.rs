@@ -349,6 +349,14 @@ impl ObjectFields {
     pub fn unit_bytes_0(&self) -> Option<u32> {
         self.get_u32(FIELD_UNIT_BYTES_0)
     }
+    /// Packed stand, pet, shapeshift and visibility state, retaining field absence.
+    pub fn unit_bytes_1(&self) -> Option<u32> {
+        self.get_u32(FIELD_UNIT_BYTES_1)
+    }
+    /// Packed sheath and unit state, retaining field absence.
+    pub fn unit_bytes_2(&self) -> Option<u32> {
+        self.get_u32(FIELD_UNIT_BYTES_2)
+    }
     /// `UNIT_VIRTUAL_ITEM_SLOT_DISPLAY + slot`: a creature's weapon `DisplayInfoID` for slot 0
     /// main hand, 1 off hand or 2 ranged, with no item behind it.
     pub fn unit_virtual_item_display(&self, slot: u8) -> Option<u32> {

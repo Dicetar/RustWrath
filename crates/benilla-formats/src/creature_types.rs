@@ -59,10 +59,10 @@ impl CreatureTypeTable {
     }
 }
 
-fn creature_type_schema() -> Schema {
+fn creature_type_schema(locales: usize) -> Schema {
     let mut s = Schema::new("CreatureType");
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
-    for i in 0..8 {
+    for i in 0..locales {
         s.add_field(SchemaField::new(format!("Name{i}"), FieldType::String));
     }
     s.add_field(SchemaField::new("NameFlags", FieldType::UInt32));
@@ -80,12 +80,18 @@ pub fn load_creature_type_table(chain: &mut Chain) -> Result<CreatureTypeTable> 
 
 /// The table a `CreatureType.dbc` holds, its names read at `locale`.
 fn table_from_bytes(bytes: &[u8], locale: Locale) -> Result<CreatureTypeTable> {
-    let rs = parse(bytes, creature_type_schema(), "CreatureType")?;
+    let locales = if crate::dbc::field_count(bytes) == Some(19) {
+        16
+    } else {
+        8
+    };
+    let rs = parse(bytes, creature_type_schema(locales), "CreatureType")?;
+    let flags_col = 2 + locales;
     let mut rows = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         if let Some(id) = u32_at(r, 0) {
             let name = loc_str(&rs, r, 1, locale).unwrap_or_default();
-            let flags = u32_at(r, 10).unwrap_or(0);
+            let flags = u32_at(r, flags_col).unwrap_or(0);
             rows.insert(id, Row { name, flags });
         }
     }

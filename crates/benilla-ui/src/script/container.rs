@@ -905,53 +905,182 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     // SetBagPortaitTexture(texture, containerID) (`0x4fa4f0`, the reference's spelling): 0 and
     // below return before the clear (`0x4fa5b9`), 1-10 clear and then set the bag's icon, 11 and
-    // up raise.
-    lua.globals().set(
+    // up raise. 12340 (`ContainerFrame_Scripts.cpp:634`, `0x005D7180`) spells it
+    // `SetBagPortraitTexture` (`ContainerFrame.lua:70`).
+    fn install_bag_portrait(
+        lua: &Lua,
+        name: &str,
+        usage: &'static str,
+        invalid: &'static str,
+    ) -> mlua::Result<()> {
+        lua.globals().set(
+            name,
+            lua.create_function(move |lua, (region, container): (Value, Value)| {
+                let rh = crate::script::region::this_texture(lua, &region)?;
+                let container = i64::from(binding_abi::number_arg(lua, container, usage)?);
+                if container >= 11 {
+                    return Err(mlua::Error::runtime(invalid));
+                }
+                if container <= 0 {
+                    return Ok(());
+                }
+                let t = container.wrapping_sub(1);
+                let inv = if t < 4 {
+                    t.wrapping_add(20)
+                } else {
+                    t.wrapping_add(60)
+                };
+                let path = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    usize::try_from(inv)
+                        .ok()
+                        .filter(|_| !model.bank_bag_shut(container))
+                        .and_then(|slot| model.inv_slot("player", slot))
+                        .and_then(|v| v.icon.clone())
+                };
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                let set = path.map_or(super::texel::TexSet::None, super::texel::TexSet::Portrait);
+                model.set_texel(rh, set);
+                let data = model.region_data.entry(rh).or_default();
+                data.circular = true;
+                data.portrait_unit = None;
+                model.note_art(rh);
+                Ok(())
+            })?,
+        )
+    }
+    install_bag_portrait(
+        lua,
         "SetBagPortaitTexture",
-        lua.create_function(|lua, (region, container): (Value, Value)| {
-            // The texture first, the member prologue against the Texture id (`0x4fa4f9`-
-            // `0x4fa56e`); then `is-number` else `Usage: SetBagPortaitTexture(texture, slot)`
-            // (`0x84d9c4`, `0x4fa58e`).
-            let rh = crate::script::region::this_texture(lua, &region)?;
-            let container = i64::from(binding_abi::number_arg(
-                lua,
-                container,
-                "Usage: SetBagPortaitTexture(texture, slot)",
-            )?);
-            if container >= 11 {
-                return Err(mlua::Error::runtime("Invalid slot in SetBagPortaitTexture"));
-            }
-            if container <= 0 {
-                return Ok(());
-            }
-            // `ContainerIDToInventoryID`'s arithmetic, inlined: an addon may replace that global,
-            // and the reference's portrait read does not go through Lua.
-            let t = container.wrapping_sub(1);
-            let inv = if t < 4 {
-                t.wrapping_add(20)
-            } else {
-                t.wrapping_add(60)
-            };
-            let path = {
-                let model = lua.app_data_ref::<Model>().expect("model app_data");
-                // A shut bank bag is no bag (`0x4fa5d8` into `0x4f93e0`): the portrait stays clear.
-                usize::try_from(inv)
-                    .ok()
-                    .filter(|_| !model.bank_bag_shut(container))
-                    .and_then(|slot| model.inv_slot("player", slot))
-                    .and_then(|v| v.icon.clone())
-            };
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // An empty slot's `None` is the answer: the reference clears first, then sets.
-            let set = path.map_or(super::texel::TexSet::None, super::texel::TexSet::Portrait);
-            model.set_texel(rh, set);
-            let data = model.region_data.entry(rh).or_default();
-            data.circular = true;
-            data.portrait_unit = None;
-            model.note_art(rh);
-            Ok(())
-        })?,
+        "Usage: SetBagPortaitTexture(texture, slot)",
+        "Invalid slot in SetBagPortaitTexture",
     )?;
+    if lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath())
+    {
+        install_bag_portrait(
+            lua,
+            "SetBagPortraitTexture",
+            "Usage: SetBagPortraitTexture(texture, slot)",
+            "Invalid slot in SetBagPortraitTexture",
+        )?;
+        // 12340 `Script_GetContainerItemQuestInfo` (`0x005D9400`, `ContainerFrame.lua:282`):
+        // returns `(isQuestItem, questId, isActive)` where `isQuestItem` is `bonding == 4`,
+        // `questId` is `start_quest` when non-zero and not already in the quest log, and
+        // `isActive` is 1 when `start_quest` is currently in the player's quest log.
+        lua.globals().set(
+            "GetContainerItemQuestInfo",
+            lua.create_function(|lua, (bag, slot): (Value, Value)| {
+                let bag = i64::from(binding_abi::number_arg(
+                    lua,
+                    bag,
+                    "Usage: GetContainerItemQuestInfo(index, slot)",
+                )?);
+                let slot = binding_abi::index_arg32(
+                    lua,
+                    slot,
+                    "Usage: GetContainerItemQuestInfo(index, slot)",
+                )?;
+                let (is_quest, quest_id, is_active) = {
+                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                    let Some(s) = model.bag_slot(bag, slot).cloned() else {
+                        return Ok(MultiValue::from_vec(vec![
+                            Value::Boolean(false),
+                            Value::Nil,
+                            Value::Nil,
+                        ]));
+                    };
+                    let start_quest = match model.item_templates.get(&s.item_id) {
+                        Some(t) => t.start_quest,
+                        None => {
+                            if s.item_id != 0 {
+                                model.item_stat_reads.insert(s.item_id);
+                            }
+                            0
+                        }
+                    };
+                    let in_log = start_quest != 0
+                        && model
+                            .quest_log
+                            .entries
+                            .iter()
+                            .any(|e| !e.is_header && e.quest_id == start_quest);
+                    (
+                        s.bonding == 4,
+                        (start_quest != 0 && !in_log).then_some(start_quest),
+                        in_log,
+                    )
+                };
+                Ok(MultiValue::from_vec(vec![
+                    Value::Boolean(is_quest),
+                    quest_id.map_or(Value::Nil, |q| Value::Integer(i64::from(q))),
+                    flag(is_active),
+                ]))
+            })?,
+        )?;
+        lua.globals().set(
+            "GetContainerItemID",
+            lua.create_function(|lua, (bag, slot): (Value, Value)| {
+                let bag = i64::from(binding_abi::number_arg(
+                    lua,
+                    bag,
+                    "Usage: GetContainerItemID(index, slot)",
+                )?);
+                let slot =
+                    binding_abi::index_arg32(lua, slot, "Usage: GetContainerItemID(index, slot)")?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let id = model
+                    .bag_slot(bag, slot)
+                    .map(|s| s.item_id)
+                    .filter(|&id| id != 0);
+                Ok(id.map_or(Value::Nil, |id| Value::Integer(i64::from(id))))
+            })?,
+        )?;
+        // 12340 refund / extended-price and free-slot helpers called by `ContainerFrame.lua:632`
+        // and `MainMenuBarBagButtons.lua`.
+        lua.globals().set(
+            "GetContainerItemPurchaseInfo",
+            // No refund receipt owner exists yet. Native 12340 returns no values without one;
+            // numeric zero would falsely advertise purchase data to Lua presence checks.
+            lua.create_function(|_, _: MultiValue| Ok(MultiValue::new()))?,
+        )?;
+        lua.globals().set(
+            "GetContainerItemPurchaseItem",
+            lua.create_function(|_, _: MultiValue| Ok(MultiValue::new()))?,
+        )?;
+        lua.globals().set(
+            "GetContainerFreeSlots",
+            lua.create_function(|lua, (bag, table): (Value, Option<mlua::Table>)| {
+                let bag = i64::from(binding_abi::number_arg(
+                    lua,
+                    bag,
+                    "Usage: GetContainerFreeSlots(index, [table])",
+                )?);
+                let free: Vec<u32> = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    let Some(c) = model.bag(bag) else {
+                        return Ok(MultiValue::new());
+                    };
+                    (1..=c.num_slots)
+                        .filter(|s| !c.slots.contains_key(s))
+                        .collect()
+                };
+                let out = match table {
+                    Some(t) => t,
+                    None => lua.create_table()?,
+                };
+                for (i, slot) in free.into_iter().enumerate() {
+                    out.set(i + 1, slot)?;
+                }
+                Ok(MultiValue::from_vec(vec![Value::Table(out), Value::Integer(0)]))
+            })?,
+        )?;
+        lua.globals().set(
+            "SocketContainerItem",
+            lua.create_function(|_, _: MultiValue| Ok(()))?,
+        )?;
+    }
 
     lua.globals().set(
         "GetContainerNumSlots",

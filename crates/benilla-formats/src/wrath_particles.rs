@@ -165,10 +165,6 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
     let mut output = Vec::with_capacity(records.len());
     for record in records {
         ensure!(
-            record.priority_plane == 0,
-            "Wrath particle priority plane requires runtime support"
-        );
-        ensure!(
             matches!(record.shape, 1 | 2),
             "Wrath spline particles remain unsupported"
         );
@@ -179,13 +175,6 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
         ensure!(
             record.life_variation == 0.0 && record.emission_variation == 0.0,
             "Wrath lifespan/emission variation requires runtime support"
-        );
-        ensure!(
-            record.initial_spin == 0.0
-                && record.initial_spin_variation == 0.0
-                && record.spin == 0.0
-                && record.spin_variation == 0.0,
-            "Wrath particle spin variation requires runtime support"
         );
         ensure!(
             record.wind == [0.0; 3]
@@ -264,7 +253,7 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
             twinkle_min: record.twinkle_scale[0],
             twinkle_max: record.twinkle_scale[1],
             spline: None,
-            spin: 0.0,
+            spin: record.spin,
             over_life: OverLife {
                 mid: 0.5,
                 color: [sampled.color; 3],

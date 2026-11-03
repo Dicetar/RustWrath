@@ -11,6 +11,31 @@ use anyhow::Result;
 
 use crate::cast_failure;
 
+mod movement;
+pub use movement::{MonsterFacing, MonsterMove};
+
+/// AzerothCore MiscHandler.cpp HandleRealmSplitOpcode; 12340 CGlueMgr::OnRealmSplitMsg
+/// (0x004D8200) forwards these three fields as SERVER_SPLIT_NOTICE.
+pub fn parse_realm_split(payload: &[u8]) -> Result<(u32, u32, String)> {
+    let mut r = Reader::new(payload);
+    let reply = (r.u32()?, r.u32()?, r.cstring()?);
+    anyhow::ensure!(r.remaining() == 0, "trailing realm split bytes");
+    Ok(reply)
+}
+
+#[test]
+fn realm_split_reply_preserves_server_state_and_rejects_truncation() {
+    let mut payload = u32::MAX.to_le_bytes().to_vec();
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(b"01/01/01\0");
+    assert_eq!(parse_realm_split(&payload).unwrap(), (u32::MAX, 0, "01/01/01".into()));
+    for end in 0..payload.len() {
+        assert!(parse_realm_split(&payload[..end]).is_err());
+    }
+    payload.push(0);
+    assert!(parse_realm_split(&payload).is_err());
+}
+
 /// `CMSG_SET_SELECTION` (`MiscHandler.cpp:543`): full `u64` GUID.
 pub fn logout_request() -> Vec<u8> {
     Vec::new()
@@ -957,7 +982,9 @@ pub struct InitialSpellCooldown {
 
 /// One typed reply this slice understands.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ServerEvent {    AttackStart { attacker: u64, victim: u64 },
+pub enum ServerEvent {
+    MonsterMove(MonsterMove),
+    AttackStart { attacker: u64, victim: u64 },
     AttackStop { attacker: u64, victim: u64 },
     AttackSwingError(AttackSwingError),
     CastFailed {
@@ -1346,10 +1373,23 @@ pub enum PeriodicAuraTick {
     },
 }
 
+/// Decode one server opcode into the app-facing shape: `Ok(None)` for an opcode this slice does
+/// not consume, the codec's error for a malformed body. The session's direct movement arm reads
+/// this wrapper; [`parse`] remains the raw `Option<Result>` form its other callers pattern on.
+pub fn decode_server(opcode: u16, body: &[u8]) -> Result<Option<ServerEvent>> {
+    match parse(opcode, body) {
+        Some(Ok(event)) => Ok(Some(event)),
+        Some(Err(error)) => Err(error),
+        None => Ok(None),
+    }
+}
+
 /// Parse one server opcode; `None` means this slice does not translate that opcode.
 pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
     use crate::opcode::*;
     Some(match opcode {
+        SMSG_MONSTER_MOVE => movement::read(body, false).map(ServerEvent::MonsterMove),
+        SMSG_MONSTER_MOVE_TRANSPORT => movement::read(body, true).map(ServerEvent::MonsterMove),
         SMSG_ATTACKSTART => read_attack_start(body),
         SMSG_ATTACKSTOP => read_attack_stop(body),
         SMSG_ATTACKSWING_NOTINRANGE => Ok(ServerEvent::AttackSwingError(AttackSwingError::NotInRange)),
@@ -2334,7 +2374,13 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     // 3.3.5 writes a variable stats block, then the fixed damage/resistance/spell blocks. The
     // 1.12 template keeps the same semantics with shorter fixed arrays; read each by its own
     // count rather than copying the whole 3.3.5 record.
-    let stats_count = r.u32()?.min(64);
+    let stats_count = r.u32()?;
+    // Build 12340 ItemStats_C has ten stat slots (AzerothCore MAX_ITEM_PROTO_STATS).
+    // Clamping the count would reinterpret excess stat bytes as the following fields.
+    anyhow::ensure!(
+        stats_count <= 10,
+        "item stat count {stats_count} exceeds 12340 limit 10"
+    );
     let mut stats = Vec::with_capacity(stats_count as usize);
     for _ in 0..stats_count {
         let stat_type = r.u32()?;
@@ -2739,7 +2785,7 @@ fn read_quest_greeting(b: &[u8]) -> Result<ServerEvent> {
     for _ in 0..count {
         quests.push(QuestListEntry {
             quest_id: r.u32()?,
-            icon: vanilla_quest_giver_status(r.u32()?).unwrap_or(0),
+            icon: r.u32()?,
             level: r.i32()? as u32,
             flags: r.u32()?,
             repeatable: r.u8()? != 0,
@@ -2755,9 +2801,9 @@ fn read_quest_rows(r: &mut Reader<'_>) -> Result<Vec<QuestListEntry>> {
     for _ in 0..count {
         quests.push(QuestListEntry {
             quest_id: r.u32()?,
-            icon: vanilla_quest_giver_status(r.u32()?).unwrap_or(0),
+            icon: r.u32()?,
             level: r.i32()? as u32,
-            flags: r.u32()?,
+            flags: r.i32()? as u32,
             repeatable: r.u8()? != 0,
             title: r.cstring()?,
         });
@@ -3304,6 +3350,22 @@ pub fn parse_char_enum(payload: &[u8]) -> Result<Vec<CharEnumRecord>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wrath_monster_move_reaches_the_gameplay_decoder() {
+        // AC MovementPacketBuilder: mover, movement byte, start, spline id, stop type.
+        let mut body = vec![1, 7, 0];
+        for value in [1.0f32, 2.0, 3.0] {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        body.extend_from_slice(&123u32.to_le_bytes());
+        body.push(1);
+        let event = parse(0x0dd, &body).expect("roaming/stop packets must not be discarded")
+            .expect("the complete stop body is valid");
+        let ServerEvent::MonsterMove(m) = event else { panic!("wrong movement event") };
+        assert!(m.stop);
+        assert_eq!((m.guid, m.spline_id, m.start), (7, 123, [1.0, 2.0, 3.0]));
+    }
+
     fn le<const N: usize>(v: &[u8]) -> [u8; N] {
         v.try_into().unwrap()
     }
@@ -3716,5 +3778,124 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    fn build_item_info_payload(
+        entry: u32,
+        stats_count_header: u32,
+        stats: &[(u32, i32)],
+        bag_family: u32,
+    ) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&entry.to_le_bytes());
+        b.extend_from_slice(&2u32.to_le_bytes()); // class
+        b.extend_from_slice(&7u32.to_le_bytes()); // subclass
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // sound_override_subclass
+        b.extend_from_slice(b"Worn Shortsword\0\0\0\0"); // 4 cstrings
+        b.extend_from_slice(&1542u32.to_le_bytes()); // display_info_id
+        b.extend_from_slice(&1u32.to_le_bytes()); // quality
+        b.extend_from_slice(&0u32.to_le_bytes()); // flags
+        b.extend_from_slice(&0u32.to_le_bytes()); // flags2
+        b.extend_from_slice(&35u32.to_le_bytes()); // buy_price
+        b.extend_from_slice(&7u32.to_le_bytes()); // sell_price
+        b.extend_from_slice(&21u32.to_le_bytes()); // inventory_type
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // allowable_class
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // allowable_race
+        b.extend_from_slice(&2u32.to_le_bytes()); // item_level
+        b.extend_from_slice(&1u32.to_le_bytes()); // required_level
+        for _ in 0..6 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // required_skill..required_rep_rank
+        }
+        b.extend_from_slice(&0i32.to_le_bytes()); // max_count
+        b.extend_from_slice(&1i32.to_le_bytes()); // stackable
+        b.extend_from_slice(&0u32.to_le_bytes()); // container_slots
+        b.extend_from_slice(&stats_count_header.to_le_bytes());
+        for &(stat_type, stat_val) in stats {
+            b.extend_from_slice(&stat_type.to_le_bytes());
+            b.extend_from_slice(&stat_val.to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // scaling_distribution
+        b.extend_from_slice(&0u32.to_le_bytes()); // scaling_value
+        for i in 0..2 {
+            let (min, max) = if i == 0 { (1.0f32, 3.0f32) } else { (0.0, 0.0) };
+            b.extend_from_slice(&min.to_le_bytes());
+            b.extend_from_slice(&max.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // armor
+        for _ in 0..6 {
+            b.extend_from_slice(&0i32.to_le_bytes()); // resistances
+        }
+        b.extend_from_slice(&1900u32.to_le_bytes()); // delay_ms
+        b.extend_from_slice(&0u32.to_le_bytes()); // ammo_type
+        b.extend_from_slice(&0.0f32.to_le_bytes()); // ranged_mod_range
+        for _ in 0..5 {
+            for _ in 0..6 {
+                b.extend_from_slice(&0u32.to_le_bytes()); // 5 spell slots * 6 dwords
+            }
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // bonding
+        b.extend_from_slice(b"Starter blade\0"); // description
+        for _ in 0..14 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // page_text..map (14 dwords)
+        }
+        b.extend_from_slice(&bag_family.to_le_bytes()); // trailing sentinel
+        b
+    }
+
+    #[test]
+    fn item_info_rejects_oversized_stat_count_without_cursor_desync() {
+        // 0 stats: trailing bag_family sentinel must align and parse accurately.
+        let zero_stats = build_item_info_payload(25, 0, &[], 0xCAFE_1234);
+        match read_item_info(&zero_stats).expect("0 stats should parse") {
+            ServerEvent::ItemInfo {
+                entry,
+                info: Some(info),
+            } => {
+                assert_eq!(entry, 25);
+                assert!(info.stats.is_empty());
+                assert_eq!(info.bag_family, 0xCAFE_1234);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // 10 stats (12340 MAX_ITEM_PROTO_STATS limit): all 10 stats and trailing bag_family align.
+        let ten_pairs: Vec<(u32, i32)> = (1..=10).map(|i| (i, i as i32 * 2)).collect();
+        let ten_stats = build_item_info_payload(49623, 10, &ten_pairs, 0xBEEF_5678);
+        match read_item_info(&ten_stats).expect("10 stats should parse") {
+            ServerEvent::ItemInfo {
+                entry,
+                info: Some(info),
+            } => {
+                assert_eq!(entry, 49623);
+                assert_eq!(info.stats, ten_pairs);
+                assert_eq!(info.bag_family, 0xBEEF_5678);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // 11 and 64 stats: must reject immediately rather than clamping and desyncing the cursor.
+        for bad_count in [11u32, 64u32] {
+            let pairs: Vec<(u32, i32)> = (0..bad_count).map(|i| (3, i as i32 + 1)).collect();
+            let oversized = build_item_info_payload(99999, bad_count, &pairs, 0x1111_2222);
+            let err = read_item_info(&oversized).expect_err("oversized stats_count must fail");
+            assert!(
+                err.to_string().contains("exceeds 12340 limit 10"),
+                "unexpected error for stats_count={bad_count}: {err:#}"
+            );
+        }
+
+        // Truncated stat block (header claims 4 stats, payload truncated mid-stats): must fail.
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(&25u32.to_le_bytes());
+        truncated.extend_from_slice(&2u32.to_le_bytes());
+        truncated.extend_from_slice(&7u32.to_le_bytes());
+        truncated.extend_from_slice(&(-1i32).to_le_bytes());
+        truncated.extend_from_slice(b"Truncated\0\0\0\0");
+        for _ in 0..17 {
+            truncated.extend_from_slice(&0u32.to_le_bytes());
+        }
+        truncated.extend_from_slice(&4u32.to_le_bytes()); // claims 4 stats, 0 follow
+        assert!(read_item_info(&truncated).is_err());
     }
 }

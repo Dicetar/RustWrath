@@ -8,7 +8,7 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{parse, str_at, u32_at};
+use crate::dbc::{field_count, parse, str_at, u32_at};
 
 const LOADING_SCREENS: &str = "DBFilesClient\\LoadingScreens.dbc";
 
@@ -44,7 +44,12 @@ pub fn load_loading_screens(chain: &mut Chain) -> Result<LoadingScreenCatalog> {
     let bytes = chain
         .read_file(LOADING_SCREENS)
         .with_context(|| format!("reading {LOADING_SCREENS}"))?;
-    let rs = parse(&bytes, schema(), "LoadingScreens")?;
+    let mut layout = schema();
+    // 12340 LoadingScreensRec::Read 0x008B2B20 appends HasWideScreen.
+    if field_count(&bytes) == Some(4) {
+        layout.add_field(SchemaField::new("HasWideScreen", FieldType::UInt32));
+    }
+    let rs = parse(&bytes, layout, "LoadingScreens")?;
     let mut paths = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         if let (Some(id), Some(path)) = (u32_at(r, 0), str_at(&rs, r, 2)) {

@@ -81,6 +81,30 @@ fn creature_line_law() {
     assert!(s.take_errors().is_empty());
 }
 
+/// `GameTooltip:IsUnit()` (the stock Wrath `OnTooltipSetUnit` handler's first test): a live unit
+/// answers 1, a cleared one nil. Without it every unit tooltip's handler dies before its lines.
+#[test]
+fn a_wrath_tooltip_answers_is_unit_while_its_unit_is_live() {
+    let mut s = UiScript::with_target(UiTarget::Wrath335).expect("VM");
+    super::common::load_tooltip_template(&s);
+    s.set_screen_size(800.0, 600.0);
+    s.set_unit("target", Some(wolf()));
+    s.run(
+        r#"
+        local a = CreateFrame("Button", "UF1"); a:SetPoint("CENTER", 0, 0); a:SetWidth(10); a:SetHeight(10)
+        local tt = CreateFrame("GameTooltip", "TT", nil, "TestTooltipTemplate")
+        tt:SetOwner(a, "ANCHOR_RIGHT")
+        assert(tt:SetUnit("target") == 1, "a live unit shows")
+        assert(tt:IsUnit() == 1, "and answers IsUnit")
+    "#,
+    )
+    .unwrap();
+    s.set_unit("target", None);
+    s.run(r#"assert(TT:IsUnit() == nil, "a cleared unit answers nil")"#)
+        .unwrap();
+    assert!(s.take_errors().is_empty());
+}
+
 /// A creature just seen: its descriptor fields are in, but the record fields (name, subtitle, type,
 /// rank, civilian) wait for the `SMSG_CREATURE_QUERY_RESPONSE` that fills `CGUnit+0xb30`.
 fn unqueried_wolf() -> UnitState {

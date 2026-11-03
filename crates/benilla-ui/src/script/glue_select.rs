@@ -48,6 +48,9 @@ pub struct GlueCharacter {
     pub zone: Option<String>,
     /// The race row's file string (`ChrRaces+0x3c`); empty without a row.
     pub file_string: String,
+    pub class_file_string: String,
+    /// 12340 character-select scene token, resolved from the race/class DBC rows.
+    pub background_model: String,
     /// `+0x102`.
     pub gender: u8,
     /// `+0xfc`: bit `0x2000` is a ghost.
@@ -437,6 +440,48 @@ fn arg(args: &MultiValue, i: usize) -> Value {
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
+    if model(lua).is_wrath() {
+        // 12340 Script_GetSelectBackgroundModel, 0x004E3620: DK uses its class scene,
+        // gnomes share Dwarf, trolls share Orc; an invalid index uses the Orc race row.
+        g.set("GetSelectBackgroundModel", lua.create_function(|lua, args: MultiValue| {
+            let index = number_arg(lua, arg(&args, 0), "Usage: GetSelectBackgroundModel(index)")?
+                .wrapping_sub(1);
+            let m = model(lua);
+            let name = usize::try_from(index).ok()
+                .and_then(|i| m.glue.roster.records.get(i))
+                .map(|r| r.character.background_model.as_str())
+                .unwrap_or_else(|| m.glue.create.race_file(2));
+            lua.create_string(name)
+        })?)?;
+    } else {
+        // CharacterSelect.lua calls this from the glue VM during a return from world. A vanilla
+        // glue VM still needs the global; the Human scene is the stock default.
+        g.set(
+            "GetSelectBackgroundModel",
+            lua.create_function(|_, _: MultiValue| Ok("Human"))?,
+        )?;
+    }
+
+    if model(lua).is_wrath() {
+        // 12340 0x004DE2E0 queries the server even when it reports a normal realm.
+        g.set("RequestRealmSplitInfo", lua.create_function(|lua, _: MultiValue| {
+            super::glue_core::queue(lua, super::GlueRequest::RealmSplit(u32::MAX));
+            Ok(())
+        })?)?;
+        g.set("SetRealmSplitState", lua.create_function(|lua, value: Value| {
+            let number = super::binding_abi::float_arg(lua, value,
+                "Usage: SetRealmSplitState(1 or 2)")?;
+            // The client narrows through a signed 64-bit integer before taking the low word.
+            // Non-finite and out-of-range conversion follows the x87 indefinite integer.
+            let integer = if number.is_finite() && number >= -9223372036854775808.0
+                && number < 9223372036854775808.0 { number as i64 } else { i64::MIN };
+            let state = integer as u32;
+            if state <= 2 {
+                super::glue_core::queue(lua, super::GlueRequest::RealmSplit(state));
+            }
+            Ok(())
+        })?)?;
+    }
 
     // `0x4731c0`: a string or number (`0x6f3510`) or the usage error (`0x838720`); the global of
     // that name castable to the model type (`0x76c760`) becomes the frame (`0x472100`), else the
@@ -519,7 +564,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .ok()
                 .and_then(|i| m.glue.roster.records.get(i))
             else {
-                return Ok(MultiValue::from_vec(vec![
+                let mut values = vec![
                     Value::Nil,
                     Value::Nil,
                     Value::Nil,
@@ -528,11 +573,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     Value::Nil,
                     Value::Number(0.0),
                     Value::Nil,
-                ]));
+                ];
+                if m.is_wrath() {
+                    values.insert(6, Value::Nil);
+                    values.push(Value::Nil);
+                }
+                return Ok(MultiValue::from_vec(values));
             };
             let c = &record.character;
             let text = |s: &str| lua.create_string(s).map(Value::String);
-            Ok(MultiValue::from_vec(vec![
+            let mut values = vec![
                 text(&c.name)?,
                 text(&c.race)?,
                 text(&c.class)?,
@@ -544,7 +594,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 text(&c.file_string)?,
                 Value::Number(f64::from(c.gender)),
                 flag(c.flags & 0x2000 != 0),
-            ]))
+            ];
+            // 12340 CharacterSelect.lua: classFilename precedes gender; PCC is the tenth value.
+            if m.is_wrath() {
+                values.insert(6, text(&c.class_file_string)?);
+                values.push(Value::Nil);
+            }
+            Ok(MultiValue::from_vec(values))
         })?,
     )?;
 
@@ -729,6 +785,71 @@ mod tests {
     use super::*;
     use crate::script::UiScript;
 
+    #[test]
+    fn wrath_realm_split_requests_preserve_low_word() {
+        let mut s = UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap();
+        s.run("RequestRealmSplitInfo()").unwrap();
+        let mut states: Vec<u32> = s
+            .take_glue_requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                crate::script::GlueRequest::RealmSplit(state) => Some(state),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(states, [u32::MAX]);
+        states.clear();
+        // Each case in its own call, so a failed conversion cannot hide behind its neighbour.
+        // 4294967297 keeps the low word (1). The three out-of-range doubles take the x87
+        // indefinite integer (INT64_MIN), whose low word is 0, so they still pass `state <= 2`;
+        // -1 becomes 0xFFFFFFFF and is refused.
+        for (call, want) in [
+            ("SetRealmSplitState(1)", Some(1)),
+            ("SetRealmSplitState('2')", Some(2)),
+            ("SetRealmSplitState(3)", None),
+            ("SetRealmSplitState(1.9)", Some(1)),
+            ("SetRealmSplitState(4294967297)", Some(1)),
+            ("SetRealmSplitState(1e20)", Some(0)),
+            ("SetRealmSplitState(math.huge)", Some(0)),
+            ("SetRealmSplitState(-1e20)", Some(0)),
+            ("SetRealmSplitState(-1)", None),
+        ] {
+            s.run(call).unwrap();
+            let got = s
+                .take_glue_requests()
+                .into_iter()
+                .filter_map(|request| match request {
+                    crate::script::GlueRequest::RealmSplit(state) => Some(state),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(got, want.into_iter().collect::<Vec<_>>(), "{call}");
+        }
+        assert!(s.run("SetRealmSplitState('invalid')").is_err());
+    }
+
+    #[test]
+    fn wrath_glue_screenshot_contracts() {
+        use crate::script::{GlueCreateCatalog, GlueCreateRace, UiTarget};
+        let mut s = UiScript::glue_with_target(UiTarget::Wrath335).unwrap();
+        s.set_glue_create_catalog(std::rc::Rc::new(GlueCreateCatalog {
+            races: vec![GlueCreateRace { id: 2, file: "Orc".into(), ..Default::default() }],
+            ..Default::default()
+        }));
+        let mut human = character(1, "Firna");
+        human.background_model = "Human".into();
+        s.load_glue_roster(vec![human]);
+        s.set_glue_account_expansion(1);
+        assert!(s.eval::<bool>(r#"
+            return IsStreamingTrial() == false and RealmListUpdateRate() == 5
+                and GetSelectBackgroundModel(1) == 'Human'
+                and GetSelectBackgroundModel(0) == 'Orc'
+                and GetAccountExpansionLevel() == 1
+        "#).unwrap());
+        s.run("SetPreferredInfo(1, true, false)").unwrap();
+        assert!(s.run("GetSelectBackgroundModel()").is_err());
+    }
+
     fn character(guid: u64, name: &str) -> GlueCharacter {
         GlueCharacter {
             guid,
@@ -738,6 +859,8 @@ mod tests {
             level: 12,
             zone: Some("Teldrassil".into()),
             file_string: "NightElf".into(),
+            class_file_string: "DRUID".into(),
+            background_model: "NightElf".into(),
             gender: 1,
             flags: 0,
             model: true,
