@@ -1890,10 +1890,26 @@ fn wrath_wm_action_intake(
             ActionIntent::AttackStop => commands.push(ClientCommand::AttackStop),
             ActionIntent::Cast { spell_id, target } => {
                 actions.last_cast_spell = Some(*spell_id);
+                // Give a WM-dispatched cast the same local interaction as a UI press; the tap
+                // adds the wire count and the native drain supplies the outcome.
+                let cast_trace = trace.as_deref().map(|trace| {
+                    let ix = trace.begin(
+                        Some((view.session_epoch, view.world_generation)),
+                        None,
+                        crate::quest_trace::Operation::Observed,
+                    );
+                    ix.record(crate::quest_trace::Stage::Cast {
+                        spell_id: Some(*spell_id),
+                        attempt: None,
+                        wire_cast_count: None,
+                        edge: crate::quest_trace::CastEdge::Requested,
+                    });
+                    ix
+                });
                 commands.push(ClientCommand::CastSpell {
                     spell_id: *spell_id,
                     target: *target,
-                    trace: None,
+                    trace: cast_trace,
                 });
             }
             ActionIntent::CastCancel => {
