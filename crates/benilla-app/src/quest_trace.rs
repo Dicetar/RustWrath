@@ -3065,7 +3065,7 @@ impl History {
                     }
                 },
                 recent: cap(self.recent().map(|line| line.to_string()).collect(), 16),
-                retention: cap(self.retention_summary(), 8),
+                retention: cap(self.retention_summary(), 12),
             });
         }
         self.inspector_snapshot.as_ref().unwrap()
