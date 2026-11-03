@@ -752,6 +752,9 @@ const READ_ONLY_TO_HANDLERS: &[&str] = &[
     "::SummonState",
     "::PetBar",
     "::QuestLog",
+    // The resident diagnostics recorder and world scope the quest-share handler observes.
+    "::quest_trace::Source",
+    "::wrath::WrathWorldView",
     "::UiClock",
     "::InteractNpc",
     "::SocialState",

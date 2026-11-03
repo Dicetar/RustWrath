@@ -117,8 +117,14 @@ pub struct WrathOutbound {
     /// Replaceable motion: under queue pressure only these may be dropped, never a cast, quest,
     /// loot or logout command (ADR-0001's admission rule).
     pub movement: bool,
+    /// Monotonic per-run sequence for movement entries only.
+    pub movement_seq: Option<u64>,
+    /// When this outbound entry was admitted to the queue, for bounded queue-age evidence.
+    pub enqueued_at: Option<std::time::Instant>,
     pub(crate) receipt: Option<crate::net::CommandReceipt>,
     pub(crate) trace: Option<crate::quest_trace::Interaction>,
+    /// Whether the carried trace scope is enforced across the async transport boundary.
+    pub(crate) enforce_scope: bool,
 }
 
 /// A translated gameplay reply tagged with the source session and world scope. The app rejects
@@ -176,6 +182,10 @@ pub enum WrathFeedEvent {
         phase: Phase,
         session_epoch: u64,
         world_generation: u64,
+        /// The login attempt that produced this phase; `None` when unavailable.
+        login_generation: Option<u64>,
+        /// The authoritative map once a world is established; coarse numeric only.
+        map_id: Option<u32>,
     },
     /// A world scope changed: the mapped entity set and pending publications for the old
     /// scope are invalid from this event on (issue 22 clears its entity map here).
@@ -187,6 +197,8 @@ pub enum WrathFeedEvent {
     /// scope active when it is drained.
     SessionEnded {
         result: Result<(), String>,
+        /// The protocol end kind the worker computed: clean logout vs lost link.
+        end: benilla_protocol::SessionEnd,
         session_epoch: u64,
         world_generation: u64,
     },
@@ -1006,12 +1018,18 @@ impl WrathControl {
                     parked,
                     Some(publisher_retire),
                 );
+                let end = if result.is_ok() {
+                    benilla_protocol::SessionEnd::LoggedOut
+                } else {
+                    benilla_protocol::SessionEnd::Lost
+                };
                 if let Ok(mut q) = feed.events.lock() {
                     if q.len() >= WRATH_EVENT_CAPACITY {
                         q.pop_front();
                     }
                     q.push_back(WrathFeedEvent::SessionEnded {
                         result: result.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")),
+                        end,
                         session_epoch: feed.last_session_epoch.load(Ordering::SeqCst),
                         world_generation: feed.last_world_generation.load(Ordering::SeqCst),
                     });
@@ -1687,6 +1705,7 @@ fn wrath_wm_action_intake(
     mut actions: ResMut<WrathWmActions>,
     view: Res<WrathWorldView>,
     net: Option<Res<NetCommands>>,
+    trace: Option<Res<crate::quest_trace::Source>>,
 ) {
     let Some(net) = net else { return };
     let Some(phase) = view.phase else { return };
@@ -1835,6 +1854,34 @@ fn wrath_wm_action_intake(
             }
             _ => None,
         };
+        if matches!(&request.intent, ActionIntent::CastCancel) {
+            // Record the local cancel request before admission can reject it. The resolved
+            // mirror supplies the identity when one exists; otherwise the target is unknown.
+            if let Some(trace) = trace.as_deref() {
+                let (spell_id, wire_cast_count) =
+                    if let Some(cast) = view.casting(view.player_guid) {
+                        (
+                            Some(cast.identity.spell_id),
+                            cast.identity.cast_count.map(u32::from),
+                        )
+                    } else if let Some(channel) = view.channeling(view.player_guid) {
+                        (Some(channel.spell_id), None)
+                    } else {
+                        (None, None)
+                    };
+                let ix = trace.begin(
+                    Some((view.session_epoch, view.world_generation)),
+                    None,
+                    crate::quest_trace::Operation::Observed,
+                );
+                ix.record(crate::quest_trace::Stage::Cast {
+                    spell_id,
+                    attempt: None,
+                    wire_cast_count,
+                    edge: crate::quest_trace::CastEdge::CancelRequested,
+                });
+            }
+        }
         if let Some(reason) = observed_refusal {
             actions.refused += 1;
             actions.answer(
@@ -1859,15 +1906,32 @@ fn wrath_wm_action_intake(
             ActionIntent::AttackStop => commands.push(ClientCommand::AttackStop),
             ActionIntent::Cast { spell_id, target } => {
                 actions.last_cast_spell = Some(*spell_id);
+                // Give a WM-dispatched cast the same local interaction as a UI press; the tap
+                // adds the wire count and the native drain supplies the outcome.
+                let cast_trace = trace.as_deref().map(|trace| {
+                    let ix = trace.begin(
+                        Some((view.session_epoch, view.world_generation)),
+                        None,
+                        crate::quest_trace::Operation::Observed,
+                    );
+                    ix.record(crate::quest_trace::Stage::Cast {
+                        spell_id: Some(*spell_id),
+                        attempt: None,
+                        wire_cast_count: None,
+                        edge: crate::quest_trace::CastEdge::Requested,
+                    });
+                    ix
+                });
                 commands.push(ClientCommand::CastSpell {
                     spell_id: *spell_id,
                     target: *target,
-                    trace: None,
+                    trace: cast_trace,
                 });
             }
             ActionIntent::CastCancel => {
                 // Cancel what the resolved mirror says is actually running, so the command
-                // owner reaches the same attempt the observation reported.
+                // owner reaches the same attempt the observation reported. The cancel request
+                // itself was recorded above, before admission could reject it.
                 if let Some(cast) = view.casting(view.player_guid) {
                     actions.last_cast_spell = Some(cast.identity.spell_id);
                     commands.push(ClientCommand::CancelCast {
@@ -3251,7 +3315,13 @@ fn wrath_tap_commands(
 ) {
     let Some(mut tap) = tap else { return };
     let Some(receiver) = tap.0.as_mut() else { return };
-    while let Ok(command) = receiver.try_recv() {
+    while let Ok(raw_command) = receiver.try_recv() {
+        // Unwrap the shared transport-identity envelope exactly once before matching the inner
+        // command. Its trace and scope flag are carried alongside the existing per-variant traces.
+        let (env_trace, env_enforce_scope, from_tracked, command) = match raw_command {
+            ClientCommand::Tracked { trace, enforce_scope, command } => (trace, enforce_scope, true, *command),
+            other => (None, false, false, other),
+        };
         let opening = matches!(&command, ClientCommand::GossipHello { .. } | ClientCommand::QuestgiverHello { .. } | ClientCommand::QuestgiverOpenTracked { .. });
         let scope = Some((view.session_epoch, view.world_generation));
         let cmd_trace = match &command {
@@ -3267,6 +3337,34 @@ fn wrath_tap_commands(
             | ClientCommand::CancelCast { trace, .. }
             | ClientCommand::CancelChannelling { trace, .. } => trace.clone(),
             _ => None,
+        };
+        let cmd_trace = cmd_trace.or(env_trace.clone());
+        // Receipt trace for quest tracked variants, used by the generic trace scope path.
+        let receipt_trace = match &command {
+            ClientCommand::QuestgiverAcceptTracked { receipt }
+            | ClientCommand::QuestgiverSelectTracked { receipt, .. }
+            | ClientCommand::QuestgiverOpenTracked { receipt, .. }
+            | ClientCommand::QuestgiverRequestRewardTracked { receipt }
+            | ClientCommand::QuestgiverChooseRewardTracked { receipt, .. } => receipt.trace.clone(),
+            _ => None,
+        };
+        let primary_trace = cmd_trace.clone().or(receipt_trace.clone());
+        let receipt_enforce = match &command {
+            ClientCommand::QuestgiverAcceptTracked { receipt }
+            | ClientCommand::QuestgiverSelectTracked { receipt, .. }
+            | ClientCommand::QuestgiverOpenTracked { receipt, .. }
+            | ClientCommand::QuestgiverRequestRewardTracked { receipt }
+            | ClientCommand::QuestgiverChooseRewardTracked { receipt, .. } => receipt.enforce_scope,
+            _ => false,
+        };
+        // Scope rule:
+        // - a `Tracked` envelope uses its explicit flag;
+        // - a receipt's flag governs its own trace;
+        // - a per-variant (non-envelope) trace with a carried scope defaults to enforced.
+        let enforce_scope = if from_tracked {
+            env_enforce_scope || receipt_enforce
+        } else {
+            receipt_enforce || primary_trace.as_ref().and_then(|t| t.scope()).is_some()
         };
         if opening {
             if let Some(trace) = &trace {
@@ -3310,6 +3408,18 @@ fn wrath_tap_commands(
                 (command, Some(receipt))
             }
             ClientCommand::QuestgiverOpenTracked { receipt, gossip } => {
+                // The transport-core scope contract covers the open arm too: a right-click open
+                // written after a session/world transfer must be refused once, not forwarded as
+                // an old-world greeting in the new world.
+                if !view.entered_world
+                    || receipt.session_epoch != view.session_epoch
+                    || receipt.world_generation != view.world_generation
+                {
+                    receipt.report(crate::net::CommandDelivery::Rejected(
+                        crate::net::CommandRefusal::ScopeChanged,
+                    ));
+                    continue;
+                }
                 let command = if gossip {
                     ClientCommand::GossipHello { guid: receipt.npc }
                 } else {
@@ -3356,7 +3466,35 @@ fn wrath_tap_commands(
             }
             command => (command, None),
         };
+        // Generic trace scope check: enforced only when `enforce_scope` is true (defaulted true for
+        // a carried scope per the named rule above).
+        if enforce_scope {
+            if let Some(ix) = &primary_trace {
+                if let Some((se, wg)) = ix.scope() {
+                if !view.entered_world
+                    || view.session_epoch != se
+                    || view.world_generation != wg
+                {
+                    if let Some(receipt) = receipt.as_ref() {
+                        receipt.report(crate::net::CommandDelivery::Rejected(
+                            crate::net::CommandRefusal::ScopeChanged,
+                        ));
+                    } else {
+                        ix.record(crate::quest_trace::Stage::Delivery(
+                            crate::net::CommandDelivery::Rejected(
+                                crate::net::CommandRefusal::ScopeChanged,
+                            ),
+                        ));
+                    }
+                    continue;
+                }
+            }
+        }
+        }
         let count = view.next_cast_count;
+        // The wire cast count actually used by a CMSG_CAST_SPELL arm, when one encodes. It is
+        // distinct from the native attempt serial and the local interaction id.
+        let mut admitted_wire_count: Option<u8> = None;
         let packet = match command {
             ClientCommand::SetSelection { guid } => {
                 if guid != 0 && !view.entities.contains_key(&guid) {
@@ -3376,6 +3514,7 @@ fn wrath_tap_commands(
                 gameplay::attack_stop(),
             )),
             ClientCommand::CastSpell { spell_id, target, .. } => {
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3744,6 +3883,7 @@ fn wrath_tap_commands(
             )),
             ClientCommand::CastSpellGameObject { spell_id, go_guid, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3752,6 +3892,7 @@ fn wrath_tap_commands(
             }
             ClientCommand::CastSpellItem { spell_id, item_guid, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3760,6 +3901,7 @@ fn wrath_tap_commands(
             }
             ClientCommand::CastSpellTradeItem { spell_id, slot, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3774,6 +3916,7 @@ fn wrath_tap_commands(
             } => {
                 use benilla_protocol::messages::CorpseTarget;
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3787,6 +3930,7 @@ fn wrath_tap_commands(
             }
             ClientCommand::CastSpellAtDest { spell_id, dest, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3795,6 +3939,7 @@ fn wrath_tap_commands(
             }
             ClientCommand::CastSpellAtSource { spell_id, src, .. } => {
                 let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
                 view.next_cast_count = count.wrapping_add(1).max(1);
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_CAST_SPELL,
@@ -3923,7 +4068,7 @@ fn wrath_tap_commands(
             _ => None,
         };
         if let Some((opcode, payload)) = packet {
-            if let Some(trace) = receipt.as_ref().and_then(|r| r.trace.as_ref()) {
+            if let Some(trace) = &primary_trace {
                 trace.record(crate::quest_trace::Stage::Encoded);
             }
             if let Ok(mut queue) = input.0.lock() {
@@ -3936,11 +4081,25 @@ fn wrath_tap_commands(
                         opcode,
                         payload,
                         movement: false,
+                        movement_seq: None,
+                        enqueued_at: None,
                         receipt: receipt.clone(),
                         trace: cmd_trace.clone(),
+                        enforce_scope,
                     });
                     if let Some(receipt) = receipt.as_ref() {
                         receipt.report(crate::net::CommandDelivery::OutboxAdmitted);
+                        // One interaction must receive exactly one terminal delivery event: the receipt
+                        // remains the authority, so a distinct envelope trace records only when its
+                        // interaction differs from the receipt's.
+                        if let Some(pt) = &primary_trace {
+                            let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                            if pt.interaction_id() != receipt_ix {
+                                pt.record_delivery(crate::net::CommandDelivery::OutboxAdmitted);
+                            }
+                        }
+                    } else if let Some(pt) = &primary_trace {
+                        pt.record_delivery(crate::net::CommandDelivery::OutboxAdmitted);
                     }
                     if diagnostic_outbound(opcode) {
                         let stage = crate::quest_trace::Stage::Outbound {
@@ -3957,6 +4116,7 @@ fn wrath_tap_commands(
                         let stage = crate::quest_trace::Stage::Cast {
                             spell_id: Some(spell_id),
                             attempt: None,
+                            wire_cast_count: admitted_wire_count.map(u32::from),
                             edge: crate::quest_trace::CastEdge::Admitted,
                         };
                         if let Some(ix) = &cmd_trace {
@@ -3982,6 +4142,18 @@ fn wrath_tap_commands(
                         receipt.report(crate::net::CommandDelivery::Rejected(
                             crate::net::CommandRefusal::OutboxFull,
                         ));
+                        if let Some(pt) = &primary_trace {
+                            let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                            if pt.interaction_id() != receipt_ix {
+                                pt.record_delivery(crate::net::CommandDelivery::Rejected(
+                                    crate::net::CommandRefusal::OutboxFull,
+                                ));
+                            }
+                        }
+                    } else if let Some(pt) = &primary_trace {
+                        pt.record_delivery(crate::net::CommandDelivery::Rejected(
+                            crate::net::CommandRefusal::OutboxFull,
+                        ));
                     }
                     if diagnostic_outbound(opcode) {
                         let stage = crate::quest_trace::Stage::Outbound {
@@ -4003,6 +4175,18 @@ fn wrath_tap_commands(
             } else {
                 if let Some(receipt) = receipt.as_ref() {
                     receipt.report(crate::net::CommandDelivery::Rejected(
+                        crate::net::CommandRefusal::Unavailable,
+                    ));
+                    if let Some(pt) = &primary_trace {
+                        let receipt_ix = receipt.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                        if pt.interaction_id() != receipt_ix {
+                            pt.record_delivery(crate::net::CommandDelivery::Rejected(
+                                crate::net::CommandRefusal::Unavailable,
+                            ));
+                        }
+                    }
+                } else if let Some(pt) = &primary_trace {
+                    pt.record_delivery(crate::net::CommandDelivery::Rejected(
                         crate::net::CommandRefusal::Unavailable,
                     ));
                 }
@@ -4103,18 +4287,53 @@ fn wrath_dispatch_events(world: &mut World) {
                     event.world_generation,
                 ))
         {
+            // The buy reply names a vendor row slot, not an entry. Resolve it from the same
+            // 12340 stock the buy packet addressed; absent stock keeps the item unknown.
+            let vendor_buy_entry = match &event.event {
+                SessionEvent::VendorBuyResult { vendor, slot, .. } => world
+                    .get_resource::<WrathWorldView>()
+                    .and_then(|view| view.vendor.as_ref())
+                    .filter(|(guid, _)| *guid == *vendor)
+                    .and_then(|(_, rows)| rows.iter().find(|row| row.slot == *slot))
+                    .map(|row| row.entry),
+                _ => None,
+            };
             if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
-                use crate::quest_trace::{DomainEvent as D, Stage};
+                use crate::quest_trace::{DomainEvent as D, LoginMilestone, Stage};
+                let login_milestone = match &event.event {
+                    SessionEvent::LoginStage { stage } => Some(match stage {
+                        benilla_protocol::LoginStage::Connecting => LoginMilestone::Connecting,
+                        benilla_protocol::LoginStage::Authenticating => {
+                            LoginMilestone::Authenticating
+                        }
+                        benilla_protocol::LoginStage::Handshaking => LoginMilestone::Handshaking,
+                        benilla_protocol::LoginStage::WorldConnected => {
+                            LoginMilestone::WorldConnected
+                        }
+                    }),
+                    SessionEvent::RealmList { failed, .. } => Some(if *failed {
+                        LoginMilestone::RealmListFailed
+                    } else {
+                        LoginMilestone::RealmListReceived
+                    }),
+                    SessionEvent::WorldAuthenticated { .. } => {
+                        Some(LoginMilestone::WorldAuthenticated)
+                    }
+                    SessionEvent::CharacterList { .. } => Some(LoginMilestone::RosterReceived),
+                    SessionEvent::RosterFailed { .. } => Some(LoginMilestone::RosterFailed),
+                    SessionEvent::LoginQueued { .. } => Some(LoginMilestone::LoginQueued),
+                    SessionEvent::LoginFailed { refusal, .. } => Some(if refusal.is_some() {
+                        LoginMilestone::LoginRefused
+                    } else {
+                        LoginMilestone::LoginFailed
+                    }),
+                    SessionEvent::CharActionResult { .. } => Some(LoginMilestone::CharacterAction),
+                    SessionEvent::CharacterLoginFailed { result } => {
+                        Some(LoginMilestone::CharacterLoginFailed { result: *result })
+                    }
+                    _ => None,
+                };
                 let kind = match &event.event {
-                    SessionEvent::LoginStage { .. } => Some(D::LoginProgress),
-                    SessionEvent::RealmList { .. } => Some(D::RealmList),
-                    SessionEvent::WorldAuthenticated { .. } => Some(D::WorldAuthenticated),
-                    SessionEvent::CharacterList { .. } => Some(D::Roster),
-                    SessionEvent::RosterFailed { .. } => Some(D::RosterFailed),
-                    SessionEvent::LoginQueued { .. } => Some(D::LoginQueued),
-                    SessionEvent::LoginFailed { .. } => Some(D::LoginFailed),
-                    SessionEvent::CharActionResult { .. } => Some(D::CharacterAction),
-                    SessionEvent::CharacterLoginFailed { .. } => Some(D::CharacterLoginFailed),
                     SessionEvent::QuestComplete(_) => Some(D::QuestComplete),
                     SessionEvent::QuestObjectiveKill { .. } | SessionEvent::QuestObjectiveItem { .. }
                     | SessionEvent::QuestObjectivesComplete { .. } => Some(D::QuestObjective),
@@ -4143,16 +4362,29 @@ fn wrath_dispatch_events(world: &mut World) {
                     | SessionEvent::LootReleaseResponse { guid, .. } => Some(*guid),
                     _ => None,
                 };
+                // Forced/terminal events (epoch 0) have no reliable producer scope; record them
+                // as unknown rather than borrowing the scope active at drain time.
+                let scope = if event.force
+                    || (event.session_epoch == 0 && event.world_generation == 0)
+                {
+                    None
+                } else {
+                    Some((event.session_epoch, event.world_generation))
+                };
+                if let Some(milestone) = login_milestone {
+                    // The attempt id comes from the wrapper that produced the event, not from
+                    // whichever attempt happens to be newest when the trace is drained.
+
+                    trace.observe(
+                        scope,
+                        None,
+                        Stage::LoginMilestone {
+                            attempt: event.login_generation,
+                            milestone,
+                        },
+                    );
+                }
                 if let Some(event_kind) = kind {
-                    // Forced/terminal events (epoch 0) have no reliable producer scope; record
-                    // them as unknown rather than borrowing the scope active at drain time.
-                    let scope = if event.force
-                        || (event.session_epoch == 0 && event.world_generation == 0)
-                    {
-                        None
-                    } else {
-                        Some((event.session_epoch, event.world_generation))
-                    };
                     trace.observe_with_npc(
                         scope,
                         None,
@@ -4160,15 +4392,153 @@ fn wrath_dispatch_events(world: &mut World) {
                         Stage::DomainEvent { event: event_kind },
                     );
                 }
-                if let SessionEvent::ItemPushResult(push) = &event.event {
-                    trace.observe(
-                        Some((event.session_epoch, event.world_generation)),
+                // Numeric, privacy-safe inbound evidence. Raw GUIDs (source, item, vendor,
+                // seller) are used only to derive the run-local alias; no GUID, name, message or
+                // packet body enters the recorder.
+                match &event.event {
+                    SessionEvent::LootResponse { guid, .. } => trace.observe_with_subject(
+                        scope,
                         None,
-                        Stage::RewardItemPushed {
-                            item_id: push.item_entry,
-                            count: push.count,
+                        Some(*guid),
+                        None,
+                        None,
+                        None,
+                        Stage::LootResponseOpened,
+                    ),
+                    SessionEvent::LootError { guid, error } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*guid),
+                        None,
+                        None,
+                        None,
+                        Stage::LootErrorObserved { reason: *error },
+                    ),
+                    SessionEvent::LootRemoved { slot } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(u32::from(*slot)),
+                        Stage::LootSlotRemoved {
+                            slot: u32::from(*slot),
+                            item_id: None,
+                            count: None,
                         },
-                    );
+                    ),
+                    SessionEvent::LootMoneyNotify { amount } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        None,
+                        None,
+                        Some(*amount),
+                        None,
+                        Stage::LootMoneyNotify { amount: *amount },
+                    ),
+                    SessionEvent::LootClearMoney => {
+                        trace.observe_with_subject(scope, None, None, None, None, None, Stage::LootMoneyCleared)
+                    }
+                    SessionEvent::LootReleaseResponse { guid, .. } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*guid),
+                        None,
+                        None,
+                        None,
+                        Stage::LootReleasedObserved,
+                    ),
+                    SessionEvent::ItemPushResult(push) => {
+                        // Keep the quest reward semantics for the quest turn-in correlator, and
+                        // record the explicit non-quest item-push domain as well.
+                        trace.observe_with_subject(
+                            scope,
+                            None,
+                            None,
+                            Some(push.item_entry),
+                            Some(push.count),
+                            None,
+                            Stage::ItemPushResult {
+                                item_id: push.item_entry,
+                                count: push.count,
+                            },
+                        );
+                        trace.observe(
+                            scope,
+                            None,
+                            Stage::RewardItemPushed {
+                                item_id: push.item_entry,
+                                count: push.count,
+                            },
+                        );
+                    }
+                    SessionEvent::InventoryFailure { reason, .. } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Stage::InventoryFailure { reason: *reason },
+                    ),
+                    SessionEvent::VendorInventory { vendor, items } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*vendor),
+                        None,
+                        None,
+                        None,
+                        Stage::VendorInventoryObserved {
+                            vendor_alias: trace.npc_alias(*vendor),
+                            rows: items.len().min(u32::MAX as usize) as u32,
+                        },
+                    ),
+                    SessionEvent::VendorBuyResult {
+                        vendor,
+                        slot,
+                        purchase_count,
+                        ..
+                    } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*vendor),
+                        vendor_buy_entry,
+                        Some(*purchase_count),
+                        Some(*slot),
+                        Stage::VendorBuyResult {
+                            item_id: vendor_buy_entry,
+                            count: *purchase_count,
+                            slot: Some(*slot),
+                        },
+                    ),
+                    SessionEvent::VendorBuyFailed {
+                        vendor,
+                        item_entry,
+                        reason,
+                    } => trace.observe_with_subject(
+                        scope,
+                        None,
+                        Some(*vendor),
+                        Some(*item_entry),
+                        None,
+                        None,
+                        Stage::VendorBuyFailedObserved {
+                            item_id: Some(*item_entry),
+                            reason: *reason,
+                        },
+                    ),
+                    SessionEvent::VendorSellFailed { vendor, reason, .. } => {
+                        trace.observe_with_subject(
+                            scope,
+                            None,
+                            Some(*vendor),
+                            None,
+                            None,
+                            None,
+                            Stage::VendorSellFailedObserved { reason: *reason },
+                        )
+                    }
+                    _ => {}
                 }
             }
             deliver.push(event.event);
@@ -4312,19 +4682,76 @@ fn wrath_net_drain(
         }
         drained += 1;
         if let Some(trace) = &trace {
-            use crate::quest_trace::{SessionPhase, Stage};
+            use crate::quest_trace::{SessionEndKind, SessionPhase, Stage};
             let stage = match &event {
-                WrathFeedEvent::Phase { phase, .. } => Some(Stage::SessionPhase {
-                    phase: match phase {
-                        Phase::CharacterSelection => SessionPhase::CharacterSelection,
-                        Phase::EnteringWorld => SessionPhase::EnteringWorld,
-                        Phase::InWorld => SessionPhase::InWorld,
-                        Phase::TransferPending => SessionPhase::TransferPending,
-                        Phase::Loading => SessionPhase::Loading,
+                WrathFeedEvent::Phase {
+                    phase,
+                    session_epoch,
+                    world_generation,
+                    login_generation,
+                    map_id,
+                } => {
+                    // Record only an actual transition: a duplicate or older phase event is
+                    // not a new milestone, and the state guard below applies the same rule.
+                    let older = scope_is_older(
+                        view.session_epoch,
+                        view.world_generation,
+                        *session_epoch,
+                        *world_generation,
+                    );
+                    let same_scope = view.session_epoch == *session_epoch
+                        && view.world_generation == *world_generation;
+                    if older || (same_scope && view.phase == Some(*phase)) {
+                        None
+                    } else {
+                        Some(Stage::SessionPhase {
+                            phase: match phase {
+                                Phase::CharacterSelection => SessionPhase::CharacterSelection,
+                                Phase::EnteringWorld => SessionPhase::EnteringWorld,
+                                Phase::InWorld => SessionPhase::InWorld,
+                                Phase::TransferPending => SessionPhase::TransferPending,
+                                Phase::Loading => SessionPhase::Loading,
+                            },
+                            attempt: *login_generation,
+                            map_id: *map_id,
+                        })
+                    }
+                }
+                WrathFeedEvent::WorldTransfer {
+                    session_epoch,
+                    world_generation,
+                    map_id,
+                } => {
+                    let older = scope_is_older(
+                        view.session_epoch,
+                        view.world_generation,
+                        *session_epoch,
+                        *world_generation,
+                    );
+                    let same_scope = view.session_epoch == *session_epoch
+                        && view.world_generation == *world_generation;
+                    if older || same_scope {
+                        None
+                    } else {
+                        Some(Stage::WorldTransfer {
+                            map_id: Some(*map_id),
+                            from: if view.session_epoch == 0 && view.world_generation == 0 {
+                                None
+                            } else {
+                                Some((view.session_epoch, view.world_generation))
+                            },
+                            to: Some((*session_epoch, *world_generation)),
+                            retired_local: 0,
+                            retired_written: 0,
+                        })
+                    }
+                }
+                WrathFeedEvent::SessionEnded { end, .. } => Some(Stage::SessionEnded {
+                    kind: match end {
+                        benilla_protocol::SessionEnd::LoggedOut => SessionEndKind::LoggedOut,
+                        benilla_protocol::SessionEnd::Lost => SessionEndKind::Lost,
                     },
                 }),
-                WrathFeedEvent::WorldTransfer { .. } => Some(Stage::WorldTransfer),
-                WrathFeedEvent::SessionEnded { result, .. } => Some(Stage::SessionEnded { failed: result.is_err() }),
                 _ => None,
             };
             if let Some(stage) = stage {
@@ -4503,7 +4930,7 @@ fn wrath_net_drain(
             WrathFeedEvent::ExportSkipped(reason) => {
                 debug!("wrath export skipped: {reason}");
             }
-            WrathFeedEvent::SessionEnded { result, session_epoch, world_generation } => {
+            WrathFeedEvent::SessionEnded { result, end: _, session_epoch, world_generation } => {
                 control.ended = true;
                 control.terminal_ready = true;
                 // The entry message may still be in the Bevy message queue; the view already
@@ -4607,6 +5034,11 @@ fn wrath_net_drain(
                         Some(Stage::Cast {
                             spell_id: resolved.event.identity.map(|id| id.spell_id),
                             attempt: resolved.event.attempt_serial,
+                            wire_cast_count: resolved
+                                .event
+                                .identity
+                                .and_then(|id| id.cast_count)
+                                .map(u32::from),
                             edge,
                         })
                     }
@@ -5769,7 +6201,23 @@ fn wrath_apply_world(world: &mut World) {
                                 if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
                                     let scope = world.get_resource::<WrathWorldView>()
                                         .map(|v| (v.session_epoch, v.world_generation));
-                                    trace.observe(scope, None, crate::quest_trace::Stage::MovementCorrectionApplied);
+                                    let distance = current.distance(bevy);
+                                    let distance_bucket = if distance <= 0.5 {
+                                        0
+                                    } else if distance <= 2.0 {
+                                        1
+                                    } else if distance <= 5.0 {
+                                        2
+                                    } else {
+                                        3
+                                    };
+                                    let (movement_seq, ambiguous) = trace.movement_written_seq_unambiguous();
+                                    trace.clear_movement_writes_since_correction();
+                                    trace.observe(scope, None, crate::quest_trace::Stage::MovementCorrectionApplied {
+                                        distance_bucket,
+                                        movement_seq,
+                                        ambiguous,
+                                    });
                                 }
                             }
                         }
@@ -6024,6 +6472,71 @@ fn wrath_apply_world(world: &mut World) {
                         }
                     }
                 }
+                // Equipment-slot evidence: the descriptor update moved one of the player's
+                // nineteen equipment guids. Record the numeric slot and the item entry (never the
+                // guid), so an equip can be distinguished from a bare item push.
+                let mut changed_slots: Vec<u8> = moved
+                    .iter()
+                    .filter_map(|&(idx, _, _)| {
+                        let base = benilla_protocol::field::FIELD_PLAYER_INV_SLOT_HEAD;
+                        ((base..base + 38).contains(&idx) && (idx - base) % 2 == 0)
+                            .then(|| ((idx - base) / 2) as u8)
+                            .filter(|slot| *slot < 19)
+                    })
+                    .collect();
+                changed_slots.sort_unstable();
+                changed_slots.dedup();
+                if !changed_slots.is_empty() {
+                    if let Some(trace) =
+                        world.get_resource::<crate::quest_trace::Source>()
+                    {
+                        let scope = world
+                            .get_resource::<WrathWorldView>()
+                            .map(|v| (v.session_epoch, v.world_generation));
+                        let mut entries: Vec<(u8, u64)> = Vec::new();
+                        if let Some(entity) =
+                            world.resource::<GuidIndex>().0.get(guid).copied()
+                        {
+                            if let Some(store) = world.get::<crate::net::ObjectStore>(entity)
+                            {
+                                for slot in &changed_slots {
+                                    entries.push((
+                                        *slot,
+                                        store.0.player_inv_slot(*slot).unwrap_or(0),
+                                    ));
+                                }
+                            }
+                        }
+                        for (slot, item_guid) in entries {
+                            let item_id = if item_guid == 0 {
+                                0
+                            } else {
+                                world
+                                    .resource::<GuidIndex>()
+                                    .0
+                                    .get(&item_guid)
+                                    .and_then(|entity| {
+                                        world
+                                            .get::<crate::net::ObjectStore>(*entity)
+                                            .and_then(|store| store.0.object_entry())
+                                    })
+                                    .unwrap_or(0)
+                            };
+                            trace.observe_with_subject(
+                                scope,
+                                None,
+                                None,
+                                Some(item_id),
+                                Some(1),
+                                Some(u32::from(slot)),
+                                crate::quest_trace::Stage::EquipmentSlotChanged {
+                                    item_id,
+                                    slot: u32::from(slot),
+                                },
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -6263,12 +6776,19 @@ fn wrath_stream_movement(
                 trace.note_movement_coalesced();
             }
         }
+        if let Some(trace) = &trace {
+            trace.note_movement_admitted();
+        }
+        let movement_seq = trace.as_ref().map(|t| t.mint_movement_sequence());
         queue.push_back(WrathOutbound {
             opcode,
             payload,
             movement: true,
+            movement_seq,
+            enqueued_at: Some(std::time::Instant::now()),
             receipt: None,
             trace: None,
+            enforce_scope: false,
         });
     } else if let Some(trace) = &trace {
         trace.note_movement_refused();
@@ -6501,6 +7021,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
     let started = std::time::Instant::now();
 
@@ -6912,6 +7434,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
     world.send(benilla_protocol_wrath::opcode::CMSG_PLAYER_LOGIN, &guid.to_le_bytes())?;
 
@@ -6938,6 +7462,7 @@ pub fn run_session_with_cancel(
                 .map(|mut queue| queue.drain(..).collect())
                 .unwrap_or_default();
             for command in pending {
+                // Cancel handling for receipt-level scope.
                 if let Some(receipt) = command.receipt.as_ref() {
                     if receipt.enforce_scope && cancel.load(Ordering::SeqCst) {
                         receipt.report(crate::net::CommandDelivery::Rejected(
@@ -6955,7 +7480,60 @@ pub fn run_session_with_cancel(
                         continue;
                     }
                 }
+                // Generic trace scope check: enforced only when the carried flag says so.
+                let mut stale_trace = false;
+                if command.enforce_scope {
+                    if let Some(ix) = &command.trace {
+                    if let Some((se, wg)) = ix.scope() {
+                        if se != session.epoch()
+                            || wg != session.world_generation()
+                            || session.phase() != Phase::InWorld
+                        {
+                            stale_trace = true;
+                            ix.record(crate::quest_trace::Stage::Delivery(
+                                crate::net::CommandDelivery::Rejected(
+                                    crate::net::CommandRefusal::ScopeChanged,
+                                ),
+                            ));
+                        }
+                    }
+                    }
+                }
+                if let Some(receipt) = &command.receipt {
+                    if !receipt.enforce_scope {
+                        if let Some(ix) = &receipt.trace {
+                            if let Some((se, wg)) = ix.scope() {
+                                if se != session.epoch()
+                                    || wg != session.world_generation()
+                                    || session.phase() != Phase::InWorld
+                                {
+                                    stale_trace = true;
+                                    // Reuse the receipt report path as authority for this interaction,
+                                    // unless the same interaction was already recorded via command.trace.
+                                    let cmd_ix = command.trace.as_ref().map(|t| t.interaction_id()).unwrap_or(0);
+                                    if cmd_ix == 0 || cmd_ix != ix.interaction_id() {
+                                        receipt.report(crate::net::CommandDelivery::Rejected(
+                                            crate::net::CommandRefusal::ScopeChanged,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if stale_trace {
+                    continue;
+                }
                 let result = world.send(command.opcode, &command.payload);
+                if command.movement {
+                    if let Some(seq) = command.movement_seq {
+                        if result.is_ok() {
+                            if let Some(trace) = &feed.trace {
+                                trace.note_movement_written(seq);
+                            }
+                        }
+                    }
+                }
                 if diagnostic_outbound(command.opcode) {
                     if let Some(ix) = &command.trace {
                         ix.record(crate::quest_trace::Stage::Outbound {
@@ -6984,6 +7562,18 @@ pub fn run_session_with_cancel(
                     } else if let Some(trace) = &feed.trace {
                         trace.observe(Some((session.epoch(), session.world_generation())), None,
                             crate::quest_trace::Stage::SocketWriteFailed);
+                    }
+                }
+                // Delivery outcome records on trace-bearing commands (defect #2 fix), unless the
+                // same interaction is already reported through the receipt path.
+                let receipt_ix = command.receipt.as_ref().and_then(|r| r.trace.as_ref()).map(|t| t.interaction_id()).unwrap_or(0);
+                if let Some(ix) = &command.trace {
+                    if receipt_ix == 0 || ix.interaction_id() != receipt_ix {
+                        if result.is_ok() {
+                            ix.record_delivery(crate::net::CommandDelivery::Written);
+                        } else {
+                            ix.record_delivery(crate::net::CommandDelivery::WriteFailed);
+                        }
                     }
                 }
                 if let Some(receipt) = command.receipt.as_ref() {
@@ -7274,6 +7864,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
             publisher.retire_all();
             return Ok(());
@@ -7368,6 +7960,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
         }
     }
@@ -7382,6 +7976,8 @@ pub fn run_session_with_cancel(
         phase: session.phase(),
         session_epoch: session.epoch(),
         world_generation: session.world_generation(),
+        login_generation: config.login_generation,
+        map_id: session.map_id(),
     });
                 publisher.retire_all();
                 return Ok(());
@@ -7608,8 +8204,11 @@ mod tests {
             opcode: 1,
             payload: vec![1],
             movement: false,
+            movement_seq: None,
+            enqueued_at: None,
             receipt: None,
             trace: None,
+            enforce_scope: false,
         }])));
         world.insert_resource(WrathInput(Arc::clone(&outbox)));
 

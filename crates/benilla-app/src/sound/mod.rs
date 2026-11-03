@@ -556,12 +556,26 @@ fn poll_mix_health(
     report_output(window, peak);
     let new_refused = health.voices_refused - *last_refused;
     *last_refused = health.voices_refused;
+    let lead_min_ms = window.lead_min_ms.map(|v| v.round() as i64);
+    let ring_min_ms = window.ring_min_ms.map(|v| v.round() as i64);
     if let Some(trace) = &trace {
         trace.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
             crate::quest_trace::Stage::AudioHealth {
                 over_full_scale_samples: level.over,
                 nonfinite_samples: level.nonfinite,
                 voices_refused: new_refused,
+                cycles: window.cycles,
+                underruns: window.underruns,
+                underrun_ms: window.underrun_ms.round() as u64,
+                overloads: window.overloads,
+                last_overload_ago_ms: window.last_overload_ago_ms.map_or(0, |v| v.round() as u64),
+                lead_min_ms,
+                ring_min_ms,
+                io_wall_max_ms: window.io_wall_max_ms.round() as u64,
+                render_wall_max_ms: window.render_wall_max_ms.round() as u64,
+                cycle_ms: window.cycle_ms.round() as u64,
+                chunk_ms: window.chunk_ms.round() as u64,
+                peak_load_percent: (peak * 100.0).round() as u32,
             });
     }
     if new_refused > 0 {

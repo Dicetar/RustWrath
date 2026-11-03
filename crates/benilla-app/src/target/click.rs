@@ -1079,8 +1079,8 @@ impl Dispatch<'_, '_> {
                     let (results, _receiver) = crossbeam_channel::bounded(2);
                     ClientCommand::QuestgiverOpenTracked {
                         receipt: crate::net::CommandReceipt {
-                            trace: Some(trace.clone()),
-                            enforce_scope: false,
+                            trace: Some((*trace).clone()),
+                            enforce_scope: true,
                             session_epoch: view.session_epoch,
                             world_generation: view.world_generation,
                             npc: guid,

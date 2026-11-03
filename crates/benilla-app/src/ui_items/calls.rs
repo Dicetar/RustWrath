@@ -31,9 +31,17 @@ pub(crate) struct ItemSteps<'w, 's> {
     purse: Option<crate::ui_merchant::RepairPurse<'w, 's>>,
     /// Resident interaction diagnostics; item/equip producers record local boundaries here.
     trace: Option<Res<'w, crate::quest_trace::Source>>,
+    /// Current Wrath scope for scoped equip interactions.
+    wrath: Option<Res<'w, crate::wrath::WrathWorldView>>,
 }
 
 impl ItemSteps<'_, '_> {
+    fn trace_scope(&self) -> Option<(u64, u64)> {
+        self.wrath
+            .as_ref()
+            .map(|view| (view.session_epoch, view.world_generation))
+    }
+
     pub(crate) fn item_suffix_name(&self, property: i32) -> Option<String> {
         self.rolls.as_ref()?.catalog.suffix_name(property).map(str::to_owned)
     }
@@ -95,6 +103,7 @@ impl ItemSteps<'_, '_> {
     pub(crate) fn apply(&mut self, script: &mut UiScript, call: ItemCall) {
         let target = script.target();
         let wire_pos = |bag, slot| wire_pos_in_target(target, bag, slot);
+        let trace_scope = self.trace_scope();
         let Self {
             net,
             self_q,
@@ -172,11 +181,42 @@ impl ItemSteps<'_, '_> {
             // `ITEM_REPAIR` as it goes out (`0x4f9ce4`). The doll's clicks (`0x4c7714`,
             // `0x4c79c4`) are the same arm on a worn item.
             ItemCall::Repair { .. } | ItemCall::RepairWorn(_) => {
+                let slot = match call {
+                    ItemCall::Repair { slot, .. } => Some(slot),
+                    ItemCall::RepairWorn(id) => Some(id),
+                    _ => None,
+                };
                 let (Some(open), Some(purse), Some(me)) = (merchant.as_deref(), purse, store)
                 else {
+                    if let Some(trace) = trace.as_ref() {
+                        trace
+                            .begin_with_details(
+                                trace_scope,
+                                None,
+                                None,
+                                None,
+                                Some(1),
+                                slot,
+                                crate::quest_trace::Operation::Buy,
+                            )
+                            .record(crate::quest_trace::Stage::GuardRefused);
+                    }
                     return;
                 };
                 let Some(vendor) = open.vendor else {
+                    if let Some(trace) = trace.as_ref() {
+                        trace
+                            .begin_with_details(
+                                trace_scope,
+                                None,
+                                None,
+                                None,
+                                Some(1),
+                                slot,
+                                crate::quest_trace::Operation::Buy,
+                            )
+                            .record(crate::quest_trace::Stage::GuardRefused);
+                    }
                     return;
                 };
                 let item_guid = match call {
@@ -191,38 +231,103 @@ impl ItemSteps<'_, '_> {
                     _ => None,
                 };
                 let Some(guid) = item_guid else {
+                    if let Some(trace) = trace.as_ref() {
+                        trace
+                            .begin_with_details(
+                                trace_scope,
+                                None,
+                                Some(vendor),
+                                None,
+                                Some(1),
+                                slot,
+                                crate::quest_trace::Operation::Buy,
+                            )
+                            .record(crate::quest_trace::Stage::GuardRefused);
+                    }
                     debug!(
                         "ui_items: repair on an empty or unaddressable slot ({call:?}) — ignored"
                     );
                     return;
                 };
+                let interaction = trace.as_ref().map(|trace| {
+                    trace.begin_with_details(
+                        trace_scope,
+                        None,
+                        Some(vendor),
+                        objects.object(guid).and_then(|fields| fields.object_entry()),
+                        Some(1),
+                        slot,
+                        crate::quest_trace::Operation::Buy,
+                    )
+                });
                 if purse.refuses(script, open, me, [guid]) {
+                    if let Some(interaction) = &interaction {
+                        interaction.record(crate::quest_trace::Stage::GuardRefused);
+                    }
                     return;
                 }
                 debug!("ui_items: repair item {guid:#x} ({call:?})");
                 script.queue_sound_kit("ITEM_REPAIR");
-                let _ = net.0.send(ClientCommand::RepairItem {
-                    vendor,
-                    item_guid: guid,
-                });
+                let command = match &interaction {
+                    Some(interaction) => ClientCommand::tracked(
+                        Some((*interaction).clone()),
+                        true,
+                        ClientCommand::RepairItem {
+                            vendor,
+                            item_guid: guid,
+                        },
+                    ),
+                    None => ClientCommand::RepairItem {
+                        vendor,
+                        item_guid: guid,
+                    },
+                };
+                let result = net.0.send(command);
+                if let Some(interaction) = &interaction {
+                    interaction.record(if result.is_ok() {
+                        crate::quest_trace::Stage::ChannelAdmitted
+                    } else {
+                        crate::quest_trace::Stage::ChannelDisconnected
+                    });
+                }
             }
             // `AutoEquipCursorItem` past its question: the call cleared the cursor, keeping the
             // pickup's lock but an arrow's (`0x5e1577`, `0x5e1711`).
             ItemCall::AutoEquip { bag, slot } => {
-                use crate::quest_trace::Operation;
-                let interaction = trace.as_ref().map(|s| s.begin(None, None, Operation::Equip));
-                let record = |stage| {
-                    if let Some(t) = &interaction {
-                        t.record(stage);
-                    }
-                };
                 let Some((bag_index, wire_slot)) = wire_pos(bag, slot) else {
-                    record(crate::quest_trace::Stage::GuardRefused);
+                    let interaction = trace.as_ref().map(|trace| {
+                        trace.begin_with_details(
+                            trace_scope,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            crate::quest_trace::Operation::Equip,
+                        )
+                    });
+                    if let Some(t) = &interaction {
+                        t.record(crate::quest_trace::Stage::GuardRefused);
+                    }
                     debug!("ui_items: autoequip ({bag}, {slot}) out of range — ignored");
                     return;
                 };
                 let slot0 = u8::try_from(slot.saturating_sub(1)).unwrap_or(0);
                 let guid = store.and_then(|s| slot_guid(&s.0, bag, slot0, objects));
+                let item = guid
+                    .and_then(|guid| objects.object(guid))
+                    .and_then(|fields| fields.object_entry());
+                let interaction = trace.as_ref().map(|trace| {
+                    trace.begin_with_details(
+                        trace_scope,
+                        None,
+                        None,
+                        item,
+                        Some(1),
+                        Some(u32::from(wire_slot)),
+                        crate::quest_trace::Operation::Equip,
+                    )
+                });
                 send_auto_equip(script, objects, items, net, bag_index, wire_slot, guid, interaction);
             }
             // The question the call raised (`0x5e16c6`), filed though the slot moved since: the
@@ -256,7 +361,17 @@ impl ItemSteps<'_, '_> {
                     net,
                     store,
                     answer,
-                    trace.as_ref().map(|s| s.begin(None, None, crate::quest_trace::Operation::Equip)),
+                    trace.as_ref().map(|s| {
+                        s.begin_with_details(
+                            trace_scope,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            crate::quest_trace::Operation::Equip,
+                        )
+                    }),
                 );
             }
             // The host hands this one to the item use, which holds the cast ladder.

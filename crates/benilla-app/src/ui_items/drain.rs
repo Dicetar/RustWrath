@@ -45,15 +45,23 @@ pub(crate) fn send_auto_equip(
         let t = items.template(entry, guid, Ask::Read)?;
         (t.class == ITEM_CLASS_PROJECTILE).then_some((guid, entry))
     });
+    let wrap = |command: ClientCommand| match &interaction {
+        Some(interaction) => ClientCommand::tracked(Some((*interaction).clone()), true, command),
+        None => command,
+    };
     if let Some((guid, entry)) = ammo {
         debug!("ui_items: set ammo entry {entry} (wire {bag_index}/{slot})");
-        record(commands.0.send(ClientCommand::SetAmmo { entry }));
+        record(commands.0.send(wrap(ClientCommand::SetAmmo { entry })));
         if script.item_locked(guid) {
             script.unlock_item(guid);
         }
     } else {
         debug!("ui_items: autoequip wire {bag_index}/{slot}");
-        record(commands.0.send(ClientCommand::AutoEquipItem { bag_index, slot }));
+        record(
+            commands
+                .0
+                .send(wrap(ClientCommand::AutoEquipItem { bag_index, slot })),
+        );
     }
 }
 
@@ -69,6 +77,9 @@ pub(crate) struct ScriptItemUse<'w, 's> {
     ladder: crate::spell::CastLadder<'w, 's>,
     ui_errors: Res<'w, crate::ui_action::UiErrorKeys>,
     gate: crate::ui_bind_confirm::BindGate<'w>,
+    /// Resident diagnostics for the item-use sell/open paths.
+    trace: Option<Res<'w, crate::quest_trace::Source>>,
+    wrath: Option<Res<'w, crate::wrath::WrathWorldView>>,
 }
 
 impl ScriptItemUse<'_, '_> {
@@ -147,8 +158,13 @@ impl ScriptItemUse<'_, '_> {
             ladder,
             ui_errors,
             gate,
+            trace,
+            wrath,
             ..
         } = self;
+        let scope = wrath
+            .as_ref()
+            .map(|view| (view.session_epoch, view.world_generation));
         let ContainerUse {
             bag,
             slot,
@@ -216,11 +232,44 @@ impl ScriptItemUse<'_, '_> {
                     return None;
                 };
                 debug!("ui_items: sell lua bag {bag} slot {slot} (item {item_guid:#x})");
-                let _ = ladder.commands.0.send(ClientCommand::SellItem {
-                    vendor,
-                    item_guid,
-                    count: 0,
+                let interaction = trace.as_ref().map(|trace| {
+                    trace.begin_with_details(
+                        scope,
+                        None,
+                        Some(vendor),
+                        ladder
+                            .objects
+                            .object(item_guid)
+                            .and_then(|fields| fields.object_entry()),
+                        None,
+                        Some(u32::from(wire_slot)),
+                        crate::quest_trace::Operation::Sell,
+                    )
                 });
+                let command = match &interaction {
+                    Some(interaction) => ClientCommand::tracked(
+                        Some((*interaction).clone()),
+                        true,
+                        ClientCommand::SellItem {
+                            vendor,
+                            item_guid,
+                            count: 0,
+                        },
+                    ),
+                    None => ClientCommand::SellItem {
+                        vendor,
+                        item_guid,
+                        count: 0,
+                    },
+                };
+                let result = ladder.commands.0.send(command);
+                if let Some(interaction) = &interaction {
+                    interaction.record(if result.is_ok() {
+                        crate::quest_trace::Stage::ChannelAdmitted
+                    } else {
+                        crate::quest_trace::Stage::ChannelDisconnected
+                    });
+                }
                 return None;
             }
             UseArm::Item(fork) => fork,
@@ -257,8 +306,16 @@ impl ScriptItemUse<'_, '_> {
                     bag_index,
                     wire_slot,
                     Some(c.guid),
-                    ladder.trace.as_ref().map(|s| {
-                        s.begin(None, None, crate::quest_trace::Operation::Equip)
+                    trace.as_ref().map(|s| {
+                        s.begin_with_details(
+                            scope,
+                            None,
+                            None,
+                            Some(c.entry),
+                            Some(1),
+                            Some(u32::from(wire_slot)),
+                            crate::quest_trace::Operation::Equip,
+                        )
                     }),
                 );
                 equip_sound.write(crate::sound::AutoEquipSound {
@@ -272,10 +329,39 @@ impl ScriptItemUse<'_, '_> {
                     "ui_items: unwrap gift {:#x} (lua bag {bag} → wire {bag_index}/{wire_slot})",
                     c.guid
                 );
-                let _ = ladder.commands.0.send(ClientCommand::OpenItem {
-                    bag_index,
-                    slot: wire_slot,
+                let interaction = trace.as_ref().map(|trace| {
+                    trace.begin_with_details(
+                        scope,
+                        None,
+                        Some(c.guid),
+                        Some(c.entry),
+                        Some(1),
+                        Some(u32::from(wire_slot)),
+                        crate::quest_trace::Operation::Loot,
+                    )
                 });
+                let command = match &interaction {
+                    Some(interaction) => ClientCommand::tracked(
+                        Some((*interaction).clone()),
+                        true,
+                        ClientCommand::OpenItem {
+                            bag_index,
+                            slot: wire_slot,
+                        },
+                    ),
+                    None => ClientCommand::OpenItem {
+                        bag_index,
+                        slot: wire_slot,
+                    },
+                };
+                let result = ladder.commands.0.send(command);
+                if let Some(interaction) = &interaction {
+                    interaction.record(if result.is_ok() {
+                        crate::quest_trace::Stage::ChannelAdmitted
+                    } else {
+                        crate::quest_trace::Stage::ChannelDisconnected
+                    });
+                }
             }
             // The call armed the wrap; a left-click on a container slot sends `CMSG_WRAP_ITEM`.
             (UseFork::WrapPaper, _) => {}

@@ -282,7 +282,7 @@ pub(super) fn feed_ui_input(
                     press_consumed.0 |= consumed;
                     let target = diagnostics.0.as_ref().map(|_| script.last_hit_name());
                     if let (Some(trace), Some(target)) = (&diagnostics.0, target) {
-                        use crate::quest_trace::{Stage, UiButton, UiTarget};
+                        use crate::quest_trace::{UiButton, UiTarget};
                         let target = match target.as_deref() {
                             None => UiTarget::NoNamedFrame,
                             Some(name) if name.starts_with("QuestLog") => UiTarget::QuestLog,
@@ -304,19 +304,20 @@ pub(super) fn feed_ui_input(
                         };
                         let scope = diagnostics.1.as_ref()
                             .map(|v| (v.session_epoch, v.world_generation));
-                        trace.observe(scope, None, Stage::UiPress {
+                        trace.record_ui_press(
+                            scope,
                             button,
                             target,
                             consumed,
-                            egui_pointer_over_last_sample: diagnostics.2.as_ref().map(|over| over.0),
-                            vm_session: script.session(),
-                        });
+                            diagnostics.2.as_ref().map(|over| over.0),
+                            script.session(),
+                        );
                     }
                 }
                 if buttons.just_released(btn) {
                     let consumed = script.mouse_button(x, y, name, false);
                     if diagnostics.0.is_some() {
-                        use crate::quest_trace::{Stage, UiButton, UiTarget};
+                        use crate::quest_trace::{UiButton, UiTarget};
                         let target = script.last_hit_name();
                         let target = match target.as_deref() {
                             None => UiTarget::NoNamedFrame,
@@ -340,16 +341,17 @@ pub(super) fn feed_ui_input(
                         let scope = diagnostics.1.as_ref()
                             .map(|v| (v.session_epoch, v.world_generation));
                         if let Some(trace) = &diagnostics.0 {
-                            trace.observe(scope, None, Stage::UiClick {
+                            trace.record_ui_click(
+                                scope,
                                 button,
                                 target,
                                 consumed,
-                                visible: script.last_hit_effective_visible(),
-                                clipped: script.last_hit_clipped(),
-                                handler_invoked: script.last_handler_invoked(),
-                                egui_pointer_over_last_sample: diagnostics.2.as_ref().map(|over| over.0),
-                                vm_session: script.session(),
-                            });
+                                script.last_hit_effective_visible(),
+                                script.last_hit_clipped(),
+                                script.last_handler_invoked(),
+                                diagnostics.2.as_ref().map(|over| over.0),
+                                script.session(),
+                            );
                         }
                     }
                 }

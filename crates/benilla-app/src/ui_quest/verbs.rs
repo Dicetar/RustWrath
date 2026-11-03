@@ -31,17 +31,54 @@ impl QuestVerbs<'_, '_> {
     /// Apply one quest call: the source a teardown zeroed the cell of, whose release and
     /// `QUEST_FINISHED` the host owes next ([`Self::teardown`]).
     pub(crate) fn apply(&mut self, script: &mut UiScript, call: QuestCall) -> Option<u64> {
-        let send = |net: &NetCommands, command| {
-            let _ = net.0.send(command);
-        };
         match call {
             QuestCall::ConfirmAccept => {
                 // `[0xbe0840]` with no test (`0x5021e0`); a world with no window holds none.
                 let quest = self.giver.as_deref().map_or(0, |g| g.confirm);
-                send(&self.net, ClientCommand::QuestConfirmAccept { quest })
+                let npc = self.giver.as_deref().and_then(|g| g.npc);
+                let trace = self.trace.as_ref().map(|source| {
+                    source.begin_with_npc(
+                        self.wrath
+                            .as_ref()
+                            .map(|v| (v.session_epoch, v.world_generation)),
+                        (quest != 0).then_some(quest),
+                        npc,
+                        crate::quest_trace::Operation::Confirm,
+                    )
+                });
+                self.send_traced(trace.as_ref(), ClientCommand::QuestConfirmAccept { quest });
             }
-            QuestCall::Abandon(slot) => send(&self.net, ClientCommand::QuestlogRemove { slot }),
-            QuestCall::Push(quest) => send(&self.net, ClientCommand::PushQuestToParty { quest }),
+            QuestCall::Abandon(slot) => {
+                let npc = self.giver.as_deref().and_then(|g| g.npc);
+                let trace = self.trace.as_ref().map(|source| {
+                    source.begin_with_npc(
+                        self.wrath
+                            .as_ref()
+                            .map(|v| (v.session_epoch, v.world_generation)),
+                        None,
+                        npc,
+                        crate::quest_trace::Operation::Abandon,
+                    )
+                });
+                if let Some(trace) = &trace {
+                    trace.record(crate::quest_trace::Stage::AbandonSlot { slot });
+                }
+                self.send_traced(trace.as_ref(), ClientCommand::QuestlogRemove { slot });
+            }
+            QuestCall::Push(quest) => {
+                let npc = self.giver.as_deref().and_then(|g| g.npc);
+                let trace = self.trace.as_ref().map(|source| {
+                    source.begin_with_npc(
+                        self.wrath
+                            .as_ref()
+                            .map(|v| (v.session_epoch, v.world_generation)),
+                        (quest != 0).then_some(quest),
+                        npc,
+                        crate::quest_trace::Operation::Share,
+                    )
+                });
+                self.send_traced(trace.as_ref(), ClientCommand::PushQuestToParty { quest });
+            }
             QuestCall::Select(select) => self.select(select),
             QuestCall::Accept => return self.accept(script),
             QuestCall::Decline => return self.decline(),
@@ -50,6 +87,48 @@ impl QuestVerbs<'_, '_> {
             QuestCall::Close => return self.teardown(true),
         }
         None
+    }
+
+    /// Send one quest command with its interaction attached. Wrath wraps it in the shared
+    /// transport-identity envelope so the tap applies the scope check and records outbox, socket
+    /// and refusal delivery against the same interaction. A world without a Wrath view keeps the
+    /// donor command exactly as it was.
+    fn send_traced(
+        &self,
+        trace: Option<&crate::quest_trace::Interaction>,
+        command: ClientCommand,
+    ) {
+        let command = match (trace, self.wrath.as_ref()) {
+            (Some(trace), Some(_)) => {
+                ClientCommand::tracked(Some((*trace).clone()), true, command)
+            }
+            _ => command,
+        };
+        let result = self.net.0.send(command);
+        if let Some(trace) = trace {
+            trace.record(if result.is_ok() {
+                crate::quest_trace::Stage::ChannelAdmitted
+            } else {
+                crate::quest_trace::Stage::ChannelDisconnected
+            });
+        }
+    }
+
+    fn begin_open_trace(
+        &self,
+        npc: u64,
+        quest: Option<u32>,
+    ) -> Option<crate::quest_trace::Interaction> {
+        self.trace.as_ref().map(|source| {
+            source.begin_with_npc(
+                self.wrath
+                    .as_ref()
+                    .map(|v| (v.session_epoch, v.world_generation)),
+                quest,
+                Some(npc),
+                crate::quest_trace::Operation::Open,
+            )
+        })
     }
 
     /// The teardown `0x501130(0, report)` as far as its cell: nothing with the cell zero
@@ -185,7 +264,7 @@ impl QuestVerbs<'_, '_> {
             });
             ClientCommand::QuestgiverSelectTracked {
                 receipt: crate::net::CommandReceipt {
-                    trace: Some(trace.clone()),
+                    trace: Some((*trace).clone()),
                     enforce_scope: true,
                     session_epoch: view.session_epoch,
                     world_generation: view.world_generation,
@@ -327,20 +406,36 @@ impl QuestVerbs<'_, '_> {
             .object(npc)
             .map(|f| (f.object_type_mask().unwrap_or(0), f.unit_npc_flags()));
         let player = self.objects.player().is_some();
-        let giver = self.giver.as_deref_mut()?;
-        let leg = decline_leg(giver.acted, giver.close_on_cancel, source, player);
+        let quest = self.giver.as_ref().and_then(|giver| match &giver.view {
+            Some(QuestView::Detail(d)) => Some(d.quest_id),
+            Some(QuestView::Progress(p)) => Some(p.quest_id),
+            Some(QuestView::Reward(o)) => Some(o.quest_id),
+            _ => None,
+        });
+        let leg = {
+            let giver = self.giver.as_deref_mut()?;
+            decline_leg(giver.acted, giver.close_on_cancel, source, player)
+        };
         debug!("ui_quest: decline on {npc:#x} — {leg:?}");
         match leg {
             DeclineLeg::Nothing => {}
             // The teardown leaves the latch clear (`0x5014aa`).
             DeclineLeg::Teardown => return self.teardown(true),
+            // The re-open keeps the panel up: a decline is not an accept, and the next
+            // accept/select is a separate interaction.
             DeclineLeg::GossipHello => {
-                let _ = self.net.0.send(ClientCommand::GossipHello { guid: npc });
-                giver.acted = true;
+                let trace = self.begin_open_trace(npc, quest);
+                self.send_traced(trace.as_ref(), ClientCommand::GossipHello { guid: npc });
+                if let Some(giver) = self.giver.as_deref_mut() {
+                    giver.acted = true;
+                }
             }
             DeclineLeg::QuestgiverHello => {
-                let _ = self.net.0.send(ClientCommand::QuestgiverHello { npc });
-                giver.acted = true;
+                let trace = self.begin_open_trace(npc, quest);
+                self.send_traced(trace.as_ref(), ClientCommand::QuestgiverHello { npc });
+                if let Some(giver) = self.giver.as_deref_mut() {
+                    giver.acted = true;
+                }
             }
         }
         None
@@ -387,7 +482,7 @@ impl QuestVerbs<'_, '_> {
             let (results, _receiver) = crossbeam_channel::bounded(2);
             ClientCommand::QuestgiverRequestRewardTracked {
                 receipt: crate::net::CommandReceipt {
-                    trace: Some(trace.clone()),
+                    trace: Some((*trace).clone()),
                     enforce_scope: true,
                     session_epoch: view.session_epoch,
                     world_generation: view.world_generation,
@@ -466,7 +561,7 @@ impl QuestVerbs<'_, '_> {
             let (results, _receiver) = crossbeam_channel::bounded(2);
             ClientCommand::QuestgiverChooseRewardTracked {
                 receipt: crate::net::CommandReceipt {
-                    trace: Some(trace.clone()),
+                    trace: Some((*trace).clone()),
                     enforce_scope: true,
                     session_epoch: view.session_epoch,
                     world_generation: view.world_generation,

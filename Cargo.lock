@@ -543,6 +543,7 @@ dependencies = [
  "sha1",
  "smithay-clipboard",
  "symphonia",
+ "tempfile",
  "toml",
  "wgpu",
  "windows-sys 0.59.0",

@@ -23,9 +23,27 @@ pub(crate) struct MerchantSteps<'w, 's> {
     purse: RepairPurse<'w, 's>,
     /// Resident interaction diagnostics; merchant producers record local boundaries here.
     trace: Option<Res<'w, crate::quest_trace::Source>>,
+    /// Current Wrath scope for scoped merchant interactions.
+    wrath: Option<Res<'w, crate::wrath::WrathWorldView>>,
 }
 
 impl MerchantSteps<'_, '_> {
+    fn trace_scope(&self) -> Option<(u64, u64)> {
+        self.wrath
+            .as_ref()
+            .map(|view| (view.session_epoch, view.world_generation))
+    }
+
+    fn tracked(
+        trace: &Option<crate::quest_trace::Interaction>,
+        command: ClientCommand,
+    ) -> ClientCommand {
+        match trace {
+            Some(trace) => ClientCommand::tracked(Some((*trace).clone()), true, command),
+            None => command,
+        }
+    }
+
     /// The vendor's cell `[0xbddfa0]`.
     pub(crate) fn vendor(&self) -> Option<u64> {
         self.open.as_deref().and_then(|o| o.vendor)
@@ -42,18 +60,17 @@ impl MerchantSteps<'_, '_> {
     /// Apply one merchant call; the close is the host's ([`MerchantCall::Close`]).
     pub(crate) fn apply(&mut self, script: &mut UiScript, call: MerchantCall) {
         use crate::quest_trace::{Operation, Stage};
-        let op = match &call {
+        let scope = self.trace_scope();
+        let default_op = match &call {
             MerchantCall::Sell { .. } => Some(Operation::Sell),
-            MerchantCall::Buy { .. } | MerchantCall::BuyIntoBag { .. }
-            | MerchantCall::BuyInSlot { .. } => Some(Operation::Buy),
-            MerchantCall::Buyback(_) | MerchantCall::RepairAll | MerchantCall::Close => None,
+            MerchantCall::Buy { .. }
+            | MerchantCall::BuyIntoBag { .. }
+            | MerchantCall::BuyInSlot { .. }
+            | MerchantCall::Buyback(_)
+            | MerchantCall::RepairAll => Some(Operation::Buy),
+            MerchantCall::Close => None,
         };
-        let vendor_npc = self.open.as_deref().and_then(|o| o.vendor);
-        let trace = self
-            .trace
-            .as_ref()
-            .zip(op)
-            .map(|(s, op)| s.begin_with_npc(None, None, vendor_npc, op));
+
         let record = |trace: &Option<crate::quest_trace::Interaction>, stage| {
             if let Some(t) = trace {
                 t.record(stage);
@@ -64,9 +81,24 @@ impl MerchantSteps<'_, '_> {
             net,
             self_q,
             purse,
-            trace: _,
+            trace,
+            ..
         } = self;
+        let make_trace = |op: Operation,
+                          vendor: Option<u64>,
+                          item: Option<u32>,
+                          count: Option<u32>,
+                          slot: Option<u32>| {
+            trace.as_ref().map(|trace| {
+                trace.begin_with_details(scope, None, vendor, item, count, slot, op)
+            })
+        };
+        let open_vendor = open.as_deref().and_then(|open| open.vendor);
+        let guard_trace = |op: Option<Operation>| {
+            op.and_then(|op| make_trace(op, open_vendor, None, None, None))
+        };
         let Some(open) = open.as_deref() else {
+            let trace = guard_trace(default_op);
             record(&trace, Stage::GuardRefused);
             debug!("ui_merchant: no merchant window in this world; {call:?} dropped");
             return;
@@ -79,21 +111,34 @@ impl MerchantSteps<'_, '_> {
             // (`0x4fb93c` → `0x5e1e90`), the quantity a byte.
             MerchantCall::Buy { row, quantity } => {
                 let (Some(vendor), Some(_)) = (open.vendor, me) else {
+                    let trace = guard_trace(Some(Operation::Buy));
                     record(&trace, Stage::GuardRefused);
                     return;
                 };
                 let Some(item) = open.row_at(row).filter(|it| it.slot != 0) else {
+                    let trace = guard_trace(Some(Operation::Buy));
                     record(&trace, Stage::GuardRefused);
                     debug!("ui_merchant: BuyMerchantItem({row}) out of range — ignored");
                     return;
                 };
                 let count = quantity.clamp(1, u32::from(u8::MAX)) as u8;
                 debug!("ui_merchant: buy row {row} (entry {} ×{count})", item.entry);
-                let result = net.0.send(ClientCommand::BuyItem {
-                    vendor,
-                    entry: item.entry,
-                    count,
-                });
+                let trace = make_trace(
+                    Operation::Buy,
+                    Some(vendor),
+                    Some(item.entry),
+                    Some(u32::from(count)),
+                    Some(row),
+                );
+                let command = Self::tracked(
+                    &trace,
+                    ClientCommand::BuyItem {
+                        vendor,
+                        entry: item.entry,
+                        count,
+                    },
+                );
+                let result = net.0.send(command);
                 record(
                     &trace,
                     if result.is_ok() {
@@ -107,11 +152,22 @@ impl MerchantSteps<'_, '_> {
             MerchantCall::Sell { item_guid, count } => {
                 let vendor = open.vendor.unwrap_or(0);
                 debug!("ui_merchant: cursor sell of {item_guid:#x} ×{count} to {vendor:#x}");
-                let result = net.0.send(ClientCommand::SellItem {
-                    vendor,
-                    item_guid,
-                    count,
-                });
+                let trace = make_trace(
+                    Operation::Sell,
+                    (vendor != 0).then_some(vendor),
+                    None,
+                    Some(u32::from(count)),
+                    None,
+                );
+                let command = Self::tracked(
+                    &trace,
+                    ClientCommand::SellItem {
+                        vendor,
+                        item_guid,
+                        count,
+                    },
+                );
+                let result = net.0.send(command);
                 record(
                     &trace,
                     if result.is_ok() {
@@ -125,6 +181,8 @@ impl MerchantSteps<'_, '_> {
             // `0x4fb9fc`): the absolute slot, 69 to 80 (`0x4fba02`).
             MerchantCall::Buyback(index) => {
                 let (Some(vendor), Some(store)) = (open.vendor, me) else {
+                    let trace = guard_trace(Some(Operation::Buy));
+                    record(&trace, Stage::GuardRefused);
                     return;
                 };
                 let order = buyback_order(&store.0);
@@ -132,9 +190,30 @@ impl MerchantSteps<'_, '_> {
                     Some(&idx) => {
                         let slot = BUYBACK_SLOT_FIRST + u32::from(idx);
                         debug!("ui_merchant: buyback list index {index} → absolute slot {slot}");
-                        let _ = net.0.send(ClientCommand::BuybackItem { vendor, slot });
+                        let trace = make_trace(
+                            Operation::Buy,
+                            Some(vendor),
+                            None,
+                            Some(1),
+                            Some(slot),
+                        );
+                        let command =
+                            Self::tracked(&trace, ClientCommand::BuybackItem { vendor, slot });
+                        let result = net.0.send(command);
+                        record(
+                            &trace,
+                            if result.is_ok() {
+                                Stage::ChannelAdmitted
+                            } else {
+                                Stage::ChannelDisconnected
+                            },
+                        );
                     }
-                    None => debug!("ui_merchant: BuybackItem({index}) out of range — ignored"),
+                    None => {
+                        let trace = guard_trace(Some(Operation::Buy));
+                        record(&trace, Stage::GuardRefused);
+                        debug!("ui_merchant: BuybackItem({index}) out of range — ignored");
+                    }
                 }
             }
             // With a player, the purse test over the equipped slots 0-18 only (`0x4fc026`-
@@ -142,33 +221,57 @@ impl MerchantSteps<'_, '_> {
             // with guid 0 (`0x4fc0d5`).
             MerchantCall::RepairAll => {
                 let (Some(vendor), Some(me)) = (open.vendor, me) else {
+                    let trace = guard_trace(Some(Operation::Buy));
+                    record(&trace, Stage::GuardRefused);
                     return;
                 };
                 let worn = (0..19u8).filter_map(|i| me.0.player_inv_slot(i));
                 if !purse.refuses(script, open, me, worn) {
                     debug!("ui_merchant: repair all");
-                    let _ = net.0.send(ClientCommand::RepairItem {
-                        vendor,
-                        item_guid: 0,
-                    });
+                    let trace = make_trace(Operation::Buy, Some(vendor), None, None, None);
+                    let command = Self::tracked(
+                        &trace,
+                        ClientCommand::RepairItem {
+                            vendor,
+                            item_guid: 0,
+                        },
+                    );
+                    let result = net.0.send(command);
+                    record(
+                        &trace,
+                        if result.is_ok() {
+                            Stage::ChannelAdmitted
+                        } else {
+                            Stage::ChannelDisconnected
+                        },
+                    );
+                } else {
+                    let trace = make_trace(Operation::Buy, Some(vendor), None, None, None);
+                    record(&trace, Stage::GuardRefused);
                 }
             }
             // The bag's guid as the drop read it, or the player's own for the backpack
             // (`0x4c7c7d`), slot `0xFF` so the server picks, count the fixed 1 (`0x4c7e9c`).
             MerchantCall::BuyIntoBag { bag_guid, entry } => {
                 let (Some(vendor), Some((_, me))) = (open.vendor, me_pair) else {
+                    let trace = guard_trace(Some(Operation::Buy));
                     record(&trace, Stage::GuardRefused);
                     return;
                 };
                 let bag_guid = bag_guid.unwrap_or(me.0);
                 debug!("ui_merchant: bag buy entry {entry} → bag {bag_guid:#x}");
-                let result = net.0.send(ClientCommand::BuyItemInSlot {
-                    vendor,
-                    entry,
-                    bag_guid,
-                    bag_slot: 0xFF,
-                    count: 1,
-                });
+                let trace = make_trace(Operation::Buy, Some(vendor), Some(entry), Some(1), None);
+                let command = Self::tracked(
+                    &trace,
+                    ClientCommand::BuyItemInSlot {
+                        vendor,
+                        entry,
+                        bag_guid,
+                        bag_slot: 0xFF,
+                        count: 1,
+                    },
+                );
+                let result = net.0.send(command);
                 record(
                     &trace,
                     if result.is_ok() {
@@ -183,10 +286,12 @@ impl MerchantSteps<'_, '_> {
             // bag; the count is the fixed 1.
             MerchantCall::BuyInSlot { bag, slot, entry } => {
                 let (Some(vendor), Some((store, guid))) = (open.vendor, me_pair) else {
+                    let trace = guard_trace(Some(Operation::Buy));
                     record(&trace, Stage::GuardRefused);
                     return;
                 };
                 let Some((bag_index, bag_slot)) = crate::ui_items::wire_pos_in_target(script.target(), bag, slot) else {
+                    let trace = guard_trace(Some(Operation::Buy));
                     record(&trace, Stage::GuardRefused);
                     debug!(
                         "ui_merchant: slot buy to an unaddressable slot ({bag}, {slot}) — ignored"
@@ -203,18 +308,24 @@ impl MerchantSteps<'_, '_> {
                     store.0.player_inv_slot(bag_index).filter(|g| *g != 0)
                 };
                 let Some(bag_guid) = bag_guid else {
+                    let trace = guard_trace(Some(Operation::Buy));
                     record(&trace, Stage::GuardRefused);
                     debug!("ui_merchant: slot buy into an absent bag {bag} — ignored");
                     return;
                 };
                 debug!("ui_merchant: slot buy entry {entry} → bag {bag_guid:#x} slot {bag_slot}");
-                let result = net.0.send(ClientCommand::BuyItemInSlot {
-                    vendor,
-                    entry,
-                    bag_guid,
-                    bag_slot,
-                    count: 1,
-                });
+                let trace = make_trace(Operation::Buy, Some(vendor), Some(entry), Some(1), None);
+                let command = Self::tracked(
+                    &trace,
+                    ClientCommand::BuyItemInSlot {
+                        vendor,
+                        entry,
+                        bag_guid,
+                        bag_slot,
+                        count: 1,
+                    },
+                );
+                let result = net.0.send(command);
                 record(
                     &trace,
                     if result.is_ok() {

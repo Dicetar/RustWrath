@@ -111,14 +111,14 @@ impl OwedAhead<'_, '_> {
             .iter()
             .any(|(_, s)| matches!(s, super::Step::Opened { .. }));
         if !response_owes && std::mem::take(&mut self.move_start.0) {
-            let closed = super::close_on_move_start(loot, latch, net);
+            let closed = super::close_on_move_start(loot, latch, net, None, None);
             self.dead.after_close(closed);
         }
         if std::mem::take(&mut self.at_rest.0) {
             if loot.disenchant_hold(&self.objects) {
                 loot.owe_sweep();
             } else {
-                let closed = super::close_interaction(loot, latch, Some(net));
+                let closed = super::close_interaction(loot, latch, Some(net), None, None);
                 self.dead.after_close(closed);
             }
         }
@@ -197,7 +197,13 @@ impl WindowPacket<'_, '_> {
             return;
         }
         let owed = self.loot.owed_unlocks();
-        let closed = super::close_interaction(&mut self.loot, &mut self.latch, Some(&self.net));
+        let closed = super::close_interaction(
+            &mut self.loot,
+            &mut self.latch,
+            Some(&self.net),
+            None,
+            None,
+        );
         if let Some(guid) = closed {
             debug!("net: loot emptied — release {guid:#x}");
         }
@@ -422,7 +428,7 @@ fn loot_release_response(
         loot.owe_sweep();
         return None;
     }
-    super::close_interaction(loot, latch, None)
+    super::close_interaction(loot, latch, None, None, None)
 }
 
 /// `SMSG_LOOT_MASTER_LIST`, staged: it lands just ahead of the response it belongs to.
@@ -807,7 +813,7 @@ mod tests {
         let mut latch = LootLatch(Some(CORPSE));
         loot.open(CORPSE, 1, 0, Vec::new());
         assert_eq!(
-            super::super::close_interaction(&mut loot, &mut latch, None),
+            super::super::close_interaction(&mut loot, &mut latch, None, None, None),
             Some(CORPSE)
         );
         assert!(loot

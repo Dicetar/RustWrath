@@ -77,7 +77,7 @@ The owner selected default-on recording with manual local export. The current so
 
 The Wrath receive loop records allowlisted opcode receipt, reducer result and gameplay
 decode result without packet contents. Object-update packet metadata is sampled one in 64;
-the omitted count is exported. Quest-slot changes are observed separately and are not sampled.
+seen, sampled, and omitted counts plus the interval are exported. Quest-slot changes are observed separately and are not sampled.
 An absent sampled packet record is therefore not evidence that the server sent no update.
 The UI observer also records whether the stock questgiver, quest-log, merchant, loot,
 spellbook, character and game-menu frames are missing, hidden or effectively visible.

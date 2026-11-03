@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use bevy::prelude::*;
@@ -41,6 +41,8 @@ pub(crate) enum Stage {
     QuestSlotAdded,
     QuestSlotProgressed { counters: [u16; 4], state: u32 },
     QuestSlotRemoved,
+    AbandonSlot { slot: u8 },
+    ServerQuestShareResult { msg: u32 },
     JournalProjection,
     JournalRowInModel,
     JournalTemplatePending,
@@ -55,16 +57,67 @@ pub(crate) enum Stage {
     ScriptError { vm_session: u64, row_seq: u64, occurrences: u32 },
     ScriptLoadError { vm_session: u64, row_seq: u64, occurrences: u32 },
     ScriptWarning { vm_session: u64, row_seq: u64, occurrences: u32 },
-    UiReload,
+    UiReload { old_vm_session: Option<u64>, old_reload_generation: Option<u64>, new_reload_generation: Option<u64> },
+    /// The new VM reported its identity after a reload load attempt. This is separate evidence
+    /// from [`Stage::UiReload`]: the reload request may have run while the load itself failed.
+    UiReloadLoaded { vm_session: Option<u64>, reload_generation: Option<u64> },
     ScriptRowsLost { vm_session: u64, count: u64 },
     ScriptRowsEvicted { vm_session: u64, count: u64 },
-    SessionPhase { phase: SessionPhase },
-    SessionEnded { failed: bool },
-    WorldTransfer,
+    SessionPhase { phase: SessionPhase, attempt: Option<u64>, map_id: Option<u32> },
+    SessionEnded { kind: SessionEndKind },
+    WorldTransfer {
+        map_id: Option<u32>,
+        from: Option<(u64, u64)>,
+        to: Option<(u64, u64)>,
+        retired_local: u64,
+        retired_written: u64,
+    },
+    LoginMilestone { attempt: Option<u64>, milestone: LoginMilestone },
     ReplicaRevision { revision: u64 },
     NativeEventsLost { count: u64 },
-    Cast { spell_id: Option<u32>, attempt: Option<u64>, edge: CastEdge },
+    Cast {
+        spell_id: Option<u32>,
+        attempt: Option<u64>,
+        wire_cast_count: Option<u32>,
+        edge: CastEdge,
+    },
     InventoryFailure { reason: u8 },
+    /// A loot slot's authoritative removal (`SMSG_LOOT_REMOVED`). The item id is known only when
+    /// the producer still holds the window row; the wire event itself carries the slot alone.
+    LootSlotRemoved {
+        slot: u32,
+        item_id: Option<u32>,
+        count: Option<u32>,
+    },
+    /// `SMSG_LOOT_MONEY_NOTIFY`: the amount is server-reported.
+    LootMoneyNotify { amount: u32 },
+    /// `SMSG_LOOT_CLEAR_MONEY`: the amount is not carried, only the bounded fact.
+    LootMoneyCleared,
+    /// A loot refusal. `reason` is the protocol's numeric loot error, never its message text.
+    LootErrorObserved { reason: u8 },
+    /// `SMSG_LOOT_RESPONSE` opened a loot window on a source.
+    LootResponseOpened,
+    /// `SMSG_LOOT_RELEASE_RESPONSE`: the server released the loot interaction.
+    LootReleasedObserved,
+    /// A non-quest item push (`SMSG_ITEM_PUSH_RESULT`), kept distinct from the quest-only
+    /// `RewardItemPushed` semantics.
+    ItemPushResult { item_id: u32, count: u32 },
+    /// `SMSG_LIST_INVENTORY`: a vendor alias and the bounded row count, never the rows.
+    VendorInventoryObserved { vendor_alias: Option<u32>, rows: u32 },
+    /// `SMSG_BUY_ITEM` for a vendor row. The protocol event names the row slot, not the entry.
+    VendorBuyResult {
+        item_id: Option<u32>,
+        count: u32,
+        slot: Option<u32>,
+    },
+    /// `SMSG_BUY_FAILED` with its numeric `buy_result` reason.
+    VendorBuyFailedObserved { item_id: Option<u32>, reason: u8 },
+    /// `SMSG_SELL_ITEM`'s numeric refusal reason. The item identity is a raw GUID on the wire and
+    /// is deliberately not recorded.
+    VendorSellFailedObserved { reason: u8 },
+    /// An observed equipment-slot move. Recorded only where the source exposes a numeric item
+    /// entry alongside the slot; the wire update alone carries no item entry.
+    EquipmentSlotChanged { item_id: u32, slot: u32 },
     AudioMixer {
         present: bool,
         voices: u32,
@@ -72,13 +125,42 @@ pub(crate) enum Stage {
         stolen: u64,
         copies_dropped: u64,
     },
-    AudioHealth { over_full_scale_samples: u64, nonfinite_samples: u64, voices_refused: u64 },
-    MovementCorrectionApplied,
-    MovementPressure { coalesced: u64, refused: u64 },
+    AudioHealth {
+        over_full_scale_samples: u64,
+        nonfinite_samples: u64,
+        voices_refused: u64,
+        cycles: u64,
+        underruns: u64,
+        underrun_ms: u64,
+        overloads: u64,
+        last_overload_ago_ms: u64,
+        lead_min_ms: Option<i64>,
+        ring_min_ms: Option<i64>,
+        io_wall_max_ms: u64,
+        render_wall_max_ms: u64,
+        cycle_ms: u64,
+        chunk_ms: u64,
+        peak_load_percent: u32,
+    },
+    MovementCorrectionApplied {
+        distance_bucket: u8,
+        movement_seq: Option<u64>,
+        ambiguous: bool,
+    },
+    MovementPressure {
+        baseline: bool,
+        admitted: u64,
+        coalesced: u64,
+        refused: u64,
+        written: u64,
+        queue_depth: u64,
+        oldest_age_ms: u64,
+    },
     SceneSummary { world_cameras: u32, animated_rigs: u32 },
     FrameWindow { frames: u32, mean_us: u64, max_us: u64 },
     AssetFailure { family: AssetFamily, cause: AssetFailure },
     AssetEventsLost { count: u64 },
+    AssetWindow { failures: u64, missed: u64, window_ms: u64 },
     PacketReceived { opcode: u16 },
     ReducerAccepted { opcode: u16 },
     ReducerRejected { opcode: u16 },
@@ -94,6 +176,7 @@ pub(crate) enum Stage {
         consumed: bool,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
+        ui_dispatch_id: u64,
     },
     UiClick {
         button: UiButton,
@@ -104,6 +187,7 @@ pub(crate) enum Stage {
         handler_invoked: bool,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
+        ui_dispatch_id: u64,
     },
     DomainEvent { event: DomainEvent },
     #[cfg(feature = "hotpatch")]
@@ -204,13 +288,24 @@ pub(crate) enum DomainEvent {
 
 #[cfg(feature = "hotpatch")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum HotpatchReason {
+    Publication,
+    Evaluation,
+    Retention,
+    Frame,
+    Unknown,
+}
+
+#[cfg(feature = "hotpatch")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum PatchEvent {
-    CandidateStaged,
-    PublicationRejected,
-    CandidateRejected,
-    Activated { digest: Option<[u8; 20]> },
-    FrameFailed,
-    RetentionFailed,
+    CandidateStaged { attempt: u64 },
+    CandidateWithdrawn { attempt: u64 },
+    PublicationRejected { attempt: Option<u64>, reason: HotpatchReason },
+    CandidateRejected { attempt: Option<u64>, reason: HotpatchReason },
+    Activated { attempt: Option<u64>, digest: Option<[u8; 20]> },
+    FrameFailed { attempt: Option<u64>, reason: HotpatchReason },
+    RetentionFailed { attempt: Option<u64>, reason: HotpatchReason },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -220,6 +315,33 @@ pub(crate) enum SessionPhase {
     InWorld,
     TransferPending,
     Loading,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum SessionEndKind {
+    LoggedOut,
+    Lost,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum LoginMilestone {
+    Connecting,
+    Authenticating,
+    Handshaking,
+    WorldConnected,
+    RealmListReceived,
+    RealmListFailed,
+    WorldAuthenticated,
+    RosterReceived,
+    RosterFailed,
+    LoginQueued,
+    /// The server refused the login (a realmd/world auth result byte was present).
+    LoginRefused,
+    /// The login failed without a server refusal category: a dial/transport failure, or a
+    /// worker failure whose refusal code was not carried in the event.
+    LoginFailed,
+    CharacterAction,
+    CharacterLoginFailed { result: u8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -250,6 +372,9 @@ pub(crate) enum Operation {
     Accept,
     RequestReward,
     ChooseReward,
+    Confirm,
+    Abandon,
+    Share,
     Observed,
     Loot,
     Equip,
@@ -257,17 +382,88 @@ pub(crate) enum Operation {
     Sell,
 }
 
+/// Canonical diagnostic vector names, in stable order.  This is the single source of truth
+/// shared by the recorder, the inspector and the export.  `unclassified` is the explicit
+/// bucket for stages that are not (yet) attributed to a named vector.
+pub(crate) const DIAGNOSTIC_VECTOR_NAMES: &[&str] = &[
+    "quest_interactions",
+    "quest_panel_correlation",
+    "ui_frame_state",
+    "ui_pointer_categories",
+    "lua_diagnostic_counts",
+    "session_lifecycle",
+    "allowlisted_packets",
+    "casts",
+    "inventory_failures",
+    "loot_and_vendor_events",
+    "audio_mixer_state",
+    "movement_queue_and_corrections",
+    "scene_camera_and_rig_counts",
+    "frame_intervals",
+    "asset_load_failure_categories",
+    "hotpatch",
+    "unclassified",
+];
+
+/// Map a vector name to its index in `DIAGNOSTIC_VECTOR_NAMES`.
+pub(crate) fn diagnostic_vector_index(name: &str) -> usize {
+    match name {
+        "quest_interactions" => 0,
+        "quest_panel_correlation" => 1,
+        "ui_frame_state" => 2,
+        "ui_pointer_categories" => 3,
+        "lua_diagnostic_counts" => 4,
+        "session_lifecycle" => 5,
+        "allowlisted_packets" => 6,
+        "casts" => 7,
+        "inventory_failures" => 8,
+        "loot_and_vendor_events" => 9,
+        "audio_mixer_state" => 10,
+        "movement_queue_and_corrections" => 11,
+        "scene_camera_and_rig_counts" => 12,
+        "frame_intervals" => 13,
+        "asset_load_failure_categories" => 14,
+        "hotpatch" => 15,
+        "unclassified" => 16,
+        _ => 16,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiDispatchToken {
+    pub id: u64,
+    pub elapsed_ms: u64,
+    pub scope: Option<(u64, u64)>,
+    pub vm_session: u64,
+    pub reload_generation: u64,
+    pub button: UiButton,
+    pub target: UiTarget,
+    pub consumed: bool,
+    pub visible: Option<bool>,
+    pub clipped: bool,
+    pub handler_invoked: bool,
+}
+
 #[derive(Debug)]
 struct Ingress {
     events: Sender<Event>,
     dropped: AtomicU64,
+    /// Per-vector producer-drop counters, indexed by `DIAGNOSTIC_VECTOR_NAMES`.
+    dropped_by_vector: Vec<AtomicU64>,
     next_id: AtomicU64,
     reload_generation: AtomicU64,
     update_packets_seen: AtomicU64,
     update_packets_sampled_out: AtomicU64,
+    movement_sequence: AtomicU64,
+    movement_admitted: AtomicU64,
     movement_coalesced: AtomicU64,
     movement_refused: AtomicU64,
+    movement_written: AtomicU64,
+    movement_last_written_seq: AtomicU64,
+    movement_writes_since_correction: AtomicU64,
     npc_aliases: Mutex<(VecDeque<(u64, u32)>, u32)>,
+    ui_dispatch_counter: AtomicU64,
+    ui_dispatches: Mutex<VecDeque<UiDispatchToken>>,
     origin: Instant,
     #[cfg(feature = "dev")]
     run_id: String,
@@ -297,8 +493,15 @@ struct Subject {
     scope: Option<(u64, u64)>,
     quest: Option<u32>,
     npc_alias: Option<u32>,
+    /// Numeric item entry / template id. Never a raw item GUID.
+    item: Option<u32>,
+    /// Item count or quantity where the producer knows it.
+    count: Option<u32>,
+    /// Loot wire slot, vendor row slot or equipment slot index where relevant.
+    slot: Option<u32>,
     operation: Operation,
     reload_generation: u64,
+    ui_dispatch_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -364,11 +567,38 @@ pub(crate) fn validate_snapshot_header(line: &str) -> Result<u32, SnapshotVersio
 /// not turn "zero retained observations" into a healthy reading: absence of an event is
 /// never proof that the corresponding condition did not occur.
 #[derive(Clone, Debug, Serialize)]
+pub(crate) struct SamplingCoverage {
+    pub object_update_packets_seen: u64,
+    pub object_update_packets_sampled: u64,
+    pub object_update_packets_sampled_out: u64,
+    pub object_update_sampling_interval: u64,
+    pub movement_packets_coalesced: u64,
+    pub movement_packets_refused: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct DiagnosticCoverage {
+    pub instrumented_paths: Vec<String>,
+    pub compiled_out_paths: Vec<String>,
+    pub event_driven_paths: Vec<String>,
+    pub sampled_paths: Vec<String>,
+    pub paths_with_producer_loss_counters: Vec<String>,
+    pub not_yet_instrumented: Vec<String>,
+    pub hotpatch_compiled: bool,
+    pub export_and_inspector_compiled: bool,
+    pub sampling: SamplingCoverage,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct DiagnosticVectorEvidence {
     pub vector: String,
     pub instrumentation_available: bool,
     pub retained_observations: u64,
     pub latest_retained_sequence: Option<u64>,
+    pub producer_drops: u64,
+    pub sampled_out: Option<u64>,
+    pub sampling_interval: Option<u64>,
+    pub sampling_denominator: Option<u64>,
     pub limiting_factors: Vec<String>,
     pub absence_not_proof: bool,
 }
@@ -393,6 +623,8 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         | Stage::QuestSlotAdded
         | Stage::QuestSlotProgressed { .. }
         | Stage::QuestSlotRemoved
+        | Stage::AbandonSlot { .. }
+        | Stage::ServerQuestShareResult { .. }
         | Stage::JournalProjection
         | Stage::JournalRowInModel
         | Stage::JournalTemplatePending
@@ -417,12 +649,14 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         Stage::ScriptError { .. }
         | Stage::ScriptLoadError { .. }
         | Stage::ScriptWarning { .. }
-        | Stage::UiReload
+        | Stage::UiReload { .. }
+        | Stage::UiReloadLoaded { .. }
         | Stage::ScriptRowsLost { .. }
         | Stage::ScriptRowsEvicted { .. } => Some("lua_diagnostic_counts"),
         Stage::SessionPhase { .. }
         | Stage::SessionEnded { .. }
-        | Stage::WorldTransfer
+        | Stage::WorldTransfer { .. }
+        | Stage::LoginMilestone { .. }
         | Stage::ReplicaRevision { .. }
         | Stage::NativeEventsLost { .. }
         | Stage::DomainEvent {
@@ -449,10 +683,22 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         | Stage::Outbound { .. } => Some("allowlisted_packets"),
         Stage::Cast { .. } => Some("casts"),
         Stage::InventoryFailure { .. }
+        | Stage::ItemPushResult { .. }
+        | Stage::EquipmentSlotChanged { .. }
         | Stage::DomainEvent {
             event: DomainEvent::InventoryFailure | DomainEvent::ItemReceived,
         } => Some("inventory_failures"),
-        Stage::DomainEvent {
+        Stage::LootSlotRemoved { .. }
+        | Stage::LootMoneyNotify { .. }
+        | Stage::LootMoneyCleared
+        | Stage::LootErrorObserved { .. }
+        | Stage::LootResponseOpened
+        | Stage::LootReleasedObserved
+        | Stage::VendorInventoryObserved { .. }
+        | Stage::VendorBuyResult { .. }
+        | Stage::VendorBuyFailedObserved { .. }
+        | Stage::VendorSellFailedObserved { .. }
+        | Stage::DomainEvent {
             event: DomainEvent::VendorList
                 | DomainEvent::VendorBuy
                 | DomainEvent::VendorBuyFailed
@@ -464,12 +710,12 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
                 | DomainEvent::LootReleased,
         } => Some("loot_and_vendor_events"),
         Stage::AudioMixer { .. } | Stage::AudioHealth { .. } => Some("audio_mixer_state"),
-        Stage::MovementCorrectionApplied | Stage::MovementPressure { .. } => {
+        Stage::MovementCorrectionApplied { .. } | Stage::MovementPressure { .. } => {
             Some("movement_queue_and_corrections")
         }
         Stage::SceneSummary { .. } => Some("scene_camera_and_rig_counts"),
         Stage::FrameWindow { .. } => Some("frame_intervals"),
-        Stage::AssetFailure { .. } | Stage::AssetEventsLost { .. } => {
+        Stage::AssetFailure { .. } | Stage::AssetEventsLost { .. } | Stage::AssetWindow { .. } => {
             Some("asset_load_failure_categories")
         }
         #[cfg(feature = "hotpatch")]
@@ -477,6 +723,7 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         Stage::DomainEvent {
             event: DomainEvent::QuestComplete | DomainEvent::QuestObjective,
         } => Some("quest_interactions"),
+        _ => Some("unclassified"),
     }
 }
 
@@ -522,12 +769,72 @@ impl Source {
             .unwrap_or(0)
     }
 
+    pub(crate) fn mint_movement_sequence(&self) -> u64 {
+        self.0.movement_sequence.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub(crate) fn note_movement_admitted(&self) {
+        self.0.movement_admitted.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn note_movement_coalesced(&self) {
         self.0.movement_coalesced.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn note_movement_refused(&self) {
         self.0.movement_refused.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_movement_written(&self, seq: u64) {
+        self.0.movement_written.fetch_add(1, Ordering::Relaxed);
+        self.0.movement_last_written_seq.store(seq, Ordering::Relaxed);
+        self.0.movement_writes_since_correction.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn movement_written_seq_unambiguous(&self) -> (Option<u64>, bool) {
+        let seq = self.0.movement_last_written_seq.load(Ordering::Relaxed);
+        let writes = self.0.movement_writes_since_correction.load(Ordering::Relaxed);
+        if seq == 0 {
+            (None, true)
+        } else if writes <= 1 {
+            (Some(seq), false)
+        } else {
+            (None, true)
+        }
+    }
+
+    pub(crate) fn clear_movement_writes_since_correction(&self) {
+        self.0.movement_writes_since_correction.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn movement_counters(&self) -> (u64, u64, u64, u64) {
+        (
+            self.0.movement_admitted.load(Ordering::Relaxed),
+            self.0.movement_coalesced.load(Ordering::Relaxed),
+            self.0.movement_refused.load(Ordering::Relaxed),
+            self.0.movement_written.load(Ordering::Relaxed),
+        )
+    }
+
+    pub(crate) fn producer_drops_for_vector(&self, vector: &str) -> u64 {
+        let index = diagnostic_vector_index(vector);
+        self.0.dropped_by_vector[index].load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn update_packets_seen(&self) -> u64 {
+        self.0.update_packets_seen.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn update_packets_sampled_out(&self) -> u64 {
+        self.0.update_packets_sampled_out.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn movement_coalesced(&self) -> u64 {
+        self.0.movement_coalesced.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn movement_refused(&self) -> u64 {
+        self.0.movement_refused.load(Ordering::Relaxed)
     }
 
     /// Sample high-volume object-update packet metadata without sampling state changes.
@@ -591,6 +898,12 @@ impl Source {
         self.0.reload_generation.fetch_add(1, Ordering::AcqRel);
     }
 
+    /// The current reload generation, without advancing it. A reload records the old value
+    /// before disposal and the new value after the replacement VM reports its session.
+    pub(crate) fn reload_generation(&self) -> u64 {
+        self.0.reload_generation.load(Ordering::Acquire)
+    }
+
     pub(crate) fn observe(
         &self,
         scope: Option<(u64, u64)>,
@@ -614,8 +927,42 @@ impl Source {
                 scope,
                 quest,
                 npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
+                item: None,
+                count: None,
+                slot: None,
                 operation: Operation::Observed,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
+                ui_dispatch_id: None,
+            },
+        };
+        trace.record(stage);
+    }
+
+    /// Observe inbound evidence with a numeric subject: an item entry, count and slot. The NPC is
+    /// still mapped to a run-local alias; raw GUIDs never reach the ring.
+    pub(crate) fn observe_with_subject(
+        &self,
+        scope: Option<(u64, u64)>,
+        quest: Option<u32>,
+        npc: Option<u64>,
+        item: Option<u32>,
+        count: Option<u32>,
+        slot: Option<u32>,
+        stage: Stage,
+    ) {
+        let trace = Interaction {
+            source: self.clone(),
+            subject: Subject {
+                interaction: 0,
+                scope,
+                quest,
+                npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
+                item,
+                count,
+                slot,
+                operation: Operation::Observed,
+                reload_generation: self.0.reload_generation.load(Ordering::Acquire),
+                ui_dispatch_id: None,
             },
         };
         trace.record(stage);
@@ -637,6 +984,23 @@ impl Source {
         npc: Option<u64>,
         operation: Operation,
     ) -> Interaction {
+        self.begin_with_details(scope, quest, npc, None, None, None, operation)
+    }
+
+    /// Start a user-originated interaction carrying the numeric subject used for later
+    /// correlation: item entry, count and slot. `npc` is the loot/vendor source GUID, mapped to a
+    /// run-local alias here.
+    #[allow(clippy::too_many_arguments)] // scope + quest + source + numeric subject + operation
+    pub(crate) fn begin_with_details(
+        &self,
+        scope: Option<(u64, u64)>,
+        quest: Option<u32>,
+        npc: Option<u64>,
+        item: Option<u32>,
+        count: Option<u32>,
+        slot: Option<u32>,
+        operation: Operation,
+    ) -> Interaction {
         let trace = Interaction {
             source: self.clone(),
             subject: Subject {
@@ -644,8 +1008,12 @@ impl Source {
                 scope,
                 quest,
                 npc_alias: npc.and_then(|guid| self.npc_alias(guid)),
+                item,
+                count,
+                slot,
                 operation,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
+                ui_dispatch_id: self.plausible_ui_dispatch(scope),
             },
         };
         trace.record(Stage::Intent);
@@ -653,9 +1021,138 @@ impl Source {
     }
 }
 
+impl Source {
+    pub(crate) fn record_ui_press(
+        &self,
+        scope: Option<(u64, u64)>,
+        button: UiButton,
+        target: UiTarget,
+        consumed: bool,
+        egui_pointer_over_last_sample: Option<bool>,
+        vm_session: u64,
+    ) -> u64 {
+        let id = self.0.ui_dispatch_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let reload_generation = self.0.reload_generation.load(Ordering::Acquire);
+        let elapsed_ms = self.0.origin.elapsed().as_millis() as u64;
+        let token = UiDispatchToken {
+            id,
+            elapsed_ms,
+            scope,
+            vm_session,
+            reload_generation,
+            button,
+            target,
+            consumed,
+            visible: None,
+            clipped: false,
+            handler_invoked: consumed,
+        };
+        if let Ok(mut guard) = self.0.ui_dispatches.lock() {
+            if guard.len() >= 8 {
+                guard.pop_front();
+            }
+            guard.push_back(token);
+        }
+        self.observe(scope, None, Stage::UiPress {
+            button,
+            target,
+            consumed,
+            egui_pointer_over_last_sample,
+            vm_session,
+            ui_dispatch_id: id,
+        });
+        id
+    }
+
+    pub(crate) fn record_ui_click(
+        &self,
+        scope: Option<(u64, u64)>,
+        button: UiButton,
+        target: UiTarget,
+        consumed: bool,
+        visible: Option<bool>,
+        clipped: bool,
+        handler_invoked: bool,
+        egui_pointer_over_last_sample: Option<bool>,
+        vm_session: u64,
+    ) -> u64 {
+        let id = self.0.ui_dispatch_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let reload_generation = self.0.reload_generation.load(Ordering::Acquire);
+        let elapsed_ms = self.0.origin.elapsed().as_millis() as u64;
+        let token = UiDispatchToken {
+            id,
+            elapsed_ms,
+            scope,
+            vm_session,
+            reload_generation,
+            button,
+            target,
+            consumed,
+            visible,
+            clipped,
+            handler_invoked,
+        };
+        if let Ok(mut guard) = self.0.ui_dispatches.lock() {
+            if guard.len() >= 8 {
+                guard.pop_front();
+            }
+            guard.push_back(token);
+        }
+        self.observe(scope, None, Stage::UiClick {
+            button,
+            target,
+            consumed,
+            visible,
+            clipped,
+            handler_invoked,
+            egui_pointer_over_last_sample,
+            vm_session,
+            ui_dispatch_id: id,
+        });
+        id
+    }
+
+    pub(crate) fn plausible_ui_dispatch(&self, scope: Option<(u64, u64)>) -> Option<u64> {
+        let now = self.0.origin.elapsed().as_millis() as u64;
+        let current_rg = self.0.reload_generation.load(Ordering::Acquire);
+        let guard = self.0.ui_dispatches.lock().ok()?;
+        let current_vm = guard.iter().map(|t| t.vm_session).max().unwrap_or(0);
+        let candidates: Vec<u64> = guard
+            .iter()
+            .filter(|t| {
+                t.scope == scope
+                    && t.reload_generation == current_rg
+                    && t.vm_session == current_vm
+                    && t.elapsed_ms <= now
+                    && now.saturating_sub(t.elapsed_ms) <= 2_000
+                    && t.visible == Some(true)
+                    && !t.clipped
+                    && t.consumed
+                    && t.handler_invoked
+            })
+            .map(|t| t.id)
+            .collect();
+        if candidates.len() == 1 {
+            Some(candidates[0])
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn recent_ui_dispatches(&self) -> Vec<UiDispatchToken> {
+        self.0
+            .ui_dispatches
+            .lock()
+            .map(|g| g.iter().copied().collect())
+            .unwrap_or_default()
+    }
+}
+
 impl Interaction {
     pub(crate) fn record(&self, stage: Stage) {
         let ingress = &self.source.0;
+        let vector_name = vector_for_stage(&stage);
+        let vector_index = diagnostic_vector_index(vector_name.unwrap_or("unclassified"));
         let event = Event {
             version: 1,
             subject: self.subject,
@@ -664,7 +1161,28 @@ impl Interaction {
         };
         if ingress.events.try_send(event).is_err() {
             ingress.dropped.fetch_add(1, Ordering::Relaxed);
+            ingress.dropped_by_vector[vector_index].fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Explicit transport delivery recorder; transport code must use this instead of
+    /// constructing `Stage::Delivery` ad hoc.
+    ///
+    /// Contract: one interaction must receive exactly one terminal delivery event. If a
+    /// trace-only envelope wraps a receipt-bearing command, the receipt remains the
+    /// authority and the envelope trace must not emit a second terminal.
+    pub(crate) fn record_delivery(&self, delivery: crate::net::CommandDelivery) {
+        self.record(Stage::Delivery(delivery));
+    }
+
+    /// The interaction's scope, exposed for stale-scope checks without making `Subject`
+    /// public across the crate boundary. Returns `None` when no scope was carried.
+    pub(crate) fn scope(&self) -> Option<(u64, u64)> {
+        self.subject.scope
+    }
+
+    pub(crate) fn interaction_id(&self) -> u64 {
+        self.subject.interaction
     }
 }
 
@@ -721,6 +1239,22 @@ struct OpenInteraction {
     state: OpenState,
 }
 
+/// One written cast interaction eligible to explain one native cast edge.
+///
+/// The local interaction id, the wire cast count and the native `attempt_serial` are distinct
+/// identifier spaces. A candidate joins the first two when the transport carried them; the
+/// native edge supplies the third. A candidate is scoped and is never reused across a session
+/// or world generation.
+#[derive(Debug, Clone, Copy)]
+struct CastCandidate {
+    subject: Subject,
+    spell_id: u32,
+    /// The wire cast count carried through admission, when the producing command had one.
+    wire_cast_count: Option<u32>,
+    written_elapsed_ms: u64,
+    consumed: bool,
+}
+
 fn same_script_row(a: Stage, b: Stage) -> bool {
     match (a, b) {
         (
@@ -735,6 +1269,80 @@ fn same_script_row(a: Stage, b: Stage) -> bool {
     }
 }
 
+/// An exact key comparison only when both sides carry it. A missing key is not an exact match.
+fn slot_matches(action: Option<u32>, evidence: Option<u32>) -> bool {
+    match (action, evidence) {
+        (Some(a), Some(e)) => a == e,
+        _ => true,
+    }
+}
+
+fn item_matches(action: Option<u32>, evidence: Option<u32>) -> bool {
+    match (action, evidence) {
+        (Some(a), Some(e)) => a == e,
+        // A known action item with unidentified evidence (or the reverse) stays eligible but can
+        // never earn exact confidence; the time window and duplicate count decide.
+        _ => true,
+    }
+}
+
+fn alias_matches(action: Option<u32>, evidence: Option<u32>) -> bool {
+    match (action, evidence) {
+        (Some(a), Some(e)) => a == e,
+        _ => true,
+    }
+}
+
+/// Human label for the numeric inbound evidence, plus whether the evidence itself carries an
+/// authoritative numeric identity strong enough for `strong` confidence.
+fn loot_vendor_evidence_label(stage: &Stage) -> Option<(String, bool)> {
+    Some(match stage {
+        Stage::LootSlotRemoved { .. } => ("loot slot removed".to_owned(), true),
+        Stage::LootMoneyNotify { .. } => ("loot money notified".to_owned(), true),
+        Stage::LootMoneyCleared => ("loot money cleared".to_owned(), true),
+        Stage::LootErrorObserved { reason } => {
+            (format!("server reported loot error {reason}"), false)
+        }
+        Stage::LootResponseOpened => ("loot window observed".to_owned(), false),
+        Stage::LootReleasedObserved => ("loot release observed".to_owned(), false),
+        Stage::ItemPushResult { .. } => ("item push observed".to_owned(), true),
+        Stage::VendorInventoryObserved { .. } => ("vendor inventory observed".to_owned(), false),
+        Stage::VendorBuyResult { item_id, slot, .. } => (
+            "vendor buy result observed".to_owned(),
+            item_id.is_some() || slot.is_some(),
+        ),
+        Stage::VendorBuyFailedObserved { reason, .. } => {
+            (format!("server reported buy failure {reason}"), false)
+        }
+        Stage::VendorSellFailedObserved { reason } => {
+            (format!("server reported sell failure {reason}"), false)
+        }
+        Stage::EquipmentSlotChanged { .. } => ("equipment slot change observed".to_owned(), true),
+        Stage::InventoryFailure { reason } => {
+            (format!("server reported inventory failure {reason}"), false)
+        }
+        Stage::DomainEvent { event: DomainEvent::LootError } => {
+            ("server reported loot error".to_owned(), false)
+        }
+        Stage::DomainEvent { event: DomainEvent::VendorBuyFailed } => {
+            ("server reported buy failure".to_owned(), false)
+        }
+        Stage::DomainEvent { event: DomainEvent::VendorSellFailed } => {
+            ("server reported sell failure".to_owned(), false)
+        }
+        Stage::DomainEvent { event: DomainEvent::InventoryFailure } => {
+            ("server reported inventory failure".to_owned(), false)
+        }
+        _ => return None,
+    })
+}
+
+/// A refusal carries its own authoritative numeric subject only for the vendor buy failure, whose
+/// `item_entry` the server sends. Loot errors and sell failures do not carry an item entry.
+fn candidate_subject_is_authoritative(stage: Stage) -> bool {
+    matches!(stage, Stage::VendorBuyFailedObserved { item_id: Some(_), .. })
+}
+
 fn is_panel_stage(stage: Stage) -> bool {
     matches!(
         stage,
@@ -746,6 +1354,34 @@ fn is_panel_stage(stage: Stage) -> bool {
     )
 }
 
+#[cfg(feature = "dev")]
+#[derive(Clone, Debug)]
+pub(crate) struct InspectorSnapshot {
+    pub built_at: Instant,
+    pub received: u64,
+    pub evicted: u64,
+    pub dropped: u64,
+    pub source_gaps: u64,
+    pub sampled_updates: u64,
+    pub incidents: Vec<String>,
+    pub actions: Vec<String>,
+    pub panels: Vec<String>,
+    pub slots: Vec<String>,
+    pub turn_ins: Vec<String>,
+    pub ui_errors: Vec<String>,
+    pub ui_clicks: Vec<String>,
+    pub cast_chains: Vec<String>,
+    pub loot_vendor: Vec<String>,
+    pub quest_ui: Vec<String>,
+    pub session: Vec<String>,
+    pub movement: Vec<String>,
+    pub movement_corrections: Vec<String>,
+    pub audio: Vec<String>,
+    pub assets: Vec<String>,
+    pub hotpatch: Vec<String>,
+    pub recent: Vec<String>,
+}
+
 #[derive(Resource)]
 pub(crate) struct History {
     source: Source,
@@ -753,6 +1389,8 @@ pub(crate) struct History {
     entries: VecDeque<(u64, Event)>,
     incidents: VecDeque<Incident>,
     open_interactions: VecDeque<OpenInteraction>,
+    /// Bounded written-cast candidates for native outcome correlation.
+    cast_candidates: VecDeque<CastCandidate>,
     interaction_tracking_lost: u64,
     incidents_evicted: u64,
     received: u64,
@@ -760,6 +1398,8 @@ pub(crate) struct History {
     source_gaps: u64,
     #[cfg(feature = "hotpatch")]
     last_observed_patch_digest: Option<[u8; 20]>,
+    #[cfg(feature = "dev")]
+    inspector_snapshot: Option<InspectorSnapshot>,
 }
 
 impl History {
@@ -822,7 +1462,20 @@ impl History {
         (evidence, truncated)
     }
 
-    fn retire_scope(&mut self, retired_scope: Option<(u64, u64)>, terminal_stage: Stage, seq: u64) {
+    fn retire_scope(
+        &mut self,
+        retired_scope: Option<(u64, u64)>,
+        terminal_stage: Stage,
+        seq: u64,
+    ) -> (u64, u64) {
+        // An old scope's written cast can never explain a native edge in the new world.
+        self.cast_candidates.retain(|candidate| {
+            !match (retired_scope, candidate.subject.scope) {
+                (Some(target), Some(current)) => target == current,
+                (None, _) => true,
+                _ => false,
+            }
+        });
         let mut remaining = VecDeque::with_capacity(self.open_interactions.len());
         let mut retired = Vec::new();
         while let Some(open) = self.open_interactions.pop_front() {
@@ -839,11 +1492,14 @@ impl History {
         }
         self.open_interactions = remaining;
         let gaps = self.has_telemetry_gaps();
+        let mut retired_local = 0u64;
+        let mut retired_written = 0u64;
         for open in retired {
             let (evidence, truncated) =
                 self.collect_interaction_evidence(open.subject.interaction, seq);
             match open.state {
                 OpenState::Written { .. } => {
+                    retired_written = retired_written.saturating_add(1);
                     self.push_incident(
                         open.subject,
                         IncidentOutcome::WriteUnconfirmed,
@@ -854,6 +1510,7 @@ impl History {
                     );
                 }
                 OpenState::Local => {
+                    retired_local = retired_local.saturating_add(1);
                     self.push_incident(
                         open.subject,
                         IncidentOutcome::LocalRefusal,
@@ -869,8 +1526,492 @@ impl History {
                 }
             }
         }
+        (retired_local, retired_written)
+    }
+
+    /// A complete socket write of a cast interaction makes it a bounded candidate for one native
+    /// cast edge. The wire cast count came from admission, when the command carried one.
+    fn note_written_cast(&mut self, event: &Event) {
+        let interaction = event.subject.interaction;
+        if interaction == 0 {
+            return;
+        }
+        if self
+            .cast_candidates
+            .iter()
+            .any(|candidate| candidate.subject.interaction == interaction)
+        {
+            return;
+        }
+        let mut spell_id = None;
+        let mut wire_cast_count = None;
+        for (_, prior) in &self.entries {
+            if prior.subject.interaction != interaction {
+                continue;
+            }
+            if let Stage::Cast {
+                spell_id: Some(id),
+                wire_cast_count: count,
+                edge: CastEdge::Requested | CastEdge::Admitted,
+                ..
+            } = prior.stage
+            {
+                spell_id = Some(id);
+                if count.is_some() {
+                    wire_cast_count = count;
+                }
+            }
+        }
+        let Some(spell_id) = spell_id else { return };
+        if self.cast_candidates.len() >= MAX_OPEN_INTERACTIONS {
+            // A bounded ring: the oldest candidate is dropped, and the loss remains visible
+            // through the interaction tracking-loss counter rather than a fabricated match.
+            self.cast_candidates.pop_front();
+            self.interaction_tracking_lost = self.interaction_tracking_lost.saturating_add(1);
+        }
+        self.cast_candidates.push_back(CastCandidate {
+            subject: event.subject,
+            spell_id,
+            wire_cast_count,
+            written_elapsed_ms: event.elapsed_ms,
+            consumed: false,
+        });
+    }
+
+    /// Correlate one native cast edge against written local casts in the same scope.
+    ///
+    /// Exact: the same wire cast count on both sides. Strong: exactly one written cast of the
+    /// same spell in the window, with its admitted wire count and no conflicting native count.
+    /// Heuristic: exactly one candidate but the authoritative count is missing on the local side
+    /// (item uses). Ambiguous: more than one eligible candidate. Unmatched: none. Terminal
+    /// failures consume a uniquely matched candidate; continuation edges (`Started`, `Delayed`,
+    /// channel updates) never do.
+    fn correlate_cast_edge(
+        &mut self,
+        event: &Event,
+        consume: bool,
+    ) -> (IncidentConfidence, Subject) {
+        let Stage::Cast {
+            spell_id: Some(spell),
+            wire_cast_count: native_count,
+            ..
+        } = event.stage
+        else {
+            return (IncidentConfidence::Unmatched, event.subject);
+        };
+        let scope = event.subject.scope;
+        let window_ms = 30_000u64;
+        // Exact count matches do not need the time window: the wire count is monotonic within a
+        // session, so a late START/GO remains usable evidence. Spell/scope/time fallback does.
+        let all: Vec<usize> = self
+            .cast_candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                !candidate.consumed
+                    && candidate.subject.scope == scope
+                    && candidate.spell_id == spell
+                    && candidate.written_elapsed_ms <= event.elapsed_ms
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if all.is_empty() {
+            return (IncidentConfidence::Unmatched, event.subject);
+        }
+
+        // Exact match on the authoritative wire count.
+        if let Some(wanted) = native_count {
+            let exact: Vec<usize> = all
+                .iter()
+                .copied()
+                .filter(|&index| self.cast_candidates[index].wire_cast_count == Some(wanted))
+                .collect();
+            if exact.len() == 1 {
+                let index = exact[0];
+                let subject = self.cast_candidates[index].subject;
+                if consume {
+                    self.cast_candidates[index].consumed = true;
+                }
+                return (IncidentConfidence::Exact, subject);
+            }
+            if exact.len() > 1 {
+                // Duplicate counts: the count cannot decide which local interaction owns the edge.
+                return (IncidentConfidence::Ambiguous, self.cast_candidates[exact[0]].subject);
+            }
+        }
+
+        // No exact count match. Spell/scope/time fallback only.
+        let mut eligible: Vec<usize> = all
+            .into_iter()
+            .filter(|&index| {
+                event
+                    .elapsed_ms
+                    .saturating_sub(self.cast_candidates[index].written_elapsed_ms)
+                    <= window_ms
+            })
+            .collect();
+        if native_count.is_some() {
+            // A count present on both sides that differs is a conflict, not evidence.
+            eligible.retain(|&index| self.cast_candidates[index].wire_cast_count.is_none());
+        }
+
+        if eligible.is_empty() {
+            return (IncidentConfidence::Unmatched, event.subject);
+        }
+        if eligible.len() == 1 {
+            let index = eligible[0];
+            let subject = self.cast_candidates[index].subject;
+            // A local admission count plus a unique spell/scope/time is a strong lead when the
+            // native edge omits the count (channel continuations). Without any local count the
+            // item-use case is only heuristic.
+            let local_count_present = self.cast_candidates[index].wire_cast_count.is_some();
+            if consume {
+                self.cast_candidates[index].consumed = true;
+            }
+            return (
+                if local_count_present {
+                    IncidentConfidence::Strong
+                } else {
+                    IncidentConfidence::Heuristic
+                },
+                subject,
+            );
+        }
+        (
+            IncidentConfidence::Ambiguous,
+            self.cast_candidates[eligible[0]].subject,
+        )
+    }
+
+    /// Close a written cast that never received native evidence inside the observation window.
+    /// This is explicitly unverified, never a failure: the missing START/GO may be a telemetry
+    /// gap rather than a server refusal.
+    fn expire_cast_windows(&mut self, now_ms: u64) {
+        let window_ms = 30_000u64;
+        let mut remaining = VecDeque::with_capacity(self.open_interactions.len());
+        let mut expired = Vec::new();
+        while let Some(open) = self.open_interactions.pop_front() {
+            let is_cast = self
+                .cast_candidates
+                .iter()
+                .any(|candidate| candidate.subject.interaction == open.subject.interaction);
+            let old_written = matches!(
+                open.state,
+                OpenState::Written { elapsed_ms, .. }
+                    if now_ms.saturating_sub(elapsed_ms) > window_ms
+            );
+            if is_cast && old_written {
+                expired.push(open);
+            } else {
+                remaining.push_back(open);
+            }
+        }
+        self.open_interactions = remaining;
+        for open in expired {
+            let terminal_seq = match open.state {
+                OpenState::Written { seq, .. } => seq,
+                OpenState::Local => 0,
+            };
+            let (evidence, truncated) =
+                self.collect_interaction_evidence(open.subject.interaction, terminal_seq);
+            self.push_incident(
+                open.subject,
+                IncidentOutcome::WriteUnconfirmed,
+                IncidentConfidence::Unverified,
+                Stage::Delivery(CommandDelivery::Written),
+                evidence,
+                truncated,
+            );
+        }
+    }
+
+    /// Bounded inspector lines for the most recent cast/channel chains. Each line names the
+    /// requested spell, the wire cast count where admitted, the native attempt when present,
+    /// the terminal edge and the correlation confidence/ambiguity. It never claims a successful
+    /// cast from a socket write alone.
+    pub(crate) fn cast_correlations(&self) -> Vec<String> {
+        let gaps = self.has_telemetry_gaps();
+        let mut groups: Vec<((Option<(u64, u64)>, Option<u32>, Option<u32>), Vec<&Event>, u64)> =
+            Vec::new();
+        for (seq, event) in &self.entries {
+            let Stage::Cast {
+                spell_id,
+                wire_cast_count,
+                ..
+            } = event.stage
+            else {
+                continue;
+            };
+            // Channel and cancel edges carry no wire count. Join them to an admitted cast only
+            // when exactly one admitted count of that spell/scope is in the window; two rapid
+            // same-spell casts deliberately stay unresolved rather than taking the newest.
+            let effective_wire = wire_cast_count.or_else(|| {
+                // A local interaction's own admission is authoritative even when two casts of
+                // the same spell overlap; never guess by adjacency.
+                if let Some(wire) = self.entries.iter().find_map(|(_, prior)| {
+                    if prior.subject.interaction != event.subject.interaction {
+                        return None;
+                    }
+                    match prior.stage {
+                        Stage::Cast {
+                            wire_cast_count: Some(wire),
+                            edge: CastEdge::Admitted,
+                            ..
+                        } => Some(wire),
+                        _ => None,
+                    }
+                }) {
+                    return Some(wire);
+                }
+                let spell = spell_id?;
+                let mut counts: Vec<u32> = self
+                    .entries
+                    .iter()
+                    .filter_map(|(_, prior)| match prior.stage {
+                        Stage::Cast {
+                            spell_id: Some(prior_spell),
+                            wire_cast_count: Some(count),
+                            edge: CastEdge::Admitted,
+                            ..
+                        } if prior_spell == spell
+                            && prior.subject.scope == event.subject.scope
+                            && prior.elapsed_ms <= event.elapsed_ms
+                            && event.elapsed_ms.saturating_sub(prior.elapsed_ms) <= 30_000 =>
+                        {
+                            Some(count)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                counts.sort_unstable();
+                counts.dedup();
+                if counts.len() == 1 {
+                    counts.first().copied()
+                } else {
+                    None
+                }
+            });
+            let key = (event.subject.scope, spell_id, effective_wire);
+            if let Some(index) = groups
+                .iter()
+                .position(|(existing, _, _)| *existing == key)
+            {
+                groups[index].1.push(event);
+                groups[index].2 = groups[index].2.max(*seq);
+            } else {
+                groups.push((key, vec![event], *seq));
+            }
+        }
+        groups.sort_by_key(|(_, _, last_seq)| std::cmp::Reverse(*last_seq));
+        groups
+            .into_iter()
+            .take(8)
+            .map(|(key, events, _)| {
+                let (scope, spell, wire) = key;
+                let last = events.last().expect("a group has at least one event");
+                let (edge, attempt, last_interaction) = match last.stage {
+                    Stage::Cast {
+                        edge,
+                        attempt,
+                        ..
+                    } => (format!("{edge:?}"), attempt, last.subject.interaction),
+                    _ => ("?".to_string(), None, last.subject.interaction),
+                };
+                let mut interactions: Vec<u64> = events
+                    .iter()
+                    .filter_map(|event| match event.stage {
+                        // A cancel is a continuation of the active cast, not a second candidate.
+                        Stage::Cast {
+                            edge: CastEdge::CancelRequested,
+                            ..
+                        } => None,
+                        _ => Some(event.subject.interaction),
+                    })
+                    .filter(|&interaction| interaction != 0)
+                    .collect();
+                interactions.sort_unstable();
+                interactions.dedup();
+                let mut attempts: Vec<u64> = events
+                    .iter()
+                    .filter_map(|event| match event.stage {
+                        Stage::Cast {
+                            attempt: Some(attempt),
+                            ..
+                        } => Some(attempt),
+                        _ => None,
+                    })
+                    .collect();
+                attempts.sort_unstable();
+                attempts.dedup();
+                let channel_or_cancel = events.iter().any(|event| {
+                    matches!(
+                        event.stage,
+                        Stage::Cast {
+                            edge: CastEdge::CancelRequested
+                                | CastEdge::ChannelStarted
+                                | CastEdge::ChannelUpdated
+                                | CastEdge::ChannelEnded,
+                            ..
+                        }
+                    )
+                });
+                let admitted_count_candidates = self
+                    .entries
+                    .iter()
+                    .filter(|(_, prior)| {
+                        matches!(
+                            prior.stage,
+                            Stage::Cast {
+                                spell_id: Some(prior_spell),
+                                wire_cast_count: Some(_),
+                                edge: CastEdge::Admitted,
+                                ..
+                            } if Some(prior_spell) == spell
+                                && prior.subject.scope == scope
+                                && prior.elapsed_ms <= last.elapsed_ms
+                                && last.elapsed_ms.saturating_sub(prior.elapsed_ms) <= 30_000
+                        )
+                    })
+                    .count();
+                let ambiguous = interactions.len() > 1
+                    || attempts.len() > 1
+                    || (wire.is_none() && channel_or_cancel && admitted_count_candidates > 1);
+                let has_native = !attempts.is_empty()
+                    || events
+                        .iter()
+                        .any(|event| event.subject.interaction == 0);
+                let confidence = if !has_native {
+                    "unmatched"
+                } else if wire.is_some() && interactions.len() == 1 && attempt.is_some() {
+                    "exact"
+                } else if !ambiguous && interactions.len() == 1 {
+                    "strong"
+                } else if ambiguous {
+                    "ambiguous"
+                } else {
+                    "unmatched"
+                };
+                let mut line = format!(
+                    "Cast spell {spell:?} wire={wire:?} attempt={attempt:?} scope={scope:?}: {edge} \
+                     confidence={confidence} {} (interaction {:?})",
+                    if ambiguous { "ambiguous" } else { "single" },
+                    last_interaction,
+                );
+                if events.iter().any(|event| {
+                    matches!(
+                        event.stage,
+                        Stage::Cast {
+                            edge: CastEdge::Admitted,
+                            wire_cast_count: None,
+                            ..
+                        }
+                    )
+                }) {
+                    line.push_str("; wire count unavailable");
+                }
+                if wire.is_some()
+                    && events.iter().any(|event| {
+                        matches!(
+                            event.stage,
+                            Stage::Cast {
+                                wire_cast_count: None,
+                                edge: CastEdge::CancelRequested
+                                    | CastEdge::ChannelStarted
+                                    | CastEdge::ChannelUpdated
+                                    | CastEdge::ChannelEnded,
+                                ..
+                            }
+                        )
+                    })
+                {
+                    line.push_str("; wire count inferred by scope/spell/time");
+                }
+                if gaps {
+                    line.push_str("; trace has gaps");
+                }
+                line
+            })
+            .collect()
     }
 }
+
+/// Whether one written loot/equip/buy/sell action's numeric subject can explain an inbound
+/// evidence event. Matching is deliberately conservative: an absent key never earns exact
+/// confidence, and a raw GUID or an item name is never consulted.
+fn loot_vendor_evidence_matches_action(action: &Subject, evidence: &Event) -> bool {
+    let stage_item = match &evidence.stage {
+        Stage::LootSlotRemoved { item_id, .. }
+        | Stage::VendorBuyResult { item_id, .. }
+        | Stage::VendorBuyFailedObserved { item_id, .. } => *item_id,
+        Stage::ItemPushResult { item_id, .. } => Some(*item_id),
+        Stage::EquipmentSlotChanged { item_id, .. } => Some(*item_id),
+        _ => None,
+    };
+    match (action.operation, &evidence.stage) {
+        (Operation::Loot, Stage::LootSlotRemoved { slot, .. }) => {
+            slot_matches(action.slot, Some(*slot))
+                && item_matches(action.item, stage_item)
+        }
+        (Operation::Loot, Stage::LootMoneyNotify { .. } | Stage::LootMoneyCleared) => true,
+        (Operation::Loot, Stage::LootErrorObserved { .. }) => {
+            alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Loot, Stage::LootResponseOpened | Stage::LootReleasedObserved) => {
+            alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Loot, Stage::ItemPushResult { item_id, .. }) => {
+            item_matches(action.item, Some(*item_id))
+        }
+        // An item push says the item arrived, not that it occupies an equipment slot. Only a
+        // slot change (or an inventory refusal) is equipment evidence.
+        // The action's `slot` is the source bag slot, not the destination equipment slot, so
+        // only the item entry can be compared here.
+        (Operation::Equip, Stage::EquipmentSlotChanged { item_id, .. }) => {
+            item_matches(action.item, Some(*item_id))
+        }
+        (Operation::Equip, Stage::InventoryFailure { .. }) => true,
+        (Operation::Buy, Stage::VendorBuyResult { item_id, slot, .. }) => {
+            item_matches(action.item, *item_id)
+                && slot_matches(action.slot, *slot)
+                && alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Buy, Stage::VendorBuyFailedObserved { item_id, .. }) => {
+            item_matches(action.item, *item_id)
+                && alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Buy, Stage::InventoryFailure { .. }) => true,
+        (Operation::Sell, Stage::VendorSellFailedObserved { .. }) => {
+            alias_matches(action.npc_alias, evidence.subject.npc_alias)
+        }
+        (Operation::Sell, Stage::InventoryFailure { .. }) => true,
+        (
+            Operation::Loot,
+            Stage::DomainEvent {
+                event: DomainEvent::LootError,
+            },
+        ) => true,
+        (
+            Operation::Buy,
+            Stage::DomainEvent {
+                event: DomainEvent::VendorBuyFailed,
+            },
+        ) => true,
+        (
+            Operation::Sell,
+            Stage::DomainEvent {
+                event: DomainEvent::VendorSellFailed,
+            },
+        ) => true,
+        (
+            Operation::Loot | Operation::Equip | Operation::Buy | Operation::Sell,
+            Stage::DomainEvent {
+                event: DomainEvent::InventoryFailure,
+            },
+        ) => true,
+        _ => false,
+    }
+}
+
 
 #[cfg(feature = "dev")]
 impl History {
@@ -882,16 +2023,53 @@ impl History {
                 Stage::ScriptError { vm_session, row_seq, .. } => (vm_session, row_seq),
                 _ => return None,
             };
-            let candidates = self.entries.iter().filter(|(_, earlier)| {
-                matches!(earlier.stage, Stage::UiPress { vm_session: vm, .. } if vm == vm_session)
-                    && earlier.subject.scope == event.subject.scope
-                    && earlier.elapsed_ms <= event.elapsed_ms
-                    && event.elapsed_ms.saturating_sub(earlier.elapsed_ms) <= 2_000
-            }).count();
-            let result = match candidates {
-                0 => format!("UI error {row_seq}: no retained press within two seconds"),
-                1 => format!("UI error {row_seq}: one nearby press (possible association)"),
-                _ => format!("UI error {row_seq}: {candidates} nearby presses (ambiguous)"),
+            let mut presses = 0usize;
+            let mut clicks: Vec<(bool, Option<bool>, bool, bool)> = Vec::new();
+            for (_, earlier) in self.entries.iter() {
+                if earlier.subject.scope != event.subject.scope
+                    || earlier.elapsed_ms > event.elapsed_ms
+                    || event.elapsed_ms.saturating_sub(earlier.elapsed_ms) > 2_000
+                {
+                    continue;
+                }
+                match earlier.stage {
+                    Stage::UiPress { vm_session: vm, .. } if vm == vm_session => presses += 1,
+                    Stage::UiClick {
+                        vm_session: vm,
+                        consumed,
+                        visible,
+                        clipped,
+                        handler_invoked,
+                        ..
+                    } if vm == vm_session => {
+                        clicks.push((consumed, visible, clipped, handler_invoked));
+                    }
+                    _ => {}
+                }
+            }
+            let total = presses + clicks.len();
+            let result = if total == 0 {
+                format!("UI error {row_seq}: no retained press or click within two seconds")
+            } else if total == 1 && clicks.len() == 1 {
+                let (consumed, visible, clipped, handler_invoked) = clicks[0];
+                let visibility = match visible {
+                    Some(true) => "visible",
+                    Some(false) => "not effectively visible",
+                    None => "visibility unknown",
+                };
+                if visible == Some(true) && !clipped && consumed && handler_invoked {
+                    format!(
+                        "UI error {row_seq}: one nearby click (consumed, {visibility}, unclipped, handler invoked; possible association)"
+                    )
+                } else {
+                    format!(
+                        "UI error {row_seq}: one nearby click (consumed={consumed}, {visibility}, clipped={clipped}, handler_invoked={handler_invoked}; not a plausible cause)"
+                    )
+                }
+            } else if total == 1 {
+                format!("UI error {row_seq}: one nearby press (possible association)")
+            } else {
+                format!("UI error {row_seq}: {total} nearby presses/clicks (ambiguous; no causal claim)")
             };
             Some(if gaps { format!("{result}; trace has gaps") } else { result })
         }).take(8).collect()
@@ -913,6 +2091,7 @@ impl History {
                     clipped,
                     handler_invoked,
                     vm_session,
+                    ui_dispatch_id,
                     ..
                 } => {
                     let visibility = match visible {
@@ -921,8 +2100,9 @@ impl History {
                         None => "visibility unknown",
                     };
                     let line = format!(
-                        "UI click {:?} on {:?}: consumed={} visible={} clipped={} handler_invoked={} vm={}",
-                        button, target, consumed, visibility, clipped, handler_invoked, vm_session
+                        "UI click {:?} on {:?}: consumed={} visible={} clipped={} handler_invoked={} vm={} dispatch={}",
+                        button, target, consumed, visibility, clipped, handler_invoked, vm_session,
+                        ui_dispatch_id
                     );
                     Some(if gaps {
                         format!("{line}; trace has gaps")
@@ -936,17 +2116,242 @@ impl History {
             .collect()
     }
 
+    pub(crate) fn inspector_snapshot(&mut self) -> &InspectorSnapshot {
+        let stale = self
+            .inspector_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot.received != self.received
+                    || snapshot.evicted != self.evicted
+                    || snapshot.dropped != self.source.0.dropped.load(Ordering::Relaxed)
+                    || snapshot.source_gaps != self.source_gaps
+                    || snapshot.sampled_updates != self.sampled_updates()
+            })
+            .unwrap_or(true);
+        let periodic = self
+            .inspector_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.built_at.elapsed() >= Duration::from_millis(250))
+            .unwrap_or(true);
+        if self.inspector_snapshot.is_none() || stale || periodic {
+            let truncate = |line: String| -> String {
+                if line.len() > 240 {
+                    let mut boundary = 240;
+                    while boundary > 0 && !line.is_char_boundary(boundary) {
+                        boundary -= 1;
+                    }
+                    let mut truncated = line;
+                    truncated.truncate(boundary);
+                    truncated
+                } else {
+                    line
+                }
+            };
+            let cap = |lines: Vec<String>, limit: usize| -> Vec<String> {
+                lines.into_iter().take(limit).map(truncate).collect()
+            };
+            let (received, evicted, dropped) = self.counters();
+            self.inspector_snapshot = Some(InspectorSnapshot {
+                built_at: Instant::now(),
+                received,
+                evicted,
+                dropped,
+                source_gaps: self.source_gaps,
+                sampled_updates: self.sampled_updates(),
+                incidents: cap(
+                    self.recent_incidents().map(|line| line.to_string()).collect(),
+                    8,
+                ),
+                actions: cap(self.action_summaries(), 8),
+                panels: cap(self.panel_correlations(), 8),
+                slots: cap(self.slot_correlations(), 8),
+                turn_ins: cap(self.turn_in_correlations(), 8),
+                ui_errors: cap(self.ui_error_correlations(), 8),
+                ui_clicks: cap(self.ui_click_correlations(), 8),
+                cast_chains: cap(self.cast_correlations(), 8),
+                loot_vendor: cap(self.loot_vendor_correlations(), 8),
+                quest_ui: cap(self.quest_ui_correlations(), 8),
+                session: cap(self.session_transition_summaries(), 8),
+                movement: cap(self.movement_pressure(), 8),
+                movement_corrections: cap(self.movement_correction_attribution(), 8),
+                audio: cap(self.audio_output_health(), 8),
+                assets: cap(self.asset_window_summary(), 8),
+                hotpatch: {
+                    #[cfg(feature = "hotpatch")]
+                    {
+                        cap(self.hotpatch_attempt_correlation(), 8)
+                    }
+                    #[cfg(not(feature = "hotpatch"))]
+                    {
+                        Vec::new()
+                    }
+                },
+                recent: cap(self.recent().map(|line| line.to_string()).collect(), 16),
+            });
+        }
+        self.inspector_snapshot.as_ref().unwrap()
+    }
+
+    /// Bounded quest/UI summary for the inspector: recent quest interactions with their last
+    /// milestone, the most recent UI dispatch token under the 2-second visibility/consumption
+    /// rules, and the latest journal projection/row with the reload generation.
+    ///
+    /// Causality is never claimed. A token is either a `possible association` (exactly one
+    /// eligible click in the window), `ambiguous` (more than one), or explicitly not a plausible
+    /// cause (hidden, clipped, unconsumed, handler not invoked, old VM, or old reload generation).
+    pub(crate) fn quest_ui_correlations(&self) -> Vec<String> {
+        let gaps = self.has_telemetry_gaps();
+        let mut lines = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (_, event) in self.entries.iter().rev() {
+            let id = event.subject.interaction;
+            if id == 0 || !seen.insert(id) {
+                continue;
+            }
+            let operation = event.subject.operation;
+            if !matches!(
+                operation,
+                Operation::Open
+                    | Operation::Select
+                    | Operation::Accept
+                    | Operation::RequestReward
+                    | Operation::ChooseReward
+                    | Operation::Confirm
+                    | Operation::Abandon
+                    | Operation::Share
+            ) {
+                continue;
+            }
+            let incident = self
+                .incidents
+                .iter()
+                .rev()
+                .find(|incident| incident.subject.interaction == id);
+            let (outcome, confidence) = incident.map_or_else(
+                || ("in progress/unconfirmed".to_string(), "Unverified".to_string()),
+                |incident| {
+                    (
+                        format!("{:?}", incident.outcome),
+                        format!("{:?}", incident.confidence),
+                    )
+                },
+            );
+            let gap = gaps || incident.is_some_and(|incident| incident.telemetry_gap);
+            lines.push(format!(
+                "Quest action {id} {operation:?} (npc {:?}, quest {:?}): last milestone {:?}; outcome {outcome} [{confidence}]; dispatch {:?}{}",
+                event.subject.npc_alias,
+                event.subject.quest,
+                event.stage,
+                event.subject.ui_dispatch_id,
+                if gap { "; trace has gaps" } else { "" },
+            ));
+            if lines.len() == 8 {
+                break;
+            }
+        }
+
+        let dispatches = self.source.recent_ui_dispatches();
+        if let Some(token) = dispatches.iter().rev().next() {
+            let current_rg = self
+                .source
+                .0
+                .reload_generation
+                .load(Ordering::Acquire);
+            let eligible = token.reload_generation == current_rg
+                && token.visible == Some(true)
+                && !token.clipped
+                && token.consumed
+                && token.handler_invoked;
+            let candidates = self
+                .entries
+                .iter()
+                .filter(|(_, earlier)| {
+                    matches!(
+                        earlier.stage,
+                        Stage::UiClick {
+                            vm_session: vm,
+                            ..
+                        } if vm == token.vm_session
+                    ) && earlier.subject.scope == token.scope
+                        && earlier.subject.reload_generation == current_rg
+                        && earlier.elapsed_ms <= token.elapsed_ms
+                        && token.elapsed_ms.saturating_sub(earlier.elapsed_ms) <= 2_000
+                })
+                .count();
+            let wording = if !eligible {
+                "not a plausible cause (hidden, clipped, unconsumed, handler not invoked, or old VM/reload)"
+            } else if candidates == 0 {
+                "unverified: the source click is not retained in the event window"
+            } else if candidates > 1 {
+                "ambiguous: multiple candidate clicks in the two-second window"
+            } else {
+                "possible association"
+            };
+            lines.push(format!(
+                "UI dispatch {}: button {:?} target {:?} consumed={} visible={:?} clipped={} handler_invoked={} vm={} reload={}; {wording}{}",
+                token.id,
+                token.button,
+                token.target,
+                token.consumed,
+                token.visible,
+                token.clipped,
+                token.handler_invoked,
+                token.vm_session,
+                token.reload_generation,
+                if gaps { "; trace has gaps" } else { "" },
+            ));
+        } else {
+            lines.push("UI dispatch antecedent: no retained press/click token".to_string());
+        }
+
+        let current_rg = self
+            .source
+            .0
+            .reload_generation
+            .load(Ordering::Acquire);
+        if let Some((_, event)) = self.entries.iter().rev().find(|(_, event)| {
+            matches!(
+                event.stage,
+                Stage::JournalProjection
+                    | Stage::JournalRowInModel
+                    | Stage::JournalTemplatePending
+                    | Stage::JournalTemplateRefused
+            )
+        }) {
+            lines.push(format!(
+                "Journal: quest {:?} {:?} in reload generation {} (current {}{})",
+                event.subject.quest,
+                event.stage,
+                event.subject.reload_generation,
+                current_rg,
+                if event.subject.reload_generation < current_rg {
+                    "; old VM projection superseded"
+                } else {
+                    ""
+                },
+            ));
+        } else {
+            lines.push(format!(
+                "Journal: no retained projection or row (reload generation {current_rg})"
+            ));
+        }
+        lines
+    }
+
     pub(crate) fn recent_incidents(&self) -> impl Iterator<Item = String> + '_ {
         self.incidents.iter().rev().take(8).map(|incident| {
             let missing = incident.evidence.iter().any(|seq| {
                 !self.entries.iter().any(|(retained, _)| retained == seq)
             });
             format!(
-                "Action {} {:?} (npc {:?}, quest {:?}): {:?} [{:?}] {:?} (evidence {:?}{}{}{})",
+                "Action {} {:?} (npc {:?}, quest {:?}, item {:?}, count {:?}, slot {:?}): {:?} [{:?}] {:?} (evidence {:?}{}{}{})",
                 incident.subject.interaction,
                 incident.subject.operation,
                 incident.subject.npc_alias,
                 incident.subject.quest,
+                incident.subject.item,
+                incident.subject.count,
+                incident.subject.slot,
                 incident.outcome,
                 incident.confidence,
                 incident.terminal_stage,
@@ -980,6 +2385,8 @@ impl History {
                             Stage::Delivery(CommandDelivery::Written)
                         );
                         let within_window = candidate.subject.scope == Some(scope)
+                            && candidate.subject.reload_generation
+                                == event.subject.reload_generation
                             && candidate.elapsed_ms <= event.elapsed_ms
                             && event.elapsed_ms.saturating_sub(candidate.elapsed_ms) <= 30_000;
                         if !written || !within_window {
@@ -1045,6 +2452,226 @@ impl History {
             .collect()
     }
 
+    /// Native cast evidence for one written local cast interaction. Multiple distinct wire counts
+    /// for the same spell in the window stay ambiguous; a single chain reports its latest edge.
+    fn cast_native_summary(&self, event: &Event) -> Option<String> {
+        if matches!(
+            event.stage,
+            Stage::Cast {
+                edge: CastEdge::LocalRefusal { .. },
+                ..
+            }
+        ) {
+            return None;
+        }
+        let spell = self.entries.iter().find_map(|(_, prior)| {
+            if prior.subject.interaction != event.subject.interaction {
+                return None;
+            }
+            match prior.stage {
+                Stage::Cast {
+                    spell_id: Some(spell),
+                    ..
+                } => Some(spell),
+                _ => None,
+            }
+        })?;
+        let local_wire = self
+            .entries
+            .iter()
+            .find_map(|(_, prior)| {
+                if prior.subject.interaction != event.subject.interaction {
+                    return None;
+                }
+                match prior.stage {
+                    Stage::Cast {
+                        wire_cast_count: Some(wire),
+                        edge: CastEdge::Admitted,
+                        ..
+                    } => Some(wire),
+                    _ => None,
+                }
+            })
+            .or_else(|| {
+                self.entries.iter().find_map(|(_, prior)| {
+                    if prior.subject.interaction != event.subject.interaction {
+                        return None;
+                    }
+                    match prior.stage {
+                        Stage::Cast {
+                            wire_cast_count: Some(wire),
+                            ..
+                        } => Some(wire),
+                        _ => None,
+                    }
+                })
+            });
+        let native: Vec<&Event> = self
+            .entries
+            .iter()
+            .map(|(_, candidate)| candidate)
+            .filter(|candidate| {
+                candidate.subject.interaction == 0
+                    && candidate.subject.scope == event.subject.scope
+                    && candidate.elapsed_ms >= event.elapsed_ms
+                    && candidate.elapsed_ms.saturating_sub(event.elapsed_ms) <= 30_000
+                    && matches!(
+                        candidate.stage,
+                        Stage::Cast {
+                            spell_id: Some(edge_spell),
+                            ..
+                        } if edge_spell == spell
+                    )
+            })
+            .collect();
+        if native.is_empty() {
+            return Some(format!(
+                "; cast spell {spell} wire {local_wire:?}: no native evidence yet (unverified)"
+            ));
+        }
+        let mut wires: Vec<u32> = native
+            .iter()
+            .filter_map(|candidate| match candidate.stage {
+                Stage::Cast {
+                    wire_cast_count: Some(wire),
+                    ..
+                } => Some(wire),
+                _ => None,
+            })
+            .collect();
+        wires.sort_unstable();
+        wires.dedup();
+        if wires.len() > 1 {
+            return Some(format!(
+                "; cast spell {spell} wire {local_wire:?}: {} native wire counts (ambiguous)",
+                wires.len()
+            ));
+        }
+        let latest = native
+            .iter()
+            .max_by_key(|candidate| candidate.elapsed_ms)
+            .expect("native is non-empty");
+        let (edge, native_wire, attempt) = match latest.stage {
+            Stage::Cast {
+                edge,
+                wire_cast_count,
+                attempt,
+                ..
+            } => (edge, wire_cast_count, attempt),
+            _ => return None,
+        };
+        Some(format!(
+            "; cast spell {spell} wire {local_wire:?}/{native_wire:?} attempt {attempt:?}: {edge:?}"
+        ))
+    }
+
+    /// Written actions in the same scope that could explain `evidence`. More than one makes the
+    /// attribution ambiguous even when each individual subject looks exact.
+    fn eligible_loot_vendor_writes(&self, evidence: &Event, operation: Operation) -> usize {
+        self.entries
+            .iter()
+            .filter(|(_, candidate)| {
+                candidate.subject.operation == operation
+                    && candidate.subject.scope.is_some()
+                    && candidate.subject.scope == evidence.subject.scope
+                    && candidate.elapsed_ms <= evidence.elapsed_ms
+                    && evidence.elapsed_ms.saturating_sub(candidate.elapsed_ms) <= 30_000
+                    && matches!(candidate.stage, Stage::Delivery(CommandDelivery::Written))
+                    && loot_vendor_evidence_matches_action(&candidate.subject, evidence)
+            })
+            .count()
+    }
+
+    /// Evidence summary for one written loot/equip/buy/sell action. `exact` is reserved for a
+    /// carried item/slot identity (or an authoritative refusal carrying the item); a bare
+    /// time-window match is heuristic.
+    fn loot_vendor_action_evidence(&self, action: &Event, evidence: &Event) -> Option<String> {
+        let (label, mut exact) = loot_vendor_evidence_label(&evidence.stage)?;
+        // An item push says the item arrived; it does not prove the loot row was removed.
+        if action.subject.operation == Operation::Loot
+            && matches!(evidence.stage, Stage::ItemPushResult { .. })
+        {
+            exact = false;
+        }
+        let matches = self.eligible_loot_vendor_writes(evidence, action.subject.operation);
+        let confidence = if matches > 1 {
+            "ambiguous"
+        } else if exact {
+            "strong"
+        } else {
+            "heuristic"
+        };
+        Some(format!("; {label} ({confidence})"))
+    }
+
+    /// Bounded inspector lines for user-originated loot, equipment and merchant actions: the last
+    /// written milestone plus the strongest matching server evidence, or an explicit uncertainty.
+    #[allow(dead_code)] // integrated by the inspector/export owner
+    pub(crate) fn loot_vendor_correlations(&self) -> Vec<String> {
+        let gaps = self.has_telemetry_gaps();
+        let mut seen = std::collections::HashSet::new();
+        let mut output = Vec::new();
+        for (_, event) in self.entries.iter().rev() {
+            let subject = event.subject;
+            if subject.interaction == 0
+                || !matches!(
+                    subject.operation,
+                    Operation::Loot | Operation::Equip | Operation::Buy | Operation::Sell
+                )
+                || !matches!(event.stage, Stage::Delivery(CommandDelivery::Written))
+                || !seen.insert(subject.interaction)
+            {
+                continue;
+            }
+            let candidate = self.entries.iter().rev().find(|(_, later)| {
+                later.subject.scope.is_some()
+                    && later.subject.scope == subject.scope
+                    && later.elapsed_ms >= event.elapsed_ms
+                    && later.elapsed_ms.saturating_sub(event.elapsed_ms) <= 30_000
+                    && loot_vendor_evidence_matches_action(&subject, later)
+            });
+            let line = match candidate {
+                Some((_, later)) => {
+                    let (label, _) = loot_vendor_evidence_label(&later.stage)
+                        .unwrap_or(("server evidence observed".to_owned(), false));
+                    let matches = self.eligible_loot_vendor_writes(later, subject.operation);
+                    let confidence = if matches > 1 {
+                        "ambiguous"
+                    } else {
+                        "possible match"
+                    };
+                    format!(
+                        "Action {} {:?} (npc {:?}, item {:?}, count {:?}, slot {:?}): {label} ({confidence})",
+                        subject.interaction,
+                        subject.operation,
+                        subject.npc_alias,
+                        subject.item,
+                        subject.count,
+                        subject.slot,
+                    )
+                }
+                None => format!(
+                    "Action {} {:?} (npc {:?}, item {:?}, count {:?}, slot {:?}): sent; no matching server evidence in 30s (unverified)",
+                    subject.interaction,
+                    subject.operation,
+                    subject.npc_alias,
+                    subject.item,
+                    subject.count,
+                    subject.slot,
+                ),
+            };
+            output.push(if gaps {
+                format!("{line}; trace has gaps")
+            } else {
+                line
+            });
+            if output.len() == 8 {
+                break;
+            }
+        }
+        output
+    }
+
     pub(crate) fn action_summaries(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
         let mut output = Vec::new();
@@ -1084,20 +2711,35 @@ impl History {
                     state: OutboundState::Queued,
                     ..
                 } => "queued; socket write unconfirmed",
-                Stage::ChannelAdmitted
-                | Stage::Encoded
-                | Stage::Cast {
-                    edge: CastEdge::Admitted,
-                    ..
-                } => "command admitted; delivery unconfirmed",
+                Stage::ChannelAdmitted | Stage::Encoded => "command admitted; delivery unconfirmed",
+                Stage::Cast { edge, .. } => match edge {
+                    CastEdge::Requested => "cast requested; delivery unconfirmed",
+                    CastEdge::LocalRefusal { .. } => "cast refused locally",
+                    CastEdge::Admitted => "cast admitted; delivery unconfirmed",
+                    CastEdge::CancelRequested => {
+                        "cancel requested; authoritative outcome pending"
+                    }
+                    CastEdge::Started => "cast started; outcome pending",
+                    CastEdge::Delayed => "cast delayed; outcome pending",
+                    CastEdge::Launched => "cast launched",
+                    CastEdge::Failed { .. } => "cast failed",
+                    CastEdge::Interrupted { .. } => "cast interrupted",
+                    CastEdge::ChannelStarted => "channel started",
+                    CastEdge::ChannelUpdated => "channel updated",
+                    CastEdge::ChannelEnded => "channel ended",
+                    CastEdge::ScopeInvalidated => "cast scope invalidated; unverified",
+                },
                 _ => "intent recorded; delivery unconfirmed",
             };
             let reason = match event.stage {
                 Stage::Delivery(CommandDelivery::Rejected(reason)) => format!(" ({reason:?})"),
                 Stage::Cast {
-                    edge: CastEdge::LocalRefusal { reason },
+                    edge:
+                        CastEdge::LocalRefusal { reason }
+                        | CastEdge::Failed { reason }
+                        | CastEdge::Interrupted { reason },
                     ..
-                } => format!(" (reason={reason:#x})"),
+                } => format!(" (reason {reason:#04x})"),
                 _ => String::new(),
             };
             let suffix = if gaps { "; trace has gaps" } else { "" };
@@ -1109,7 +2751,10 @@ impl History {
                         let same_scope_and_window = event.subject.scope.is_some()
                             && later.subject.scope == event.subject.scope
                             && later.elapsed_ms >= event.elapsed_ms
-                            && later.elapsed_ms.saturating_sub(event.elapsed_ms) <= 30_000;
+                            && later.elapsed_ms.saturating_sub(event.elapsed_ms) <= 30_000
+                            && (!is_panel_stage(later.stage)
+                                || later.subject.reload_generation
+                                    == event.subject.reload_generation);
                         if !same_scope_and_window {
                             return None;
                         }
@@ -1327,26 +2972,320 @@ impl History {
                                 }
                                 None
                             }
-                            Operation::Observed
-                            | Operation::Loot
-                            | Operation::Equip
-                            | Operation::Buy
-                            | Operation::Sell => None,
+                            Operation::Confirm => {
+                                if later.subject.quest == event.subject.quest
+                                    && matches!(later.stage, Stage::QuestSlotAdded)
+                                {
+                                    let matches = self
+                                        .entries
+                                        .iter()
+                                        .filter(|(_, candidate)| {
+                                            candidate.subject.operation == Operation::Confirm
+                                                && candidate.subject.scope == later.subject.scope
+                                                && candidate.subject.quest == later.subject.quest
+                                                && matches!(
+                                                    candidate.stage,
+                                                    Stage::Delivery(CommandDelivery::Written)
+                                                )
+                                                && candidate.elapsed_ms <= later.elapsed_ms
+                                                && later
+                                                    .elapsed_ms
+                                                    .saturating_sub(candidate.elapsed_ms)
+                                                    <= 30_000
+                                        })
+                                        .count();
+                                    return Some(format!(
+                                        "; quest slot added ({})",
+                                        if matches > 1 {
+                                            "ambiguous"
+                                        } else {
+                                            "possible match"
+                                        }
+                                    ));
+                                }
+                                None
+                            }
+                            Operation::Abandon => {
+                                if matches!(later.stage, Stage::QuestSlotRemoved) {
+                                    let matches = self
+                                        .entries
+                                        .iter()
+                                        .filter(|(_, candidate)| {
+                                            candidate.subject.operation == Operation::Abandon
+                                                && candidate.subject.scope == later.subject.scope
+                                                && matches!(
+                                                    candidate.stage,
+                                                    Stage::Delivery(CommandDelivery::Written)
+                                                )
+                                                && candidate.elapsed_ms <= later.elapsed_ms
+                                                && later
+                                                    .elapsed_ms
+                                                    .saturating_sub(candidate.elapsed_ms)
+                                                    <= 30_000
+                                        })
+                                        .count();
+                                    return Some(format!(
+                                        "; quest slot removed ({})",
+                                        if matches > 1 {
+                                            "ambiguous"
+                                        } else {
+                                            "possible match"
+                                        }
+                                    ));
+                                }
+                                None
+                            }
+                            Operation::Share => {
+                                if let Stage::ServerQuestShareResult { msg } = later.stage {
+                                    if later.subject.scope == event.subject.scope
+                                        && later.elapsed_ms.saturating_sub(event.elapsed_ms)
+                                            <= 30_000
+                                    {
+                                        let matches = self
+                                            .entries
+                                            .iter()
+                                            .filter(|(_, candidate)| {
+                                                candidate.subject.operation == Operation::Share
+                                                    && candidate.subject.scope
+                                                        == later.subject.scope
+                                                    && matches!(
+                                                        candidate.stage,
+                                                        Stage::Delivery(CommandDelivery::Written)
+                                                    )
+                                                    && candidate.elapsed_ms <= later.elapsed_ms
+                                                    && later
+                                                        .elapsed_ms
+                                                        .saturating_sub(candidate.elapsed_ms)
+                                                        <= 30_000
+                                            })
+                                            .count();
+                                        return Some(format!(
+                                            "; share result {msg} ({})",
+                                            if matches > 1 {
+                                                "ambiguous"
+                                            } else {
+                                                "possible match; no quest ID"
+                                            }
+                                        ));
+                                    }
+                                }
+                                None
+                            }
+                            Operation::Loot | Operation::Equip | Operation::Buy | Operation::Sell => {
+                                self.loot_vendor_action_evidence(event, later)
+                            }
+                            Operation::Observed => None,
                         }
                     })
                     .unwrap_or_default()
             } else {
                 String::new()
             };
+            let cast_evidence = self.cast_native_summary(event).unwrap_or_default();
             output.push(format!(
-                "Action {id} {:?} (npc {:?}, quest {:?}): {status}{reason}{server_evidence}{suffix}",
-                event.subject.operation, event.subject.npc_alias, event.subject.quest
+                "Action {id} {:?} (npc {:?}, quest {:?}, item {:?}, count {:?}, slot {:?}): {status}{reason}{server_evidence}{cast_evidence}{suffix}",
+                event.subject.operation,
+                event.subject.npc_alias,
+                event.subject.quest,
+                event.subject.item,
+                event.subject.count,
+                event.subject.slot,
             ));
             if output.len() == 8 {
                 break;
             }
         }
         output
+    }
+
+    /// Bounded inspector summary of the login/session/world/reload chain.
+    ///
+    /// The lines are derived from the same retained ring as the export, so a reader can correlate
+    /// them with the event rows. Missing milestones are named as unknown rather than assigned to
+    /// the newest attempt, and any loss makes a negative conclusion explicitly unverified.
+    #[allow(dead_code)] // the export/coverage owner reads this accessor
+    pub(crate) fn session_transition_summaries(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let gaps = self.has_telemetry_gaps();
+
+        let login = self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+            Stage::LoginMilestone { attempt, milestone } => Some((attempt, milestone)),
+            _ => None,
+        });
+        match login {
+            Some((attempt, milestone)) => out.push(format!(
+                "login attempt {:?}: last milestone {:?}",
+                attempt, milestone
+            )),
+            None => out.push("login attempt: unknown (no retained login milestone)".to_string()),
+        }
+        if let Some((phase, attempt, map_id)) =
+            self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+                Stage::SessionPhase {
+                    phase,
+                    attempt,
+                    map_id,
+                } => Some((phase, attempt, map_id)),
+                _ => None,
+            })
+        {
+            out.push(format!(
+                "last session phase: {:?} (attempt {:?}, map {:?})",
+                phase, attempt, map_id
+            ));
+        }
+        if let Some(scope) = self
+            .entries
+            .iter()
+            .filter_map(|(_, event)| event.subject.scope)
+            .max()
+        {
+            // The highest observed scope, not the last ingested one: a delayed old event must
+            // not make a retired scope look current.
+            out.push(format!(
+                "most recent scope: epoch {}, world generation {}",
+                scope.0, scope.1
+            ));
+        }
+
+        let failure = self.entries.iter().rev().find_map(|(_, event)| {
+            let (category, attempt) = match event.stage {
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::LoginRefused,
+                } => ("login refusal", attempt),
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::LoginFailed,
+                } => ("login failure without a refusal category", attempt),
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::RosterFailed,
+                } => ("roster failure", attempt),
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::CharacterLoginFailed { .. },
+                } => ("character-login refusal", attempt),
+                Stage::LoginMilestone {
+                    attempt,
+                    milestone: LoginMilestone::RealmListFailed,
+                } => ("realm-list failure", attempt),
+                Stage::SessionEnded {
+                    kind: SessionEndKind::Lost,
+                } => ("session end (lost link)", None),
+                _ => return None,
+            };
+            Some((category, attempt))
+        });
+        match failure {
+            Some((category, attempt)) => out.push(format!(
+                "last failure: {category} (attempt {:?})",
+                attempt
+            )),
+            None => out.push("last failure: none retained".to_string()),
+        }
+        let last_end = self
+            .entries
+            .iter()
+            .filter_map(|(_, event)| match event.stage {
+                Stage::SessionEnded { kind } => {
+                    Some((event.subject.scope.unwrap_or((0, 0)), kind))
+                }
+                _ => None,
+            })
+            .max_by_key(|(scope, _)| *scope)
+            .map(|(_, kind)| kind);
+        if let Some(kind) = last_end {
+            out.push(format!("last session end: {:?}", kind));
+        }
+
+        let transfer = self
+            .entries
+            .iter()
+            .filter_map(|(_, event)| match event.stage {
+                Stage::WorldTransfer {
+                    map_id,
+                    from,
+                    to,
+                    retired_local,
+                    retired_written,
+                } => Some((to.unwrap_or((0, 0)), (from, to, map_id, retired_local, retired_written))),
+                _ => None,
+            })
+            .max_by_key(|(to, _)| *to)
+            .map(|(_, transfer)| transfer);
+        match transfer {
+            Some((from, to, map_id, retired_local, retired_written)) => out.push(format!(
+                "last transfer: {:?} -> {:?}, map {:?}, retired local={} written={}",
+                from, to, map_id, retired_local, retired_written
+            )),
+            None => out.push("last transfer: none retained".to_string()),
+        }
+
+        match self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+            Stage::UiReload {
+                old_vm_session,
+                old_reload_generation,
+                new_reload_generation,
+            } => Some((old_vm_session, old_reload_generation, new_reload_generation)),
+            _ => None,
+        }) {
+            Some((old_vm_session, old_generation, new_generation)) => out.push(format!(
+                "last reload: old VM {:?}, generation {:?} -> {:?}",
+                old_vm_session, old_generation, new_generation
+            )),
+            None => out.push("last reload: none retained".to_string()),
+        }
+        if let Some((vm_session, reload_generation)) =
+            self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+                Stage::UiReloadLoaded {
+                    vm_session,
+                    reload_generation,
+                } => Some((vm_session, reload_generation)),
+                _ => None,
+            })
+        {
+            out.push(format!(
+                "VM after reload attempt: session {:?}, generation {:?} (load result separate)",
+                vm_session, reload_generation
+            ));
+        }
+
+        let current_reload = self.source.0.reload_generation.load(Ordering::Acquire);
+        let superseded_projections = self
+            .entries
+            .iter()
+            .filter(|(_, event)| {
+                matches!(event.stage, Stage::JournalProjection)
+                    && event.subject.reload_generation < current_reload
+            })
+            .count();
+        if superseded_projections > 0 {
+            out.push(format!(
+                "superseded projections from older VM generations: {superseded_projections}"
+            ));
+        }
+        let stale_pending = self
+            .open_interactions
+            .iter()
+            .filter(|open| open.subject.reload_generation < current_reload)
+            .count();
+        if stale_pending > 0 {
+            out.push(format!(
+                "pending actions from older VM generations: {stale_pending} (stale, not resent)"
+            ));
+        }
+        if gaps {
+            out.push(format!(
+                "telemetry gaps: evicted={}, dropped={}, tracking_lost={}, source_gaps={}; negative conclusions unverified",
+                self.evicted,
+                self.source.0.dropped.load(Ordering::Relaxed),
+                self.interaction_tracking_lost,
+                self.source_gaps
+            ));
+        }
+        out.truncate(12);
+        out
     }
 
     pub(crate) fn export_status(&self) -> &'static str {
@@ -1362,33 +3301,35 @@ impl History {
         (self.received, self.evicted, self.source.0.dropped.load(Ordering::Relaxed))
     }
 
+    /// Delivery counts across retained entries (admitted, written, rejected, write-failed).
+    pub(crate) fn delivery_counts(&self) -> (u64, u64, u64, u64) {
+        let mut admitted = 0u64;
+        let mut written = 0u64;
+        let mut rejected = 0u64;
+        let mut failed = 0u64;
+        for (_, event) in &self.entries {
+            if let Stage::Delivery(delivery) = event.stage {
+                match delivery {
+                    crate::net::CommandDelivery::OutboxAdmitted => admitted = admitted.saturating_add(1),
+                    crate::net::CommandDelivery::Written => written = written.saturating_add(1),
+                    crate::net::CommandDelivery::Rejected(_) => rejected = rejected.saturating_add(1),
+                    crate::net::CommandDelivery::WriteFailed => failed = failed.saturating_add(1),
+                }
+            }
+        }
+        (admitted, written, rejected, failed)
+    }
+
     /// Additive per-vector evidence summary derived from the same bounded snapshot that
     /// supplies the exported event rows.  Classification goes through `vector_for_stage`
     /// so both export paths agree.
     pub(crate) fn diagnostic_vectors(&self) -> Vec<DiagnosticVectorEvidence> {
-        const VECTORS: &[&str] = &[
-            "quest_interactions",
-            "quest_panel_correlation",
-            "ui_frame_state",
-            "ui_pointer_categories",
-            "lua_diagnostic_counts",
-            "session_lifecycle",
-            "allowlisted_packets",
-            "casts",
-            "inventory_failures",
-            "loot_and_vendor_events",
-            "audio_mixer_state",
-            "movement_queue_and_corrections",
-            "scene_camera_and_rig_counts",
-            "frame_intervals",
-            "asset_load_failure_categories",
-            "hotpatch",
-        ];
-        let dropped = self.source.0.dropped.load(Ordering::Relaxed);
         let evicted = self.evicted;
         let interaction_tracking_lost = self.interaction_tracking_lost;
-        let mut out = Vec::with_capacity(VECTORS.len());
-        for &vector in VECTORS {
+        let sampled_out_total = self.sampled_updates();
+        let update_packets_seen = self.update_packets_seen();
+        let mut out = Vec::with_capacity(DIAGNOSTIC_VECTOR_NAMES.len());
+        for &vector in DIAGNOSTIC_VECTOR_NAMES {
             let available = if vector == "hotpatch" {
                 cfg!(feature = "hotpatch")
             } else {
@@ -1409,6 +3350,7 @@ impl History {
             if vector == "quest_interactions" && interaction_tracking_lost > 0 {
                 source_specific_loss = true;
             }
+            let producer_drops = self.source.producer_drops_for_vector(vector);
             let mut limiting_factors = vec!["event_driven_reporting".to_string()];
             if vector == "allowlisted_packets" {
                 limiting_factors.push("sampling".to_string());
@@ -1416,15 +3358,30 @@ impl History {
             if source_specific_loss {
                 limiting_factors.push("source_specific_loss".to_string());
             }
-            if dropped > 0 || evicted > 0 {
-                limiting_factors.push("global_loss_unknown_vector".to_string());
+            if producer_drops > 0 {
+                limiting_factors.push("producer_drop".to_string());
             }
+            if evicted > 0 {
+                limiting_factors.push("retained_eviction".to_string());
+            }
+            if !available {
+                limiting_factors.push("uninstrumented".to_string());
+            }
+            let (sampled_out, sampling_interval, sampling_denominator) = if vector == "allowlisted_packets" {
+                (Some(sampled_out_total), Some(64u64), Some(update_packets_seen))
+            } else {
+                (None, None, None)
+            };
             let value = DiagnosticVectorEvidence {
                 vector: vector.to_string(),
                 instrumentation_available: available,
                 retained_observations,
                 latest_retained_sequence,
-                limiting_factors: limiting_factors.clone(),
+                producer_drops,
+                sampled_out,
+                sampling_interval,
+                sampling_denominator,
+                limiting_factors,
                 absence_not_proof: true,
             };
             out.push(value);
@@ -1436,10 +3393,235 @@ impl History {
         self.source_gaps
     }
 
+    /// Recent one-second movement pressure events (bounded).
+    pub(crate) fn movement_pressure(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(seq, event)| match event.stage {
+                Stage::MovementPressure {
+                    baseline,
+                    admitted,
+                    coalesced,
+                    refused,
+                    written,
+                    queue_depth,
+                    oldest_age_ms,
+                } => Some(format!(
+                    "#{seq} movement pressure: baseline={baseline} admitted={admitted} coalesced={coalesced} refused={refused} written={written} queue_depth={queue_depth} oldest_age_ms={oldest_age_ms}"
+                )),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+    pub(crate) fn one_second_movement_pressure(&self) -> Vec<String> {
+        self.movement_pressure()
+    }
+    pub(crate) fn movement_pressure_events(&self) -> Vec<String> {
+        self.movement_pressure()
+    }
+
+    /// Movement correction attribution. Unambiguous only when a single movement write followed
+    /// the previous correction; otherwise the attribution is ambiguous.
+    pub(crate) fn movement_correction_attribution(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(seq, event)| match event.stage {
+                Stage::MovementCorrectionApplied {
+                    distance_bucket,
+                    movement_seq,
+                    ambiguous,
+                } => Some(format!(
+                    "#{seq} movement correction: distance_bucket={distance_bucket} movement_seq={movement_seq:?} ambiguous={ambiguous} (attribution is unambiguous only when a single movement write followed the previous correction)"
+                )),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+    pub(crate) fn movement_corrections(&self) -> Vec<String> {
+        self.movement_correction_attribution()
+    }
+
+    /// Recent audio output health windows (bounded). `cycles == 0` means no stream, not health.
+    pub(crate) fn audio_output_health(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(seq, event)| match event.stage {
+                Stage::AudioHealth {
+                    cycles,
+                    underruns,
+                    overloads,
+                    lead_min_ms,
+                    ring_min_ms,
+                    ..
+                } => Some(format!(
+                    "#{seq} audio output: cycles={cycles} (no_stream={}) underruns={underruns} overloads={overloads} lead_min_ms={:?} ring_min_ms={:?}",
+                    cycles == 0,
+                    lead_min_ms,
+                    ring_min_ms,
+                )),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+    pub(crate) fn audio_output(&self) -> Vec<String> {
+        self.audio_output_health()
+    }
+
+    /// Recent asset per-window summaries (bounded).
+    pub(crate) fn asset_window_summary(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(seq, event)| match event.stage {
+                Stage::AssetWindow { failures, missed, window_ms } => Some(format!(
+                    "#{seq} asset window: observed_failures={failures} missed_events={missed} window_ms={window_ms} (Bevy untyped asset-failure messages only)"
+                )),
+                _ => None,
+            })
+            .take(8)
+            .collect()
+    }
+    pub(crate) fn asset_window(&self) -> Vec<String> {
+        self.asset_window_summary()
+    }
+
+    #[cfg(feature = "hotpatch")]
+    pub(crate) fn hotpatch_attempt_correlation(&self) -> Vec<String> {
+        // Correlate candidate staging to terminal events by attempt id within retained entries.
+        let mut out = Vec::new();
+        for (_, event) in self.entries.iter().rev() {
+            if let Stage::Hotpatch {
+                event: PatchEvent::CandidateStaged { attempt },
+            } = event.stage
+            {
+                let terminals: Vec<Stage> = self
+                    .entries
+                    .iter()
+                    .filter_map(|(_, later)| {
+                        let att = match later.stage {
+                            Stage::Hotpatch {
+                                event: PatchEvent::CandidateWithdrawn { attempt },
+                            } => Some(attempt),
+                            Stage::Hotpatch {
+                                event: PatchEvent::Activated { attempt: a, .. },
+                            } => a,
+                            Stage::Hotpatch {
+                                event: PatchEvent::CandidateRejected { attempt: a, .. },
+                            } => a,
+                            _ => None,
+                        };
+                        if att == Some(attempt) {
+                            Some(later.stage)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let terminal_count = terminals.len();
+                let terminal = terminals.into_iter().last();
+                let earlier = if terminal_count > 1 {
+                    " (earlier terminal evidence exists)"
+                } else {
+                    ""
+                };
+                let line = match terminal {
+                    Some(Stage::Hotpatch {
+                        event: PatchEvent::Activated { digest, .. },
+                    }) => format!("attempt {attempt}: activated (digest={digest:?}){earlier}"),
+                    Some(Stage::Hotpatch { event }) => {
+                        format!("attempt {attempt}: {:?}{earlier}", event)
+                    }
+                    None => format!("attempt {attempt}: no terminal event retained (ambiguous/unresolved)"),
+                };
+                out.push(line);
+                if out.len() >= 8 {
+                    break;
+                }
+            }
+        }
+        out
+    }
+    #[cfg(feature = "hotpatch")]
+    pub(crate) fn hotpatch_attempts(&self) -> Vec<String> {
+        self.hotpatch_attempt_correlation()
+    }
+
     pub(crate) fn sampled_updates(&self) -> u64 {
         self.source.0.update_packets_sampled_out.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn update_packets_seen(&self) -> u64 {
+        self.source.update_packets_seen()
+    }
+
+    pub(crate) fn update_packets_sampled(&self) -> u64 {
+        self.update_packets_seen()
+            .saturating_sub(self.sampled_updates())
+    }
+
+    pub(crate) fn movement_coalesced(&self) -> u64 {
+        self.source.movement_coalesced()
+    }
+
+    pub(crate) fn movement_refused(&self) -> u64 {
+        self.source.movement_refused()
+    }
+
+    pub(crate) fn coverage(&self) -> DiagnosticCoverage {
+        let vectors = self.diagnostic_vectors();
+        let mut instrumented_paths = Vec::new();
+        let mut compiled_out_paths = Vec::new();
+        for vector in &vectors {
+            if vector.vector == "unclassified" {
+                continue;
+            }
+            if vector.instrumentation_available {
+                instrumented_paths.push(vector.vector.clone());
+            } else {
+                compiled_out_paths.push(vector.vector.clone());
+            }
+        }
+        let not_yet_instrumented = vec![
+            "visible_pixels".to_string(),
+            "frame_occlusion_owner".to_string(),
+            "audio_audibility".to_string(),
+            "movement_causality".to_string(),
+            "asset_dependency_revisions".to_string(),
+            "hotpatch_trust_and_rollback".to_string(),
+        ];
+        DiagnosticCoverage {
+            instrumented_paths,
+            compiled_out_paths,
+            event_driven_paths: vectors
+                .iter()
+                .filter(|v| v.instrumentation_available && v.vector != "unclassified")
+                .map(|v| v.vector.clone())
+                .collect(),
+            sampled_paths: vec!["allowlisted_packets".to_string()],
+            paths_with_producer_loss_counters: vectors
+                .iter()
+                .filter(|v| v.instrumentation_available && v.vector != "unclassified")
+                .map(|v| v.vector.clone())
+                .collect(),
+            not_yet_instrumented,
+            hotpatch_compiled: cfg!(feature = "hotpatch"),
+            export_and_inspector_compiled: cfg!(feature = "dev"),
+            sampling: SamplingCoverage {
+                object_update_packets_seen: self.update_packets_seen(),
+                object_update_packets_sampled: self.update_packets_sampled(),
+                object_update_packets_sampled_out: self.sampled_updates(),
+                object_update_sampling_interval: 64,
+                movement_packets_coalesced: self.movement_coalesced(),
+                movement_packets_refused: self.movement_refused(),
+            },
+        }
+    }
     pub(crate) fn recent(&self) -> impl Iterator<Item = String> + '_ {
         self.entries.iter().rev().take(16).map(|(seq, e)| {
             format!("#{seq} +{}ms · action {} {:?} · npc {:?} · quest {:?} · {:?} · scope {:?}",
@@ -1663,7 +3845,7 @@ impl History {
     }
 
     /// Save an allowlisted snapshot away from the frame thread.
-    pub(crate) fn export(&self, build: benilla_world::build_id::BuildId) -> Result<(), String> {
+    pub(crate) fn export(&self, build: benilla_world::build_id::BuildId, protocol_mode: &'static str) -> Result<(), String> {
         let directory = crate::local_state::home()
             .ok_or_else(|| "Local report storage is unavailable".to_owned())?
             .join("Logs").join("InteractionDiagnostics");
@@ -1689,6 +3871,11 @@ impl History {
         #[cfg(not(feature = "hotpatch"))]
         let last_observed_patch_digest: Option<[u8; 20]> = None;
         let sampled_updates = self.sampled_updates();
+        let update_packets_seen = self.update_packets_seen();
+        let update_packets_sampled = self.update_packets_sampled();
+        let movement_coalesced = self.movement_coalesced();
+        let movement_refused = self.movement_refused();
+        let coverage = self.coverage();
         let diagnostic_vectors = self.diagnostic_vectors();
         let first_sequence = self.entries.front().map(|(seq, _)| *seq);
         let highest_sequence = self.entries.back().map(|(seq, _)| *seq);
@@ -1701,6 +3888,18 @@ impl History {
         let turn_in_correlations = self.turn_in_correlations();
         let ui_correlations = self.ui_error_correlations();
         let ui_click_correlations = self.ui_click_correlations();
+        let cast_chains = self.cast_correlations();
+        let loot_vendor = self.loot_vendor_correlations();
+        let quest_ui = self.quest_ui_correlations();
+        let session = self.session_transition_summaries();
+        let movement = self.movement_pressure();
+        let movement_corrections = self.movement_correction_attribution();
+        let audio = self.audio_output_health();
+        let assets = self.asset_window_summary();
+        #[cfg(feature = "hotpatch")]
+        let hotpatch = self.hotpatch_attempt_correlation();
+        #[cfg(not(feature = "hotpatch"))]
+        let hotpatch: Vec<String> = Vec::new();
         let spawn = std::thread::Builder::new()
             .name("interaction-diagnostics-export".into())
             .spawn(move || {
@@ -1710,8 +3909,6 @@ impl History {
                     std::fs::create_dir_all(&directory)?;
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-                    let path = directory.join(format!("interaction-{timestamp}.jsonl"));
-                    let temporary = directory.join(format!("interaction-{timestamp}.tmp"));
                     let file_hash = std::env::current_exe().ok().and_then(|executable| {
                         let mut file = std::fs::File::open(executable).ok()?;
                         let mut digest = Sha1::new();
@@ -1729,24 +3926,8 @@ impl History {
                         "schema": "rustwrath.interaction-diagnostics.v1",
                         "version": 1,
                         "run_id": run_id,
-                        "protocol_mode": "wrath_12340",
-                        "coverage": {
-                            "instrumented_paths": [
-                                "quest_interactions", "quest_panel_correlation",
-                                "ui_frame_state", "ui_pointer_categories",
-                                "lua_diagnostic_counts", "session_lifecycle", "allowlisted_packets",
-                                "casts", "inventory_failures", "loot_and_vendor_events",
-                                "audio_mixer_state", "movement_queue_and_corrections",
-                                "scene_camera_and_rig_counts", "frame_intervals",
-                                "asset_load_failure_categories"
-                            ],
-                            "diagnostic_vector_coverage": true,
-                            "hotpatch_compiled": cfg!(feature = "hotpatch"),
-                            "not_yet_instrumented": [
-                                "visible_pixels", "frame_occlusion_owner", "audio_output",
-                                "movement_causality", "asset_dependency_revisions"
-                            ]
-                        },
+                        "protocol_mode": protocol_mode,
+                        "coverage": coverage,
                         "build_git_sha": if build.sha.is_empty() { None } else { Some(build.sha) },
                         "build_dirty_state": "unknown",
                         "executable_file_sha1": file_hash,
@@ -1761,7 +3942,12 @@ impl History {
                         "npc_aliases_assigned": npc_aliases_assigned,
                         "upstream_gap_events": source_gaps,
                         "last_observed_patch_sha1_bytes": last_observed_patch_digest,
+                        "object_update_packets_seen": update_packets_seen,
+                        "object_update_packets_sampled": update_packets_sampled,
                         "object_update_packets_sampled_out": sampled_updates,
+                        "object_update_sampling_interval": 64,
+                        "movement_packets_coalesced": movement_coalesced,
+                        "movement_packets_refused": movement_refused,
                         "incidents": incidents,
                         "incidents_evicted": incidents_evicted,
                         "ingress_pending_at_snapshot": ingress_pending,
@@ -1771,6 +3957,15 @@ impl History {
                         "turn_in_correlations": turn_in_correlations,
                         "ui_error_correlations": ui_correlations,
                         "ui_click_correlations": ui_click_correlations,
+                        "cast_correlations": cast_chains,
+                        "loot_vendor_correlations": loot_vendor,
+                        "quest_ui_correlations": quest_ui,
+                        "session_transition_summaries": session,
+                        "movement_pressure": movement,
+                        "movement_correction_attribution": movement_corrections,
+                        "audio_output_health": audio,
+                        "asset_window_summaries": assets,
+                        "hotpatch_attempts": hotpatch,
                         "diagnostic_vectors": diagnostic_vectors,
                     }).to_string();
                     text.push('\n');
@@ -1778,12 +3973,22 @@ impl History {
                         text.push_str(&serde_json::to_string(&(sequence, event))?);
                         text.push('\n');
                     }
-                    let mut file = std::fs::OpenOptions::new().write(true)
-                        .create_new(true).open(&temporary)?;
+                    let mut file = tempfile::NamedTempFile::new_in(&directory)?;
                     file.write_all(text.as_bytes())?;
-                    file.sync_all()?;
-                    drop(file);
-                    std::fs::rename(&temporary, &path)?;
+                    file.as_file().sync_all()?;
+                    let mut path = directory.join(format!("interaction-{timestamp}.jsonl"));
+                    let mut suffix = 0_u64;
+                    loop {
+                        match file.persist_noclobber(&path) {
+                            Ok(_) => break,
+                            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                                file = error.file;
+                                suffix += 1;
+                                path = directory.join(format!("interaction-{timestamp}-{suffix}.jsonl"));
+                            }
+                            Err(error) => return Err(error.error.into()),
+                        }
+                    }
                     info!("quest diagnostics saved to {}", path.display());
                     Ok(())
                 })();
@@ -1811,13 +4016,23 @@ pub(crate) fn new_pair() -> (Source, History) {
     let source = Source(Arc::new(Ingress {
         events,
         dropped: AtomicU64::new(0),
+        dropped_by_vector: (0..DIAGNOSTIC_VECTOR_NAMES.len())
+            .map(|_| AtomicU64::new(0))
+            .collect(),
         next_id: AtomicU64::new(1),
         reload_generation: AtomicU64::new(0),
         update_packets_seen: AtomicU64::new(0),
         update_packets_sampled_out: AtomicU64::new(0),
+        movement_sequence: AtomicU64::new(0),
+        movement_admitted: AtomicU64::new(0),
         movement_coalesced: AtomicU64::new(0),
         movement_refused: AtomicU64::new(0),
+        movement_written: AtomicU64::new(0),
+        movement_last_written_seq: AtomicU64::new(0),
+        movement_writes_since_correction: AtomicU64::new(0),
         npc_aliases: Mutex::new((VecDeque::with_capacity(MAX_NPC_ALIASES), 0)),
+        ui_dispatch_counter: AtomicU64::new(1),
+        ui_dispatches: Mutex::new(VecDeque::with_capacity(8)),
         origin: Instant::now(),
         #[cfg(feature = "dev")]
         run_id: format!("{:x}-{:x}",
@@ -1844,6 +4059,7 @@ pub(crate) fn new_pair() -> (Source, History) {
         entries: VecDeque::with_capacity(1024),
         incidents: VecDeque::with_capacity(64),
         open_interactions: VecDeque::with_capacity(MAX_OPEN_INTERACTIONS),
+        cast_candidates: VecDeque::with_capacity(MAX_OPEN_INTERACTIONS),
         interaction_tracking_lost: 0,
         incidents_evicted: 0,
         received: 0,
@@ -1851,6 +4067,8 @@ pub(crate) fn new_pair() -> (Source, History) {
         source_gaps: 0,
         #[cfg(feature = "hotpatch")]
         last_observed_patch_digest: None,
+        #[cfg(feature = "dev")]
+        inspector_snapshot: None,
     };
     (source, history)
 }
@@ -1867,15 +4085,20 @@ fn poll_asset_failures(
     source: Res<Source>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
     events: Option<Res<Messages<bevy::asset::UntypedAssetLoadFailedEvent>>>,
+    time: Res<Time>,
     mut cursor: Local<bevy::ecs::message::MessageCursor<bevy::asset::UntypedAssetLoadFailedEvent>>,
+    mut window: Local<(f64, u64, u64)>,
 ) {
     let Some(events) = events else { return };
     let scope = view.as_ref().map(|v| (v.session_epoch, v.world_generation));
-    let missed = cursor.missed_messages(&events);
-    if missed > 0 {
-        source.observe(scope, None, Stage::AssetEventsLost { count: missed as u64 });
+    let now = time.elapsed_secs_f64();
+    if window.0 == 0.0 {
+        window.0 = now;
     }
+    let missed = cursor.missed_messages(&events);
+    let mut failures_this = 0u64;
     for failure in cursor.read(&events) {
+        failures_this += 1;
         let extension = failure.path.path().extension().and_then(|s| s.to_str()).unwrap_or("");
         let family = if extension.eq_ignore_ascii_case("m2") || extension.eq_ignore_ascii_case("skin") {
             AssetFamily::Model
@@ -1904,6 +4127,22 @@ fn poll_asset_failures(
             _ => AssetFailure::Other,
         };
         source.observe(scope, None, Stage::AssetFailure { family, cause });
+    }
+    if missed > 0 {
+        source.observe(scope, None, Stage::AssetEventsLost { count: missed as u64 });
+    }
+    window.1 = window.1.saturating_add(failures_this);
+    window.2 = window.2.saturating_add(missed as u64);
+    if now - window.0 >= 1.0 {
+        let window_ms = ((now - window.0) * 1000.0).round() as u64;
+        source.observe(scope, None, Stage::AssetWindow {
+            failures: window.1,
+            missed: window.2,
+            window_ms: window_ms.max(1),
+        });
+        window.0 = now;
+        window.1 = 0;
+        window.2 = 0;
     }
 }
 
@@ -1962,8 +4201,9 @@ fn poll_scene(
 fn poll_movement(
     source: Res<Source>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
+    input: Option<Res<crate::wrath::WrathInput>>,
     time: Res<Time>,
-    mut last: Local<Option<(u64, u64)>>,
+    mut last: Local<Option<(u64, u64, u64, u64, u64, u64)>>,
     mut next_poll: Local<f64>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -1971,14 +4211,66 @@ fn poll_movement(
         return;
     }
     *next_poll = now + 1.0;
-    let current = (
-        source.0.movement_coalesced.load(Ordering::Relaxed),
-        source.0.movement_refused.load(Ordering::Relaxed),
-    );
-    if *last != Some(current) {
+    let (admitted, coalesced, refused, written) = source.movement_counters();
+    // Queue depth and oldest movement age are read from the live outbox without changing it.
+    let mut queue_depth = 0u64;
+    let mut oldest_age_ms = 0u64;
+    if let Some(input) = input.as_ref() {
+        if let Ok(queue) = input.0.lock() {
+            let mut oldest: Option<std::time::Instant> = None;
+            for entry in queue.iter() {
+                if entry.movement {
+                    queue_depth += 1;
+                    if let Some(enqueued) = entry.enqueued_at {
+                        oldest = Some(match oldest {
+                            Some(current) if current <= enqueued => current,
+                            _ => enqueued,
+                        });
+                    }
+                }
+            }
+            if let Some(oldest) = oldest {
+                oldest_age_ms = oldest.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            }
+        }
+    }
+    let current = (admitted, coalesced, refused, written, queue_depth, oldest_age_ms);
+    if let Some(previous) = *last {
+        let deltas = (
+            admitted.saturating_sub(previous.0),
+            coalesced.saturating_sub(previous.1),
+            refused.saturating_sub(previous.2),
+            written.saturating_sub(previous.3),
+        );
+        let depth_changed = queue_depth != previous.4;
+        if deltas.0 > 0 || deltas.1 > 0 || deltas.2 > 0 || deltas.3 > 0 || depth_changed {
+            *last = Some(current);
+            source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
+                Stage::MovementPressure {
+                    baseline: false,
+                    admitted: deltas.0,
+                    coalesced: deltas.1,
+                    refused: deltas.2,
+                    written: deltas.3,
+                    queue_depth,
+                    oldest_age_ms,
+                });
+        } else {
+            *last = Some(current);
+        }
+    } else {
         *last = Some(current);
+        // First sample: emit baseline deltas (current counts) so evidence exists.
         source.observe(view.as_ref().map(|v| (v.session_epoch, v.world_generation)), None,
-            Stage::MovementPressure { coalesced: current.0, refused: current.1 });
+            Stage::MovementPressure {
+                baseline: true,
+                admitted: 0,
+                coalesced: 0,
+                refused: 0,
+                written: 0,
+                queue_depth,
+                oldest_age_ms,
+            });
     }
 }
 
@@ -2004,14 +4296,18 @@ fn poll_audio(
         output.copies_dropped,
     );
     if *last != Some(current) {
+        let previous = *last;
         *last = Some(current);
+        let denied_delta = current.2.saturating_sub(previous.map_or(0, |p| p.2));
+        let stolen_delta = current.3.saturating_sub(previous.map_or(0, |p| p.3));
+        let copies_delta = current.4.saturating_sub(previous.map_or(0, |p| p.4));
         let scope = view.as_ref().map(|v| (v.session_epoch, v.world_generation));
         source.observe(scope, None, Stage::AudioMixer {
             present: current.0,
             voices: current.1,
-            denied: current.2,
-            stolen: current.3,
-            copies_dropped: current.4,
+            denied: denied_delta,
+            stolen: stolen_delta,
+            copies_dropped: copies_delta,
         });
     }
 }
@@ -2086,7 +4382,7 @@ pub(crate) fn drain(mut history: ResMut<History>) {
 
 pub(crate) fn drain_history(history: &mut History) {
     for _ in 0..64 {
-        let Ok(event) = history.incoming.try_recv() else { break };
+        let Ok(mut event) = history.incoming.try_recv() else { break };
         history.received += 1;
         let seq = history.received;
         if matches!(event.stage,
@@ -2096,7 +4392,7 @@ pub(crate) fn drain_history(history: &mut History) {
             history.source_gaps = history.source_gaps.saturating_add(1);
         }
         #[cfg(feature = "hotpatch")]
-        if let Stage::Hotpatch { event: PatchEvent::Activated { digest } } = event.stage {
+        if let Stage::Hotpatch { event: PatchEvent::Activated { digest, .. } } = event.stage {
             history.last_observed_patch_digest = digest;
         }
 
@@ -2153,6 +4449,7 @@ pub(crate) fn drain_history(history: &mut History) {
                             .open_interactions
                             .retain(|open| open.subject.interaction != event.subject.interaction);
                     }
+                    history.note_written_cast(&event);
                 }
                 Stage::ChannelAdmitted
                     if matches!(
@@ -2182,7 +4479,11 @@ pub(crate) fn drain_history(history: &mut History) {
                         | OutboundState::WriteFailed,
                     ..
                 }
-                | Stage::SocketWriteFailed => {
+                | Stage::SocketWriteFailed
+                | Stage::Cast {
+                    edge: CastEdge::LocalRefusal { .. } | CastEdge::CancelRequested,
+                    ..
+                } => {
                     history
                         .open_interactions
                         .retain(|open| open.subject.interaction != event.subject.interaction);
@@ -2197,14 +4498,15 @@ pub(crate) fn drain_history(history: &mut History) {
             | Stage::DomainEvent {
                 event: DomainEvent::PlayerDisconnected,
             } => {
-                history.retire_scope(None, event.stage, seq);
+                let ended_scope = event.subject.scope;
+                let _ = history.retire_scope(ended_scope, event.stage, seq);
             }
-            Stage::WorldTransfer
+            Stage::WorldTransfer { .. }
             | Stage::DomainEvent {
                 event: DomainEvent::Worldport,
             } => {
                 // WorldTransfer carries the new world_generation in event.subject.scope;
-                // retire any open interaction from an older scope in the same session.
+                // retire only interactions from a strictly older scope in the same session.
                 let new_scope = event.subject.scope;
                 let stale_scopes: Vec<_> = history
                     .open_interactions
@@ -2218,8 +4520,23 @@ pub(crate) fn drain_history(history: &mut History) {
                         }
                     })
                     .collect();
+                let mut retired_local = 0u64;
+                let mut retired_written = 0u64;
                 for stale in stale_scopes {
-                    history.retire_scope(stale, event.stage, seq);
+                    let (local, written) = history.retire_scope(stale, event.stage, seq);
+                    retired_local = retired_local.saturating_add(local);
+                    retired_written = retired_written.saturating_add(written);
+                }
+                // Replace the placeholder counts with the bounded summary of what this
+                // transfer actually retired; one event, not one per interaction.
+                if let Stage::WorldTransfer { map_id, from, to, .. } = event.stage {
+                    event.stage = Stage::WorldTransfer {
+                        map_id,
+                        from,
+                        to,
+                        retired_local,
+                        retired_written,
+                    };
                 }
             }
             _ => {}
@@ -2243,6 +4560,13 @@ pub(crate) fn drain_history(history: &mut History) {
                     if open.subject.scope != event.subject.scope
                         || event.elapsed_ms < elapsed_ms
                         || event.elapsed_ms.saturating_sub(elapsed_ms) > 30_000
+                    {
+                        return None;
+                    }
+                    // A panel is a VM presentation fact. An action admitted in an older VM
+                    // generation is superseded, not matched to the replacement VM's panel.
+                    if is_panel_stage(event.stage)
+                        && open.subject.reload_generation != event.subject.reload_generation
                     {
                         return None;
                     }
@@ -2305,17 +4629,161 @@ pub(crate) fn drain_history(history: &mut History) {
             }
         }
 
-        let gaps = history.has_telemetry_gaps();
-        let outcome = match event.stage {
-            Stage::GuardRefused
-            | Stage::Cast {
-                edge: CastEdge::LocalRefusal { .. },
+        // Resolve a native cast edge against written local casts before classifying it. Only an
+        // authoritative terminal failure consumes the candidate; Started/Launched and channel
+        // edges remain continuations of the same attempt.
+        let cast_terminal = match event.stage {
+            Stage::Cast {
+                edge: CastEdge::Started | CastEdge::Launched | CastEdge::ChannelStarted
+                    | CastEdge::ChannelUpdated | CastEdge::ChannelEnded,
+                ..
+            } => Some(history.correlate_cast_edge(&event, false)),
+            Stage::Cast {
+                edge: CastEdge::Failed { .. } | CastEdge::Interrupted { .. },
+                ..
+            } => Some(history.correlate_cast_edge(&event, true)),
+            Stage::Cast {
+                edge: CastEdge::ScopeInvalidated,
+                ..
+            } => Some(history.correlate_cast_edge(&event, true)),
+            _ => None,
+        };
+        // A correlated positive launch or authoritative terminal failure closes the local write's
+        // open lifecycle, so a later scope change cannot re-report it as unverified.
+        if matches!(
+            event.stage,
+            Stage::Cast {
+                edge: CastEdge::Launched
+                    | CastEdge::ChannelStarted
+                    | CastEdge::Failed { .. }
+                    | CastEdge::Interrupted { .. }
+                    | CastEdge::ScopeInvalidated,
                 ..
             }
-            | Stage::NoWorld
-            | Stage::AlreadyPending
-            | Stage::TrackingCapacity
-            | Stage::ChannelDisconnected
+        ) {
+            if let Some((_, subject)) = cast_terminal {
+                if subject.interaction != 0 {
+                    history
+                        .open_interactions
+                        .retain(|open| open.subject.interaction != subject.interaction);
+                }
+            }
+        }
+        // Loot, vendor-buy and equipment observations are authoritative outcomes for a written
+        // action, but they only resolve it when exactly one written action can explain them. A
+        // duplicate same-subject write stays ambiguous. An equip's item push is NOT authoritative:
+        // it says the item arrived, not that it occupied an equipment slot.
+        if matches!(
+            event.stage,
+            Stage::LootSlotRemoved { .. }
+                | Stage::LootMoneyNotify { .. }
+                | Stage::LootMoneyCleared
+                | Stage::LootResponseOpened
+                | Stage::LootReleasedObserved
+                | Stage::VendorBuyResult { .. }
+                | Stage::EquipmentSlotChanged { .. }
+        ) {
+            let operation = match event.stage {
+                Stage::LootSlotRemoved { .. }
+                | Stage::LootMoneyNotify { .. }
+                | Stage::LootMoneyCleared
+                | Stage::LootResponseOpened
+                | Stage::LootReleasedObserved => Some(Operation::Loot),
+                Stage::VendorBuyResult { .. } => Some(Operation::Buy),
+                Stage::EquipmentSlotChanged { .. } => Some(Operation::Equip),
+                _ => None,
+            };
+            if let Some(operation) = operation {
+                let matching_indices: Vec<usize> = history
+                    .open_interactions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, open)| {
+                        let OpenState::Written { elapsed_ms, .. } = open.state else {
+                            return None;
+                        };
+                        if open.subject.operation != operation
+                            || open.subject.scope != event.subject.scope
+                            || event.elapsed_ms < elapsed_ms
+                            || event.elapsed_ms.saturating_sub(elapsed_ms) > 30_000
+                        {
+                            return None;
+                        }
+                        loot_vendor_evidence_matches_action(&open.subject, &event)
+                            .then_some(idx)
+                    })
+                    .collect();
+                if matching_indices.len() > 1 {
+                    let mut evidence: Vec<u64> = matching_indices
+                        .iter()
+                        .filter_map(|&idx| match history.open_interactions[idx].state {
+                            OpenState::Written { seq: write_seq, .. } => Some(write_seq),
+                            OpenState::Local => None,
+                        })
+                        .collect();
+                    evidence.push(seq);
+                    let first_subject = history.open_interactions[matching_indices[0]].subject;
+                    history.push_incident(
+                        first_subject,
+                        IncidentOutcome::AmbiguousServerOutcome,
+                        IncidentConfidence::Ambiguous,
+                        event.stage,
+                        evidence,
+                        false,
+                    );
+                }
+                for idx in matching_indices.into_iter().rev() {
+                    history.open_interactions.remove(idx);
+                }
+            }
+        }
+
+        let gaps = history.has_telemetry_gaps();
+        let outcome = match event.stage {
+            Stage::Cast {
+                edge: CastEdge::LocalRefusal { .. },
+                ..
+            } => Some((
+                IncidentOutcome::LocalRefusal,
+                if gaps {
+                    IncidentConfidence::Unverified
+                } else {
+                    IncidentConfidence::Exact
+                },
+                event.subject,
+            )),
+            Stage::Cast {
+                edge: CastEdge::Failed { .. },
+                ..
+            }
+            | Stage::Cast {
+                edge: CastEdge::Interrupted { .. },
+                ..
+            } => {
+                let (confidence, subject) =
+                    cast_terminal.unwrap_or((IncidentConfidence::Unmatched, event.subject));
+                // A negative match during a telemetry gap is unverified, not proof of no local cast.
+                let confidence = if gaps && confidence == IncidentConfidence::Unmatched {
+                    IncidentConfidence::Unverified
+                } else {
+                    confidence
+                };
+                Some((IncidentOutcome::ServerReportedFailure, confidence, subject))
+            }
+            Stage::Cast {
+                edge: CastEdge::ScopeInvalidated,
+                ..
+            } => {
+                let (_, subject) =
+                    cast_terminal.unwrap_or((IncidentConfidence::Unverified, event.subject));
+                Some((
+                    IncidentOutcome::WriteUnconfirmed,
+                    IncidentConfidence::Unverified,
+                    subject,
+                ))
+            }
+            Stage::GuardRefused | Stage::NoWorld | Stage::AlreadyPending
+            | Stage::TrackingCapacity | Stage::ChannelDisconnected
             | Stage::Delivery(CommandDelivery::Rejected(_))
             | Stage::Outbound {
                 state: OutboundState::Refused,
@@ -2403,32 +4871,135 @@ pub(crate) fn drain_history(history: &mut History) {
                 ))
             }
             Stage::InventoryFailure { .. }
+            | Stage::LootErrorObserved { .. }
+            | Stage::VendorBuyFailedObserved { .. }
+            | Stage::VendorSellFailedObserved { .. }
             | Stage::DomainEvent {
                 event:
                     DomainEvent::LootError
                     | DomainEvent::VendorBuyFailed
                     | DomainEvent::VendorSellFailed
                     | DomainEvent::InventoryFailure,
-            } => Some((
-                IncidentOutcome::ServerReportedFailure,
-                if gaps {
-                    IncidentConfidence::Unverified
-                } else {
-                    IncidentConfidence::Heuristic
-                },
-                event.subject,
-            )),
+            } => {
+                let operation = match event.stage {
+                    Stage::LootErrorObserved { .. }
+                    | Stage::DomainEvent {
+                        event: DomainEvent::LootError,
+                    } => Some(Operation::Loot),
+                    Stage::VendorBuyFailedObserved { .. }
+                    | Stage::DomainEvent {
+                        event: DomainEvent::VendorBuyFailed,
+                    } => Some(Operation::Buy),
+                    Stage::VendorSellFailedObserved { .. }
+                    | Stage::DomainEvent {
+                        event: DomainEvent::VendorSellFailed,
+                    } => Some(Operation::Sell),
+                    _ => None,
+                };
+                let candidates: Vec<Subject> = match operation {
+                    Some(operation) => history
+                        .entries
+                        .iter()
+                        .filter_map(|(_, candidate)| {
+                            let written = matches!(
+                                candidate.stage,
+                                Stage::Delivery(CommandDelivery::Written)
+                            );
+                            let in_window = candidate.subject.scope.is_some()
+                                && candidate.subject.scope == event.subject.scope
+                                && candidate.subject.operation == operation
+                                && candidate.elapsed_ms <= event.elapsed_ms
+                                && event.elapsed_ms.saturating_sub(candidate.elapsed_ms)
+                                    <= 30_000;
+                            (written
+                                && in_window
+                                && loot_vendor_evidence_matches_action(
+                                    &candidate.subject,
+                                    &event,
+                                ))
+                            .then_some(candidate.subject)
+                        })
+                        .collect(),
+                    None => history
+                        .entries
+                        .iter()
+                        .filter_map(|(_, candidate)| {
+                            let written = matches!(
+                                candidate.stage,
+                                Stage::Delivery(CommandDelivery::Written)
+                            );
+                            let in_window = candidate.subject.scope.is_some()
+                                && candidate.subject.scope == event.subject.scope
+                                && matches!(
+                                    candidate.subject.operation,
+                                    Operation::Loot
+                                        | Operation::Equip
+                                        | Operation::Buy
+                                        | Operation::Sell
+                                )
+                                && candidate.elapsed_ms <= event.elapsed_ms
+                                && event.elapsed_ms.saturating_sub(candidate.elapsed_ms)
+                                    <= 30_000;
+                            (written
+                                && in_window
+                                && loot_vendor_evidence_matches_action(
+                                    &candidate.subject,
+                                    &event,
+                                ))
+                            .then_some(candidate.subject)
+                        })
+                        .collect(),
+                };
+                for subject in &candidates {
+                    history
+                        .open_interactions
+                        .retain(|open| open.subject.interaction != subject.interaction);
+                }
+                let (confidence, attributed_subject) = match candidates.as_slice() {
+                    [subject] => {
+                        let exact = candidate_subject_is_authoritative(event.stage);
+                        (
+                            if gaps {
+                                IncidentConfidence::Unverified
+                            } else if exact {
+                                IncidentConfidence::Strong
+                            } else {
+                                IncidentConfidence::Heuristic
+                            },
+                            *subject,
+                        )
+                    }
+                    [] => (
+                        if gaps {
+                            IncidentConfidence::Unverified
+                        } else {
+                            IncidentConfidence::Heuristic
+                        },
+                        event.subject,
+                    ),
+                    many => (IncidentConfidence::Ambiguous, many[0]),
+                };
+                Some((
+                    IncidentOutcome::ServerReportedFailure,
+                    confidence,
+                    attributed_subject,
+                ))
+            }
             Stage::SocketReadFailed | Stage::SocketWriteFailed | Stage::AssetFailure { .. }
             | Stage::ReducerRejected { .. } | Stage::GameplayRejected { .. }
-            | Stage::SessionEnded { failed: true } | Stage::ScriptError { .. }
+            | Stage::SessionEnded { kind: SessionEndKind::Lost } | Stage::ScriptError { .. }
             | Stage::ScriptLoadError { .. } => Some((
                 IncidentOutcome::ObservedFailure,
                 IncidentConfidence::Exact,
                 event.subject,
             )),
-            Stage::AudioHealth { nonfinite_samples, voices_refused, .. }
-                if nonfinite_samples > 0 || voices_refused > 0 =>
-            {
+            Stage::AudioHealth {
+                nonfinite_samples,
+                voices_refused,
+                underruns,
+                overloads,
+                ..
+            } if nonfinite_samples > 0 || voices_refused > 0 || underruns > 0 || overloads > 0 =>
                 Some((
                     IncidentOutcome::ObservedFailure,
                     IncidentConfidence::Exact,
@@ -2444,10 +5015,10 @@ pub(crate) fn drain_history(history: &mut History) {
             #[cfg(feature = "hotpatch")]
             Stage::Hotpatch {
                 event:
-                    PatchEvent::PublicationRejected
-                    | PatchEvent::CandidateRejected
-                    | PatchEvent::FrameFailed
-                    | PatchEvent::RetentionFailed,
+                    PatchEvent::PublicationRejected { .. }
+                    | PatchEvent::CandidateRejected { .. }
+                    | PatchEvent::FrameFailed { .. }
+                    | PatchEvent::RetentionFailed { .. },
             } => Some((
                 IncidentOutcome::ObservedFailure,
                 IncidentConfidence::Exact,
@@ -2490,6 +5061,8 @@ pub(crate) fn drain_history(history: &mut History) {
         }
         history.entries.push_back((seq, event));
     }
+    let now_ms = history.source.0.origin.elapsed().as_millis() as u64;
+    history.expire_cast_windows(now_ms);
 }
 
 #[cfg(test)]
@@ -2600,7 +5173,7 @@ mod tests {
             source.begin_with_npc(Some((1, 1)), Some(783), Some(0x1111), Operation::Accept);
         old_accept.record(Stage::Delivery(CommandDelivery::Written));
         // World transfer to generation 2 retires the old scope's open write as unverified.
-        source.observe(Some((1, 2)), None, Stage::WorldTransfer);
+        source.observe(Some((1, 2)), None, Stage::WorldTransfer { map_id: None, from: None, to: None, retired_local: 0, retired_written: 0 });
         // A slot addition in the new world (1, 2) must not match the (1, 1) write.
         source.observe(Some((1, 2)), Some(783), Stage::QuestSlotAdded);
         drain_all(&mut history);
@@ -2645,7 +5218,7 @@ mod tests {
         source.observe(Some((1, 1)), Some(783), Stage::JournalProjection);
 
         // Simulate /reload: advance reload generation and start VM session 11.
-        source.observe(Some((1, 1)), None, Stage::UiReload);
+        source.observe(Some((1, 1)), None, Stage::UiReload { old_vm_session: Some(10), old_reload_generation: Some(0), new_reload_generation: Some(1) });
         source.advance_reload_generation();
         source.capture_script_counts(
             Some((1, 1)),
