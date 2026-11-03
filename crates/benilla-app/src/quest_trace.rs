@@ -3824,7 +3824,7 @@ impl History {
     }
 
     /// Save an allowlisted snapshot away from the frame thread.
-    pub(crate) fn export(&self, build: benilla_world::build_id::BuildId) -> Result<(), String> {
+    pub(crate) fn export(&self, build: benilla_world::build_id::BuildId, protocol_mode: &'static str) -> Result<(), String> {
         let directory = crate::local_state::home()
             .ok_or_else(|| "Local report storage is unavailable".to_owned())?
             .join("Logs").join("InteractionDiagnostics");
@@ -3904,7 +3904,7 @@ impl History {
                         "schema": "rustwrath.interaction-diagnostics.v1",
                         "version": 1,
                         "run_id": run_id,
-                        "protocol_mode": "wrath_12340",
+                        "protocol_mode": protocol_mode,
                         "coverage": coverage,
                         "build_git_sha": if build.sha.is_empty() { None } else { Some(build.sha) },
                         "build_dirty_state": "unknown",

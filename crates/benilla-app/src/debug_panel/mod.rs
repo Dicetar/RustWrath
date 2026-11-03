@@ -292,7 +292,12 @@ fn debug_panel_ui(
     ping: Res<crate::net::PingShared>,
     dropped: Res<crate::net::DroppedOpcodes>,
     mut weather_state: Option<ResMut<benilla_world::weather::WeatherState>>,
-    (mut world, quest_trace): (WorldReadout, Option<ResMut<crate::quest_trace::History>>),
+    (mut world, quest_trace, wrath_input, net_offline): (
+        WorldReadout,
+        Option<ResMut<crate::quest_trace::History>>,
+        Option<Res<crate::wrath::WrathInput>>,
+        Option<Res<crate::net::NetOffline>>,
+    ),
 ) -> Result {
     if !debug.open {
         return Ok(());
@@ -339,7 +344,15 @@ fn debug_panel_ui(
                             ui.label(format!("{} upstream gap events", history.source_gaps()));
                             ui.label(format!("{} object-update packet samples omitted", history.sampled_updates()));
                             if ui.button("Save local report").clicked() {
-                                match history.export(*stamp) {
+                                // Wrath also disables the stock IO thread, so its outbox takes precedence.
+                                let protocol_mode = if wrath_input.is_some() {
+                                    "wrath_12340"
+                                } else if net_offline.is_some() {
+                                    "offline"
+                                } else {
+                                    "vanilla_5875"
+                                };
+                                match history.export(*stamp, protocol_mode) {
                                     Ok(()) => info!("quest diagnostics export started"),
                                     Err(error) => warn!("quest diagnostics export failed: {error}"),
                                 }
