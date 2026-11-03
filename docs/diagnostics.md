@@ -51,3 +51,31 @@ quest, spell or NPC IDs where available. The collector does not currently correl
 requests to responses or detect silent timeouts, missing loot, deformed meshes or wrong
 textures from pixels. Those require runtime instrumentation or human evidence; this
 report must never be used as proof that the gameplay route passed.
+
+## Resident interaction diagnostics
+
+The resident recorder exports an allowlisted JSONL bundle from the debug panel. Coverage
+is derived from the compiled vector registry, not an optimistic list: `hotpatch` is
+listed as instrumented only when that feature is compiled, and vectors that are not
+produced by source are listed under `not_yet_instrumented`. Every vector reports
+`absence_not_proof: true`; zero retained observations is not a healthy reading.
+
+Per-vector producer drops are attributed through `vector_for_stage` at ingress time.
+The export and inspector expose `producer_drops`, `sampled_out`, `sampling_interval`,
+`sampling_denominator`, `retained_observations`, `latest_retained_sequence`, and
+`limiting_factors` (`producer_drop`, `retained_eviction`, `source_specific_loss`,
+`sampling`, `uninstrumented`, plus `event_driven_reporting`).
+
+Object-update sampling reports seen/sampled/sampled-out counts with interval 64;
+movement reports coalesced/refused counts. An absent sampled packet is not evidence
+that the server sent no update.
+
+The inspector uses a cached, bounded snapshot refreshed at most once per 250 ms or
+material ring change; it does not rescan the retained ring on every egui pass.
+
+Export is user-initiated, runs off the frame thread, writes to a temporary file, and
+renames with `create_new(true)` so an existing report is never overwritten. Unknown
+schema versions are rejected by `validate_snapshot_header` before row decoding. Raw
+GUIDs, credentials, chat, free-form strings, paths, packet bodies and coordinates are
+not exported; NPC identity is a run-local numeric alias. Run ID and export/inspector
+support are compiled only with the `dev` feature; coverage states this explicitly.

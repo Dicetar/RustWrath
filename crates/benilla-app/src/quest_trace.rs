@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use bevy::prelude::*;
@@ -257,10 +257,59 @@ pub(crate) enum Operation {
     Sell,
 }
 
+/// Canonical diagnostic vector names, in stable order.  This is the single source of truth
+/// shared by the recorder, the inspector and the export.  `unclassified` is the explicit
+/// bucket for stages that are not (yet) attributed to a named vector.
+pub(crate) const DIAGNOSTIC_VECTOR_NAMES: &[&str] = &[
+    "quest_interactions",
+    "quest_panel_correlation",
+    "ui_frame_state",
+    "ui_pointer_categories",
+    "lua_diagnostic_counts",
+    "session_lifecycle",
+    "allowlisted_packets",
+    "casts",
+    "inventory_failures",
+    "loot_and_vendor_events",
+    "audio_mixer_state",
+    "movement_queue_and_corrections",
+    "scene_camera_and_rig_counts",
+    "frame_intervals",
+    "asset_load_failure_categories",
+    "hotpatch",
+    "unclassified",
+];
+
+/// Map a vector name to its index in `DIAGNOSTIC_VECTOR_NAMES`.
+pub(crate) fn diagnostic_vector_index(name: &str) -> usize {
+    match name {
+        "quest_interactions" => 0,
+        "quest_panel_correlation" => 1,
+        "ui_frame_state" => 2,
+        "ui_pointer_categories" => 3,
+        "lua_diagnostic_counts" => 4,
+        "session_lifecycle" => 5,
+        "allowlisted_packets" => 6,
+        "casts" => 7,
+        "inventory_failures" => 8,
+        "loot_and_vendor_events" => 9,
+        "audio_mixer_state" => 10,
+        "movement_queue_and_corrections" => 11,
+        "scene_camera_and_rig_counts" => 12,
+        "frame_intervals" => 13,
+        "asset_load_failure_categories" => 14,
+        "hotpatch" => 15,
+        "unclassified" => 16,
+        _ => 16,
+    }
+}
+
 #[derive(Debug)]
 struct Ingress {
     events: Sender<Event>,
     dropped: AtomicU64,
+    /// Per-vector producer-drop counters, indexed by `DIAGNOSTIC_VECTOR_NAMES`.
+    dropped_by_vector: Vec<AtomicU64>,
     next_id: AtomicU64,
     reload_generation: AtomicU64,
     update_packets_seen: AtomicU64,
@@ -364,11 +413,38 @@ pub(crate) fn validate_snapshot_header(line: &str) -> Result<u32, SnapshotVersio
 /// not turn "zero retained observations" into a healthy reading: absence of an event is
 /// never proof that the corresponding condition did not occur.
 #[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SamplingCoverage {
+    pub object_update_packets_seen: u64,
+    pub object_update_packets_sampled: u64,
+    pub object_update_packets_sampled_out: u64,
+    pub object_update_sampling_interval: u64,
+    pub movement_packets_coalesced: u64,
+    pub movement_packets_refused: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct DiagnosticCoverage {
+    pub instrumented_paths: Vec<String>,
+    pub compiled_out_paths: Vec<String>,
+    pub event_driven_paths: Vec<String>,
+    pub sampled_paths: Vec<String>,
+    pub paths_with_producer_loss_counters: Vec<String>,
+    pub not_yet_instrumented: Vec<String>,
+    pub hotpatch_compiled: bool,
+    pub export_and_inspector_compiled: bool,
+    pub sampling: SamplingCoverage,
+}
+
 pub(crate) struct DiagnosticVectorEvidence {
     pub vector: String,
     pub instrumentation_available: bool,
     pub retained_observations: u64,
     pub latest_retained_sequence: Option<u64>,
+    pub producer_drops: u64,
+    pub sampled_out: Option<u64>,
+    pub sampling_interval: Option<u64>,
+    pub sampling_denominator: Option<u64>,
     pub limiting_factors: Vec<String>,
     pub absence_not_proof: bool,
 }
@@ -477,6 +553,7 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         Stage::DomainEvent {
             event: DomainEvent::QuestComplete | DomainEvent::QuestObjective,
         } => Some("quest_interactions"),
+        _ => Some("unclassified"),
     }
 }
 
@@ -528,6 +605,27 @@ impl Source {
 
     pub(crate) fn note_movement_refused(&self) {
         self.0.movement_refused.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn producer_drops_for_vector(&self, vector: &str) -> u64 {
+        let index = diagnostic_vector_index(vector);
+        self.0.dropped_by_vector[index].load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn update_packets_seen(&self) -> u64 {
+        self.0.update_packets_seen.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn update_packets_sampled_out(&self) -> u64 {
+        self.0.update_packets_sampled_out.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn movement_coalesced(&self) -> u64 {
+        self.0.movement_coalesced.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn movement_refused(&self) -> u64 {
+        self.0.movement_refused.load(Ordering::Relaxed)
     }
 
     /// Sample high-volume object-update packet metadata without sampling state changes.
@@ -656,6 +754,8 @@ impl Source {
 impl Interaction {
     pub(crate) fn record(&self, stage: Stage) {
         let ingress = &self.source.0;
+        let vector_name = vector_for_stage(&stage);
+        let vector_index = diagnostic_vector_index(vector_name.unwrap_or("unclassified"));
         let event = Event {
             version: 1,
             subject: self.subject,
@@ -664,6 +764,7 @@ impl Interaction {
         };
         if ingress.events.try_send(event).is_err() {
             ingress.dropped.fetch_add(1, Ordering::Relaxed);
+            ingress.dropped_by_vector[vector_index].fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -746,6 +847,25 @@ fn is_panel_stage(stage: Stage) -> bool {
     )
 }
 
+#[cfg(feature = "dev")]
+#[derive(Clone, Debug)]
+pub(crate) struct InspectorSnapshot {
+    pub built_at: Instant,
+    pub received: u64,
+    pub evicted: u64,
+    pub dropped: u64,
+    pub source_gaps: u64,
+    pub sampled_updates: u64,
+    pub incidents: Vec<String>,
+    pub actions: Vec<String>,
+    pub panels: Vec<String>,
+    pub slots: Vec<String>,
+    pub turn_ins: Vec<String>,
+    pub ui_errors: Vec<String>,
+    pub ui_clicks: Vec<String>,
+    pub recent: Vec<String>,
+}
+
 #[derive(Resource)]
 pub(crate) struct History {
     source: Source,
@@ -760,6 +880,10 @@ pub(crate) struct History {
     source_gaps: u64,
     #[cfg(feature = "hotpatch")]
     last_observed_patch_digest: Option<[u8; 20]>,
+    #[cfg(feature = "dev")]
+    inspector_snapshot: Option<InspectorSnapshot>,
+    #[cfg(feature = "dev")]
+    inspector_last_build: Instant,
 }
 
 impl History {
@@ -934,6 +1058,54 @@ impl History {
             })
             .take(8)
             .collect()
+    }
+
+    pub(crate) fn inspector_snapshot(&mut self) -> &InspectorSnapshot {
+        let stale = self
+            .inspector_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot.received != self.received
+                    || snapshot.evicted != self.evicted
+                    || snapshot.dropped != self.source.0.dropped.load(Ordering::Relaxed)
+                    || snapshot.source_gaps != self.source_gaps
+                    || snapshot.sampled_updates != self.sampled_updates()
+            })
+            .unwrap_or(true);
+        if self.inspector_snapshot.is_none() || stale {
+            let truncate = |line: String| -> String {
+                if line.len() > 240 {
+                    line[..240].to_string()
+                } else {
+                    line
+                }
+            };
+            let cap = |lines: Vec<String>, limit: usize| -> Vec<String> {
+                lines.into_iter().take(limit).map(truncate).collect()
+            };
+            let (received, evicted, dropped) = self.counters();
+            self.inspector_snapshot = Some(InspectorSnapshot {
+                built_at: Instant::now(),
+                received,
+                evicted,
+                dropped,
+                source_gaps: self.source_gaps,
+                sampled_updates: self.sampled_updates(),
+                incidents: cap(
+                    self.recent_incidents().map(|line| line.to_string()).collect(),
+                    8,
+                ),
+                actions: cap(self.action_summaries(), 8),
+                panels: cap(self.panel_correlations(), 8),
+                slots: cap(self.slot_correlations(), 8),
+                turn_ins: cap(self.turn_in_correlations(), 8),
+                ui_errors: cap(self.ui_error_correlations(), 8),
+                ui_clicks: cap(self.ui_click_correlations(), 8),
+                recent: cap(self.recent().map(|line| line.to_string()).collect(), 16),
+            });
+            self.inspector_last_build = Instant::now();
+        }
+        self.inspector_snapshot.as_ref().unwrap()
     }
 
     pub(crate) fn recent_incidents(&self) -> impl Iterator<Item = String> + '_ {
@@ -1336,29 +1508,11 @@ impl History {
     /// supplies the exported event rows.  Classification goes through `vector_for_stage`
     /// so both export paths agree.
     pub(crate) fn diagnostic_vectors(&self) -> Vec<DiagnosticVectorEvidence> {
-        const VECTORS: &[&str] = &[
-            "quest_interactions",
-            "quest_panel_correlation",
-            "ui_frame_state",
-            "ui_pointer_categories",
-            "lua_diagnostic_counts",
-            "session_lifecycle",
-            "allowlisted_packets",
-            "casts",
-            "inventory_failures",
-            "loot_and_vendor_events",
-            "audio_mixer_state",
-            "movement_queue_and_corrections",
-            "scene_camera_and_rig_counts",
-            "frame_intervals",
-            "asset_load_failure_categories",
-            "hotpatch",
-        ];
-        let dropped = self.source.0.dropped.load(Ordering::Relaxed);
         let evicted = self.evicted;
         let interaction_tracking_lost = self.interaction_tracking_lost;
-        let mut out = Vec::with_capacity(VECTORS.len());
-        for &vector in VECTORS {
+        let sampled_out_total = self.sampled_updates();
+        let mut out = Vec::with_capacity(DIAGNOSTIC_VECTOR_NAMES.len());
+        for &vector in DIAGNOSTIC_VECTOR_NAMES {
             let available = if vector == "hotpatch" {
                 cfg!(feature = "hotpatch")
             } else {
@@ -1379,6 +1533,7 @@ impl History {
             if vector == "quest_interactions" && interaction_tracking_lost > 0 {
                 source_specific_loss = true;
             }
+            let producer_drops = self.source.producer_drops_for_vector(vector);
             let mut limiting_factors = vec!["event_driven_reporting".to_string()];
             if vector == "allowlisted_packets" {
                 limiting_factors.push("sampling".to_string());
@@ -1386,15 +1541,30 @@ impl History {
             if source_specific_loss {
                 limiting_factors.push("source_specific_loss".to_string());
             }
-            if dropped > 0 || evicted > 0 {
-                limiting_factors.push("global_loss_unknown_vector".to_string());
+            if producer_drops > 0 {
+                limiting_factors.push("producer_drop".to_string());
             }
+            if evicted > 0 {
+                limiting_factors.push("retained_eviction".to_string());
+            }
+            if !available {
+                limiting_factors.push("uninstrumented".to_string());
+            }
+            let (sampled_out, sampling_interval, sampling_denominator) = if vector == "allowlisted_packets" {
+                (Some(sampled_out_total), Some(64u64), Some(64u64))
+            } else {
+                (None, None, None)
+            };
             let value = DiagnosticVectorEvidence {
                 vector: vector.to_string(),
                 instrumentation_available: available,
                 retained_observations,
                 latest_retained_sequence,
-                limiting_factors: limiting_factors.clone(),
+                producer_drops,
+                sampled_out,
+                sampling_interval,
+                sampling_denominator,
+                limiting_factors,
                 absence_not_proof: true,
             };
             out.push(value);
@@ -1410,6 +1580,60 @@ impl History {
         self.source.0.update_packets_sampled_out.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn update_packets_seen(&self) -> u64 {
+        self.source.update_packets_seen()
+    }
+
+    pub(crate) fn update_packets_sampled(&self) -> u64 {
+        self.update_packets_seen()
+            .saturating_sub(self.sampled_updates())
+    }
+
+    pub(crate) fn movement_coalesced(&self) -> u64 {
+        self.source.movement_coalesced()
+    }
+
+    pub(crate) fn movement_refused(&self) -> u64 {
+        self.source.movement_refused()
+    }
+
+    pub(crate) fn coverage(&self) -> DiagnosticCoverage {
+        let vectors = self.diagnostic_vectors();
+        let mut instrumented_paths = Vec::new();
+        let mut compiled_out_paths = Vec::new();
+        for vector in &vectors {
+            if vector.instrumentation_available {
+                instrumented_paths.push(vector.vector.clone());
+            } else {
+                compiled_out_paths.push(vector.vector.clone());
+            }
+        }
+        let not_yet_instrumented = vec![
+            "visible_pixels".to_string(),
+            "frame_occlusion_owner".to_string(),
+            "audio_output".to_string(),
+            "movement_causality".to_string(),
+            "asset_dependency_revisions".to_string(),
+        ];
+        DiagnosticCoverage {
+            instrumented_paths,
+            compiled_out_paths,
+            event_driven_paths: vectors.iter().map(|v| v.vector.clone()).collect(),
+            sampled_paths: vec!["allowlisted_packets".to_string()],
+            paths_with_producer_loss_counters: vectors.iter().map(|v| v.vector.clone()).collect(),
+            not_yet_instrumented,
+            hotpatch_compiled: cfg!(feature = "hotpatch"),
+            export_and_inspector_compiled: cfg!(feature = "dev"),
+            sampling: SamplingCoverage {
+                object_update_packets_seen: self.update_packets_seen(),
+                object_update_packets_sampled: self.update_packets_sampled(),
+                object_update_packets_sampled_out: self.sampled_updates(),
+                object_update_sampling_interval: 64,
+                movement_packets_coalesced: self.movement_coalesced(),
+                movement_packets_refused: self.movement_refused(),
+            },
+        }
+    }
     pub(crate) fn recent(&self) -> impl Iterator<Item = String> + '_ {
         self.entries.iter().rev().take(16).map(|(seq, e)| {
             format!("#{seq} +{}ms · action {} {:?} · npc {:?} · quest {:?} · {:?} · scope {:?}",
@@ -1659,6 +1883,11 @@ impl History {
         #[cfg(not(feature = "hotpatch"))]
         let last_observed_patch_digest: Option<[u8; 20]> = None;
         let sampled_updates = self.sampled_updates();
+        let update_packets_seen = self.update_packets_seen();
+        let update_packets_sampled = self.update_packets_sampled();
+        let movement_coalesced = self.movement_coalesced();
+        let movement_refused = self.movement_refused();
+        let coverage = self.coverage();
         let diagnostic_vectors = self.diagnostic_vectors();
         let first_sequence = self.entries.front().map(|(seq, _)| *seq);
         let highest_sequence = self.entries.back().map(|(seq, _)| *seq);
@@ -1699,23 +1928,7 @@ impl History {
                         "version": 1,
                         "run_id": run_id,
                         "protocol_mode": "wrath_12340",
-                        "coverage": {
-                            "instrumented_paths": [
-                                "quest_interactions", "quest_panel_correlation",
-                                "ui_frame_state", "ui_pointer_categories",
-                                "lua_diagnostic_counts", "session_lifecycle", "allowlisted_packets",
-                                "casts", "inventory_failures", "loot_and_vendor_events",
-                                "audio_mixer_state", "movement_queue_and_corrections",
-                                "scene_camera_and_rig_counts", "frame_intervals",
-                                "asset_load_failure_categories"
-                            ],
-                            "diagnostic_vector_coverage": true,
-                            "hotpatch_compiled": cfg!(feature = "hotpatch"),
-                            "not_yet_instrumented": [
-                                "visible_pixels", "frame_occlusion_owner", "audio_output",
-                                "movement_causality", "asset_dependency_revisions"
-                            ]
-                        },
+                        "coverage": coverage,
                         "build_git_sha": if build.sha.is_empty() { None } else { Some(build.sha) },
                         "build_dirty_state": "unknown",
                         "executable_file_sha1": file_hash,
@@ -1730,7 +1943,12 @@ impl History {
                         "npc_aliases_assigned": npc_aliases_assigned,
                         "upstream_gap_events": source_gaps,
                         "last_observed_patch_sha1_bytes": last_observed_patch_digest,
+                        "object_update_packets_seen": update_packets_seen,
+                        "object_update_packets_sampled": update_packets_sampled,
                         "object_update_packets_sampled_out": sampled_updates,
+                        "object_update_sampling_interval": 64,
+                        "movement_packets_coalesced": movement_coalesced,
+                        "movement_packets_refused": movement_refused,
                         "incidents": incidents,
                         "incidents_evicted": incidents_evicted,
                         "ingress_pending_at_snapshot": ingress_pending,
@@ -1779,6 +1997,9 @@ pub(crate) fn new_pair() -> (Source, History) {
     let source = Source(Arc::new(Ingress {
         events,
         dropped: AtomicU64::new(0),
+        dropped_by_vector: (0..DIAGNOSTIC_VECTOR_NAMES.len())
+            .map(|_| AtomicU64::new(0))
+            .collect(),
         next_id: AtomicU64::new(1),
         reload_generation: AtomicU64::new(0),
         update_packets_seen: AtomicU64::new(0),
@@ -1819,6 +2040,10 @@ pub(crate) fn new_pair() -> (Source, History) {
         source_gaps: 0,
         #[cfg(feature = "hotpatch")]
         last_observed_patch_digest: None,
+        #[cfg(feature = "dev")]
+        inspector_snapshot: None,
+        #[cfg(feature = "dev")]
+        inspector_last_build: Instant::now(),
     };
     (source, history)
 }
