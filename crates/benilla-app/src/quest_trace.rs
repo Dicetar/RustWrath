@@ -305,7 +305,145 @@ pub(crate) enum PatchEvent {
     CandidateRejected { attempt: Option<u64>, reason: HotpatchReason },
     Activated { attempt: Option<u64>, digest: Option<[u8; 20]> },
     FrameFailed { attempt: Option<u64>, reason: HotpatchReason },
+    /// The failed active module was replaced by a retained predecessor.
+    RestoredPrevious {
+        failed_attempt: Option<u64>,
+        restored_attempt: Option<u64>,
+        digest: Option<[u8; 20]>,
+    },
+    /// The failed active module had no retained predecessor; the baseline pose is active.
+    RestoreUnavailable { failed_attempt: Option<u64> },
     RetentionFailed { attempt: Option<u64>, reason: HotpatchReason },
+}
+
+/// Both attempt fields a hotpatch event can carry, for bounded correlation indexing.
+#[cfg(feature = "hotpatch")]
+fn patch_event_attempts(event: PatchEvent) -> [Option<u64>; 2] {
+    match event {
+        PatchEvent::CandidateStaged { attempt } | PatchEvent::CandidateWithdrawn { attempt } => {
+            [Some(attempt), None]
+        }
+        PatchEvent::PublicationRejected { attempt, .. }
+        | PatchEvent::CandidateRejected { attempt, .. }
+        | PatchEvent::Activated { attempt, .. }
+        | PatchEvent::FrameFailed { attempt, .. }
+        | PatchEvent::RetentionFailed { attempt, .. }
+        | PatchEvent::RestoreUnavailable {
+            failed_attempt: attempt,
+        } => [attempt, None],
+        PatchEvent::RestoredPrevious {
+            failed_attempt,
+            restored_attempt,
+            ..
+        } => [failed_attempt, restored_attempt],
+    }
+}
+
+#[cfg(feature = "hotpatch")]
+fn patch_event_is_terminal_for(event: PatchEvent, attempt: u64) -> bool {
+    match event {
+        PatchEvent::CandidateStaged { .. } => false,
+        PatchEvent::CandidateWithdrawn {
+            attempt: withdrawn,
+        } => withdrawn == attempt,
+        PatchEvent::PublicationRejected {
+            attempt: rejected, ..
+        }
+        | PatchEvent::CandidateRejected {
+            attempt: rejected, ..
+        }
+        | PatchEvent::Activated {
+            attempt: rejected, ..
+        }
+        | PatchEvent::FrameFailed {
+            attempt: rejected, ..
+        }
+        | PatchEvent::RetentionFailed {
+            attempt: rejected, ..
+        } => rejected == Some(attempt),
+        PatchEvent::RestoreUnavailable { failed_attempt } => failed_attempt == Some(attempt),
+        PatchEvent::RestoredPrevious {
+            failed_attempt,
+            restored_attempt,
+            ..
+        } => failed_attempt == Some(attempt) || restored_attempt == Some(attempt),
+    }
+}
+
+#[cfg(feature = "hotpatch")]
+fn hotpatch_digest_label(digest: Option<[u8; 20]>) -> String {
+    match digest {
+        Some(bytes) => {
+            let mut label = String::with_capacity(40);
+            for byte in bytes {
+                label.push_str(&format!("{byte:02x}"));
+            }
+            label
+        }
+        None => "unknown".to_string(),
+    }
+}
+
+#[cfg(feature = "hotpatch")]
+fn hotpatch_attempt_label(attempt: Option<u64>) -> String {
+    attempt.map_or_else(|| "unknown".to_string(), |attempt| attempt.to_string())
+}
+
+/// Human-readable one-line terminal for one correlated attempt. Digest is a verified content
+/// identity; an unavailable digest stays `unknown` rather than becoming a zero digest.
+#[cfg(feature = "hotpatch")]
+fn patch_event_summary(event: PatchEvent, attempt: u64) -> String {
+    match event {
+        PatchEvent::CandidateStaged { .. } => {
+            format!("attempt {attempt}: staged, awaiting activation")
+        }
+        PatchEvent::CandidateWithdrawn { .. } => {
+            format!("attempt {attempt}: withdrawn before activation")
+        }
+        PatchEvent::PublicationRejected {
+            attempt: rejected,
+            reason,
+        } => format!(
+            "attempt {attempt}: publication rejected (attempt={}, reason={reason:?})",
+            hotpatch_attempt_label(rejected)
+        ),
+        PatchEvent::CandidateRejected { reason, .. } => format!(
+            "attempt {attempt}: rejected ({reason:?}); active module retained"
+        ),
+        PatchEvent::Activated { digest, .. } => format!(
+            "attempt {attempt}: activated (digest={})",
+            hotpatch_digest_label(digest)
+        ),
+        PatchEvent::FrameFailed { reason, .. } => format!(
+            "attempt {attempt}: frame failed ({reason:?}); no restore evidence retained"
+        ),
+        PatchEvent::RestoredPrevious {
+            failed_attempt,
+            restored_attempt,
+            digest,
+        } => {
+            if failed_attempt == Some(attempt) {
+                format!(
+                    "attempt {attempt}: active frame failed; previous module restored (restored_attempt={}, digest={})",
+                    hotpatch_attempt_label(restored_attempt),
+                    hotpatch_digest_label(digest)
+                )
+            } else {
+                format!(
+                    "attempt {attempt}: restored as active module after attempt {} failed (digest={})",
+                    hotpatch_attempt_label(failed_attempt),
+                    hotpatch_digest_label(digest)
+                )
+            }
+        }
+        PatchEvent::RestoreUnavailable { failed_attempt } => format!(
+            "attempt {attempt}: active frame failed; no previous module to restore (baseline pose; failed_attempt={})",
+            hotpatch_attempt_label(failed_attempt)
+        ),
+        PatchEvent::RetentionFailed { reason, .. } => {
+            format!("attempt {attempt}: artifact retention failed ({reason:?})")
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -3493,60 +3631,84 @@ impl History {
 
     #[cfg(feature = "hotpatch")]
     pub(crate) fn hotpatch_attempt_correlation(&self) -> Vec<String> {
-        // Correlate candidate staging to terminal events by attempt id within retained entries.
-        let mut out = Vec::new();
+        // Correlate each retained attempt to its latest terminal evidence. A frame failure and
+        // the restore decision it triggered are one terminal family, so the failure is not
+        // reported as "earlier evidence" when its restore is the actual outcome.
+        let gaps = self.has_telemetry_gaps();
+        let mut attempts: Vec<u64> = Vec::new();
         for (_, event) in self.entries.iter().rev() {
-            if let Stage::Hotpatch {
-                event: PatchEvent::CandidateStaged { attempt },
-            } = event.stage
-            {
-                let terminals: Vec<Stage> = self
-                    .entries
-                    .iter()
-                    .filter_map(|(_, later)| {
-                        let att = match later.stage {
-                            Stage::Hotpatch {
-                                event: PatchEvent::CandidateWithdrawn { attempt },
-                            } => Some(attempt),
-                            Stage::Hotpatch {
-                                event: PatchEvent::Activated { attempt: a, .. },
-                            } => a,
-                            Stage::Hotpatch {
-                                event: PatchEvent::CandidateRejected { attempt: a, .. },
-                            } => a,
-                            _ => None,
-                        };
-                        if att == Some(attempt) {
-                            Some(later.stage)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+            let Stage::Hotpatch { event } = event.stage else {
+                continue;
+            };
+            for attempt in patch_event_attempts(event).into_iter().flatten() {
+                if !attempts.contains(&attempt) {
+                    attempts.push(attempt);
+                }
+            }
+        }
+        attempts
+            .into_iter()
+            .take(8)
+            .map(|attempt| {
+                let mut staged = false;
+                let mut terminals: Vec<PatchEvent> = Vec::new();
+                for (_, event) in &self.entries {
+                    let Stage::Hotpatch { event } = event.stage else {
+                        continue;
+                    };
+                    if matches!(
+                        event,
+                        PatchEvent::CandidateStaged { attempt: staged_attempt }
+                            if staged_attempt == attempt
+                    ) {
+                        staged = true;
+                    }
+                    if patch_event_is_terminal_for(event, attempt) {
+                        terminals.push(event);
+                    }
+                }
+                let has_restore_terminal = terminals.iter().any(|event| match *event {
+                    PatchEvent::RestoredPrevious { failed_attempt, .. } => {
+                        failed_attempt == Some(attempt)
+                    }
+                    PatchEvent::RestoreUnavailable { failed_attempt } => {
+                        failed_attempt == Some(attempt)
+                    }
+                    _ => false,
+                });
+                if has_restore_terminal {
+                    terminals.retain(|event| {
+                        !matches!(
+                            event,
+                            PatchEvent::FrameFailed { attempt: Some(failed), .. }
+                                if *failed == attempt
+                        )
+                    });
+                }
                 let terminal_count = terminals.len();
-                let terminal = terminals.into_iter().last();
+                let terminal = terminals.last().copied();
                 let earlier = if terminal_count > 1 {
                     " (earlier terminal evidence exists)"
                 } else {
                     ""
                 };
-                let line = match terminal {
-                    Some(Stage::Hotpatch {
-                        event: PatchEvent::Activated { digest, .. },
-                    }) => format!("attempt {attempt}: activated (digest={digest:?}){earlier}"),
-                    Some(Stage::Hotpatch { event }) => {
-                        format!("attempt {attempt}: {:?}{earlier}", event)
-                    }
-                    None => format!("attempt {attempt}: no terminal event retained (ambiguous/unresolved)"),
-                    Some(_) => format!("attempt {attempt}: unexpected terminal evidence (unresolved)"),
+                let gap = if gaps {
+                    " (trace has gaps; outcome unverified)"
+                } else {
+                    ""
                 };
-                out.push(line);
-                if out.len() >= 8 {
-                    break;
-                }
-            }
-        }
-        out
+                let line = match terminal {
+                    Some(event) => patch_event_summary(event, attempt),
+                    None if staged => format!(
+                        "attempt {attempt}: staged; no terminal event retained (unresolved)"
+                    ),
+                    None => format!(
+                        "attempt {attempt}: no terminal evidence retained (ambiguous/unresolved)"
+                    ),
+                };
+                format!("{line}{earlier}{gap}")
+            })
+            .collect()
     }
     #[cfg(feature = "hotpatch")]
     pub(crate) fn hotpatch_attempts(&self) -> Vec<String> {
@@ -3594,7 +3756,10 @@ impl History {
             "audio_audibility".to_string(),
             "movement_causality".to_string(),
             "asset_dependency_revisions".to_string(),
-            "hotpatch_trust_and_rollback".to_string(),
+            // Module validation/rollback is instrumented; the trust decision itself is not.
+            // Hotpatch modules are explicitly trusted local native code, and the host provides
+            // no memory isolation or sandbox, so no trust boundary is claimed here.
+            "hotpatch_trust_policy".to_string(),
         ];
         DiagnosticCoverage {
             instrumented_paths,
@@ -4393,8 +4558,19 @@ pub(crate) fn drain_history(history: &mut History) {
             history.source_gaps = history.source_gaps.saturating_add(1);
         }
         #[cfg(feature = "hotpatch")]
-        if let Stage::Hotpatch { event: PatchEvent::Activated { digest, .. } } = event.stage {
-            history.last_observed_patch_digest = digest;
+        match event.stage {
+            Stage::Hotpatch {
+                event: PatchEvent::Activated { digest, .. },
+            }
+            | Stage::Hotpatch {
+                event: PatchEvent::RestoredPrevious { digest, .. },
+            } => history.last_observed_patch_digest = digest,
+            Stage::Hotpatch {
+                event:
+                    PatchEvent::FrameFailed { .. }
+                    | PatchEvent::RestoreUnavailable { .. },
+            } => history.last_observed_patch_digest = None,
+            _ => {}
         }
 
         // Track bounded open interactions for lifecycle retirement and server outcome correlation.
@@ -5018,6 +5194,7 @@ pub(crate) fn drain_history(history: &mut History) {
                     PatchEvent::PublicationRejected { .. }
                     | PatchEvent::CandidateRejected { .. }
                     | PatchEvent::FrameFailed { .. }
+                    | PatchEvent::RestoreUnavailable { .. }
                     | PatchEvent::RetentionFailed { .. },
             } => Some((
                 IncidentOutcome::ObservedFailure,

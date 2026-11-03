@@ -60,6 +60,18 @@ listed as instrumented only when that feature is compiled, and vectors that are 
 produced by source are listed under `not_yet_instrumented`. Every vector reports
 `absence_not_proof: true`; zero retained observations is not a healthy reading.
 
+Hotpatch rollback evidence is instrumented: a frame failure of the active module is
+followed by either a bounded `RestoredPrevious` outcome (failed attempt, the restored
+attempt when it is still known, and the restored module's verified content digest or
+`unknown`) or an explicit `RestoreUnavailable` outcome meaning no retained predecessor
+existed and the baseline pose is active. A restored module that fails again produces a
+new bounded failure/restore outcome rather than one collapsed terminal. Free-form loader
+error text, module paths and revision labels stay in the local log and are not exported;
+a lost restore event is reported as an unverified gap, not a claimed success. Trust
+policy and memory isolation remain out of scope: hotpatch modules are explicitly trusted
+local native code, so coverage lists `hotpatch_trust_policy`, not rollback, as not yet
+instrumented.
+
 Per-vector producer drops are attributed through `vector_for_stage` at ingress time.
 The export and inspector expose `producer_drops`, `sampled_out`, `sampling_interval`,
 `sampling_denominator`, `retained_observations`, `latest_retained_sequence`, and

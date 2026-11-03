@@ -71,6 +71,18 @@ fn capture_hotpatch_events(
                         },
                     }
                 }
+                HotpatchEvent::RestoredPrevious {
+                    failed_attempt,
+                    restored_attempt,
+                    digest,
+                } => PatchEvent::RestoredPrevious {
+                    failed_attempt,
+                    restored_attempt,
+                    digest,
+                },
+                HotpatchEvent::RestoreUnavailable { failed_attempt } => {
+                    PatchEvent::RestoreUnavailable { failed_attempt }
+                }
                 HotpatchEvent::RetentionFailed { attempt, reason } => {
                     PatchEvent::RetentionFailed {
                         attempt,

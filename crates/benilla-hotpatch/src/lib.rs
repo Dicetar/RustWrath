@@ -10,6 +10,28 @@ use std::{
 };
 
 const MAX_LIBRARY_BYTES: u64 = 64 * 1024 * 1024;
+/// Bounded restore-outcome ring. One `evaluate` can report at most the active module plus the
+/// three retained predecessors; the cap only bounds an unconsumed producer.
+const MAX_RESTORE_OUTCOMES: usize = 8;
+
+/// Verified SHA-1 content identity of a loaded module, as raw bytes.
+pub type ModuleDigest = [u8; 20];
+
+/// Recorder-safe description of one active-module frame failure and its fallback decision.
+///
+/// Free-form loader errors stay in `take_active_failure`/logs. This enum carries only the
+/// verified content identity (when available) and whether a retained predecessor was promoted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestoreOutcome {
+    /// The failed module was replaced by the newest retained predecessor.
+    Restored {
+        failed_digest: Option<ModuleDigest>,
+        /// `None` only when the restored module's identity could not be encoded.
+        restored_digest: Option<ModuleDigest>,
+    },
+    /// The failed module had no retained predecessor; the baseline pose is active again.
+    Unavailable { failed_digest: Option<ModuleDigest> },
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,7 +50,24 @@ struct Loaded {
     _library: Library,
 }
 
+fn digest_bytes(digest: &str) -> Option<ModuleDigest> {
+    if digest.len() != 40 {
+        return None;
+    }
+    let mut bytes = [0u8; 20];
+    for (output, pair) in bytes.iter_mut().zip(digest.as_bytes().chunks_exact(2)) {
+        let high = (pair[0] as char).to_digit(16)?;
+        let low = (pair[1] as char).to_digit(16)?;
+        *output = ((high << 4) | low) as u8;
+    }
+    Some(bytes)
+}
+
 impl Loaded {
+    fn digest_bytes(&self) -> Option<ModuleDigest> {
+        digest_bytes(&self.digest)
+    }
+
     fn open(root: &Path, publication: Publication) -> Result<Self> {
         let path = Path::new(&publication.library);
         ensure!(
@@ -116,6 +155,7 @@ pub struct Host {
     previous: VecDeque<Loaded>,
     rejection: Option<String>,
     active_failure: Option<String>,
+    restores: VecDeque<RestoreOutcome>,
 }
 
 impl Host {
@@ -128,6 +168,7 @@ impl Host {
             previous: VecDeque::new(),
             rejection: None,
             active_failure: None,
+            restores: VecDeque::new(),
         }
     }
 
@@ -191,6 +232,22 @@ impl Host {
 
     pub fn take_active_failure(&mut self) -> Option<String> {
         self.active_failure.take()
+    }
+
+    /// Drain the bounded active-failure/restore outcomes accumulated by `evaluate`.
+    ///
+    /// Each outcome is one failed module and the fallback decision made for it, in evaluation
+    /// order, so a restored module that fails again is reported separately instead of being
+    /// collapsed into one terminal. No loader error text, path or revision label is included.
+    pub fn take_restore_outcomes(&mut self) -> Vec<RestoreOutcome> {
+        self.restores.drain(..).collect()
+    }
+
+    fn push_restore(&mut self, outcome: RestoreOutcome) {
+        if self.restores.len() == MAX_RESTORE_OUTCOMES {
+            self.restores.pop_front();
+        }
+        self.restores.push_back(outcome);
     }
 
     /// Only this host's digest-named artifacts are collected. A publisher uses the same lock;
@@ -302,11 +359,25 @@ impl Host {
                     return Ok(true);
                 }
                 Err(error) => {
+                    let failed_digest = module.digest_bytes();
                     self.active_failure = Some(format!(
                         "active module {} failed; restoring a previous module: {error:#}",
                         module.revision
                     ));
-                    self.active = self.previous.pop_back();
+                    match self.previous.pop_back() {
+                        Some(previous) => {
+                            let restored_digest = previous.digest_bytes();
+                            self.active = Some(previous);
+                            self.push_restore(RestoreOutcome::Restored {
+                                failed_digest,
+                                restored_digest,
+                            });
+                        }
+                        None => {
+                            self.active = None;
+                            self.push_restore(RestoreOutcome::Unavailable { failed_digest });
+                        }
+                    }
                 }
             }
         }
