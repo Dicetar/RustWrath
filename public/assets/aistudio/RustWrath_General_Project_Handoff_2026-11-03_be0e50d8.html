@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark light"><meta name="description" content="RustWrath general technical handoff, architecture review, interaction flight recorder, gameplay diagnostics and hotpatch roadmap."><title>RustWrath — General Technical Handoff | 2026-11-03</title><style>
+:root{--bg:#0a101b;--panel:#101b2b;--panel2:#172437;--panel3:#1b2b40;--text:#e8edf4;--muted:#a3b3c9;--muted2:#71839b;--line:#2c3c51;--accent:#63d9c4;--accent2:#f2c57a;--red:#f28c91;--blue:#86bdfa;--radius:14px;--mono:ui-monospace,SFMono-Regular,Consolas,Monaco,'Liberation Mono',monospace;--sans:Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.75 var(--sans);-webkit-font-smoothing:antialiased}body:before{content:'';position:fixed;inset:0;pointer-events:none;z-index:-1;background:radial-gradient(ellipse 850px 600px at 90% 0%,rgba(68,132,172,.12),transparent 70%),radial-gradient(ellipse 700px 500px at -10% 75%,rgba(44,162,147,.07),transparent 70%)}
+a{color:#82d8ce;text-decoration:none;border-bottom:1px solid rgba(99,217,196,.3);overflow-wrap:anywhere}a:hover{color:#b8ffeb;border-color:currentColor}button,input{font:inherit}.layout{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:100vh}
+.sidebar{position:sticky;top:0;height:100vh;overflow:auto;padding:24px 19px;background:#0c1522;border-right:1px solid var(--line);scrollbar-width:thin;scrollbar-color:#374961 transparent}
+.brand{display:flex;gap:11px;align-items:center;padding:6px 5px 19px;border-bottom:1px solid var(--line);margin-bottom:16px}.brand-mark{display:grid;place-items:center;width:39px;height:39px;background:linear-gradient(135deg,var(--accent),#6c9bc7);color:#09111d;font-weight:900;border-radius:11px;letter-spacing:-1px}.brand strong{display:block;letter-spacing:.03em;font-size:15px}.brand small{color:var(--muted2);font-size:11px}.sidebar-label{font-size:10px;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted2);padding:7px 11px}.toc-item{display:block;padding:8px 11px;margin:3px 0;border-radius:9px;color:#adbed1;border:0;line-height:1.34;font-size:12px;transition:background .2s,color .2s}.toc-item:hover,.toc-item.active{background:#183243;color:var(--accent)}.toc-item.lv3{padding-left:25px;color:#829ab3;font-size:11px}.toc-item.lv3.active{color:var(--accent)}.sidebar-bottom{border-top:1px solid var(--line);margin-top:28px;padding:17px 10px;color:var(--muted2);font-size:11px;line-height:1.6}
+.main{max-width:100%;min-width:0}.topline{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:17px clamp(24px,4vw,76px);border-bottom:1px solid var(--line);background:rgba(10,16,27,.84);position:sticky;top:0;z-index:4;backdrop-filter:blur(16px)}.topline .crumb{color:var(--muted);font-size:12px}.topline .crumb strong{color:var(--text)}.actions{display:flex;gap:8px;align-items:center}.btn{background:var(--panel2);border:1px solid #34485b;color:var(--text);cursor:pointer;padding:8px 12px;border-radius:9px;font-size:12px;font-weight:650;white-space:nowrap}.btn:hover{background:#234055;border-color:#5baea8}.btn.accent{background:#183e3a;border-color:#346b62;color:#91f8dc}#search{padding:8px 12px;border:1px solid #334559;border-radius:8px;background:#101a29;color:var(--text);font-size:12px;min-width:180px;max-width:220px;outline:none}#search:focus{border-color:var(--accent)}#searchStatus{font-size:11px;color:var(--muted2)}
+.page{width:min(1120px,100%);margin:auto;padding:45px clamp(24px,4vw,76px) 110px}.eyebrow{font-size:10px;letter-spacing:.18em;text-transform:uppercase;font-weight:900;color:var(--accent);margin-bottom:15px}.hero{padding:0 0 36px;border-bottom:1px solid var(--line);margin-bottom:35px}.hero h1{font-size:clamp(32px,4vw,53px);font-weight:800;letter-spacing:-.05em;line-height:1.11;margin:11px 0 18px;background:linear-gradient(90deg,#fff 0%,#c6e5e9 60%,#88baae 100%);-webkit-background-clip:text;background-clip:text;color:transparent}.hero p{max-width:830px;font-size:15px;color:var(--muted)}.meta-row{display:flex;flex-wrap:wrap;gap:9px;margin:23px 0}.chip{font-size:11px;color:#c8d5e6;background:#142233;border:1px solid #2d465b;border-radius:999px;padding:5px 11px}.chip strong{color:#fff}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.metric{padding:14px 15px;border:1px solid var(--line);background:var(--panel);border-radius:12px}.metric .value{font-size:14px;font-weight:700;color:var(--text)}.metric .label{color:var(--muted2);font-size:11px;margin-top:3px}.content h1{display:none}.content h2{font-size:24px;font-weight:760;letter-spacing:-.025em;line-height:1.25;border-top:1px solid var(--line);padding-top:40px;margin:47px 0 17px;scroll-margin-top:95px}.content h2:first-of-type{border-top:0}.content h3{font-size:17px;letter-spacing:-.012em;margin:29px 0 11px;font-weight:730;scroll-margin-top:95px;color:#d8e9ee}.content h4{font-size:15px}.anchor{opacity:.35;font-size:12px;padding-left:9px;border:0}.content h2:hover .anchor,.content h3:hover .anchor{opacity:1}.content p{margin:12px 0 17px;color:#c9d5e3}.content strong{color:#f2f6fb}.content ul,.content ol{padding-left:21px;color:#ccd8e7}.content li{padding-left:4px;margin:7px 0}.content li::marker{color:var(--accent)}.content blockquote{padding:14px 19px 14px 21px;background:linear-gradient(90deg,#142c35,#101d2b);border:1px solid #2e5553;border-left:3px solid var(--accent);margin:19px 0 28px;border-radius:0 12px 12px 0;color:#e3f5f2}.content blockquote p{margin:2px}.content hr{border:0;border-top:1px solid var(--line);margin:45px 0}.callout{padding:19px 22px;background:#142434;border:1px solid #385766;border-left:4px solid var(--accent);border-radius:11px;color:#d2e3ef;line-height:1.7;margin:24px 0}.callout-important{background:#153034;border-color:#34665e}.phase-note{padding:17px 19px;border:1px solid #705d3e;background:#29241c;border-radius:11px;color:#ead5a8;margin:16px 0 19px}
+.table-wrap{width:100%;overflow-x:auto;border:1px solid var(--line);border-radius:11px;margin:18px 0 28px;scrollbar-width:thin;scrollbar-color:#49586c transparent}.content table{width:100%;border-collapse:collapse;min-width:640px;font-size:12.5px;line-height:1.62}.content th{background:#1b2b3b;color:#f0f6fb;text-align:left;position:relative;font-size:11px;text-transform:uppercase;letter-spacing:.055em;font-weight:760;border-bottom:1px solid #41556c;padding:12px 15px}.content td{vertical-align:top;color:#c4d1e1;padding:12px 15px;border-bottom:1px solid #26384b}.content tr:last-child td{border-bottom:0}.content tr:hover td{background:#152538}.content table strong{color:#f0f6f9}.content code{font:12px/1.65 var(--mono);color:#b4f1e5;background:#152b32;border:1px solid #28494c;padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}.content pre{background:#0a1420!important;border:1px solid #2e4154;border-radius:12px;padding:17px 19px;overflow-x:auto;margin:16px 0 26px;max-width:100%;line-height:1.65}.content pre code{display:block;background:transparent;border:0;padding:0;font-size:12px;line-height:1.75;color:#d2e7f3;white-space:pre;overflow-wrap:normal}.code-wrap{position:relative}.copy-btn{position:absolute;right:9px;top:9px;z-index:1;cursor:pointer;background:#1b3443;color:#cfebeb;border:1px solid #3a5963;border-radius:7px;padding:4px 10px;font-size:10px;font-weight:700}.copy-btn:hover{background:#29515a}
+.system-map{padding:23px 18px;display:flex;flex-direction:column;align-items:center;background:linear-gradient(135deg,#0e1a2a,#101d2b);border:1px solid #30465c;border-radius:17px;max-width:650px;margin:20px auto 27px}.sysbox{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:8px;width:min(100%,460px);padding:11px 13px;background:#182b3a;border:1px solid #365365;border-radius:10px;text-align:center}.sysbox .sys-icon{width:25px;height:25px;display:grid;place-items:center;color:#0c1c23;background:var(--accent);border-radius:50%;font-size:11px;font-weight:900}.sysbox strong{font-size:13px}.sysbox small{flex-basis:100%;color:#92afc4;line-height:1.25;font-size:11px}.sysbox.core{background:#253344;border-color:#6e6875}.sysbox.core .sys-icon{background:#efc57e}.sys-arrow{font-size:19px;color:#6fa399;margin:2px}.side-note{max-width:500px;margin-top:17px;padding:12px 16px;text-align:center;border-top:1px dashed #42616b;color:#a7c2d3;font-size:11px;line-height:1.6}.sequence{display:grid;grid-template-columns:repeat(7,minmax(110px,1fr));gap:7px;overflow-x:auto;margin:20px 0 26px;padding:1px 0}.sequence>div{border:1px solid #38546a;background:#15283a;border-radius:10px;padding:11px 9px;min-height:105px}.sequence b{display:block;font-size:10px;color:#7edde0}.sequence strong{font-size:12px;display:block;line-height:1.27;margin:7px 0}.sequence span{display:block;font-size:10px;color:#8dabc1;line-height:1.4}
+.footer{padding:33px 0 10px;border-top:1px solid var(--line);color:var(--muted2);font-size:12px}.footer strong{color:var(--text)}.footer-cols{display:flex;justify-content:space-between;gap:20px}.hint{font-size:10px;color:var(--muted2)}.mobile-menu{display:none}.focus-match{outline:2px solid var(--accent);outline-offset:6px;border-radius:4px}::selection{background:#1f6b60;color:white}
+@media(max-width:1150px){.sidebar{width:240px}.layout{grid-template-columns:240px minmax(0,1fr)}.page{padding-left:38px;padding-right:38px}}@media(max-width:850px){.layout{display:block}.sidebar{position:fixed;top:0;left:0;z-index:8;width:280px;transform:translateX(-102%);transition:transform .25s;box-shadow:15px 0 70px rgba(0,0,0,.45)}body.navopen .sidebar{transform:translateX(0)}.mobile-menu{display:inline-flex}.topline{padding:10px 16px}.page{padding:30px 21px 80px}.metrics{grid-template-columns:1fr 1fr 1fr}.actions{gap:5px}#search{min-width:100px;width:140px}.topline .crumb{display:none}}@media(max-width:560px){.metrics{grid-template-columns:1fr}.sequence{grid-template-columns:repeat(7,135px)}#search{width:116px}.btn{padding:7px}.btn.textbtn{font-size:0}.btn.textbtn:before{content:'Print';font-size:12px}.content h2{font-size:21px}.page{padding:25px 15px 75px}.hero h1{font-size:35px}}
+@media print{body{background:white;color:#141c25;font-size:10pt}.layout{display:block}.sidebar,.topline,.copy-btn,.anchor{display:none!important}.page{width:100%;padding:0}.hero h1{color:#1c333b;background:none;-webkit-text-fill-color:#1c333b}.hero p,.content p,.content td,.content li{color:#263240}.content h2{color:#162d37;break-after:avoid}.content h3{color:#21404b;break-after:avoid}.content table{font-size:8pt;min-width:0}.content th{background:#ddd!important;color:#111}.content td{color:#171b20!important}.table-wrap{overflow:visible}.content pre{white-space:pre-wrap;break-inside:avoid;background:#f3f5f6!important;color:#17202a}.content pre code{color:#17202a!important;white-space:pre-wrap}.callout,blockquote,.metric,.sysbox{background:#f2f5f6!important;color:#141c25!important}.footer{display:none}a{color:#153b4a}.content a:after{content:''} }
+</style></head>
+<body><div class="layout"><aside class="sidebar" id="navigation"><div class="brand"><div class="brand-mark">RW</div><div><strong>RustWrath</strong><small>PROJECT B · GENERAL HANDOFF</small></div></div><div class="sidebar-label">Document map</div><nav aria-label="Table of contents"><a href="#01-project-identity-and-immediate-goal" class="toc-item lv2"><span>01 — Project identity and immediate goal</span></a>
+<a href="#system-ownership-map" class="toc-item lv3"><span>System ownership map</span></a>
+<a href="#02-review-findings-and-evidence-maturity" class="toc-item lv2"><span>02 — Review findings and evidence maturity</span></a>
+<a href="#specific-source-concerns-to-carry-forward" class="toc-item lv3"><span>Specific source concerns to carry forward</span></a>
+<a href="#03-revised-solution-one-observable-transaction-per-meaningful-player-action" class="toc-item lv2"><span>03 — Revised solution: one observable transaction per meaningful player action</span></a>
+<a href="#event-chain-and-evidence-levels" class="toc-item lv3"><span>Event chain and evidence levels</span></a>
+<a href="#correlation-and-limitations" class="toc-item lv3"><span>Correlation and limitations</span></a>
+<a href="#recommended-event-model-illustrative-contract" class="toc-item lv3"><span>Recommended event model (illustrative contract)</span></a>
+<a href="#outcome-taxonomy" class="toc-item lv3"><span>Outcome taxonomy</span></a>
+<a href="#04-first-vertical-slice-quest-lifecycle-contract" class="toc-item lv2"><span>04 — First vertical slice: quest lifecycle contract</span></a>
+<a href="#example-timeline-demonstration-only" class="toc-item lv3"><span>Example timeline — demonstration only</span></a>
+<a href="#05-expand-to-other-systems-through-reusable-workflow-contracts" class="toc-item lv2"><span>05 — Expand to other systems through reusable workflow contracts</span></a>
+<a href="#06-broken-ui-diagnostics-logic-hit-testing-and-rendering" class="toc-item lv2"><span>06 — Broken UI diagnostics: logic, hit-testing and rendering</span></a>
+<a href="#07-diagnostic-storage-reports-and-privacy" class="toc-item lv2"><span>07 — Diagnostic storage, reports and privacy</span></a>
+<a href="#08-hotpatch-program-current-reality-and-target-design" class="toc-item lv2"><span>08 — Hotpatch program: current reality and target design</span></a>
+<a href="#hotpatch-incident-and-rollback-rules" class="toc-item lv3"><span>Hotpatch incident and rollback rules</span></a>
+<a href="#first-controlled-hotpatch-proof" class="toc-item lv3"><span>First controlled hotpatch proof</span></a>
+<a href="#09-priority-plan-and-work-packages" class="toc-item lv2"><span>09 — Priority plan and work packages</span></a>
+<a href="#10-test-matrix-failure-injection-and-acceptance-gates" class="toc-item lv2"><span>10 — Test matrix, failure injection and acceptance gates</span></a>
+<a href="#definition-of-done-for-the-first-diagnostic-slice" class="toc-item lv3"><span>Definition of done for the first diagnostic slice</span></a>
+<a href="#definition-of-done-for-first-hotpatch-slice" class="toc-item lv3"><span>Definition of done for first hotpatch slice</span></a>
+<a href="#11-risk-register-and-design-decisions" class="toc-item lv2"><span>11 — Risk register and design decisions</span></a>
+<a href="#12-instructions-to-the-next-agent" class="toc-item lv2"><span>12 — Instructions to the next agent</span></a>
+<a href="#13-linked-primary-sources-and-external-technical-references" class="toc-item lv2"><span>13 — Linked primary sources and external technical references</span></a></nav><div class="sidebar-bottom"><strong>Research anchor</strong><br>wotlk@236b1a7a · 2026-11-03<br>Source reviewed. No runtime tests executed for this handoff.<br><br>This is Handoff 1; detailed implementation handoff to follow on request.</div></aside><main class="main"><div class="topline"><button class="btn mobile-menu" id="menuBtn" aria-label="Open navigation">☰</button><div class="crumb"><strong>TECHNICAL HANDOFF</strong> &nbsp; / &nbsp; Research &amp; roadmap</div><div class="actions"><div><input id="search" type="search" placeholder="Search  Ctrl+K" aria-label="Search handoff"><div id="searchStatus" role="status" aria-live="polite"></div></div><button id="copyLink" class="btn">Copy link</button><button id="printBtn" class="btn textbtn">Print / PDF</button></div></div><div class="page"><header class="hero"><div class="eyebrow">PROJECT B / HANDOFF NO. 01 / SOURCE-ANCHORED</div><h1>RustWrath<br>General Technical Handoff</h1><p>Architecture, implementation maturity, failure diagnosis, safe hotpatching and an execution roadmap for a 3.3.5a-native Rust/Bevy client.</p><div class="meta-row"><div class="chip"><strong>Target</strong> · WoW 3.3.5a / 12340</div><div class="chip"><strong>Stack</strong> · Rust / Bevy 0.18.1</div><div class="chip"><strong>Branch</strong> · wotlk</div><div class="chip"><strong>Date</strong> · 03 Nov 2026</div></div><div class="metrics"><div class="metric"><div class="value">Private Windows alpha</div><div class="label">First product milestone</div></div><div class="metric"><div class="value">Observable gameplay</div><div class="label">Flight recorder + contracts</div></div><div class="metric"><div class="value">Versioned live updates</div><div class="label">Controlled, capability-based hotpatch</div></div></div></header><article class="content"><h1 id="rustwrath-general-technical-handoff">RustWrath — General Technical Handoff<a href="#rustwrath-general-technical-handoff" class="anchor" aria-label="Direct link to RustWrath — General Technical Handoff">#</a></h1>
+<p><strong>Project overview · architecture review · interaction diagnostics · seamless hotpatch roadmap</strong></p>
+<blockquote>
+<p><strong>Purpose.</strong> Provide the owner and the next implementation agent with an actionable, evidence-labelled picture of RustWrath and a coherent direction for fixing gameplay failures while iterating in a live client. This is <strong>Handoff 1: General View</strong>. The detailed per-file implementation specification and coding-agent execution prompt are intentionally reserved for a later handoff.</p>
+</blockquote>
+<p>&lt;div class=&quot;callout callout-important&quot;&gt;&lt;strong&gt;Recommended direction:&lt;/strong&gt; build a persistent &lt;em&gt;Interaction Flight Recorder&lt;/em&gt; and a &lt;em&gt;Gameplay Contract Validator&lt;/em&gt;, connect them to a controlled &lt;em&gt;Patch Revision Manager&lt;/em&gt;, and use the resulting evidence for targeted regression repairs. Preserve the existing networking, reducer, UI, asset and WM ownership boundaries. Establish a reproducible private alpha before broadening the feature set.&lt;/div&gt;</p>
+<h2 id="01-project-identity-and-immediate-goal">01 — Project identity and immediate goal<a href="#01-project-identity-and-immediate-goal" class="anchor" aria-label="Direct link to 01 — Project identity and immediate goal">#</a></h2>
+<p><strong>Repository:</strong> <a href="https://github.com/Dicetar/RustWrath">Dicetar/RustWrath</a> · <strong>active branch:</strong> <a href="https://github.com/Dicetar/RustWrath/tree/wotlk"><code>wotlk</code></a> · <strong>inspected HEAD:</strong> <code>236b1a7aebc017655f9a0fc0dea54e52dae891ef</code> (2026-11-02 UTC). The default <code>main</code> branch is a publication baseline and can lag the development branch. Begin every new session by checking the branch, HEAD, dirty working tree, and active owners; these coordinates will age.</p>
+<p>RustWrath is a Rust/Bevy client targeting <strong>World of Warcraft: Wrath of the Lich King 3.3.5a, build 12340</strong>. It derives from the <em>benilla</em> Vanilla 1.12.1 client, while connecting to the owner's existing <strong>AzerothCore</strong> server and reading assets from the owner's game installation. The separate React/Vite/Three web preview is an independent artifact: web-preview success is not evidence of native-client gameplay. See <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/README.md">README</a>, <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/CONTEXT.md">CONTEXT</a>, and <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/AGENTS.md">AGENTS</a>.</p>
+<p><strong>Near-term product promise:</strong> a <strong>private Windows alpha</strong> with login, realm and character navigation, entry into the world, and a real <strong>Northshire (Firna) quest → combat → loot → turn-in loop</strong>. Later platform ambitions include Souls-style combat, building, generated spaces, extensibility and the WorldMaster orchestration layer. A large collection of source files, unit tests and prototype subsystems already exists. Runtime acceptance of the entire route remains open in the cited project documents.</p>
+<h3 id="system-ownership-map">System ownership map<a href="#system-ownership-map" class="anchor" aria-label="Direct link to System ownership map">#</a></h3>
+<p>&lt;div class=&quot;system-map&quot;&gt;&lt;div class=&quot;sysbox&quot;&gt;&lt;span class=&quot;sys-icon&quot;&gt;1&lt;/span&gt;&lt;strong&gt;Input + stock UI&lt;/strong&gt;&lt;small&gt;Lua/XML widgets, egui dev overlay, client actions&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;sys-arrow&quot;&gt;↓&lt;/div&gt;&lt;div class=&quot;sysbox&quot;&gt;&lt;span class=&quot;sys-icon&quot;&gt;2&lt;/span&gt;&lt;strong&gt;Wrath command / wire&lt;/strong&gt;&lt;small&gt;Version-aware serialization, outbound queues, socket&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;sys-arrow&quot;&gt;↓&lt;/div&gt;&lt;div class=&quot;sysbox core&quot;&gt;&lt;span class=&quot;sys-icon&quot;&gt;3&lt;/span&gt;&lt;strong&gt;AzerothCore authority&lt;/strong&gt;&lt;small&gt;Quests, combat, character inventory, durable gameplay&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;sys-arrow&quot;&gt;↓&lt;/div&gt;&lt;div class=&quot;sysbox&quot;&gt;&lt;span class=&quot;sys-icon&quot;&gt;4&lt;/span&gt;&lt;strong&gt;Decoder + reducer&lt;/strong&gt;&lt;small&gt;3.3.5 packet events, GUID/world-generation-scoped replica&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;sys-arrow&quot;&gt;↓&lt;/div&gt;&lt;div class=&quot;sysbox&quot;&gt;&lt;span class=&quot;sys-icon&quot;&gt;5&lt;/span&gt;&lt;strong&gt;ECS + presentation&lt;/strong&gt;&lt;small&gt;World state, quest journal, UI events, graphics&lt;/small&gt;&lt;/div&gt;&lt;div class=&quot;side-note&quot;&gt;The diagnostic recorder observes &lt;strong&gt;every boundary&lt;/strong&gt;. A hotpatch revision manager operates inside the resident client. WorldMaster receives scoped observations and can later publish authenticated, compatible content revisions.&lt;/div&gt;&lt;/div&gt;</p>
+<ul>
+<li><strong>AzerothCore</strong> owns authoritative and durable world/player state. Client claims must reflect actually observed server state.</li>
+<li><strong>RustWrath client</strong> owns command intent, server-state projection, local prediction, graphical/UI presentation, diagnostics, and client-side patch activation.</li>
+<li><strong>WorldMaster (WM)</strong> is an existing Python orchestration service. Its native observation transport is a bounded loopback-only channel and <strong>is not</strong> a general untrusted patch-delivery service today. See <a href="https://github.com/Dicetar/RustWrath/tree/wotlk/crates/benilla-wm-native"><code>benilla-wm-native</code></a>.</li>
+<li><strong>The Vanilla donor and Wrath branch are separate compatibility targets.</strong> Retain 1.12 behavior behind explicit version boundaries and expand 12340 models where the semantics differ. The <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/adr-0001-wrath-compatibility-boundary.md">Wrath compatibility ADR</a> was <strong>proposed</strong> at the inspected point; its approval should be revalidated.</li>
+</ul>
+<h2 id="02-review-findings-and-evidence-maturity">02 — Review findings and evidence maturity<a href="#02-review-findings-and-evidence-maturity" class="anchor" aria-label="Direct link to 02 — Review findings and evidence maturity">#</a></h2>
+<p>Evidence levels used here: <strong>source-inspected</strong> = code/doc exists; <strong>focused-test reported</strong> = a documented targeted test ran; <strong>compiled reported</strong> = a historical build report exists; <strong>live-accepted</strong> = the player or receiver visibly verified the behavior. All claims must carry their actual level. I inspected the public repository and documentation; I <strong>did not run Rust builds, log in, launch the game, execute scripts or validate the server</strong> during preparation of this handoff.</p>
+<table>
+<thead>
+<tr>
+  <th>Area</th>
+  <th>Inspected state</th>
+  <th>Confidence / action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Native 3.3.5 client</td>
+  <td>Real Bevy/Cargo workspace, version-aware code and packet/reducer flow; private alpha under repair</td>
+  <td><strong>Source-inspected.</strong> Verify real Northshire route end to end.</td>
+</tr>
+<tr>
+  <td>Quest system</td>
+  <td><code>ui_quest</code> separates verbs, packet handlers, state and feed; <code>ui_quest_log</code> derives journal state</td>
+  <td><strong>Source-inspected.</strong> Ideal first correlated trace/contract.</td>
+</tr>
+<tr>
+  <td>UI diagnostics</td>
+  <td>Lua error/load/warning records, script lifecycle, developer egui overlay</td>
+  <td><strong>Implemented fragments.</strong> Host-persistent, action-correlated monitoring required.</td>
+</tr>
+<tr>
+  <td>Spell diagnostics</td>
+  <td>Recent cast journal captures start/go/fail/impact</td>
+  <td><strong>Implemented fragment.</strong> Generalize the event model and retain cross-system traces.</td>
+</tr>
+<tr>
+  <td>Packet diagnostics</td>
+  <td>Opcode/body trace with sensitive-payload handling; launch log collector exists</td>
+  <td><strong>Implemented fragments.</strong> Connect intent→writer→response→reducer→UI.</td>
+</tr>
+<tr>
+  <td>Native hotpatch</td>
+  <td>Pose ABI, DLL publisher, loader and Bevy adapter; focused roundtrip reported</td>
+  <td><strong>Source + focused test reported.</strong> Real same-PID in-game acceptance pending.</td>
+</tr>
+<tr>
+  <td>Shader hot reload</td>
+  <td>Embedded watcher opt-in</td>
+  <td><strong>Source-inspected.</strong> Validate rendering and failure recovery.</td>
+</tr>
+<tr>
+  <td>Lua/UI reload</td>
+  <td>Existing VM lifecycle and <code>ReloadUI()</code></td>
+  <td><strong>Source-inspected.</strong> Developer overlay, reload survival and repeated runs need acceptance.</td>
+</tr>
+<tr>
+  <td>Asset/content revisions</td>
+  <td>Profile reload exists; live dependent caches/models remain a future stage</td>
+  <td><strong>Planned.</strong> Require revision-coherent reimport and rollback.</td>
+</tr>
+<tr>
+  <td>Movement/combat/space/story modules</td>
+  <td>ABI definitions and simple enablement registry</td>
+  <td><strong>Scaffolding.</strong> Full independent runtime loaders/activation not demonstrated.</td>
+</tr>
+<tr>
+  <td>Automated CI</td>
+  <td>Workflow exists for forks/dispatch; no Actions runs in the checked public API</td>
+  <td><strong>Verification gap.</strong> Ensure development branch commits/PRs execute meaningful gates.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Corrections to the older architecture review.</strong> <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/architecture-review-2026-10-26.md">The 2026-10-26 review</a> was grounded in an earlier checkpoint. Several highlighted defects were subsequently repaired in inspected source: Wrath falling/swimming flag translation, the two-item-damage-triplet decoder, movement queue eviction protecting critical actions, mode-aware UI build identity, and initial cooldown decoding. Preserve regression tests for these repairs. The historical report remains valuable for still-open semantic gaps; it cannot be re-used verbatim as the current defect list.</p>
+<h3 id="specific-source-concerns-to-carry-forward">Specific source concerns to carry forward<a href="#specific-source-concerns-to-carry-forward" class="anchor" aria-label="Direct link to Specific source concerns to carry forward">#</a></h3>
+<ol>
+<li><strong>Outbound action admission:</strong> <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/wrath.rs">Wrath outbox code</a> has a cap of 256 and logs a warning when full, while some calling sites ignore the return of <code>send</code>. The recorder should distinguish <strong>user intent</strong>, <strong>accepted into channel</strong>, <strong>accepted into outbox</strong>, <strong>actually written</strong>, and <strong>refused</strong>. Recording <code>send()</code> as success would hide real loss.</li>
+<li><strong>Unbounded internal queues:</strong> Some <code>crossbeam_channel::unbounded()</code> session-event channels exist in the Wrath worker. Design bounded/backpressure semantics for high-rate telemetry, and separately review the correctness constraints for gameplay events; never silently discard critical ordered events.</li>
+<li><strong>Count-handling parser risk:</strong> The item-stat reader clamps a declared statistic count with <code>.min(64)</code> instead of rejecting or consuming excess declared fields. On malformed packets, that can misalign subsequent parsing. Preserve as a targeted packet fuzz/regression case.</li>
+<li><strong>Hotpatch failed-publication retry:</strong> In <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-hotpatch/src/lib.rs"><code>Host::poll</code></a>, the manifest text is marked <code>observed</code> before TOML parsing / DLL opening completes. Re-reading the unchanged manifest then skips a candidate that previously failed transiently. Track attempted/succeeded/retryable states separately.</li>
+<li><strong>UI diagnostic lifetime:</strong> <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-ui/src/script/diagnostics.rs"><code>DiagnosticLog</code></a> is bounded (256 distinct messages) and owned by the UI model; a new VM clears it. The resident host should retain incidents through <code>/reload</code> and transitions, with explicit retention limits.</li>
+<li><strong>CI gate semantics:</strong> <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/.github/workflows/ci.yml"><code>.github/workflows/ci.yml</code></a> gates same-repository PR jobs off via a head-repo check and has no push trigger. Confirm the repository's intended execution model, then establish evidence on the actual shared development branch.</li>
+</ol>
+<h2 id="03-revised-solution-one-observable-transaction-per-meaningful-player-action">03 — Revised solution: one observable transaction per meaningful player action<a href="#03-revised-solution-one-observable-transaction-per-meaningful-player-action" class="anchor" aria-label="Direct link to 03 — Revised solution: one observable transaction per meaningful player action">#</a></h2>
+<p>Build <strong>three cooperating components</strong>:</p>
+<ol>
+<li><strong>Interaction Flight Recorder (IFR)</strong> — persistent, structured, privacy-conscious telemetry. Captures user intent, UI callbacks, command admission, outbound serialization/writes, inbound decoded responses, reducer/state projections, Lua events and rendered/UI-visible consequences.</li>
+<li><strong>Gameplay Contract Validator (GCV)</strong> — small, domain-specific finite-state machines that compare actual observations with expected outcomes. Categorizes successes, explicit server refusals, stalls, ambiguous matches and confirmed inconsistencies. Focus first on quests.</li>
+<li><strong>Patch Revision Manager (PRM)</strong> — stages compatible module/content revisions, validates dependencies and ABI, activates at a safe boundary, observes health and reverts candidate <em>client-side</em> revisions if needed. It uses the same recorder and regression fixtures.</li>
+</ol>
+<p>Keep them in the <strong>resident host</strong>. The stock Lua VM, addon scripts, UI frames and dynamically patched implementations may be rebuilt; the recorder's identity, pending incidents and patch history must persist through those lifecycles. A native recorder implementation requires <strong>one coordinated bootstrap build/restart</strong> to install its hooks. Future components can then use the stable interfaces it exposes.</p>
+<h3 id="event-chain-and-evidence-levels">Event chain and evidence levels<a href="#event-chain-and-evidence-levels" class="anchor" aria-label="Direct link to Event chain and evidence levels">#</a></h3>
+<p>&lt;div class=&quot;sequence&quot;&gt;&lt;div&gt;&lt;b&gt;01&lt;/b&gt;&lt;strong&gt;Player intent&lt;/strong&gt;&lt;span&gt;Widget / key / world hit&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;02&lt;/b&gt;&lt;strong&gt;UI dispatch&lt;/strong&gt;&lt;span&gt;Event / Lua handler / guard&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;03&lt;/b&gt;&lt;strong&gt;Command admission&lt;/strong&gt;&lt;span&gt;Queue accepted or explicit refusal&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;04&lt;/b&gt;&lt;strong&gt;Socket writer&lt;/strong&gt;&lt;span&gt;Outbound packet written&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;05&lt;/b&gt;&lt;strong&gt;Server outcome&lt;/strong&gt;&lt;span&gt;Refusal / response / observed state&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;06&lt;/b&gt;&lt;strong&gt;Projection&lt;/strong&gt;&lt;span&gt;Reducer → ECS / quest store&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;07&lt;/b&gt;&lt;strong&gt;Presentation&lt;/strong&gt;&lt;span&gt;Lua event / journal / visible frame&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;</p>
+<p>The strongest useful failure diagnosis is a <strong>specific boundary mismatch</strong>: “server-state transition observed; journal row absent,” “UI action admitted; writer refused,” or “Lua handler threw before creating a command.” An incomplete chain is reported as <strong>uncertain</strong> with the last confirmed stage. Generic timeouts alone rarely prove whether the server, client or UI is defective.</p>
+<h3 id="correlation-and-limitations">Correlation and limitations<a href="#correlation-and-limitations" class="anchor" aria-label="Direct link to Correlation and limitations">#</a></h3>
+<p>The stock 3.3.5 protocol provides <strong>no general client-generated interaction ID</strong> attached to every server reply. Generate a local <code>interaction_id</code> and correlate inbound events using <code>(session_epoch, world_generation, quest_id, NPC GUID, command class, event sequence, monotonic time window)</code>. Track the candidate confidence as <code>exact</code>, <code>strong</code>, <code>heuristic</code>, or <code>unmatched</code>. Multiple simultaneous interactions and asynchronous background updates can cause ambiguity; preserve it.</p>
+<p>A future <strong>negotiated WM-enhanced/server diagnostic channel</strong> could carry an explicit request ID for developer-only acknowledgments. Keep <strong>baseline 3.3.5 packets unchanged</strong> and preserve ordinary clients. Server instrumentation is optional and must honor AzerothCore authority; it should never invent gameplay confirmations.</p>
+<h3 id="recommended-event-model-illustrative-contract">Recommended event model (illustrative contract)<a href="#recommended-event-model-illustrative-contract" class="anchor" aria-label="Direct link to Recommended event model (illustrative contract)">#</a></h3>
+<pre><code class="language-json">{
+  &quot;schema&quot;: &quot;rustwrath.diagnostic.event.v1&quot;,
+  &quot;run_id&quot;: &quot;local-run-20261103-001&quot;,
+  &quot;interaction_id&quot;: &quot;act-000184&quot;,
+  &quot;seq&quot;: 8281,
+  &quot;monotonic_ms&quot;: 328944,
+  &quot;session_epoch&quot;: 17,
+  &quot;world_generation&quot;: 4,
+  &quot;actor_scope&quot;: &quot;self&quot;,
+  &quot;domain&quot;: &quot;quest&quot;,
+  &quot;operation&quot;: &quot;accept&quot;,
+  &quot;quest_id&quot;: 783,
+  &quot;target_guid&quot;: &quot;0x0000000000001a42&quot;,
+  &quot;stage&quot;: &quot;command_admission&quot;,
+  &quot;outcome&quot;: &quot;accepted&quot;,
+  &quot;evidence&quot;: &quot;client_command_queue&quot;,
+  &quot;correlation_confidence&quot;: &quot;exact&quot;,
+  &quot;source_revision&quot;: &quot;236b1a7a&quot;,
+  &quot;binary_digest&quot;: &quot;&lt;actual runtime hash&gt;&quot;,
+  &quot;content_revision&quot;: &quot;&lt;actual active revision&gt;&quot;,
+  &quot;patch_revision&quot;: null,
+  &quot;details&quot;: { &quot;command&quot;: &quot;QuestgiverAccept&quot; }
+}
+</code></pre>
+<p>Use monotonic time for ordering/durations; record wall-clock time in <strong>run metadata</strong> for cross-process reconciliation. Include <code>source_revision</code>, <strong>running executable hash</strong>, selected asset profile, and the exact active hotpatch/content revisions; these may differ from the current Git checkout. Treat <code>trace_id</code>/<code>span_id</code> as local diagnostic IDs rather than trying to insert unsupported trace headers into WoW packets. The <a href="https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/">OpenTelemetry messaging guidance</a> provides a useful conceptual model for asynchronous producer/consumer correlation.</p>
+<h3 id="outcome-taxonomy">Outcome taxonomy<a href="#outcome-taxonomy" class="anchor" aria-label="Direct link to Outcome taxonomy">#</a></h3>
+<table>
+<thead>
+<tr>
+  <th>Outcome</th>
+  <th>Meaning</th>
+  <th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>observed_success</code></td>
+  <td>Expected authoritative and presentation evidence arrived</td>
+  <td>Quest appears in server-backed slots and journal</td>
+</tr>
+<tr>
+  <td><code>expected_refusal</code></td>
+  <td>Server or validated client guard rejected action with a reason</td>
+  <td>Quest log full; invalid reward selection</td>
+</tr>
+<tr>
+  <td><code>command_refused</code></td>
+  <td>Local queue/write path explicitly refused the request</td>
+  <td>Outbox capacity hit</td>
+</tr>
+<tr>
+  <td><code>timeout_unverified</code></td>
+  <td>Required evidence absent within a configurable window</td>
+  <td>Request sent; no correlatable response/state</td>
+</tr>
+<tr>
+  <td><code>state_mismatch</code></td>
+  <td>Authoritative state and projected client model disagree</td>
+  <td>Quest slot observed, projection lacks quest</td>
+</tr>
+<tr>
+  <td><code>presentation_mismatch</code></td>
+  <td>Model contains expected state, UI fails to present it</td>
+  <td>Journal missing otherwise active quest</td>
+</tr>
+<tr>
+  <td><code>script_or_render_error</code></td>
+  <td>Lua/UI/rendering error during this interaction</td>
+  <td>Missing handler, nil global, bad widget bounds</td>
+</tr>
+<tr>
+  <td><code>ambiguous</code></td>
+  <td>Multiple plausible event matches; provenance insufficient</td>
+  <td>Two same-quest updates in flight</td>
+</tr>
+<tr>
+  <td><code>cancelled_or_superseded</code></td>
+  <td>A normal transition replaced the pending interaction</td>
+  <td>Logout, UI reload, teleport, panel close</td>
+</tr>
+</tbody>
+</table>
+<p>The validator should emit a <strong>case/fingerprint</strong> such as <code>quest.accept.presentation_missing</code> and a compact evidence graph rather than thousands of duplicate log lines. Make valid business/server refusals visible and intelligible; keep them distinct from bugs. Different actions need different timeout policies, and latency distributions should be measured before setting strict thresholds.</p>
+<h2 id="04-first-vertical-slice-quest-lifecycle-contract">04 — First vertical slice: quest lifecycle contract<a href="#04-first-vertical-slice-quest-lifecycle-contract" class="anchor" aria-label="Direct link to 04 — First vertical slice: quest lifecycle contract">#</a></h2>
+<p><strong>Instrument these existing owners rather than cloning them:</strong> <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_quest/verbs.rs"><code>ui_quest/verbs.rs</code></a> for UI quest calls and guards; <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_quest/net.rs"><code>ui_quest/net.rs</code></a> for inbound quest events; <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_quest/mod.rs"><code>ui_quest/mod.rs</code></a> for open/close/feed; <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_quest_log.rs"><code>ui_quest_log.rs</code></a> for journal and cached quest templates; the Wrath worker/reducer for authoritative slots and session-scoped state.</p>
+<table>
+<thead>
+<tr>
+  <th>Workflow</th>
+  <th>Required observations</th>
+  <th>Diagnostic when missing</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Open NPC/questgiver</td>
+  <td>World hit-test → interaction command → greeting/detail/progress/reward event → questgiver view created → expected frame visible</td>
+  <td><code>quest.open.input_missing</code>, <code>.wire_missing</code>, <code>.panel_missing</code></td>
+</tr>
+<tr>
+  <td>Select quest</td>
+  <td>Row identifier/index resolved → guard passed → query/complete command sent → appropriate detail/progress response → panel opened</td>
+  <td><code>quest.select.bad_row</code>, <code>.response_unverified</code>, <code>.panel_mismatch</code></td>
+</tr>
+<tr>
+  <td>Accept quest</td>
+  <td><code>QuestgiverAccept</code> admitted and written → server-owned active quest slot observed (or explicit refusal) → journal data and displayed row verified</td>
+  <td><code>quest.accept.admission_refused</code>, <code>.state_unverified</code>, <code>.journal_missing</code></td>
+</tr>
+<tr>
+  <td>Objective progress</td>
+  <td>Expected server progress/update → objective-count state → quest watcher/toast/current journal representation</td>
+  <td><code>quest.objective.state_mismatch</code>, <code>.toast_missing</code></td>
+</tr>
+<tr>
+  <td>Journal open</td>
+  <td>UI event/handler → authoritative quest model and template availability → journal widget with correct row/text</td>
+  <td><code>quest.journal.script_error</code>, <code>.template_missing</code>, <code>.row_hidden</code></td>
+</tr>
+<tr>
+  <td>Request hand-in</td>
+  <td><code>QuestgiverComplete</code> / <code>QuestgiverRequestReward</code> → progress/reward view as permitted → choose reward request</td>
+  <td><code>quest.turnin.panel_missing</code>, <code>.invalid_choice</code></td>
+</tr>
+<tr>
+  <td>Complete and reward</td>
+  <td>Server completion event → quest removed/chain updated as appropriate → XP/money/item state deltas (separate updates) → UI notification</td>
+  <td><code>quest.reward.state_unverified</code>, <code>.inventory_projection</code>, <code>.display_missing</code></td>
+</tr>
+<tr>
+  <td>Abandon/share</td>
+  <td>Correct command and allowed state transition / push result / refusal</td>
+  <td><code>quest.abandon.state_unverified</code>, <code>quest.share.response_missing</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Important subtleties:</strong> receiving <code>SMSG_QUESTGIVER_QUEST_COMPLETE</code> can establish a <strong>completion event</strong>; actual money, XP and items arrive through other object/item update paths. Reward accounting must compare the server-observed before/after state where meaningful and allow legitimate variations (max-level XP, quest chains, selectable reward, inventory capacity, asynchronous updates). Some successful quest interactions leave a panel open or transition to another quest. Validation rules must match <strong>real 12340/AzerothCore semantics</strong>, including supported customizations, rather than equating “the window closed” with success.</p>
+<p><strong>Example incident:</strong> <code>quest.accept.journal_missing</code> — user clicked Accept; command admitted and written; quest ID found in the player's replicated quest slots; journal template known; journal UI row absent after the relevant update. This focuses investigation on quest-log projection, Lua update signaling, or UI visibility. The sample quest ID in this document is fictional and serves only as a schema demonstration.</p>
+<h3 id="example-timeline-demonstration-only">Example timeline — demonstration only<a href="#example-timeline-demonstration-only" class="anchor" aria-label="Direct link to Example timeline — demonstration only">#</a></h3>
+<pre><code class="language-text">[0.000] act-184 quest.accept ui_input          observed
+[0.004] act-184 quest.accept lua_guard         allowed
+[0.011] act-184 quest.accept command_admission accepted
+[0.020] act-184 quest.accept socket_write      written
+[0.089] act-184 quest.accept quest_slot        active   (strong match)
+[0.115] act-184 quest.accept journal_model     present
+[0.132] act-184 quest.accept journal_widget    absent
+[0.133] incident quest.accept.presentation_missing
+         suspected boundary: UI event / frame visibility
+</code></pre>
+<h2 id="05-expand-to-other-systems-through-reusable-workflow-contracts">05 — Expand to other systems through reusable workflow contracts<a href="#05-expand-to-other-systems-through-reusable-workflow-contracts" class="anchor" aria-label="Direct link to 05 — Expand to other systems through reusable workflow contracts">#</a></h2>
+<table>
+<thead>
+<tr>
+  <th>Family</th>
+  <th>Target failure scenarios</th>
+  <th>Primary proof</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Spells/combat</td>
+  <td>Button click fails, cast refused, cooldown mismatches, damage never appears, animation absent</td>
+  <td>Intent → cast command → cast result/state → presentation. Reuse <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/debug_panel/journal.rs"><code>CastJournal</code></a>.</td>
+</tr>
+<tr>
+  <td>Inventory/equipment</td>
+  <td>Item click ignored, stack disappears, equip accepted but stats/model stale, bank slots missing</td>
+  <td>Slot/stack authoritative state vs UI/visual model; item GUID/count reconciliation.</td>
+</tr>
+<tr>
+  <td>Vendors/economy</td>
+  <td>Buy/sell click, money deducted, item absent, wrong error dialog</td>
+  <td>Merchant response and server-owned money/inventory deltas.</td>
+</tr>
+<tr>
+  <td>Character/glue screens</td>
+  <td>Click ignored, realm choice unavailable, creation/cancel stalls, loading screen stuck</td>
+  <td>Screen lifecycle, Lua handler and network state machine; handle destructive actions with owner approval.</td>
+</tr>
+<tr>
+  <td>World transitions</td>
+  <td>Teleport/worldport, character missing, stale GUID, perpetual loading</td>
+  <td>Session/world-generation identity, decoder events, entity spawn and render proof.</td>
+</tr>
+<tr>
+  <td>Assets/graphics</td>
+  <td>Mesh missing, shader failure, skeleton drift, material corrupt, animated model invisible</td>
+  <td>Asset lineage, revision resolution, GPU pipeline status, visibility/geometry probe.</td>
+</tr>
+<tr>
+  <td>Chat/social/party</td>
+  <td>Input consumed without result, unknown addon API, party update missing</td>
+  <td>Private and server-visible event routing; aggressive redaction.</td>
+</tr>
+<tr>
+  <td>Generated spaces / building / Souls combat</td>
+  <td>Custom action refused or incorrectly treated as stock</td>
+  <td>Capability negotiation, typed extension contracts, authoritative server outcomes.</td>
+</tr>
+</tbody>
+</table>
+<p>Each validator should be <strong>small and independent</strong>: domain event predicates, state transitions, correlation keys, allowed terminal conditions and diagnostic tags. Share a central event schema, exporter and incident lifecycle; keep domain rules beside their owning code. Use table-driven tests, synthetic packet fixtures and opt-in headless UI fixtures before expensive live play.</p>
+<h2 id="06-broken-ui-diagnostics-logic-hit-testing-and-rendering">06 — Broken UI diagnostics: logic, hit-testing and rendering<a href="#06-broken-ui-diagnostics-logic-hit-testing-and-rendering" class="anchor" aria-label="Direct link to 06 — Broken UI diagnostics: logic, hit-testing and rendering">#</a></h2>
+<p>A visible button can fail at several separate levels. Build a developer UI inspector with an always-resident event sink that records:</p>
+<ul>
+<li><strong>Input reachability:</strong> screen coordinates, logical pixel scale, target widget/frame identity, actual hit-test result, z-order, visibility, clipping/occlusion, active modal and mouse-capture owner.</li>
+<li><strong>Dispatch:</strong> <code>OnMouseDown</code>, <code>OnClick</code>, Lua callback invocation, exception, guard return, command emitted. Capture handler/file identity when available without logging arbitrary Lua source or secrets.</li>
+<li><strong>UI model:</strong> frame creation/teardown, loaded AddOn/FrameXML identity, missing methods/globals/CVars, event registration, <code>QUEST_LOG_UPDATE</code>/other event dispatch where applicable, expected data rows.</li>
+<li><strong>Layout/render:</strong> frame dimensions and coordinates, alpha/hidden states, draw-list presence, missing texture/font/shader, invalid geometry; optional screenshot/visual diff where a deterministic baseline exists.</li>
+<li><strong>Reload continuity:</strong> prior VM identity, requested reload, unload/save phase, fresh VM loaded, rebind succeeded, error count, player/world/session identity retained.</li>
+</ul>
+<p>Use the existing <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-ui/src/script/diagnostics.rs"><code>script diagnostics</code></a>, <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_script/lifecycle.rs"><code>ui_script/lifecycle.rs</code></a>, <a href="https://github.com/Dicetar/RustWrath/tree/wotlk/crates/benilla-app/src/debug_panel"><code>debug_panel</code></a>, and the <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/tools/collect-diagnostics.ps1">PowerShell diagnostics collector</a> as integration points. The current overlay could gain a <strong>Recent Interactions</strong> tab and an <strong>Inspect Last Failed Click</strong> command.</p>
+<p><strong>UI success is an evidence ladder:</strong> handler invoked → model updated → widget bound/visible → pixels plausibly rendered. State and geometry checks can be automated consistently. Visual appearance, design quality and complex occlusion still benefit from manual inspection or carefully controlled screenshot baselines. Avoid claiming universal visual-bug detection.</p>
+<h2 id="07-diagnostic-storage-reports-and-privacy">07 — Diagnostic storage, reports and privacy<a href="#07-diagnostic-storage-reports-and-privacy" class="anchor" aria-label="Direct link to 07 — Diagnostic storage, reports and privacy">#</a></h2>
+<p><strong>Default behavior:</strong> in-memory rolling history of recent structured events, small summaries always on in developer builds, and selective detailed tracing per domain. Make the recorder bounded in <strong>event count, byte budget and disk age</strong>; use a non-blocking bounded writer with an explicit <code>telemetry_events_dropped</code> counter. Never block the render/input thread on diagnostic disk I/O. Consider <code>tracing</code> and a bounded logging/export sink; <a href="https://docs.rs/tracing-appender/latest/tracing_appender/"><code>tracing-appender</code></a> provides off-thread file writing primitives, but its queue/drop policy must be configured and tested for this use.</p>
+<p><strong>Illustrative defaults to benchmark, not mandated limits:</strong> a 60-second pre-incident circular window, 10,000 structured events in memory, a configurable 100 MiB local incident-storage budget, rotating JSONL files and a minimal user action to pin/export a case. Separate high-rate movement/animation sampling from loss-intolerant audit milestones. On overflow, preserve a trustworthy <em>gap record</em> so investigators know whether evidence is complete.</p>
+<p><strong>One-click bug report:</strong> the player presses a dev-key or chooses “Report last action.” The client captures an incident ID, chronological sanitized trace, summary/fingerprint, currently loaded patch/module/content versions, source + running executable digest, asset profile, recent bounded Lua errors, selected system snapshot and optionally a screenshot. It produces a local ZIP/JSONL/Markdown bundle. The user may add a short reproduction note. Automatic report preparation can coexist with manual initiation; automatic network upload should remain opt-in.</p>
+<p><strong>Redaction and minimization:</strong> exclude passwords, session/auth proofs, bearer tokens, channel passwords, private chat, remote player names, arbitrary packet bodies, database credentials, addon secrets, personal file paths and unapproved screenshots from shareable exports by default. The existing <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/net/io/wire_trace.rs">wire trace</a> already handles some credential and chat cases, but a new exporter requires its <strong>own comprehensive allowlist</strong> and tests. Keep rich raw captures local and explicitly marked sensitive. Validate archive paths and prevent untrusted content from becoming executable on report import.</p>
+<p><strong>Report layout:</strong> <code>summary.md</code>, <code>incident.json</code>, <code>events.jsonl</code>, <code>environment.json</code>, <code>active_revisions.json</code>, <code>ui_errors.json</code>, <code>protocol_summary.json</code>, optional <code>screenshot.png</code>, optional <code>replay_fixture.json</code>. Every field should disclose observed vs inferred evidence and any data loss. Content provenance matters as much as Git revision.</p>
+<h2 id="08-hotpatch-program-current-reality-and-target-design">08 — Hotpatch program: current reality and target design<a href="#08-hotpatch-program-current-reality-and-target-design" class="anchor" aria-label="Direct link to 08 — Hotpatch program: current reality and target design">#</a></h2>
+<p>The objective is rapid iteration <strong>without losing the current player session</strong> whenever a supported patch class allows safe activation. <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/adr-0002-live-client-modules.md">ADR-0002</a> is the authoritative source for the current native pose path. The implemented sample has a DLL loader, a C ABI, immutable digest-named files and an atomic <code>ready.toml</code> publisher. The documentation reports a passing focused Bevy roundtrip test, while <strong>visible same-process in-game activation remains pending</strong>. The <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/tools/publish-pose-module.ps1"><code>publish-pose-module.ps1</code></a> script is a real initial test vehicle.</p>
+<table>
+<thead>
+<tr>
+  <th>Change class</th>
+  <th>Current state</th>
+  <th>Target activation / promise</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Compatible pose postprocessor</td>
+  <td>Implemented loader/adapter, targeted test reported</td>
+  <td>Swap complete dirty-rig batch at frame boundary; retain old implementation; verify PID, rig, session</td>
+</tr>
+<tr>
+  <td>Compatible WGSL source</td>
+  <td>Opt-in embedded watching</td>
+  <td>Hot-watch, compile, validate visible result; preserve previously working pipeline on failure</td>
+</tr>
+<tr>
+  <td>Lua/XML/addon UI</td>
+  <td>VM reload lifecycle exists; content overlay work pending</td>
+  <td>Versioned overlay + <code>/reload</code> with retained socket/character/world; explicit UI lifecycle checks</td>
+</tr>
+<tr>
+  <td>Texture, sprite, material, tuning</td>
+  <td>Dependent reimport pipeline missing</td>
+  <td>Build immutable coherent revision, invalidate all dependent caches, prepare GPU objects, atomic visible swap</td>
+</tr>
+<tr>
+  <td>M2/SKIN/animation</td>
+  <td>Live reimport/rebind missing</td>
+  <td>Replace affected model family while retaining logical entity and safe animation phase</td>
+</tr>
+<tr>
+  <td>Terrain/WMO/collision</td>
+  <td>Planned</td>
+  <td>Staged affected-cell swap with render/collision coherence and server-authority respect</td>
+</tr>
+<tr>
+  <td>Movement/combat/story/space native ABI</td>
+  <td>Types and registry scaffolding</td>
+  <td>Stable interfaces, per-kind loader/activation, host-owned state, rollback and domain tests</td>
+</tr>
+<tr>
+  <td>New Bevy host systems, schema or ABI</td>
+  <td>Resident host must be rebuilt</td>
+  <td>Coordinated maintenance restart; make rejoin/context recovery smooth where feasible</td>
+</tr>
+<tr>
+  <td>WM-delivered revisions</td>
+  <td>No authenticated remote distribution contract yet</td>
+  <td>Future authenticated publisher, allowlisted modules/content, opt-in negotiated delivery</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Stable host principle.</strong> Retain the Bevy ECS, GPU/device, socket, clocks, authoritative replicas, player identity, input and diagnostic services in the base executable. Dynamic modules implement <strong>explicit, versioned host interfaces</strong> and operate over borrowed bounded data at known schedule barriers. Avoid attempting to repeatedly install/uninstall arbitrary Bevy plugins, passing Rust-native structs/trait objects/allocators across unstable DLL boundaries, or running arbitrary untrusted DLLs inside the process.</p>
+<p><strong>Publication protocol, proposed v2:</strong></p>
+<ol>
+<li><strong>Build</strong> only the affected module or content unit; preserve the last-known-good runtime.</li>
+<li><strong>Stage</strong> into a private candidate directory; attach source revision, runtime ABI/feature requirements, selected asset profile, dependency digests, full artifact hash (prefer SHA-256), and an authenticated publisher identity for remote delivery.</li>
+<li><strong>Preflight</strong> schema, ABI, allowed paths, size, dependency closure, privacy/trust rules, deterministic offline regression cases and module-specific validation.</li>
+<li><strong>Prepare</strong> resources and dependencies off the render-critical path where possible; existing assets and modules stay pinned. Await completion/error with bounded budgets and explicit states.</li>
+<li><strong>Activate</strong> at a defined safe boundary. For the pose slice, validate a complete batch before promotion; for content, stage <em>all</em> dependent resources and commit the coherent revision as a unit.</li>
+<li><strong>Observe</strong> health and functional invariants: frame time, panics/errors, GPU/asset failures, session epoch, world identity, quest state, inventory state and regression outcomes.</li>
+<li><strong>Commit or revert</strong>. On candidate failure, restore the previous client-side revision and record the exact reason. Preserve the last-known-good artifacts and expose the active revision in diagnostics.</li>
+<li><strong>Retire</strong> old resources safely after references/frames are released; enforce disk/memory retention and reject inconsistent or concurrent publishers.</li>
+</ol>
+<p>The current <code>sha1</code> digest is treated by ADR-0002 as <strong>local file identity/completeness</strong>, <strong>not authenticity</strong>. A remote WM publisher must use an authenticated/signature-capable delivery contract. A stronger digest such as SHA-256 is recommended for the new generalized manifest; migration should preserve backwards compatibility for the existing local ABI 1 loader.</p>
+<h3 id="hotpatch-incident-and-rollback-rules">Hotpatch incident and rollback rules<a href="#hotpatch-incident-and-rollback-rules" class="anchor" aria-label="Direct link to Hotpatch incident and rollback rules">#</a></h3>
+<ul>
+<li>Keep <em>load failure</em>, <em>validation failure</em>, <em>activation failure</em>, <em>health regression</em>, and <em>manual rollback</em> as distinct events. Preserve activation history and prior revision identity.</li>
+<li>Fix the current loader's premature <code>observed</code> latch. Distinguish a broken <strong>permanent</strong> publication from a transient file lock/read failure; retry with capped backoff where appropriate. Never let a corrupted candidate thrash indefinitely.</li>
+<li>Use <strong>single publisher / serialization</strong> for publication manifests; stage atomically, then activate after dependencies are ready. For WM delivery, authenticate origin, include replay protection/revision ordering and explicitly scope the target.</li>
+<li>Treat <strong>native DLL crashes as process failures</strong>. Output validation cannot catch arbitrary memory corruption. Use only trusted local code and keep a crash-detectable last-known-good selection for safe next-launch recovery. True containment requires process isolation.</li>
+<li>Client rollback restores <strong>client code/assets/state projections</strong>. It cannot undo irreversible server transactions such as quest hand-ins, gold transfers or combat outcomes. Never automatically replay such actions as validation.</li>
+<li>“Seamless” requires measured budgets: no logout for compatible patches, no stale handle/collision changes, no visible duplicate animations/events, and bounded activation frame-time spikes. Report achieved measurements rather than asserting zero stutter.</li>
+</ul>
+<h3 id="first-controlled-hotpatch-proof">First controlled hotpatch proof<a href="#first-controlled-hotpatch-proof" class="anchor" aria-label="Direct link to First controlled hotpatch proof">#</a></h3>
+<p>Use the existing local Windows development workflow, <strong>only after checking active build/client owners and confirming permission</strong>. Build the host with the <code>hotpatch</code> feature, launch the existing test character, then publish one pose module and its comparison implementation without restarting. The publisher supports <code>-LiftDemo</code> and <code>-PassThrough</code>; verify visually relevant output in the actual scene, the same PID, preserved session, revision switch, successful reversion and absence of transform accumulation. Then test a rejected candidate and a transient publishing failure. The <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-hotpatch-bevy/src/lib.rs"><code>benilla-hotpatch-bevy</code> test</a> is a useful bounded fixture; its Windows-native test is ignored by default and requires test artifacts.</p>
+<pre><code class="language-powershell"># Illustrative commands from the repository docs; run only in an authorized free Cargo/client slot.
+cd D:\Projects\project-b-client
+cargo build -p benilla --features hotpatch
+&amp; '.\Launch RustWrath.cmd'
+
+# In a separate shell, with the authorized live client running:
+.\tools\publish-pose-module.ps1 -LiftDemo
+.\tools\publish-pose-module.ps1 -PassThrough
+</code></pre>
+<p>A pose-module swap tests the native hotpatch <strong>mechanism</strong>. The quest action trace is initially a <strong>resident-host change</strong> requiring a bootstrap compile. Later, a verified <code>QuestDiagnosticModule</code> could be swapped live <em>after its interface exists</em>. Prioritize credible implementation over an illusory claim of general arbitrary-code replacement.</p>
+<h2 id="09-priority-plan-and-work-packages">09 — Priority plan and work packages<a href="#09-priority-plan-and-work-packages" class="anchor" aria-label="Direct link to 09 — Priority plan and work packages">#</a></h2>
+<p>&lt;div class=&quot;phase-note&quot;&gt;Dependencies matter: the resident diagnostic service should exist before trying to use it as proof of complex hotpatch behavior. At the same time, the existing pose-module proof can run as an isolated baseline in coordination with the shared client slot.&lt;/div&gt;</p>
+<table>
+<thead>
+<tr>
+  <th>Stage</th>
+  <th>Owner-facing deliverable</th>
+  <th>Essential acceptance</th>
+  <th>Dependencies</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>P0 — Baseline and hygiene</strong></td>
+  <td>Branch/HEAD/runtime-hash inventory, known-good launcher proof, CI strategy, source-to-test matrix</td>
+  <td>Traceable source + actual running binary + current route blockers; CI executes on meaningful changes</td>
+  <td>Read AGENTS/workflow/owners; no competing builds</td>
+</tr>
+<tr>
+  <td><strong>P1 — Flight recorder core</strong></td>
+  <td><code>diagnostics-core</code> resident service, event schema, bounded storage, incident exporter</td>
+  <td>Stable IDs; survives UI <code>/reload</code>; every dropped trace is accounted for; privacy tests pass</td>
+  <td>Single coordinated host bootstrap build</td>
+</tr>
+<tr>
+  <td><strong>P2 — Quest contract</strong></td>
+  <td>Quest accept/open/journal/turn-in correlation; synthetic fixtures; targeted in-game check</td>
+  <td>Can intentionally detect command refusal, server refusal, missing state, missing journal row; low false positives</td>
+  <td>P1; existing quest owners</td>
+</tr>
+<tr>
+  <td><strong>P3 — UI inspector</strong></td>
+  <td>Click-path instrumentation, Lua callback error links, frame visibility/layout snapshots</td>
+  <td>A deliberately broken button produces actionable boundary evidence</td>
+  <td>P1; UI script lifecycle</td>
+</tr>
+<tr>
+  <td><strong>P4 — Pose patch proof</strong></td>
+  <td>Same-PID two-version activation and rejection test; retry fix</td>
+  <td>Actual visual delta/revert, session intact, no growing retention, failed candidate preserves active</td>
+  <td>Existing ABI/publisher + shared client slot; can run in parallel with P1 source work only if file ownership separated</td>
+</tr>
+<tr>
+  <td><strong>P5 — Patch manager v2</strong></td>
+  <td>Revision manifest, staging, capability matrix, bounded activation, audit log, recovery</td>
+  <td>Tamper/corruption tests; bad revision rejected; validated revision activates and can revert</td>
+  <td>P1, P4, ADR acceptance</td>
+</tr>
+<tr>
+  <td><strong>P6 — Content + UI revisions</strong></td>
+  <td>Asset overlay/cache dependency graph, coherent models/materials, UI reload publication</td>
+  <td>Change Lua + texture + model family with preserved quest/position/target and rollback</td>
+  <td>P5, loader ownership, reproducible fixtures</td>
+</tr>
+<tr>
+  <td><strong>P7 — Broader workflows and WM</strong></td>
+  <td>Cast/inventory/vendors/world-transition validation; negotiated authenticated WM publisher</td>
+  <td>End-to-end traced Northshire gameplay; safe remote publication in isolated pilot</td>
+  <td>Stable baseline, server and authorization</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Suggested new work-unit boundaries (names are proposals):</strong> <code>diagnostics-core</code>, <code>quest-contract-validator</code>, <code>ui-interaction-inspector</code>, <code>hotpatch-retry-and-health</code>, <code>content-revision-manager</code>, <code>ci-observability-gates</code>, and <code>incident-report-exporter</code>. Do not preempt existing tickets or overwrite agent reservations. Register work in the project's <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/agents/workflow.md">issue/handoff convention</a>.</p>
+<h2 id="10-test-matrix-failure-injection-and-acceptance-gates">10 — Test matrix, failure injection and acceptance gates<a href="#10-test-matrix-failure-injection-and-acceptance-gates" class="anchor" aria-label="Direct link to 10 — Test matrix, failure injection and acceptance gates">#</a></h2>
+<table>
+<thead>
+<tr>
+  <th>ID</th>
+  <th>Scenario</th>
+  <th>Expected evidence and behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>T01</td>
+  <td>Accept quest, happy path</td>
+  <td>Inbound/outbound correlation, authoritative active slot, journal row, complete success record</td>
+</tr>
+<tr>
+  <td>T02</td>
+  <td>Force outbound admission refusal (fixture)</td>
+  <td>Explicit refusal and <code>command_refused</code> incident; no phantom success</td>
+</tr>
+<tr>
+  <td>T03</td>
+  <td>Server refusal with a known quest-failure reason (fixture)</td>
+  <td>Classified as <code>expected_refusal</code>, reason preserved, UI message observed</td>
+</tr>
+<tr>
+  <td>T04</td>
+  <td>Quest enters server-backed state while journal row intentionally withheld</td>
+  <td><code>presentation_mismatch</code> with state/row links</td>
+</tr>
+<tr>
+  <td>T05</td>
+  <td>Quest detail packet omitted or late</td>
+  <td><code>timeout_unverified</code> with match confidence and last confirmed boundary</td>
+</tr>
+<tr>
+  <td>T06</td>
+  <td>Concurrent same-NPC/quest interactions</td>
+  <td>Ambiguity reported where independent mapping is impossible; no false exact correlation</td>
+</tr>
+<tr>
+  <td>T07</td>
+  <td><code>/reload</code> during pending quest interaction</td>
+  <td>Host recorder persists; pending case cancelled/rebased according to lifecycle rules</td>
+</tr>
+<tr>
+  <td>T08</td>
+  <td>Lua click handler raises, input and frame visible</td>
+  <td>Error linked to click trace and AddOn/frame, preserving privacy</td>
+</tr>
+<tr>
+  <td>T09</td>
+  <td>Widget occluded by a modal</td>
+  <td>Hit-test result identifies the intercepting owner</td>
+</tr>
+<tr>
+  <td>T10</td>
+  <td>Teleport/world-generation increment</td>
+  <td>Old events cannot complete a new-world interaction</td>
+</tr>
+<tr>
+  <td>T11</td>
+  <td>Report/export with chats, credentials and local paths present</td>
+  <td>Redacted bundle; explicit policy tests against sensitive fields</td>
+</tr>
+<tr>
+  <td>T12</td>
+  <td>Fault-injected diagnostic writer stalls</td>
+  <td>Gameplay remains responsive; bounded queue and gap counters observable</td>
+</tr>
+<tr>
+  <td>T13</td>
+  <td>Pose swap A→B→A, same running PID</td>
+  <td>Visual evidence, current module IDs, state intact, no accumulated pose offsets</td>
+</tr>
+<tr>
+  <td>T14</td>
+  <td>ABI mismatch, invalid manifest/hash, missing DLL</td>
+  <td>Candidate refused; last-known-good remains active; precise rejection event</td>
+</tr>
+<tr>
+  <td>T15</td>
+  <td>Temporary file sharing/read failure</td>
+  <td>Backoff/retry and eventual recovery without forced manifest rewrite</td>
+</tr>
+<tr>
+  <td>T16</td>
+  <td>Repeated publish cycles</td>
+  <td>Memory/disk bounded; retired DLLs removed only when safe</td>
+</tr>
+<tr>
+  <td>T17</td>
+  <td>Content family includes missing <code>.skin</code> dependency</td>
+  <td>Coherent candidate rejected; currently displayed model remains intact</td>
+</tr>
+<tr>
+  <td>T18</td>
+  <td>Separate completion/reward state updates</td>
+  <td>No premature reward success, no false failure for legitimate async updates</td>
+</tr>
+<tr>
+  <td>T19</td>
+  <td>Known parser malformed item-stat count</td>
+  <td>Clean controlled decoder rejection / no field desync or panic</td>
+</tr>
+<tr>
+  <td>T20</td>
+  <td>CI on actual shared change path</td>
+  <td>Platform gates run and report status; artifacts identify tested SHA</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Execution discipline:</strong> these are a <strong>planning catalog</strong>, not a command to run 20 live tests. The project currently limits authorized checks to at most 20 essential targeted cases <em>per task</em>, with the owner handling real login/combat and persistent changes. Most cases should be deterministic unit/headless fixtures. A small number of carefully approved live tests establish visible behavior. Record exact source/binary hashes, logs, test input and observed result for each executed case.</p>
+<h3 id="definition-of-done-for-the-first-diagnostic-slice">Definition of done for the first diagnostic slice<a href="#definition-of-done-for-the-first-diagnostic-slice" class="anchor" aria-label="Direct link to Definition of done for the first diagnostic slice">#</a></h3>
+<p>A quest acceptance regression can be reproduced and attributed to one of: local input/handler, rejected command admission, outbound packet failure, explicit server refusal, unresolved server outcome, authoritative-state projection, or UI presentation. A single incident bundle must show the chain, IDs, timings, source/binary/patch identity, correlation confidence, missing evidence and applicable privacy scrubbing. At least one <strong>deliberately injected</strong> defect is detected, the normal path remains clean, and a live user scenario is recorded at the highest authorized evidence level.</p>
+<h3 id="definition-of-done-for-first-hotpatch-slice">Definition of done for first hotpatch slice<a href="#definition-of-done-for-first-hotpatch-slice" class="anchor" aria-label="Direct link to Definition of done for first hotpatch slice">#</a></h3>
+<p>Two different trusted pose implementations are activated in the <strong>same running PID</strong>, with a verified visual change and restored baseline. The active revision is shown; malformed and ABI-incompatible candidates leave the last-known-good pose in place. Performance and memory retention are measured. A simulated transient publication failure is recoverable. Call it <strong>pose-module hotpatch accepted</strong>, and keep content/native-gameplay/UI hotpatch acceptance separately tracked.</p>
+<h2 id="11-risk-register-and-design-decisions">11 — Risk register and design decisions<a href="#11-risk-register-and-design-decisions" class="anchor" aria-label="Direct link to 11 — Risk register and design decisions">#</a></h2>
+<table>
+<thead>
+<tr>
+  <th>Priority</th>
+  <th>Risk</th>
+  <th>Response / trade-off</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Critical</td>
+  <td>In-process native patch crashes entire client</td>
+  <td>Trusted publisher only; preflight; crash marker and next-start fallback; isolated process required for untrusted modules</td>
+</tr>
+<tr>
+  <td>High</td>
+  <td>Correlation overclaims server acceptance</td>
+  <td>Evidence ladder, confidence levels, server-authoritative state checks, optional negotiated diagnostic IDs</td>
+</tr>
+<tr>
+  <td>High</td>
+  <td>Diagnostics mutate gameplay timing or memory use</td>
+  <td>Fixed-cost fast path, bounded queues, sampling, overflow accounting and frame-time metrics</td>
+</tr>
+<tr>
+  <td>High</td>
+  <td>Wrong Wrath/Vanilla semantic projection</td>
+  <td>Keep version-specific contracts, tests against 12340/AzerothCore source and live known-good cases</td>
+</tr>
+<tr>
+  <td>High</td>
+  <td>Live content swaps create mixed revisions</td>
+  <td>Immutable graph-wide revision, dependency closure, prepare-before-commit, invalidation and rollback</td>
+</tr>
+<tr>
+  <td>High</td>
+  <td>Hotpatch activation is a stall</td>
+  <td>Prestage asynchronously; time the actual activation; budget and defer when unsafe</td>
+</tr>
+<tr>
+  <td>Medium</td>
+  <td>Duplicate/missing Lua callbacks after reload</td>
+  <td>Explicit VM teardown/rebuild contract, event-registration audit, repeated reload tests</td>
+</tr>
+<tr>
+  <td>Medium</td>
+  <td>Reporter captures sensitive user material</td>
+  <td>Allowlist export, local-only default, redaction tests, explicit screenshot/upload consent</td>
+</tr>
+<tr>
+  <td>Medium</td>
+  <td>CI gives misleading green status</td>
+  <td>Fix trigger coverage and capture run artifacts; do not substitute tests for visible gameplay</td>
+</tr>
+<tr>
+  <td>Medium</td>
+  <td>Agent overlap invalidates evidence</td>
+  <td>Single coordinator and Cargo/client slot; per-ticket ownership; checkout/binary identity proof</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Decisions proposed for owner approval before large implementation:</strong> (A) permanent host-level diagnostics with low-cost always-on summaries; (B) manual activation for native DLL patches at first; (C) JSONL/ZIP local report format and default redaction; (D) one coherent content revision namespace shared by assets and UI; (E) server enhancements behind an explicit negotiated dev capability. They are proposed scope choices, <strong>not reported approvals</strong>.</p>
+<h2 id="12-instructions-to-the-next-agent">12 — Instructions to the next agent<a href="#12-instructions-to-the-next-agent" class="anchor" aria-label="Direct link to 12 — Instructions to the next agent">#</a></h2>
+<ol>
+<li><strong>Read the source of truth:</strong> <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/AGENTS.md"><code>AGENTS.md</code></a>, <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/CONTEXT.md"><code>CONTEXT.md</code></a>, <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/agents/workflow.md"><code>workflow</code></a>, <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/agents/active-ownership.md"><code>active-ownership</code></a>, <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/adr-0001-wrath-compatibility-boundary.md">ADR-0001</a>, <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/adr-0002-live-client-modules.md">ADR-0002</a>, and the current ticket handoffs. Confirm which decisions have subsequently been accepted.</li>
+<li><strong>Observe checkout state:</strong> <code>git status</code>, exact branch/HEAD, staged/unstaged files, coordinated owners, Cargo/rustc and graphical-client PIDs. Preserve all dirty source. No blanket reset/clean, switching beneath uncommitted work, or duplicate session launch.</li>
+<li><strong>Map existing seams:</strong> <code>ui_quest/{verbs,net,mod}.rs</code>, <code>ui_quest_log.rs</code>, <code>ui_script/lifecycle.rs</code>, <code>benilla-ui/src/script/diagnostics.rs</code>, <code>debug_panel</code>, <code>wrath.rs</code>, <code>net/io/wire_trace.rs</code>, <code>benilla-hotpatch</code>, <code>benilla-hotpatch-bevy</code>, and the native WM boundary. Write a tiny event-interface RFC before modifying cross-crate contracts.</li>
+<li><strong>Build the minimal coherent recorder:</strong> use a typed schema, session scopes, bounded ring, explicit admission telemetry, redaction and a queryable incident list. Retain the old logging path; augment rather than duplicate its ownership.</li>
+<li><strong>Implement one proof at a time:</strong> quest accept outcome contract, one broken Lua click fixture, one two-version pose hotpatch. Separate source review, successful compile, targeted fixture and owner-visible runtime evidence.</li>
+<li><strong>Keep regression fixtures:</strong> every fixed incident becomes a named test with expected milestones and version-scoped outcome. Preserve supported stock behavior and donor 1.12 compatibility.</li>
+<li><strong>Report honestly:</strong> exact files/diffs, checks executed/omitted, artifacts/logs, observed failures, open questions and next action. An agent report is a pointer to evidence, not itself proof of runtime success.</li>
+</ol>
+<p><strong>Expected deliverables for the future detailed handoff:</strong> an ADR/RFC draft for diagnostics and patch revisions, proposed Rust APIs and module ownership, instrumentation map with exact hook signatures, test fixtures, incident exporter schema, patch manifest and state machine, phased implementation tickets, and copy-ready coding-agent instructions. This first handoff intentionally defines the <strong>what, why, boundaries and acceptance</strong> so the detailed design can be requested separately.</p>
+<h2 id="13-linked-primary-sources-and-external-technical-references">13 — Linked primary sources and external technical references<a href="#13-linked-primary-sources-and-external-technical-references" class="anchor" aria-label="Direct link to 13 — Linked primary sources and external technical references">#</a></h2>
+<p><strong>Repository / architecture</strong></p>
+<ul>
+<li><a href="https://github.com/Dicetar/RustWrath">RustWrath canonical repository</a> · <a href="https://github.com/Dicetar/RustWrath/tree/wotlk">active <code>wotlk</code> branch</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/README.md">README</a>.</li>
+<li><a href="https://github.com/Dicetar/RustWrath/blob/wotlk/CONTEXT.md">Project context</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/AGENTS.md">agent instructions</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/agents/workflow.md">coordination workflow</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/launching.md">launching</a>.</li>
+<li><a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/adr-0001-wrath-compatibility-boundary.md">Wrath compatibility ADR</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/adr-0002-live-client-modules.md">live module ADR</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/architecture-review-2026-10-26.md">architecture review (historical)</a>.</li>
+<li><a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_quest/verbs.rs">Quest verbs</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_quest/net.rs">quest responses</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_quest_log.rs">journal projection</a>.</li>
+<li><a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-ui/src/script/diagnostics.rs">UI script diagnostic log</a> · <a href="https://github.com/Dicetar/RustWrath/tree/wotlk/crates/benilla-app/src/debug_panel">debug panel</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/net/io/wire_trace.rs">packet trace</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/tools/collect-diagnostics.ps1">diagnostic report tool</a>.</li>
+<li><a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-hotpatch-abi/src/lib.rs">Hotpatch ABI</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-hotpatch/src/lib.rs">hotpatch host</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-hotpatch-bevy/src/lib.rs">Bevy adapter</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/tools/publish-pose-module.ps1">publisher</a>.</li>
+<li><a href="https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-wm-native/src/lib.rs">WM native contract</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/.github/workflows/ci.yml">CI workflow</a> · <a href="https://github.com/Dicetar/RustWrath/blob/wotlk/.scratch/project-b/issues/15-client-hotpatch.md">hotpatch issue</a>.</li>
+</ul>
+<p><strong>External references for design methods</strong></p>
+<ul>
+<li><a href="https://opentelemetry.io/docs/specs/semconv/general/trace/">OpenTelemetry — trace conventions</a> and <a href="https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/">messaging correlation</a> for event/span semantics; no dependency on a remote collector is required.</li>
+<li><a href="https://docs.rs/tracing-appender/latest/tracing_appender/">Rust <code>tracing-appender</code></a> for rolling and non-blocking log writing, subject to bounded-queue policy.</li>
+<li><a href="https://github.com/bevyengine/bevy-website/blob/main/content/learn/book/development-practices/hot-reloading.md">Bevy hot-reloading guide</a> for assets/watchers and limits of development asset reload.</li>
+<li><a href="https://doc.rust-lang.org/reference/items/external-blocks.html#abi">Rust language reference: external blocks / ABI</a> for stable explicit foreign-function boundaries. Follow the project's pinned Bevy 0.18.1 APIs when implementing.</li>
+</ul>
+<hr />
+<p><strong>Handoff classification:</strong> <code>GENERAL / ARCHITECTURE + PRODUCT ROADMAP</code> · <strong>Inspection date:</strong> 2026-11-03 · <strong>Git anchor:</strong> <code>wotlk@236b1a7a</code> · <strong>Status:</strong> research/design recommendation · <strong>Repository modifications:</strong> none · <strong>Builds/runtime tests executed for this handoff:</strong> none.</p>
+</article><footer class="footer"><div class="footer-cols"><span><strong>RustWrath</strong> · General handoff · source inspection and design</span><span>Prepared 2026-11-03 · No source changes</span></div><p class="hint">Standalone HTML · No network dependencies or external fonts · Use the table of contents, search, code-copy and Print / PDF tools.</p></footer></div></main></div><script>
+const $=(s,root=document)=>root.querySelector(s);
+const $$=(s,root=document)=>Array.from(root.querySelectorAll(s));
+const nav=$$('.toc-item');
+const sectionHeads=$$('.content h2,.content h3');
+let previousMatch=null;
+function scrollToHash(){const hash=decodeURIComponent(location.hash.slice(1));if(hash){let t=document.getElementById(hash);if(t){t.scrollIntoView({behavior:'smooth',block:'start'});}}}
+nav.forEach(a=>a.addEventListener('click',()=>{document.body.classList.remove('navopen');}));
+const io=new IntersectionObserver(entries=>{for(const entry of entries){if(entry.isIntersecting){const hash=entry.target.id;nav.forEach(a=>a.classList.toggle('active',a.getAttribute('href')==='#'+hash));}}},{rootMargin:'-90px 0px -65% 0px'});sectionHeads.forEach(h=>io.observe(h));
+$('#menuBtn').addEventListener('click',()=>document.body.classList.toggle('navopen'));
+$('#printBtn').addEventListener('click',()=>window.print());
+$('#copyLink').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(location.href);const b=$('#copyLink');b.textContent='Copied';setTimeout(()=>b.textContent='Copy link',1400);}catch(e){const b=$('#copyLink');b.textContent='Select URL';setTimeout(()=>b.textContent='Copy link',1500);}});
+const input=$('#search');const status=$('#searchStatus');let matched=[];let matchIndex=0;
+function search(){const q=input.value.trim().toLowerCase();if(previousMatch){previousMatch.classList.remove('focus-match');previousMatch=null;}if(q.length<2){status.textContent='';matched=[];return;}matched=$$('.content h2,.content h3,.content p,.content td,.content li').filter(el=>el.textContent.toLowerCase().includes(q));matchIndex=0;status.textContent=matched.length?matched.length+' matching passages · Enter to jump':'No matches';}
+input.addEventListener('input',search);
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&matched.length){e.preventDefault();const hit=matched[matchIndex%matched.length];if(previousMatch)previousMatch.classList.remove('focus-match');hit.classList.add('focus-match');previousMatch=hit;hit.scrollIntoView({behavior:'smooth',block:'center'});matchIndex++;status.textContent=`${Math.min(matchIndex,matched.length)} / ${matched.length} · Enter for next`;}});
+document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();input.focus();input.select();}if(e.key==='Escape'){document.body.classList.remove('navopen');input.blur();}});
+$$('.content pre').forEach(pre=>{const wrap=document.createElement('div');wrap.className='code-wrap';pre.parentNode.insertBefore(wrap,pre);wrap.appendChild(pre);const b=document.createElement('button');b.className='copy-btn';b.textContent='Copy';b.type='button';b.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(pre.textContent);b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1500);}catch(e){b.textContent='Unavailable';setTimeout(()=>b.textContent='Copy',1500);}});wrap.appendChild(b);});
+$$('.content table').forEach(table=>{const w=document.createElement('div');w.className='table-wrap';table.parentNode.insertBefore(w,table);w.appendChild(table);});
+window.addEventListener('load',()=>setTimeout(scrollToHash,80));
+</script></body></html>

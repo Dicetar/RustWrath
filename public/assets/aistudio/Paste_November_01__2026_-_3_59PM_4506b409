@@ -1,0 +1,217 @@
+se files or the patch chain
+2026-11-01T12:55:38.513534Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.513634Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.513732Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.514620Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.529478Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.529728Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.529842Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.529936Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.530030Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.530901Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.545806Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.546083Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.546189Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.546306Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.546426Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.547370Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.562831Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.563094Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.563208Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.563316Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.563416Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.564295Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.579425Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.579725Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.579850Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.579947Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.580049Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.580994Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.595867Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.596119Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.596218Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.596310Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.596391Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.597259Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.612509Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.612776Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.612890Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.612978Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.613062Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.613941Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.629462Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.629714Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.629820Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.629915Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.630005Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.630886Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.645911Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.646172Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.646270Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.646355Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.646437Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.647283Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.662416Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.662653Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.662760Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.662848Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.662948Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.663821Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.679421Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.679671Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.679769Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.679852Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.679933Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.680772Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.695943Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.696175Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.696260Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.696332Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.696414Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.697238Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.712537Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.712792Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.712906Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.712992Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.713075Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.713935Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.729025Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.729262Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.729366Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.729454Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.729540Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.730382Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.746124Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.746359Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.746454Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.746532Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.746615Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.747591Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.762577Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.762831Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.762936Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.763023Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.763111Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.763986Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.779080Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.779339Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.779445Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.779542Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.779638Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.780532Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.795698Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.795946Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.796053Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.796149Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.796240Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.797080Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.812697Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.812983Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.813086Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.813185Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.813342Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.814230Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.829393Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.829629Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.829713Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.829816Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.829902Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.830846Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.846136Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.846393Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.846489Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.846578Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.846653Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.847541Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.862754Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.863005Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.863101Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.863192Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.863314Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.864175Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.879483Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.879743Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.879858Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.879960Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.880046Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.881001Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.896107Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.896351Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.896453Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.896537Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.896621Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.897484Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.912823Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.913089Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.913197Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.913291Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.913384Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.914270Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.929301Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.929561Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.929667Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.929755Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.929841Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.930710Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.946097Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.946365Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.946464Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.946552Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.946631Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.947490Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.962751Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.963042Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.963179Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.963291Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.963401Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.964260Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.978962Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.979214Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.979315Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.979400Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.979484Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.980310Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:38.996094Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:38.996360Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.996519Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.996614Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.996696Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:38.997605Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:39.012569Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:39.012810Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.012892Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.012963Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.013062Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.013900Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:39.029246Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:39.029504Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.029614Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.029707Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.029852Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.030743Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:39.046221Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:39.046477Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.046609Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.046712Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.046801Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.047717Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:39.062683Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:39.062943Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.063049Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.063146Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.063240Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.064115Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:39.092272Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:39.092567Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.092669Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.092758Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.092834Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.093803Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:39.099415Z  WARN benilla_app::ui_chat::language: ui_chat: language word pools unavailable — reading DBFilesClient\LanguageWords.dbc: file not in patch chain: DBFilesClient\LanguageWords.dbc
+2026-11-01T12:55:39.099689Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\FRIZQT__.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.099828Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\ARIALN.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.099941Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\MORPHEUS.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.100050Z  WARN benilla_app::ui_text::engine: ui_text: failed to read Fonts\SKURRI.TTF from the loose files or the patch chain
+2026-11-01T12:55:39.101173Z  WARN benilla_app::ui_script::extract: ui_script: runtime error: [string "BenillaRealmlistButton:OnUpdate"]:3: BenillaRealmlistText:SetText(): Font not set
+2026-11-01T12:55:39.102678Z  INFO bevy_window::system: No windows are open, exiting
+2026-11-01T12:55:39.103035Z  INFO bevy_winit::system: Closing window 0v0

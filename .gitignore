@@ -46,3 +46,9 @@ __pycache__/
 # Machine-local run evidence may contain extracted game files and session details.
 # Previously tracked Markdown evidence remains tracked.
 /.scratch/project-b/verification/
+
+# Web preview and tooling artifacts
+/node_modules/
+/dist/
+/.vite/
+/.aistudio/

@@ -1,0 +1,1692 @@
+{
+  "schema": "rustwrath.execution.v3",
+  "prepared": "2026-11-03",
+  "basis": [
+    "Uploaded conversation/skill research",
+    "General Handoff 2026-11-03",
+    "Execution Handoff V2 2026-11-03",
+    "34 Work Packages JSON 2026-11-03",
+    "Read-only GitHub source at selected wotlk SHA"
+  ],
+  "source_anchor": "wotlk@236b1a7aebc017655f9a0fc0dea54e52dae891ef",
+  "status": "proposed; not executed",
+  "repoBase": "https://github.com/Dicetar/RustWrath/blob/wotlk/",
+  "stages": {
+    "0": "Admission & urgent defects",
+    "1": "Resident diagnostics",
+    "2": "Quest workflow contracts",
+    "3": "Safe live updates",
+    "4": "Expansion & release"
+  },
+  "changes_from_v2": {
+    "Q05": "add Q03 requirement",
+    "H01": "remove D02 blocker; use PID/hash evidence until recorder is built",
+    "H02": "depend on H00 and D00 instead of H01; allow design in parallel with acceptance"
+  },
+  "tasks": [
+    {
+      "id": "G00",
+      "stage": 0,
+      "priority": "P0",
+      "deps": [],
+      "owner": "Integration",
+      "title": "Establish the live baseline and ticket frontier",
+      "objective": "Create a source/binary/runtime evidence snapshot and select a single unclaimed task.",
+      "status": "proposed",
+      "files": [
+        "AGENTS.md",
+        "CONTEXT.md",
+        "docs/agents/workflow.md",
+        "docs/agents/active-ownership.md",
+        "docs/agents/issue-tracker.md"
+      ],
+      "procedure": "Read local Git state, active file ownership, live processes and source pins. Build an evidence table identifying owner, process, source SHA, executable hash, server revision and patch profile where known. Pick one unclaimed blocked symptom.",
+      "proof": "Written baseline, ticket frontier and explicit unknowns; zero unowned mutations.",
+      "avoid": "A stale reservation or clean Git tree is not proof of a running binary or free Cargo slot.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Read local Git state, active file ownership, live processes and source pins. Build an evidence table identifying owner, process, source SHA, executable hash, server revision and patch profile where known. Pick one unclaimed blocked symptom.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for establish the live baseline and ticket frontier.",
+        "Failure-path fixture: Written baseline, ticket frontier and explicit unknowns; zero unowned mutations.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Written baseline, ticket frontier and explicit unknowns; zero unowned mutations.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for establish the live baseline and ticket frontier.",
+        "Failure-path fixture: Written baseline, ticket frontier and explicit unknowns; zero unowned mutations.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "May begin after checking ownership and resources.",
+      "kind": "verification"
+    },
+    {
+      "id": "G01",
+      "stage": 0,
+      "priority": "P0",
+      "deps": [
+        "G00"
+      ],
+      "owner": "Alpha integration",
+      "title": "Map the failing alpha journey",
+      "objective": "Map login, realm, roster, world entry, NPC, quest, combat, loot and reward against actual evidence.",
+      "status": "proposed",
+      "files": [
+        "docs/launching.md",
+        "crates/benilla-app/src/wrath.rs",
+        "crates/benilla-app/src/ui_quest/net.rs",
+        "crates/benilla-app/src/ui_quest/verbs.rs"
+      ],
+      "procedure": "Create a milestone grid for login→realm→roster→character→world→NPC→quest→combat→loot→reward. Follow the earliest unverified boundary backward and locate real owners. Record minimum reproduction and selected-mode requirements.",
+      "proof": "Every milestone classified as observed, source-only, historical or unknown; one narrow blocker isolated.",
+      "avoid": "Do not substitute the React/Vite web preview or historical source test for native gameplay.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Create a milestone grid for login→realm→roster→character→world→NPC→quest→combat→loot→reward. Follow the earliest unverified boundary backward and locate real owners. Record minimum reproduction and selected-mode requirements.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for map the failing alpha journey.",
+        "Failure-path fixture: Every milestone classified as observed, source-only, historical or unknown; one narrow blocker isolated.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Every milestone classified as observed, source-only, historical or unknown; one narrow blocker isolated.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for map the failing alpha journey.",
+        "Failure-path fixture: Every milestone classified as observed, source-only, historical or unknown; one narrow blocker isolated.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G00",
+      "kind": "verification"
+    },
+    {
+      "id": "G02",
+      "stage": 0,
+      "priority": "P1",
+      "deps": [
+        "G00"
+      ],
+      "owner": "CI/release",
+      "title": "Make CI exercise development changes",
+      "objective": "Fix the workflow coverage so authorized same-repository development changes receive CI evidence.",
+      "status": "proposed",
+      "files": [
+        ".github/workflows/ci.yml",
+        "scripts/gates.sh"
+      ],
+      "procedure": "Audit push, same-repository PR, fork PR and manual-dispatch paths. Update event predicates and permissions conservatively; keep Linux and Windows data-free tests separate and pin workflow revision.",
+      "proof": "Actual eligible run linked to an exact commit if publication authorized; YAML-only checks labeled static.",
+      "avoid": "Do not leak repository credentials to untrusted fork actions or claim a run from static YAML.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Audit push, same-repository PR, fork PR and manual-dispatch paths. Update event predicates and permissions conservatively; keep Linux and Windows data-free tests separate and pin workflow revision.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for make ci exercise development changes.",
+        "Failure-path fixture: Actual eligible run linked to an exact commit if publication authorized; YAML-only checks labeled static.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Actual eligible run linked to an exact commit if publication authorized; YAML-only checks labeled static.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for make ci exercise development changes.",
+        "Failure-path fixture: Actual eligible run linked to an exact commit if publication authorized; YAML-only checks labeled static.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G00",
+      "kind": "implementation"
+    },
+    {
+      "id": "G03",
+      "stage": 0,
+      "priority": "P1",
+      "deps": [
+        "G00"
+      ],
+      "owner": "Wrath protocol",
+      "title": "Reject malformed item-stat counts",
+      "objective": "Safely reject malformed item-stat counts before parser cursor desynchronization.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-protocol-wrath/src/gameplay.rs"
+      ],
+      "procedure": "Reproduce overlarge declared item stat count followed by sentinel fields. Confirm 12340 limit and wire layout. Reject before advancing into unrelated fields, preserving valid counts and the two-damage-triplet fix.",
+      "proof": "Red/green parser fixtures for valid count, high count and truncation; bounded memory and no cursor drift.",
+      "avoid": "A .min(64) clamp changes the iteration count yet leaves undeclared fields to poison the cursor.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Reproduce overlarge declared item stat count followed by sentinel fields. Confirm 12340 limit and wire layout. Reject before advancing into unrelated fields, preserving valid counts and the two-damage-triplet fix.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for reject malformed item-stat counts.",
+        "Failure-path fixture: Red/green parser fixtures for valid count, high count and truncation; bounded memory and no cursor drift.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Red/green parser fixtures for valid count, high count and truncation; bounded memory and no cursor drift.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for reject malformed item-stat counts.",
+        "Failure-path fixture: Red/green parser fixtures for valid count, high count and truncation; bounded memory and no cursor drift.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G00",
+      "kind": "implementation"
+    },
+    {
+      "id": "G04",
+      "stage": 0,
+      "priority": "P1",
+      "deps": [
+        "G00"
+      ],
+      "owner": "Action/network",
+      "title": "Design typed outbound command-admission results",
+      "objective": "Specify queue admission, writer delivery and refusal as distinct evidenced boundaries.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/wrath.rs",
+        "crates/benilla-app/src/ui_quest/verbs.rs",
+        "docs/architecture/adr-0001-wrath-compatibility-boundary.md"
+      ],
+      "procedure": "Inventory all queue boundaries and caller return values. Define typed acceptance at UI channel, Wrath outbox and actual socket write with asynchronous receipt for delayed failures. Specify cancellation and overflow.",
+      "proof": "One reviewed API contract with distinct accepted, written, rejected, disconnected states.",
+      "avoid": "A successful channel send does not prove that the Wrath writer emitted a packet.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Inventory all queue boundaries and caller return values. Define typed acceptance at UI channel, Wrath outbox and actual socket write with asynchronous receipt for delayed failures. Specify cancellation and overflow.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for design typed outbound command-admission results.",
+        "Failure-path fixture: One reviewed API contract with distinct accepted, written, rejected, disconnected states.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "One reviewed API contract with distinct accepted, written, rejected, disconnected states.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for design typed outbound command-admission results.",
+        "Failure-path fixture: One reviewed API contract with distinct accepted, written, rejected, disconnected states.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G00",
+      "kind": "design"
+    },
+    {
+      "id": "G05",
+      "stage": 0,
+      "priority": "P1",
+      "deps": [
+        "G04"
+      ],
+      "owner": "Action/quest",
+      "title": "Implement admission/refusal for quest acceptance",
+      "objective": "Make a critical quest command observable when admitted, rejected or stranded at later boundaries.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/wrath.rs",
+        "crates/benilla-app/src/ui_quest/verbs.rs"
+      ],
+      "procedure": "Use quest acceptance as the tracer-bullet action. Write pressure/disconnect tests; pass typed refusal from actual outbox boundary to host owner and HUD/log. Keep the current movement-only eviction rule.",
+      "proof": "Queue saturation surfaces precise refusal; accepted ordered actions keep order under movement pressure.",
+      "avoid": "Do not set an acted latch on a failed admission without a deliberate UI recovery policy.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Use quest acceptance as the tracer-bullet action. Write pressure/disconnect tests; pass typed refusal from actual outbox boundary to host owner and HUD/log. Keep the current movement-only eviction rule.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for implement admission/refusal for quest acceptance.",
+        "Failure-path fixture: Queue saturation surfaces precise refusal; accepted ordered actions keep order under movement pressure.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Queue saturation surfaces precise refusal; accepted ordered actions keep order under movement pressure.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for implement admission/refusal for quest acceptance.",
+        "Failure-path fixture: Queue saturation surfaces precise refusal; accepted ordered actions keep order under movement pressure.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G04",
+      "kind": "implementation"
+    },
+    {
+      "id": "G06",
+      "stage": 0,
+      "priority": "P2",
+      "deps": [
+        "G00"
+      ],
+      "owner": "Network/concurrency",
+      "title": "Inventory backpressure and lifecycle queues",
+      "objective": "Define per-channel boundedness and loss guarantees, separating telemetry from gameplay events.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/wrath.rs",
+        "crates/benilla-wm-native/src/lib.rs"
+      ],
+      "procedure": "Enumerate every unbounded Crossbeam channel, producer, consumer, frame drain, lifecycle and event class. Stress a stopped consumer; propose distinct backpressure for gameplay and sampled telemetry.",
+      "proof": "Matrix of boundedness/queue pressure and an independently scoped follow-up ticket per channel.",
+      "avoid": "Dropping oldest is acceptable only for replaceable telemetry, never ordered critical gameplay events.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Enumerate every unbounded Crossbeam channel, producer, consumer, frame drain, lifecycle and event class. Stress a stopped consumer; propose distinct backpressure for gameplay and sampled telemetry.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for inventory backpressure and lifecycle queues.",
+        "Failure-path fixture: Matrix of boundedness/queue pressure and an independently scoped follow-up ticket per channel.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Matrix of boundedness/queue pressure and an independently scoped follow-up ticket per channel.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for inventory backpressure and lifecycle queues.",
+        "Failure-path fixture: Matrix of boundedness/queue pressure and an independently scoped follow-up ticket per channel.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G00",
+      "kind": "design"
+    },
+    {
+      "id": "D00",
+      "stage": 1,
+      "priority": "P0",
+      "deps": [
+        "G00",
+        "G04"
+      ],
+      "owner": "Diagnostics architecture",
+      "title": "Approve IFR/GCV design RFC",
+      "objective": "Choose resident owner, event schema, retention, correlator, UI and export contracts.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/debug_panel/mod.rs",
+        "crates/benilla-app/src/debug_panel/journal.rs",
+        "crates/benilla-ui/src/script/diagnostics.rs",
+        "docs/architecture/"
+      ],
+      "procedure": "Write RFC with host boundaries, event IDs, scope, retention, confidence, observable milestones, privacy and selective overhead. Map CastJournal, Lua DiagnosticLog and actual Wrath socket seam.",
+      "proof": "Approved/undecided RFC with state diagram, type table, event fixture and explicit open decisions.",
+      "avoid": "Do not attach a second mutable authoritative player-state model to diagnostics.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Write RFC with host boundaries, event IDs, scope, retention, confidence, observable milestones, privacy and selective overhead. Map CastJournal, Lua DiagnosticLog and actual Wrath socket seam.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for approve ifr/gcv design rfc.",
+        "Failure-path fixture: Approved/undecided RFC with state diagram, type table, event fixture and explicit open decisions.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Approved/undecided RFC with state diagram, type table, event fixture and explicit open decisions.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for approve ifr/gcv design rfc.",
+        "Failure-path fixture: Approved/undecided RFC with state diagram, type table, event fixture and explicit open decisions.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G00; G04",
+      "kind": "design"
+    },
+    {
+      "id": "D01",
+      "stage": 1,
+      "priority": "P1",
+      "deps": [
+        "D00"
+      ],
+      "owner": "Diagnostics core",
+      "title": "Define versioned event and incident types",
+      "objective": "Implement small testable typed events and versioned incident representation independent of Bevy.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/",
+        "crates/benilla-ui/src/script/diagnostics.rs"
+      ],
+      "procedure": "Define DiagnosticEventV1, IncidentV1, Scope and Outcome as bounded typed data; version serialized envelopes. Create deterministic serde fixtures and rejection behavior.",
+      "proof": "Round-trip test, unknown-version policy, monotonic sequencing and finite memory contract.",
+      "avoid": "No generic unbounded maps or arbitrary Lua table/packet payload storage.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Define DiagnosticEventV1, IncidentV1, Scope and Outcome as bounded typed data; version serialized envelopes. Create deterministic serde fixtures and rejection behavior.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for define versioned event and incident types.",
+        "Failure-path fixture: Round-trip test, unknown-version policy, monotonic sequencing and finite memory contract.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Round-trip test, unknown-version policy, monotonic sequencing and finite memory contract.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for define versioned event and incident types.",
+        "Failure-path fixture: Round-trip test, unknown-version policy, monotonic sequencing and finite memory contract.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D00",
+      "kind": "implementation"
+    },
+    {
+      "id": "D02",
+      "stage": 1,
+      "priority": "P1",
+      "deps": [
+        "D01"
+      ],
+      "owner": "Diagnostics core",
+      "title": "Implement bounded host recorder",
+      "objective": "Preserve trace history across Lua reloads with bounded memory and explicit dropped-data counts.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/debug_panel/journal.rs",
+        "crates/benilla-app/src/ui_script/lifecycle.rs"
+      ],
+      "procedure": "Implement resident ring buffer and bounded incidents queue with nonblocking record path. Handle /reload and world scope changes explicitly; track dropped/sampled events and snapshot consistency.",
+      "proof": "Burst and concurrent snapshot test; observed recorder identity through UI VM replacement.",
+      "avoid": "Recording on render path must not perform blocking filesystem writes or locks.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Implement resident ring buffer and bounded incidents queue with nonblocking record path. Handle /reload and world scope changes explicitly; track dropped/sampled events and snapshot consistency.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for implement bounded host recorder.",
+        "Failure-path fixture: Burst and concurrent snapshot test; observed recorder identity through UI VM replacement.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Burst and concurrent snapshot test; observed recorder identity through UI VM replacement.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for implement bounded host recorder.",
+        "Failure-path fixture: Burst and concurrent snapshot test; observed recorder identity through UI VM replacement.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D01",
+      "kind": "implementation"
+    },
+    {
+      "id": "D03",
+      "stage": 1,
+      "priority": "P1",
+      "deps": [
+        "D01",
+        "D02"
+      ],
+      "owner": "Diagnostics flow",
+      "title": "Correlate asynchronous interaction evidence",
+      "objective": "Match local intent to protocol and state outcomes with scope and confidence, preserving ambiguity.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/wrath.rs",
+        "crates/benilla-app/src/ui_quest/net.rs"
+      ],
+      "procedure": "Implement scope-aware intent registry matching GUID, operation, quest/item/spell ID, sequence and time window. Test repeated same-NPC clicks, late server events, reconnect and ambiguity.",
+      "proof": "Correlation returns exact/strong/heuristic/ambiguous/unmatched with auditable evidence.",
+      "avoid": "Stock 3.3.5 has no universal trace ID that travels to the server and back.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Implement scope-aware intent registry matching GUID, operation, quest/item/spell ID, sequence and time window. Test repeated same-NPC clicks, late server events, reconnect and ambiguity.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for correlate asynchronous interaction evidence.",
+        "Failure-path fixture: Correlation returns exact/strong/heuristic/ambiguous/unmatched with auditable evidence.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Correlation returns exact/strong/heuristic/ambiguous/unmatched with auditable evidence.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for correlate asynchronous interaction evidence.",
+        "Failure-path fixture: Correlation returns exact/strong/heuristic/ambiguous/unmatched with auditable evidence.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D01; D02",
+      "kind": "implementation"
+    },
+    {
+      "id": "D04",
+      "stage": 1,
+      "priority": "P1",
+      "deps": [
+        "D02",
+        "G05"
+      ],
+      "owner": "Action diagnostics",
+      "title": "Instrument UI to socket-writer milestones",
+      "objective": "Record distinct intent, queue-admission, writer and refusal events without claiming server acceptance.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/ui_quest/verbs.rs",
+        "crates/benilla-app/src/wrath.rs"
+      ],
+      "procedure": "Instrument real selected Wrath command chain at intent, channel accept, outbox accept, serialization and write. Emit rejections at each owner; inspect old donor wire trace separately.",
+      "proof": "Fixture identifies first lost boundary under queue pressure; socket write claims require writer hook.",
+      "avoid": "Do not assume benilla-app/src/net/io/wire_trace.rs automatically instruments the Wrath worker.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Instrument real selected Wrath command chain at intent, channel accept, outbox accept, serialization and write. Emit rejections at each owner; inspect old donor wire trace separately.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for instrument ui to socket-writer milestones.",
+        "Failure-path fixture: Fixture identifies first lost boundary under queue pressure; socket write claims require writer hook.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Fixture identifies first lost boundary under queue pressure; socket write claims require writer hook.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for instrument ui to socket-writer milestones.",
+        "Failure-path fixture: Fixture identifies first lost boundary under queue pressure; socket write claims require writer hook.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D02; G05",
+      "kind": "implementation"
+    },
+    {
+      "id": "D05",
+      "stage": 1,
+      "priority": "P1",
+      "deps": [
+        "D02",
+        "D03"
+      ],
+      "owner": "Inbound diagnostics",
+      "title": "Instrument decoder to reducer to domain owner",
+      "objective": "Observe ingress, decode, event dispatch and state changes with authoritative evidence boundaries.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/wrath.rs",
+        "crates/benilla-app/src/ui_quest/net.rs",
+        "crates/benilla-app/src/net/apply.rs"
+      ],
+      "procedure": "Add limited metadata hooks for packet arrival, decode result, reducer admission, state delta and domain consumption; group by session/world. Reject sensitive raw packet bodies.",
+      "proof": "Known fixture traces receipt through actual replica change; stale-world and malformed packet cases labeled.",
+      "avoid": "An inbound response is evidence of receipt; authoritative success requires specific state/result semantics.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Add limited metadata hooks for packet arrival, decode result, reducer admission, state delta and domain consumption; group by session/world. Reject sensitive raw packet bodies.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for instrument decoder to reducer to domain owner.",
+        "Failure-path fixture: Known fixture traces receipt through actual replica change; stale-world and malformed packet cases labeled.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Known fixture traces receipt through actual replica change; stale-world and malformed packet cases labeled.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for instrument decoder to reducer to domain owner.",
+        "Failure-path fixture: Known fixture traces receipt through actual replica change; stale-world and malformed packet cases labeled.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D02; D03",
+      "kind": "implementation"
+    },
+    {
+      "id": "D06",
+      "stage": 1,
+      "priority": "P1",
+      "deps": [
+        "D02"
+      ],
+      "owner": "UI diagnostics",
+      "title": "Bridge Lua/UI diagnostics to resident recorder",
+      "objective": "Persist script load errors, callbacks and relevant widget event failures through /reload.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-ui/src/script/diagnostics.rs",
+        "crates/benilla-app/src/ui_script/lifecycle.rs"
+      ],
+      "procedure": "Use existing UiScript::diagnostics rows as an input, recording since-last-seq before teardown. Link UI handler errors to interaction ID where available; include reload generation.",
+      "proof": "A Lua failure remains in resident incident history after /reload; no duplicate spam.",
+      "avoid": "The current UI VM diagnostic store resets on world entry and reload.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Use existing UiScript::diagnostics rows as an input, recording since-last-seq before teardown. Link UI handler errors to interaction ID where available; include reload generation.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for bridge lua/ui diagnostics to resident recorder.",
+        "Failure-path fixture: A Lua failure remains in resident incident history after /reload; no duplicate spam.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "A Lua failure remains in resident incident history after /reload; no duplicate spam.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for bridge lua/ui diagnostics to resident recorder.",
+        "Failure-path fixture: A Lua failure remains in resident incident history after /reload; no duplicate spam.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D02",
+      "kind": "implementation"
+    },
+    {
+      "id": "D07",
+      "stage": 1,
+      "priority": "P1",
+      "deps": [
+        "D02",
+        "D03"
+      ],
+      "owner": "Incident UX",
+      "title": "Build privacy-safe incident exporter",
+      "objective": "Produce one-click sanitized incident archive with source/binary identity and reproducible trace data.",
+      "status": "proposed",
+      "files": [
+        "tools/collect-diagnostics.ps1",
+        "crates/benilla-app/src/debug_panel/mod.rs",
+        "docs/launching.md"
+      ],
+      "procedure": "Package allowlisted JSONL traces, incidents, run manifest, executable hash and redacted logs. Offer last-interaction capture, consent for optional screenshot, preview and optional manual note.",
+      "proof": "An induced error exports a readable archive with no credentials, auth packets, chat or secrets.",
+      "avoid": "Hash or omit user identifiers; no raw memory dump and no private packet bodies in default reports.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Package allowlisted JSONL traces, incidents, run manifest, executable hash and redacted logs. Offer last-interaction capture, consent for optional screenshot, preview and optional manual note.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for build privacy-safe incident exporter.",
+        "Failure-path fixture: An induced error exports a readable archive with no credentials, auth packets, chat or secrets.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "An induced error exports a readable archive with no credentials, auth packets, chat or secrets.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for build privacy-safe incident exporter.",
+        "Failure-path fixture: An induced error exports a readable archive with no credentials, auth packets, chat or secrets.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D02; D03",
+      "kind": "implementation"
+    },
+    {
+      "id": "D08",
+      "stage": 1,
+      "priority": "P2",
+      "deps": [
+        "D06",
+        "D03"
+      ],
+      "owner": "UI/UX diagnostics",
+      "title": "Inspect UI input, layout and rendering faults",
+      "objective": "Differentiate missed hit, intercepted click, script failure, stale view and visual obstruction.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/debug_panel/inspect.rs",
+        "crates/benilla-app/src/ui_script/",
+        "crates/benilla-ui/src/script/"
+      ],
+      "procedure": "Instrument pointer hit-test, top intercepting widget, active visibility, frame event, Lua handler, state mutation and effective render bounds. Sample only on click/incident.",
+      "proof": "Fixtures distinguish overlay swallow, nil handler, clipped button and valid server refusal.",
+      "avoid": "Avoid per-frame full UI tree snapshots and speculative detection based solely on empty panels.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Instrument pointer hit-test, top intercepting widget, active visibility, frame event, Lua handler, state mutation and effective render bounds. Sample only on click/incident.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for inspect ui input, layout and rendering faults.",
+        "Failure-path fixture: Fixtures distinguish overlay swallow, nil handler, clipped button and valid server refusal.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Fixtures distinguish overlay swallow, nil handler, clipped button and valid server refusal.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for inspect ui input, layout and rendering faults.",
+        "Failure-path fixture: Fixtures distinguish overlay swallow, nil handler, clipped button and valid server refusal.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D06; D03",
+      "kind": "implementation"
+    },
+    {
+      "id": "Q00",
+      "stage": 2,
+      "priority": "P1",
+      "deps": [
+        "D01",
+        "D03",
+        "D05"
+      ],
+      "owner": "Gameplay contracts",
+      "title": "Define deterministic workflow contract engine",
+      "objective": "Model domain-specific transitions and expected evidence without a fake universal ACK.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/ui_quest/",
+        "crates/benilla-app/src/ui_quest_log.rs"
+      ],
+      "procedure": "Encode quest milestones in a small domain DSL or state table. Specify sufficient evidence for open, accept, progress, turn-in and reward; define refusal, cancellation, ambiguity and timeout budgets.",
+      "proof": "Unit tests exercise transitions and out-of-order, duplicate, terminal and unsupported edges.",
+      "avoid": "Do not use one universal fixed deadline for all server and UI operations.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Encode quest milestones in a small domain DSL or state table. Specify sufficient evidence for open, accept, progress, turn-in and reward; define refusal, cancellation, ambiguity and timeout budgets.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for define deterministic workflow contract engine.",
+        "Failure-path fixture: Unit tests exercise transitions and out-of-order, duplicate, terminal and unsupported edges.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Unit tests exercise transitions and out-of-order, duplicate, terminal and unsupported edges.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for define deterministic workflow contract engine.",
+        "Failure-path fixture: Unit tests exercise transitions and out-of-order, duplicate, terminal and unsupported edges.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D01; D03; D05",
+      "kind": "implementation"
+    },
+    {
+      "id": "Q01",
+      "stage": 2,
+      "priority": "P1",
+      "deps": [
+        "Q00",
+        "D04",
+        "D06"
+      ],
+      "owner": "Quest integration",
+      "title": "Trace questgiver open and selection",
+      "objective": "Observe NPC interaction through panel visibility, with proof at each transition.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/ui_quest/net.rs",
+        "crates/benilla-app/src/ui_quest/verbs.rs",
+        "crates/benilla-app/src/ui_quest/mod.rs"
+      ],
+      "procedure": "Trace NPC click, selected-world GUID, quest greeting/detail response, QuestGiver view update and actual panel render. Include one-click quest selection and invalid-GUID cases.",
+      "proof": "A broken NPC dialog reports first failing boundary; a working fixture passes the same chain.",
+      "avoid": "A decoded greeting alone does not prove a visible panel.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Trace NPC click, selected-world GUID, quest greeting/detail response, QuestGiver view update and actual panel render. Include one-click quest selection and invalid-GUID cases.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for trace questgiver open and selection.",
+        "Failure-path fixture: A broken NPC dialog reports first failing boundary; a working fixture passes the same chain.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "A broken NPC dialog reports first failing boundary; a working fixture passes the same chain.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for trace questgiver open and selection.",
+        "Failure-path fixture: A broken NPC dialog reports first failing boundary; a working fixture passes the same chain.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "Q00; D04; D06",
+      "kind": "implementation"
+    },
+    {
+      "id": "Q02",
+      "stage": 2,
+      "priority": "P1",
+      "deps": [
+        "Q01",
+        "G05",
+        "D05"
+      ],
+      "owner": "Quest integration",
+      "title": "Validate quest acceptance through journal",
+      "objective": "Trace command, authoritative quest-log slot, projection and visible journal row.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/ui_quest/verbs.rs",
+        "crates/benilla-app/src/ui_quest_log.rs",
+        "crates/benilla-app/src/wrath.rs"
+      ],
+      "procedure": "Record accept intent, guard/latch, real command admission, quest state fields and journal row. Compare server refusal reasons against expected quest prerequisites.",
+      "proof": "Red/green scenario: accepted quest exists in authoritative replica and UI; phantom acceptance identified.",
+      "avoid": "Close/teardown before send result can hide a failed admission; restore or report accordingly.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Record accept intent, guard/latch, real command admission, quest state fields and journal row. Compare server refusal reasons against expected quest prerequisites.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for validate quest acceptance through journal.",
+        "Failure-path fixture: Red/green scenario: accepted quest exists in authoritative replica and UI; phantom acceptance identified.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Red/green scenario: accepted quest exists in authoritative replica and UI; phantom acceptance identified.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for validate quest acceptance through journal.",
+        "Failure-path fixture: Red/green scenario: accepted quest exists in authoritative replica and UI; phantom acceptance identified.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "Q01; G05; D05",
+      "kind": "implementation"
+    },
+    {
+      "id": "Q03",
+      "stage": 2,
+      "priority": "P2",
+      "deps": [
+        "Q02"
+      ],
+      "owner": "Quest integration",
+      "title": "Validate objectives and journal synchronization",
+      "objective": "Relate server progress, cached template, objective counters and the actual displayed row.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/ui_quest_log.rs",
+        "crates/benilla-ui/src/script/quest_log.rs"
+      ],
+      "procedure": "Track kill/item objective event, quest-template availability, objective count source, cache callback and visible journal progress. Add stale-cache/reload tests.",
+      "proof": "Progress sample shows exact value in replica and journal; missing template classified as pending/unknown.",
+      "avoid": "Quest objective messages and journal display can be legitimately delayed.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Track kill/item objective event, quest-template availability, objective count source, cache callback and visible journal progress. Add stale-cache/reload tests.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for validate objectives and journal synchronization.",
+        "Failure-path fixture: Progress sample shows exact value in replica and journal; missing template classified as pending/unknown.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Progress sample shows exact value in replica and journal; missing template classified as pending/unknown.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for validate objectives and journal synchronization.",
+        "Failure-path fixture: Progress sample shows exact value in replica and journal; missing template classified as pending/unknown.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "Q02",
+      "kind": "implementation"
+    },
+    {
+      "id": "Q04",
+      "stage": 2,
+      "priority": "P1",
+      "deps": [
+        "Q02",
+        "D05"
+      ],
+      "owner": "Quest integration",
+      "title": "Validate turn-in and delayed rewards",
+      "objective": "Correlate completion, quest removal, XP, money and item changes arriving separately.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/ui_quest/net.rs",
+        "crates/benilla-app/src/ui_quest/verbs.rs",
+        "crates/benilla-app/src/ui_quest_log.rs"
+      ],
+      "procedure": "Track choose-reward command, completion receipt, quest-state removal and independent XP/money/item changes. Build delayed-reward and full-inventory cases.",
+      "proof": "No success claim until expected authoritative deltas observed or explicit server refusal recorded.",
+      "avoid": "SMSG_QUESTGIVER_QUEST_COMPLETE is not itself proof every reward entered inventory.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Track choose-reward command, completion receipt, quest-state removal and independent XP/money/item changes. Build delayed-reward and full-inventory cases.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for validate turn-in and delayed rewards.",
+        "Failure-path fixture: No success claim until expected authoritative deltas observed or explicit server refusal recorded.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "No success claim until expected authoritative deltas observed or explicit server refusal recorded.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for validate turn-in and delayed rewards.",
+        "Failure-path fixture: No success claim until expected authoritative deltas observed or explicit server refusal recorded.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "Q02; D05",
+      "kind": "implementation"
+    },
+    {
+      "id": "Q05",
+      "stage": 2,
+      "priority": "P0",
+      "deps": [
+        "Q01",
+        "Q02",
+        "Q03",
+        "Q04",
+        "D07"
+      ],
+      "owner": "Alpha validation",
+      "title": "Prove a real Northshire quest journey",
+      "objective": "Capture owner-authorized quest through completion with visible gameplay and redacted artifacts.",
+      "status": "proposed",
+      "files": [
+        "docs/launching.md",
+        "crates/benilla-app/src/capture/",
+        "crates/benilla-app/src/ui_quest/"
+      ],
+      "procedure": "With authorization and free client slot, demonstrate actual Firna/Northshire quest progression; record binary/profile/PID, traces, UI screenshots (optional), rewards and follow-up reload/reconnect.",
+      "proof": "Owner-visible evidence ledger covers acceptance, progress, hand-in, rewards, and failed-path report bundle.",
+      "avoid": "Do not automate character creation, combat or other persistent state without direct permission.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: With authorization and free client slot, demonstrate actual Firna/Northshire quest progression; record binary/profile/PID, traces, UI screenshots (optional), rewards and follow-up reload/reconnect.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for prove a real northshire quest journey.",
+        "Failure-path fixture: Owner-visible evidence ledger covers acceptance, progress, hand-in, rewards, and failed-path report bundle.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Owner-visible evidence ledger covers acceptance, progress, hand-in, rewards, and failed-path report bundle.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for prove a real northshire quest journey.",
+        "Failure-path fixture: Owner-visible evidence ledger covers acceptance, progress, hand-in, rewards, and failed-path report bundle.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "Q01; Q02; Q03; Q04; D07",
+      "kind": "verification"
+    },
+    {
+      "id": "H00",
+      "stage": 3,
+      "priority": "P1",
+      "deps": [
+        "G00"
+      ],
+      "owner": "Hotpatch Rust",
+      "title": "Repair failed-manifest retry state",
+      "objective": "Make transient candidate errors retryable while preserving the active pose module.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-hotpatch/src/lib.rs",
+        "crates/benilla-hotpatch/src/bin/hotpatch-probe.rs"
+      ],
+      "procedure": "Stage manifest with missing/transiently locked DLL, then publish DLL later without touching manifest. Delay observed-revision commit until success, or track retry state with capped backoff; preserve active module.",
+      "proof": "Same unchanged ready.toml eventually loads after transient failure; invalid candidate rejection is visible.",
+      "avoid": "Manifest text is currently remembered before TOML/open success, which can suppress retry.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Stage manifest with missing/transiently locked DLL, then publish DLL later without touching manifest. Delay observed-revision commit until success, or track retry state with capped backoff; preserve active module.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for repair failed-manifest retry state.",
+        "Failure-path fixture: Same unchanged ready.toml eventually loads after transient failure; invalid candidate rejection is visible.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Same unchanged ready.toml eventually loads after transient failure; invalid candidate rejection is visible.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for repair failed-manifest retry state.",
+        "Failure-path fixture: Same unchanged ready.toml eventually loads after transient failure; invalid candidate rejection is visible.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G00",
+      "kind": "implementation"
+    },
+    {
+      "id": "H01",
+      "stage": 3,
+      "priority": "P1",
+      "deps": [
+        "H00"
+      ],
+      "owner": "Hotpatch integration",
+      "title": "Prove in-game A to B to A pose swap",
+      "objective": "Demonstrate real same-PID patch activation and rollback under an authorized player session.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-hotpatch-bevy/src/lib.rs",
+        "tools/publish-pose-module.ps1",
+        "crates/benilla-app/src/hotpatch.rs",
+        "docs/architecture/adr-0002-live-client-modules.md"
+      ],
+      "procedure": "Build feature-enabled client under shared Cargo slot. Run approved live A→B→A pose publications and verify same PID, session, target, position, pose difference and no cumulative drift.",
+      "proof": "Written PID/hash/manifest evidence and visible same-process B and restored A; failure states documented.",
+      "avoid": "An ignored Bevy unit test is separate from real rendered acceptance; DLL swap may hitch.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Build feature-enabled client under shared Cargo slot. Run approved live A→B→A pose publications and verify same PID, session, target, position, pose difference and no cumulative drift.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for prove in-game a to b to a pose swap.",
+        "Failure-path fixture: Written PID/hash/manifest evidence and visible same-process B and restored A; failure states documented.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Written PID/hash/manifest evidence and visible same-process B and restored A; failure states documented.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for prove in-game a to b to a pose swap.",
+        "Failure-path fixture: Written PID/hash/manifest evidence and visible same-process B and restored A; failure states documented.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "H00",
+      "kind": "verification"
+    },
+    {
+      "id": "H02",
+      "stage": 3,
+      "priority": "P2",
+      "deps": [
+        "H00",
+        "D00"
+      ],
+      "owner": "Hotpatch design",
+      "title": "Specify revision trust and capability contract",
+      "objective": "Define staged revisions, authenticity, capability gates and failure semantics before expanding hotpatch.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-hotpatch-abi/src/lib.rs",
+        "crates/benilla-hotpatch/src/lib.rs",
+        "docs/architecture/adr-0002-live-client-modules.md"
+      ],
+      "procedure": "Define PatchRevisionV1 with artifact digest, signer/trust origin, capability, host ABI, required dependencies, validation level and rollback limits. Model staged→validated→active→rejected.",
+      "proof": "Reviewed manifest/ADR plus trust policy, activation decision table and unsupported class list.",
+      "avoid": "SHA-1 content naming is not remote publisher authentication; DLL code remains fully trusted native code.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Define PatchRevisionV1 with artifact digest, signer/trust origin, capability, host ABI, required dependencies, validation level and rollback limits. Model staged→validated→active→rejected.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for specify revision trust and capability contract.",
+        "Failure-path fixture: Reviewed manifest/ADR plus trust policy, activation decision table and unsupported class list.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Reviewed manifest/ADR plus trust policy, activation decision table and unsupported class list.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for specify revision trust and capability contract.",
+        "Failure-path fixture: Reviewed manifest/ADR plus trust policy, activation decision table and unsupported class list.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "H00; D00",
+      "kind": "design"
+    },
+    {
+      "id": "H03",
+      "stage": 3,
+      "priority": "P2",
+      "deps": [
+        "H02",
+        "H01",
+        "D02"
+      ],
+      "owner": "Hotpatch Rust",
+      "title": "Add patch health and last-good rollback",
+      "objective": "Report actual candidate status and restore previous validated code for recoverable errors.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-hotpatch/src/lib.rs",
+        "crates/benilla-hotpatch-bevy/src/lib.rs"
+      ],
+      "procedure": "Add candidate active/last-good revision and health observations; validate output before promotion. Add recoverable rollback, reject reasons, timeout and crash-on-next-launch recovery strategy.",
+      "proof": "Failure injection leaves active processor functional; rollback events name old/new revision and reason.",
+      "avoid": "An in-process native access violation can terminate the client; post-crash restore is startup recovery.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Add candidate active/last-good revision and health observations; validate output before promotion. Add recoverable rollback, reject reasons, timeout and crash-on-next-launch recovery strategy.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for add patch health and last-good rollback.",
+        "Failure-path fixture: Failure injection leaves active processor functional; rollback events name old/new revision and reason.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Failure injection leaves active processor functional; rollback events name old/new revision and reason.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for add patch health and last-good rollback.",
+        "Failure-path fixture: Failure injection leaves active processor functional; rollback events name old/new revision and reason.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "H02; H01; D02",
+      "kind": "implementation"
+    },
+    {
+      "id": "H04",
+      "stage": 3,
+      "priority": "P2",
+      "deps": [
+        "D06",
+        "H02"
+      ],
+      "owner": "UI/hotpatch",
+      "title": "Package Lua/UI updates using /reload",
+      "objective": "Stage UI content as a revision and confirm reload preserves socket and authoritative state.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/ui_script/lifecycle.rs",
+        "docs/architecture/adr-0002-live-client-modules.md"
+      ],
+      "procedure": "Design and test a local UI overlay revision, then call existing controlled /reload with save/teardown/load/rebind. Preserve socket and host diagnostics; report addon failures.",
+      "proof": "Same PID/session and quest/bag/server state, with UI revision changed and startup error safely recoverable.",
+      "avoid": "Existing /reload lifecycle alone cannot load arbitrary new code without a content overlay.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Design and test a local UI overlay revision, then call existing controlled /reload with save/teardown/load/rebind. Preserve socket and host diagnostics; report addon failures.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for package lua/ui updates using /reload.",
+        "Failure-path fixture: Same PID/session and quest/bag/server state, with UI revision changed and startup error safely recoverable.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Same PID/session and quest/bag/server state, with UI revision changed and startup error safely recoverable.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for package lua/ui updates using /reload.",
+        "Failure-path fixture: Same PID/session and quest/bag/server state, with UI revision changed and startup error safely recoverable.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "D06; H02",
+      "kind": "implementation"
+    },
+    {
+      "id": "H05",
+      "stage": 3,
+      "priority": "P3",
+      "deps": [
+        "H02"
+      ],
+      "owner": "Asset architecture",
+      "title": "Design coherent asset revision dependencies",
+      "objective": "Plan atomic consistency across archives, async tasks, M2/SKIN, materials, palettes and GPU resources.",
+      "status": "proposed",
+      "files": [
+        "docs/architecture/adr-0002-live-client-modules.md",
+        "crates/benilla-assets/",
+        "crates/benilla-profile/"
+      ],
+      "procedure": "Map each asset family and its dependent GPU/CPU consumers. Specify immutable overlay revision and stale async job cancellation, complete family swap, retention and compatibility constraints.",
+      "proof": "Design note with a dependency graph and prototype-ready two-phase commit/abort contract.",
+      "avoid": "Reopening MPQ readers alone does not invalidate living models, materials or derived caches.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Map each asset family and its dependent GPU/CPU consumers. Specify immutable overlay revision and stale async job cancellation, complete family swap, retention and compatibility constraints.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for design coherent asset revision dependencies.",
+        "Failure-path fixture: Design note with a dependency graph and prototype-ready two-phase commit/abort contract.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Design note with a dependency graph and prototype-ready two-phase commit/abort contract.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for design coherent asset revision dependencies.",
+        "Failure-path fixture: Design note with a dependency graph and prototype-ready two-phase commit/abort contract.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "H02",
+      "kind": "design"
+    },
+    {
+      "id": "X00",
+      "stage": 4,
+      "priority": "P2",
+      "deps": [
+        "Q05"
+      ],
+      "owner": "Combat/UI",
+      "title": "Extend workflow validation to cast/combat",
+      "objective": "Detect cast admission, server refusal, cooldown, damage and visible feedback mismatches.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/debug_panel/journal.rs",
+        "crates/benilla-app/src/ui_action/"
+      ],
+      "procedure": "Reuse workflow engine with cast intent, start/go/fail, cooldown, aura/damage and UI feedback; include server-rejected spell and line-of-sight cases.",
+      "proof": "Incident points at cast request vs authoritative result vs display mismatch.",
+      "avoid": "A spell animation is not evidence the server applied damage.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Reuse workflow engine with cast intent, start/go/fail, cooldown, aura/damage and UI feedback; include server-rejected spell and line-of-sight cases.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for extend workflow validation to cast/combat.",
+        "Failure-path fixture: Incident points at cast request vs authoritative result vs display mismatch.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Incident points at cast request vs authoritative result vs display mismatch.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for extend workflow validation to cast/combat.",
+        "Failure-path fixture: Incident points at cast request vs authoritative result vs display mismatch.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "Q05",
+      "kind": "implementation"
+    },
+    {
+      "id": "X01",
+      "stage": 4,
+      "priority": "P2",
+      "deps": [
+        "Q05"
+      ],
+      "owner": "Inventory/UI",
+      "title": "Extend workflow validation to loot/equip/merchants",
+      "objective": "Correlate item GUIDs, bags, vendor commands, payments and resulting replicated state.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/ui_quest_log.rs",
+        "crates/benilla-app/src/ui_merchant.rs",
+        "crates/benilla-app/src/ui_action/"
+      ],
+      "procedure": "Trace loot and merchant intents through accepted command, item GUID/slot delta and copper change; include overflow, split and purchase refusal paths.",
+      "proof": "Server-backed inventory/balance changes verified with GUID, slot and count where available.",
+      "avoid": "Do not infer successful purchase from a button animation or toast.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Trace loot and merchant intents through accepted command, item GUID/slot delta and copper change; include overflow, split and purchase refusal paths.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for extend workflow validation to loot/equip/merchants.",
+        "Failure-path fixture: Server-backed inventory/balance changes verified with GUID, slot and count where available.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Server-backed inventory/balance changes verified with GUID, slot and count where available.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for extend workflow validation to loot/equip/merchants.",
+        "Failure-path fixture: Server-backed inventory/balance changes verified with GUID, slot and count where available.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "Q05",
+      "kind": "implementation"
+    },
+    {
+      "id": "X02",
+      "stage": 4,
+      "priority": "P2",
+      "deps": [
+        "G01",
+        "D03"
+      ],
+      "owner": "World/session",
+      "title": "Trace auth, roster, login and world transitions",
+      "objective": "Track lifecycle epochs across connection, world entry, teleport and reconnect.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-app/src/wrath.rs",
+        "crates/benilla-app/src/ui_script/lifecycle.rs"
+      ],
+      "procedure": "Tag UI action and state epochs across auth→realm→roster→worldport and reconnect. Cancel stale interactions; test same-map transfer and delayed pre-teleport packet.",
+      "proof": "Traces retain full lifecycle and do not correlate a stale-world response to new-world action.",
+      "avoid": "Map ID alone is insufficient to identify a world generation.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Tag UI action and state epochs across auth→realm→roster→worldport and reconnect. Cancel stale interactions; test same-map transfer and delayed pre-teleport packet.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for trace auth, roster, login and world transitions.",
+        "Failure-path fixture: Traces retain full lifecycle and do not correlate a stale-world response to new-world action.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Traces retain full lifecycle and do not correlate a stale-world response to new-world action.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for trace auth, roster, login and world transitions.",
+        "Failure-path fixture: Traces retain full lifecycle and do not correlate a stale-world response to new-world action.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G01; D03",
+      "kind": "implementation"
+    },
+    {
+      "id": "X03",
+      "stage": 4,
+      "priority": "P2",
+      "deps": [
+        "G03",
+        "D01",
+        "H00"
+      ],
+      "owner": "Testing/security",
+      "title": "Add fuzz, property and architectural contract checks",
+      "objective": "Guard parsers, event schemas, queue invariants and FFI lifecycle with regression fixtures.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-protocol-wrath/src/gameplay.rs",
+        "crates/benilla-hotpatch/src/lib.rs",
+        "crates/benilla-hotpatch-abi/src/lib.rs"
+      ],
+      "procedure": "Add format fuzz seeds for item count and network limits, properties for ring/correlation, and invalid FFI descriptor/oversized publication cases. Avoid unsafe module execution in untrusted test harness.",
+      "proof": "Bounded targeted suite with reproducible seed IDs and acceptance gates.",
+      "avoid": "Static checks and mocked protocol tests cannot assert complete WotLK runtime behavior.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Add format fuzz seeds for item count and network limits, properties for ring/correlation, and invalid FFI descriptor/oversized publication cases. Avoid unsafe module execution in untrusted test harness.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for add fuzz, property and architectural contract checks.",
+        "Failure-path fixture: Bounded targeted suite with reproducible seed IDs and acceptance gates.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Bounded targeted suite with reproducible seed IDs and acceptance gates.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for add fuzz, property and architectural contract checks.",
+        "Failure-path fixture: Bounded targeted suite with reproducible seed IDs and acceptance gates.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "G03; D01; H00",
+      "kind": "implementation"
+    },
+    {
+      "id": "X04",
+      "stage": 4,
+      "priority": "P3",
+      "deps": [
+        "Q05",
+        "H03"
+      ],
+      "owner": "WorldMaster integration",
+      "title": "Design negotiated WM diagnostic and patch pilot",
+      "objective": "Plan authenticated, capability-negotiated, opt-in publication; preserve server authority.",
+      "status": "proposed",
+      "files": [
+        "crates/benilla-wm-native/src/lib.rs",
+        "integrations/wm-native/",
+        "docs/architecture/adr-0002-live-client-modules.md"
+      ],
+      "procedure": "Survey existing loopback WM observation protocol, authentication and owner decisions. Draft separate explicit diagnostic/publisher negotiation and owner consent, replay resistance and source authenticity.",
+      "proof": "Opt-in pilot contract, threat model and staging-only proof plan, with rollback roles.",
+      "avoid": "Current wm-native observation interface is not a general-purpose remote DLL publisher.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Survey existing loopback WM observation protocol, authentication and owner decisions. Draft separate explicit diagnostic/publisher negotiation and owner consent, replay resistance and source authenticity.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for design negotiated wm diagnostic and patch pilot.",
+        "Failure-path fixture: Opt-in pilot contract, threat model and staging-only proof plan, with rollback roles.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Opt-in pilot contract, threat model and staging-only proof plan, with rollback roles.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for design negotiated wm diagnostic and patch pilot.",
+        "Failure-path fixture: Opt-in pilot contract, threat model and staging-only proof plan, with rollback roles.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "Q05; H03",
+      "kind": "design"
+    },
+    {
+      "id": "X05",
+      "stage": 4,
+      "priority": "P0",
+      "deps": [
+        "Q05",
+        "G02"
+      ],
+      "owner": "Release coordination",
+      "title": "Package release proof and durable handoff",
+      "objective": "Produce a truthful private alpha checkpoint with exact artifacts and known gaps.",
+      "status": "proposed",
+      "files": [
+        "docs/launching.md",
+        "docs/agents/workflow.md",
+        "docs/agents/active-ownership.md"
+      ],
+      "procedure": "Collect source SHA and dirty diff, binary hash, data profile, server version, supported alpha path, exact test logs, user-visible evidence, remaining blockers and next assigned ticket.",
+      "proof": "Honest release evidence matrix with no unsupported passes; next-session handoff is reproducible.",
+      "avoid": "Do not call the alpha ready based on CI alone, web preview or existence of code paths.",
+      "steps": [
+        "Admission: read the live branch, active ownership and relevant ADR; name precise implementation and test owners. Confirm required permission and shared resources.",
+        "Evidence first: isolate one real symptom or gap; locate existing producer/consumer paths and record current source/bytecode identities.",
+        "RED: write or specify the smallest focused failing fixture for this task and capture its actual output when authorized.",
+        "Implement: Collect source SHA and dirty diff, binary hash, data profile, server version, supported alpha path, exact test logs, user-visible evidence, remaining blockers and next assigned ticket.",
+        "GREEN and inspect: run targeted authorized checks, review exact diffs and confirm protocol/version/ordering and state-invariant effects.",
+        "Closeout: attach exact source SHA, affected files, commands/results, S/B/T/R/V level, remaining risks and handoff to the next ready ticket."
+      ],
+      "tests": [
+        "Minimal positive-path fixture for package release proof and durable handoff.",
+        "Failure-path fixture: Honest release evidence matrix with no unsupported passes; next-session handoff is reproducible.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "done": [
+        "Honest release evidence matrix with no unsupported passes; next-session handoff is reproducible.",
+        "All supported claims point to artifacts and fresh test output; unrun checks labeled unrun.",
+        "Ticket ownership and changes are reconciled; no other agent work overwritten."
+      ],
+      "verification": [
+        "Minimal positive-path fixture for package release proof and durable handoff.",
+        "Failure-path fixture: Honest release evidence matrix with no unsupported passes; next-session handoff is reproducible.",
+        "Regression review: original player-visible symptom, relevant mode and state scope, with status recorded at the evidence level actually exercised."
+      ],
+      "blocking_reason": "Q05; G02",
+      "kind": "verification"
+    }
+  ],
+  "references": {
+    "RW-ROOT": {
+      "title": "RustWrath active repository",
+      "url": "https://github.com/Dicetar/RustWrath/tree/wotlk"
+    },
+    "RW-AGENTS": {
+      "title": "Agent standing rules",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/AGENTS.md"
+    },
+    "RW-CONTEXT": {
+      "title": "Project context and glossary",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/CONTEXT.md"
+    },
+    "RW-WORK": {
+      "title": "Agent coordination and test authorization",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/docs/agents/workflow.md"
+    },
+    "RW-OWN": {
+      "title": "Active owner reservations",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/docs/agents/active-ownership.md"
+    },
+    "RW-REF": {
+      "title": "3.3.5 build 12340 research process",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/docs/agents/12340-reference.md"
+    },
+    "RW-ADR1": {
+      "title": "Wrath compatibility boundary — proposed",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/adr-0001-wrath-compatibility-boundary.md"
+    },
+    "RW-ADR2": {
+      "title": "Live module/content revisions — in progress",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/docs/architecture/adr-0002-live-client-modules.md"
+    },
+    "RW-HOTPATCH": {
+      "title": "Pose module host implementation",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-hotpatch/src/lib.rs"
+    },
+    "RW-WRATH": {
+      "title": "Wrath worker and outbound queue",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/wrath.rs"
+    },
+    "RW-QUEST": {
+      "title": "Questgiver verbs",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_quest/verbs.rs"
+    },
+    "RW-QUEST-NET": {
+      "title": "Quest packet handlers",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/ui_quest/net.rs"
+    },
+    "RW-UI": {
+      "title": "Lua diagnostic store",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-ui/src/script/diagnostics.rs"
+    },
+    "RW-WIRE": {
+      "title": "Donor wire trace implementation",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/net/io/wire_trace.rs"
+    },
+    "RW-CAST": {
+      "title": "Existing cast event journal",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-app/src/debug_panel/journal.rs"
+    },
+    "RW-CI": {
+      "title": "GitHub Actions configuration",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/.github/workflows/ci.yml"
+    },
+    "RW-ISSUE15": {
+      "title": "Original hotpatch ticket",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/.scratch/project-b/issues/15-client-hotpatch.md"
+    },
+    "RW-LAUNCH": {
+      "title": "Windows launch and runtime instructions",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/docs/launching.md"
+    },
+    "RW-PUBLISH": {
+      "title": "Native pose publication script",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/tools/publish-pose-module.ps1"
+    },
+    "RW-WM": {
+      "title": "WorldMaster native observation contract",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-wm-native/src/lib.rs"
+    },
+    "RW-ITEM": {
+      "title": "Item stats decoder",
+      "url": "https://github.com/Dicetar/RustWrath/blob/wotlk/crates/benilla-protocol-wrath/src/gameplay.rs"
+    },
+    "SK-PLAN": {
+      "title": "Superpowers · writing-plans",
+      "url": "https://github.com/obra/superpowers/blob/main/skills/writing-plans/SKILL.md"
+    },
+    "SK-DEBUG": {
+      "title": "Superpowers · systematic-debugging",
+      "url": "https://github.com/obra/superpowers/blob/main/skills/systematic-debugging/SKILL.md"
+    },
+    "SK-VERIFY": {
+      "title": "Superpowers · verification-before-completion",
+      "url": "https://github.com/obra/superpowers/blob/main/skills/verification-before-completion/SKILL.md"
+    },
+    "SK-TICKET": {
+      "title": "Matt Pocock · to-tickets",
+      "url": "https://github.com/mattpocock/skills/blob/main/skills/engineering/to-tickets/SKILL.md"
+    },
+    "SK-OBS": {
+      "title": "Addy Osmani · observability-and-instrumentation",
+      "url": "https://github.com/addyosmani/agent-skills/blob/main/skills/observability-and-instrumentation/SKILL.md"
+    },
+    "SK-RUST": {
+      "title": "Trail of Bits · rust-review",
+      "url": "https://github.com/trailofbits/skills/blob/main/plugins/rust-review/skills/rust-review/SKILL.md"
+    },
+    "OTEL": {
+      "title": "OpenTelemetry terminology/semantic conventions",
+      "url": "https://opentelemetry.io/docs/concepts/"
+    },
+    "BEVY": {
+      "title": "Bevy 0.18.1 asset framework",
+      "url": "https://docs.rs/bevy/0.18.1/bevy/asset/"
+    },
+    "RUST-ABI": {
+      "title": "Rust FFI ABI documentation",
+      "url": "https://doc.rust-lang.org/reference/items/external-blocks.html#abi"
+    }
+  }
+}
