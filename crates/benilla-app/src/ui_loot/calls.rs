@@ -171,8 +171,9 @@ impl LootSteps<'_, '_> {
     /// (`0x4c27ad`, `0x4c27b6`).
     fn take(&mut self, script: &mut UiScript, row: u32) {
         use crate::quest_trace::{Operation, Stage};
+        let loot_source = self.loot.source();
         let trace = self.trace.as_ref().map(|s| {
-            s.begin(None, None, Operation::Loot)
+            s.begin_with_npc(None, None, loot_source, Operation::Loot)
         });
         let record = |trace: &Option<crate::quest_trace::Interaction>, stage| {
             if let Some(t) = trace {
@@ -272,7 +273,11 @@ impl LootSteps<'_, '_> {
     /// loot twice.
     fn confirm(&mut self, row: u32) {
         use crate::quest_trace::Operation;
-        let trace = self.trace.as_ref().map(|s| s.begin(None, None, Operation::Loot));
+        let loot_source = self.loot.source();
+        let trace = self
+            .trace
+            .as_ref()
+            .map(|s| s.begin_with_npc(None, None, loot_source, Operation::Loot));
         if self.objects.player().is_none() || self.loot.pending_bind_confirm != Some(row) {
             if let Some(t) = &trace {
                 t.record(crate::quest_trace::Stage::GuardRefused);
@@ -432,10 +437,13 @@ impl LootSteps<'_, '_> {
                 self.loot.then.push(Then::SweepRest { row, flag });
                 return;
             }
+            let loot_source = self.loot.source();
             self.store(
                 wire_slot,
                 display_id,
-                self.trace.as_ref().map(|s| s.begin(None, None, crate::quest_trace::Operation::Loot)),
+                self.trace.as_ref().map(|s| {
+                    s.begin_with_npc(None, None, loot_source, crate::quest_trace::Operation::Loot)
+                }),
             );
         }
         self.sweep_end(script, flag);

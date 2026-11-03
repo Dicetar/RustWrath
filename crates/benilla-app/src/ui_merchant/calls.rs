@@ -48,7 +48,12 @@ impl MerchantSteps<'_, '_> {
             | MerchantCall::BuyInSlot { .. } => Some(Operation::Buy),
             MerchantCall::Buyback(_) | MerchantCall::RepairAll | MerchantCall::Close => None,
         };
-        let trace = self.trace.as_ref().zip(op).map(|(s, op)| s.begin(None, None, op));
+        let vendor_npc = self.open.as_deref().and_then(|o| o.vendor);
+        let trace = self
+            .trace
+            .as_ref()
+            .zip(op)
+            .map(|(s, op)| s.begin_with_npc(None, None, vendor_npc, op));
         let record = |trace: &Option<crate::quest_trace::Interaction>, stage| {
             if let Some(t) = trace {
                 t.record(stage);
