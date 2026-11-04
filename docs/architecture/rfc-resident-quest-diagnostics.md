@@ -125,15 +125,20 @@ matches when a restore event was lost. Trust policy and memory isolation are not
 
 ### Evidence-class retention (additive to v1)
 
-Retained rows are classified into `action`, `health`, `protocol` and `unclassified`
-independent of their diagnostic vector. Periodic health rows (frame, asset, scene,
-replica, movement pressure, audio, UI frame visibility) are capped at 256 of the 1024
+Retained rows are classified into `action`, `health`, `protocol`, `ui_input` and
+`unclassified` independent of their diagnostic vector. Periodic health rows (frame, asset,
+scene, replica, movement pressure, audio, UI frame visibility) are capped at 256 of the 1024
 retained rows and reclaimed before action/protocol evidence while retained health exceeds
-a 64-row reserve. An incoming health row reclaims an older health row, so periodic traffic
-never displaces action evidence while any health row is retained; action pressure reclaims
-health down to the reserve, then its own oldest row. This protects the action chain that
-explains an incident while still exposing health loss in dedicated counters rather than
-suppressing health producers. `dropped` is the classified
+a 64-row reserve. High-volume UI pointer rows (`UiPress`/`UiClick`) are capped at 256 rows
+with a 32-row reserve and reclaimed separately, so a long click-heavy session cannot
+displace core action/protocol evidence; an incoming pointer row reclaims an older pointer
+row, then (above the health reserve) an older health row, and is refused with an explicit
+counter rather than overwriting protected core evidence. An incoming health row reclaims an
+older health row, so periodic traffic never displaces action evidence while any health row
+is retained; action pressure reclaims health down to the reserve, then UI input down to
+its reserve, then its own oldest row. This protects the action chain that explains an
+incident while still exposing health and pointer loss in dedicated counters rather than
+suppressing producers. `dropped` is the classified
 ingress loss sum, so the per-class counters reconcile with the global counters including
 `unclassified`, and health-only churn does not turn an action conclusion into a telemetry
 gap by itself. Incidents keep their bounded `evidence` sequence references and add up to

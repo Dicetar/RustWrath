@@ -228,18 +228,23 @@ pub(crate) enum EvidenceClass {
     /// Decode-adjacent transport evidence: packet receipt, reducer acceptance, gameplay decode.
     /// A rejection is classed `Action` because it directly explains a failed action.
     Protocol,
+    /// High-volume UI pointer traffic: presses and clicks. Bounded separately so a long
+    /// click-heavy session cannot displace core action/protocol evidence, while recent
+    /// presses/clicks remain available for UI-error and quest-dispatch correlation.
+    UiInput,
     /// Fallback class. See the type-level note: current producers map exhaustively.
     Unclassified,
 }
 
 /// Number of evidence classes; fixed-size per-class counters derive from this.
-pub(crate) const EVIDENCE_CLASS_COUNT: usize = 4;
+pub(crate) const EVIDENCE_CLASS_COUNT: usize = 5;
 
 impl EvidenceClass {
     pub(crate) const ALL: [EvidenceClass; EVIDENCE_CLASS_COUNT] = [
         EvidenceClass::Action,
         EvidenceClass::Health,
         EvidenceClass::Protocol,
+        EvidenceClass::UiInput,
         EvidenceClass::Unclassified,
     ];
 
@@ -248,7 +253,8 @@ impl EvidenceClass {
             EvidenceClass::Action => 0,
             EvidenceClass::Health => 1,
             EvidenceClass::Protocol => 2,
-            EvidenceClass::Unclassified => 3,
+            EvidenceClass::UiInput => 3,
+            EvidenceClass::Unclassified => 4,
         }
     }
 
@@ -257,6 +263,7 @@ impl EvidenceClass {
             EvidenceClass::Action => "action",
             EvidenceClass::Health => "health",
             EvidenceClass::Protocol => "protocol",
+            EvidenceClass::UiInput => "ui_input",
             EvidenceClass::Unclassified => "unclassified",
         }
     }
@@ -271,7 +278,7 @@ impl EvidenceClass {
 /// - `ReducerRejected` and `GameplayRejected` are `Action`: they directly explain why an action
 ///   did not land. `PacketReceived`, `ReducerAccepted` and `GameplayDecoded` are `Protocol`.
 /// - `UiFrame` is `Health` (visibility is a periodic frame observation) while `UiPress` and
-///   `UiClick` are `Action` (they are the interaction evidence incidents are built from).
+///   `UiClick` are `UiInput` (high-volume pointer traffic, bounded separately).
 /// - Loss annotations (`NativeEventsLost`, `ScriptRowsLost`, `ScriptRowsEvicted`,
 ///   `AssetEventsLost`) are `Action`. They are the evidence that a gap exists; letting periodic
 ///   churn reclaim them first would hide telemetry loss.
@@ -345,8 +352,6 @@ pub(crate) fn evidence_class_for_stage(stage: &Stage) -> EvidenceClass {
         | Stage::SocketReadFailed
         | Stage::SocketWriteFailed
         | Stage::Outbound { .. }
-        | Stage::UiPress { .. }
-        | Stage::UiClick { .. }
         | Stage::DomainEvent { .. }
         | Stage::Delivery(_) => EvidenceClass::Action,
 
@@ -365,6 +370,10 @@ pub(crate) fn evidence_class_for_stage(stage: &Stage) -> EvidenceClass {
         Stage::PacketReceived { .. }
         | Stage::ReducerAccepted { .. }
         | Stage::GameplayDecoded { .. } => EvidenceClass::Protocol,
+
+        // High-volume UI pointer traffic, bounded separately from core action evidence.
+        Stage::UiPress { .. }
+        | Stage::UiClick { .. } => EvidenceClass::UiInput,
 
         #[cfg(feature = "hotpatch")]
         Stage::Hotpatch { .. } => EvidenceClass::Action,
@@ -744,10 +753,33 @@ pub(crate) const HEALTH_RETENTION_BUDGET: usize = 256;
 /// and the per-class eviction counters expose exactly how much health was reclaimed.
 pub(crate) const HEALTH_RETENTION_RESERVE: usize = 64;
 
+/// Maximum number of `UiInput` (press/click) observations retained at once.
+///
+/// Pointer traffic is high-volume and change-driven, but it is not core action/protocol
+/// evidence: a long click-heavy session must not displace cast/loot/login evidence. Capping it
+/// at its own budget keeps recent presses/clicks available for UI-error and quest-dispatch
+/// correlation while bounding their footprint. A UI input row that is pushed out by this
+/// ceiling is counted as a class-aware eviction; pointer observations are never suppressed at
+/// the producer.
+pub(crate) const UI_INPUT_RETENTION_BUDGET: usize = 256;
+
+/// Minimum number of `UiInput` observations protected from action/protocol pressure.
+///
+/// UI input reclaims its own oldest rows first. Below this reserve, an incoming
+/// action/protocol/unclassified row may reclaim a UI input row above the reserve, but UI input
+/// never consumes the protected core action share: an incoming pointer row that cannot be
+/// inserted without displacing protected core evidence is refused and counted rather than
+/// overwriting action evidence.
+pub(crate) const UI_INPUT_RETENTION_RESERVE: usize = 32;
+
 // Retention invariants: health has a real ceiling, the protected reserve fits inside it, and
 // health can never consume the whole ring by itself.
 const _: () = assert!(HEALTH_RETENTION_RESERVE <= HEALTH_RETENTION_BUDGET);
 const _: () = assert!(HEALTH_RETENTION_BUDGET < RETAINED_CAPACITY);
+// UI input has a real ceiling, the protected reserve fits inside it, and it cannot consume
+// the whole ring by itself.
+const _: () = assert!(UI_INPUT_RETENTION_RESERVE <= UI_INPUT_RETENTION_BUDGET);
+const _: () = assert!(UI_INPUT_RETENTION_BUDGET < RETAINED_CAPACITY);
 
 /// Maximum bytes in one inspector/export summary line.
 const SNAPSHOT_LINE_BYTES: usize = 240;
@@ -960,6 +992,8 @@ pub(crate) struct DiagnosticCoverage {
     pub evidence_class_totals: EvidenceClassTotals,
     pub health_retention_budget: u64,
     pub health_retention_reserve: u64,
+    pub ui_input_retention_budget: u64,
+    pub ui_input_retention_reserve: u64,
 }
 
 /// One evidence-class row of the retention summary.
@@ -1998,17 +2032,46 @@ impl History {
 
     /// Class-aware eviction under full-ring pressure.
     ///
-    /// An incoming health row reclaims an older health row rather than an action row, so a
-    /// periodic health observation can never displace action/protocol evidence while any health
-    /// row is retained. An incoming action/protocol/unclassified row reclaims health while
-    /// retained health is above its protected reserve, then reclaims the oldest row of its own
-    /// group. When the ring holds nothing but health rows at the reserve, the oldest health row
-    /// is the only possible victim.
-    fn evict_under_pressure(&mut self, incoming_health: bool) -> bool {
-        let health = self.retained_by_class(EvidenceClass::Health);
-        if health > 0 && (incoming_health || health > HEALTH_RETENTION_RESERVE as u64) {
-            return self.evict_oldest_of(EvidenceClass::Health);
+    /// Victims are chosen by the incoming class:
+    /// - incoming `Health`: reclaim the oldest health row (health never needs core permission).
+    /// - incoming `UiInput`: reclaim the oldest UI input row first; only above the UI reserve
+    ///   may it reclaim health above its reserve. It never touches protected core evidence; if
+    ///   no evictable UI/health row exists the caller refuses insertion instead.
+    /// - incoming `Action`/`Protocol`/`Unclassified`: reclaim health above its reserve, then UI
+    ///   input above its reserve, then the oldest core action/protocol/unclassified row.
+    fn evict_for_incoming(&mut self, incoming: EvidenceClass) -> bool {
+        match incoming {
+            EvidenceClass::Health => {
+                if self.retained_by_class(EvidenceClass::Health) > 0 {
+                    return self.evict_oldest_of(EvidenceClass::Health);
+                }
+                // Fall through to core only when no health row exists at all.
+            }
+            EvidenceClass::UiInput => {
+                if self.retained_by_class(EvidenceClass::UiInput) > 0 {
+                    return self.evict_oldest_of(EvidenceClass::UiInput);
+                }
+                let health = self.retained_by_class(EvidenceClass::Health);
+                if health > HEALTH_RETENTION_RESERVE as u64 {
+                    return self.evict_oldest_of(EvidenceClass::Health);
+                }
+                // No evictable UI/health row: refuse rather than touch core evidence.
+                return false;
+            }
+            EvidenceClass::Action
+            | EvidenceClass::Protocol
+            | EvidenceClass::Unclassified => {
+                let health = self.retained_by_class(EvidenceClass::Health);
+                if health > HEALTH_RETENTION_RESERVE as u64 {
+                    return self.evict_oldest_of(EvidenceClass::Health);
+                }
+                let ui = self.retained_by_class(EvidenceClass::UiInput);
+                if ui > UI_INPUT_RETENTION_RESERVE as u64 {
+                    return self.evict_oldest_of(EvidenceClass::UiInput);
+                }
+            }
         }
+        // Core incoming (or health with no health row): reclaim the oldest core row.
         let mut oldest: Option<(EvidenceClass, u64)> = None;
         for class in [
             EvidenceClass::Action,
@@ -2024,7 +2087,17 @@ impl History {
         if let Some((_, seq)) = oldest {
             return self.evict_sequence(seq);
         }
-        self.evict_oldest_of(EvidenceClass::Health)
+        // Only health (or ui) rows remain: reclaim one above its reserve if possible, else refuse.
+        if incoming == EvidenceClass::Health {
+            return self.evict_oldest_of(EvidenceClass::Health);
+        }
+        if self.retained_by_class(EvidenceClass::Health) > HEALTH_RETENTION_RESERVE as u64 {
+            return self.evict_oldest_of(EvidenceClass::Health);
+        }
+        if self.retained_by_class(EvidenceClass::UiInput) > UI_INPUT_RETENTION_RESERVE as u64 {
+            return self.evict_oldest_of(EvidenceClass::UiInput);
+        }
+        false
     }
 
     /// Insert one retained row, applying the health ceiling and the global capacity policy.
@@ -2032,6 +2105,7 @@ impl History {
     fn insert_retained(&mut self, seq: u64, event: Event) {
         let class = evidence_class_for_stage(&event.stage);
         let incoming_health = class == EvidenceClass::Health;
+        let incoming_ui = class == EvidenceClass::UiInput;
         if incoming_health {
             while self.class_sequences[EvidenceClass::Health.index()].len()
                 >= HEALTH_RETENTION_BUDGET
@@ -2041,9 +2115,26 @@ impl History {
                 }
             }
         }
+        if incoming_ui {
+            while self.class_sequences[EvidenceClass::UiInput.index()].len()
+                >= UI_INPUT_RETENTION_BUDGET
+            {
+                if !self.evict_oldest_of(EvidenceClass::UiInput) {
+                    break;
+                }
+            }
+        }
         while self.entries.len() >= RETAINED_CAPACITY {
-            if !self.evict_under_pressure(incoming_health) {
-                break;
+            if !self.evict_for_incoming(class) {
+                // Refuse insertion rather than displace protected core evidence. Count the row
+                // as a retained-ring eviction of its own class so the loss is explicit.
+                let vector = vector_for_stage(&event.stage).unwrap_or("unclassified");
+                let index = diagnostic_vector_index(vector);
+                self.retained_evictions[index] = self.retained_evictions[index].saturating_add(1);
+                self.evicted_by_class[class.index()] =
+                    self.evicted_by_class[class.index()].saturating_add(1);
+                self.evicted = self.evicted.saturating_add(1);
+                return;
             }
         }
         self.class_sequences[class.index()].insert(seq);
@@ -2078,6 +2169,13 @@ impl History {
             || self.source_gaps > 0
             || self.interaction_tracking_lost > 0
             || self.source.0.dropped.load(Ordering::Relaxed) > 0
+    }
+
+    /// Whether any UI pointer (press/click) evidence was lost from the retained ring or ingress.
+    /// Used to keep UI-error and quest-dispatch correlations truthful after pointer eviction.
+    pub(crate) fn ui_input_rows_lost(&self) -> bool {
+        self.evicted_by_class[EvidenceClass::UiInput.index()] > 0
+            || self.source.producer_drops_for_class(EvidenceClass::UiInput) > 0
     }
 
     fn push_incident(
@@ -2926,8 +3024,15 @@ impl History {
                 }
             }
             let total = presses + clicks.len();
+            let pointer_lost = self.ui_input_rows_lost();
             let result = if total == 0 {
-                format!("UI error {row_seq}: no retained press or click within two seconds")
+                if pointer_lost {
+                    format!(
+                        "UI error {row_seq}: no retained press or click within two seconds; pointer rows were lost (association unavailable)"
+                    )
+                } else {
+                    format!("UI error {row_seq}: no retained press or click within two seconds")
+                }
             } else if total == 1 && clicks.len() == 1 {
                 let (consumed, visible, clipped, handler_invoked) = clicks[0];
                 let visibility = match visible {
@@ -2949,7 +3054,18 @@ impl History {
             } else {
                 format!("UI error {row_seq}: {total} nearby presses/clicks (ambiguous; no causal claim)")
             };
-            Some(if gaps { format!("{result}; trace has gaps") } else { result })
+            Some(if gaps || pointer_lost {
+                let mut line = result.clone();
+                if gaps {
+                    line.push_str("; trace has gaps");
+                }
+                if pointer_lost {
+                    line.push_str("; pointer rows were lost");
+                }
+                line
+            } else {
+                result
+            })
         }).take(8).collect()
     }
 
@@ -3065,7 +3181,7 @@ impl History {
                     }
                 },
                 recent: cap(self.recent().map(|line| line.to_string()).collect(), 16),
-                retention: cap(self.retention_summary(), 12),
+                retention: cap(self.retention_summary(), 13),
             });
         }
         self.inspector_snapshot.as_ref().unwrap()
@@ -3160,7 +3276,11 @@ impl History {
             let wording = if !eligible {
                 "not a plausible cause (hidden, clipped, unconsumed, handler not invoked, or old VM/reload)"
             } else if candidates == 0 {
-                "unverified: the source click is not retained in the event window"
+                if self.ui_input_rows_lost() {
+                    "unverified: the source click is not retained in the event window; pointer rows were lost (association unavailable)"
+                } else {
+                    "unverified: the source click is not retained in the event window"
+                }
             } else if candidates > 1 {
                 "ambiguous: multiple candidate clicks in the two-second window"
             } else {
@@ -3177,7 +3297,18 @@ impl History {
                 token.handler_invoked,
                 token.vm_session,
                 token.reload_generation,
-                if gaps { "; trace has gaps" } else { "" },
+                if gaps || self.ui_input_rows_lost() {
+                    let mut suffix = String::new();
+                    if gaps {
+                        suffix.push_str("; trace has gaps");
+                    }
+                    if self.ui_input_rows_lost() {
+                        suffix.push_str("; pointer rows were lost");
+                    }
+                    suffix
+                } else {
+                    String::new()
+                },
             ));
         } else {
             lines.push("UI dispatch antecedent: no retained press/click token".to_string());
@@ -4363,7 +4494,7 @@ impl History {
     /// global counter so a reader can verify the invariant.  Zero retained observations is not a
     /// healthy reading, so that caveat is always present.
     pub(crate) fn retention_summary(&self) -> Vec<String> {
-        const MAX_LINES: usize = 12;
+        const MAX_LINES: usize = 13;
         const MAX_EVICTION_LINES: usize = 4;
         fn bound(mut line: String) -> String {
             if line.len() > SNAPSHOT_LINE_BYTES {
@@ -4395,11 +4526,12 @@ impl History {
         let action = class_line(&[EvidenceClass::Action]);
         let health = class_line(&[EvidenceClass::Health]);
         let protocol = class_line(&[EvidenceClass::Protocol]);
+        let ui_input = class_line(&[EvidenceClass::UiInput]);
         let unclassified = class_line(&[EvidenceClass::Unclassified]);
         let totals = (
-            action.0 + health.0 + protocol.0 + unclassified.0,
-            action.1 + health.1 + protocol.1 + unclassified.1,
-            action.2 + health.2 + protocol.2 + unclassified.2,
+            action.0 + health.0 + protocol.0 + ui_input.0 + unclassified.0,
+            action.1 + health.1 + protocol.1 + ui_input.1 + unclassified.1,
+            action.2 + health.2 + protocol.2 + ui_input.2 + unclassified.2,
         );
         // Report the class-sum drop count so the summary line and the per-class lines agree.
         let dropped = totals.2;
@@ -4412,13 +4544,19 @@ impl History {
             action.0, action.1, action.2, health.0, health.1, health.2
         ));
         lines.push(format!(
-            "evidence classes: protocol held={} evicted={} dropped={}; unclassified held={} evicted={} dropped={}; sum held={} evicted={} dropped={}",
-            protocol.0, protocol.1, protocol.2,
+            "evidence classes: protocol held={} evicted={} dropped={}; ui_input held={} evicted={} dropped={}",
+            protocol.0, protocol.1, protocol.2, ui_input.0, ui_input.1, ui_input.2
+        ));
+        lines.push(format!(
+            "evidence classes: unclassified held={} evicted={} dropped={}; sum held={} evicted={} dropped={}",
             unclassified.0, unclassified.1, unclassified.2,
             totals.0, totals.1, totals.2
         ));
         lines.push(format!(
-            "health retention: budget={HEALTH_RETENTION_BUDGET} reserve={HEALTH_RETENTION_RESERVE}; class-aware eviction reclaims the oldest health row first, then the oldest action/protocol/unclassified row"
+            "health retention: budget={HEALTH_RETENTION_BUDGET} reserve={HEALTH_RETENTION_RESERVE}; class-aware eviction reclaims the oldest health row first, then action/protocol/unclassified"
+        ));
+        lines.push(format!(
+            "ui input retention: budget={UI_INPUT_RETENTION_BUDGET} reserve={UI_INPUT_RETENTION_RESERVE}; incoming UiInput reclaims oldest UiInput first, then health above reserve; refuses if core evidence would be displaced"
         ));
         lines.push(
             "zero retained observations is not proof that no event occurred (absence_not_proof=true)"
@@ -4799,6 +4937,8 @@ impl History {
             evidence_class_totals,
             health_retention_budget: HEALTH_RETENTION_BUDGET as u64,
             health_retention_reserve: HEALTH_RETENTION_RESERVE as u64,
+            ui_input_retention_budget: UI_INPUT_RETENTION_BUDGET as u64,
+            ui_input_retention_reserve: UI_INPUT_RETENTION_RESERVE as u64,
         }
     }
     pub(crate) fn recent(&self) -> impl Iterator<Item = String> + '_ {
@@ -5123,6 +5263,8 @@ impl History {
                         "evidence_class_totals": evidence_class_totals,
                         "health_retention_budget": HEALTH_RETENTION_BUDGET,
                         "health_retention_reserve": HEALTH_RETENTION_RESERVE,
+                        "ui_input_retention_budget": UI_INPUT_RETENTION_BUDGET,
+                        "ui_input_retention_reserve": UI_INPUT_RETENTION_RESERVE,
                         "build_git_sha": if build.sha.is_empty() { None } else { Some(build.sha) },
                         "build_dirty_state": "unknown",
                         "executable_file_sha1": file_hash,
