@@ -293,6 +293,9 @@ fn texture_schema() -> Schema {
     for i in 0..4 {
         s.add_field(SchemaField::new(format!("Doodad{i}"), FieldType::UInt32));
     }
+    for i in 0..4 {
+        s.add_field(SchemaField::new(format!("DoodadWeight{i}"), FieldType::UInt32));
+    }
     s.add_field(SchemaField::new("Density", FieldType::UInt32));
     s.add_field(SchemaField::new("Sound", FieldType::UInt32));
     s
@@ -353,7 +356,7 @@ pub fn load_ground_effect_catalog(
         if slots.iter().all(Option::is_none) {
             continue; // a terrain-type row: footsteps and sound, no doodads
         }
-        let density = u32_at(r, 5).unwrap_or(0);
+        let density = u32_at(r, 9).unwrap_or(0);
         effects.insert(
             id,
             GroundEffect {

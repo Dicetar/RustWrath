@@ -32,6 +32,7 @@ fn schema(name: &str) -> Schema {
     let mut s = Schema::new(name);
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
     s.add_field(SchemaField::new("Pattern", FieldType::String));
+    s.add_field(SchemaField::new("Language", FieldType::UInt32));
     s.set_key_field("ID");
     s
 }

@@ -69,7 +69,7 @@ impl AnimDataCatalog {
 
 fn schema() -> Schema {
     let mut s = Schema::new("AnimationData");
-    for i in 0..7 {
+    for i in 0..8 {
         let ty = if i == 1 {
             FieldType::String
         } else {
@@ -94,7 +94,7 @@ pub fn load_anim_data_catalog(chain: &mut Chain) -> Result<AnimDataCatalog> {
             id as u16,
             AnimEntry {
                 weapon_flags: u32_at(r, 2).unwrap_or(0),
-                fallback: u32_at(r, 6).unwrap_or(0) as u16,
+                fallback: u32_at(r, 5).unwrap_or(0) as u16,
             },
         );
         if let Some(name) = str_at(&rs, r, 1).filter(|n| !n.is_empty()) {

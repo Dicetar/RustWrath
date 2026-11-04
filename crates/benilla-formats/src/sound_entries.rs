@@ -202,6 +202,7 @@ fn sound_entries_schema() -> Schema {
     s.add_field(SchemaField::new("MinDistance", FieldType::Float32));
     s.add_field(SchemaField::new("DistanceCutoff", FieldType::Float32));
     s.add_field(SchemaField::new("EAXDef", FieldType::UInt32));
+    s.add_field(SchemaField::new("SoundEntriesAdvancedID", FieldType::UInt32));
     s
 }
 

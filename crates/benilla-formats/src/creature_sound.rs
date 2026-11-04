@@ -81,7 +81,7 @@ impl CreatureVoiceCatalog {
 
 pub(crate) fn csd_schema() -> Schema {
     let mut s = Schema::new("CreatureSoundData");
-    for i in 0..30 {
+    for i in 0..38 {
         s.add_field(SchemaField::new(format!("f{i}"), FieldType::UInt32));
     }
     s
@@ -89,7 +89,7 @@ pub(crate) fn csd_schema() -> Schema {
 
 fn cdi_schema() -> Schema {
     let mut s = Schema::new("CreatureDisplayInfo");
-    for i in 0..12 {
+    for i in 0..16 {
         s.add_field(SchemaField::new(format!("f{i}"), FieldType::UInt32));
     }
     s
@@ -127,14 +127,14 @@ pub fn load_creature_voice_catalog(chain: &mut Chain) -> Result<CreatureVoiceCat
                 wing_glide: g(12),
                 alert: g(13),
                 fidget: [g(14), g(15), g(16), g(17)],
-                custom_attack: [g(18), g(19), g(20), g(21)],
-                loop_sound: g(23),
-                impact_type: g(24),
-                jump_start: g(25),
-                jump_end: g(26),
-                pet_attack: g(27),
-                pet_order: g(28),
-                pet_dismiss: g(29),
+                custom_attack: [g(19), g(20), g(21), g(22)],
+                loop_sound: g(24),
+                impact_type: g(25),
+                jump_start: g(26),
+                jump_end: g(27),
+                pet_attack: g(28),
+                pet_order: g(29),
+                pet_dismiss: g(30),
             },
         );
     }

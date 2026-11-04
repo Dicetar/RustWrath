@@ -660,7 +660,7 @@ fn schema_for(dbc_name: &str) -> Option<Schema> {
     for (name, ctor) in [
         (
             "CreatureDisplayInfo.dbc",
-            creatures::creature_display_info_schema as fn() -> Schema,
+            creatures::creature_display_info_schema_wotlk as fn() -> Schema,
         ),
         (
             "CreatureDisplayInfoExtra.dbc",
@@ -720,7 +720,9 @@ fn schema_for(dbc_name: &str) -> Option<Schema> {
     }
 
     if base.eq_ignore_ascii_case("AreaTable.dbc") {
-        // 25 fields, 100-byte records, as `area_table.rs` and `area_sound.rs` load them.
+        // 36 fields, as the 12340 AreaTable layout: 11 base columns, 16 localized name offsets
+        // plus flags, then FactionGroupMask, LiquidTypeID[4], MinElevation, AmbientMultiplier,
+        // LightID.
         let mut s = Schema::new("AreaTable");
         s.add_field(SchemaField::new("ID", FieldType::UInt32));
         s.add_field(SchemaField::new("ContinentID", FieldType::UInt32));
@@ -736,15 +738,18 @@ fn schema_for(dbc_name: &str) -> Option<Schema> {
         s.add_field(SchemaField::new("ZoneMusic", FieldType::UInt32));
         s.add_field(SchemaField::new("IntroSound", FieldType::UInt32));
         s.add_field(SchemaField::new("ExplorationLevel", FieldType::UInt32));
-        s.add_field(SchemaField::new("AreaName", FieldType::String)); // enUS (locale 0)
+        s.add_field(SchemaField::new("AreaName", FieldType::String)); // locale 0
         s.add_field(SchemaField::new_array(
             "AreaNameOtherLocales",
             FieldType::String,
-            7,
+            15,
         ));
         s.add_field(SchemaField::new("AreaNameFlags", FieldType::UInt32));
         s.add_field(SchemaField::new("FactionGroupMask", FieldType::UInt32));
         s.add_field(SchemaField::new_array("LiquidTypeID", FieldType::UInt32, 4));
+        s.add_field(SchemaField::new("MinElevation", FieldType::Float32));
+        s.add_field(SchemaField::new("AmbientMultiplier", FieldType::Float32));
+        s.add_field(SchemaField::new("LightID", FieldType::UInt32));
         s.set_key_field("ID");
         return Some(s);
     }
@@ -779,7 +784,7 @@ fn schema_for(dbc_name: &str) -> Option<Schema> {
         for name in ["LocX", "LocY", "LocZ"] {
             s.add_field(SchemaField::new(name, FieldType::Float32));
         }
-        for name in ["Flags", "Delay"] {
+        for name in ["Flags", "Delay", "ArrivalEventID", "DepartureEventID"] {
             s.add_field(SchemaField::new(name, FieldType::UInt32));
         }
         s.set_key_field("ID");

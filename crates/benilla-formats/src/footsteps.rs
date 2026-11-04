@@ -100,12 +100,12 @@ pub fn load_footstep_catalog(chain: &mut Chain) -> Result<FootstepCatalog> {
         .context("reading GroundEffectTexture.dbc")?;
     let rs = parse(
         &bytes,
-        n_u32_schema("GroundEffectTexture", 7, &[]),
+        n_u32_schema("GroundEffectTexture", 11, &[]),
         "GroundEffectTexture",
     )?;
     let mut effect_terrain = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
-        if let (Some(id), Some(tt)) = (u32_at(r, 0), u32_at(r, 6)) {
+        if let (Some(id), Some(tt)) = (u32_at(r, 0), u32_at(r, 10)) {
             effect_terrain.insert(id, tt);
         }
     }

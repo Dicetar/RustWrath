@@ -80,7 +80,7 @@ pub fn load_gm_survey(chain: &mut Chain) -> Result<GmSurvey> {
         .with_context(|| format!("reading {QUESTIONS}"))?;
     let texts = parse(
         &texts,
-        schema("GMSurveyQuestions", 8, 0),
+        schema("GMSurveyQuestions", 16, 0),
         "GMSurveyQuestions",
     )?;
     let texts = texts
