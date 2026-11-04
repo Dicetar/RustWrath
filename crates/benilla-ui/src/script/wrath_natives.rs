@@ -118,6 +118,35 @@ fn modified_click(action: &str) -> Option<&'static str> {
     }
 }
 
+/// `GetLFGRandomCooldownExpiration` (`0x558060`) and `GetLFGDeserterExpiration` (`0x5580E0`): the
+/// active player's native aura end time for `spell_id` in seconds on the `GetTime()` clock, or no
+/// values with no player, no observed aura list, or no such aura. Both reference bindings walk
+/// `CGUnit_C::GetAuraIndex` (`0x7289C0`, the raw slot array), which the scoped `UnitAura` query
+/// exposes; the aura-bar display filter does not apply, so the hidden random-dungeon cooldown 71328
+/// is found. A match with no timer answers the reference's zero end time, not no values.
+fn lfg_aura_expiration(lua: &Lua, spell_id: u32) -> mlua::Result<MultiValue> {
+    let player = lua
+        .app_data_ref::<Model>()
+        .expect("model app_data")
+        .unit_guids
+        .player;
+    if player == 0 {
+        return Ok(MultiValue::new());
+    }
+    let auras = super::host::with_host(lua, |host| host.unit_auras(player));
+    let Some(auras) = auras.flatten() else {
+        return Ok(MultiValue::new());
+    };
+    // `unit_auras` is in ascending slot order, so the first match is the reference's
+    // `GetAuraIndex` slot.
+    Ok(auras
+        .iter()
+        .find(|aura| aura.spell_id == spell_id)
+        .map_or_else(MultiValue::new, |aura| {
+            MultiValue::from_vec(vec![Value::Number(aura.expiration.unwrap_or(0.0))])
+        }))
+}
+
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `IsStereoVideoAvailable` (`VideoOptionsPanels.lua:571`): the stereo-3D path needs glasses
     // driver hardware the real client probes for at boot; benilla has no stereo renderer, so the
@@ -859,8 +888,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // LFG/dungeon finder is not wired: the stock frames see an empty dungeon list, no
-    // backfill, and no deserter timer. `RequestLFDPlayerLockInfo` returns false because no
+    // LFG/dungeon finder is not wired: the stock frames see an empty dungeon list and no
+    // backfill. `RequestLFDPlayerLockInfo` returns false because no
     // CMSG_LFG_PLAYER_LOCK_INFO_REQUEST is sent (reference 0x5569D0 returns true only
     // after sending it). `GetAvailableRoles` still follows the character's class, as the
     // reference reads ChrClasses.dbc.
@@ -872,21 +901,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetNumRandomDungeons",
         lua.create_function(|_, ()| Ok(0i64))?,
     )?;
-    // `GetLFGDeserterExpiration` (0x5580E0): the deserter aura 71041's end time in seconds,
-    // or no values when the player lacks it (or before world entry, when player_auras is empty).
+    // `GetLFGRandomCooldownExpiration` (0x558060, aura 71328) and `GetLFGDeserterExpiration`
+    // (0x5580E0, aura 71041): the player's native aura end times, the fallback pair stock
+    // `LFDQueueFrameRandomCooldownFrame_Update` (`LFDFrame.lua:955`, `:962`) reads.
+    lua.globals().set(
+        "GetLFGRandomCooldownExpiration",
+        lua.create_function(|lua, _: MultiValue| lfg_aura_expiration(lua, 71328))?,
+    )?;
     lua.globals().set(
         "GetLFGDeserterExpiration",
-        lua.create_function(|lua, _: mlua::MultiValue| {
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            for aura in &model.player_auras {
-                if aura.spell_id == 71041 {
-                    return Ok(mlua::MultiValue::from_vec(vec![mlua::Value::Number(
-                        aura.expiration_time,
-                    )]));
-                }
-            }
-            Ok(mlua::MultiValue::new())
-        })?,
+        lua.create_function(|lua, _: MultiValue| lfg_aura_expiration(lua, 71041))?,
     )?;
     lua.globals().set(
         "RequestLFDPlayerLockInfo",
@@ -1469,5 +1493,131 @@ mod tests {
         assert_eq!(s.eval::<i64>("return GetRuneType(5)").unwrap(), 3);
         assert_eq!(s.eval::<bool>("return IsXPUserDisabled()").unwrap(), false);
         assert_eq!(s.eval::<bool>("return IsLoggedIn()").unwrap(), true);
+    }
+
+    /// `GetLFGRandomCooldownExpiration`/`GetLFGDeserterExpiration`: `LFDFrame.lua:955`/`:962`
+    /// read the player's native aura end time, or no values when the player, the observed aura
+    /// list or the aura itself is absent.
+    #[test]
+    fn wrath_lfg_cooldown_expirations_read_the_native_player_aura() {
+        use crate::script::host;
+
+        const PLAYER: u64 = 0x10;
+
+        struct AuraHost {
+            guid: u64,
+            auras: Option<Vec<crate::script::WrathAuraView>>,
+            asked: Vec<u64>,
+        }
+
+        impl crate::script::CallHost for AuraHost {
+            fn apply(
+                &mut self,
+                _script: &mut UiScript,
+                _call: crate::script::ScriptCall,
+            ) -> Option<crate::script::CallTail> {
+                None
+            }
+
+            fn unit_auras(&mut self, guid: u64) -> Option<Vec<crate::script::WrathAuraView>> {
+                self.asked.push(guid);
+                if guid != self.guid {
+                    return None;
+                }
+                self.auras.clone()
+            }
+        }
+
+        fn aura(slot: u8, spell_id: u32, expiration: Option<f64>) -> crate::script::WrathAuraView {
+            crate::script::WrathAuraView {
+                slot,
+                spell_id,
+                name: String::new(),
+                rank: None,
+                icon: None,
+                count: 1,
+                level: 80,
+                dispel: None,
+                helpful: Some(false),
+                caster: None,
+                duration: 0.0,
+                expiration,
+                cancelable: false,
+                stealable: None,
+                consolidate: None,
+            }
+        }
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        // No player guid: no values, and the host is never asked.
+        assert_eq!(s.arity("GetLFGDeserterExpiration()").unwrap(), 0);
+        assert_eq!(s.arity("GetLFGRandomCooldownExpiration()").unwrap(), 0);
+
+        s.seat_player_guid(PLAYER);
+        // No host lent: no values.
+        assert_eq!(s.arity("GetLFGDeserterExpiration()").unwrap(), 0);
+
+        let mut host = AuraHost {
+            guid: PLAYER,
+            auras: None,
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            // The generation's aura packet has not arrived: unavailable, not observed-empty.
+            assert_eq!(s.arity("GetLFGDeserterExpiration()").unwrap(), 0);
+            assert_eq!(s.arity("GetLFGRandomCooldownExpiration()").unwrap(), 0);
+        });
+
+        // The random-dungeon cooldown, hidden from the bar, is still in the native list; the
+        // unrelated aura after it is not a match.
+        host.auras = Some(vec![aura(33, 71328, Some(1_234.5)), aura(34, 1243, Some(99.0))]);
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(s.arity("GetLFGRandomCooldownExpiration()").unwrap(), 1);
+            assert_eq!(
+                s.eval::<f64>("return GetLFGRandomCooldownExpiration()").unwrap(),
+                1_234.5
+            );
+            assert_eq!(
+                s.arity("GetLFGDeserterExpiration()").unwrap(),
+                0,
+                "each binding reads its own spell"
+            );
+        });
+
+        // The deserter, and an unrelated-only list: no values.
+        host.auras = Some(vec![aura(32, 71041, Some(1_500.0))]);
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(
+                s.eval::<f64>("return GetLFGDeserterExpiration()").unwrap(),
+                1_500.0
+            );
+            assert_eq!(s.arity("GetLFGRandomCooldownExpiration()").unwrap(), 0);
+        });
+        host.auras = Some(vec![aura(32, 1243, Some(30.0))]);
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(s.arity("GetLFGDeserterExpiration()").unwrap(), 0);
+            assert_eq!(s.arity("GetLFGRandomCooldownExpiration()").unwrap(), 0);
+        });
+
+        // A match with no timer is one zero end time, which the caller treats as expired.
+        host.auras = Some(vec![aura(33, 71328, None)]);
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(s.arity("GetLFGRandomCooldownExpiration()").unwrap(), 1);
+            assert_eq!(
+                s.eval::<f64>("return GetLFGRandomCooldownExpiration()").unwrap(),
+                0.0
+            );
+        });
+
+        // The list removed (another object generation): no values again.
+        host.auras = None;
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(s.arity("GetLFGDeserterExpiration()").unwrap(), 0);
+            assert_eq!(s.arity("GetLFGRandomCooldownExpiration()").unwrap(), 0);
+        });
+        assert!(
+            host.asked.iter().all(|&guid| guid == PLAYER),
+            "the host is asked for the player's guid only"
+        );
     }
 }
