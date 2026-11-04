@@ -67,11 +67,18 @@ These are outside the assigned API set or have no local state owner.
   `UNIT_FIELD_CHARMEDBY` 12 / `SUMMONEDBY` 14 / `CREATEDBY` 16 from the 12340 reducer, and
   projects them onto the 1.12 slots 10/11, 12/13, 14/15. This reaches `target/relations.rs`
   (`owner`/`CanAttack`), `ui_unit`, `vplates`, minimap blips, combat log and pet UI, which
-  previously saw no owner for a hunter pet. Source-level fix; live reaction acceptance unrun.
-- Paladin player appearance remains open. The Wrath path already projects `display_id` (67 ->
-  131/132), `bytes_0` (23 -> 36) and `player_bytes`/`player_bytes_2` (153/154 -> 193/194);
-  the saved report does not distinguish a present/valid display id from an absent/zero one, nor
-  display resolution from skin/appearance failure. No evidence-backed edit was made.
+  previously saw no owner for a hunter pet. The source-level reaction path is now closed: with
+  no owner, `player_rungs` returns neutral and `can_attack` returns true; the ownership fix
+  supplies the controller. Live reaction acceptance is still unrun.
+- `9e797d98` corrects the display producer: `build_digest` now uses `field_delivered` for
+  `display_id`, level, faction, flags, bytes and player bytes instead of treating the reducer's
+  client-view zero as an observed zero. A player without a delivered/valid
+  `UNIT_FIELD_DISPLAYID` gets the `ChrRaces` body display for its race/sex, the same source the
+  glue preview and the reference's `InitDisplayIds` use. This is the source-level fix for the
+  missing player avatar; no client run has confirmed it.
+- Paladin player appearance was not repaired by the field-index rewrite; the display producer
+  above is the first divergence found by the normal `build_digest` -> `wrath_apply_world` ->
+  `live_display_id` entry point. Runtime acceptance remains open.
 
 ## Verification level
 
