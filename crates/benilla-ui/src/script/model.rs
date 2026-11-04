@@ -136,6 +136,8 @@ pub(crate) struct Model {
     pub(crate) addon_enable_saved: super::EnableHash,
     /// The AddOns folder, so `LoadAddOn` can read an addon's files from inside a Lua binding.
     pub(crate) addons_root: Option<std::path::PathBuf>,
+    /// Fallback AddOns folders searched after `addons_root` during `LoadAddOn`.
+    pub(crate) addons_extra_roots: Vec<std::path::PathBuf>,
     /// The host's reader for chain-sourced addon files; without one such an addon is `MISSING`.
     pub(crate) addons_chain_reader: Option<super::addon::SharedChainReader>,
     /// The host's font engine, so a metric answers inside the asking call, not a frame later.
@@ -1418,6 +1420,7 @@ impl Model {
             addon_enable: Default::default(),
             addon_enable_saved: Default::default(),
             addons_root: None,
+            addons_extra_roots: Vec::new(),
             addons_chain_reader: None,
             measurer: None,
             tooltip_measures: HashMap::new(),

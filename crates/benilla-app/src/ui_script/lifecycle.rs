@@ -303,7 +303,7 @@ fn install_addon_asset_resolvers(world: &mut World, script: &mut UiScript) {
     let Some(mut assets) = world.get_resource_mut::<benilla_assets::WorldAssets>() else {
         return;
     };
-    assets.set_loose_addon_root(addons::root());
+    assets.set_loose_addon_roots(addons::roots());
     let loose = assets.loose().clone();
     let chain = assets.chain.clone();
     let size_chain = chain.clone();

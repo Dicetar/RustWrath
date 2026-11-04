@@ -8,6 +8,22 @@ use crate::value::StrRef;
 use crate::vm::Vm;
 
 pub(super) fn open(vm: &mut Vm) {
+    let table = vm
+        .get_global("string")
+        .as_table()
+        .expect("string library installed");
+    for (name, function) in [
+        ("split", split as crate::heap::NativeFn),
+        ("trim", trim),
+        ("join", join),
+    ] {
+        let value = vm.new_native(name, function);
+        let key = vm.str(name.as_bytes());
+        vm.heap
+            .table_mut(table)
+            .set(key, value)
+            .expect("library key");
+    }
     vm.register("strsplit", split);
     vm.register("strtrim", trim);
     vm.register("strjoin", join);

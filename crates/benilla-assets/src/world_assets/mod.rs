@@ -430,6 +430,8 @@ pub fn file_texture_rgba(
 pub struct LooseFiles {
     /// benilla's AddOns folder, or `None` (always under `$WOW_CAPTURE`).
     pub addons: Option<PathBuf>,
+    /// Additional AddOns folders searched after `addons`.
+    pub extra_addons: Vec<PathBuf>,
     /// The install's index ([`benilla_formats::install_index`]), or `None` for a test's chain.
     pub install: Option<Arc<LooseIndexCell>>,
 }
@@ -439,6 +441,7 @@ impl LooseFiles {
     pub fn install() -> Self {
         LooseFiles {
             addons: None,
+            extra_addons: Vec::new(),
             install: Some(benilla_formats::install_index()),
         }
     }
@@ -463,8 +466,9 @@ impl LooseFiles {
         if norm.starts_with(ADDONS_PREFIX) {
             return self
                 .addons
-                .as_deref()
-                .and_then(|root| loose_addon_file(root, &norm))
+                .iter()
+                .chain(self.extra_addons.iter())
+                .find_map(|root| loose_addon_file(root, &norm))
                 .map(LooseFile::Plain);
         }
         install.as_ref().and_then(|ix| ix.get(&norm))
@@ -693,10 +697,25 @@ impl WorldAssets {
     /// existed gets a second look, and so is every `Interface\AddOns\` entry, since a loose file
     /// shadows the chain's ([`read_loose_or_chain`]); any other hit came from the chain and stays.
     pub fn set_loose_addon_root(&mut self, root: Option<PathBuf>) {
-        if self.loose.addons == root {
+        if self.loose.addons == root && self.loose.extra_addons.is_empty() {
             return;
         }
         self.loose.addons = root;
+        self.loose.extra_addons.clear();
+        self.cache.drop_addons_and_misses();
+    }
+
+    /// Install primary and fallback AddOns folders, evicting cached misses and `Interface\AddOns\`
+    /// entries when the folder list changes.
+    pub fn set_loose_addon_roots(&mut self, roots: Vec<PathBuf>) {
+        let mut iter = roots.into_iter();
+        let primary = iter.next();
+        let extra: Vec<PathBuf> = iter.collect();
+        if self.loose.addons == primary && self.loose.extra_addons == extra {
+            return;
+        }
+        self.loose.addons = primary;
+        self.loose.extra_addons = extra;
         self.cache.drop_addons_and_misses();
     }
 

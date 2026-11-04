@@ -89,6 +89,18 @@ fn install_wrath(lua: &Lua) -> mlua::Result<()> {
         "debuglocals",
         lua.create_function(|_, _level: Option<Value>| Ok(Value::Nil))?,
     )?;
+    // `tostringall(...)` converts every argument via `tostring`, used by Ace3 and 3.3.5a addons.
+    let tostring: mlua::Function = globals.get("tostring")?;
+    globals.set(
+        "tostringall",
+        lua.create_function(move |_, args: Variadic<Value>| {
+            let mut out = mlua::MultiValue::new();
+            for v in args {
+                out.push_back(tostring.call::<Value>(v)?);
+            }
+            Ok(out)
+        })?,
+    )?;
     Ok(())
 }
 

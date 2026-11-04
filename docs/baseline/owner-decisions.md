@@ -45,3 +45,10 @@ asset/model hotpatching.
    subsystems can be swapped or unloaded at runtime without breaking the base project.
 3. **Single-Owner Workflow**: Retire the split Astra-vs-OC crate lockouts in favor of a unified
    single-owner workflow where any agent can touch any crate per ticket.
+
+2026-11-04 owner-confirmed decision:
+1. **3.3.5a + New Features First (No Mandatory 1.12 Preservation)**: RustWrath's target is a
+   WoW 3.3.5a (build 12340) client reimplemented in Rust with new features. Agents do not need
+   to cling to 1.12 donor behavior or maintain strict 1.12 version-boundary gates; retain 1.12
+   donor code only where it is genuinely useful and fitting.
+

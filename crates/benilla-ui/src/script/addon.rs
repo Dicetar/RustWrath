@@ -131,6 +131,9 @@ const USAGE_DISABLE: &str = "Usage: DisableAddOn(index or \"name\")"; // 0x842e1
 const USAGE_LOAD_ON_DEMAND: &str = "Usage: IsAddOnLoadOnDemand(index or \"name\")"; // 0x842e44
 const USAGE_LOADED: &str = "Usage: IsAddOnLoaded(index or \"name\")"; // 0x842e70
 const USAGE_LOAD: &str = "Usage: LoadAddOn(index or \"name\")"; // 0x842e98
+const USAGE_OPT_DEPENDENCIES: &str = "Usage: GetAddOnOptionalDependencies(index or \"name\")";
+const USAGE_MEMORY_USAGE: &str = "Usage: GetAddOnMemoryUsage(index or \"name\")";
+const USAGE_CPU_USAGE: &str = "Usage: GetAddOnCPUUsage(index or \"name\")";
 
 /// The `index or "name"` argument, read by the prologue all eight in-game verbs share
 /// (`GetAddOnInfo 0x48e390`, `GetAddOnMetadata 0x48e530`, `GetAddOnDependencies 0x48e5e0`,
@@ -178,12 +181,24 @@ fn addon_key(lua: &Lua, model: &Model, key: &Value, usage: &'static str) -> mlua
 /// `AddOn_GetTitle 0x51df20`, `SStrCmpI`), by the CRT `qsort` (`0x73f727`) from the list's order.
 /// Titles that match without case sit where `qsort` leaves them. Empty until the server replies.
 fn rebuild_index(model: &mut Model) {
-    let Some(reply) = model.addon_reply.take() else {
+    if let Some(reply) = model.addon_reply.take() {
+        apply_reply(&mut model.addons, &reply);
+        model.addon_reply = Some(reply);
+    } else if model.target == super::UiTarget::Wrath335 {
+        for a in &mut model.addons {
+            a.corrupt = false;
+            if a.chain || a.signature_ok {
+                a.hidden = true;
+                a.security = AddonSecurity::Secure;
+            } else {
+                a.hidden = false;
+                a.security = AddonSecurity::Insecure;
+            }
+        }
+    } else {
         model.addon_index = Vec::new(); // no reply yet, as in the reference
         return;
-    };
-    apply_reply(&mut model.addons, &reply);
-    model.addon_reply = Some(reply);
+    }
     let mut index: Vec<usize> = (0..model.addons.len())
         .filter(|&i| !model.addons[i].hidden)
         .collect();
@@ -443,8 +458,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     ] {
         g.set(
             name,
-            lua.create_function(move |lua, key: Value| {
+            lua.create_function(move |lua, args: MultiValue| {
                 let mut model = lua.app_data_mut::<Model>().expect("model");
+                let key = if model.target == super::UiTarget::Wrath335
+                    && args.len() >= 2
+                    && !matches!(args.get(1), None | Some(Value::Nil))
+                    && matches!(args.front(), Some(Value::String(_) | Value::Nil))
+                    && lua.coerce_number(args.front().cloned().unwrap_or(Value::Nil))?.is_none()
+                {
+                    args.get(1).cloned().unwrap_or(Value::Nil)
+                } else {
+                    args.front().cloned().unwrap_or(Value::Nil)
+                };
                 let (row, name) = match addon_key(lua, &model, &key, usage)? {
                     AddonKey::Index(i) => (Some(i), model.addons[i].name.clone()),
                     AddonKey::Name(n) => (by_name(&model, &n), n),
@@ -538,6 +563,86 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 lua_str(lua, &reason)?,
             ]))
         })?,
+    )?;
+
+    if lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335 {
+        install_wrath(lua, &g)?;
+    }
+
+    Ok(())
+}
+
+fn install_wrath(lua: &Lua, g: &mlua::Table) -> mlua::Result<()> {
+    g.set(
+        "GetAddOnOptionalDependencies",
+        lua.create_function(|lua, key: Value| {
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let key = addon_key(lua, &model, &key, USAGE_OPT_DEPENDENCIES)?;
+            let Some(i) = row_of(&model, &key) else {
+                return Ok(MultiValue::new());
+            };
+            let mut out = Vec::new();
+            for dep in &model.addons[i].optional_dependencies {
+                out.push(lua_str(lua, dep)?);
+            }
+            Ok(MultiValue::from_iter(out))
+        })?,
+    )?;
+
+    g.set(
+        "GetAddOnEnableState",
+        lua.create_function(|lua, args: MultiValue| {
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let key = if args.len() >= 2 && !matches!(args.get(1), None | Some(Value::Nil)) {
+                args.get(1).cloned().unwrap_or(Value::Nil)
+            } else {
+                args.front().cloned().unwrap_or(Value::Nil)
+            };
+            let key = addon_key(lua, &model, &key, USAGE_INFO)?;
+            let enabled = row_of(&model, &key).is_some_and(|i| model.addons[i].enabled);
+            Ok(if enabled { 2.0f64 } else { 0.0f64 })
+        })?,
+    )?;
+
+    g.set(
+        "UpdateAddOnMemoryUsage",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+    g.set(
+        "GetAddOnMemoryUsage",
+        lua.create_function(|lua, key: Value| {
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let _ = addon_key(lua, &model, &key, USAGE_MEMORY_USAGE)?;
+            Ok(0.0f64)
+        })?,
+    )?;
+    g.set(
+        "UpdateAddOnCPUUsage",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+    g.set(
+        "GetAddOnCPUUsage",
+        lua.create_function(|lua, key: Value| {
+            let model = lua.app_data_ref::<Model>().expect("model");
+            let _ = addon_key(lua, &model, &key, USAGE_CPU_USAGE)?;
+            Ok(0.0f64)
+        })?,
+    )?;
+    g.set(
+        "GetFunctionCPUUsage",
+        lua.create_function(|_, _: MultiValue| Ok((0.0f64, 0i64)))?,
+    )?;
+    g.set(
+        "GetFrameCPUUsage",
+        lua.create_function(|_, _: MultiValue| Ok((0.0f64, 0i64)))?,
+    )?;
+    g.set(
+        "GetEventCPUUsage",
+        lua.create_function(|_, _: MultiValue| Ok((0.0f64, 0i64)))?,
+    )?;
+    g.set(
+        "ResetCPUUsage",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
     )?;
 
     Ok(())
@@ -731,8 +836,22 @@ impl DemandLoad<'_> {
                 reader(&format!("Interface/AddOns/{req}"))
             }))
         } else {
-            let root = model.addons_root.clone()?;
-            Some(Box::new(move |req: &str| read_under(&root, req)))
+            let mut roots: Vec<PathBuf> = model.addons_root.iter().cloned().collect();
+            roots.extend(model.addons_extra_roots.iter().cloned());
+            if roots.is_empty() {
+                return None;
+            }
+            let chain_reader = model.addons_chain_reader.clone();
+            Some(Box::new(move |req: &str| {
+                roots
+                    .iter()
+                    .find_map(|root| read_under(root, req))
+                    .or_else(|| {
+                        chain_reader
+                            .as_ref()
+                            .and_then(|r| r(&format!("Interface/AddOns/{req}")))
+                    })
+            }))
         }
     }
 }
@@ -932,16 +1051,43 @@ fn load_failure(lua: &Lua, msg: &str) {
 }
 
 /// Read `root/rel`, refusing a path that leaves `root`, lexically before any filesystem call;
-/// `join_ref` has already resolved the path, so an escape shows as a leading `..`.
+/// `join_ref` has already resolved the path, so an escape shows as a leading `..`. Each path
+/// component is matched case-insensitively on disk so Windows-authored `.toc` and `<Include>`
+/// references resolve regardless of casing or separator style.
 fn read_under(root: &std::path::Path, rel: &str) -> Option<Vec<u8>> {
-    let rel = std::path::Path::new(rel);
-    if rel
-        .components()
-        .any(|c| !matches!(c, std::path::Component::Normal(_)))
-    {
+    let mut at = root.to_path_buf();
+    let mut any = false;
+    for comp in rel.split(['/', '\\']) {
+        if comp.is_empty() {
+            continue;
+        }
+        any = true;
+        let plain = matches!(
+            std::path::Path::new(comp).components().collect::<Vec<_>>()[..],
+            [std::path::Component::Normal(_)]
+        );
+        if !plain || comp.starts_with('.') {
+            return None;
+        }
+        at = child_ignoring_case(&at, comp)?;
+    }
+    if !any {
         return None;
     }
-    std::fs::read(root.join(rel)).ok()
+    std::fs::read(at).ok()
+}
+
+fn child_ignoring_case(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let direct = dir.join(name);
+    if direct.exists() {
+        return Some(direct);
+    }
+    let found = std::fs::read_dir(dir).ok()?.flatten().find(|e| {
+        e.file_name()
+            .to_str()
+            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+    })?;
+    Some(found.path())
 }
 
 /// Run a chunk read off disk, BOM stripped: [`crate::script::UiScript::run_chunk`] for the
@@ -1027,8 +1173,14 @@ impl super::UiScript {
         model.addons_saved_account = saved_account;
         model.addons_saved_character = saved_character;
         // The reference builds the array when the server's reply lands, before world entry, so
-        // the rebuild runs here; with no reply the array stays empty, as there.
+        // the rebuild runs here; with no reply the array stays empty in 1.12, and uses the
+        // local manifest security/visibility rule in Wrath.
         rebuild_index(&mut model);
+    }
+
+    /// Seat fallback AddOns folders searched after `addons_root` during `LoadAddOn`.
+    pub fn set_addon_extra_roots(&mut self, roots: Vec<PathBuf>) {
+        self.model_mut().addons_extra_roots = roots;
     }
 
     /// Record the `SMSG_ADDON_INFO` (`0x2ef`) verdict, the addons answered status 2; the caller

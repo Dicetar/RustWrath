@@ -123,16 +123,26 @@ fn arg(args: &MultiValue, i: usize) -> Value {
 /// `Usage:`, then the registry row of that place in the Lua index space, or `0x837d70`'s range
 /// error.
 fn row_arg(lua: &Lua, model: &Model, v: Value, usage: &'static str) -> mlua::Result<usize> {
-    let n = lua
-        .coerce_number(v)?
-        .ok_or_else(|| mlua::Error::RuntimeError(usage.into()))?;
-    index_row(model, n)
+    if let Some(n) = lua.coerce_number(v.clone())? {
+        return index_row(model, n);
+    }
+    if model.target == super::UiTarget::Wrath335 {
+        if let Value::String(s) = v {
+            let name = s.to_string_lossy();
+            return model
+                .addons
+                .iter()
+                .position(|a| a.name.eq_ignore_ascii_case(&name))
+                .ok_or_else(|| mlua::Error::RuntimeError(usage.into()));
+        }
+    }
+    Err(mlua::Error::RuntimeError(usage.into()))
 }
 
 /// The `(character, index)` pair of the three per-character verbs: argument 1 is a string or
 /// number (`0x6f3510`) or an explicit nil (`0x6f3400` answers tag 0), which names every node;
-/// an absent argument is the usage error. Argument 2 is a number. The character is read before
-/// the index is resolved (`0x46d6fd`-`0x46d75e`).
+/// an absent argument is the usage error. Argument 2 is a number (or addon name in Wrath). The
+/// character is read before the index is resolved (`0x46d6fd`-`0x46d75e`).
 fn character_and_row(
     lua: &Lua,
     args: &MultiValue,
@@ -143,10 +153,7 @@ fn character_and_row(
         Some(v) => Some(string_arg(lua, v.clone(), usage)?),
         None => return Err(mlua::Error::RuntimeError(usage.into())),
     };
-    let n = lua
-        .coerce_number(arg(args, 1))?
-        .ok_or_else(|| mlua::Error::RuntimeError(usage.into()))?;
-    let row = index_row(&model(lua), n)?;
+    let row = row_arg(lua, &model(lua), arg(args, 1), usage)?;
     Ok((character, row))
 }
 
@@ -360,6 +367,38 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
+
+    if model(lua).target == super::UiTarget::Wrath335 {
+        g.set(
+            "GetAddOnOptionalDependencies",
+            lua.create_function(|lua, args: MultiValue| {
+                let model = model(lua);
+                let i = row_arg(lua, &model, arg(&args, 0), USAGE_DEPENDENCIES)?;
+                let mut out = Vec::new();
+                for dep in &model.addons[i].optional_dependencies {
+                    out.push(lua_str(lua, dep)?);
+                }
+                Ok(MultiValue::from_vec(out))
+            })?,
+        )?;
+        g.set(
+            "GetAddOnMetadata",
+            lua.create_function(|lua, args: MultiValue| {
+                let model = model(lua);
+                let i = row_arg(lua, &model, arg(&args, 0), USAGE_INFO)?;
+                let field = string_arg(lua, arg(&args, 1), USAGE_INFO)?;
+                match model.addons[i]
+                    .directives
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(&field))
+                {
+                    Some((_, v)) => lua_str(lua, v),
+                    None => Ok(Value::Nil),
+                }
+            })?,
+        )?;
+    }
 
     Ok(())
 }
@@ -1075,5 +1114,95 @@ mod tests {
         );
         assert!(raised(&s, "LaunchAddOnURL('x')").contains("Usage: LaunchAddOnURL(index)"));
         assert!(raised(&s, "LaunchAddOnURL(9)").contains("range of 1 to 4"));
+    }
+
+    #[test]
+    fn wrath_addons_work_out_of_the_box_without_server_reply() {
+        use super::super::UiTarget;
+
+        // 1. Glue VM in Wrath mode builds the addon index without SMSG_ADDON_INFO, hiding
+        // chain addons (and marking them SECURE) while listing third-party addons.
+        let mut glue = UiScript::glue_with_target(UiTarget::Wrath335).unwrap();
+        let mut blizz = addon("Blizzard_TalentUI", Some("Blizzard Talent UI"));
+        blizz.chain = true;
+        blizz.signature_ok = true;
+        blizz.interface = 30300;
+        let mut third_party = addon("Recount", Some("Recount Damage Meter"));
+        third_party.interface = 30300;
+        third_party.optional_dependencies = vec!["Ace3".into(), "LibSharedMedia-3.0".into()];
+        third_party.directives = vec![("Version".into(), "v3.3.5a".into())];
+        glue.register_addons(vec![blizz.clone(), third_party.clone()], None, None, None);
+
+        assert_eq!(glue.eval::<f64>("return GetNumAddOns()").unwrap(), 1.0);
+        assert!(glue.addon_is_secure("Blizzard_TalentUI"));
+        assert!(!glue.addon_is_secure("Recount"));
+        assert_eq!(
+            glue.eval::<(String, String, String)>("local n, t, _, _, _, _, sec = GetAddOnInfo(1) return n, t, sec").unwrap(),
+            ("Recount".into(), "Recount Damage Meter".into(), "INSECURE".into())
+        );
+        assert_eq!(
+            glue.eval::<(String, String)>("return GetAddOnOptionalDependencies('Recount')").unwrap(),
+            ("Ace3".into(), "LibSharedMedia-3.0".into())
+        );
+        assert_eq!(
+            glue.eval::<String>("return GetAddOnMetadata('Recount', 'Version')").unwrap(),
+            "v3.3.5a"
+        );
+
+        // 2. In-game VM in Wrath mode supports string:trim/split/join, tostringall,
+        // profiling/inspection globals, and case-insensitive demand loading across roots.
+        let mut ingame = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        let tmp = std::env::temp_dir().join(format!("rustwrath_addon_test_{}", std::process::id()));
+        let primary = tmp.join("primary_addons");
+        let fallback = tmp.join("fallback_addons");
+        let addon_dir = fallback.join("MyWrathAddon").join("Libs");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&addon_dir).unwrap();
+        std::fs::write(
+            addon_dir.join("Core.lua"),
+            b"local name, ns = ...\nns.tag = ('  hello:wrath  '):trim()\nlocal a, b = ns.tag:split(':')\nMY_WRATH_RESULT = string.join('-', tostringall(name, a, b, 30300))\n",
+        )
+        .unwrap();
+
+        let mut demand_addon = addon("MyWrathAddon", Some("My Wrath Addon"));
+        demand_addon.interface = 30300;
+        demand_addon.load_on_demand = true;
+        demand_addon.optional_dependencies = vec!["LibStub".into()];
+        // Use backslash and different casing from disk ("libs\\core.lua" vs "Libs/Core.lua").
+        demand_addon.files = vec!["libs\\core.lua".into()];
+
+        ingame.register_addons(
+            vec![blizz, third_party, demand_addon],
+            Some(primary),
+            None,
+            None,
+        );
+        ingame.set_addon_extra_roots(vec![fallback]);
+
+        assert_eq!(ingame.eval::<i64>("return GetNumAddOns()").unwrap(), 2);
+        assert!(ingame.addon_is_secure("Blizzard_TalentUI"));
+        assert_eq!(
+            ingame.eval::<String>("return GetAddOnOptionalDependencies('MyWrathAddon')").unwrap(),
+            "LibStub"
+        );
+        assert_eq!(
+            ingame.eval::<f64>("return GetAddOnEnableState('Player', 'MyWrathAddon')").unwrap(),
+            2.0
+        );
+        assert_eq!(
+            ingame.eval::<f64>("UpdateAddOnMemoryUsage() UpdateAddOnCPUUsage() ResetCPUUsage() return GetAddOnMemoryUsage(1) + GetAddOnCPUUsage(1)").unwrap(),
+            0.0
+        );
+        assert_eq!(
+            ingame.eval::<(i64, Option<String>)>("return LoadAddOn('MyWrathAddon')").unwrap(),
+            (1, None)
+        );
+        assert_eq!(
+            ingame.eval::<String>("return MY_WRATH_RESULT").unwrap(),
+            "MyWrathAddon-hello-wrath-30300"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

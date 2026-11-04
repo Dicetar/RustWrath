@@ -62,9 +62,9 @@ records. Do not generalize one format's stride to another.
 2. Search the reference for the symbol, layout or original address. Read the narrow call chain.
 3. Record the pin, reference file/symbol/address, mechanism and confidence in the owning issue or
    checkpoint. Identify any stand-in or unsupported branch explicitly.
-4. Implement the mechanism idiomatically through existing Rust owners, preserving version
-   boundaries. Do not transplant global architecture, use fake success values or bypass a
-   producer merely because a Lua caller then stops throwing.
+4. Implement the mechanism idiomatically through existing Rust owners for 3.3.5a (retaining
+   1.12 donor code only where useful and fitting). Do not transplant global architecture, use
+   fake success values or bypass a producer merely because a Lua caller then stops throwing.
 5. Use the applicable authorized focused verification and original symptom rerun. A reference
    match, test pass or successful build alone does not establish rendered/gameplay acceptance.
 

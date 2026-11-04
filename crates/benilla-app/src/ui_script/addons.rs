@@ -253,25 +253,54 @@ fn is_lua(entry: &str) -> bool {
 /// ([`super::reference_ui::read`]), as does one the root lacks. A loose file that will not read is a
 /// miss (`0x647865`).
 pub(crate) fn read_addon_file(root: &Path, req: &str) -> Option<Vec<u8>> {
-    match benilla_assets::loose_addon_file(root, &benilla_assets::normalize_path(req)) {
-        Some(file) => std::fs::read(file).ok(),
-        None => super::reference_ui::read(&req.replace('/', "\\")),
+    let norm = benilla_assets::normalize_path(req);
+    if let Some(file) = benilla_assets::loose_addon_file(root, &norm) {
+        return std::fs::read(file).ok();
     }
+    for extra in roots() {
+        if extra != root {
+            if let Some(file) = benilla_assets::loose_addon_file(&extra, &norm) {
+                return std::fs::read(file).ok();
+            }
+        }
+    }
+    super::reference_ui::read(&req.replace('/', "\\"))
 }
 
 /// A `Dir` addon's base before its folder name ([`Addon::prefix`]), `/`-separated as `join_ref` is.
 const ADDONS_PREFIX: &str = "Interface/AddOns/";
 
 /// The selected client's read-only addon source; textures and fonts resolve onto it too.
-/// Wrath uses the data install's Interface/AddOns. Deviation: vanilla uses the client's own
-/// state folder. Capture mode suppresses either loose source; saved-state writes use local_state.
+/// Wrath uses the data install's Interface/AddOns first and falls back to the client's local
+/// state AddOns folder (`benilla-config/AddOns`). Vanilla uses the client's own state folder.
+/// Capture mode suppresses either loose source; saved-state writes use local_state.
 pub(crate) fn root() -> Option<PathBuf> {
-    let home = crate::local_state::home()?;
+    roots().into_iter().next()
+}
+
+/// All configured AddOns directories in priority order. In Wrath, `<wow_install>/Interface/AddOns`
+/// comes first, followed by `benilla-config/AddOns` so users can place 3.3.5a addons in either
+/// location without modifying their game install.
+pub(crate) fn roots() -> Vec<PathBuf> {
+    let home = crate::local_state::home();
     if crate::wrath::selected_from_env() {
-        let data = benilla_formats::wow_data()?;
-        return Some(data.parent()?.join("Interface").join(ADDONS_DIR));
+        if home.is_none() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if let Some(install_addons) = benilla_formats::wow_data()
+            .and_then(|d| d.parent().map(|p| p.join("Interface").join(ADDONS_DIR)))
+        {
+            out.push(install_addons);
+        }
+        if let Some(local_addons) = root_from(home) {
+            if !out.contains(&local_addons) {
+                out.push(local_addons);
+            }
+        }
+        return out;
     }
-    root_from(Some(home))
+    root_from(home).into_iter().collect()
 }
 
 /// [`root`] with its one environment fact passed in, so a test need not set the environment.
@@ -384,7 +413,7 @@ pub(super) fn sweep_loose_interface() {
         .into_iter()
         .map(str::to_string)
         .collect();
-    if let Some(root) = root() {
+    for root in roots() {
         if let Ok(entries) = std::fs::read_dir(&root) {
             for e in entries.flatten() {
                 if let Some(name) = e.file_name().to_str() {
@@ -411,13 +440,19 @@ fn sweep_moves(last: &mut BTreeSet<String>, now: BTreeSet<String>) -> bool {
     moves
 }
 
-/// The player's own addons: every folder under the AddOns root with a `<Name>.toc`, in
-/// [`sort_by_directory_order`].
+/// The player's own addons: every folder under the AddOns roots with a `<Name>.toc`, in
+/// [`sort_by_directory_order`] per root, first root winning on a duplicate folder name.
 fn discover_folder() -> Vec<Addon> {
-    let Some(root) = root() else {
-        return Vec::new();
-    };
-    discover_in(&root)
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    for root in roots() {
+        for addon in discover_in(&root) {
+            if seen.insert(addon.name.to_ascii_lowercase()) {
+                found.push(addon);
+            }
+        }
+    }
+    found
 }
 
 /// [`discover_folder`] under `root`. A `Blizzard*` folder holding its own `.toc` is one the glue
@@ -761,12 +796,17 @@ pub(super) fn load_third_party(
     for (info, addon) in infos.iter_mut().zip(addons.iter()) {
         info.enabled = store.enabled_for(&info.name, addon.toc.default_state(), character);
     }
+    let all_roots = roots();
+    let mut roots_iter = all_roots.into_iter();
+    let primary_root = roots_iter.next();
+    let extra_roots: Vec<PathBuf> = roots_iter.collect();
     script.register_addons(
         infos,
-        root(),
+        primary_root,
         crate::local_state::addon_saved_account_dir(),
         identity.and_then(|(r, c)| crate::local_state::addon_saved_character_dir(r, c)),
     );
+    script.set_addon_extra_roots(extra_roots);
     // The verbs write through the character's own hash, so logout saves only what they changed.
     script.set_addon_enable_hash(
         character

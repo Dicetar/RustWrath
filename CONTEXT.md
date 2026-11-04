@@ -15,7 +15,7 @@ is historical input; adopted decisions and ADRs in this repository guide current
 ## Domain language
 
 - **Fork** — this repo, branch `wotlk`, upstream donor `samwhosung/benilla` (1.12.1).
-  This project's compatibility target is 3.3.5a; donor behavior stays behind its version boundary.
+  This project's primary target is a 3.3.5a client reimplemented in Rust with new features; donor 1.12 code/behavior is kept only where useful and fitting.
 - **Baseline mode** — standard 3.3.5 protocol behavior; the regression invariant (no extension traffic, no capability negotiation).
 - **WM-enhanced / Experimental modes** — owned carriers/addons; souls/building/custom geometry after capability negotiation.
 - **Reducer** — the time-free wire→typed-state decode layer (H2 replay depends on its purity).

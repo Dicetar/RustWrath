@@ -1,9 +1,10 @@
 # RustWrath agent instructions
 
 RustWrath is the Project B fork of benilla: a Rust/Bevy client targeting WoW 3.3.5a
-build 12340 and the owner's existing AzerothCore server. Preserve donor 1.12 behavior
-behind its version boundary. First delivery: a private Windows alpha with a working
-login/roster flow, then Firna's Northshire quest/combat/loot route.
+build 12340 and the owner's existing AzerothCore server, extended with new features.
+1.12 donor code is retained only where useful and fitting, not as a mandatory version
+boundary. First delivery: a private Windows alpha with a working login/roster flow,
+then Firna's Northshire quest/combat/loot route.
 
 ## Bootstrap
 
