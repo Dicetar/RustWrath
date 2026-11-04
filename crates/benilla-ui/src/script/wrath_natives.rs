@@ -147,6 +147,32 @@ fn lfg_aura_expiration(lua: &Lua, spell_id: u32) -> mlua::Result<MultiValue> {
         }))
 }
 
+/// `UnitHasLFGRandomCooldown("unit")` (`0x00555760`) and `UnitHasLFGDeserter("unit")`
+/// (`0x00555840`): whether the named unit carries the random-dungeon cooldown (71328) or
+/// deserter (71041) aura. The reference consults the unit object's `HasAuraBySpellId`, falling
+/// back to the `CGPartyMemberState` repository's aura list; benilla's native aura list (the same
+/// `unit_auras` owner `UnitAura` reads) covers the player and party members the host projects.
+/// A `None` list, a guid of zero, or no host answers no values, matching the reference's
+/// `guid == 0` / `state == nullptr` early returns; the party-state fallback has no separate
+/// owner here, so it is not synthesized.
+fn lfg_party_aura(lua: &Lua, token: Value, spell_id: u32, usage: &'static str) -> mlua::Result<MultiValue> {
+    let token = crate::script::binding_abi::string_arg(lua, token, usage)?;
+    let guid = {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        model.unit_guids.guid_of(&token)?.unwrap_or(0)
+    };
+    if guid == 0 {
+        return Ok(MultiValue::new());
+    }
+    let auras = super::host::with_host(lua, |host| host.unit_auras(guid));
+    let Some(auras) = auras.flatten() else {
+        return Ok(MultiValue::new());
+    };
+    Ok(MultiValue::from_vec(vec![Value::Boolean(
+        auras.iter().any(|aura| aura.spell_id == spell_id),
+    )]))
+}
+
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `IsStereoVideoAvailable` (`VideoOptionsPanels.lua:571`): the stereo-3D path needs glasses
     // driver hardware the real client probes for at boot; benilla has no stereo renderer, so the
@@ -913,6 +939,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, _: MultiValue| lfg_aura_expiration(lua, 71041))?,
     )?;
     lua.globals().set(
+        "UnitHasLFGRandomCooldown",
+        lua.create_function(|lua, token: Value| lfg_party_aura(lua, token, 71328, "Usage: UnitHasLFGRandomCooldown(\"unit\")"))?,
+    )?;
+    lua.globals().set(
+        "UnitHasLFGDeserter",
+        lua.create_function(|lua, token: Value| lfg_party_aura(lua, token, 71041, "Usage: UnitHasLFGDeserter(\"unit\")"))?,
+    )?;
+    lua.globals().set(
         "RequestLFDPlayerLockInfo",
         lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
     )?;
@@ -1618,6 +1652,145 @@ mod tests {
         assert!(
             host.asked.iter().all(|&guid| guid == PLAYER),
             "the host is asked for the player's guid only"
+        );
+    }
+
+    /// `UnitHasLFGRandomCooldown("unit")` / `UnitHasLFGDeserter("unit")`: boolean aura
+    /// presence for the named unit, zero values for a missing unit/host/list.
+    #[test]
+    fn wrath_lfg_party_auras_are_boolean_predicates() {
+        use crate::script::{UiScript, UiTarget, UnitGuids};
+        use crate::script::host;
+
+        const PLAYER: u64 = 0x10;
+        const PARTY1: u64 = 0x20;
+
+        struct AuraHost {
+            asked: Vec<u64>,
+            auras: Option<Vec<crate::script::WrathAuraView>>,
+            answer_for: u64,
+        }
+
+        impl crate::script::CallHost for AuraHost {
+            fn apply(
+                &mut self,
+                _script: &mut UiScript,
+                _call: crate::script::ScriptCall,
+            ) -> Option<crate::script::CallTail> {
+                None
+            }
+
+            fn unit_auras(&mut self, guid: u64) -> Option<Vec<crate::script::WrathAuraView>> {
+                self.asked.push(guid);
+                if guid != self.answer_for {
+                    return None;
+                }
+                self.auras.clone()
+            }
+        }
+
+        fn aura(spell_id: u32) -> crate::script::WrathAuraView {
+            crate::script::WrathAuraView {
+                slot: 1,
+                spell_id,
+                name: String::new(),
+                rank: None,
+                icon: None,
+                count: 1,
+                level: 80,
+                dispel: None,
+                helpful: Some(false),
+                caster: None,
+                duration: 0.0,
+                expiration: None,
+                cancelable: false,
+                stealable: None,
+                consolidate: None,
+            }
+        }
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        // Non-string argument -> usage error.
+        assert!(s.run("UnitHasLFGRandomCooldown(5)").is_err());
+        assert!(s.run("UnitHasLFGDeserter(nil)").is_err());
+        assert!(s.run("UnitHasLFGRandomCooldown(true)").is_err());
+
+        // No player guid / unknown guid -> zero values.
+        assert_eq!(s.arity("UnitHasLFGRandomCooldown('player')").unwrap(), 0);
+        assert_eq!(s.arity("UnitHasLFGDeserter('player')").unwrap(), 0);
+
+        s.set_unit_guids(&UnitGuids {
+            player: PLAYER,
+            party: [PARTY1, 0, 0, 0],
+            wrath: true,
+            ..Default::default()
+        });
+
+        // No host lent -> zero values.
+        assert_eq!(s.arity("UnitHasLFGRandomCooldown('player')").unwrap(), 0);
+        assert_eq!(s.arity("UnitHasLFGDeserter('player')").unwrap(), 0);
+
+        // Unknown guid (party2 slot is 0) -> zero values, host not asked for 0.
+        assert_eq!(s.arity("UnitHasLFGRandomCooldown('party2')").unwrap(), 0);
+
+        let mut host = AuraHost {
+            asked: Vec::new(),
+            auras: None,
+            answer_for: PLAYER,
+        };
+
+        // None list -> zero values.
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(s.arity("UnitHasLFGRandomCooldown('player')").unwrap(), 0);
+            assert_eq!(s.arity("UnitHasLFGDeserter('player')").unwrap(), 0);
+        });
+
+        // Player aura present -> true for the matching spell only.
+        host.answer_for = PLAYER;
+        host.auras = Some(vec![aura(71328)]);
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(
+                s.eval::<bool>("return UnitHasLFGRandomCooldown('player')").unwrap(),
+                true
+            );
+            assert_eq!(
+                s.eval::<bool>("return UnitHasLFGDeserter('player')").unwrap(),
+                false
+            );
+        });
+
+        // Absent spell -> false.
+        host.auras = Some(vec![aura(1243)]);
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(
+                s.eval::<bool>("return UnitHasLFGRandomCooldown('player')").unwrap(),
+                false
+            );
+        });
+
+        // Party1 aura present -> true.
+        host.answer_for = PARTY1;
+        host.auras = Some(vec![aura(71041)]);
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(
+                s.eval::<bool>("return UnitHasLFGDeserter('party1')").unwrap(),
+                true
+            );
+            assert_eq!(
+                s.eval::<bool>("return UnitHasLFGRandomCooldown('party1')").unwrap(),
+                false
+            );
+        });
+
+        // Player/party isolation: player has no aura now (None) while party1 has it.
+        host.answer_for = PLAYER;
+        host.auras = None;
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(s.arity("UnitHasLFGRandomCooldown('player')").unwrap(), 0);
+        });
+        assert!(
+            host.asked.iter().all(|&g| g == PLAYER || g == PARTY1),
+            "host is asked only for resolved guids"
         );
     }
 }
