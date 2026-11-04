@@ -1142,6 +1142,22 @@ const _: () = assert!(UI_INPUT_RETENTION_BUDGET < RETAINED_CAPACITY);
 /// Maximum bytes in one inspector/export summary line.
 const SNAPSHOT_LINE_BYTES: usize = 240;
 
+/// Truncate one summary line at a UTF-8 boundary, bounded by [`SNAPSHOT_LINE_BYTES`].
+///
+/// The inspector's cached snapshot truncates with its own `cap`; the saved report writes the
+/// same strings directly, so the outcome lines bound themselves here to keep the exported
+/// report as bounded as the inspector.
+fn bounded_line(mut line: String) -> String {
+    if line.len() > SNAPSHOT_LINE_BYTES {
+        let mut boundary = SNAPSHOT_LINE_BYTES;
+        while boundary > 0 && !line.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        line.truncate(boundary);
+    }
+    line
+}
+
 /// Maximum sequence references and self-contained evidence notes per incident.
 const MAX_INCIDENT_EVIDENCE: usize = 8;
 
@@ -1193,7 +1209,104 @@ pub(crate) struct UiDispatchToken {
     pub visible: Option<bool>,
     pub clipped: bool,
     pub handler_invoked: bool,
+    /// Bounded capture-time hit and handler facts for this edge.
     pub witness: UiHitEvidence,
+}
+
+/// Whether this retained edge could have fired `OnClick` for its button registration, and did.
+///
+/// `OnClick` follows `RegisterForClicks`: a press edge only for a `…ButtonDown` registration, a
+/// release edge only for a `…ButtonUp`. A press row of an Up-only click is pointer traffic, not a
+/// click antecedent. `engine_click` counts because the engine click action (a LootButton take)
+/// runs the same slot without a Lua handler.
+fn click_edge_can_claim(witness: &UiHitEvidence) -> bool {
+    if !(witness.onclick_ran || witness.engine_click) {
+        return false;
+    }
+    match witness.edge {
+        UiEdge::Press => matches!(witness.clicks, UiClickMask::Down | UiClickMask::Both),
+        UiEdge::Release => matches!(witness.clicks, UiClickMask::Up | UiClickMask::Both),
+    }
+}
+
+/// The bounded key two retained pointer edges need to decide whether they are one click.
+///
+/// A dispatch token and a retained row carry the same facts; keeping the comparison here stops
+/// the retro link (tokens) and the outcome section (rows) from disagreeing about a pair.
+#[derive(Clone, Copy)]
+struct EdgeKey {
+    edge: UiEdge,
+    button: UiButton,
+    scope: Option<(u64, u64)>,
+    vm_session: u64,
+    reload_generation: u64,
+    elapsed_ms: u64,
+    press_target: Option<UiFrameRef>,
+}
+
+impl EdgeKey {
+    fn from_token(token: &UiDispatchToken) -> Self {
+        Self {
+            edge: token.witness.edge,
+            button: token.button,
+            scope: token.scope,
+            vm_session: token.vm_session,
+            reload_generation: token.reload_generation,
+            elapsed_ms: token.elapsed_ms,
+            press_target: token.witness.press_target,
+        }
+    }
+
+    fn from_event(event: &Event) -> Option<Self> {
+        let (button, vm_session, witness) = match event.stage {
+            Stage::UiPress {
+                button,
+                vm_session,
+                witness,
+                ..
+            }
+            | Stage::UiClick {
+                button,
+                vm_session,
+                witness,
+                ..
+            } => (button, vm_session, witness),
+            _ => return None,
+        };
+        Some(Self {
+            edge: witness.edge,
+            button,
+            scope: event.subject.scope,
+            vm_session,
+            reload_generation: event.subject.reload_generation,
+            elapsed_ms: event.elapsed_ms,
+            press_target: witness.press_target,
+        })
+    }
+
+    /// Whether `self` is the release of the physical click `press` began.
+    ///
+    /// `UiFrameRef` is a coarse kind and family, so an equal pair is an association, not proof
+    /// of the same frame. A release whose press target is absent (the pressed frame hid or died)
+    /// does not pair; it also never ran the click slot, so the press edge alone claims it.
+    fn pairs_with(&self, press: &EdgeKey) -> bool {
+        press.edge == UiEdge::Press
+            && self.edge == UiEdge::Release
+            && press.button == self.button
+            && press.scope == self.scope
+            && press.vm_session == self.vm_session
+            && press.reload_generation == self.reload_generation
+            && self.elapsed_ms >= press.elapsed_ms
+            && self.elapsed_ms - press.elapsed_ms <= 2_000
+            && self.press_target.is_some()
+            && press.press_target.is_some()
+            && self.press_target == press.press_target
+    }
+}
+
+/// Whether two retained tokens are the press and the release of one physical click.
+fn same_physical_click(press: &UiDispatchToken, release: &UiDispatchToken) -> bool {
+    EdgeKey::from_token(release).pairs_with(&EdgeKey::from_token(press))
 }
 
 #[derive(Debug)]
@@ -1792,6 +1905,21 @@ impl Source {
         self.begin_with_details(scope, quest, npc, None, None, None, operation)
     }
 
+    /// Start an interaction that is explicitly not a UI click antecedent.
+    ///
+    /// The world right-click interact mints through the same subject shape as a UI verb, but it
+    /// is driven by the world click, not by a retained press/click row. Attaching no
+    /// `ui_dispatch_id` keeps a nearby, unrelated UI click from being read as its cause.
+    pub(crate) fn begin_with_npc_unlinked(
+        &self,
+        scope: Option<(u64, u64)>,
+        quest: Option<u32>,
+        npc: Option<u64>,
+        operation: Operation,
+    ) -> Interaction {
+        self.begin_inner(scope, quest, npc, None, None, None, operation, false)
+    }
+
     /// Start a user-originated interaction carrying the numeric subject used for later
     /// correlation: item entry, count and slot. `npc` is the loot/vendor source GUID, mapped to a
     /// run-local alias here.
@@ -1806,6 +1934,33 @@ impl Source {
         slot: Option<u32>,
         operation: Operation,
     ) -> Interaction {
+        // A keyboard or native cast (`Operation::Observed`) is not UI-initiated, so it must not
+        // inherit a nearby click's id; the world interact uses the explicit unlinked entry point.
+        let attach_dispatch = !matches!(operation, Operation::Observed);
+        self.begin_inner(
+            scope,
+            quest,
+            npc,
+            item,
+            count,
+            slot,
+            operation,
+            attach_dispatch,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // scope + quest + source + numeric subject + operation + flag
+    fn begin_inner(
+        &self,
+        scope: Option<(u64, u64)>,
+        quest: Option<u32>,
+        npc: Option<u64>,
+        item: Option<u32>,
+        count: Option<u32>,
+        slot: Option<u32>,
+        operation: Operation,
+        attach_dispatch: bool,
+    ) -> Interaction {
         let trace = Interaction {
             source: self.clone(),
             subject: Subject {
@@ -1818,7 +1973,11 @@ impl Source {
                 slot,
                 operation,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
-                ui_dispatch_id: self.plausible_ui_dispatch(scope),
+                ui_dispatch_id: if attach_dispatch {
+                    self.plausible_ui_dispatch(scope)
+                } else {
+                    None
+                },
             },
         };
         trace.record(Stage::Intent);
@@ -1926,12 +2085,21 @@ impl Source {
         id
     }
 
+    /// The retained click antecedent for an intent minted now, or `None` when the evidence does
+    /// not support exactly one.
+    ///
+    /// This is a host-side attribution, not a carried identity: it returns the single edge whose
+    /// registration could have fired the click's handler in the same scope, VM and reload
+    /// generation within two seconds. A press and the release of one physical click count once.
+    /// An Up-only click is claimed by its release row, a Down-only click by its press row, and a
+    /// `Both` registration by the release row once the pair is complete. Two clicks in the window
+    /// stay `None` (ambiguous) rather than choosing the newest by adjacency.
     pub(crate) fn plausible_ui_dispatch(&self, scope: Option<(u64, u64)>) -> Option<u64> {
         let now = self.0.origin.elapsed().as_millis() as u64;
         let current_rg = self.0.reload_generation.load(Ordering::Acquire);
         let guard = self.0.ui_dispatches.lock().ok()?;
         let current_vm = guard.iter().map(|t| t.vm_session).max().unwrap_or(0);
-        let candidates: Vec<u64> = guard
+        let eligible: Vec<UiDispatchToken> = guard
             .iter()
             .filter(|t| {
                 t.scope == scope
@@ -1939,11 +2107,36 @@ impl Source {
                     && t.vm_session == current_vm
                     && t.elapsed_ms <= now
                     && now.saturating_sub(t.elapsed_ms) <= 2_000
+                    // Capture-time hit: the hit frame took the point, so it was effectively
+                    // visible and its effective bounds were resolvable on screen. `visible` is
+                    // derived from `hit.is_some()`, so this also states the capture-time fact.
                     && t.visible == Some(true)
-                    && !t.clipped
-                    && t.consumed
-                    && t.handler_invoked
+                    && t.witness
+                        .hit
+                        .is_some_and(|hit| hit.family != UiTarget::World)
+                    && !matches!(
+                        t.witness.bounds,
+                        UiBoundsState::Unresolved | UiBoundsState::Empty | UiBoundsState::OffScreen
+                    )
+                    && click_edge_can_claim(&t.witness)
             })
+            .copied()
+            .collect();
+        // One physical click can leave a press row and a release row; count it once, naming the
+        // release edge. An unmatched press stays its own candidate, so a half-observed click is
+        // still reportable rather than silently dropped.
+        let mut paired_presses: Vec<u64> = Vec::new();
+        for release in eligible.iter().filter(|t| t.witness.edge == UiEdge::Release) {
+            let mut presses = eligible
+                .iter()
+                .filter(|t| same_physical_click(*t, release));
+            if let (Some(press), None) = (presses.next(), presses.next()) {
+                paired_presses.push(press.id);
+            }
+        }
+        let candidates: Vec<u64> = eligible
+            .iter()
+            .filter(|t| !paired_presses.contains(&t.id))
             .map(|t| t.id)
             .collect();
         if candidates.len() == 1 {
@@ -2376,6 +2569,8 @@ pub(crate) struct InspectorSnapshot {
     pub turn_ins: Vec<String>,
     pub ui_errors: Vec<String>,
     pub ui_clicks: Vec<String>,
+    /// Bounded per-click handler/action outcomes, newer than `ui_clicks` in wording but additive.
+    pub ui_click_outcomes: Vec<String>,
     pub cast_chains: Vec<String>,
     pub loot_vendor: Vec<String>,
     pub quest_ui: Vec<String>,
@@ -3618,91 +3813,342 @@ fn loot_vendor_evidence_matches_action(action: &Subject, evidence: &Event) -> bo
     }
 }
 
+/// Closed handler outcome for one retained click edge.
+///
+/// Derived only from the witness, so the inspector and the saved report cannot disagree with the
+/// row they describe. The variant set is closed: an unrecognised state cannot be invented.
+#[cfg(feature = "dev")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UiClickOutcome {
+    /// No frame took the point. `clipped` names the rect-containing frame that effective hit
+    /// excluded, and only when that exclusion is a scroll clip or an unresolvable clip owner.
+    NoHit { clipped: Option<UiBlockReason> },
+    /// A frame took the point but carries no recognised coarse category.
+    NoNamedHit,
+    /// A named frame took the point and no handler (Lua function, script hook or engine click
+    /// action) is bound for the edge that fires `OnClick`.
+    NoHandler,
+    /// A handler is bound but the click slot did not reach it.
+    HandlerBlocked { gate: UiClickBlock },
+    /// A Lua handler ran, or the engine click action ran without one.
+    HandlerRan,
+}
+
+/// Classify one edge from its witness alone.
+#[cfg(feature = "dev")]
+fn click_outcome(witness: &UiHitEvidence) -> UiClickOutcome {
+    // `handler_error` implies the slot reached a handler, so a raise is never reported as
+    // "not run"; `blocked` may also read `HandlerError` in that case.
+    if witness.onclick_ran || witness.engine_click || witness.handler_error {
+        return UiClickOutcome::HandlerRan;
+    }
+    let Some(hit) = witness.hit else {
+        // Only a scroll clip or a missing clip owner is a clipped-target statement. Hit insets,
+        // a disabled mouse bit and the nameplate veto are by design or by veto, never a clip.
+        let clipped = witness.blocker.and_then(|blocker| match blocker.reason {
+            UiBlockReason::OutsideClip | UiBlockReason::ClipUnresolved => Some(blocker.reason),
+            UiBlockReason::HitInsets
+            | UiBlockReason::NotMouseEnabled
+            | UiBlockReason::NameplateVeto => None,
+        });
+        return UiClickOutcome::NoHit { clipped };
+    };
+    if hit.family == UiTarget::NoNamedFrame {
+        return UiClickOutcome::NoNamedHit;
+    }
+    if witness.onclick_present {
+        UiClickOutcome::HandlerBlocked {
+            gate: witness.blocked,
+        }
+    } else if witness.blocked == UiClickBlock::HandlerMissing {
+        // The slot's own verdict: it was evaluated, nothing was bound and nothing ran.
+        UiClickOutcome::NoHandler
+    } else {
+        // Everything else is a gate (a concrete one, or no recorded gate at all). A bare
+        // `None` is reachable without being a nil-handler claim: a target with no run-local
+        // frame id cannot answer the presence question, and the hyperlink route fires a
+        // different script. Report the gate, never "no handler bound".
+        UiClickOutcome::HandlerBlocked {
+            gate: witness.blocked,
+        }
+    }
+}
+
+/// What the outcome establishes, in the closed vocabulary.
+#[cfg(feature = "dev")]
+fn click_outcome_phrase(witness: &UiHitEvidence) -> String {
+    match click_outcome(witness) {
+        UiClickOutcome::NoHit { clipped: None } => {
+            "no hit (no frame took the point; a fully hidden frame is indistinguishable from empty space)"
+                .to_string()
+        }
+        UiClickOutcome::NoHit {
+            clipped: Some(reason),
+        } => format!(
+            "no hit; a rect-containing frame was excluded because {}",
+            block_reason_phrase(reason)
+        ),
+        UiClickOutcome::NoNamedHit => {
+            "a frame took the point but has no recognised category".to_string()
+        }
+        UiClickOutcome::NoHandler => {
+            "no handler bound for this button edge (no Lua handler, hook or engine click action)"
+                .to_string()
+        }
+        UiClickOutcome::HandlerBlocked { gate } => {
+            let press_note = if witness.edge == UiEdge::Release
+                && matches!(witness.clicks, UiClickMask::Down)
+            {
+                " (this registration fires OnClick on the press edge)"
+            } else {
+                ""
+            };
+            if witness.onclick_present {
+                format!(
+                    "handler present, not run: {}{press_note}",
+                    click_block_phrase(gate)
+                )
+            } else {
+                format!(
+                    "click not run on this edge: {}{press_note}",
+                    click_block_phrase(gate)
+                )
+            }
+        }
+        UiClickOutcome::HandlerRan => {
+            if witness.onclick_ran {
+                "handler ran".to_string()
+            } else if witness.handler_error {
+                "a handler on this edge raised (local exact)".to_string()
+            } else {
+                "engine click action ran (no Lua handler)".to_string()
+            }
+        }
+    }
+}
+
+/// Why a rect-containing frame did not take the point.
+#[cfg(feature = "dev")]
+fn block_reason_phrase(reason: UiBlockReason) -> &'static str {
+    match reason {
+        UiBlockReason::OutsideClip => "its scroll clip excluded the point",
+        UiBlockReason::ClipUnresolved => "it has no resolvable clip owner (layout gap)",
+        UiBlockReason::HitInsets => "the point is outside its hit-rect insets (by design)",
+        UiBlockReason::NotMouseEnabled => "it is not mouse-enabled (by design)",
+        UiBlockReason::NameplateVeto => "a nameplate veto refused the hit",
+    }
+}
+
+/// The first gate that stopped a bound handler, in the order the click slots test them.
+///
+/// `HandlerMissing`/`HandlerError` are the slot's own verdicts, not gates; the capture invariant
+/// (`onclick_present` implies `onclick_ran` or a recorded gate) makes `None` here unreachable for
+/// a blocked edge, and the arm exists only so the match stays total.
+#[cfg(feature = "dev")]
+fn click_block_phrase(gate: UiClickBlock) -> &'static str {
+    match gate {
+        UiClickBlock::None => "no gate recorded",
+        UiClickBlock::LayoutDrag => "a layout drag took the press",
+        UiClickBlock::WorldHook => "the world input hook took the press",
+        UiClickBlock::TitleMove => "the press landed in the title region",
+        UiClickBlock::PressTargetNone => "there was no press target",
+        UiClickBlock::Disabled => "the button was disabled",
+        UiClickBlock::NotRegistered => "the frame is not registered for this button edge",
+        UiClickBlock::CursorOutside => "the release point was outside the pressed frame",
+        UiClickBlock::FrameGone => "the pressed frame no longer exists",
+        UiClickBlock::CaptureLost => "the pressed frame hid before the release",
+        UiClickBlock::NotPushed => {
+            "the button was not pushed (disabled, hidden, never pressed, or the press was cleared)"
+        }
+        UiClickBlock::DragStarted => "a drag consumed the release",
+        UiClickBlock::HandlerMissing => "no handler is bound for this edge",
+        UiClickBlock::HandlerError => "the handler raised",
+    }
+}
+
+/// Rank an incident confidence so two claims can be composed by the weaker one.
+#[cfg(feature = "dev")]
+fn confidence_rank(confidence: IncidentConfidence) -> u8 {
+    match confidence {
+        IncidentConfidence::Exact => 5,
+        IncidentConfidence::Strong => 4,
+        IncidentConfidence::Heuristic => 3,
+        IncidentConfidence::Ambiguous => 2,
+        IncidentConfidence::Unverified => 1,
+        IncidentConfidence::Unmatched => 0,
+    }
+}
+
+/// The weaker of two confidences: a later exact server report can never upgrade a weaker click
+/// link, and a click link can never upgrade an unverified refusal.
+#[cfg(feature = "dev")]
+fn weaker(a: IncidentConfidence, b: IncidentConfidence) -> IncidentConfidence {
+    if confidence_rank(a) <= confidence_rank(b) {
+        a
+    } else {
+        b
+    }
+}
+
+/// The association between a click whose handler ran and the retained script-error rows.
+///
+/// A row is message identity: identical messages collapse across frames and the row time is a
+/// poll boundary. A message first retained after the click is a new appearance; one retained
+/// before the click is a repeat. Neither establishes that this click raised it.
+#[cfg(feature = "dev")]
+fn script_error_attachment(
+    errors: &[(u64, u64, u64, u64)],
+    vm_session: u64,
+    click_elapsed: u64,
+) -> String {
+    let mut fresh = 0usize;
+    let mut repeats = 0usize;
+    for &(vm, _, first, last) in errors {
+        if vm != vm_session {
+            continue;
+        }
+        if first > click_elapsed {
+            if first - click_elapsed <= 2_000 {
+                fresh += 1;
+            }
+        } else if last > click_elapsed && last - click_elapsed <= 2_000 {
+            repeats += 1;
+        }
+    }
+    match (fresh, repeats) {
+        (0, 0) => String::new(),
+        (1, 0) => "; a script-error row first appeared after this click (polled 1 Hz, message-keyed; association only)".to_string(),
+        (0, 1) => "; a script-error message already retained was polled again after this click (association only)".to_string(),
+        _ => format!(
+            "; {} script-error rows polled after this click ({fresh} new, {repeats} repeats; ambiguous, association only)",
+            fresh + repeats
+        ),
+    }
+}
+
 
 #[cfg(feature = "dev")]
 impl History {
     /// A time-window association is a lead, not proof that a press caused a script error.
+    ///
+    /// `ScriptError` rows are polled once per second from the VM's diagnostic log and keyed by
+    /// the error message, not by the handler or frame that raised it. The row time is therefore a
+    /// poll boundary rather than the error time, and identical messages raise one row however
+    /// many frames raise them. A click's local `handler_error` is the only exact fault fact this
+    /// recorder keeps; every other statement here is an association.
     pub(crate) fn ui_error_correlations(&self) -> Vec<String> {
         let gaps = self.has_telemetry_gaps();
-        self.entries.iter().rev().filter_map(|(_, event)| {
-            let (vm_session, row_seq) = match event.stage {
-                Stage::ScriptError { vm_session, row_seq, .. } => (vm_session, row_seq),
-                _ => return None,
-            };
-            let mut presses = 0usize;
-            let mut clicks: Vec<(bool, Option<bool>, bool, bool)> = Vec::new();
-            for (_, earlier) in self.entries.iter() {
-                if earlier.subject.scope != event.subject.scope
-                    || earlier.elapsed_ms > event.elapsed_ms
-                    || event.elapsed_ms.saturating_sub(earlier.elapsed_ms) > 2_000
-                {
-                    continue;
-                }
-                match earlier.stage {
-                    Stage::UiPress { vm_session: vm, .. } if vm == vm_session => presses += 1,
-                    Stage::UiClick {
-                        vm_session: vm,
-                        consumed,
-                        visible,
-                        clipped,
-                        handler_invoked,
-                        ..
-                    } if vm == vm_session => {
-                        clicks.push((consumed, visible, clipped, handler_invoked));
-                    }
-                    _ => {}
-                }
-            }
-            let total = presses + clicks.len();
-            let pointer_lost = self.ui_input_rows_lost();
-            let result = if total == 0 {
-                if pointer_lost {
-                    format!(
-                        "UI error {row_seq}: no retained press or click within two seconds; pointer rows were lost (association unavailable)"
-                    )
-                } else {
-                    format!("UI error {row_seq}: no retained press or click within two seconds")
-                }
-            } else if total == 1 && clicks.len() == 1 {
-                let (consumed, visible, clipped, handler_invoked) = clicks[0];
-                let visibility = match visible {
-                    Some(true) => "visible",
-                    Some(false) => "not effectively visible",
-                    None => "visibility unknown",
+        let pointer_lost = self.ui_input_rows_lost();
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|(_, event)| {
+                let (vm_session, row_seq) = match event.stage {
+                    Stage::ScriptError { vm_session, row_seq, .. } => (vm_session, row_seq),
+                    _ => return None,
                 };
-                if visible == Some(true) && !clipped && consumed && handler_invoked {
+                // A repeated message bumps its retained row's count; a new message mints a row.
+                // Only retained rows can say which happened, and only approximately: a row is
+                // message identity, never handler identity.
+                let repeated = self.entries.iter().any(|(_, earlier)| {
+                    earlier.elapsed_ms < event.elapsed_ms
+                        && matches!(
+                            earlier.stage,
+                            Stage::ScriptError { vm_session: vm, row_seq: row, .. }
+                                if vm == vm_session && row == row_seq
+                        )
+                });
+                let mut pointers = 0usize;
+                let mut antecedents = 0usize;
+                let mut local_errors: Vec<u64> = Vec::new();
+                for (_, earlier) in self.entries.iter() {
+                    if earlier.subject.scope != event.subject.scope
+                        || earlier.elapsed_ms > event.elapsed_ms
+                        || event.elapsed_ms.saturating_sub(earlier.elapsed_ms) > 2_000
+                    {
+                        continue;
+                    }
+                    let (witness, dispatch) = match earlier.stage {
+                        Stage::UiPress {
+                            vm_session: vm,
+                            witness,
+                            ui_dispatch_id,
+                            ..
+                        }
+                        | Stage::UiClick {
+                            vm_session: vm,
+                            witness,
+                            ui_dispatch_id,
+                            ..
+                        } if vm == vm_session => (witness, ui_dispatch_id),
+                        _ => continue,
+                    };
+                    pointers += 1;
+                    if witness.handler_error {
+                        local_errors.push(dispatch);
+                    }
+                    if witness.handler_error || click_edge_can_claim(&witness) {
+                        antecedents += 1;
+                    }
+                }
+                let poll_note = if repeated {
+                    "a repeat of a message already retained"
+                } else {
+                    "a first retained appearance"
+                };
+                let result = if pointers == 0 {
+                    if pointer_lost {
+                        "no retained press or click in this VM within two seconds; pointer rows were lost (association unavailable)".to_string()
+                    } else {
+                        "no retained press or click in this VM within two seconds (absence, not proof)".to_string()
+                    }
+                } else if local_errors.len() == 1 {
                     format!(
-                        "UI error {row_seq}: one nearby click (consumed, {visibility}, unclipped, handler invoked; possible association)"
+                        "pointer edge {} caught a local handler error in the window (exact); this polled row is {poll_note} and is not handler-identified",
+                        local_errors[0]
+                    )
+                } else if local_errors.len() > 1 {
+                    format!(
+                        "{} pointer edges caught a local handler error in the window (ambiguous; no causal claim)",
+                        local_errors.len()
+                    )
+                } else if antecedents == 1 {
+                    format!(
+                        "one nearby click edge whose handler ran in the same VM; polled row is {poll_note}; possible association, polled once per second and message-keyed"
+                    )
+                } else if antecedents > 1 {
+                    format!(
+                        "{antecedents} nearby click edges whose handlers ran (ambiguous; no causal claim)"
                     )
                 } else {
-                    format!(
-                        "UI error {row_seq}: one nearby click (consumed={consumed}, {visibility}, clipped={clipped}, handler_invoked={handler_invoked}; not a plausible cause)"
-                    )
-                }
-            } else if total == 1 {
-                format!("UI error {row_seq}: one nearby press (possible association)")
-            } else {
-                format!("UI error {row_seq}: {total} nearby presses/clicks (ambiguous; no causal claim)")
-            };
-            Some(if gaps || pointer_lost {
-                let mut line = result.clone();
-                if gaps {
-                    line.push_str("; trace has gaps");
-                }
-                if pointer_lost {
-                    line.push_str("; pointer rows were lost");
-                }
-                line
-            } else {
-                result
+                    "pointer input within two seconds but no click antecedent for the edge that fires the handler (no causal claim)".to_string()
+                };
+                Some(bounded_line(if gaps || pointer_lost {
+                    let mut line = format!("UI error {row_seq}: {result}");
+                    if gaps {
+                        line.push_str("; trace has gaps");
+                    }
+                    if pointer_lost {
+                        line.push_str("; pointer rows were lost");
+                    }
+                    line
+                } else {
+                    format!("UI error {row_seq}: {result}")
+                }))
             })
-        }).take(8).collect()
+            .take(8)
+            .collect()
     }
 
-    /// Summarize recent UI clicks without claiming causality for later gameplay refusals.
-    #[cfg(feature = "dev")]
+    /// Summarize recent UI clicks with their handler outcome and retained attachments.
+    ///
+    /// The verdict comes from the witness captured at the click edge. `visible` is the
+    /// capture-time hit fact, so a click whose handler hid its own frame stays a click; the
+    /// after-handler facts are separate fields. Attachments are associations unless the witness
+    /// literally establishes them.
     pub(crate) fn ui_click_correlations(&self) -> Vec<String> {
         let gaps = self.has_telemetry_gaps();
+        let pointer_lost = self.ui_input_rows_lost();
         self.entries
             .iter()
             .rev()
@@ -3710,34 +4156,251 @@ impl History {
                 Stage::UiClick {
                     button,
                     target,
-                    consumed,
-                    visible,
-                    clipped,
-                    handler_invoked,
-                    vm_session,
                     ui_dispatch_id,
+                    witness,
                     ..
                 } => {
-                    let visibility = match visible {
-                        Some(true) => "visible",
-                        Some(false) => "not effectively visible",
-                        None => "visibility unknown",
-                    };
-                    let line = format!(
-                        "UI click {:?} on {:?}: consumed={} visible={} clipped={} handler_invoked={} vm={} dispatch={}",
-                        button, target, consumed, visibility, clipped, handler_invoked, vm_session,
-                        ui_dispatch_id
-                    );
-                    Some(if gaps {
-                        format!("{line}; trace has gaps")
+                    let hops = if witness.hit.is_some() && witness.owner_hops != 0xff {
+                        format!(", hops {}", witness.owner_hops)
                     } else {
-                        line
-                    })
+                        String::new()
+                    };
+                    // On a miss, `owner`/`bounds` describe the excluded candidate, not a hit
+                    // frame; say so rather than letting the reader assume a hit.
+                    let frame_note = if witness.hit.is_some() {
+                        ""
+                    } else if witness.blocker.is_some() {
+                        " (excluded frame)"
+                    } else {
+                        ""
+                    };
+                    let mut line = format!(
+                        "UI click {ui_dispatch_id} {button:?} on {target:?} (owner {:?}{hops}{frame_note}, bounds {:?}/{:?}, clicks {:?}): {}",
+                        witness.owner,
+                        witness.bounds,
+                        witness.bounds_bucket,
+                        witness.clicks,
+                        click_outcome_phrase(&witness),
+                    );
+                    if witness.hit.is_some() && !witness.visible_after {
+                        line.push_str("; hit frame hidden after the click");
+                    }
+                    if witness.hit.is_some() && !witness.alive_after {
+                        line.push_str("; hit frame no longer exists after the click");
+                    }
+                    if witness.onclick_ran && witness.handler_error {
+                        line.push_str("; handler error caught locally (exact)");
+                    }
+                    if gaps {
+                        line.push_str("; trace has gaps");
+                    }
+                    if pointer_lost {
+                        line.push_str("; pointer rows were lost");
+                    }
+                    Some(bounded_line(line))
                 }
                 _ => None,
             })
             .take(8)
             .collect()
+    }
+
+    /// Bounded per-click outcome lines for the inspector and the saved report.
+    ///
+    /// A click is one physical press/release pair, but either edge can carry the handler: an Up
+    /// registration runs it on the release row, a Down registration on the press row. Every
+    /// claimable edge therefore gets its own line, and a release row names the press edge that
+    /// ran the click when the pair is retained, so the release row's gate never erases the run.
+    /// Each line states what the retained evidence establishes (its own witness), what it links
+    /// through the host-minted `ui_dispatch_id`, and what stays an association. Missing evidence
+    /// is reported as absence, never as a negative outcome.
+    pub(crate) fn ui_click_outcomes(&self) -> Vec<String> {
+        let gaps = self.has_telemetry_gaps();
+        let pointer_lost = self.ui_input_rows_lost();
+        // One bounded pass over the retained script-error rows: first and last poll time per
+        // (VM, message row). This keeps the per-click attachment cheap, and lets a line say
+        // whether the message pre-dates the click.
+        let mut errors: Vec<(u64, u64, u64, u64)> = Vec::new();
+        for (_, event) in self.entries.iter() {
+            let (vm_session, row_seq) = match event.stage {
+                Stage::ScriptError {
+                    vm_session,
+                    row_seq,
+                    ..
+                } => (vm_session, row_seq),
+                _ => continue,
+            };
+            if let Some(entry) = errors
+                .iter_mut()
+                .find(|entry| entry.0 == vm_session && entry.1 == row_seq)
+            {
+                entry.2 = entry.2.min(event.elapsed_ms);
+                entry.3 = entry.3.max(event.elapsed_ms);
+            } else {
+                errors.push((vm_session, row_seq, event.elapsed_ms, event.elapsed_ms));
+            }
+        }
+        // The press edges that actually ran a click. A Down or Both registration invokes
+        // `OnClick` on the press row, and that row is the edge that ran; the release row's
+        // `NotRegistered` gate must not read as the whole story.
+        let mut press_edges: Vec<(u64, EdgeKey)> = Vec::new();
+        for (_, event) in self.entries.iter() {
+            if let Stage::UiPress {
+                ui_dispatch_id,
+                witness,
+                ..
+            } = event.stage
+            {
+                if click_edge_can_claim(&witness) {
+                    if let Some(key) = EdgeKey::from_event(event) {
+                        press_edges.push((ui_dispatch_id, key));
+                    }
+                }
+            }
+        }
+        let mut lines: Vec<String> = self
+            .entries
+            .iter()
+            .rev()
+            .filter_map(|(_, event)| {
+                let (edge, vm_session, ui_dispatch_id, witness) = match event.stage {
+                    Stage::UiClick {
+                        vm_session,
+                        ui_dispatch_id,
+                        witness,
+                        ..
+                    } => (UiEdge::Release, vm_session, ui_dispatch_id, witness),
+                    Stage::UiPress {
+                        vm_session,
+                        ui_dispatch_id,
+                        witness,
+                        ..
+                    } if click_edge_can_claim(&witness) => {
+                        (UiEdge::Press, vm_session, ui_dispatch_id, witness)
+                    }
+                    _ => return None,
+                };
+                let edge_name = match edge {
+                    UiEdge::Press => "press",
+                    UiEdge::Release => "release",
+                };
+                let mut line = format!(
+                    "UI click {ui_dispatch_id} ({edge_name} edge, vm{vm_session} reload{}): {}",
+                    event.subject.reload_generation,
+                    click_outcome_phrase(&witness),
+                );
+                if witness.handler_error {
+                    if witness.onclick_ran {
+                        line.push_str("; handler error caught locally (exact)");
+                    }
+                } else if witness.onclick_ran || witness.engine_click {
+                    line.push_str(&script_error_attachment(
+                        &errors,
+                        vm_session,
+                        event.elapsed_ms,
+                    ));
+                }
+                if click_outcome(&witness) == UiClickOutcome::HandlerRan {
+                    line.push_str(&self.dispatch_link_phrase(event.subject.scope, ui_dispatch_id));
+                }
+                if edge == UiEdge::Release {
+                    if let Some(key) = EdgeKey::from_event(event) {
+                        if let Some((id, _)) =
+                            press_edges.iter().find(|(_, press)| key.pairs_with(press))
+                        {
+                            if witness.onclick_ran || witness.engine_click {
+                                line.push_str(&format!(
+                                    "; paired press edge {id} of the same physical click"
+                                ));
+                            } else {
+                                line.push_str(&format!(
+                                    "; paired press edge {id} ran this click"
+                                ));
+                            }
+                        }
+                    }
+                }
+                if gaps {
+                    line.push_str("; trace has gaps");
+                }
+                if pointer_lost {
+                    line.push_str("; pointer rows were lost");
+                }
+                Some(bounded_line(line))
+            })
+            .take(8)
+            .collect();
+        if lines.is_empty() {
+            lines.push(bounded_line(if pointer_lost {
+                "UI click outcome: no retained click rows; pointer rows were lost (association unavailable)".to_string()
+            } else {
+                "UI click outcome: no retained click rows (absence, not proof)".to_string()
+            }));
+        }
+        lines
+    }
+
+    /// What the retained actions that carry `ui_dispatch_id` can establish.
+    ///
+    /// The link is the host-minted id on the action's `Subject`, not temporal adjacency. That id
+    /// is one eligible candidate chosen at intent time, so the link is a `Heuristic` attribution,
+    /// and the incident's confidence is composed with it by the weaker.
+    fn dispatch_link_phrase(&self, scope: Option<(u64, u64)>, ui_dispatch_id: u64) -> String {
+        let mut links: Vec<(Subject, Stage)> = Vec::new();
+        for (_, earlier) in self.entries.iter().rev() {
+            if earlier.subject.ui_dispatch_id != Some(ui_dispatch_id)
+                || earlier.subject.interaction == 0
+                || earlier.subject.scope != scope
+            {
+                continue;
+            }
+            if links
+                .iter()
+                .any(|(subject, _)| subject.interaction == earlier.subject.interaction)
+            {
+                continue;
+            }
+            links.push((earlier.subject, earlier.stage));
+            if links.len() == 4 {
+                break;
+            }
+        }
+        match links.as_slice() {
+            [] => {
+                if self.ui_input_rows_lost() {
+                    "; no retained action carries this click's id; pointer rows were lost (association unavailable)".to_string()
+                } else {
+                    // A cast or macro invoked inside the handler is an `Observed` action with no
+                    // click id, so it has no link here; that is not evidence against the click.
+                    "; no retained action carries this click's id; absence of a link is not evidence the click had no effect (absence, not proof)".to_string()
+                }
+            }
+            [(subject, stage)] => {
+                match self
+                    .incidents
+                    .iter()
+                    .rev()
+                    .find(|incident| incident.subject.interaction == subject.interaction)
+                {
+                    Some(incident) => format!(
+                        "; host-attributed link action {} {:?} last {:?}; outcome {:?} [{:?}]",
+                        subject.interaction,
+                        subject.operation,
+                        stage,
+                        incident.outcome,
+                        weaker(IncidentConfidence::Heuristic, incident.confidence),
+                    ),
+                    None => format!(
+                        "; host-attributed link action {} {:?} last {:?}; outcome in progress/unconfirmed [Unverified]",
+                        subject.interaction, subject.operation, stage,
+                    ),
+                }
+            }
+            many => format!(
+                "; {} host-attributed links (ambiguous reporting)",
+                many.len()
+            ),
+        }
     }
 
     pub(crate) fn inspector_snapshot(&mut self) -> &InspectorSnapshot {
@@ -3792,6 +4455,7 @@ impl History {
                 turn_ins: cap(self.turn_in_correlations(), 8),
                 ui_errors: cap(self.ui_error_correlations(), 8),
                 ui_clicks: cap(self.ui_click_correlations(), 8),
+                ui_click_outcomes: cap(self.ui_click_outcomes(), 8),
                 cast_chains: cap(self.cast_correlations(), 8),
                 loot_vendor: cap(self.loot_vendor_correlations(), 8),
                 quest_ui: cap(self.quest_ui_correlations(), 8),
@@ -3875,73 +4539,49 @@ impl History {
             }
         }
 
+        // The newest retained click token, joined to the retained actions that carry its id.
+        //
+        // This is a reverse join on the host-minted `ui_dispatch_id`, not a temporal count. The
+        // token's own click row is never a separate candidate, and a press row of an Up-only
+        // click cannot claim the antecedent at all because `OnClick` fires on its release.
         let dispatches = self.source.recent_ui_dispatches();
-        if let Some(token) = dispatches.iter().rev().next() {
-            let current_rg = self
-                .source
-                .0
-                .reload_generation
-                .load(Ordering::Acquire);
-            let eligible = token.reload_generation == current_rg
-                && token.visible == Some(true)
-                && !token.clipped
-                && token.consumed
-                && token.handler_invoked;
-            let candidates = self
-                .entries
-                .iter()
-                .filter(|(_, earlier)| {
-                    matches!(
-                        earlier.stage,
-                        Stage::UiClick {
-                            vm_session: vm,
-                            ..
-                        } if vm == token.vm_session
-                    ) && earlier.subject.scope == token.scope
-                        && earlier.subject.reload_generation == current_rg
-                        && earlier.elapsed_ms <= token.elapsed_ms
-                        && token.elapsed_ms.saturating_sub(earlier.elapsed_ms) <= 2_000
-                })
-                .count();
-            let wording = if !eligible {
-                "not a plausible cause (hidden, clipped, unconsumed, handler not invoked, or old VM/reload)"
-            } else if candidates == 0 {
-                if self.ui_input_rows_lost() {
-                    "unverified: the source click is not retained in the event window; pointer rows were lost (association unavailable)"
-                } else {
-                    "unverified: the source click is not retained in the event window"
+        let newest = dispatches.iter().rev().find(|token| {
+            token.witness.edge == UiEdge::Release
+                || matches!(token.witness.clicks, UiClickMask::Down | UiClickMask::Both)
+                || click_edge_can_claim(&token.witness)
+        });
+        match newest {
+            Some(token) => {
+                let current_rg = self.source.0.reload_generation.load(Ordering::Acquire);
+                let mut line = format!(
+                    "UI dispatch {}: button {:?} target {:?} edge {:?} clicks {:?} (vm{} reload{}): {}",
+                    token.id,
+                    token.button,
+                    token.target,
+                    token.witness.edge,
+                    token.witness.clicks,
+                    token.vm_session,
+                    token.reload_generation,
+                    if token.reload_generation != current_rg {
+                        "not a plausible cause (old reload generation)"
+                    } else if !click_edge_can_claim(&token.witness) {
+                        "not a click antecedent (no handler ran on the edge that fires OnClick)"
+                    } else {
+                        "established click antecedent for this registration"
+                    },
+                );
+                line.push_str(&self.dispatch_link_phrase(token.scope, token.id));
+                if gaps {
+                    line.push_str("; trace has gaps");
                 }
-            } else if candidates > 1 {
-                "ambiguous: multiple candidate clicks in the two-second window"
-            } else {
-                "possible association"
-            };
-            lines.push(format!(
-                "UI dispatch {}: button {:?} target {:?} consumed={} visible={:?} clipped={} handler_invoked={} vm={} reload={}; {wording}{}",
-                token.id,
-                token.button,
-                token.target,
-                token.consumed,
-                token.visible,
-                token.clipped,
-                token.handler_invoked,
-                token.vm_session,
-                token.reload_generation,
-                if gaps || self.ui_input_rows_lost() {
-                    let mut suffix = String::new();
-                    if gaps {
-                        suffix.push_str("; trace has gaps");
-                    }
-                    if self.ui_input_rows_lost() {
-                        suffix.push_str("; pointer rows were lost");
-                    }
-                    suffix
-                } else {
-                    String::new()
-                },
-            ));
-        } else {
-            lines.push("UI dispatch antecedent: no retained press/click token".to_string());
+                if self.ui_input_rows_lost() {
+                    line.push_str("; pointer rows were lost");
+                }
+                lines.push(bounded_line(line));
+            }
+            None => {
+                lines.push("UI dispatch antecedent: no retained press/click token".to_string());
+            }
         }
 
         let current_rg = self
@@ -5852,6 +6492,8 @@ impl History {
         let turn_in_correlations = self.turn_in_correlations();
         let ui_correlations = self.ui_error_correlations();
         let ui_click_correlations = self.ui_click_correlations();
+        let ui_click_outcomes = self.ui_click_outcomes();
+        let ui_input_rows_lost = self.ui_input_rows_lost();
         let cast_chains = self.cast_correlations();
         let loot_vendor = self.loot_vendor_correlations();
         let quest_ui = self.quest_ui_correlations();
@@ -5931,6 +6573,8 @@ impl History {
                         "turn_in_correlations": turn_in_correlations,
                         "ui_error_correlations": ui_correlations,
                         "ui_click_correlations": ui_click_correlations,
+                        "ui_click_outcomes": ui_click_outcomes,
+                        "ui_input_rows_lost": ui_input_rows_lost,
                         "cast_correlations": cast_chains,
                         "loot_vendor_correlations": loot_vendor,
                         "quest_ui_correlations": quest_ui,
