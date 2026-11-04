@@ -106,7 +106,7 @@ fn concat(vm: &mut Vm, nargs: usize) -> R<usize> {
 
 fn join(vm: &mut Vm, nargs: usize) -> R<usize> {
     let separator = vm.check_str(nargs, 1)?;
-    let separator_len = vm.heap.str(separator).len();
+    let separator_len = c_len(vm.heap.str(separator));
     let pieces = nargs - 1;
     if pieces <= 1 || separator_len == 0 {
         return concat(vm, pieces);
@@ -119,7 +119,7 @@ fn join(vm: &mut Vm, nargs: usize) -> R<usize> {
         result.extend_from_slice(&vm.heap.str(piece)[..length]);
         if index + 1 < pieces {
             vm.reserve(&mut result, separator_len)?;
-            result.extend_from_slice(vm.heap.str(separator));
+            result.extend_from_slice(&vm.heap.str(separator)[..separator_len]);
         }
     }
     Ok(vm.ret_str(&result))
