@@ -1065,7 +1065,10 @@ impl Dispatch<'_, '_> {
                 debug!("right-click interact: {guid:#x} ({arm:?})");
                 let trace = if matches!(arm, ServiceArm::Gossip | ServiceArm::Questgiver) {
                     self.quest_trace.as_ref().map(|source| {
-                        source.begin_with_npc(
+                        // A world right-click interact is not a UI click antecedent: no
+                        // `ui_dispatch_id`, so a nearby retained click can never be read as its
+                        // cause.
+                        source.begin_with_npc_unlinked(
                             self.wrath_view.as_ref().map(|v| (v.session_epoch, v.world_generation)),
                             None,
                             Some(guid),

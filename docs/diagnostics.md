@@ -215,13 +215,14 @@ animation, a toast, an empty panel or the absence of anything.
 Attachments are listed after the verdict and never upgrade it. `host-attributed link` names the
 action whose `Subject.ui_dispatch_id` is this click's id, with its last retained milestone. That
 id is one eligible candidate chosen when the intent was minted, so the link is a heuristic
-attribution, not an identity carried from the UI; a keybound cast or a world-interact open can
-inherit an unrelated nearby click's id, and the line still claims only the attribution. A typed
-server refusal keeps the weaker of the link confidence and the incident confidence, so a strong
-refusal can never make a weak click link look exact. A script-error row is polled from the VM's
-diagnostic log once per second and keyed by the error message, so a row is message identity, not
-handler identity: a row first retained after a click is a possible association, and a row already
-retained is a repeat of a message.
+attribution, not an identity carried from the UI, and it is still not proof that Lua raised the
+action. A keyboard or native cast (`Observed`) and the world right-click interact attach no click
+id at all, so neither can be read as a click's effect. A typed server refusal keeps the weaker of
+the link confidence and the incident confidence, so a strong refusal can never make a weak click
+link look exact. A script-error row is polled from the VM's diagnostic log once per second and
+keyed by the error message, so a row is message identity, not handler identity: a row first
+retained after a click is a possible association, and a row already retained is a repeat of a
+message.
 Nothing printed here establishes an error or an action as the click's effect, that a panel or
 button was rendered, that the user intended that control, or that the server received what the
 client sent.
@@ -233,10 +234,14 @@ the action's carried id. A fully hidden frame, a release outside the window (whi
 row at all), and an engine click action with no Lua handler are all reported as what they are,
 not as a nil-handler fault.
 
-The inspector prints up to eight click-outcome lines. The saved report exports the same strings
-as `ui_click_outcomes`, beside the existing `ui_click_correlations`, and adds the boolean
-`ui_input_rows_lost`. Both are additive to `rustwrath.interaction-diagnostics.v1` version 1:
-existing keys and types are unchanged, `validate_snapshot_header` is unchanged, and readers that
-ignore unknown keys are unaffected. The existing row fields keep their meaning; `visible` remains
-a capture-time hit fact (`null` on a miss), and the post-handler observation is the witness's own
-`visible_after`/`alive_after`.
+The inspector prints up to eight click-outcome lines, one per claimable edge. A `…ButtonUp`
+registration runs its handler on the release row; a `…ButtonDown` registration runs it on the
+press row, so that press row gets its own line and the release row says `click not run on this
+edge: not registered for this button edge` plus `paired press edge <id> ran this click`. A
+registration that fires on both edges shows two lines for the one physical click. The saved
+report exports the same strings as `ui_click_outcomes`, beside the existing
+`ui_click_correlations`, and adds the boolean `ui_input_rows_lost`. Both are additive to
+`rustwrath.interaction-diagnostics.v1` version 1: existing keys and types are unchanged,
+`validate_snapshot_header` is unchanged, and readers that ignore unknown keys are unaffected.
+The existing row fields keep their meaning; `visible` remains a capture-time hit fact (`null` on
+a miss), and the post-handler observation is the witness's own `visible_after`/`alive_after`.

@@ -898,28 +898,84 @@ fn click_edge_can_claim(witness: &UiHitEvidence) -> bool {
     }
 }
 
-/// Whether two retained edges are the press and the release of one physical click.
+/// The bounded key two retained pointer edges need to decide whether they are one click.
 ///
-/// Cross-row identity is not retained: `UiFrameRef` is a coarse kind and family, so an equal
-/// pair is an association, not proof of the same frame. The pair is the release row's press
-/// target matching the press row's own press target (the actual edge target, which can differ
-/// from the press row's hit when a capture is held), on the same button, scope, VM and reload
-/// generation inside the same two-second window. A pair that does not match stays two
-/// candidates, which the caller reports as ambiguous rather than guessing. A release row whose
-/// press target is absent (the pressed frame hid or died) does not pair; it also never ran the
-/// click slot, so the press row alone can claim the antecedent.
+/// A dispatch token and a retained row carry the same facts; keeping the comparison here stops
+/// the retro link (tokens) and the outcome section (rows) from disagreeing about a pair.
+#[derive(Clone, Copy)]
+struct EdgeKey {
+    edge: UiEdge,
+    button: UiButton,
+    scope: Option<(u64, u64)>,
+    vm_session: u64,
+    reload_generation: u64,
+    elapsed_ms: u64,
+    press_target: Option<UiFrameRef>,
+}
+
+impl EdgeKey {
+    fn from_token(token: &UiDispatchToken) -> Self {
+        Self {
+            edge: token.witness.edge,
+            button: token.button,
+            scope: token.scope,
+            vm_session: token.vm_session,
+            reload_generation: token.reload_generation,
+            elapsed_ms: token.elapsed_ms,
+            press_target: token.witness.press_target,
+        }
+    }
+
+    fn from_event(event: &Event) -> Option<Self> {
+        let (button, vm_session, witness) = match event.stage {
+            Stage::UiPress {
+                button,
+                vm_session,
+                witness,
+                ..
+            }
+            | Stage::UiClick {
+                button,
+                vm_session,
+                witness,
+                ..
+            } => (button, vm_session, witness),
+            _ => return None,
+        };
+        Some(Self {
+            edge: witness.edge,
+            button,
+            scope: event.subject.scope,
+            vm_session,
+            reload_generation: event.subject.reload_generation,
+            elapsed_ms: event.elapsed_ms,
+            press_target: witness.press_target,
+        })
+    }
+
+    /// Whether `self` is the release of the physical click `press` began.
+    ///
+    /// `UiFrameRef` is a coarse kind and family, so an equal pair is an association, not proof
+    /// of the same frame. A release whose press target is absent (the pressed frame hid or died)
+    /// does not pair; it also never ran the click slot, so the press edge alone claims it.
+    fn pairs_with(&self, press: &EdgeKey) -> bool {
+        press.edge == UiEdge::Press
+            && self.edge == UiEdge::Release
+            && press.button == self.button
+            && press.scope == self.scope
+            && press.vm_session == self.vm_session
+            && press.reload_generation == self.reload_generation
+            && self.elapsed_ms >= press.elapsed_ms
+            && self.elapsed_ms - press.elapsed_ms <= 2_000
+            && self.press_target.is_some()
+            && press.press_target.is_some()
+            && self.press_target == press.press_target
+    }
+}
+
+/// Whether two retained tokens are the press and the release of one physical click.
 fn same_physical_click(press: &UiDispatchToken, release: &UiDispatchToken) -> bool {
-    press.witness.edge == UiEdge::Press
-        && release.witness.edge == UiEdge::Release
-        && press.button == release.button
-        && press.scope == release.scope
-        && press.vm_session == release.vm_session
-        && press.reload_generation == release.reload_generation
-        && release.elapsed_ms >= press.elapsed_ms
-        && release.elapsed_ms - press.elapsed_ms <= 2_000
-        && release.witness.press_target.is_some()
-        && press.witness.press_target.is_some()
-        && release.witness.press_target == press.witness.press_target
+    EdgeKey::from_token(release).pairs_with(&EdgeKey::from_token(press))
 }
 
 #[derive(Debug)]
@@ -1518,6 +1574,21 @@ impl Source {
         self.begin_with_details(scope, quest, npc, None, None, None, operation)
     }
 
+    /// Start an interaction that is explicitly not a UI click antecedent.
+    ///
+    /// The world right-click interact mints through the same subject shape as a UI verb, but it
+    /// is driven by the world click, not by a retained press/click row. Attaching no
+    /// `ui_dispatch_id` keeps a nearby, unrelated UI click from being read as its cause.
+    pub(crate) fn begin_with_npc_unlinked(
+        &self,
+        scope: Option<(u64, u64)>,
+        quest: Option<u32>,
+        npc: Option<u64>,
+        operation: Operation,
+    ) -> Interaction {
+        self.begin_inner(scope, quest, npc, None, None, None, operation, false)
+    }
+
     /// Start a user-originated interaction carrying the numeric subject used for later
     /// correlation: item entry, count and slot. `npc` is the loot/vendor source GUID, mapped to a
     /// run-local alias here.
@@ -1532,6 +1603,33 @@ impl Source {
         slot: Option<u32>,
         operation: Operation,
     ) -> Interaction {
+        // A keyboard or native cast (`Operation::Observed`) is not UI-initiated, so it must not
+        // inherit a nearby click's id; the world interact uses the explicit unlinked entry point.
+        let attach_dispatch = !matches!(operation, Operation::Observed);
+        self.begin_inner(
+            scope,
+            quest,
+            npc,
+            item,
+            count,
+            slot,
+            operation,
+            attach_dispatch,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // scope + quest + source + numeric subject + operation + flag
+    fn begin_inner(
+        &self,
+        scope: Option<(u64, u64)>,
+        quest: Option<u32>,
+        npc: Option<u64>,
+        item: Option<u32>,
+        count: Option<u32>,
+        slot: Option<u32>,
+        operation: Operation,
+        attach_dispatch: bool,
+    ) -> Interaction {
         let trace = Interaction {
             source: self.clone(),
             subject: Subject {
@@ -1544,7 +1642,11 @@ impl Source {
                 slot,
                 operation,
                 reload_generation: self.0.reload_generation.load(Ordering::Acquire),
-                ui_dispatch_id: self.plausible_ui_dispatch(scope),
+                ui_dispatch_id: if attach_dispatch {
+                    self.plausible_ui_dispatch(scope)
+                } else {
+                    None
+                },
             },
         };
         trace.record(Stage::Intent);
@@ -3765,9 +3867,13 @@ impl History {
 
     /// Bounded per-click outcome lines for the inspector and the saved report.
     ///
-    /// Each line states what the retained evidence establishes (the click row's own witness),
-    /// what it links through the host-minted `ui_dispatch_id`, and what stays an association.
-    /// Missing evidence is reported as absence, never as a negative outcome.
+    /// A click is one physical press/release pair, but either edge can carry the handler: an Up
+    /// registration runs it on the release row, a Down registration on the press row. Every
+    /// claimable edge therefore gets its own line, and a release row names the press edge that
+    /// ran the click when the pair is retained, so the release row's gate never erases the run.
+    /// Each line states what the retained evidence establishes (its own witness), what it links
+    /// through the host-minted `ui_dispatch_id`, and what stays an association. Missing evidence
+    /// is reported as absence, never as a negative outcome.
     pub(crate) fn ui_click_outcomes(&self) -> Vec<String> {
         let gaps = self.has_telemetry_gaps();
         let pointer_lost = self.ui_input_rows_lost();
@@ -3794,45 +3900,93 @@ impl History {
                 errors.push((vm_session, row_seq, event.elapsed_ms, event.elapsed_ms));
             }
         }
+        // The press edges that actually ran a click. A Down or Both registration invokes
+        // `OnClick` on the press row, and that row is the edge that ran; the release row's
+        // `NotRegistered` gate must not read as the whole story.
+        let mut press_edges: Vec<(u64, EdgeKey)> = Vec::new();
+        for (_, event) in self.entries.iter() {
+            if let Stage::UiPress {
+                ui_dispatch_id,
+                witness,
+                ..
+            } = event.stage
+            {
+                if click_edge_can_claim(&witness) {
+                    if let Some(key) = EdgeKey::from_event(event) {
+                        press_edges.push((ui_dispatch_id, key));
+                    }
+                }
+            }
+        }
         let mut lines: Vec<String> = self
             .entries
             .iter()
             .rev()
-            .filter_map(|(_, event)| match event.stage {
-                Stage::UiClick {
-                    vm_session,
-                    ui_dispatch_id,
-                    witness,
-                    ..
-                } => {
-                    let mut line = format!(
-                        "UI click {ui_dispatch_id} (vm{vm_session} reload{}): {}",
-                        event.subject.reload_generation,
-                        click_outcome_phrase(&witness),
-                    );
-                    if witness.handler_error {
-                        if witness.onclick_ran {
-                            line.push_str("; handler error caught locally (exact)");
-                        }
-                    } else if witness.onclick_ran || witness.engine_click {
-                        line.push_str(&script_error_attachment(
-                            &errors,
-                            vm_session,
-                            event.elapsed_ms,
-                        ));
+            .filter_map(|(_, event)| {
+                let (edge, vm_session, ui_dispatch_id, witness) = match event.stage {
+                    Stage::UiClick {
+                        vm_session,
+                        ui_dispatch_id,
+                        witness,
+                        ..
+                    } => (UiEdge::Release, vm_session, ui_dispatch_id, witness),
+                    Stage::UiPress {
+                        vm_session,
+                        ui_dispatch_id,
+                        witness,
+                        ..
+                    } if click_edge_can_claim(&witness) => {
+                        (UiEdge::Press, vm_session, ui_dispatch_id, witness)
                     }
-                    if click_outcome(&witness) == UiClickOutcome::HandlerRan {
-                        line.push_str(&self.click_link_phrase(event, ui_dispatch_id));
+                    _ => return None,
+                };
+                let edge_name = match edge {
+                    UiEdge::Press => "press",
+                    UiEdge::Release => "release",
+                };
+                let mut line = format!(
+                    "UI click {ui_dispatch_id} ({edge_name} edge, vm{vm_session} reload{}): {}",
+                    event.subject.reload_generation,
+                    click_outcome_phrase(&witness),
+                );
+                if witness.handler_error {
+                    if witness.onclick_ran {
+                        line.push_str("; handler error caught locally (exact)");
                     }
-                    if gaps {
-                        line.push_str("; trace has gaps");
-                    }
-                    if pointer_lost {
-                        line.push_str("; pointer rows were lost");
-                    }
-                    Some(bounded_line(line))
+                } else if witness.onclick_ran || witness.engine_click {
+                    line.push_str(&script_error_attachment(
+                        &errors,
+                        vm_session,
+                        event.elapsed_ms,
+                    ));
                 }
-                _ => None,
+                if click_outcome(&witness) == UiClickOutcome::HandlerRan {
+                    line.push_str(&self.dispatch_link_phrase(event.subject.scope, ui_dispatch_id));
+                }
+                if edge == UiEdge::Release {
+                    if let Some(key) = EdgeKey::from_event(event) {
+                        if let Some((id, _)) =
+                            press_edges.iter().find(|(_, press)| key.pairs_with(press))
+                        {
+                            if witness.onclick_ran || witness.engine_click {
+                                line.push_str(&format!(
+                                    "; paired press edge {id} of the same physical click"
+                                ));
+                            } else {
+                                line.push_str(&format!(
+                                    "; paired press edge {id} ran this click"
+                                ));
+                            }
+                        }
+                    }
+                }
+                if gaps {
+                    line.push_str("; trace has gaps");
+                }
+                if pointer_lost {
+                    line.push_str("; pointer rows were lost");
+                }
+                Some(bounded_line(line))
             })
             .take(8)
             .collect();
@@ -3844,11 +3998,6 @@ impl History {
             }));
         }
         lines
-    }
-
-    /// The link for a retained click row.
-    fn click_link_phrase(&self, click: &Event, ui_dispatch_id: u64) -> String {
-        self.dispatch_link_phrase(click.subject.scope, ui_dispatch_id)
     }
 
     /// What the retained actions that carry `ui_dispatch_id` can establish.
