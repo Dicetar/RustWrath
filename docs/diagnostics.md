@@ -215,11 +215,13 @@ animation, a toast, an empty panel or the absence of anything.
 Attachments are listed after the verdict and never upgrade it. `host-attributed link` names the
 action whose `Subject.ui_dispatch_id` is this click's id, with its last retained milestone. That
 id is one eligible candidate chosen when the intent was minted, so the link is a heuristic
-attribution, not an identity carried from the UI. A typed server refusal keeps the weaker of the
-link confidence and the incident confidence, so a strong refusal can never make a weak click link
-look exact. A script-error row is polled from the VM's diagnostic log once per second and keyed
-by the error message, so a row is message identity, not handler identity: a row first retained
-after a click is a possible association, and a row already retained is a repeat of a message.
+attribution, not an identity carried from the UI; a keybound cast or a world-interact open can
+inherit an unrelated nearby click's id, and the line still claims only the attribution. A typed
+server refusal keeps the weaker of the link confidence and the incident confidence, so a strong
+refusal can never make a weak click link look exact. A script-error row is polled from the VM's
+diagnostic log once per second and keyed by the error message, so a row is message identity, not
+handler identity: a row first retained after a click is a possible association, and a row already
+retained is a repeat of a message.
 Nothing printed here establishes an error or an action as the click's effect, that a panel or
 button was rendered, that the user intended that control, or that the server received what the
 client sent.
