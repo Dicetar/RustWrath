@@ -257,6 +257,7 @@ pub(crate) enum EvidenceClass {
     /// High-volume UI pointer traffic: presses and clicks. Bounded separately so a long
     /// click-heavy session cannot displace core action/protocol evidence, while recent
     /// presses/clicks remain available for UI-error and quest-dispatch correlation.
+    #[serde(rename = "ui_input")]
     UiInput,
     /// Fallback class. See the type-level note: current producers map exhaustively.
     Unclassified,
@@ -2285,17 +2286,22 @@ impl History {
             chain.notes.len(),
             "incident evidence sequences and notes must stay aligned"
         );
-        let opening_recovered = chain
+        // A one-note chain whose only note is the terminal is not an opening: a server-only
+        // observation (interaction 0) has no local opener. Do not present the terminal row as
+        // the incident's opening just because it is first in the chain.
+        let opening_note_present = chain
             .notes
             .first()
-            .map_or(false, |note| note.recovered);
-        let opening_note_source = chain.notes.first().map_or("unavailable", |note| {
-            if note.recovered {
-                "recovered_from_start_metadata"
-            } else {
-                "observed"
-            }
-        });
+            .is_some_and(|note| chain.notes.len() > 1 || note.stage != terminal_stage);
+        let opening_recovered = opening_note_present
+            && chain.notes.first().is_some_and(|note| note.recovered);
+        let opening_note_source = if !opening_note_present {
+            "unavailable"
+        } else if opening_recovered {
+            "recovered_from_start_metadata"
+        } else {
+            "observed"
+        };
         if self.incidents.len() == 64 {
             self.incidents.pop_front();
             self.incidents_evicted += 1;
@@ -3647,12 +3653,12 @@ impl History {
             // so they stay readable even when both referenced rows are gone from the ring.
             // Provenance distinguishes a directly retained row from one recovered from bounded
             // start metadata, and an explicit unavailable state when no metadata exists.
-            let opening = match incident.evidence_notes.first() {
-                None => "opening unavailable".to_string(),
-                Some(note) if note.recovered => {
+            let opening = match (incident.opening_note_source, incident.evidence_notes.first()) {
+                ("unavailable", _) | (_, None) => "opening unavailable".to_string(),
+                (_, Some(note)) if note.recovered => {
                     format!("recovered from start metadata ({})", note.label())
                 }
-                Some(note) => note.label(),
+                (_, Some(note)) => note.label(),
             };
             let terminal = incident.evidence_notes.last().map_or_else(
                 || "terminal note unavailable".to_string(),
