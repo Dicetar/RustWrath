@@ -385,6 +385,9 @@ fn debug_panel_ui(
                             for line in &snapshot.ui_clicks {
                                 ui.label(line);
                             }
+                            for line in &snapshot.ui_click_outcomes {
+                                ui.label(line);
+                            }
                             for line in &snapshot.cast_chains {
                                 ui.label(line);
                             }

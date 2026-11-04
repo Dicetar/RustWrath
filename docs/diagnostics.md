@@ -197,3 +197,44 @@ the stored local boundary time and says so. The saved report uses the same incid
 these fields survive export unchanged. All additions are additive to schema
 `rustwrath.interaction-diagnostics.v1` version 1: existing readers can ignore the new
 header and incident fields, and `validate_snapshot_header` is unchanged.
+
+### UI click outcomes
+
+Every retained press or click resolves to one of five closed verdicts. The verdict is derived
+only from the bounded witness captured at the input edge, never from a later action, a button
+animation, a toast, an empty panel or the absence of anything.
+
+| Verdict | What it establishes |
+|---|---|
+| `no hit` | No frame took the point. When a rect-containing frame was excluded, the line names why: `its scroll clip excluded the point` or `it has no resolvable clip owner (layout gap)`. Hit insets, a disabled mouse bit and a nameplate veto are by design or by veto and are never reported as a clipped button. A fully hidden frame is absent from the hit walk, so it is indistinguishable from empty space. |
+| `a frame took the point but has no recognised category` | The hit is real but its coarse frame category is unknown; the row cannot name what was clicked further than that. |
+| `no handler bound for this button edge` | A named frame took the point and no Lua handler, script hook or engine click action exists for the edge that fires `OnClick`. For a `Button`, that edge follows `RegisterForClicks`; a release on an `…ButtonUp` registration is not the same edge as a press on an `…ButtonDown` one. |
+| `handler present, not run: <gate>` | A handler exists but the click slot stopped at the first named gate: title region, not pushed, not registered for this button edge, cursor outside the pressed frame, drag, capture lost, frame destroyed, layout drag, world hook, or no press target. `not pushed` means the button was not PUSHED at the release (disabled, hidden, never pressed, or the press was cleared) and is not the same claim as `disabled`. |
+| `handler ran` | A Lua handler ran, or `engine click action ran (no Lua handler)` for the LootButton take. A `handler error caught locally (exact)` records an mlua error raised inside that edge's own script fire; it is the only exact handler-fault evidence this recorder keeps. |
+
+Attachments are listed after the verdict and never upgrade it. `host-attributed link` names the
+action whose `Subject.ui_dispatch_id` is this click's id, with its last retained milestone. That
+id is one eligible candidate chosen when the intent was minted, so the link is a heuristic
+attribution, not an identity carried from the UI. A typed server refusal keeps the weaker of the
+link confidence and the incident confidence, so a strong refusal can never make a weak click link
+look exact. A script-error row is polled from the VM's diagnostic log once per second and keyed
+by the error message, so a row is message identity, not handler identity: a row first retained
+after a click is a possible association, and a row already retained is a repeat of a message.
+Nothing printed here establishes an error or an action as the click's effect, that a panel or
+button was rendered, that the user intended that control, or that the server received what the
+client sent.
+
+Missing evidence is never a negative result. `absence, not proof` means the window expired with
+nothing retained. `unverified ... pointer rows were lost` means the bounded UI-input class evicted
+the pointer row (see `ui_input_rows_lost`), while the click-to-action link can still survive on
+the action's carried id. A fully hidden frame, a release outside the window (which produces no
+row at all), and an engine click action with no Lua handler are all reported as what they are,
+not as a nil-handler fault.
+
+The inspector prints up to eight click-outcome lines. The saved report exports the same strings
+as `ui_click_outcomes`, beside the existing `ui_click_correlations`, and adds the boolean
+`ui_input_rows_lost`. Both are additive to `rustwrath.interaction-diagnostics.v1` version 1:
+existing keys and types are unchanged, `validate_snapshot_header` is unchanged, and readers that
+ignore unknown keys are unaffected. The existing row fields keep their meaning; `visible` remains
+a capture-time hit fact (`null` on a miss), and the post-handler observation is the witness's own
+`visible_after`/`alive_after`.
