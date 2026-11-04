@@ -901,10 +901,12 @@ fn click_edge_can_claim(witness: &UiHitEvidence) -> bool {
 /// Whether two retained edges are the press and the release of one physical click.
 ///
 /// Cross-row identity is not retained, so the pair is the release row's press target matching
-/// the press row's hit frame (kind and coarse family), on the same button, scope, VM and reload
-/// generation inside the same two-second window. A pair that does not match stays two candidates,
-/// which the caller reports as ambiguous rather than guessing.
+/// the press row's own press target (or its hit when the press row has no capture target), on
+/// the same button, scope, VM and reload generation inside the same two-second window. A pair
+/// that does not match stays two candidates, which the caller reports as ambiguous rather than
+/// guessing.
 fn same_physical_click(press: &UiDispatchToken, release: &UiDispatchToken) -> bool {
+    let press_frame = press.witness.press_target.or(press.witness.hit);
     press.witness.edge == UiEdge::Press
         && release.witness.edge == UiEdge::Release
         && press.button == release.button
@@ -914,7 +916,7 @@ fn same_physical_click(press: &UiDispatchToken, release: &UiDispatchToken) -> bo
         && release.elapsed_ms >= press.elapsed_ms
         && release.elapsed_ms - press.elapsed_ms <= 2_000
         && release.witness.press_target.is_some()
-        && release.witness.press_target == press.witness.hit
+        && release.witness.press_target == press_frame
 }
 
 #[derive(Debug)]
@@ -3390,7 +3392,9 @@ enum UiClickOutcome {
 /// Classify one edge from its witness alone.
 #[cfg(feature = "dev")]
 fn click_outcome(witness: &UiHitEvidence) -> UiClickOutcome {
-    if witness.onclick_ran || witness.engine_click {
+    // `handler_error` implies the slot reached a handler, so a raise is never reported as
+    // "not run"; `blocked` may also read `HandlerError` in that case.
+    if witness.onclick_ran || witness.engine_click || witness.handler_error {
         return UiClickOutcome::HandlerRan;
     }
     let Some(hit) = witness.hit else {
@@ -3412,7 +3416,21 @@ fn click_outcome(witness: &UiHitEvidence) -> UiClickOutcome {
             gate: witness.blocked,
         }
     } else {
-        UiClickOutcome::NoHandler
+        // A concrete gate can stop the edge before the handler question is answered (a
+        // Down-only registration's release row reads `NotRegistered`, a disabled button reads
+        // `Disabled`). Those must not be reported as "no handler bound"; only the slot's own
+        // `HandlerMissing`, or a slot that ran with no handler, is that claim.
+        let concrete_gate = !matches!(
+            witness.blocked,
+            UiClickBlock::None | UiClickBlock::HandlerMissing | UiClickBlock::HandlerError
+        );
+        if concrete_gate {
+            UiClickOutcome::HandlerBlocked {
+                gate: witness.blocked,
+            }
+        } else {
+            UiClickOutcome::NoHandler
+        }
     }
 }
 
@@ -3438,11 +3456,30 @@ fn click_outcome_phrase(witness: &UiHitEvidence) -> String {
                 .to_string()
         }
         UiClickOutcome::HandlerBlocked { gate } => {
-            format!("handler present, not run: {}", click_block_phrase(gate))
+            let press_note = if witness.edge == UiEdge::Release
+                && matches!(witness.clicks, UiClickMask::Down)
+            {
+                " (this registration fires OnClick on the press edge)"
+            } else {
+                ""
+            };
+            if witness.onclick_present {
+                format!(
+                    "handler present, not run: {}{press_note}",
+                    click_block_phrase(gate)
+                )
+            } else {
+                format!(
+                    "click not run on this edge: {}{press_note}",
+                    click_block_phrase(gate)
+                )
+            }
         }
         UiClickOutcome::HandlerRan => {
             if witness.onclick_ran {
                 "handler ran".to_string()
+            } else if witness.handler_error {
+                "a handler on this edge raised (local exact)".to_string()
             } else {
                 "engine click action ran (no Lua handler)".to_string()
             }
@@ -3698,6 +3735,9 @@ impl History {
                     if witness.hit.is_some() && !witness.alive_after {
                         line.push_str("; hit frame no longer exists after the click");
                     }
+                    if witness.onclick_ran && witness.handler_error {
+                        line.push_str("; handler error caught locally (exact)");
+                    }
                     if gaps {
                         line.push_str("; trace has gaps");
                     }
@@ -3760,7 +3800,9 @@ impl History {
                         click_outcome_phrase(&witness),
                     );
                     if witness.handler_error {
-                        line.push_str("; handler error caught locally (exact)");
+                        if witness.onclick_ran {
+                            line.push_str("; handler error caught locally (exact)");
+                        }
                     } else if witness.onclick_ran || witness.engine_click {
                         line.push_str(&script_error_attachment(
                             &errors,
