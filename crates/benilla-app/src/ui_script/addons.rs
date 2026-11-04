@@ -282,11 +282,11 @@ pub(crate) fn root() -> Option<PathBuf> {
 /// comes first, followed by `benilla-config/AddOns` so users can place 3.3.5a addons in either
 /// location without modifying their game install.
 pub(crate) fn roots() -> Vec<PathBuf> {
+    if std::env::var_os("WOW_CAPTURE").is_some() {
+        return Vec::new();
+    }
     let home = crate::local_state::home();
     if crate::wrath::selected_from_env() {
-        if home.is_none() {
-            return Vec::new();
-        }
         let mut out = Vec::new();
         if let Some(install_addons) = benilla_formats::wow_data()
             .and_then(|d| d.parent().map(|p| p.join("Interface").join(ADDONS_DIR)))
