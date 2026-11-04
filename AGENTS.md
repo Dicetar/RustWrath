@@ -14,6 +14,7 @@ then Firna's Northshire quest/combat/loot route.
 4. Consult [METHOD](docs/METHOD.md), [CONTRIBUTING](docs/CONTRIBUTING.md), and relevant
    parts of [MAP](docs/MAP.md). MAP is generated orientation, not runtime acceptance.
 5. For Wrath repairs, follow [the 12340 reference workflow](docs/agents/12340-reference.md).
+6. For an explicitly requested local launch, read [the server and client runbook](docs/agents/local-launch.md).
 
 System/developer instructions and direct owner requests take precedence. The Project B
 workflow qualifies inherited donor verification/release procedures; those procedures
