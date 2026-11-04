@@ -447,6 +447,12 @@ pub struct WrathEntity {
     pub dynamic_flags: Option<u32>,
     /// `UNIT_FIELD_TARGET`; absent when the reducer has not observed both GUID words.
     pub target: Option<u64>,
+    /// `UNIT_FIELD_CHARMEDBY`: whoever is charming this unit; feeds ownership/reaction consumers.
+    pub charmed_by: Option<u64>,
+    /// `UNIT_FIELD_SUMMONEDBY`: the summoner of a pet, guardian or totem.
+    pub summoned_by: Option<u64>,
+    /// `UNIT_FIELD_CREATEDBY`: the creator of a totem or created object; for a hunter pet, its owner.
+    pub created_by: Option<u64>,
     /// Wrath `PLAYER_BYTES`: skin, face, hair style, hair colour.
     pub player_bytes: Option<u32>,
     /// Wrath `PLAYER_BYTES_2`: facial hair, bank slots, rest state, arena faction.
@@ -5796,6 +5802,22 @@ fn wrath_apply_world(world: &mut World) {
             pairs.push((16, target as u32));
             pairs.push((17, (target >> 32) as u32));
         }
+        // Project 12340 ownership guids onto the 1.12 descriptor slots the reaction, UI and minimap
+        // consumers read (`CHARMEDBY` 10/11, `SUMMONEDBY` 12/13, `CREATEDBY` 14/15). Without these
+        // a hunter pet streams in with no owner, so it reads as neutral/attackable even though the
+        // server refuses the swing.
+        if let Some(charmed_by) = remote.charmed_by {
+            pairs.push((10, charmed_by as u32));
+            pairs.push((11, (charmed_by >> 32) as u32));
+        }
+        if let Some(summoned_by) = remote.summoned_by {
+            pairs.push((12, summoned_by as u32));
+            pairs.push((13, (summoned_by >> 32) as u32));
+        }
+        if let Some(created_by) = remote.created_by {
+            pairs.push((14, created_by as u32));
+            pairs.push((15, (created_by >> 32) as u32));
+        }
         let mut wrath_slots: Option<WrathQuestSlots> = None;
         if kind == EntityKind::Player {
             if let Some(bytes) = remote.player_bytes {
@@ -8052,6 +8074,9 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 npc_flags: entry.field(fields::UNIT_NPC_FLAGS),
                 dynamic_flags: entry.field(fields::UNIT_DYNAMIC_FLAGS),
                 target: entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0),
+                charmed_by: entry.self_guid(fields::UNIT_FIELD_CHARMEDBY).filter(|&guid| guid != 0),
+                summoned_by: entry.self_guid(fields::UNIT_FIELD_SUMMONEDBY).filter(|&guid| guid != 0),
+                created_by: entry.self_guid(fields::UNIT_FIELD_CREATEDBY).filter(|&guid| guid != 0),
                 player_bytes: entry.field(fields::PLAYER_BYTES),
                 player_bytes_2: entry.field(fields::PLAYER_BYTES_2),
                 position: entry.movement.as_ref().and_then(|m| m.position),
