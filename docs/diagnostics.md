@@ -141,9 +141,10 @@ diagnostic vector that owns it. The mapping is explicit in
 
 | Class | Stages | Intent |
 |---|---|---|
-| action | intent, guard, admission, encoded, outbox, delivery, outbound; cast; quest panel/slot/journal/turn-in; inventory, loot, vendor and equipment; `UiPress`/`UiClick`; session, world, login and hotpatch transitions; loss annotations; script errors, load errors and warnings; reducer/gameplay rejections; socket failures | protected action evidence |
+| action | intent, guard, admission, encoded, outbox, delivery, outbound; cast; quest panel/slot/journal/turn-in; inventory, loot, vendor and equipment; session, world, login and hotpatch transitions; loss annotations; script errors, load errors and warnings; reducer/gameplay rejections; socket failures | protected action evidence |
 | health | frame window, asset failure/window, scene summary, replica revision, movement pressure, audio mixer/health, UI frame visibility | periodic, reclaimed first |
 | protocol | packet receipt, reducer acceptance, gameplay decode | protected decode-adjacent evidence |
+| ui_input | `UiPress`/`UiClick` pointer traffic | bounded UI input; reclaimed before core evidence is touched |
 | unclassified | fallback only | counted, never inferred from a vector |
 
 `ScriptError`, `ScriptLoadError` and `ScriptWarning` are action evidence: a script failure
@@ -154,17 +155,19 @@ protocol. The mapping is total over the closed `Stage` enum, so current producer
 emit unclassified rows. The class and its counters remain so a future stage must choose a
 class explicitly instead of silently becoming disposable.
 
-Retention keeps at most 256 `health` rows and reclaims the oldest health row first while
-the 1024-row ring is under pressure. 64 health rows are protected, so a burst of UI clicks
-cannot leave the report with no frame, asset, scene, movement or audio context. Health
-rows above the reserve are evicted first, within their own budget, and counted; an
-incoming health row reclaims an older health row rather than an action row, so a periodic
-observation never displaces action evidence while any health row is retained. Only when
-no evictable health observation remains (retained health is at its reserve) does an
-incoming action/protocol/unclassified row evict the oldest row of that protected group.
-Rows keep their global sequence order for every reader. The store is a sequence-keyed
-ordered map plus one per-class sequence index; each insert and eviction is bounded
-(`O(log 1024)`), with no per-event scan of the ring and exact per-class membership.
+Retention keeps at most 256 `health` rows and 256 `ui_input` rows and reclaims the oldest
+row of the incoming class first while the 1024-row ring is under pressure. 64 health rows
+and 32 UI input rows are protected. Health rows above the reserve are evicted first,
+within their own budget, and counted; an incoming health row reclaims an older health
+row rather than an action row. UI input rows above the reserve are evicted before core
+evidence; an incoming UI input row reclaims an older UI input row, then (above the
+health reserve) an older health row, and is refused with an explicit counter rather than
+displacing protected core action/protocol evidence. An incoming action/protocol/unclassified
+row reclaims health above its reserve, then UI input above its reserve, then the oldest
+core action/protocol row. Rows keep their global sequence order for every reader. The
+store is a sequence-keyed ordered map plus one per-class sequence index; each insert and
+eviction is bounded (`O(log 1024)`), with no per-event scan of the ring and exact
+per-class membership.
 
 Per-class `retained`, `evicted` and `dropped` counts are exported in
 `coverage.evidence_classes`, `coverage.evidence_class_totals`, and the top-level
