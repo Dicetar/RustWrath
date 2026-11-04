@@ -699,16 +699,16 @@ fn merge_overlays_deltas_and_replaces_on_recreate() {
 #[test]
 fn merge_diff_reports_each_moved_dword_once_with_its_old_value() {
     let mut store =
-        ObjectFields::from_pairs(&[(24, 100), (32, 100), (34, 9)]).into_created(ObjectType::Unit);
+        ObjectFields::from_pairs(&[(22, 100), (28, 100), (34, 9)]).into_created(ObjectType::Unit);
     let mut edges = Vec::new();
     // Health drops, level rises, max-health re-sent as it was, a never-seen field appears.
     store.merge_diff(
-        ObjectFields::from_pairs(&[(34, 10), (24, 40), (32, 100), (59, 8)]),
+        ObjectFields::from_pairs(&[(34, 10), (22, 40), (28, 100), (46, 8)]),
         |i, old, new| edges.push((i, old, new)),
     );
     assert_eq!(
         edges,
-        vec![(24, 100, 40), (34, 9, 10), (59, 0, 8)],
+        vec![(22, 100, 40), (34, 9, 10), (46, 0, 8)],
         "moved dwords only, ascending; absent-before reads 0; an unchanged resend is silent"
     );
     assert_eq!(store.unit_health(), Some(40), "the delta still lands");

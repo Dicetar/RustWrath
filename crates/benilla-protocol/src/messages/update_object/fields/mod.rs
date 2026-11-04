@@ -33,7 +33,7 @@ pub const FIELD_CORPSE_DYNAMIC_FLAGS: u16 = 36;
 // UNIT fields. The client reads FLAGS, COMBATREACH, DYNAMIC_FLAGS and NPC_FLAGS at unit block
 // bytes 0xa0, 0x1f0, 0x224 and 0x234.
 /// The unit's target; the client turns an idle unit to face it, and no packet carries that facing.
-const FIELD_UNIT_TARGET: u16 = 18;
+const FIELD_UNIT_TARGET: u16 = 16;
 /// The unit this one charms (`UpdateFields_1_12_1.h:41`), descriptor byte 0.
 const FIELD_UNIT_CHARM: u16 = 6;
 /// The unit this one summoned (`UpdateFields_1_12_1.h:42`); on us, the `"pet"` unit. The pet bar
@@ -41,25 +41,25 @@ const FIELD_UNIT_CHARM: u16 = 6;
 const FIELD_UNIT_SUMMON: u16 = 8;
 /// The charmer, 0 for none. The attack-start check `0x612df0` refuses a swing when it is set and
 /// is not us (`ERR_ATTACK_CHARMED`); `0x5ee5a0` and `0x5ff580` prefer it as the owner.
-const FIELD_UNIT_CHARMEDBY: u16 = 12;
+const FIELD_UNIT_CHARMEDBY: u16 = 10;
 /// The summoner of a pet, guardian or totem; with CREATEDBY, the "owned by me" test of `0x5efea0`.
-const FIELD_UNIT_SUMMONEDBY: u16 = 14;
-const FIELD_UNIT_CREATEDBY: u16 = 16;
+const FIELD_UNIT_SUMMONEDBY: u16 = 12;
+const FIELD_UNIT_CREATEDBY: u16 = 14;
 /// The unit that persuaded this one (`UpdateFields_1_12_1.h:47`), descriptor byte `0x30`.
 const FIELD_UNIT_PERSUADED: u16 = 18;
 /// The channel's target, possibly the caster (`UpdateFields_1_12_1.h:48`). Public, so another
 /// unit's channel renders from it; `MSG_CHANNEL_START`/`UPDATE` reach only the caster.
 const FIELD_UNIT_CHANNEL_OBJECT: u16 = 20;
-pub const FIELD_UNIT_HEALTH: u16 = 24;
+pub const FIELD_UNIT_HEALTH: u16 = 22;
 /// Five power slots: mana, rage, focus, energy, happiness; `MAXPOWER1..5` follow `MAXHEALTH`.
 const FIELD_UNIT_POWER1: u16 = 23;
-pub const FIELD_UNIT_MAXHEALTH: u16 = 32;
+pub const FIELD_UNIT_MAXHEALTH: u16 = 28;
 const FIELD_UNIT_MAXPOWER1: u16 = 29;
 pub const FIELD_UNIT_LEVEL: u16 = 34;
-pub const FIELD_UNIT_FACTIONTEMPLATE: u16 = 55;
-const FIELD_UNIT_BYTES_0: u16 = 23;
+pub const FIELD_UNIT_FACTIONTEMPLATE: u16 = 35;
+const FIELD_UNIT_BYTES_0: u16 = 36;
 pub const FIELD_UNIT_BYTES_1: u16 = 138;
-pub const FIELD_UNIT_FLAGS: u16 = 59;
+pub const FIELD_UNIT_FLAGS: u16 = 46;
 // The aura block: four public parallel arrays (`UpdateFields_1_12_1.h:67-70`), which the client
 // reads at unit block bytes 0xa4 and 0x164 onward. Duration reaches only the aura's own target,
 // over `SMSG_UPDATE_AURA_DURATION`, and no packet carries the caster.
@@ -77,13 +77,13 @@ const FIELD_UNIT_BOUNDINGRADIUS: u16 = 129;
 const FIELD_UNIT_COMBATREACH: u16 = 130;
 const FIELD_UNIT_BASE_MANA: u16 = 162;
 const FIELD_UNIT_BASE_HEALTH: u16 = 163;
-pub const FIELD_UNIT_DISPLAYID: u16 = 67;
+pub const FIELD_UNIT_DISPLAYID: u16 = 131;
 /// The unshifted appearance, untouched by forms, morphs and polymorph (`UpdateFields_1_12_1.h:77`).
 /// The client sizes the mover collision box from it (`0x60b270`), so a shapeshift keeps the box.
-const FIELD_UNIT_NATIVEDISPLAYID: u16 = 68;
+const FIELD_UNIT_NATIVEDISPLAYID: u16 = 132;
 /// The ridden mount's `CreatureDisplayInfo` id, 0 when unmounted; this field, not the aura, is the
 /// mounted state (`Unit::IsMounted`; client `[unit+0x110]+0x1fc`).
-pub const FIELD_UNIT_MOUNTDISPLAYID: u16 = 69;
+pub const FIELD_UNIT_MOUNTDISPLAYID: u16 = 133;
 /// Nonzero on a pet or charm; the rank getter `0x605620` then forces rank 0, so an enslaved mob
 /// shows no elite dragon, tooltip rank word or boss skull.
 const FIELD_UNIT_PETNUMBER: u16 = 139;
@@ -97,7 +97,7 @@ const FIELD_UNIT_PETNEXTLEVELEXP: u16 = 142;
 /// Two `u16`s: `GetPetTrainingPoints` (`0x4be790`) returns the high word first, which
 /// `PetPaperDollFrame.lua` names `totalPoints`, then the low word as `spent`.
 const FIELD_UNIT_TRAINING_POINTS: u16 = 149;
-pub const FIELD_UNIT_DYNAMIC_FLAGS: u16 = 79;
+pub const FIELD_UNIT_DYNAMIC_FLAGS: u16 = 143;
 /// The spell being channeled, 0 for none (`UpdateFields_1_12_1.h:89`).
 pub const FIELD_UNIT_CHANNEL_SPELL: u16 = 144;
 /// The cast-time factor, a float (`UpdateFields_1_12_1.h:90`).
