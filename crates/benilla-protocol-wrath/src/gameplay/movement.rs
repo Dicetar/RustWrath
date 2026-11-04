@@ -51,7 +51,7 @@ pub(super) fn read(body: &[u8], on_transport: bool) -> Result<MonsterMove> {
         2 => MonsterFacing::Spot(point(&mut r)?),
         3 => MonsterFacing::Target(r.u64()?),
         4 => MonsterFacing::Angle(scalar(&mut r)?),
-        _ => anyhow::bail!("unknown monster move type {kind}"),
+        _ => return Err(crate::gameplay::DecodeError::invalid_value("unknown monster move type").into()),
     };
     let mut result = MonsterMove {
         guid, transport, movement_byte, start, spline_id, facing, stop: kind == 1,
