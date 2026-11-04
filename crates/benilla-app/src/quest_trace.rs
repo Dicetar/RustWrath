@@ -1130,6 +1130,22 @@ pub(crate) const UI_INPUT_RETENTION_BUDGET: usize = 256;
 /// overwriting action evidence.
 pub(crate) const UI_INPUT_RETENTION_RESERVE: usize = 32;
 
+/// Maximum number of `Protocol` (`PacketReceived`, `ReducerAccepted`, `GameplayDecoded`)
+/// observations retained at once.
+///
+/// Every allowlisted inbound packet emits three `Protocol` rows per domain `Action` row. Capping
+/// `Protocol` at its own budget prevents routine packet/reducer/decode triplets from crowding out
+/// earlier login, cast, quest and loot `Action` chains during longer sessions, while keeping recent
+/// wire-level acceptance rows available. Protocol rejections (`ReducerRejected`,
+/// `GameplayRejected`, `SocketReadFailed`, `SocketWriteFailed`) are classed `Action` and are not
+/// subject to this ceiling.
+pub(crate) const PROTOCOL_RETENTION_BUDGET: usize = 256;
+
+/// Minimum number of `Protocol` observations protected from `Action` pressure when the ring is
+/// full. Above this reserve, an incoming `Action` row reclaims the oldest `Protocol` row before
+/// evicting an older `Action` row.
+pub(crate) const PROTOCOL_RETENTION_RESERVE: usize = 64;
+
 // Retention invariants: health has a real ceiling, the protected reserve fits inside it, and
 // health can never consume the whole ring by itself.
 const _: () = assert!(HEALTH_RETENTION_RESERVE <= HEALTH_RETENTION_BUDGET);
@@ -1138,6 +1154,14 @@ const _: () = assert!(HEALTH_RETENTION_BUDGET < RETAINED_CAPACITY);
 // the whole ring by itself.
 const _: () = assert!(UI_INPUT_RETENTION_RESERVE <= UI_INPUT_RETENTION_BUDGET);
 const _: () = assert!(UI_INPUT_RETENTION_BUDGET < RETAINED_CAPACITY);
+// Protocol has a real ceiling, the protected reserve fits inside it, and the combined non-action
+// reserves leave the majority of the ring for Action evidence.
+const _: () = assert!(PROTOCOL_RETENTION_RESERVE <= PROTOCOL_RETENTION_BUDGET);
+const _: () = assert!(PROTOCOL_RETENTION_BUDGET < RETAINED_CAPACITY);
+const _: () = assert!(
+    HEALTH_RETENTION_RESERVE + UI_INPUT_RETENTION_RESERVE + PROTOCOL_RETENTION_RESERVE
+        < RETAINED_CAPACITY
+);
 
 /// Maximum bytes in one inspector/export summary line.
 const SNAPSHOT_LINE_BYTES: usize = 240;
@@ -1475,6 +1499,8 @@ pub(crate) struct DiagnosticCoverage {
     pub health_retention_reserve: u64,
     pub ui_input_retention_budget: u64,
     pub ui_input_retention_reserve: u64,
+    pub protocol_retention_budget: u64,
+    pub protocol_retention_reserve: u64,
 }
 
 /// One evidence-class row of the retention summary.
@@ -2594,6 +2620,30 @@ pub(crate) struct InspectorSnapshot {
     pub retention: Vec<String>,
 }
 
+/// Bounded last-observed session/login/world/reload milestones retained across ring eviction.
+///
+/// Each field stores the originating sequence number alongside the bounded enum/numeric payload so
+/// the inspector and export can distinguish a milestone whose row is still in the ring from one
+/// preserved in bounded session state after ring eviction.
+#[derive(Clone, Copy, Debug, Default)]
+struct RetainedSessionState {
+    login_milestone: Option<(u64, Option<u64>, LoginMilestone)>,
+    session_phase: Option<(u64, SessionPhase, Option<u64>, Option<u32>)>,
+    highest_scope: Option<(u64, (u64, u64))>,
+    last_failure: Option<(u64, &'static str, Option<u64>)>,
+    last_session_end: Option<(u64, (u64, u64), SessionEndKind)>,
+    last_transfer: Option<(
+        u64,
+        Option<(u64, u64)>,
+        Option<(u64, u64)>,
+        Option<u32>,
+        u64,
+        u64,
+    )>,
+    last_reload: Option<(u64, Option<u64>, Option<u64>, Option<u64>)>,
+    last_reload_loaded: Option<(u64, Option<u64>, Option<u64>)>,
+}
+
 #[derive(Resource)]
 pub(crate) struct History {
     source: Source,
@@ -2609,6 +2659,9 @@ pub(crate) struct History {
     open_interactions: VecDeque<OpenInteraction>,
     /// Bounded written-cast candidates for native outcome correlation.
     cast_candidates: VecDeque<CastCandidate>,
+    /// Bounded last-known login/session/world/reload milestones so long sessions do not lose
+    /// session identity when early rows age out of the 1,024-event ring.
+    session_state: RetainedSessionState,
     interaction_tracking_lost: u64,
     incidents_evicted: u64,
     received: u64,
@@ -2663,8 +2716,11 @@ impl History {
     /// - incoming `UiInput`: reclaim the oldest UI input row first; only above the UI reserve
     ///   may it reclaim health above its reserve. It never touches protected core evidence; if
     ///   no evictable UI/health row exists the caller refuses insertion instead.
-    /// - incoming `Action`/`Protocol`/`Unclassified`: reclaim health above its reserve, then UI
-    ///   input above its reserve, then the oldest core action/protocol/unclassified row.
+    /// - incoming `Protocol`: reclaim health above its reserve, then UI input above its reserve,
+    ///   then the oldest protocol row so routine packet/reducer/decode triplets never displace
+    ///   `Action` chains while any protocol row is retained.
+    /// - incoming `Action`/`Unclassified`: reclaim health above its reserve, then UI input above
+    ///   its reserve, then protocol above its reserve, then the oldest action/unclassified row.
     fn evict_for_incoming(&mut self, incoming: EvidenceClass) -> bool {
         match incoming {
             EvidenceClass::Health => {
@@ -2684,9 +2740,7 @@ impl History {
                 // No evictable UI/health row: refuse rather than touch core evidence.
                 return false;
             }
-            EvidenceClass::Action
-            | EvidenceClass::Protocol
-            | EvidenceClass::Unclassified => {
+            EvidenceClass::Protocol => {
                 let health = self.retained_by_class(EvidenceClass::Health);
                 if health > HEALTH_RETENTION_RESERVE as u64 {
                     return self.evict_oldest_of(EvidenceClass::Health);
@@ -2695,15 +2749,32 @@ impl History {
                 if ui > UI_INPUT_RETENTION_RESERVE as u64 {
                     return self.evict_oldest_of(EvidenceClass::UiInput);
                 }
+                if self.retained_by_class(EvidenceClass::Protocol) > 0 {
+                    return self.evict_oldest_of(EvidenceClass::Protocol);
+                }
+                // No protocol row exists and non-core classes are at/below reserve: refuse
+                // rather than displace protected Action evidence.
+                return false;
+            }
+            EvidenceClass::Action | EvidenceClass::Unclassified => {
+                let health = self.retained_by_class(EvidenceClass::Health);
+                if health > HEALTH_RETENTION_RESERVE as u64 {
+                    return self.evict_oldest_of(EvidenceClass::Health);
+                }
+                let ui = self.retained_by_class(EvidenceClass::UiInput);
+                if ui > UI_INPUT_RETENTION_RESERVE as u64 {
+                    return self.evict_oldest_of(EvidenceClass::UiInput);
+                }
+                let protocol = self.retained_by_class(EvidenceClass::Protocol);
+                if protocol > PROTOCOL_RETENTION_RESERVE as u64 {
+                    return self.evict_oldest_of(EvidenceClass::Protocol);
+                }
             }
         }
-        // Core incoming (or health with no health row): reclaim the oldest core row.
+        // Core incoming (or health with no health row): reclaim the oldest action/unclassified row,
+        // or protocol if action/unclassified are empty.
         let mut oldest: Option<(EvidenceClass, u64)> = None;
-        for class in [
-            EvidenceClass::Action,
-            EvidenceClass::Protocol,
-            EvidenceClass::Unclassified,
-        ] {
+        for class in [EvidenceClass::Action, EvidenceClass::Unclassified] {
             if let Some(&seq) = self.class_sequences[class.index()].iter().next() {
                 if oldest.map_or(true, |(_, candidate)| seq < candidate) {
                     oldest = Some((class, seq));
@@ -2713,7 +2784,10 @@ impl History {
         if let Some((_, seq)) = oldest {
             return self.evict_sequence(seq);
         }
-        // Only health (or ui) rows remain: reclaim one above its reserve if possible, else refuse.
+        if self.retained_by_class(EvidenceClass::Protocol) > PROTOCOL_RETENTION_RESERVE as u64 {
+            return self.evict_oldest_of(EvidenceClass::Protocol);
+        }
+        // Only health, ui, or reserved protocol rows remain: reclaim above reserve if possible.
         if incoming == EvidenceClass::Health {
             return self.evict_oldest_of(EvidenceClass::Health);
         }
@@ -2723,15 +2797,19 @@ impl History {
         if self.retained_by_class(EvidenceClass::UiInput) > UI_INPUT_RETENTION_RESERVE as u64 {
             return self.evict_oldest_of(EvidenceClass::UiInput);
         }
+        if self.retained_by_class(EvidenceClass::Protocol) > 0 {
+            return self.evict_oldest_of(EvidenceClass::Protocol);
+        }
         false
     }
 
-    /// Insert one retained row, applying the health ceiling and the global capacity policy.
+    /// Insert one retained row, applying the class ceilings and the global capacity policy.
     /// O(log capacity) per event: no scan of the ring, no shift of retained entries.
     fn insert_retained(&mut self, seq: u64, event: Event) {
         let class = evidence_class_for_stage(&event.stage);
         let incoming_health = class == EvidenceClass::Health;
         let incoming_ui = class == EvidenceClass::UiInput;
+        let incoming_protocol = class == EvidenceClass::Protocol;
         if incoming_health {
             while self.class_sequences[EvidenceClass::Health.index()].len()
                 >= HEALTH_RETENTION_BUDGET
@@ -2746,6 +2824,15 @@ impl History {
                 >= UI_INPUT_RETENTION_BUDGET
             {
                 if !self.evict_oldest_of(EvidenceClass::UiInput) {
+                    break;
+                }
+            }
+        }
+        if incoming_protocol {
+            while self.class_sequences[EvidenceClass::Protocol.index()].len()
+                >= PROTOCOL_RETENTION_BUDGET
+            {
+                if !self.evict_oldest_of(EvidenceClass::Protocol) {
                     break;
                 }
             }
@@ -3562,15 +3649,30 @@ impl History {
             .into_iter()
             .take(8)
             .map(|chain| {
+                let candidate_meta = match &chain.key {
+                    ChainKey::Local(interaction) => self
+                        .cast_candidates
+                        .iter()
+                        .find(|candidate| candidate.subject.interaction == *interaction),
+                    ChainKey::Native { .. } => None,
+                };
                 let scope = match &chain.key {
-                    ChainKey::Local(_) => chain.events.last().and_then(|event| event.subject.scope),
+                    ChainKey::Local(_) => chain
+                        .events
+                        .last()
+                        .and_then(|event| event.subject.scope)
+                        .or_else(|| candidate_meta.and_then(|c| c.subject.scope)),
                     ChainKey::Native { scope, .. } => *scope,
                 };
                 let spell = match &chain.key {
-                    ChainKey::Local(_) => chain.events.iter().find_map(|event| match event.stage {
-                        Stage::Cast { spell_id, .. } => spell_id,
-                        _ => None,
-                    }),
+                    ChainKey::Local(_) => chain
+                        .events
+                        .iter()
+                        .find_map(|event| match event.stage {
+                            Stage::Cast { spell_id, .. } => spell_id,
+                            _ => None,
+                        })
+                        .or_else(|| candidate_meta.map(|c| c.spell_id)),
                     ChainKey::Native { spell, .. } => *spell,
                 };
                 let events = chain.events;
@@ -3623,6 +3725,11 @@ impl History {
                         _ => None,
                     })
                     .collect();
+                if wires.is_empty() {
+                    if let Some(candidate_wire) = candidate_meta.and_then(|c| c.wire_cast_count) {
+                        wires.push(candidate_wire);
+                    }
+                }
                 wires.sort_unstable();
                 wires.dedup();
                 let wire = if wires.len() == 1 {
@@ -5549,40 +5656,61 @@ impl History {
             Stage::LoginMilestone { attempt, milestone } => Some((attempt, milestone)),
             _ => None,
         });
-        match login {
-            Some((attempt, milestone)) => out.push(format!(
+        match (login, self.session_state.login_milestone) {
+            (Some((attempt, milestone)), _) => out.push(format!(
                 "login attempt {:?}: last milestone {:?}",
                 attempt, milestone
             )),
-            None => out.push("login attempt: unknown (no retained login milestone)".to_string()),
+            (None, Some((seq, attempt, milestone))) => out.push(format!(
+                "login attempt {:?}: last milestone {:?} (recovered from bounded session state; row #{seq} evicted)",
+                attempt, milestone
+            )),
+            (None, None) => {
+                out.push("login attempt: unknown (no retained login milestone)".to_string())
+            }
         }
-        if let Some((phase, attempt, map_id)) =
-            self.entries.iter().rev().find_map(|(_, event)| match event.stage {
-                Stage::SessionPhase {
-                    phase,
-                    attempt,
-                    map_id,
-                } => Some((phase, attempt, map_id)),
-                _ => None,
-            })
-        {
-            out.push(format!(
+        let ring_phase = self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+            Stage::SessionPhase {
+                phase,
+                attempt,
+                map_id,
+            } => Some((phase, attempt, map_id)),
+            _ => None,
+        });
+        match (ring_phase, self.session_state.session_phase) {
+            (Some((phase, attempt, map_id)), _) => out.push(format!(
                 "last session phase: {:?} (attempt {:?}, map {:?})",
                 phase, attempt, map_id
-            ));
+            )),
+            (None, Some((seq, phase, attempt, map_id))) => out.push(format!(
+                "last session phase: {:?} (attempt {:?}, map {:?}; recovered from bounded session state, row #{seq} evicted)",
+                phase, attempt, map_id
+            )),
+            (None, None) => {}
         }
-        if let Some(scope) = self
+        let ring_scope = self
             .entries
             .iter()
             .filter_map(|(_, event)| event.subject.scope)
-            .max()
-        {
-            // The highest observed scope, not the last ingested one: a delayed old event must
-            // not make a retired scope look current.
-            out.push(format!(
-                "most recent scope: epoch {}, world generation {}",
+            .max();
+        match (ring_scope, self.session_state.highest_scope) {
+            (Some(scope), Some((_, highest))) if highest > scope => out.push(format!(
+                "most recent scope: epoch {}, world generation {} (recovered from bounded session state)",
+                highest.0, highest.1
+            )),
+            (Some(scope), _) => {
+                // The highest observed scope, not the last ingested one: a delayed old event must
+                // not make a retired scope look current.
+                out.push(format!(
+                    "most recent scope: epoch {}, world generation {}",
+                    scope.0, scope.1
+                ));
+            }
+            (None, Some((seq, scope))) => out.push(format!(
+                "most recent scope: epoch {}, world generation {} (recovered from bounded session state; row #{seq} evicted)",
                 scope.0, scope.1
-            ));
+            )),
+            (None, None) => {}
         }
 
         let failure = self.entries.iter().rev().find_map(|(_, event)| {
@@ -5614,12 +5742,16 @@ impl History {
             };
             Some((category, attempt))
         });
-        match failure {
-            Some((category, attempt)) => out.push(format!(
+        match (failure, self.session_state.last_failure) {
+            (Some((category, attempt)), _) => out.push(format!(
                 "last failure: {category} (attempt {:?})",
                 attempt
             )),
-            None => out.push("last failure: none retained".to_string()),
+            (None, Some((seq, category, attempt))) => out.push(format!(
+                "last failure: {category} (attempt {:?}; recovered from bounded session state, row #{seq} evicted)",
+                attempt
+            )),
+            (None, None) => out.push("last failure: none retained".to_string()),
         }
         let last_end = self
             .entries
@@ -5632,8 +5764,13 @@ impl History {
             })
             .max_by_key(|(scope, _)| *scope)
             .map(|(_, kind)| kind);
-        if let Some(kind) = last_end {
-            out.push(format!("last session end: {:?}", kind));
+        match (last_end, self.session_state.last_session_end) {
+            (Some(kind), _) => out.push(format!("last session end: {:?}", kind)),
+            (None, Some((seq, _, kind))) => out.push(format!(
+                "last session end: {:?} (recovered from bounded session state; row #{seq} evicted)",
+                kind
+            )),
+            (None, None) => {}
         }
 
         let transfer = self
@@ -5651,41 +5788,59 @@ impl History {
             })
             .max_by_key(|(to, _)| *to)
             .map(|(_, transfer)| transfer);
-        match transfer {
-            Some((from, to, map_id, retired_local, retired_written)) => out.push(format!(
+        match (transfer, self.session_state.last_transfer) {
+            (Some((from, to, map_id, retired_local, retired_written)), _) => out.push(format!(
                 "last transfer: {:?} -> {:?}, map {:?}, retired local={} written={}",
                 from, to, map_id, retired_local, retired_written
             )),
-            None => out.push("last transfer: none retained".to_string()),
+            (None, Some((seq, from, to, map_id, retired_local, retired_written))) => {
+                out.push(format!(
+                    "last transfer: {:?} -> {:?}, map {:?}, retired local={} written={} (recovered from bounded session state; row #{seq} evicted)",
+                    from, to, map_id, retired_local, retired_written
+                ))
+            }
+            (None, None) => out.push("last transfer: none retained".to_string()),
         }
 
-        match self.entries.iter().rev().find_map(|(_, event)| match event.stage {
+        let ring_reload = self.entries.iter().rev().find_map(|(_, event)| match event.stage {
             Stage::UiReload {
                 old_vm_session,
                 old_reload_generation,
                 new_reload_generation,
             } => Some((old_vm_session, old_reload_generation, new_reload_generation)),
             _ => None,
-        }) {
-            Some((old_vm_session, old_generation, new_generation)) => out.push(format!(
+        });
+        match (ring_reload, self.session_state.last_reload) {
+            (Some((old_vm_session, old_generation, new_generation)), _) => out.push(format!(
                 "last reload: old VM {:?}, generation {:?} -> {:?}",
                 old_vm_session, old_generation, new_generation
             )),
-            None => out.push("last reload: none retained".to_string()),
+            (None, Some((seq, old_vm_session, old_generation, new_generation))) => {
+                out.push(format!(
+                    "last reload: old VM {:?}, generation {:?} -> {:?} (recovered from bounded session state; row #{seq} evicted)",
+                    old_vm_session, old_generation, new_generation
+                ))
+            }
+            (None, None) => out.push("last reload: none retained".to_string()),
         }
-        if let Some((vm_session, reload_generation)) =
+        let ring_reload_loaded =
             self.entries.iter().rev().find_map(|(_, event)| match event.stage {
                 Stage::UiReloadLoaded {
                     vm_session,
                     reload_generation,
                 } => Some((vm_session, reload_generation)),
                 _ => None,
-            })
-        {
-            out.push(format!(
+            });
+        match (ring_reload_loaded, self.session_state.last_reload_loaded) {
+            (Some((vm_session, reload_generation)), _) => out.push(format!(
                 "VM after reload attempt: session {:?}, generation {:?} (load result separate)",
                 vm_session, reload_generation
-            ));
+            )),
+            (None, Some((seq, vm_session, reload_generation))) => out.push(format!(
+                "VM after reload attempt: session {:?}, generation {:?} (load result separate; recovered from bounded session state, row #{seq} evicted)",
+                vm_session, reload_generation
+            )),
+            (None, None) => {}
         }
 
         let current_reload = self.source.0.reload_generation.load(Ordering::Acquire);
@@ -5902,10 +6057,10 @@ impl History {
             totals.0, totals.1, totals.2
         ));
         lines.push(format!(
-            "health retention: budget={HEALTH_RETENTION_BUDGET} reserve={HEALTH_RETENTION_RESERVE}; class-aware eviction reclaims the oldest health row first, then action/protocol/unclassified"
+            "health retention: budget={HEALTH_RETENTION_BUDGET} reserve={HEALTH_RETENTION_RESERVE}; protocol retention: budget={PROTOCOL_RETENTION_BUDGET} reserve={PROTOCOL_RETENTION_RESERVE}"
         ));
         lines.push(format!(
-            "ui input retention: budget={UI_INPUT_RETENTION_BUDGET} reserve={UI_INPUT_RETENTION_RESERVE}; incoming UiInput reclaims oldest UiInput first, then health above reserve; refuses if core evidence would be displaced"
+            "ui input retention: budget={UI_INPUT_RETENTION_BUDGET} reserve={UI_INPUT_RETENTION_RESERVE}; incoming UiInput/Protocol reclaim their own class before core Action evidence"
         ));
         lines.push(
             "zero retained observations is not proof that no event occurred (absence_not_proof=true)"
@@ -6288,6 +6443,8 @@ impl History {
             health_retention_reserve: HEALTH_RETENTION_RESERVE as u64,
             ui_input_retention_budget: UI_INPUT_RETENTION_BUDGET as u64,
             ui_input_retention_reserve: UI_INPUT_RETENTION_RESERVE as u64,
+            protocol_retention_budget: PROTOCOL_RETENTION_BUDGET as u64,
+            protocol_retention_reserve: PROTOCOL_RETENTION_RESERVE as u64,
         }
     }
     pub(crate) fn recent(&self) -> impl Iterator<Item = String> + '_ {
@@ -6616,6 +6773,8 @@ impl History {
                         "health_retention_reserve": HEALTH_RETENTION_RESERVE,
                         "ui_input_retention_budget": UI_INPUT_RETENTION_BUDGET,
                         "ui_input_retention_reserve": UI_INPUT_RETENTION_RESERVE,
+                        "protocol_retention_budget": PROTOCOL_RETENTION_BUDGET,
+                        "protocol_retention_reserve": PROTOCOL_RETENTION_RESERVE,
                         "build_git_sha": if build.sha.is_empty() { None } else { Some(build.sha) },
                         "build_dirty_state": "unknown",
                         "executable_file_sha1": file_hash,
@@ -6754,6 +6913,7 @@ pub(crate) fn new_pair() -> (Source, History) {
         incidents: VecDeque::with_capacity(64),
         open_interactions: VecDeque::with_capacity(MAX_OPEN_INTERACTIONS),
         cast_candidates: VecDeque::with_capacity(MAX_OPEN_INTERACTIONS),
+        session_state: RetainedSessionState::default(),
         interaction_tracking_lost: 0,
         incidents_evicted: 0,
         received: 0,
@@ -7260,6 +7420,90 @@ pub(crate) fn drain_history(history: &mut History) {
                         retired_written,
                     };
                 }
+            }
+            _ => {}
+        }
+
+        // Preserve bounded last-observed session/login/world/reload milestones so long sessions
+        // keep session provenance even after early ring rows age out.
+        if let Some(scope) = event.subject.scope {
+            if history
+                .session_state
+                .highest_scope
+                .map_or(true, |(_, highest)| scope >= highest)
+            {
+                history.session_state.highest_scope = Some((seq, scope));
+            }
+        }
+        match event.stage {
+            Stage::LoginMilestone { attempt, milestone } => {
+                history.session_state.login_milestone = Some((seq, attempt, milestone));
+                let failure_cat = match milestone {
+                    LoginMilestone::LoginRefused => Some("login refusal"),
+                    LoginMilestone::LoginFailed => Some("login failure without a refusal category"),
+                    LoginMilestone::RosterFailed => Some("roster failure"),
+                    LoginMilestone::CharacterLoginFailed { .. } => Some("character-login refusal"),
+                    LoginMilestone::RealmListFailed => Some("realm-list failure"),
+                    _ => None,
+                };
+                if let Some(category) = failure_cat {
+                    history.session_state.last_failure = Some((seq, category, attempt));
+                }
+            }
+            Stage::SessionPhase {
+                phase,
+                attempt,
+                map_id,
+            } => {
+                history.session_state.session_phase = Some((seq, phase, attempt, map_id));
+            }
+            Stage::SessionEnded { kind } => {
+                let scope = event.subject.scope.unwrap_or((0, 0));
+                if history
+                    .session_state
+                    .last_session_end
+                    .map_or(true, |(_, prev_scope, _)| scope >= prev_scope)
+                {
+                    history.session_state.last_session_end = Some((seq, scope, kind));
+                }
+                if kind == SessionEndKind::Lost {
+                    history.session_state.last_failure =
+                        Some((seq, "session end (lost link)", None));
+                }
+            }
+            Stage::WorldTransfer {
+                map_id,
+                from,
+                to,
+                retired_local,
+                retired_written,
+            } => {
+                let to_key = to.unwrap_or((0, 0));
+                if history
+                    .session_state
+                    .last_transfer
+                    .map_or(true, |(_, _, prev_to, _, _, _)| {
+                        to_key >= prev_to.unwrap_or((0, 0))
+                    })
+                {
+                    history.session_state.last_transfer =
+                        Some((seq, from, to, map_id, retired_local, retired_written));
+                }
+            }
+            Stage::UiReload {
+                old_vm_session,
+                old_reload_generation,
+                new_reload_generation,
+            } => {
+                history.session_state.last_reload =
+                    Some((seq, old_vm_session, old_reload_generation, new_reload_generation));
+            }
+            Stage::UiReloadLoaded {
+                vm_session,
+                reload_generation,
+            } => {
+                history.session_state.last_reload_loaded =
+                    Some((seq, vm_session, reload_generation));
             }
             _ => {}
         }

@@ -155,16 +155,24 @@ protocol. The mapping is total over the closed `Stage` enum, so current producer
 emit unclassified rows. The class and its counters remain so a future stage must choose a
 class explicitly instead of silently becoming disposable.
 
-Retention keeps at most 256 `health` rows and 256 `ui_input` rows and reclaims the oldest
-row of the incoming class first while the 1024-row ring is under pressure. 64 health rows
-and 32 UI input rows are protected. Health rows above the reserve are evicted first,
-within their own budget, and counted; an incoming health row reclaims an older health
-row rather than an action row. UI input rows above the reserve are evicted before core
-evidence; an incoming UI input row reclaims an older UI input row, then (above the
-health reserve) an older health row, and is refused with an explicit counter rather than
-displacing protected core action/protocol evidence. An incoming action/protocol/unclassified
-row reclaims health above its reserve, then UI input above its reserve, then the oldest
-core action/protocol row. Rows keep their global sequence order for every reader. The
+Retention keeps at most 256 `health` rows, 256 `ui_input` rows and 256 `protocol` rows, and
+reclaims the oldest row of the incoming class first while the 1024-row ring is under pressure.
+64 health rows, 32 UI input rows and 64 protocol rows are protected as reserves. Health rows
+above the reserve are evicted first, within their own budget, and counted; an incoming health
+row reclaims an older health row rather than an action row. UI input rows above the reserve
+are evicted before core evidence; an incoming UI input row reclaims an older UI input row,
+then (above the health reserve) an older health row, and is refused with an explicit counter
+rather than displacing protected core action/protocol evidence. Routine protocol rows
+(`PacketReceived`, `ReducerAccepted`, `GameplayDecoded`) are capped at 256 with a 64-row
+reserve so three-row packet decode triplets never crowd out `action` chains; an incoming
+protocol row reclaims health above its reserve, then UI input above its reserve, then an
+older protocol row, and refuses insertion rather than displacing protected `action` evidence.
+An incoming `action`/`unclassified` row reclaims health above its reserve, then UI input above
+its reserve, then protocol above its reserve, and only then the oldest `action`/`unclassified`
+row. Bounded last-observed login, session phase, scope, transfer and UI reload milestones are
+also retained on `History` with their originating sequence number so `session_transition_summaries`
+still reports session identity (explicitly labeled as recovered from bounded session state)
+after the early ring rows age out. Rows keep their global sequence order for every reader. The
 store is a sequence-keyed ordered map plus one per-class sequence index; each insert and
 eviction is bounded (`O(log 1024)`), with no per-event scan of the ring and exact
 per-class membership.

@@ -146,12 +146,20 @@ a 64-row reserve. High-volume UI pointer rows (`UiPress`/`UiClick`) are capped a
 with a 32-row reserve and reclaimed separately, so a long click-heavy session cannot
 displace core action/protocol evidence; an incoming pointer row reclaims an older pointer
 row, then (above the health reserve) an older health row, and is refused with an explicit
-counter rather than overwriting protected core evidence. An incoming health row reclaims an
+counter rather than overwriting protected core evidence. Routine protocol rows
+(`PacketReceived`, `ReducerAccepted`, `GameplayDecoded`) are capped at 256 rows with a
+64-row reserve so three-per-packet decode triplets cannot crowd out earlier login, cast,
+quest and loot `action` chains; an incoming protocol row reclaims health above its reserve,
+then UI input above its reserve, then an older protocol row, and refuses insertion rather
+than displacing protected `action` evidence. An incoming health row reclaims an
 older health row, so periodic traffic never displaces action evidence while any health row
-is retained; action pressure reclaims health down to the reserve, then UI input down to
-its reserve, then its own oldest row. This protects the action chain that explains an
-incident while still exposing health and pointer loss in dedicated counters rather than
-suppressing producers. `dropped` is the classified
+is retained; action pressure reclaims health down to its reserve, then UI input down to
+its reserve, then protocol down to its reserve, then its own oldest row. Bounded last-observed
+login, session phase, scope, transfer and UI reload milestones are also retained on `History`
+with their sequence numbers so `session_transition_summaries` explicitly reports recovered
+session state after early ring rows age out. This protects the action chain that explains an
+incident while still exposing health, pointer and protocol loss in dedicated counters rather
+than suppressing producers. `dropped` is the classified
 ingress loss sum, so the per-class counters reconcile with the global counters including
 `unclassified`, and health-only churn does not turn an action conclusion into a telemetry
 gap by itself. Incidents keep their bounded `evidence` sequence references and add up to
