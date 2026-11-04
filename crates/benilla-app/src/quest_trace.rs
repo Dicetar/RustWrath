@@ -5,13 +5,17 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use bevy::prelude::*;
 use benilla_protocol_wrath::gameplay::{DecodeFailure, DecoderFamily};
 use crossbeam_channel::{bounded, Receiver, Sender};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+#[cfg(feature = "dev")]
+use serde::Deserialize;
+#[cfg(feature = "dev")]
+use std::time::Duration;
 #[cfg(feature = "dev")]
 use std::sync::atomic::{AtomicBool, AtomicU8};
 
@@ -1436,6 +1440,7 @@ impl std::fmt::Display for SnapshotVersionError {
 
 impl std::error::Error for SnapshotVersionError {}
 
+#[cfg(feature = "dev")]
 #[derive(Deserialize)]
 struct SnapshotProbe {
     schema: String,
@@ -1443,11 +1448,16 @@ struct SnapshotProbe {
     version: u32,
 }
 
+#[cfg(feature = "dev")]
 fn default_snapshot_version() -> u32 {
     1
 }
 
 /// Validate the first JSONL header line of an exported snapshot before decoding any event records.
+///
+/// This is a dev/export-time reader: `serde_json` is an optional dependency of the `dev`
+/// feature, so the player build must not reference this function or its probe type.
+#[cfg(feature = "dev")]
 #[allow(dead_code)]
 pub(crate) fn validate_snapshot_header(line: &str) -> Result<u32, SnapshotVersionError> {
     let probe: SnapshotProbe =
@@ -1669,7 +1679,6 @@ pub(crate) fn vector_for_stage(stage: &Stage) -> Option<&'static str> {
         Stage::DomainEvent {
             event: DomainEvent::QuestComplete | DomainEvent::QuestObjective,
         } => Some("quest_interactions"),
-        _ => Some("unclassified"),
     }
 }
 
@@ -3227,10 +3236,10 @@ impl History {
                     continue;
                 }
                 if spell_id.is_none() {
-                    spell_id = Some(*id);
+                    spell_id = Some(id);
                 }
                 if count.is_some() && wire_cast_count.is_none() {
-                    wire_cast_count = *count;
+                    wire_cast_count = count;
                 }
                 match edge {
                     CastEdge::Requested => {
@@ -6112,13 +6121,12 @@ impl History {
         } else {
             for entry in vector_entries {
                 if !current.ends_with(':') && current.len() + 1 + entry.len() > SNAPSHOT_LINE_BYTES {
-                    packed.push(current);
+                    packed.push(std::mem::take(&mut current));
                     if packed.len() >= MAX_EVICTION_LINES - 1 {
                         packed.push(
                             "retained_evictions (further nonzero vectors omitted; sum above is complete)"
                                 .to_string(),
                         );
-                        current.clear();
                         break;
                     }
                     current = "retained_evictions (cont.):".to_string();

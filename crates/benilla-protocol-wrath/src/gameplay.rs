@@ -4006,7 +4006,7 @@ mod tests {
         b.extend_from_slice(&(-1i32).to_le_bytes()); // allowable_race
         b.extend_from_slice(&2u32.to_le_bytes()); // item_level
         b.extend_from_slice(&1u32.to_le_bytes()); // required_level
-        for _ in 0..6 {
+        for _ in 0..7 {
             b.extend_from_slice(&0u32.to_le_bytes()); // required_skill..required_rep_rank
         }
         b.extend_from_slice(&0i32.to_le_bytes()); // max_count
