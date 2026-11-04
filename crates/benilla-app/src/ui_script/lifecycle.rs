@@ -750,6 +750,26 @@ fn load_ingame_ui_seated(world: &mut World, seat: LoadSeat) {
     if seat == LoadSeat::Roster {
         world.insert_resource(crate::combat_text::read_damage_text_font(&script));
     }
+    // Ensure unit frames whose unit does not exist are hidden, preventing orphaned empty frames
+    // (TargetFrame, FocusFrame, Boss1..4TargetFrame) from cluttering the screen at initial load.
+    let _ = script.run(r#"
+        local units = {
+            TargetFrame = "target",
+            FocusFrame = "focus",
+            Boss1TargetFrame = "boss1",
+            Boss2TargetFrame = "boss2",
+            Boss3TargetFrame = "boss3",
+            Boss4TargetFrame = "boss4",
+        }
+        for frameName, token in pairs(units) do
+            local f = _G[frameName]
+            if f and f.IsShown and f:IsShown() then
+                if not UnitExists(token) then
+                    f:Hide()
+                end
+            end
+        end
+    "#);
     // The load is over: disarm its instruction bound, so no handler is killed for being slow.
     script.clear_instruction_budget();
     world.insert_non_send_resource(script);

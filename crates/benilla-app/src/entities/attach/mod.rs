@@ -304,8 +304,19 @@ pub(super) fn attach_entity_visuals(
         // The appear ramp's origin: the unit's arrival, however long its visual waited to build.
         let arrived = arrival.map_or(now, |a| a.0);
         // A player attaches once its equipment settles, so it never flashes naked.
-        if net.kind == EntityKind::Player && !equipment.is_some_and(|e| e.settled) {
-            continue;
+        // Fallback: if settlement takes > 1.0 second (e.g. server slow or custom items), proceed
+        // with available mesh attachments so the player entity is not left invisible indefinitely.
+        let equip_settled = equipment.is_some_and(|e| e.settled);
+        if net.kind == EntityKind::Player && !equip_settled {
+            if now - arrived < 1.0 {
+                continue;
+            } else {
+                warn!(
+                    "diag[ENTITY_MODEL] Player {:?} equipment unsettled after {:.2}s, attaching visual anyway",
+                    entity,
+                    now - arrived
+                );
+            }
         }
         // A corpse waits for `resolve_corpse_equipment`: it is never re-dressed, so a body
         // composited early would stay naked.
@@ -378,7 +389,26 @@ pub(super) fn attach_entity_visuals(
                         &asset_server,
                     ) {
                         BodyAtlas::Ready(tex) => tex,
-                        BodyAtlas::Pending => continue,
+                        BodyAtlas::Pending => {
+                            if now - arrived > 1.5 {
+                                warn!(
+                                    "diag[ENTITY_MODEL] Player {:?} BodyAtlas pending timeout ({:.2}s), forcing atlas build",
+                                    entity,
+                                    now - arrived
+                                );
+                                char_skin::forced_body_atlas(
+                                    l,
+                                    key,
+                                    displays.as_deref(),
+                                    sections.as_deref(),
+                                    &mut skin_composites,
+                                    &asset_server,
+                                    &mut images,
+                                )
+                            } else {
+                                continue;
+                            }
+                        }
                     }
                 }
             }

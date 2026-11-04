@@ -3,7 +3,7 @@ param(
     [string]$DataPath = 'D:\WOW\world of warcraft 3.3.5a hd\data',
     [string]$AuthServer = '127.0.0.1:3724',
     [string]$WorldServer = '127.0.0.1:8095',
-    [switch]$WithAddons
+    [bool]$WithAddons = $true
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -32,6 +32,15 @@ $env:WOW_STOCK_UI = '1'
 $env:WOW_GM = 'off'
 $env:WM_ASSET_MANIFEST = Join-Path $repo 'docs\profiles\wm-hd.mpqlist'
 $env:WM_ASSET_PROFILE = 'wm-hd'
+
+# Set addons path if present in game install
+if ($WithAddons) {
+    $gameRoot = Split-Path -Parent $DataPath
+    $addonsFolder = Join-Path $gameRoot 'Interface\AddOns'
+    if (Test-Path -LiteralPath $addonsFolder) {
+        $env:WOW_ADDONS_PATH = $addonsFolder
+    }
+}
 
 # This workstation's read-only shadow hides loose third-party addons. It shares installed
 # archives through links; it is not a second copy of the game. Explicit addon launches use data.

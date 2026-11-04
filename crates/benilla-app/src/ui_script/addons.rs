@@ -288,10 +288,26 @@ pub(crate) fn roots() -> Vec<PathBuf> {
     let home = crate::local_state::home();
     if crate::wrath::selected_from_env() {
         let mut out = Vec::new();
-        if let Some(install_addons) = benilla_formats::wow_data()
-            .and_then(|d| d.parent().map(|p| p.join("Interface").join(ADDONS_DIR)))
-        {
-            out.push(install_addons);
+        if let Some(explicit) = std::env::var_os("WOW_ADDONS_PATH").map(PathBuf::from) {
+            if explicit.is_dir() && !out.contains(&explicit) {
+                out.push(explicit);
+            }
+        }
+        if let Some(d) = benilla_formats::wow_data() {
+            let direct = d.join("Interface").join(ADDONS_DIR);
+            if direct.is_dir() && !out.contains(&direct) {
+                out.push(direct);
+            }
+            if let Some(parent) = d.parent() {
+                let parent_addons = parent.join("Interface").join(ADDONS_DIR);
+                if parent_addons.is_dir() && !out.contains(&parent_addons) {
+                    out.push(parent_addons);
+                }
+            }
+        }
+        let win_default = PathBuf::from(r"D:\WOW\world of warcraft 3.3.5a hd\Interface\AddOns");
+        if win_default.is_dir() && !out.contains(&win_default) {
+            out.push(win_default);
         }
         if let Some(local_addons) = root_from(home) {
             if !out.contains(&local_addons) {
@@ -942,15 +958,29 @@ impl benilla_ui::script::AddonLoad for Walk<'_> {
     fn refused(&mut self, i: usize, reason: &str) {
         let addon = &self.all[i];
         match reason {
-            "DISABLED" => info!("ui_script: {} is disabled — not loaded", addon.name),
-            "INTERFACE_VERSION" => info!(
-                "ui_script: {} is out of date (## Interface: {}, client {}) — not loaded \
-                 (the AddOns screen's 'Load out of date AddOns' loads it anyway)",
-                addon.name,
-                addon.toc.interface_version(),
-                self.script.target().interface()
-            ),
-            other => info!("ui_script: {} is not loaded ({other})", addon.name),
+            "DISABLED" => {
+                info!("ui_script: {} is disabled — not loaded", addon.name);
+                warn!("diag[ADDON] {} is DISABLED in AddOn enable configuration", addon.name);
+            }
+            "INTERFACE_VERSION" => {
+                info!(
+                    "ui_script: {} is out of date (## Interface: {}, client {}) — not loaded \
+                     (the AddOns screen's 'Load out of date AddOns' loads it anyway)",
+                    addon.name,
+                    addon.toc.interface_version(),
+                    self.script.target().interface()
+                );
+                warn!(
+                    "diag[ADDON] {} interface mismatch: toc={} client={}",
+                    addon.name,
+                    addon.toc.interface_version(),
+                    self.script.target().interface()
+                );
+            }
+            other => {
+                info!("ui_script: {} is not loaded ({other})", addon.name);
+                warn!("diag[ADDON] {} not loaded: {}", addon.name, other);
+            }
         }
     }
 
@@ -963,6 +993,7 @@ impl benilla_ui::script::AddonLoad for Walk<'_> {
             self.all[i].name
         );
         error!("ui_script: {e}");
+        warn!("diag[ADDON] {} dependency failed: {}", self.all[i].name, dep);
         // Retained for the player, who can usually fix it by installing the dependency.
         self.script.report_load_failure(&e);
         self.failures.push(e);

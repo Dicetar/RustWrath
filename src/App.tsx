@@ -127,11 +127,21 @@ function parseRawLogsOrJsonToTickets(raw: string): PreppedTicket[] {
   const luaErrors = new Map<string, number>();
   const dbcFailures = new Map<string, number>();
   const assetFailures = new Map<string, number>();
+  const diagProbes = new Map<string, Map<string, number>>();
   const flightIncidents: string[] = [];
 
   for (const rawLine of lines) {
     const line = rawLine.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
     if (!line) continue;
+
+    const diagMatch = line.match(/diag\[([A-Z_]+)\]\s*(.*)/);
+    if (diagMatch) {
+      const tag = diagMatch[1];
+      const detail = diagMatch[2].trim();
+      if (!diagProbes.has(tag)) diagProbes.set(tag, new Map());
+      const m = diagProbes.get(tag)!;
+      m.set(detail, (m.get(detail) || 0) + 1);
+    }
 
     if (line.startsWith('{"schema":"rustwrath.interaction-diagnostics.v1"')) {
       try {
@@ -329,6 +339,101 @@ function parseRawLogsOrJsonToTickets(raw: string): PreppedTicket[] {
       evidence: flightIncidents.slice(0, 15),
       prompt: `Inspect and resolve the flight-recorder incidents: ${flightIncidents.slice(0, 3).join(' | ')}`,
     });
+  }
+
+  const diagMeta: Record<string, { category: string; title: string; files: string[]; prompt: string }> = {
+    ENTITY_MODEL: {
+      category: '3D Models & Player Visuals',
+      title: 'Fix 3D character/entity model attachment failure or settle timeout',
+      files: ['crates/benilla-app/src/entities/attach/', 'crates/benilla-app/src/entities/equipment/'],
+      prompt: 'Repair the character/entity 3D model attachment failure or equipment settlement timeout recorded by diag[ENTITY_MODEL].',
+    },
+    PORTRAIT: {
+      category: 'Portraits & Stand-ins',
+      title: 'Fix unit portrait fallback or missing race mapping',
+      files: ['crates/benilla-app/src/portrait/'],
+      prompt: 'Repair the unit portrait 2D/3D stand-in fallback or unmapped race texture recorded by diag[PORTRAIT].',
+    },
+    UI_UNITFRAME: {
+      category: 'Unit Frames',
+      title: 'Reconcile or hide unheld unit frames (TargetFrame, FocusFrame, Boss1..4)',
+      files: ['crates/benilla-app/src/ui_unit.rs', 'crates/benilla-app/src/ui_script/lifecycle.rs'],
+      prompt: 'Hide or properly bind unit frames that are shown without an existing unit as recorded by diag[UI_UNITFRAME].',
+    },
+    ADDON: {
+      category: 'AddOns & Third-Party UI',
+      title: 'Resolve third-party AddOn loading, version, or dependency errors',
+      files: ['crates/benilla-app/src/ui_script/addons.rs', 'crates/benilla-ui/src/script/addon.rs'],
+      prompt: 'Fix the AddOn load refusal, dependency missing, or version mismatch recorded by diag[ADDON].',
+    },
+    UI_WINDOW: {
+      category: 'UI Windows & Frames',
+      title: 'Fix disabled or broken UI windows (Talents, SpellBook, CharacterFrame)',
+      files: ['crates/benilla-ui/src/script/talent.rs', 'crates/benilla-app/src/ui_script/'],
+      prompt: 'Repair the in-game UI window failure or disabled state reported by diag[UI_WINDOW].',
+    },
+    HOTKEY: {
+      category: 'Input & Keybinds',
+      title: 'Fix unresponsive hotkey bindings or missing action bar handlers',
+      files: ['crates/benilla-app/src/bindings/', 'crates/benilla-ui/src/script/keybind/'],
+      prompt: 'Fix the unhandled or unresponsive hotkey / action bar keybind reported by diag[HOTKEY].',
+    },
+    TEXTURE: {
+      category: 'Textures & BLP',
+      title: 'Fix missing or corrupted BLP textures',
+      files: ['crates/benilla-assets/src/', 'crates/benilla-formats/src/blp.rs'],
+      prompt: 'Resolve the missing or failed BLP texture decode reported by diag[TEXTURE].',
+    },
+    MODEL_MESH: {
+      category: '3D Mesh & Geometry',
+      title: 'Fix broken M2/WMO mesh, skeleton, or animations',
+      files: ['crates/benilla-formats/src/m2/', 'crates/benilla-world/src/model_render.rs'],
+      prompt: 'Fix the M2/WMO geometry, skinning, or animation corruption recorded by diag[MODEL_MESH].',
+    },
+    LOGIN_ANIM: {
+      category: 'Login & Character Screen',
+      title: 'Fix title/login screen animations and model rigs',
+      files: ['crates/benilla-app/src/glue_session/', 'crates/benilla-app/src/portrait/'],
+      prompt: 'Fix the login screen or character select animation/model issue reported by diag[LOGIN_ANIM].',
+    },
+    ITEM_TOOLTIP: {
+      category: 'Items & Tooltips',
+      title: 'Fix item tooltip description, stats, or template query failures',
+      files: ['crates/benilla-app/src/ui_tooltip/', 'crates/benilla-app/src/items/'],
+      prompt: 'Fix the item description, tooltip, or template query failure reported by diag[ITEM_TOOLTIP].',
+    },
+    AUDIO_SFX: {
+      category: 'Audio & Sound Effects',
+      title: 'Fix missing or unplayed sound effects',
+      files: ['crates/benilla-app/src/sound/'],
+      prompt: 'Fix the missing or failing sound effect playback reported by diag[AUDIO_SFX].',
+    },
+    AUDIO_MUSIC: {
+      category: 'Audio & Music',
+      title: 'Fix missing background music track or zero music volume',
+      files: ['crates/benilla-app/src/sound/'],
+      prompt: 'Fix the missing background music track or audio volume issue reported by diag[AUDIO_MUSIC].',
+    },
+  };
+
+  for (const [tag, dict] of diagProbes.entries()) {
+    if (dict.size > 0) {
+      const meta = diagMeta[tag] || {
+        category: `Diagnostic / ${tag}`,
+        title: `Resolve in-game defects tagged with diag[${tag}]`,
+        files: ['crates/benilla-app/src/'],
+        prompt: `Resolve the in-game defects recorded by diag[${tag}].`,
+      };
+      tickets.push({
+        id: `AUTO-0${idx++}`,
+        category: meta.category,
+        title: `${meta.title} (${dict.size} unique)`,
+        label: 'ready-for-agent',
+        targetFiles: meta.files,
+        evidence: formatMap(dict).slice(0, 15),
+        prompt: meta.prompt,
+      });
+    }
   }
 
   return tickets;

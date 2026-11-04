@@ -178,6 +178,7 @@ $luaErrors        = @{}
 $dbcFailures      = @{}
 $assetFailures    = @{}
 $uiLoadFailures   = @{}
+$diagProbes       = @{}
 
 foreach ($line in $lines) {
     # 1. Missing global functions: attempt to call global 'Foo' (a nil value)
@@ -232,6 +233,16 @@ foreach ($line in $lines) {
     if ($line -match 'ui_script: (stock glue up|in-game UI up).*') {
         $msg = $Matches[0]
         $uiLoadFailures[$msg] = ($uiLoadFailures[$msg] -as [int]) + 1
+    }
+
+    # 9. Structured in-game diagnostic probes: diag[TAG]
+    if ($line -match 'diag\[([A-Z_]+)\]\s*(.*)') {
+        $tag = $Matches[1]
+        $detail = $Matches[2].Trim()
+        if (-not $diagProbes.ContainsKey($tag)) {
+            $diagProbes[$tag] = @{}
+        }
+        $diagProbes[$tag][$detail] = ($diagProbes[$tag][$detail] -as [int]) + 1
     }
 }
 
@@ -341,6 +352,104 @@ if ($assetFailures.Count -gt 0) {
         -TargetFiles @('crates/benilla-formats/src/', 'crates/benilla-assets/src/') `
         -Evidence $ev `
         -Prompt "Investigate and fix the M2/Skin/BLP/WMO asset load failures recorded in the diagnostic log."
+}
+
+# Structured in-game diagnostic probe tickets
+$diagMap = @{
+    ENTITY_MODEL = @{
+        Category = '3D Models & Player Visuals'
+        Title    = 'Fix 3D character/entity model attachment failure or settle timeout'
+        Files    = @('crates/benilla-app/src/entities/attach/', 'crates/benilla-app/src/entities/equipment/')
+        Prompt   = 'Repair the character/entity 3D model attachment failure or equipment settlement timeout recorded by diag[ENTITY_MODEL].'
+    }
+    PORTRAIT     = @{
+        Category = 'Portraits & Stand-ins'
+        Title    = 'Fix unit portrait fallback or missing race mapping'
+        Files    = @('crates/benilla-app/src/portrait/')
+        Prompt   = 'Repair the unit portrait 2D/3D stand-in fallback or unmapped race texture recorded by diag[PORTRAIT].'
+    }
+    UI_UNITFRAME = @{
+        Category = 'Unit Frames'
+        Title    = 'Reconcile or hide unheld unit frames (TargetFrame, FocusFrame, Boss1..4)'
+        Files    = @('crates/benilla-app/src/ui_unit.rs', 'crates/benilla-app/src/ui_script/lifecycle.rs')
+        Prompt   = 'Hide or properly bind unit frames that are shown without an existing unit as recorded by diag[UI_UNITFRAME].'
+    }
+    ADDON        = @{
+        Category = 'AddOns & Third-Party UI'
+        Title    = 'Resolve third-party AddOn loading, version, or dependency errors'
+        Files    = @('crates/benilla-app/src/ui_script/addons.rs', 'crates/benilla-ui/src/script/addon.rs')
+        Prompt   = 'Fix the AddOn load refusal, dependency missing, or version mismatch recorded by diag[ADDON].'
+    }
+    UI_WINDOW    = @{
+        Category = 'UI Windows & Frames'
+        Title    = 'Fix disabled or broken UI windows (Talents, SpellBook, CharacterFrame)'
+        Files    = @('crates/benilla-ui/src/script/talent.rs', 'crates/benilla-app/src/ui_script/')
+        Prompt   = 'Repair the in-game UI window failure or disabled state reported by diag[UI_WINDOW].'
+    }
+    HOTKEY       = @{
+        Category = 'Input & Keybinds'
+        Title    = 'Fix unresponsive hotkey bindings or missing action bar handlers'
+        Files    = @('crates/benilla-app/src/bindings/', 'crates/benilla-ui/src/script/keybind/')
+        Prompt   = 'Fix the unhandled or unresponsive hotkey / action bar keybind reported by diag[HOTKEY].'
+    }
+    TEXTURE      = @{
+        Category = 'Textures & BLP'
+        Title    = 'Fix missing or corrupted BLP textures'
+        Files    = @('crates/benilla-assets/src/', 'crates/benilla-formats/src/blp.rs')
+        Prompt   = 'Resolve the missing or failed BLP texture decode reported by diag[TEXTURE].'
+    }
+    MODEL_MESH   = @{
+        Category = '3D Mesh & Geometry'
+        Title    = 'Fix broken M2/WMO mesh, skeleton, or animations'
+        Files    = @('crates/benilla-formats/src/m2/', 'crates/benilla-world/src/model_render.rs')
+        Prompt   = 'Fix the M2/WMO geometry, skinning, or animation corruption recorded by diag[MODEL_MESH].'
+    }
+    LOGIN_ANIM   = @{
+        Category = 'Login & Character Screen'
+        Title    = 'Fix title/login screen animations and model rigs'
+        Files    = @('crates/benilla-app/src/glue_session/', 'crates/benilla-app/src/portrait/')
+        Prompt   = 'Fix the login screen or character select animation/model issue reported by diag[LOGIN_ANIM].'
+    }
+    ITEM_TOOLTIP = @{
+        Category = 'Items & Tooltips'
+        Title    = 'Fix item tooltip description, stats, or template query failures'
+        Files    = @('crates/benilla-app/src/ui_tooltip/', 'crates/benilla-app/src/items/')
+        Prompt   = 'Fix the item description, tooltip, or template query failure reported by diag[ITEM_TOOLTIP].'
+    }
+    AUDIO_SFX    = @{
+        Category = 'Audio & Sound Effects'
+        Title    = 'Fix missing or unplayed sound effects'
+        Files    = @('crates/benilla-app/src/sound/')
+        Prompt   = 'Fix the missing or failing sound effect playback reported by diag[AUDIO_SFX].'
+    }
+    AUDIO_MUSIC  = @{
+        Category = 'Audio & Music'
+        Title    = 'Fix missing background music track or zero music volume'
+        Files    = @('crates/benilla-app/src/sound/')
+        Prompt   = 'Fix the missing background music track or audio volume issue reported by diag[AUDIO_MUSIC].'
+    }
+}
+
+foreach ($tag in $diagProbes.Keys) {
+    $dict = $diagProbes[$tag]
+    if ($dict.Count -gt 0) {
+        $meta = if ($diagMap.ContainsKey($tag)) { $diagMap[$tag] } else {
+            @{
+                Category = "Diagnostic / $tag"
+                Title    = "Resolve in-game issues tagged with diag[$tag]"
+                Files    = @('crates/benilla-app/src/')
+                Prompt   = "Resolve the in-game defects recorded by diag[$tag]."
+            }
+        }
+        $ev = @($dict.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { "$($_.Key) (x$($_.Value))" })
+        Add-ReadyTicket `
+            -Category $meta.Category `
+            -Title "$($meta.Title) ($($dict.Count) unique)" `
+            -Label 'ready-for-agent' `
+            -TargetFiles $meta.Files `
+            -Evidence $ev `
+            -Prompt $meta.Prompt
+    }
 }
 
 # Flight-recorder incident & correlation tickets

@@ -780,11 +780,12 @@ impl UnitTokens<'_, '_> {
             UnitBase::Party(row) => self.party_member(row),
             // The interaction NPC's guid, `[0xb4e2d0]` (`0x515c00`).
             UnitBase::Npc => self.interact.as_ref()?.1,
-            UnitBase::Focus => Some(wrath?.focus),
-            UnitBase::Vehicle => Some(wrath?.vehicle),
+            UnitBase::Focus => wrath.and_then(|w| (w.focus != 0).then_some(w.focus)),
+            UnitBase::Vehicle => wrath.and_then(|w| (w.vehicle != 0).then_some(w.vehicle)),
             UnitBase::Boss(row) => usize::try_from(row)
                 .ok()
-                .and_then(|row| wrath?.boss.get(row).copied()),
+                .and_then(|row| wrath.and_then(|w| w.boss.get(row).copied()))
+                .filter(|&g| g != 0),
         }
     }
 
@@ -1577,6 +1578,14 @@ fn feed_units(
         if target_dirty {
             gate.audit("feed_units", "the target snapshot");
             script.set_unit("target", target.clone());
+            match &target {
+                Some(cur) => {
+                    memo.last.insert("target".to_string(), cur.clone());
+                }
+                None => {
+                    memo.last.remove("target");
+                }
+            }
         }
         // Absence is data here too: the target dropping its target clears the token. A seat
         // replaced it past the memo, as it did `"target"`.
@@ -1589,6 +1598,14 @@ fn feed_units(
         if tot_dirty {
             gate.audit("feed_units", "the target-of-target snapshot");
             script.set_unit("targettarget", tot.clone());
+            match &tot {
+                Some(cur) => {
+                    memo.last.insert("targettarget".to_string(), cur.clone());
+                }
+                None => {
+                    memo.last.remove("targettarget");
+                }
+            }
         }
 
         // Closing the window must clear the token, so the memo is written here, not only read.

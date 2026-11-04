@@ -1742,7 +1742,12 @@ fn player_temporary_portrait(race: Option<u8>, sex: Option<u8>) -> String {
         Some(6) => "Tauren",
         Some(7) => "Gnome",
         Some(8) => "Troll",
-        _ => return format!("{TEMPORARY_PORTRAIT}.blp"),
+        Some(10) => "BloodElf",
+        Some(11) => "Draenei",
+        _ => {
+            warn!("diag[PORTRAIT] player_temporary_portrait unmapped race {:?} sex {:?} (falling back to gnoll)", race, sex);
+            return format!("{TEMPORARY_PORTRAIT}.blp");
+        }
     };
     format!("{TEMPORARY_PORTRAIT}-{sex}-{race}.blp")
 }
