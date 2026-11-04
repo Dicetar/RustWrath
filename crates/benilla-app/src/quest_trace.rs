@@ -1620,6 +1620,20 @@ struct EvidenceNote {
     elapsed_ms: u64,
     class: EvidenceClass,
     stage: Stage,
+    /// True when this note was synthesized from bounded start metadata after the original
+    /// event row was already evicted. False for notes captured directly from a retained row.
+    #[serde(default)]
+    recovered: bool,
+    /// Alias for `recovered`, using the synthetic-provenance wording from the recovery path.
+    #[serde(default)]
+    synthetic: bool,
+    /// Stable provenance label: `observed` or `recovered`.
+    #[serde(default = "default_evidence_note_source")]
+    source: &'static str,
+}
+
+fn default_evidence_note_source() -> &'static str {
+    "observed"
 }
 
 impl EvidenceNote {
@@ -1629,6 +1643,24 @@ impl EvidenceNote {
             elapsed_ms: event.elapsed_ms,
             class: evidence_class_for_stage(&event.stage),
             stage: event.stage,
+            recovered: false,
+            synthetic: false,
+            source: "observed",
+        }
+    }
+
+    /// Synthesize a bounded opening note from retained start metadata after the original row has
+    /// been evicted. The stored local boundary time is reported as-is; no stage, outcome or
+    /// timestamp is fabricated beyond the stored metadata.
+    fn recovered(seq: u64, elapsed_ms: u64, class: EvidenceClass, stage: Stage) -> Self {
+        Self {
+            seq,
+            elapsed_ms,
+            class,
+            stage,
+            recovered: true,
+            synthetic: true,
+            source: "recovered",
         }
     }
 
@@ -1658,6 +1690,17 @@ struct Incident {
     evidence_truncated: bool,
     evidence_notes_truncated: bool,
     telemetry_gap: bool,
+    /// Additive provenance for the incident's opening evidence: `observed`,
+    /// `recovered_from_start_metadata`, or `unavailable`.
+    #[serde(default = "default_opening_note_source")]
+    opening_note_source: &'static str,
+    /// Additive boolean form of `opening_note_source == "recovered_from_start_metadata"`.
+    #[serde(default)]
+    opening_recovered: bool,
+}
+
+fn default_opening_note_source() -> &'static str {
+    "unavailable"
 }
 
 /// The bounded evidence chain for one incident.
@@ -1698,6 +1741,10 @@ enum OpenState {
 struct OpenInteraction {
     subject: Subject,
     state: OpenState,
+    /// Bounded start boundary for this open interaction. Captured when the `Stage::Intent`
+    /// row enters the open set; not an unbounded history.
+    start_seq: u64,
+    start_elapsed_ms: u64,
 }
 
 /// One written cast interaction eligible to explain one native cast edge.
@@ -1714,6 +1761,13 @@ struct CastCandidate {
     wire_cast_count: Option<u32>,
     written_elapsed_ms: u64,
     consumed: bool,
+    /// Bounded request/admission start boundary for this written cast. When no `Requested`
+    /// row was retained, this falls back to the admission or written row and
+    /// `started_from_request` is false.
+    started_seq: u64,
+    started_elapsed_ms: u64,
+    started_from_request: bool,
+    started_from_admission: bool,
 }
 
 /// How one native cast edge maps onto the retained written local casts.
@@ -2089,14 +2143,16 @@ impl History {
         mut chain: EvidenceChain,
     ) {
         let telemetry_gap = self.has_telemetry_gaps();
-        // Both views of the chain are bounded to the same eight rows; older rows are dropped and
-        // the truncation is marked on the incident rather than silently forgotten.
+        // Both views of the chain are bounded to the same eight rows. Keep the opening row and
+        // the most recent rows; middle rows are dropped and the truncation is marked rather than
+        // silently forgotten.
         let overflow = chain.sequences.len().saturating_sub(MAX_INCIDENT_EVIDENCE);
         if overflow > 0 {
-            chain.sequences.drain(0..overflow);
+            // Preserve index 0 (the opening note) and drop the oldest middle rows.
+            chain.sequences.drain(1..=overflow);
             let note_overflow = chain.notes.len().saturating_sub(MAX_INCIDENT_EVIDENCE);
             if note_overflow > 0 {
-                chain.notes.drain(0..note_overflow);
+                chain.notes.drain(1..=note_overflow);
             }
             chain.truncated = true;
         }
@@ -2105,6 +2161,17 @@ impl History {
             chain.notes.len(),
             "incident evidence sequences and notes must stay aligned"
         );
+        let opening_recovered = chain
+            .notes
+            .first()
+            .map_or(false, |note| note.recovered);
+        let opening_note_source = chain.notes.first().map_or("unavailable", |note| {
+            if note.recovered {
+                "recovered_from_start_metadata"
+            } else {
+                "observed"
+            }
+        });
         if self.incidents.len() == 64 {
             self.incidents.pop_front();
             self.incidents_evicted += 1;
@@ -2120,6 +2187,8 @@ impl History {
             evidence_truncated: chain.truncated,
             evidence_notes_truncated: chain.truncated,
             telemetry_gap,
+            opening_note_source,
+            opening_recovered,
         });
     }
 
@@ -2135,26 +2204,49 @@ impl History {
         interaction_id: u64,
         terminal_seq: u64,
         terminal: &Event,
+        opening_note: Option<EvidenceNote>,
     ) -> EvidenceChain {
         self.collect_evidence_with_terminal(
             interaction_id,
             EvidenceNote::from_event(terminal_seq, terminal),
+            opening_note,
         )
     }
 
     /// As [`Self::collect_interaction_evidence`], but with a terminal note synthesized from
     /// bounded state when the terminal row is no longer available as a retained `Event`.
+    /// `opening_note` is an optional note synthesized from bounded start metadata; it is
+    /// prepended only when its sequence is not already retained in the chain.
     fn collect_evidence_with_terminal(
         &self,
         interaction_id: u64,
         terminal_note: EvidenceNote,
+        opening_note: Option<EvidenceNote>,
     ) -> EvidenceChain {
         let terminal_seq = terminal_note.seq;
         if interaction_id == 0 {
+            let mut sequences = Vec::new();
+            let mut notes = Vec::new();
+            if let Some(note) = opening_note {
+                if !sequences.contains(&note.seq) {
+                    sequences.push(note.seq);
+                    notes.push(note);
+                }
+            }
+            if !sequences.contains(&terminal_seq) {
+                sequences.push(terminal_seq);
+                notes.push(terminal_note);
+            }
+            let truncated = sequences.len() > MAX_INCIDENT_EVIDENCE;
+            if truncated {
+                let remove = sequences.len() - MAX_INCIDENT_EVIDENCE;
+                sequences.drain(1..=remove);
+                notes.drain(1..=remove);
+            }
             return EvidenceChain {
-                sequences: vec![terminal_seq],
-                notes: vec![terminal_note],
-                truncated: false,
+                sequences,
+                notes,
+                truncated,
             };
         }
         let priors: Vec<(u64, &Event)> = self
@@ -2165,8 +2257,8 @@ impl History {
             })
             .map(|(prior_seq, prior)| (*prior_seq, prior))
             .collect();
-        let truncated = priors.len() > MAX_INCIDENT_EVIDENCE - 1;
-        let selected: Vec<(u64, &Event)> = if truncated {
+        let prior_truncated = priors.len() > MAX_INCIDENT_EVIDENCE - 1;
+        let selected: Vec<(u64, &Event)> = if prior_truncated {
             let mut selected = Vec::with_capacity(MAX_INCIDENT_EVIDENCE);
             selected.push(priors[0]);
             selected.extend_from_slice(
@@ -2181,8 +2273,23 @@ impl History {
             .iter()
             .map(|(seq, event)| EvidenceNote::from_event(*seq, event))
             .collect();
+        // Prepend a recovered opening note only when the original row is no longer retained.
+        if let Some(note) = opening_note {
+            if !sequences.contains(&note.seq) {
+                sequences.insert(0, note.seq);
+                notes.insert(0, note);
+            }
+        }
         sequences.push(terminal_seq);
         notes.push(terminal_note);
+        let mut truncated = prior_truncated;
+        if sequences.len() > MAX_INCIDENT_EVIDENCE {
+            let remove = sequences.len() - MAX_INCIDENT_EVIDENCE;
+            sequences.drain(1..=remove);
+            notes.drain(1..=remove);
+            truncated = true;
+        }
+        debug_assert_eq!(sequences.len(), notes.len());
         EvidenceChain {
             sequences,
             notes,
@@ -2197,24 +2304,47 @@ impl History {
         writes: impl Iterator<Item = (u64, u64)>,
         terminal_seq: u64,
         terminal: &Event,
+        opening_note: Option<EvidenceNote>,
     ) -> EvidenceChain {
         let mut sequences = Vec::with_capacity(MAX_INCIDENT_EVIDENCE);
         let mut notes = Vec::with_capacity(MAX_INCIDENT_EVIDENCE);
+        if let Some(note) = opening_note {
+            if !sequences.contains(&note.seq) {
+                sequences.push(note.seq);
+                notes.push(note);
+            }
+        }
         for (seq, elapsed_ms) in writes {
+            if sequences.contains(&seq) {
+                continue;
+            }
             sequences.push(seq);
             notes.push(EvidenceNote {
                 seq,
                 elapsed_ms,
                 class: EvidenceClass::Action,
                 stage: Stage::Delivery(CommandDelivery::Written),
+                recovered: false,
+                synthetic: false,
+                source: "observed",
             });
         }
-        sequences.push(terminal_seq);
-        notes.push(EvidenceNote::from_event(terminal_seq, terminal));
+        if !sequences.contains(&terminal_seq) {
+            sequences.push(terminal_seq);
+            notes.push(EvidenceNote::from_event(terminal_seq, terminal));
+        }
+        let mut truncated = false;
+        if sequences.len() > MAX_INCIDENT_EVIDENCE {
+            let remove = sequences.len() - MAX_INCIDENT_EVIDENCE;
+            sequences.drain(1..=remove);
+            notes.drain(1..=remove);
+            truncated = true;
+        }
+        debug_assert_eq!(sequences.len(), notes.len());
         EvidenceChain {
             sequences,
             notes,
-            truncated: false,
+            truncated,
         }
     }
 
@@ -2252,8 +2382,24 @@ impl History {
         let mut retired_local = 0u64;
         let mut retired_written = 0u64;
         for open in retired {
-            let chain =
-                self.collect_interaction_evidence(open.subject.interaction, seq, terminal);
+            let opening_note = if open.start_seq != 0
+                && !self.entries.contains_key(&open.start_seq)
+            {
+                Some(EvidenceNote::recovered(
+                    open.start_seq,
+                    open.start_elapsed_ms,
+                    EvidenceClass::Action,
+                    Stage::Intent,
+                ))
+            } else {
+                None
+            };
+            let chain = self.collect_interaction_evidence(
+                open.subject.interaction,
+                seq,
+                terminal,
+                opening_note,
+            );
             match open.state {
                 OpenState::Written { .. } => {
                     retired_written = retired_written.saturating_add(1);
@@ -2286,7 +2432,7 @@ impl History {
 
     /// A complete socket write of a cast interaction makes it a bounded candidate for one native
     /// cast edge. The wire cast count came from admission, when the command carried one.
-    fn note_written_cast(&mut self, event: &Event) {
+    fn note_written_cast(&mut self, seq: u64, event: &Event) {
         let interaction = event.subject.interaction;
         if interaction == 0 {
             return;
@@ -2300,24 +2446,57 @@ impl History {
         }
         let mut spell_id = None;
         let mut wire_cast_count = None;
-        for (_, prior) in &self.entries {
+        let mut started_seq = 0u64;
+        let mut started_elapsed_ms = 0u64;
+        let mut started_from_request = false;
+        let mut started_from_admission = false;
+        for (prior_seq, prior) in &self.entries {
             if prior.subject.interaction != interaction {
                 continue;
             }
             if let Stage::Cast {
                 spell_id: Some(id),
                 wire_cast_count: count,
-                edge: CastEdge::Requested | CastEdge::Admitted,
+                edge,
                 ..
             } = prior.stage
             {
-                spell_id = Some(id);
-                if count.is_some() {
-                    wire_cast_count = count;
+                if !matches!(edge, CastEdge::Requested | CastEdge::Admitted) {
+                    continue;
+                }
+                if spell_id.is_none() {
+                    spell_id = Some(*id);
+                }
+                if count.is_some() && wire_cast_count.is_none() {
+                    wire_cast_count = *count;
+                }
+                match edge {
+                    CastEdge::Requested => {
+                        if !started_from_request {
+                            started_seq = *prior_seq;
+                            started_elapsed_ms = prior.elapsed_ms;
+                            started_from_request = true;
+                            started_from_admission = false;
+                        }
+                    }
+                    CastEdge::Admitted => {
+                        if !started_from_request && !started_from_admission {
+                            started_seq = *prior_seq;
+                            started_elapsed_ms = prior.elapsed_ms;
+                            started_from_admission = true;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
         let Some(spell_id) = spell_id else { return };
+        if started_seq == 0 {
+            // The request row is already gone: use the admission/written boundary and mark
+            // that this is not the original request row.
+            started_seq = seq;
+            started_elapsed_ms = event.elapsed_ms;
+        }
         if self.cast_candidates.len() >= MAX_OPEN_INTERACTIONS {
             // A bounded ring: the oldest candidate is dropped, and the loss remains visible
             // through the interaction tracking-loss counter rather than a fabricated match.
@@ -2330,6 +2509,10 @@ impl History {
             wire_cast_count,
             written_elapsed_ms: event.elapsed_ms,
             consumed: false,
+            started_seq,
+            started_elapsed_ms,
+            started_from_request,
+            started_from_admission,
         });
     }
 
@@ -2508,6 +2691,66 @@ impl History {
         }
         self.open_interactions = remaining;
         for open in expired {
+            let candidate_data = self
+                .cast_candidates
+                .iter()
+                .find(|candidate| candidate.subject.interaction == open.subject.interaction)
+                .map(|candidate| {
+                    (
+                        candidate.started_seq,
+                        candidate.started_elapsed_ms,
+                        candidate.started_from_request,
+                        candidate.started_from_admission,
+                        candidate.spell_id,
+                        candidate.wire_cast_count,
+                    )
+                });
+            let opening_note = if let Some((
+                started_seq,
+                started_elapsed_ms,
+                started_from_request,
+                started_from_admission,
+                spell_id,
+                wire_cast_count,
+            )) = candidate_data
+            {
+                if started_seq != 0 && !self.entries.contains_key(&started_seq) {
+                    let stage = if started_from_request {
+                        Stage::Cast {
+                            spell_id: Some(spell_id),
+                            attempt: None,
+                            wire_cast_count,
+                            edge: CastEdge::Requested,
+                        }
+                    } else if started_from_admission {
+                        Stage::Cast {
+                            spell_id: Some(spell_id),
+                            attempt: None,
+                            wire_cast_count,
+                            edge: CastEdge::Admitted,
+                        }
+                    } else {
+                        Stage::Delivery(CommandDelivery::Written)
+                    };
+                    Some(EvidenceNote::recovered(
+                        started_seq,
+                        started_elapsed_ms,
+                        EvidenceClass::Action,
+                        stage,
+                    ))
+                } else {
+                    None
+                }
+            } else if open.start_seq != 0 && !self.entries.contains_key(&open.start_seq) {
+                Some(EvidenceNote::recovered(
+                    open.start_seq,
+                    open.start_elapsed_ms,
+                    EvidenceClass::Action,
+                    Stage::Intent,
+                ))
+            } else {
+                None
+            };
             let chain = match open.state {
                 OpenState::Written { seq, elapsed_ms } => self.collect_evidence_with_terminal(
                     open.subject.interaction,
@@ -2516,13 +2759,27 @@ impl History {
                         elapsed_ms,
                         class: EvidenceClass::Action,
                         stage: Stage::Delivery(CommandDelivery::Written),
+                        recovered: false,
+                        synthetic: false,
+                        source: "observed",
                     },
+                    opening_note,
                 ),
-                OpenState::Local => EvidenceChain {
-                    sequences: Vec::new(),
-                    notes: Vec::new(),
-                    truncated: false,
-                },
+                OpenState::Local => {
+                    let mut sequences = Vec::new();
+                    let mut notes = Vec::new();
+                    if let Some(note) = opening_note {
+                        if !sequences.contains(&note.seq) {
+                            sequences.push(note.seq);
+                            notes.push(note);
+                        }
+                    }
+                    EvidenceChain {
+                        sequences,
+                        notes,
+                        truncated: false,
+                    }
+                }
             };
             self.push_incident(
                 open.subject,
@@ -3231,10 +3488,15 @@ impl History {
                 .count();
             // The opening and terminal notes are self-contained copies resolved before eviction,
             // so they stay readable even when both referenced rows are gone from the ring.
-            let opening = incident.evidence_notes.first().map_or_else(
-                || "opening note unavailable".to_string(),
-                EvidenceNote::label,
-            );
+            // Provenance distinguishes a directly retained row from one recovered from bounded
+            // start metadata, and an explicit unavailable state when no metadata exists.
+            let opening = match incident.evidence_notes.first() {
+                None => "opening unavailable".to_string(),
+                Some(note) if note.recovered => {
+                    format!("recovered from start metadata ({})", note.label())
+                }
+                Some(note) => note.label(),
+            };
             let terminal = incident.evidence_notes.last().map_or_else(
                 || "terminal note unavailable".to_string(),
                 EvidenceNote::label,
@@ -5621,6 +5883,7 @@ pub(crate) fn drain_history(history: &mut History) {
         let Ok(mut event) = history.incoming.try_recv() else { break };
         history.received += 1;
         let seq = history.received;
+        let mut captured_opening_note: Option<EvidenceNote> = None;
         if matches!(event.stage,
             Stage::NativeEventsLost { .. } | Stage::ScriptRowsLost { .. }
                 | Stage::ScriptRowsEvicted { .. } | Stage::AssetEventsLost { .. })
@@ -5676,6 +5939,8 @@ pub(crate) fn drain_history(history: &mut History) {
                         history.open_interactions.push_back(OpenInteraction {
                             subject: event.subject,
                             state: OpenState::Local,
+                            start_seq: seq,
+                            start_elapsed_ms: event.elapsed_ms,
                         });
                     }
                 }
@@ -5690,7 +5955,7 @@ pub(crate) fn drain_history(history: &mut History) {
                             elapsed_ms: event.elapsed_ms,
                         };
                     }
-                    history.note_written_cast(&event);
+                    history.note_written_cast(seq, &event);
                 }
                 Stage::GuardRefused
                 | Stage::NoWorld
@@ -5839,9 +6104,26 @@ pub(crate) fn drain_history(history: &mut History) {
                         OpenState::Local => None,
                     })
                     .collect();
-                let first_subject = history.open_interactions[matching_indices[0]].subject;
-                let chain =
-                    history.correlate_written_evidence(writes.into_iter(), seq, &event);
+                let first_open = &history.open_interactions[matching_indices[0]];
+                let opening_note = if first_open.start_seq != 0
+                    && !history.entries.contains_key(&first_open.start_seq)
+                {
+                    Some(EvidenceNote::recovered(
+                        first_open.start_seq,
+                        first_open.start_elapsed_ms,
+                        EvidenceClass::Action,
+                        Stage::Intent,
+                    ))
+                } else {
+                    None
+                };
+                let first_subject = first_open.subject;
+                let chain = history.correlate_written_evidence(
+                    writes.into_iter(),
+                    seq,
+                    &event,
+                    opening_note,
+                );
                 history.push_incident(
                     first_subject,
                     IncidentOutcome::AmbiguousServerOutcome,
@@ -5889,6 +6171,74 @@ pub(crate) fn drain_history(history: &mut History) {
         ) {
             if let Some((_, subject)) = cast_terminal {
                 if subject.interaction != 0 {
+                    if captured_opening_note.is_none() {
+                        let candidate_data = history
+                            .cast_candidates
+                            .iter()
+                            .find(|candidate| candidate.subject.interaction == subject.interaction)
+                            .map(|candidate| {
+                                (
+                                    candidate.started_seq,
+                                    candidate.started_elapsed_ms,
+                                    candidate.started_from_request,
+                                    candidate.started_from_admission,
+                                    candidate.spell_id,
+                                    candidate.wire_cast_count,
+                                )
+                            });
+                        if let Some((
+                            started_seq,
+                            started_elapsed_ms,
+                            started_from_request,
+                            started_from_admission,
+                            spell_id,
+                            wire_cast_count,
+                        )) = candidate_data
+                        {
+                            if started_seq != 0
+                                && !history.entries.contains_key(&started_seq)
+                            {
+                                let stage = if started_from_request {
+                                    Stage::Cast {
+                                        spell_id: Some(spell_id),
+                                        attempt: None,
+                                        wire_cast_count,
+                                        edge: CastEdge::Requested,
+                                    }
+                                } else if started_from_admission {
+                                    Stage::Cast {
+                                        spell_id: Some(spell_id),
+                                        attempt: None,
+                                        wire_cast_count,
+                                        edge: CastEdge::Admitted,
+                                    }
+                                } else {
+                                    Stage::Delivery(CommandDelivery::Written)
+                                };
+                                captured_opening_note = Some(EvidenceNote::recovered(
+                                    started_seq,
+                                    started_elapsed_ms,
+                                    EvidenceClass::Action,
+                                    stage,
+                                ));
+                            }
+                        } else if let Some(open) = history
+                            .open_interactions
+                            .iter()
+                            .find(|open| open.subject.interaction == subject.interaction)
+                        {
+                            if open.start_seq != 0
+                                && !history.entries.contains_key(&open.start_seq)
+                            {
+                                captured_opening_note = Some(EvidenceNote::recovered(
+                                    open.start_seq,
+                                    open.start_elapsed_ms,
+                                    EvidenceClass::Action,
+                                    Stage::Intent,
+                                ));
+                            }
+                        }
+                    }
                     history
                         .open_interactions
                         .retain(|open| open.subject.interaction != subject.interaction);
@@ -5949,9 +6299,26 @@ pub(crate) fn drain_history(history: &mut History) {
                             OpenState::Local => None,
                         })
                         .collect();
-                    let first_subject = history.open_interactions[matching_indices[0]].subject;
-                    let chain =
-                        history.correlate_written_evidence(writes.into_iter(), seq, &event);
+                    let first_open = &history.open_interactions[matching_indices[0]];
+                    let opening_note = if first_open.start_seq != 0
+                        && !history.entries.contains_key(&first_open.start_seq)
+                    {
+                        Some(EvidenceNote::recovered(
+                            first_open.start_seq,
+                            first_open.start_elapsed_ms,
+                            EvidenceClass::Action,
+                            Stage::Intent,
+                        ))
+                    } else {
+                        None
+                    };
+                    let first_subject = first_open.subject;
+                    let chain = history.correlate_written_evidence(
+                        writes.into_iter(),
+                        seq,
+                        &event,
+                        opening_note,
+                    );
                     history.push_incident(
                         first_subject,
                         IncidentOutcome::AmbiguousServerOutcome,
@@ -6073,6 +6440,27 @@ pub(crate) fn drain_history(history: &mut History) {
                         matches_key.then_some((*c_seq, candidate.subject))
                     })
                     .collect();
+                if captured_opening_note.is_none() {
+                    for (_, matched_subj) in &candidates {
+                        if let Some(open) = history
+                            .open_interactions
+                            .iter()
+                            .find(|open| open.subject.interaction == matched_subj.interaction)
+                        {
+                            if open.start_seq != 0
+                                && !history.entries.contains_key(&open.start_seq)
+                            {
+                                captured_opening_note = Some(EvidenceNote::recovered(
+                                    open.start_seq,
+                                    open.start_elapsed_ms,
+                                    EvidenceClass::Action,
+                                    Stage::Intent,
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
                 for (_, matched_subj) in &candidates {
                     history
                         .open_interactions
@@ -6178,6 +6566,27 @@ pub(crate) fn drain_history(history: &mut History) {
                         })
                         .collect(),
                 };
+                if captured_opening_note.is_none() {
+                    for subject in &candidates {
+                        if let Some(open) = history
+                            .open_interactions
+                            .iter()
+                            .find(|open| open.subject.interaction == subject.interaction)
+                        {
+                            if open.start_seq != 0
+                                && !history.entries.contains_key(&open.start_seq)
+                            {
+                                captured_opening_note = Some(EvidenceNote::recovered(
+                                    open.start_seq,
+                                    open.start_elapsed_ms,
+                                    EvidenceClass::Action,
+                                    Stage::Intent,
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
                 for subject in &candidates {
                     history
                         .open_interactions
@@ -6277,10 +6686,88 @@ pub(crate) fn drain_history(history: &mut History) {
                 false
             };
             if !updated {
+                let opening_note = captured_opening_note.or_else(|| {
+                    if attributed_subject.interaction == 0 {
+                        return None;
+                    }
+                    let candidate_data = history
+                        .cast_candidates
+                        .iter()
+                        .find(|candidate| {
+                            candidate.subject.interaction == attributed_subject.interaction
+                        })
+                        .map(|candidate| {
+                            (
+                                candidate.started_seq,
+                                candidate.started_elapsed_ms,
+                                candidate.started_from_request,
+                                candidate.started_from_admission,
+                                candidate.spell_id,
+                                candidate.wire_cast_count,
+                            )
+                        });
+                    if let Some((
+                        started_seq,
+                        started_elapsed_ms,
+                        started_from_request,
+                        started_from_admission,
+                        spell_id,
+                        wire_cast_count,
+                    )) = candidate_data
+                    {
+                        if started_seq != 0
+                            && !history.entries.contains_key(&started_seq)
+                        {
+                            let stage = if started_from_request {
+                                Stage::Cast {
+                                    spell_id: Some(spell_id),
+                                    attempt: None,
+                                    wire_cast_count,
+                                    edge: CastEdge::Requested,
+                                }
+                            } else if started_from_admission {
+                                Stage::Cast {
+                                    spell_id: Some(spell_id),
+                                    attempt: None,
+                                    wire_cast_count,
+                                    edge: CastEdge::Admitted,
+                                }
+                            } else {
+                                Stage::Delivery(CommandDelivery::Written)
+                            };
+                            return Some(EvidenceNote::recovered(
+                                started_seq,
+                                started_elapsed_ms,
+                                EvidenceClass::Action,
+                                stage,
+                            ));
+                        }
+                    }
+                    if let Some(open) = history
+                        .open_interactions
+                        .iter()
+                        .find(|open| {
+                            open.subject.interaction == attributed_subject.interaction
+                        })
+                    {
+                        if open.start_seq != 0
+                            && !history.entries.contains_key(&open.start_seq)
+                        {
+                            return Some(EvidenceNote::recovered(
+                                open.start_seq,
+                                open.start_elapsed_ms,
+                                EvidenceClass::Action,
+                                Stage::Intent,
+                            ));
+                        }
+                    }
+                    None
+                });
                 let chain = history.collect_interaction_evidence(
                     attributed_subject.interaction,
                     seq,
                     &event,
+                    opening_note,
                 );
                 history.push_incident(
                     attributed_subject,

@@ -188,7 +188,9 @@ because they were captured before eviction.
 
 The inspector's incident line shows the opening and terminal note for the latest incident
 and says `opening note unavailable`, `terminal note unavailable`, or `notes truncated`
-rather than implying a row is present. The saved report uses the same incident record, so
+rather than implying a row is present. An opening note may be `recovered from start metadata`
+when the original row was already evicted but bounded start metadata survived; it then uses
+the stored local boundary time and says so. The saved report uses the same incident record, so
 these fields survive export unchanged. All additions are additive to schema
 `rustwrath.interaction-diagnostics.v1` version 1: existing readers can ignore the new
 header and incident fields, and `validate_snapshot_header` is unchanged.
