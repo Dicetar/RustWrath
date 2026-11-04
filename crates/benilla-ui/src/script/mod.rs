@@ -173,6 +173,10 @@ mod party;
 mod pet;
 mod petition;
 mod pointer;
+pub use pointer::{
+    UiBlockReason, UiBlockerFacts, UiBoundsBucket, UiBoundsState, UiClickBlock, UiClickMask, UiEdge,
+    UiFamily, UiFrameFacts, UiHitFacts,
+};
 mod pvp;
 mod quest;
 mod quest_log;
@@ -1312,6 +1316,13 @@ impl UiScript {
             .arena
             .iter_frames()
             .any(|(_, f)| f.name.as_deref() == Some(name) && f.effective_visible)
+    }
+
+    /// The bounded fact set the input router's most recent press/release edge left, for the app's
+    /// retained pointer witness. It carries the run-local frame ids for the compatibility
+    /// accessors; the app's retained copy drops them.
+    pub fn last_hit_facts(&self) -> UiHitFacts {
+        self.model_ref().last_hit
     }
 
     /// The global name of the frame the input router's most recent hit test resolved to, if any.

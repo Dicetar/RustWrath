@@ -89,10 +89,23 @@ attempt when retained and the restored module's digest or `unknown`; `RestoreUna
 means no retained predecessor existed. A restored module that fails again reports another
 bounded outcome, so one boolean never collapses repeated failures. Loader error text and
 paths stay in the local log and are not recorded.
-Physical UI presses record button, a coarse allowlisted target category, VM identity and
-whether the UI reported consuming the press. No coordinates, arbitrary frame names or
-keyboard input are retained. A missing named hit can also mean an unnamed frame. Input
-records are not automatically correlated to later actions.
+Physical UI presses and clicks record the button, a coarse allowlisted target category, VM
+identity and whether the UI reported consuming the edge. Each edge also carries one bounded
+client-side witness: the coarse widget kind and recognised frame family of the frame that took
+the point and of its nearest recognised owner (with capped ancestor hops); the first frame whose
+rect contained the point but whose effective hit excluded it and why (scroll clip, unresolved
+clip owner, hit insets, no mouse enablement, nameplate veto); which click edges the frame
+registers; whether an `OnClick`-equivalent handler was bound and whether it ran; whether one of
+the edge's own script fires raised a local error; whether an engine click action (loot take,
+check toggle) ran without a Lua handler; the first gate that stopped the click slot; the release
+target and whether it matched the point's hit, still contained it, or was lost; and a coarse
+bounds state and size bucket of the effective hit rect (`unresolved`, `empty`, `off_screen`,
+`partial`, `on_screen`; `tiny` through `fullscreen`). No coordinates, exact rects, arbitrary
+frame names, frame ids, GUIDs or keyboard input are retained. `visible` is the capture-time hit;
+the post-handler visibility and liveness of the hit frame are separate witness bits. A fully
+hidden frame is absent from the hit walk and cannot be told from empty space; a release outside
+the window produces no row; an engine click action is not a Lua handler. Input records are not
+automatically correlated to later actions.
 The inspector can display presses within two seconds before a sampled Lua error as possible
 or ambiguous associations. Error capture is polled, so this is an observation window rather
 than a precise error timestamp or proof of causality.
