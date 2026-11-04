@@ -217,12 +217,14 @@ action whose `Subject.ui_dispatch_id` is this click's id, with its last retained
 id is one eligible candidate chosen when the intent was minted, so the link is a heuristic
 attribution, not an identity carried from the UI, and it is still not proof that Lua raised the
 action. A keyboard or native cast (`Observed`) and the world right-click interact attach no click
-id at all, so neither can be read as a click's effect. A typed server refusal keeps the weaker of
-the link confidence and the incident confidence, so a strong refusal can never make a weak click
-link look exact. A script-error row is polled from the VM's diagnostic log once per second and
-keyed by the error message, so a row is message identity, not handler identity: a row first
-retained after a click is a possible association, and a row already retained is a repeat of a
-message.
+id at all, so neither can be read as a click's effect; a cast or macro invoked inside a click
+handler is one of those, and its click line therefore shows no link. Absence of a link is never
+evidence that the click had no effect, and nothing here attributes a cast by timing. A typed
+server refusal keeps the weaker of the link confidence and the incident confidence, so a strong
+refusal can never make a weak click link look exact. A script-error row is polled from the VM's
+diagnostic log once per second and keyed by the error message, so a row is message identity, not
+handler identity: a row first retained after a click is a possible association, and a row already
+retained is a repeat of a message.
 Nothing printed here establishes an error or an action as the click's effect, that a panel or
 button was rendered, that the user intended that control, or that the server received what the
 client sent.

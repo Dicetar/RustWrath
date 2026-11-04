@@ -4030,7 +4030,9 @@ impl History {
                 if self.ui_input_rows_lost() {
                     "; no retained action carries this click's id; pointer rows were lost (association unavailable)".to_string()
                 } else {
-                    "; no retained action carries this click's id (absence, not proof)".to_string()
+                    // A cast or macro invoked inside the handler is an `Observed` action with no
+                    // click id, so it has no link here; that is not evidence against the click.
+                    "; no retained action carries this click's id; absence of a link is not evidence the click had no effect (absence, not proof)".to_string()
                 }
             }
             [(subject, stage)] => {
