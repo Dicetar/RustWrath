@@ -236,11 +236,14 @@ the action's carried id. A fully hidden frame, a release outside the window (whi
 row at all), and an engine click action with no Lua handler are all reported as what they are,
 not as a nil-handler fault.
 
-The inspector prints up to eight click-outcome lines, one per claimable edge. A `…ButtonUp`
-registration runs its handler on the release row; a `…ButtonDown` registration runs it on the
-press row, so that press row gets its own line and the release row says `click not run on this
-edge: not registered for this button edge` plus `paired press edge <id> ran this click`. A
-registration that fires on both edges shows two lines for the one physical click. The saved
+The inspector prints up to eight click-outcome lines: every retained release edge, plus each
+press edge whose registration fires `OnClick` on the press edge (a `…ButtonDown` or `Both`
+registration), including a press edge with no handler.
+A `…ButtonUp` registration therefore runs its handler on the release row; a `…ButtonDown`
+registration runs it on the press row, so that press row gets its own line and the release row
+says `click not run on this edge: not registered for this button edge` plus `paired press edge
+<id> ran this click`. A registration that fires on both edges shows two lines for the one
+physical click. The saved
 report exports the same strings as `ui_click_outcomes`, beside the existing
 `ui_click_correlations`, and adds the boolean `ui_input_rows_lost`. Both are additive to
 `rustwrath.interaction-diagnostics.v1` version 1: existing keys and types are unchanged,

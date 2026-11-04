@@ -1229,6 +1229,15 @@ fn click_edge_can_claim(witness: &UiHitEvidence) -> bool {
     }
 }
 
+/// Whether this press edge is the edge its registration fires `OnClick` on, whether or not a
+/// handler actually ran. This is the display/pairing predicate, not the link predicate: a
+/// Down/Both press with no handler must still appear as the click edge, so the release row does
+/// not present "not registered" as the whole story.
+fn press_edge_fires_click(witness: &UiHitEvidence) -> bool {
+    witness.edge == UiEdge::Press
+        && matches!(witness.clicks, UiClickMask::Down | UiClickMask::Both)
+}
+
 /// The bounded key two retained pointer edges need to decide whether they are one click.
 ///
 /// A dispatch token and a retained row carry the same facts; keeping the comparison here stops
@@ -4182,10 +4191,19 @@ impl History {
                         witness.clicks,
                         click_outcome_phrase(&witness),
                     );
-                    if witness.hit.is_some() && !witness.visible_after {
+                    // The after-state belongs to the hit frame only when the press and release
+                    // landed on it; a release over a different frame says nothing about the
+                    // pressed frame's handler. `press_same_frame` keeps this truthful.
+                    if witness.hit.is_some()
+                        && witness.press_same_frame
+                        && !witness.visible_after
+                    {
                         line.push_str("; hit frame hidden after the click");
                     }
-                    if witness.hit.is_some() && !witness.alive_after {
+                    if witness.hit.is_some()
+                        && witness.press_same_frame
+                        && !witness.alive_after
+                    {
                         line.push_str("; hit frame no longer exists after the click");
                     }
                     if witness.onclick_ran && witness.handler_error {
@@ -4240,10 +4258,11 @@ impl History {
                 errors.push((vm_session, row_seq, event.elapsed_ms, event.elapsed_ms));
             }
         }
-        // The press edges that actually ran a click. A Down or Both registration invokes
-        // `OnClick` on the press row, and that row is the edge that ran; the release row's
-        // `NotRegistered` gate must not read as the whole story.
-        let mut press_edges: Vec<(u64, EdgeKey)> = Vec::new();
+        // The press edges that are the click edge for their registration. A Down or Both
+        // registration invokes `OnClick` on the press row, and that row is the edge that ran (or
+        // should have run); the release row's `NotRegistered` gate must not read as the whole
+        // story. A press with no handler is still included so its nil-handler verdict is visible.
+        let mut press_edges: Vec<(u64, EdgeKey, UiHitEvidence)> = Vec::new();
         for (_, event) in self.entries.iter() {
             if let Stage::UiPress {
                 ui_dispatch_id,
@@ -4251,9 +4270,9 @@ impl History {
                 ..
             } = event.stage
             {
-                if click_edge_can_claim(&witness) {
+                if press_edge_fires_click(&witness) {
                     if let Some(key) = EdgeKey::from_event(event) {
-                        press_edges.push((ui_dispatch_id, key));
+                        press_edges.push((ui_dispatch_id, key, witness));
                     }
                 }
             }
@@ -4275,7 +4294,7 @@ impl History {
                         ui_dispatch_id,
                         witness,
                         ..
-                    } if click_edge_can_claim(&witness) => {
+                    } if press_edge_fires_click(&witness) => {
                         (UiEdge::Press, vm_session, ui_dispatch_id, witness)
                     }
                     _ => return None,
@@ -4305,18 +4324,28 @@ impl History {
                 }
                 if edge == UiEdge::Release {
                     if let Some(key) = EdgeKey::from_event(event) {
-                        if let Some((id, _)) =
-                            press_edges.iter().find(|(_, press)| key.pairs_with(press))
-                        {
-                            if witness.onclick_ran || witness.engine_click {
-                                line.push_str(&format!(
+                        let paired: Vec<(u64, UiHitEvidence)> = press_edges
+                            .iter()
+                            .filter(|(_, press, _)| key.pairs_with(press))
+                            .map(|(id, _, press)| (*id, *press))
+                            .collect();
+                        match paired.as_slice() {
+                            [(id, press)] if press.onclick_ran || press.engine_click => line
+                                .push_str(&format!(
                                     "; paired press edge {id} of the same physical click"
-                                ));
-                            } else {
-                                line.push_str(&format!(
-                                    "; paired press edge {id} ran this click"
-                                ));
-                            }
+                                )),
+                            [(id, press)] if press.onclick_present => line
+                                .push_str(&format!(
+                                    "; paired press edge {id} is the click edge (handler present, not run)"
+                                )),
+                            [(id, _)] => line.push_str(&format!(
+                                "; paired press edge {id} is the click edge (no handler bound)"
+                            )),
+                            [] => {}
+                            many => line.push_str(&format!(
+                                "; {} press edges could pair with this release (ambiguous)",
+                                many.len()
+                            )),
                         }
                     }
                 }
@@ -4545,11 +4574,20 @@ impl History {
         // token's own click row is never a separate candidate, and a press row of an Up-only
         // click cannot claim the antecedent at all because `OnClick` fires on its release.
         let dispatches = self.source.recent_ui_dispatches();
-        let newest = dispatches.iter().rev().find(|token| {
-            token.witness.edge == UiEdge::Release
-                || matches!(token.witness.clicks, UiClickMask::Down | UiClickMask::Both)
-                || click_edge_can_claim(&token.witness)
-        });
+        // Prefer the newest edge that actually fired OnClick. A Down-only registration's release
+        // row is newer than its press row but is not the antecedent; selecting the release first
+        // would hide the press edge that ran. Fall back to the newest edge of the registration
+        // so a no-handler or blocked click still gets an explicit "not an antecedent" line.
+        let newest = dispatches
+            .iter()
+            .rev()
+            .find(|token| click_edge_can_claim(&token.witness))
+            .or_else(|| {
+                dispatches.iter().rev().find(|token| {
+                    token.witness.edge == UiEdge::Release
+                        || matches!(token.witness.clicks, UiClickMask::Down | UiClickMask::Both)
+                })
+            });
         match newest {
             Some(token) => {
                 let current_rg = self.source.0.reload_generation.load(Ordering::Acquire);
@@ -4570,7 +4608,9 @@ impl History {
                         "established click antecedent for this registration"
                     },
                 );
-                line.push_str(&self.dispatch_link_phrase(token.scope, token.id));
+                if click_edge_can_claim(&token.witness) {
+                    line.push_str(&self.dispatch_link_phrase(token.scope, token.id));
+                }
                 if gaps {
                     line.push_str("; trace has gaps");
                 }
