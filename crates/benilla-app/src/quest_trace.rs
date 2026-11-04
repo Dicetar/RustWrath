@@ -900,13 +900,13 @@ fn click_edge_can_claim(witness: &UiHitEvidence) -> bool {
 
 /// Whether two retained edges are the press and the release of one physical click.
 ///
-/// Cross-row identity is not retained, so the pair is the release row's press target matching
-/// the press row's own press target (or its hit when the press row has no capture target), on
-/// the same button, scope, VM and reload generation inside the same two-second window. A pair
-/// that does not match stays two candidates, which the caller reports as ambiguous rather than
-/// guessing.
+/// Cross-row identity is not retained: `UiFrameRef` is a coarse kind and family, so an equal
+/// pair is an association, not proof of the same frame. The pair is the release row's press
+/// target matching the press row's own press target (the actual edge target, which can differ
+/// from the press row's hit when a capture is held), on the same button, scope, VM and reload
+/// generation inside the same two-second window. A pair that does not match stays two
+/// candidates, which the caller reports as ambiguous rather than guessing.
 fn same_physical_click(press: &UiDispatchToken, release: &UiDispatchToken) -> bool {
-    let press_frame = press.witness.press_target.or(press.witness.hit);
     press.witness.edge == UiEdge::Press
         && release.witness.edge == UiEdge::Release
         && press.button == release.button
@@ -916,7 +916,8 @@ fn same_physical_click(press: &UiDispatchToken, release: &UiDispatchToken) -> bo
         && release.elapsed_ms >= press.elapsed_ms
         && release.elapsed_ms - press.elapsed_ms <= 2_000
         && release.witness.press_target.is_some()
-        && release.witness.press_target == press_frame
+        && press.witness.press_target.is_some()
+        && release.witness.press_target == press.witness.press_target
 }
 
 #[derive(Debug)]
@@ -3500,6 +3501,10 @@ fn block_reason_phrase(reason: UiBlockReason) -> &'static str {
 }
 
 /// The first gate that stopped a bound handler, in the order the click slots test them.
+///
+/// `HandlerMissing`/`HandlerError` are the slot's own verdicts, not gates; the capture invariant
+/// (`onclick_present` implies `onclick_ran` or a recorded gate) makes `None` here unreachable for
+/// a blocked edge, and the arm exists only so the match stays total.
 #[cfg(feature = "dev")]
 fn click_block_phrase(gate: UiClickBlock) -> &'static str {
     match gate {
@@ -3721,8 +3726,17 @@ impl History {
                     } else {
                         String::new()
                     };
+                    // On a miss, `owner`/`bounds` describe the excluded candidate, not a hit
+                    // frame; say so rather than letting the reader assume a hit.
+                    let frame_note = if witness.hit.is_some() {
+                        ""
+                    } else if witness.blocker.is_some() {
+                        " (excluded frame)"
+                    } else {
+                        ""
+                    };
                     let mut line = format!(
-                        "UI click {ui_dispatch_id} {button:?} on {target:?} (owner {:?}{hops}, bounds {:?}/{:?}, clicks {:?}): {}",
+                        "UI click {ui_dispatch_id} {button:?} on {target:?} (owner {:?}{hops}{frame_note}, bounds {:?}/{:?}, clicks {:?}): {}",
                         witness.owner,
                         witness.bounds,
                         witness.bounds_bucket,
