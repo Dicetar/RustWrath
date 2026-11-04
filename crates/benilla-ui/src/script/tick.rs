@@ -325,6 +325,10 @@ pub(crate) fn fire_event_into(lua: &Lua, event: &str, args: Vec<ScriptValue>) {
     if let Ok(name) = lua.create_string(event) {
         let _ = globals.set("event", name);
     }
+    {
+        let mut model = model_mut();
+        model.firing_events = model.firing_events.saturating_add(1);
+    }
     while let Some(h) = at {
         let mut model = model_mut();
         // A saved next that the previous handler unregistered ends the walk.
@@ -345,6 +349,10 @@ pub(crate) fn fire_event_into(lua: &Lua, event: &str, args: Vec<ScriptValue>) {
             model_mut().record_lua_error(&e);
         }
         at = next;
+    }
+    {
+        let mut model = model_mut();
+        model.firing_events = model.firing_events.saturating_sub(1);
     }
     if let Some(saved) = saved {
         let _ = globals.set("event", saved);

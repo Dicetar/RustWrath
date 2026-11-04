@@ -3014,9 +3014,9 @@ fn read_reward_block(r: &mut Reader<'_>) -> Result<Vec<RewardItem>> {
 }
 
 fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
-    // 12340 (`SMSG_QUESTGIVER_QUEST_DETAILS`): the second GUID, the extra dword after
-    // `is_finished`, and the reputation/emote tail are Wrath-only; the 1.12 reader's
-    // money-first tail cuts the packet short.
+    // 12340 (`SMSG_QUESTGIVER_QUEST_DETAILS`): the second GUID, the unk dword after the arena
+    // points, and the reputation/emote tail are Wrath-only; the 1.12 reader's money-first tail
+    // cuts the packet short.
     let mut r = Reader::new(b);
     let npc = r.u64()?;
     let _guid2 = r.u64()?;
@@ -3029,7 +3029,6 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
         flags: r.u32()?, suggested_players: r.u32()?, ..Default::default()
     };
     let _finished = r.u8()?;
-    let _unknown = r.u32()?;
     let choices = read_reward_block(&mut r)?;
     let rewards = read_reward_block(&mut r)?;
     let money = r.u32()?;
@@ -3041,6 +3040,10 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
     extra.title_id = r.u32()?;
     extra.talents = r.u32()?;
     extra.arena_points = r.u32()?;
+    // 12340 emits one unk dword after the arena points, before the reputation arrays; the server's
+    // `SendQuestGiverQuestDetails` writes it there (`data << uint32(0)`). Reading it after
+    // `is_finished` instead shifted every reward/reputation field and made the packet Truncated.
+    let _unknown = r.u32()?;
     extra.reputation = read_quest_reputation(&mut r)?;
     let emotes = r.u32()?;
     for _ in 0..emotes {
@@ -3820,8 +3823,8 @@ mod tests {
         );
     }
 
-    /// The 12340 details tail: second GUID, the dword after `is_finished`, reputation
-    /// arrays and the emote list, which the 1.12 reader did not know.
+    /// The 12340 details tail: second GUID, the reward blocks, the dword after the arena points,
+    /// reputation arrays and the emote list, which the 1.12 reader did not know.
     fn quest_details_bytes() -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(&0x0000_0002_0000_0011u64.to_le_bytes()); // npc
@@ -3834,7 +3837,6 @@ mod tests {
         b.extend_from_slice(&8u32.to_le_bytes()); // flags
         b.extend_from_slice(&0u32.to_le_bytes()); // suggested
         b.push(0); // is_finished
-        b.extend_from_slice(&0u32.to_le_bytes()); // 12340 dword
         b.extend_from_slice(&1u32.to_le_bytes()); // one choice
         b.extend_from_slice(&44u32.to_le_bytes());
         b.extend_from_slice(&2u32.to_le_bytes());
@@ -3849,6 +3851,7 @@ mod tests {
         b.extend_from_slice(&0u32.to_le_bytes()); // title
         b.extend_from_slice(&0u32.to_le_bytes()); // talent
         b.extend_from_slice(&0u32.to_le_bytes()); // arena
+        b.extend_from_slice(&0u32.to_le_bytes()); // 12340 dword after the arena points
         for _ in 0..15 {
             b.extend_from_slice(&0u32.to_le_bytes()); // reputations
         }

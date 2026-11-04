@@ -648,8 +648,19 @@ fn selected_row(model: &Model) -> Option<usize> {
 /// skill-line and expand-mask commits (`0x4d8cb0`, `0x4d8cd0`, the collapse verbs') do the same
 /// (`0x4d8cc0`, `0x4d8ce0`). The stock window's filter click (`Blizzard_TrainerUI.lua:524`) does
 /// not repaint.
+///
+/// Deviation: a signal from inside another event handler is dropped. 12340's stock trainer
+/// handler (`ClassTrainerFrame_OnEvent`, `TRAINER_UPDATE`) re-selects the first learnable row,
+/// and when that row is a skill-line header (`ClassTrainer_SetSelection`) it calls
+/// Collapse/ExpandTrainerSkillLine. Those verbs signal `TRAINER_UPDATE` again in the reference, so
+/// the handler re-enters itself through the same header forever (the crash was ~2,600 nested
+/// frames of CollapseTrainerSkillLine). The handler already repaints after the call returns, so
+/// the nested signal is redundant; outside a handler, a verb still signals in place.
 fn raise_trainer_update(model: &mut Model) {
     finalize(model);
+    if model.firing_events > 0 {
+        return;
+    }
     model.raise("TRAINER_UPDATE", Vec::new());
 }
 

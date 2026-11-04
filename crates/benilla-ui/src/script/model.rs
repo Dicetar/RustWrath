@@ -1225,6 +1225,11 @@ pub(crate) struct Model {
     /// The events the running [`super::tick::verb`] segment has raised, fired in order once its
     /// model borrow drops; `None` outside a segment, where [`Model::raise`] queues instead.
     pub(crate) verb_events: Option<Vec<super::tick::Raised>>,
+    /// How many event handlers are on the stack right now: raised by
+    /// [`super::tick::fire_event_into`] around its walk. A binding called from a handler can see
+    /// it and avoid re-entering the handler it is already inside (the trainer's
+    /// Collapse/ExpandTrainerSkillLine, see the trainer module).
+    pub(crate) firing_events: u32,
     /// The guids of the items the client holds locked, the reference's `item+0x314` bit 0, set by
     /// `LockItem` (`0x4953e0`) and cleared by `UnlockItem` (`0x495420`) and the unlock-all
     /// (`0x495460`) ([`super::cursor::lock_item`]).
@@ -1797,6 +1802,7 @@ impl Model {
             worldstate: super::worldstate::WorldStateUiState::default(),
             pending_events: Vec::new(),
             verb_events: None,
+            firing_events: 0,
             item_locks: std::collections::HashSet::new(),
             cursor_pos: (0.0, 0.0),
             minimap: crate::widget::MinimapStatics::default(),

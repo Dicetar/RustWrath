@@ -858,6 +858,28 @@ fn the_filter_and_collapse_verbs_fire_trainer_update_in_place() {
     assert_eq!(seen, ["TRAINER_UPDATE 4", "TRAINER_UPDATE 3"]);
 }
 
+/// 12340's stock trainer handler re-selects the first learnable row on `TRAINER_UPDATE`; when
+/// that row is a header, `ClassTrainer_SetSelection` calls Collapse/ExpandTrainerSkillLine, whose
+/// own signal would re-enter the handler through the same header forever. The nested signal is
+/// dropped while a handler runs, so the collapse returns and the list repaints once.
+#[test]
+fn a_collapse_inside_a_trainer_update_handler_does_not_re_enter() {
+    let mut s = UiScript::new().unwrap();
+    s.set_trainer(Some(trainer()));
+    s.run(
+        "ENTRIES = 0 \
+         HANDLER = CreateFrame('Frame') \
+         HANDLER:RegisterEvent('TRAINER_UPDATE') \
+         HANDLER:SetScript('OnEvent', function() \
+             ENTRIES = ENTRIES + 1 \
+             if ENTRIES == 1 then CollapseTrainerSkillLine(1) end \
+         end)",
+    )
+    .unwrap();
+    s.run("CollapseTrainerSkillLine(1)").unwrap();
+    assert_eq!(s.eval::<i64>("return ENTRIES").unwrap(), 1);
+}
+
 /// `OpenTrainer` (`0x4d8cf0`) asks for the player's own list: it hands the host its call, which
 /// holds the player, and takes no argument.
 #[test]
