@@ -1,5 +1,34 @@
 import React, { useState } from 'react';
 
+interface PreppedTicket {
+  id: string;
+  category: string;
+  title: string;
+  label: string;
+  targetFiles: string[];
+  evidence: string[];
+  prompt: string;
+}
+
+const AUTO_CATCHER_WORKFLOW = `# From D:\\Projects\\project-b-client:
+# 1. Pull latest auto-catcher & exit-snapshot updates:
+git pull origin main
+
+# 2. Build client once with hotpatch + dev diagnostics:
+cargo build -p benilla --features hotpatch
+
+# 3. Launch the game normally (or double-click "Launch RustWrath.cmd"):
+powershell -ExecutionPolicy Bypass -File tools\\launch-client.ps1
+
+# What happens automatically while you play & when you close the window:
+# - In-game incidents auto-export every 10s to benilla-config\\Logs\\InteractionDiagnostics\\
+# - Closing the window (Alt+F4 / Quit) flushes a synchronous final flight-recorder snapshot
+# - A background watcher automatically runs tools\\collect-diagnostics.ps1 on exit and generates:
+#     * benilla-config\\Logs\\Launcher\\latest-tickets.md      (Ready-to-resolve repair queue!)
+#     * benilla-config\\Logs\\Launcher\\latest-diagnostics.md  (Full subsystem + flight recorder report)
+#     * benilla-config\\Logs\\Launcher\\latest-diagnostics.json
+# - Or double-click "Collect Diagnostics.cmd" at any time while the game is still open!`;
+
 const TARGETED_TEST_COMMANDS = `# Run from D:\\Projects\\project-b-client (13 total test cases — strictly within 20-case ceiling)
 
 # 1. G03: Build 12340 ItemStats_C count bounds (0, 10, >10 rejection without cursor desync, truncated) [1 test]
@@ -11,117 +40,325 @@ cargo test -p benilla-hotpatch --lib
 # 3. D01–D07 & Q00–Q04: Resident Flight Recorder, Objective Progress, Delayed Template & Turn-In Delta Correlation [9 tests]
 cargo test -p benilla-app --lib quest_trace::tests`;
 
-const H01_LIVE_RUNBOOK = `# H01 — Same-PID Live Pose Module Swap (A -> B -> A) Runbook
-# Prerequisite: No competing cargo/benilla process; run from D:\\Projects\\project-b-client
+function parseRawLogsOrJsonToTickets(raw: string): PreppedTicket[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
 
-# Step 1: Launch client with hotpatch enabled and record PID
-$proc = Start-Process -FilePath "target\\debug\\benilla.exe" -PassThru
-Write-Host "Launched benilla.exe with PID: $($proc.Id)"
-
-# Step 2: Enter world with test character so an active animated rig is present
-
-# Step 3: Publish Revision A (-LiftDemo) into the running process
-powershell -ExecutionPolicy Bypass -File scripts\\publish-pose-module.ps1 -LiftDemo -Revision "h01-rev-a-lift"
-Get-Content "$env:LOCALAPPDATA\\benilla\\hotpatch\\pose\\ready.toml"
-
-# Step 4: Verify in client log & viewport that h01-rev-a-lift activated under the SAME PID ($proc.Id)
-
-# Step 5: Publish Revision B (-PassThrough) into the same running process
-powershell -ExecutionPolicy Bypass -File scripts\\publish-pose-module.ps1 -PassThrough -Revision "h01-rev-b-pass"
-Get-Content "$env:LOCALAPPDATA\\benilla\\hotpatch\\pose\\ready.toml"
-
-# Step 6: Re-publish Revision A (-LiftDemo) to complete A -> B -> A cycle under identical PID
-powershell -ExecutionPolicy Bypass -File scripts\\publish-pose-module.ps1 -LiftDemo -Revision "h01-rev-a-return"
-Get-Process -Id $proc.Id | Select-Object Id, ProcessName, StartTime`;
-
-const Q05_LIVE_RUNBOOK = `# Q05 — Firna Northshire Connected Quest Route & Diagnostics Export Runbook
-# Owner-driven live acceptance (Credentials & combat driven by owner)
-
-# Step 1: Log in as Firna in Northshire Valley (Map 0, Elwynn/Northshire)
-# Step 2: Interact with Deputy Willem / Marshal McBride:
-#   - Right-click NPC -> verify Greeting/Detail panel opens (correlates Open -> GreetingPanel/DetailPanel)
-#   - Click Accept -> verify QuestSlotAdded + JournalProjection + JournalRowInModel (or JournalTemplatePending -> JournalRowInModel)
-# Step 3: Complete objective progress in Northshire:
-#   - Verify QuestSlotProgressed counters advance in quest log and tracker
-# Step 4: Return to questgiver -> Complete Quest -> Choose Reward:
-#   - Verify RequestReward -> RewardPanel -> ChooseReward -> QuestCompletePacket
-#   - Verify asynchronous turn-in deltas: QuestSlotRemoved + PlayerXpChanged + PlayerMoneyChanged + RewardItemPushed
-# Step 5: Open Debug Overlay (Ctrl+Shift+D) -> Interaction Diagnostics -> Click "Save local report"
-# Step 6: Inspect latest JSONL snapshot header & correlations:
-Get-ChildItem "$env:LOCALAPPDATA\\benilla\\Logs\\InteractionDiagnostics\\interaction-*.jsonl" |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1 |
-  ForEach-Object {
-    Write-Host "Snapshot: $($_.FullName)"
-    Get-Content $_.FullName -TotalCount 1 | ConvertFrom-Json |
-      Select-Object schema, version, executable_file_sha1, received, dropped, evicted,
-        action_summaries, panel_correlations, slot_correlations, turn_in_correlations
+  // Check if user pasted latest-diagnostics.json directly
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed.readyTickets)) {
+        return parsed.readyTickets;
+      }
+      if (parsed.schema === 'rustwrath.interaction-diagnostics.v1') {
+        const tickets: PreppedTicket[] = [];
+        let idx = 1;
+        const incLines: string[] = [];
+        if (Array.isArray(parsed.incidents)) {
+          for (const item of parsed.incidents) {
+            const rec = item.record || item;
+            incLines.push(
+              `outcome=${rec.outcome} confidence=${rec.confidence} stage=${JSON.stringify(rec.terminal_stage)} subject=${JSON.stringify(rec.subject)}`
+            );
+          }
+        }
+        if (incLines.length > 0) {
+          tickets.push({
+            id: `AUTO-0${idx++}`,
+            category: 'Flight Recorder / Incidents',
+            title: `Triage and resolve ${incLines.length} recorded interaction incident(s)`,
+            label: 'ready-for-agent',
+            targetFiles: [
+              'crates/benilla-app/src/quest_trace.rs',
+              'crates/benilla-app/src/wrath.rs',
+              'crates/benilla-app/src/ui_quest/',
+            ],
+            evidence: incLines.slice(0, 15),
+            prompt: `Inspect the ${incLines.length} flight-recorder incidents (${incLines.slice(0, 3).join('; ')}), trace the terminal_stage and action chain, and fix the underlying client refusal or decode rejection.`,
+          });
+        }
+        const questAnomalies: string[] = [];
+        for (const key of [
+          'slot_correlations',
+          'turn_in_correlations',
+          'panel_correlations',
+          'quest_ui_correlations',
+        ]) {
+          if (Array.isArray(parsed[key])) {
+            for (const line of parsed[key]) {
+              if (
+                /mismatch|unverified|incomplete|ambiguous|refused|failed|without a retained/i.test(
+                  line
+                )
+              ) {
+                questAnomalies.push(`[${key}] ${line}`);
+              }
+            }
+          }
+        }
+        if (questAnomalies.length > 0) {
+          tickets.push({
+            id: `AUTO-0${idx++}`,
+            category: 'Quests / Correlations',
+            title: `Resolve ${questAnomalies.length} quest/journal/turn-in correlation anomaly(ies)`,
+            label: 'ready-for-agent',
+            targetFiles: [
+              'crates/benilla-app/src/ui_quest/',
+              'crates/benilla-app/src/ui_quest_log.rs',
+              'crates/benilla-protocol-wrath/src/gameplay.rs',
+            ],
+            evidence: questAnomalies.slice(0, 15),
+            prompt: `Fix the quest/journal/turn-in correlation anomalies captured by the flight recorder: ${questAnomalies.slice(0, 4).join(' | ')}`,
+          });
+        }
+        return tickets;
+      }
+    } catch {
+      // Fall through to line-by-line log + JSONL parser
+    }
   }
-`;
 
-const WORKSTATION_SYNC_COMMAND = `# From D:\\Projects\\project-b-client:
-git fetch origin
-git pull origin main`;
+  const lines = trimmed.split(/\r?\n/);
+  const missingGlobals = new Map<string, number>();
+  const missingMethods = new Map<string, number>();
+  const missingFields = new Map<string, number>();
+  const missingCvars = new Map<string, number>();
+  const luaErrors = new Map<string, number>();
+  const dbcFailures = new Map<string, number>();
+  const assetFailures = new Map<string, number>();
+  const flightIncidents: string[] = [];
 
-const LEDGER_ROWS = [
-  {
-    pkg: 'H02',
-    title: 'Specify Revision Trust & Capability Gate Contract in ADR-0002',
-    status: 'S (Delivered)',
-    gap: 'Owner Review & H03 Implementation',
-    files: 'docs/architecture/adr-0002-live-client-modules.md',
-  },
-  {
-    pkg: 'D00–D07, Q00–Q02',
-    title: 'Resident Interaction Flight Recorder, NPC Alias Redaction & Scope Retirement',
-    status: 'S + B + T (7/7)',
-    gap: 'R / V (Q05 Live Run)',
-    files: 'quest_trace.rs, rfc-resident-quest-diagnostics.md',
-  },
-  {
-    pkg: 'G03',
-    title: 'Build 12340 ItemStats_C Count Bounds Rejection (<= 10) + Unit Fixture',
-    status: 'S + B + T Ready (1 test)',
-    gap: 'Run targeted G03 test command below',
-    files: 'crates/benilla-protocol-wrath/src/gameplay.rs',
-  },
-  {
-    pkg: 'G04–G05',
-    title: 'Typed Outbound Command Admission & Refusal Receipts (incl. RequestReward & ChooseReward)',
-    status: 'S + B + T Ready',
-    gap: 'Covered by quest_trace & verbs tests',
-    files: 'net.rs, net/io.rs, wrath.rs, ui_quest/verbs.rs',
-  },
-  {
-    pkg: 'H00',
-    title: 'Hotpatch Host::poll Failed-Manifest Retry State Machine + Unit Fixture',
-    status: 'S + B + T Ready (3 tests)',
-    gap: 'R / V: H01 Same-PID A->B->A swap',
-    files: 'crates/benilla-hotpatch/src/lib.rs',
-  },
-  {
-    pkg: 'Q03',
-    title: 'Objective Progress (QuestSlotProgressed) & Delayed/Refused Template vs Journal Row Sync',
-    status: 'S + T Ready (+1 test)',
-    gap: 'R / V: Q05 Live Northshire route',
-    files: 'wrath.rs, ui_quest_log.rs, quest_trace.rs',
-  },
-  {
-    pkg: 'Q04',
-    title: 'Turn-In & Asynchronous Reward Proof (QuestCompletePacket + Slot/XP/Money/Item Push Deltas)',
-    status: 'S + T Ready (+1 test)',
-    gap: 'R / V: Q05 Live Northshire route',
-    files: 'ui_quest/verbs.rs, ui_quest/net.rs, wrath.rs, quest_trace.rs',
-  },
-];
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
+    if (!line) continue;
+
+    if (line.startsWith('{"schema":"rustwrath.interaction-diagnostics.v1"')) {
+      try {
+        const header = JSON.parse(line);
+        if (Array.isArray(header.incidents)) {
+          for (const item of header.incidents) {
+            const rec = item.record || item;
+            flightIncidents.push(
+              `outcome=${rec.outcome} confidence=${rec.confidence} stage=${JSON.stringify(rec.terminal_stage)}`
+            );
+          }
+        }
+      } catch {
+        // ignore malformed jsonl header
+      }
+      continue;
+    }
+
+    const gMatch = line.match(
+      /attempt to call global ['`"]([^'`"]+)['`"] \(a nil value\)/
+    );
+    if (gMatch) {
+      missingGlobals.set(gMatch[1], (missingGlobals.get(gMatch[1]) || 0) + 1);
+    }
+
+    const mMatch = line.match(
+      /attempt to call method ['`"]([^'`"]+)['`"] \(a nil value\)/
+    );
+    if (mMatch) {
+      missingMethods.set(mMatch[1], (missingMethods.get(mMatch[1]) || 0) + 1);
+    }
+
+    const fMatch = line.match(
+      /attempt to index (?:field|global) ['`"]([^'`"]+)['`"] \(a nil value\)/
+    );
+    if (fMatch) {
+      missingFields.set(fMatch[1], (missingFields.get(fMatch[1]) || 0) + 1);
+    }
+
+    const cMatch = line.match(/Couldn't find CVar named '([^']+)'/);
+    if (cMatch) {
+      missingCvars.set(cMatch[1], (missingCvars.get(cMatch[1]) || 0) + 1);
+    }
+
+    const stripped = line.replace(
+      /^\d{4}-\d{2}-\d{2}T\S+\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+/,
+      ''
+    );
+
+    if (
+      /(DBC|\.dbc|schema field count|record size|Spell\.dbc|ChrClasses|ChrRaces)/i.test(
+        line
+      ) &&
+      /\b(ERROR|WARN)\b/.test(line)
+    ) {
+      dbcFailures.set(stripped, (dbcFailures.get(stripped) || 0) + 1);
+    }
+
+    if (
+      /(Failed to load asset|parsing skin|companion skin|not a SKIN|\.skin|\.m2|\.blp|\.wmo|\.adt)/i.test(
+        line
+      ) &&
+      /\b(ERROR|WARN)\b/.test(line)
+    ) {
+      assetFailures.set(stripped, (assetFailures.get(stripped) || 0) + 1);
+    }
+
+    if (
+      /(Interface\\|FrameXML|GlueXML|runtime error:|Lua error|ui_script:)/i.test(
+        line
+      ) &&
+      (/\b(ERROR|WARN)\b/.test(line) || /runtime error:/.test(line))
+    ) {
+      luaErrors.set(stripped, (luaErrors.get(stripped) || 0) + 1);
+    }
+  }
+
+  const tickets: PreppedTicket[] = [];
+  let idx = 1;
+  const formatMap = (m: Map<string, number>) =>
+    Array.from(m.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${k} (x${v})`);
+
+  if (missingGlobals.size > 0) {
+    const names = Array.from(missingGlobals.keys()).slice(0, 10).join(', ');
+    tickets.push({
+      id: `AUTO-0${idx++}`,
+      category: 'UI / Lua Globals',
+      title: `Implement missing Wrath Lua global functions (${missingGlobals.size} unique)`,
+      label: 'ready-for-agent',
+      targetFiles: [
+        'crates/benilla-ui/src/script/',
+        'crates/benilla-app/src/ui_script/',
+      ],
+      evidence: formatMap(missingGlobals).slice(0, 15),
+      prompt: `Implement the missing 3.3.5a Lua global functions observed at runtime (${names}) in their owning script module under crates/benilla-ui/src/script/ or crates/benilla-app/src/, following the 12340 reference contract.`,
+    });
+  }
+
+  if (missingMethods.size > 0) {
+    const names = Array.from(missingMethods.keys()).slice(0, 10).join(', ');
+    tickets.push({
+      id: `AUTO-0${idx++}`,
+      category: 'UI / Widget Methods',
+      title: `Implement missing FrameXML widget methods (${missingMethods.size} unique)`,
+      label: 'ready-for-agent',
+      targetFiles: ['crates/benilla-ui/src/script/widget/'],
+      evidence: formatMap(missingMethods).slice(0, 15),
+      prompt: `Implement the missing FrameXML widget methods (${names}) on the appropriate widget tables in crates/benilla-ui/src/script/widget/ against the 12340 reference.`,
+    });
+  }
+
+  if (missingFields.size > 0) {
+    const names = Array.from(missingFields.keys()).slice(0, 10).join(', ');
+    tickets.push({
+      id: `AUTO-0${idx++}`,
+      category: 'UI / Frame & Table Fields',
+      title: `Resolve nil field/global indexing (${missingFields.size} unique)`,
+      label: 'ready-for-agent',
+      targetFiles: [
+        'crates/benilla-ui/src/script/',
+        'crates/benilla-app/src/ui_script/',
+      ],
+      evidence: formatMap(missingFields).slice(0, 15),
+      prompt: `Trace and fix the nil field/global accesses (${names}) in crates/benilla-ui/src/script/ or crates/benilla-app/src/ui_script/ using the logged Lua stack lines.`,
+    });
+  }
+
+  if (missingCvars.size > 0) {
+    const names = Array.from(missingCvars.keys()).slice(0, 10).join(', ');
+    tickets.push({
+      id: `AUTO-0${idx++}`,
+      category: 'CVars',
+      title: `Register missing 3.3.5a CVars (${missingCvars.size} unique)`,
+      label: 'ready-for-agent',
+      targetFiles: ['crates/benilla-app/src/cvars/'],
+      evidence: formatMap(missingCvars).slice(0, 15),
+      prompt: `Register the missing 3.3.5a CVars (${names}) with their stock 12340 default values in crates/benilla-app/src/cvars/.`,
+    });
+  }
+
+  if (luaErrors.size > 0) {
+    tickets.push({
+      id: `AUTO-0${idx++}`,
+      category: 'UI / Lua Runtime',
+      title: `Fix Lua / FrameXML runtime errors (${luaErrors.size} unique)`,
+      label: 'ready-for-agent',
+      targetFiles: [
+        'crates/benilla-ui/src/script/',
+        'crates/benilla-app/src/ui_script/',
+      ],
+      evidence: formatMap(luaErrors).slice(0, 15),
+      prompt: `Fix the logged Lua/FrameXML runtime errors in crates/benilla-ui or crates/benilla-app: ${formatMap(luaErrors).slice(0, 3).join(' | ')}`,
+    });
+  }
+
+  if (dbcFailures.size > 0) {
+    tickets.push({
+      id: `AUTO-0${idx++}`,
+      category: 'DBC / Formats',
+      title: `Fix DBC schema / record layout mismatches (${dbcFailures.size} unique)`,
+      label: 'ready-for-agent',
+      targetFiles: [
+        'crates/benilla-formats/src/dbc.rs',
+        'crates/benilla-app/src/',
+      ],
+      evidence: formatMap(dbcFailures).slice(0, 15),
+      prompt: `Repair the 3.3.5a (12340) DBC record reader / field count mismatches: ${formatMap(dbcFailures).slice(0, 3).join(' | ')}`,
+    });
+  }
+
+  if (assetFailures.size > 0) {
+    tickets.push({
+      id: `AUTO-0${idx++}`,
+      category: 'Assets / M2 / BLP',
+      title: `Fix M2 / Skin / BLP / WMO asset load failures (${assetFailures.size} unique)`,
+      label: 'ready-for-agent',
+      targetFiles: ['crates/benilla-formats/src/', 'crates/benilla-assets/src/'],
+      evidence: formatMap(assetFailures).slice(0, 15),
+      prompt: `Investigate and fix the M2/Skin/BLP/WMO asset load failures: ${formatMap(assetFailures).slice(0, 3).join(' | ')}`,
+    });
+  }
+
+  if (flightIncidents.length > 0) {
+    tickets.push({
+      id: `AUTO-0${idx++}`,
+      category: 'Flight Recorder / Incidents',
+      title: `Resolve ${flightIncidents.length} in-game flight-recorder incident(s)`,
+      label: 'ready-for-agent',
+      targetFiles: [
+        'crates/benilla-app/src/quest_trace.rs',
+        'crates/benilla-app/src/wrath.rs',
+      ],
+      evidence: flightIncidents.slice(0, 15),
+      prompt: `Inspect and resolve the flight-recorder incidents: ${flightIncidents.slice(0, 3).join(' | ')}`,
+    });
+  }
+
+  return tickets;
+}
 
 export default function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [rawInput, setRawInput] = useState('');
+  const [parsedTickets, setParsedTickets] = useState<PreppedTicket[]>([]);
 
   const copyText = (id: string, text: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleAnalyze = () => {
+    setParsedTickets(parseRawLogsOrJsonToTickets(rawInput));
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const content = String(ev.target?.result || '');
+      setRawInput(content);
+      setParsedTickets(parseRawLogsOrJsonToTickets(content));
+    };
+    reader.readAsText(file);
   };
 
   return (
@@ -133,93 +370,162 @@ export default function App() {
               WoW 3.3.5a (12340)
             </span>
             <span className="px-2.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-mono text-xs">
-              main@cbc8a717 (wotlk merged)
+              Auto-Catcher &amp; Triage Pipeline Active
             </span>
           </div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-stone-100 mt-2">
-            RustWrath — Engineering Execution & Verification Console
+            RustWrath — Automated Issue Catcher &amp; Resolution Prep Console
           </h1>
           <p className="text-stone-400 text-sm mt-1">
-            Active branch is now <code className="text-emerald-300">main</code> (tracking <code className="text-stone-300">origin/main</code>) · <code className="text-amber-300">wotlk</code> fully merged
+            Zero manual bug writing: play the game, close the window, and let the resident flight recorder + log triager prep every issue into ready-to-fix tickets.
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">
           <span className="px-3 py-1.5 rounded bg-emerald-950/90 border border-emerald-700/60 text-emerald-300 font-mono text-xs">
-            13 TARGETED TESTS (&lt; 20 CEILING)
+            AUTO-EXPORT ON INCIDENT + EXIT
           </span>
           <span className="text-xs text-stone-400 font-mono">
-            Evidence Separation: S / B / T / R / V
+            Logs/Launcher/latest-tickets.md
           </span>
         </div>
       </header>
 
-      {/* GitHub & Workstation Sync Banner */}
+      {/* Automated Workstation Workflow */}
       <section className="bg-sky-950/40 border border-sky-600/40 rounded-lg p-5 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold text-sky-300 flex items-center gap-2">
-              <span>⚡</span> Workstation Synchronization
+            <h2 className="text-base font-semibold text-sky-300">
+              1. Zero-Touch Workstation Issue Catcher
             </h2>
             <p className="text-stone-300 text-xs mt-0.5">
-              All merged commits and packages are synchronized on branch <code className="text-emerald-300">main</code>. Pull directly from GitHub on your Windows workstation:
+              Every play session now automatically exports <code className="text-emerald-300">InteractionDiagnostics</code> snapshots on incidents &amp; exit, and auto-generates <code className="text-amber-300">latest-tickets.md</code> when the game closes:
             </p>
           </div>
-          <div className="flex items-center gap-2.5 self-start sm:self-auto">
-            <button
-              onClick={() => copyText('sync', WORKSTATION_SYNC_COMMAND)}
-              className="py-1.5 px-3.5 rounded bg-sky-500 hover:bg-sky-400 text-stone-950 font-semibold text-xs transition cursor-pointer"
-            >
-              {copiedId === 'sync' ? '✓ Copied PowerShell Sync!' : 'Copy PowerShell Commands'}
-            </button>
-          </div>
+          <button
+            onClick={() => copyText('workflow', AUTO_CATCHER_WORKFLOW)}
+            className="py-1.5 px-3.5 rounded bg-sky-500 hover:bg-sky-400 text-stone-950 font-semibold text-xs transition cursor-pointer self-start sm:self-auto"
+          >
+            {copiedId === 'workflow' ? '✓ Copied Commands!' : 'Copy Workstation Commands'}
+          </button>
         </div>
         <pre className="bg-stone-950/90 p-3 rounded border border-stone-800 text-sky-200 font-mono text-xs overflow-x-auto whitespace-pre-wrap leading-relaxed">
-          {WORKSTATION_SYNC_COMMAND}
+          {AUTO_CATCHER_WORKFLOW}
         </pre>
       </section>
 
-      <section className="bg-stone-900/90 rounded-lg p-6 border border-stone-800 space-y-4">
-        <h2 className="text-lg font-semibold text-amber-300">
-          1. Current S/B/T/R/V Evidence Ledger
-        </h2>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-stone-800 text-stone-400 font-mono">
-                <th className="py-2.5 pr-4">Package</th>
-                <th className="py-2.5 pr-4">Deliverable Summary</th>
-                <th className="py-2.5 pr-4">Evidence State</th>
-                <th className="py-2.5 pr-4">Remaining Gate</th>
-                <th className="py-2.5">Owned Files</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-stone-800/70">
-              {LEDGER_ROWS.map((row) => (
-                <tr key={row.pkg} className="hover:bg-stone-800/40">
-                  <td className="py-3 pr-4 font-mono font-semibold text-amber-300 whitespace-nowrap">
-                    {row.pkg}
-                  </td>
-                  <td className="py-3 pr-4 text-stone-200">{row.title}</td>
-                  <td className="py-3 pr-4 font-mono text-emerald-300 whitespace-nowrap">
-                    {row.status}
-                  </td>
-                  <td className="py-3 pr-4 text-stone-300">{row.gap}</td>
-                  <td className="py-3 font-mono text-stone-400">{row.files}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Interactive Log / Snapshot Triage Dropzone */}
+      <section className="bg-stone-900/90 rounded-lg p-6 border border-amber-500/40 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-amber-300">
+              2. Instant Log &amp; Flight-Recorder Ticket Generator
+            </h2>
+            <p className="text-stone-400 text-xs mt-0.5">
+              Upload or paste <code className="text-stone-200">stderr.log</code>, <code className="text-stone-200">interaction-*.jsonl</code>, or <code className="text-stone-200">latest-diagnostics.json</code> to immediately extract deduplicated repair tickets and agent prompts.
+            </p>
+          </div>
+          <label className="py-2 px-4 rounded bg-stone-800 hover:bg-stone-700 border border-stone-700 text-stone-200 font-semibold text-xs transition cursor-pointer self-start sm:self-auto">
+            Upload Log / JSONL File
+            <input
+              type="file"
+              accept=".log,.txt,.json,.jsonl,.md"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+          </label>
         </div>
+
+        <textarea
+          value={rawInput}
+          onChange={(e) => setRawInput(e.target.value)}
+          placeholder="Paste lines from stderr.log, stdout.log, interaction-*.jsonl, or latest-diagnostics.json here..."
+          rows={5}
+          className="w-full bg-stone-950 border border-stone-800 rounded p-3 text-xs font-mono text-stone-200 focus:outline-none focus:border-amber-500"
+        />
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleAnalyze}
+            className="py-2 px-4 rounded bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold text-xs transition cursor-pointer"
+          >
+            Extract &amp; Prep Resolution Tickets
+          </button>
+          {parsedTickets.length > 0 && (
+            <button
+              onClick={() =>
+                copyText(
+                  'all-prompts',
+                  parsedTickets
+                    .map(
+                      (t) =>
+                        `[${t.id}] ${t.title}\nTarget: ${t.targetFiles.join(', ')}\nPrompt: ${t.prompt}\nEvidence:\n${t.evidence.map((e) => '  - ' + e).join('\n')}`
+                    )
+                    .join('\n\n')
+                )
+              }
+              className="py-2 px-4 rounded bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-semibold text-xs transition cursor-pointer"
+            >
+              {copiedId === 'all-prompts'
+                ? '✓ Copied All Tickets!'
+                : `Copy All ${parsedTickets.length} Prepped Tickets`}
+            </button>
+          )}
+        </div>
+
+        {parsedTickets.length > 0 && (
+          <div className="space-y-3 pt-2">
+            {parsedTickets.map((ticket) => (
+              <div
+                key={ticket.id}
+                className="bg-stone-950 border border-stone-800 rounded p-4 space-y-2"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono text-xs font-semibold">
+                      {ticket.id}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-mono text-xs">
+                      {ticket.category}
+                    </span>
+                    <h3 className="font-semibold text-sm text-stone-100">
+                      {ticket.title}
+                    </h3>
+                  </div>
+                  <button
+                    onClick={() => copyText(ticket.id, ticket.prompt)}
+                    className="py-1 px-3 rounded bg-stone-800 hover:bg-stone-700 text-amber-300 font-mono text-xs transition cursor-pointer self-start sm:self-auto"
+                  >
+                    {copiedId === ticket.id
+                      ? '✓ Copied Prompt!'
+                      : 'Copy Agent Prompt'}
+                  </button>
+                </div>
+                <div className="text-xs text-stone-400 font-mono">
+                  Target Files: {ticket.targetFiles.join(', ')}
+                </div>
+                <div className="text-xs text-stone-300 bg-stone-900/80 p-2.5 rounded border border-stone-800/80">
+                  <span className="text-amber-300 font-semibold">Prompt: </span>
+                  {ticket.prompt}
+                </div>
+                <ul className="text-xs font-mono text-stone-400 space-y-1 pl-4 list-disc">
+                  {ticket.evidence.map((ev, i) => (
+                    <li key={i}>{ev}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="bg-stone-900/90 rounded-lg p-6 border border-emerald-500/30 space-y-4">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold text-emerald-300">
-              2. Close Out T-Level Gates (G03, H00, D01–D07, Q00–Q04)
+              3. Targeted Verification Suite (13 Tests &lt; 20 Ceiling)
             </h2>
             <p className="text-stone-400 text-xs mt-0.5">
-              Executes 13 targeted unit tests total (1 in <code className="text-stone-200">benilla-protocol-wrath</code>, 3 in <code className="text-stone-200">benilla-hotpatch</code>, 9 in <code className="text-stone-200">benilla-app::quest_trace::tests</code>).
+              Validates G03 item stats bounds, H00 hotpatch retry state, and D01–D07 / Q00–Q04 flight-recorder correlations.
             </p>
           </div>
           <button
@@ -233,43 +539,6 @@ export default function App() {
           {TARGETED_TEST_COMMANDS}
         </pre>
       </section>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <section className="bg-stone-900/90 rounded-lg p-6 border border-amber-500/30 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-amber-300">
-              3. H01 Runbook — Live Same-PID Pose Swap (A → B → A)
-            </h2>
-            <button
-              onClick={() => copyText('h01', H01_LIVE_RUNBOOK)}
-              className="py-1.5 px-3 rounded bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold text-xs transition cursor-pointer"
-            >
-              {copiedId === 'h01' ? '✓ Copied H01!' : 'Copy H01 Runbook'}
-            </button>
-          </div>
-          <pre className="bg-stone-950 p-4 rounded border border-stone-800 text-stone-200 font-mono text-xs overflow-x-auto whitespace-pre-wrap leading-relaxed">
-            {H01_LIVE_RUNBOOK}
-          </pre>
-        </section>
-
-        <section className="bg-stone-900/90 rounded-lg p-6 border border-amber-500/30 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-amber-300">
-              4. Q05 Runbook — Firna Northshire Live Acceptance
-            </h2>
-            <button
-              onClick={() => copyText('q05', Q05_LIVE_RUNBOOK)}
-              className="py-1.5 px-3 rounded bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold text-xs transition cursor-pointer"
-            >
-              {copiedId === 'q05' ? '✓ Copied Q05!' : 'Copy Q05 Runbook'}
-            </button>
-          </div>
-          <pre className="bg-stone-950 p-4 rounded border border-stone-800 text-stone-200 font-mono text-xs overflow-x-auto whitespace-pre-wrap leading-relaxed">
-            {Q05_LIVE_RUNBOOK}
-          </pre>
-        </section>
-      </div>
     </main>
   );
 }
-

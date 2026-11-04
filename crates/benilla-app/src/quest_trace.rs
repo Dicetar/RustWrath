@@ -6677,16 +6677,11 @@ impl History {
             .collect()
     }
 
-    /// Save an allowlisted snapshot away from the frame thread.
-    pub(crate) fn export(&self, build: benilla_world::build_id::BuildId, protocol_mode: &'static str) -> Result<(), String> {
-        let directory = crate::local_state::home()
-            .ok_or_else(|| "Local report storage is unavailable".to_owned())?
-            .join("Logs").join("InteractionDiagnostics");
-        if self.source.0.exporting.swap(true, Ordering::AcqRel) {
-            return Err("A report is already being saved".into());
-        }
-        self.source.0.export_status.store(1, Ordering::Release);
-        let ingress = self.source.0.clone();
+    fn build_export_payload(
+        &self,
+        build: benilla_world::build_id::BuildId,
+        protocol_mode: &'static str,
+    ) -> (serde_json::Value, Vec<(u64, Event)>) {
         let rows: Vec<(u64, Event)> = self
             .entries
             .iter()
@@ -6745,114 +6740,174 @@ impl History {
         let hotpatch = self.hotpatch_attempt_correlation();
         #[cfg(not(feature = "hotpatch"))]
         let hotpatch: Vec<String> = Vec::new();
+        let evidence_class_retention = coverage.evidence_classes.clone();
+        let evidence_class_totals = coverage.evidence_class_totals.clone();
+        let header = serde_json::json!({
+            "schema": "rustwrath.interaction-diagnostics.v1",
+            "version": 1,
+            "run_id": run_id,
+            "protocol_mode": protocol_mode,
+            "coverage": coverage,
+            "evidence_class_retention": evidence_class_retention,
+            "evidence_class_totals": evidence_class_totals,
+            "health_retention_budget": HEALTH_RETENTION_BUDGET,
+            "health_retention_reserve": HEALTH_RETENTION_RESERVE,
+            "ui_input_retention_budget": UI_INPUT_RETENTION_BUDGET,
+            "ui_input_retention_reserve": UI_INPUT_RETENTION_RESERVE,
+            "protocol_retention_budget": PROTOCOL_RETENTION_BUDGET,
+            "protocol_retention_reserve": PROTOCOL_RETENTION_RESERVE,
+            "build_git_sha": if build.sha.is_empty() { None } else { Some(build.sha) },
+            "build_dirty_state": "unknown",
+            "executable_file_sha1": serde_json::Value::Null,
+            "asset_profile_requested": asset_profile,
+            "cargo_profile": if build.profile.is_empty() { None } else { Some(build.profile) },
+            "received": received,
+            "first_retained_sequence": first_sequence,
+            "highest_retained_sequence": highest_sequence,
+            "retained_capacity": RETAINED_CAPACITY,
+            "retention_summary": retention_summary,
+            "evicted": evicted,
+            "dropped": dropped,
+            "interaction_tracking_lost": interaction_tracking_lost,
+            "npc_aliases_assigned": npc_aliases_assigned,
+            "upstream_gap_events": source_gaps,
+            "last_observed_patch_sha1_bytes": last_observed_patch_digest,
+            "object_update_packets_seen": update_packets_seen,
+            "object_update_packets_sampled": update_packets_sampled,
+            "object_update_packets_sampled_out": sampled_updates,
+            "object_update_sampling_interval": 64,
+            "movement_packets_coalesced": movement_coalesced,
+            "movement_packets_refused": movement_refused,
+            "incidents": incidents,
+            "incidents_evicted": incidents_evicted,
+            "ingress_pending_at_snapshot": ingress_pending,
+            "action_summaries": action_summaries,
+            "panel_correlations": panel_correlations,
+            "slot_correlations": slot_correlations,
+            "turn_in_correlations": turn_in_correlations,
+            "ui_error_correlations": ui_correlations,
+            "ui_click_correlations": ui_click_correlations,
+            "ui_click_outcomes": ui_click_outcomes,
+            "ui_input_rows_lost": ui_input_rows_lost,
+            "cast_correlations": cast_chains,
+            "loot_vendor_correlations": loot_vendor,
+            "quest_ui_correlations": quest_ui,
+            "session_transition_summaries": session,
+            "movement_pressure": movement,
+            "movement_correction_attribution": movement_corrections,
+            "audio_output_health": audio,
+            "asset_window_summaries": assets,
+            "hotpatch_attempts": hotpatch,
+            "diagnostic_vectors": diagnostic_vectors,
+        });
+        (header, rows)
+    }
+
+    fn write_export_snapshot(
+        directory: &std::path::Path,
+        mut header: serde_json::Value,
+        rows: &[(u64, Event)],
+    ) -> anyhow::Result<std::path::PathBuf> {
+        use std::io::{Read, Write};
+        use sha1::{Digest, Sha1};
+        std::fs::create_dir_all(directory)?;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let file_hash = std::env::current_exe().ok().and_then(|executable| {
+            let mut file = std::fs::File::open(executable).ok()?;
+            let mut digest = Sha1::new();
+            let mut buffer = [0u8; 65536];
+            loop {
+                let count = file.read(&mut buffer).ok()?;
+                if count == 0 {
+                    break;
+                }
+                digest.update(&buffer[..count]);
+            }
+            Some(format!("{:x}", digest.finalize()))
+        });
+        if let Some(obj) = header.as_object_mut() {
+            obj.insert(
+                "executable_file_sha1".to_string(),
+                file_hash.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        let mut text = header.to_string();
+        text.push('\n');
+        for (sequence, event) in rows {
+            text.push_str(&serde_json::to_string(&(sequence, event))?);
+            text.push('\n');
+        }
+        let mut file = tempfile::NamedTempFile::new_in(directory)?;
+        file.write_all(text.as_bytes())?;
+        file.as_file().sync_all()?;
+        let mut path = directory.join(format!("interaction-{timestamp}.jsonl"));
+        let mut suffix = 0_u64;
+        loop {
+            match file.persist_noclobber(&path) {
+                Ok(_) => break,
+                Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    file = error.file;
+                    suffix += 1;
+                    path = directory.join(format!("interaction-{timestamp}-{suffix}.jsonl"));
+                }
+                Err(error) => return Err(error.error.into()),
+            }
+        }
+        info!("quest diagnostics saved to {}", path.display());
+        Ok(path)
+    }
+
+    /// Save an allowlisted snapshot synchronously (used on application exit so the process does not
+    /// terminate before the background writer finishes).
+    pub(crate) fn export_sync(
+        &self,
+        build: benilla_world::build_id::BuildId,
+        protocol_mode: &'static str,
+    ) -> Result<std::path::PathBuf, String> {
+        let directory = crate::local_state::home()
+            .ok_or_else(|| "Local report storage is unavailable".to_owned())?
+            .join("Logs")
+            .join("InteractionDiagnostics");
+        for _ in 0..100 {
+            if !self.source.0.exporting.swap(true, Ordering::AcqRel) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.source.0.export_status.store(1, Ordering::Release);
+        let (header, rows) = self.build_export_payload(build, protocol_mode);
+        let result = Self::write_export_snapshot(&directory, header, &rows);
+        let status = match &result {
+            Ok(_) => 2,
+            Err(error) => {
+                warn!("quest diagnostics export failed: {error:#}");
+                3
+            }
+        };
+        self.source.0.export_status.store(status, Ordering::Release);
+        self.source.0.exporting.store(false, Ordering::Release);
+        result.map_err(|e| e.to_string())
+    }
+
+    /// Save an allowlisted snapshot away from the frame thread.
+    pub(crate) fn export(&self, build: benilla_world::build_id::BuildId, protocol_mode: &'static str) -> Result<(), String> {
+        let directory = crate::local_state::home()
+            .ok_or_else(|| "Local report storage is unavailable".to_owned())?
+            .join("Logs").join("InteractionDiagnostics");
+        if self.source.0.exporting.swap(true, Ordering::AcqRel) {
+            return Err("A report is already being saved".into());
+        }
+        self.source.0.export_status.store(1, Ordering::Release);
+        let ingress = self.source.0.clone();
+        let (header, rows) = self.build_export_payload(build, protocol_mode);
         let spawn = std::thread::Builder::new()
             .name("interaction-diagnostics-export".into())
             .spawn(move || {
-                let result = (|| -> anyhow::Result<()> {
-                    use std::io::{Read, Write};
-                    use sha1::{Digest, Sha1};
-                    std::fs::create_dir_all(&directory)?;
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-                    let file_hash = std::env::current_exe().ok().and_then(|executable| {
-                        let mut file = std::fs::File::open(executable).ok()?;
-                        let mut digest = Sha1::new();
-                        let mut buffer = [0u8; 65536];
-                        loop {
-                            let count = file.read(&mut buffer).ok()?;
-                            if count == 0 {
-                                break;
-                            }
-                            digest.update(&buffer[..count]);
-                        }
-                        Some(format!("{:x}", digest.finalize()))
-                    });
-                    let evidence_class_retention = coverage.evidence_classes.clone();
-                    let evidence_class_totals = coverage.evidence_class_totals.clone();
-                    let mut text = serde_json::json!({
-                        "schema": "rustwrath.interaction-diagnostics.v1",
-                        "version": 1,
-                        "run_id": run_id,
-                        "protocol_mode": protocol_mode,
-                        "coverage": coverage,
-                        "evidence_class_retention": evidence_class_retention,
-                        "evidence_class_totals": evidence_class_totals,
-                        "health_retention_budget": HEALTH_RETENTION_BUDGET,
-                        "health_retention_reserve": HEALTH_RETENTION_RESERVE,
-                        "ui_input_retention_budget": UI_INPUT_RETENTION_BUDGET,
-                        "ui_input_retention_reserve": UI_INPUT_RETENTION_RESERVE,
-                        "protocol_retention_budget": PROTOCOL_RETENTION_BUDGET,
-                        "protocol_retention_reserve": PROTOCOL_RETENTION_RESERVE,
-                        "build_git_sha": if build.sha.is_empty() { None } else { Some(build.sha) },
-                        "build_dirty_state": "unknown",
-                        "executable_file_sha1": file_hash,
-                        "asset_profile_requested": asset_profile,
-                        "cargo_profile": if build.profile.is_empty() { None } else { Some(build.profile) },
-                        "received": received,
-                        "first_retained_sequence": first_sequence,
-                        "highest_retained_sequence": highest_sequence,
-                        "retained_capacity": RETAINED_CAPACITY,
-                        "retention_summary": retention_summary,
-                        "evicted": evicted,
-                        "dropped": dropped,
-                        "interaction_tracking_lost": interaction_tracking_lost,
-                        "npc_aliases_assigned": npc_aliases_assigned,
-                        "upstream_gap_events": source_gaps,
-                        "last_observed_patch_sha1_bytes": last_observed_patch_digest,
-                        "object_update_packets_seen": update_packets_seen,
-                        "object_update_packets_sampled": update_packets_sampled,
-                        "object_update_packets_sampled_out": sampled_updates,
-                        "object_update_sampling_interval": 64,
-                        "movement_packets_coalesced": movement_coalesced,
-                        "movement_packets_refused": movement_refused,
-                        "incidents": incidents,
-                        "incidents_evicted": incidents_evicted,
-                        "ingress_pending_at_snapshot": ingress_pending,
-                        "action_summaries": action_summaries,
-                        "panel_correlations": panel_correlations,
-                        "slot_correlations": slot_correlations,
-                        "turn_in_correlations": turn_in_correlations,
-                        "ui_error_correlations": ui_correlations,
-                        "ui_click_correlations": ui_click_correlations,
-                        "ui_click_outcomes": ui_click_outcomes,
-                        "ui_input_rows_lost": ui_input_rows_lost,
-                        "cast_correlations": cast_chains,
-                        "loot_vendor_correlations": loot_vendor,
-                        "quest_ui_correlations": quest_ui,
-                        "session_transition_summaries": session,
-                        "movement_pressure": movement,
-                        "movement_correction_attribution": movement_corrections,
-                        "audio_output_health": audio,
-                        "asset_window_summaries": assets,
-                        "hotpatch_attempts": hotpatch,
-                        "diagnostic_vectors": diagnostic_vectors,
-                    }).to_string();
-                    text.push('\n');
-                    for (sequence, event) in rows {
-                        text.push_str(&serde_json::to_string(&(sequence, event))?);
-                        text.push('\n');
-                    }
-                    let mut file = tempfile::NamedTempFile::new_in(&directory)?;
-                    file.write_all(text.as_bytes())?;
-                    file.as_file().sync_all()?;
-                    let mut path = directory.join(format!("interaction-{timestamp}.jsonl"));
-                    let mut suffix = 0_u64;
-                    loop {
-                        match file.persist_noclobber(&path) {
-                            Ok(_) => break,
-                            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                                file = error.file;
-                                suffix += 1;
-                                path = directory.join(format!("interaction-{timestamp}-{suffix}.jsonl"));
-                            }
-                            Err(error) => return Err(error.error.into()),
-                        }
-                    }
-                    info!("quest diagnostics saved to {}", path.display());
-                    Ok(())
-                })();
+                let result = Self::write_export_snapshot(&directory, header, &rows);
                 let status = match result {
-                    Ok(()) => 2,
+                    Ok(_) => 2,
                     Err(error) => {
                         warn!("quest diagnostics export failed: {error:#}");
                         3
@@ -6943,6 +6998,82 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<ScriptCursor>()
         .insert_resource(history)
         .add_systems(Last, (poll_script_diagnostics, poll_replica, poll_audio, poll_movement, poll_scene, poll_frame_time, poll_asset_failures, drain).chain());
+    #[cfg(feature = "dev")]
+    {
+        app.add_systems(Last, auto_export_incidents.after(drain));
+        crate::shutdown::on_app_exit(app, export_on_exit.after(drain).into_configs());
+    }
+}
+
+#[cfg(feature = "dev")]
+fn resolve_protocol_mode(
+    wrath_input: Option<&Res<crate::wrath::WrathInput>>,
+    net_offline: Option<&Res<crate::net::NetOffline>>,
+) -> &'static str {
+    if wrath_input.is_some() {
+        "wrath_12340"
+    } else if net_offline.is_some() {
+        "offline"
+    } else {
+        "vanilla_5875"
+    }
+}
+
+#[cfg(feature = "dev")]
+#[derive(Default)]
+struct AutoExportState {
+    last_exported_incidents_total: u64,
+    last_export_secs: f64,
+}
+
+#[cfg(feature = "dev")]
+fn auto_export_incidents(
+    history: Res<History>,
+    stamp: Option<Res<benilla_world::build_id::BuildId>>,
+    wrath_input: Option<Res<crate::wrath::WrathInput>>,
+    net_offline: Option<Res<crate::net::NetOffline>>,
+    time: Res<Time<bevy::time::Real>>,
+    mut state: Local<AutoExportState>,
+) {
+    if crate::run_mode::unattended() || crate::local_state::home().is_none() {
+        return;
+    }
+    let total_incidents = (history.incidents.len() as u64).saturating_add(history.incidents_evicted);
+    if total_incidents <= state.last_exported_incidents_total {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    if state.last_export_secs > 0.0 && now - state.last_export_secs < 10.0 {
+        return;
+    }
+    let build = stamp.map(|s| *s).unwrap_or_default();
+    let protocol_mode = resolve_protocol_mode(wrath_input.as_ref(), net_offline.as_ref());
+    if history.export(build, protocol_mode).is_ok() {
+        state.last_exported_incidents_total = total_incidents;
+        state.last_export_secs = now;
+    }
+}
+
+#[cfg(feature = "dev")]
+fn export_on_exit(
+    mut history: ResMut<History>,
+    stamp: Option<Res<benilla_world::build_id::BuildId>>,
+    wrath_input: Option<Res<crate::wrath::WrathInput>>,
+    net_offline: Option<Res<crate::net::NetOffline>>,
+) {
+    if crate::run_mode::unattended() || crate::local_state::home().is_none() {
+        return;
+    }
+    for _ in 0..8 {
+        drain_history(&mut history);
+    }
+    let (received, _, dropped) = history.counters();
+    if received == 0 && dropped == 0 {
+        return;
+    }
+    let build = stamp.map(|s| *s).unwrap_or_default();
+    let protocol_mode = resolve_protocol_mode(wrath_input.as_ref(), net_offline.as_ref());
+    let _ = history.export_sync(build, protocol_mode);
 }
 
 #[derive(Default)]

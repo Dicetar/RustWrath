@@ -57,4 +57,15 @@ $client = Start-Process -FilePath $binary -WorkingDirectory $repo -PassThru `
     -RedirectStandardError (Join-Path $run 'stderr.log')
 @("pid=$($client.Id)", "binary_sha256=$((Get-FileHash -LiteralPath $binary).Hash)") |
     Set-Content -LiteralPath (Join-Path $run 'launch.txt')
-Write-Host "RustWrath started. Enter credentials in the game window. Logs: $run"
+
+$collector = Join-Path $PSScriptRoot 'collect-diagnostics.ps1'
+if (Test-Path -LiteralPath $collector) {
+    $watchCmd = "Wait-Process -Id $($client.Id) -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; & '$($collector.Replace("'", "''"))' -RunDir '$($run.Replace("'", "''"))' *> `$null"
+    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-Command', $watchCmd
+    ) | Out-Null
+}
+Write-Host "RustWrath started (PID $($client.Id)). Enter credentials in the game window."
+Write-Host "Logs & auto-triage tickets will be saved to: $logs\latest-tickets.md when you close the game."
