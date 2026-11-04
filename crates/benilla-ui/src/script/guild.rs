@@ -38,6 +38,13 @@ pub const RANK_RIGHT_BITS: [u32; 13] = [
     0x0001_0000, // 13 Modify Guild Info
 ];
 
+/// `CanGuildBankRepair`'s bit (`WoW/Source/Ui/GuildInfo_Scripts.cpp`,
+/// `Script_CanGuildBankRepair`, OFFSET `0x005CC200`): the player's own rank rights must
+/// contain `0x40000`. vmangos names this `GR_RIGHT_WITHDRAW_GOLD` (bank repair / withdraw
+/// gold), which sits outside the thirteen `GuildControl` checkboxes, so it is deliberately
+/// excluded from [`RANK_RIGHT_BITS`].
+pub const BANK_REPAIR: u32 = 0x0004_0000;
+
 /// One-based indices into [`RANK_RIGHT_BITS`], numbered as `GUILDCONTROL_OPTION<n>`.
 mod right {
     pub(super) const PROMOTE: usize = 5;
@@ -647,6 +654,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         )?;
     }
 
+    // CanGuildBankRepair() (`GuildInfo_Scripts.cpp` `Script_CanGuildBankRepair`, OFFSET
+    // `0x005CC200`): the player's own rank rights must contain BANK_REPAIR (`0x40000`),
+    // outside the thirteen `GuildControl` checkboxes. Always one return: 1 or nil.
+    g.set(
+        "CanGuildBankRepair",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(binding_abi::flag(
+                model.guild.in_guild && model.guild.rights & BANK_REPAIR != 0,
+            ))
+        })?,
+    )?;
+
     // ── The rank-control popup ───────────────────────────────────────────────────────────────
     // GuildControlGetNumRanks() (`0x4d1e60`): the guild's rank count.
     g.set(
@@ -1051,6 +1071,57 @@ mod tests {
         assert!(member_at(&roster, 0).is_none(), "0 = nothing selected");
         assert!(member_at(&roster, 3).is_none(), "past the end");
         assert!(member_at(&roster, -1).is_none(), "negative");
+    }
+
+    /// `Script_CanGuildBankRepair` (OFFSET `0x005CC200`): in-guild with the `0x40000` right
+    /// pushes one `1`; every other case pushes one nil, never zero values.
+    #[test]
+    fn can_guild_bank_repair_is_one_value() {
+        let mut s = crate::script::UiScript::new().unwrap();
+        s.set_guild(GuildState {
+            in_guild: true,
+            rights: 0x0004_0000,
+            ..Default::default()
+        });
+        assert_eq!(
+            s.eval::<Option<i64>>("return CanGuildBankRepair()").unwrap(),
+            Some(1)
+        );
+        assert_eq!(s.arity("CanGuildBankRepair()").unwrap(), 1);
+
+        let mut s = crate::script::UiScript::new().unwrap();
+        s.set_guild(GuildState {
+            in_guild: true,
+            rights: 0,
+            ..Default::default()
+        });
+        assert_eq!(
+            s.eval::<Option<i64>>("return CanGuildBankRepair()").unwrap(),
+            None
+        );
+        assert_eq!(s.arity("CanGuildBankRepair()").unwrap(), 1);
+
+        let mut s = crate::script::UiScript::new().unwrap();
+        s.set_guild(GuildState {
+            in_guild: false,
+            rights: 0x0004_0000,
+            ..Default::default()
+        });
+        assert_eq!(
+            s.eval::<Option<i64>>("return CanGuildBankRepair()").unwrap(),
+            None
+        );
+
+        let mut s = crate::script::UiScript::new().unwrap();
+        s.set_guild(GuildState {
+            in_guild: true,
+            rights: 0x0000_0001,
+            ..Default::default()
+        });
+        assert_eq!(
+            s.eval::<Option<i64>>("return CanGuildBankRepair()").unwrap(),
+            None
+        );
     }
 }
 
