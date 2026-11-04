@@ -905,7 +905,9 @@ fn click_edge_can_claim(witness: &UiHitEvidence) -> bool {
 /// target matching the press row's own press target (the actual edge target, which can differ
 /// from the press row's hit when a capture is held), on the same button, scope, VM and reload
 /// generation inside the same two-second window. A pair that does not match stays two
-/// candidates, which the caller reports as ambiguous rather than guessing.
+/// candidates, which the caller reports as ambiguous rather than guessing. A release row whose
+/// press target is absent (the pressed frame hid or died) does not pair; it also never ran the
+/// click slot, so the press row alone can claim the antecedent.
 fn same_physical_click(press: &UiDispatchToken, release: &UiDispatchToken) -> bool {
     press.witness.edge == UiEdge::Press
         && release.witness.edge == UiEdge::Release
@@ -3416,21 +3418,16 @@ fn click_outcome(witness: &UiHitEvidence) -> UiClickOutcome {
         UiClickOutcome::HandlerBlocked {
             gate: witness.blocked,
         }
+    } else if witness.blocked == UiClickBlock::HandlerMissing {
+        // The slot's own verdict: it was evaluated, nothing was bound and nothing ran.
+        UiClickOutcome::NoHandler
     } else {
-        // A concrete gate can stop the edge before the handler question is answered (a
-        // Down-only registration's release row reads `NotRegistered`, a disabled button reads
-        // `Disabled`). Those must not be reported as "no handler bound"; only the slot's own
-        // `HandlerMissing`, or a slot that ran with no handler, is that claim.
-        let concrete_gate = !matches!(
-            witness.blocked,
-            UiClickBlock::None | UiClickBlock::HandlerMissing | UiClickBlock::HandlerError
-        );
-        if concrete_gate {
-            UiClickOutcome::HandlerBlocked {
-                gate: witness.blocked,
-            }
-        } else {
-            UiClickOutcome::NoHandler
+        // Everything else is a gate (a concrete one, or no recorded gate at all). A bare
+        // `None` is reachable without being a nil-handler claim: a target with no run-local
+        // frame id cannot answer the presence question, and the hyperlink route fires a
+        // different script. Report the gate, never "no handler bound".
+        UiClickOutcome::HandlerBlocked {
+            gate: witness.blocked,
         }
     }
 }
