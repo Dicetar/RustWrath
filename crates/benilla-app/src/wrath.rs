@@ -5791,9 +5791,29 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(flags) = remote.dynamic_flags {
             pairs.push((143, flags));
         }
-        if let Some(display) = remote.display_id {
+        if let Some(display) = remote.display_id.filter(|&display| display != 0) {
             pairs.push((131, display));
             pairs.push((132, display));
+        } else if kind == EntityKind::Player {
+            // A self player's create mask can omit `UNIT_FIELD_DISPLAYID`; the race/sex body
+            // display is authoritative (`ChrRaces` cols 4/5), and both the glue preview and the
+            // reference's `InitDisplayIds` derive the body from it. Without this fallback the
+            // undelivered field reaches `live_display_id` as zero and no avatar is built.
+            if let Some(bytes) = remote.bytes_0 {
+                let race = (bytes & 0xff) as u8;
+                let sex = ((bytes >> 16) & 0xff) as u8;
+                if let Some(display) = world
+                    .get_resource::<crate::entities::CharCreate>()
+                    .and_then(|create| create.0.body_display(race, sex))
+                {
+                    pairs.push((131, display));
+                    pairs.push((132, display));
+                    info!(
+                        "wrath: player {guid:#x} has no delivered display id; using ChrRaces body display {display} (race {race}, sex {sex})",
+                        guid = remote.guid
+                    );
+                }
+            }
         }
         if let Some(bytes) = remote.bytes_0 {
             pairs.push((36, bytes));
@@ -8057,28 +8077,28 @@ fn build_digest(session: &SessionState) -> WorldDigest {
             WrathEntity {
                 guid: *guid,
                 type_id: entry.type_id,
-                entry: entry.field(fields::OBJECT_FIELD_ENTRY),
-                display_id: entry.field(fields::UNIT_FIELD_DISPLAYID),
-                scale: entry.field(fields::OBJECT_FIELD_SCALE_X).map(f32::from_bits),
+                entry: observed(fields::OBJECT_FIELD_ENTRY),
+                display_id: observed(fields::UNIT_FIELD_DISPLAYID),
+                scale: observed(fields::OBJECT_FIELD_SCALE_X).map(f32::from_bits),
                 health: observed(fields::UNIT_FIELD_HEALTH),
                 max_health: observed(fields::UNIT_FIELD_MAXHEALTH),
                 powers,
                 max_powers,
-                level: entry.field(fields::UNIT_FIELD_LEVEL),
-                bytes_0: entry.field(fields::UNIT_FIELD_BYTES_0),
-                faction: entry.field(fields::UNIT_FIELD_FACTIONTEMPLATE),
-                unit_flags: entry.field(fields::UNIT_FIELD_FLAGS),
-                mount_display_id: entry.field(fields::UNIT_FIELD_MOUNTDISPLAYID),
-                bytes_1: entry.field(fields::UNIT_FIELD_BYTES_1),
-                bytes_2: entry.field(fields::UNIT_FIELD_BYTES_2),
-                npc_flags: entry.field(fields::UNIT_NPC_FLAGS),
-                dynamic_flags: entry.field(fields::UNIT_DYNAMIC_FLAGS),
+                level: observed(fields::UNIT_FIELD_LEVEL),
+                bytes_0: observed(fields::UNIT_FIELD_BYTES_0),
+                faction: observed(fields::UNIT_FIELD_FACTIONTEMPLATE),
+                unit_flags: observed(fields::UNIT_FIELD_FLAGS),
+                mount_display_id: observed(fields::UNIT_FIELD_MOUNTDISPLAYID),
+                bytes_1: observed(fields::UNIT_FIELD_BYTES_1),
+                bytes_2: observed(fields::UNIT_FIELD_BYTES_2),
+                npc_flags: observed(fields::UNIT_NPC_FLAGS),
+                dynamic_flags: observed(fields::UNIT_DYNAMIC_FLAGS),
                 target: entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0),
                 charmed_by: entry.self_guid(fields::UNIT_FIELD_CHARMEDBY).filter(|&guid| guid != 0),
                 summoned_by: entry.self_guid(fields::UNIT_FIELD_SUMMONEDBY).filter(|&guid| guid != 0),
                 created_by: entry.self_guid(fields::UNIT_FIELD_CREATEDBY).filter(|&guid| guid != 0),
-                player_bytes: entry.field(fields::PLAYER_BYTES),
-                player_bytes_2: entry.field(fields::PLAYER_BYTES_2),
+                player_bytes: observed(fields::PLAYER_BYTES),
+                player_bytes_2: observed(fields::PLAYER_BYTES_2),
                 position: entry.movement.as_ref().and_then(|m| m.position),
                 move_flags: entry.movement.as_ref().map(|m| m.move_flags),
                 create_spline: entry
