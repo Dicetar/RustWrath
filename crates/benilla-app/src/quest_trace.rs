@@ -4396,12 +4396,46 @@ impl History {
         }
         match links.as_slice() {
             [] => {
-                if self.ui_input_rows_lost() {
-                    "; no retained action carries this click's id; pointer rows were lost (association unavailable)".to_string()
-                } else {
-                    // A cast or macro invoked inside the handler is an `Observed` action with no
-                    // click id, so it has no link here; that is not evidence against the click.
-                    "; no retained action carries this click's id; absence of a link is not evidence the click had no effect (absence, not proof)".to_string()
+                // The action rows can leave the ring while the incident keeps the subject that
+                // minted the link. Prefer that retained incident over claiming the link is gone.
+                let mut incident_links: Vec<(u64, Operation, IncidentOutcome, IncidentConfidence)> =
+                    Vec::new();
+                for incident in self.incidents.iter().rev() {
+                    let subject = incident.subject;
+                    if subject.ui_dispatch_id != Some(ui_dispatch_id)
+                        || subject.scope != scope
+                        || subject.interaction == 0
+                        || incident_links
+                            .iter()
+                            .any(|(interaction, _, _, _)| *interaction == subject.interaction)
+                    {
+                        continue;
+                    }
+                    incident_links.push((
+                        subject.interaction,
+                        subject.operation,
+                        incident.outcome,
+                        weaker(IncidentConfidence::Heuristic, incident.confidence),
+                    ));
+                }
+                match incident_links.as_slice() {
+                    [(interaction, operation, outcome, confidence)] => format!(
+                        "; host-attributed link from retained incident action {} {:?}; outcome {:?} [{:?}]; action rows not retained",
+                        interaction, operation, outcome, confidence,
+                    ),
+                    many if !many.is_empty() => format!(
+                        "; {} retained incidents carry this click's id (ambiguous reporting)",
+                        many.len()
+                    ),
+                    _ if self.ui_input_rows_lost() => {
+                        "; no retained action or incident carries this click's id; pointer rows were lost (association unavailable)".to_string()
+                    }
+                    _ => {
+                        // A cast or macro invoked inside the handler is an `Observed` action with
+                        // no click id, so it has no link here; that is not evidence against the
+                        // click.
+                        "; no retained action or incident carries this click's id; absence of a link is not evidence the click had no effect (absence, not proof)".to_string()
+                    }
                 }
             }
             [(subject, stage)] => {

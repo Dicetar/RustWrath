@@ -232,9 +232,10 @@ client sent.
 Missing evidence is never a negative result. `absence, not proof` means the window expired with
 nothing retained. `unverified ... pointer rows were lost` means the bounded UI-input class evicted
 the pointer row (see `ui_input_rows_lost`), while the click-to-action link can still survive on
-the action's carried id. A fully hidden frame, a release outside the window (which produces no
-row at all), and an engine click action with no Lua handler are all reported as what they are,
-not as a nil-handler fault.
+the action's carried id; if the action rows were evicted too, the retained incident's subject
+still carries the id and the line says the action rows are not retained. A fully hidden frame, a
+release outside the window (which produces no row at all), and an engine click action with no Lua
+handler are all reported as what they are, not as a nil-handler fault.
 
 The inspector prints up to eight click-outcome lines: every retained release edge, plus each
 press edge whose registration fires `OnClick` on the press edge (a `…ButtonDown` or `Both`
