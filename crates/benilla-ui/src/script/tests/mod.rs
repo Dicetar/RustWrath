@@ -405,3 +405,119 @@ fn an_error_handler_that_errors_does_not_recurse() {
         "nothing recurses: the queue drained and the handler failure did not re-enter it"
     );
 }
+
+/// Inside the engine's dispatch the handler's own frame is level 1, so `debuglocals` answers a
+/// real dump there: names and values for its locals and upvalues, with no `tostring` or
+/// metamethod (the reference's packer switches on the type and never calls one).
+#[test]
+fn debuglocals_dumps_the_handlers_locals_and_upvalues_during_dispatch() {
+    let mut s = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.set_screen_size(1024.0, 768.0);
+    s.run(
+        r#"
+        local up = 7
+        seterrorhandler(function(m)
+            local count, flag, ratio, text = 3, true, 1.5, "hi"
+            local mt = { __tostring = function() error("__tostring must not run") end }
+            local guarded = setmetatable({}, mt)
+            local cyclic = {}
+            cyclic.self = cyclic
+            local ordered = { child = 42 }
+            UpSeen = up
+            Dump = debuglocals(1)
+        end)
+        local f = CreateFrame('Frame')
+        f:RegisterEvent('PLAYER_ALIVE')
+        f:SetScript('OnEvent', function() error('boom from a handler') end)
+        "#,
+    )
+    .unwrap();
+    s.fire_event("PLAYER_ALIVE", vec![]);
+    s.dispatch_script_errors_to_handler();
+
+    let dump: String = s.eval("return Dump").unwrap();
+    for want in [
+        "m = \"",
+        "count = 3",
+        "flag = true",
+        "ratio = 1.5",
+        "text = \"hi\"",
+        "guarded = <table> {",
+        "cyclic = <table> {",
+        "ordered = <table> {",
+        "up = 7",
+    ] {
+        assert!(dump.contains(want), "{want:?} missing from: {dump:?}");
+    }
+    // The table's header goes in before its children and its closing brace after them, as the
+    // stock packer appends them: `self.pack` must not let a child line precede its header.
+    let header = dump
+        .find("ordered = <table> {")
+        .unwrap_or_else(|| panic!("no ordered header: {dump:?}"));
+    let child = dump
+        .find("child = 42")
+        .unwrap_or_else(|| panic!("no ordered child: {dump:?}"));
+    let close = dump[child..]
+        .find("\n}\n")
+        .map(|at| child + at)
+        .unwrap_or_else(|| panic!("no closing brace after the ordered child: {dump:?}"));
+    assert!(
+        header < child,
+        "the header must precede its child: {dump:?}"
+    );
+    assert!(
+        child < close,
+        "the closing brace must follow its child: {dump:?}"
+    );
+    assert!(dump.ends_with('\n'), "the packer ends every line: {dump:?}");
+    assert_eq!(s.eval::<i64>("return UpSeen").unwrap(), 7, "the upvalue is live");
+    let errors = s.take_errors();
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.contains("error handler itself failed")),
+        "the handler's own frame dumps cleanly: {errors:?}"
+    );
+}
+
+/// The stock 3.3.5 handler shape: five `%s` in `ERROR_FORMAT`, the fifth the `debuglocals(4)`
+/// answer (`Blizzard_DebugTools.lua:398`, `:406`, `:432-439`). Level 4 names no frame under this
+/// engine's deferred dispatch, so the dump is legitimately empty — but it is a string, so the
+/// handler no longer fails at argument #6.
+#[test]
+fn the_stock_error_format_gets_a_string_from_debuglocals() {
+    let mut s = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.set_screen_size(1024.0, 768.0);
+    s.run(
+        r#"
+        Formatted = nil
+        LocalKind = nil
+        LocalCount = nil
+        seterrorhandler(function(m)
+            local locals = debuglocals(4)
+            LocalKind = type(locals)
+            LocalCount = select('#', debuglocals(4))
+            Formatted = string.format("%s|%s|%s|%s|%s", m, "12:34:56", 1, "stack", locals)
+        end)
+        local f = CreateFrame('Frame')
+        f:RegisterEvent('PLAYER_ALIVE')
+        f:SetScript('OnEvent', function() error('stock shape') end)
+        "#,
+    )
+    .unwrap();
+    s.fire_event("PLAYER_ALIVE", vec![]);
+    s.dispatch_script_errors_to_handler();
+
+    assert_eq!(s.eval::<String>("return LocalKind").unwrap(), "string");
+    assert_eq!(s.eval::<i64>("return LocalCount").unwrap(), 1);
+    let formatted: String = s.eval("return Formatted").unwrap();
+    assert!(formatted.contains("stock shape"), "{formatted:?}");
+    assert!(formatted.ends_with("|stack|"), "{formatted:?}");
+    let errors = s.take_errors();
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.contains("bad argument #6") || e.contains("error handler itself failed")),
+        "the five-%s format must not fail: {errors:?}"
+    );
+}
