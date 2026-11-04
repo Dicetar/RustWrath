@@ -534,7 +534,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             for k in kb.keys_of(name) {
                 out.push(Value::String(lua.create_string(k)?));
             }
-            Ok(MultiValue::from_iter(out))
+            Ok(MultiValue::from_vec(out))
         })?,
     )?;
     // A stored binding signals `UPDATE_BINDINGS` before the verb returns 1 (`0x4b805b`); a refused
@@ -588,7 +588,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             for k in kb.keys_of(&command) {
                 out.push(Value::String(lua.create_string(k)?));
             }
-            Ok(MultiValue::from_iter(out))
+            Ok(MultiValue::from_vec(out))
         })?,
     )?;
     lua.globals().set(
