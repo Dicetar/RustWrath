@@ -1,6 +1,12 @@
 # RustWrath architecture review and release plan
 
-**Review date:** 2026-11-05. **Source baseline:** fetched main at `dbaf8eac`, Bevy 0.18.1. This is a source and requirements review. No build, server or gameplay run was performed. The recorder writer and pose rollback edits in the integration checkout are local proposals and must be reviewed against the release branch. The newer debuglocals and LFG cooldown commits are already on main; the older launch log cannot verify them.
+**Current dispatch baseline (2026-11-05):** fetched `origin/main` at `46fd2f0c2af476b3659116f0fc8c95900bde95a0`, Bevy 0.18.1. Start with the [prioritized source review and ownership diagram](release-review-2026-11-05.md), [17-family trace matrix](release-matrix-2026-11-05.md) and [execution packages, dependency graph and release gates](release-backlog-2026-11-05.md). Dispatch **L1** (stock inventory) and **T1** (scoped reliable delivery) first. One supervisor owns admission and shared-file integration.
+
+**Corrections to the starting plan.** Main has the party LFG aura predicates, guild-bank repair binding and chat channel display functions alongside the earlier debuglocals and LFG cooldown fixes. The addon self-whisper already uses targeted chat; the Python WM owner already has a native receiver. Prove their receivers and workflows before scheduling replacements. Pet orders and talent spends have producers but no encoding arm in the Wrath tap. The bank defect affects both outgoing addresses and incoming projection. Check the unbounded session-reply channel separately from the bounded, oldest-evicted lifecycle feed. Pose rollback and recorder serialization have unmerged local candidate repairs. See the review for exact symbols and branch dispositions.
+
+**Historical planning record below:** the original review examined `dbaf8eac` and was published at `0bb7f4f79185da8cbeab6c7f439712a78121e9b2`. Its phase names and original suggested assignments are retained for provenance. Use the linked backlog for current dispatch. Both reviews are source-only.
+
+One required addon has a separate native dependency: the installed WM_Multiclass glue/world UI calls `MulticlassRequest` and `MulticlassPoll` over the owned 0x51b/0x51a protocol. Those host bindings are absent from the reviewed fork. Package U4 owns this replacement blocker independently of Spellwright self-whisper.
 
 ## What counts as released
 
@@ -89,7 +95,7 @@ Start with inventory as the reference migration. Add **proposed** `apply_wrath_i
 
 **Platform gate:** run a combined scenario with movement, combat, building, generated content and story enabled, disable each independently, and repeat under reconnect and rejected updates. Record who owns outstanding timers, requests and memory after unload. The second release requires this gate plus the replacement release.
 
-## Dispatch and evidence policy
+## Original dispatch and evidence policy (superseded by the linked backlog)
 
 Start two independent packages: **A**, release inventory plus the inventory projection migration plan; **B**, bounded session delivery plus the reproducible alpha route. Assign one integration owner to review changes touching `wrath.rs`, record source identity and own runtime slots. Then close the route, broaden parity by family, and integrate negotiated live updates. Offline module or procgen work may proceed in parallel; schedule live gameplay expansion after alpha per the owner decision. Server-side packages require their own approved workspace and owner.
 
