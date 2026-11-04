@@ -6,7 +6,9 @@
 //! - [`install`]: the 1.12 bare globals (string, table and math aliases, the `debug*` family, the
 //!   error-handler pair), `time` and `date`.
 
-use mlua::{Lua, Value, Variadic};
+use std::cell::Cell;
+
+use mlua::{Lua, MultiValue, Value, Variadic};
 
 /// An mlua error's bare Lua message: what `lua_pcall` leaves for a 1.12 error function (`0x703b40`)
 /// and what `loadstring` returns. It drops the `syntax error: ` and `runtime error: ` words mlua's
@@ -84,11 +86,7 @@ fn install_wrath(lua: &Lua) -> mlua::Result<()> {
     })?;
     globals.set("wipe", wipe.clone())?;
     globals.get::<mlua::Table>("table")?.set("wipe", wipe)?;
-    // `Blizzard_DebugTools.lua:432` calls `debuglocals(4)` inside its error handler.
-    globals.set(
-        "debuglocals",
-        lua.create_function(|_, _level: Option<Value>| Ok(Value::Nil))?,
-    )?;
+    install_debuglocals(lua)?;
     // `tostringall(...)` converts every argument via `tostring`, used by Ace3 and 3.3.5a addons.
     let tostring: mlua::Function = globals.get("tostring")?;
     globals.set(
@@ -102,6 +100,156 @@ fn install_wrath(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     Ok(())
+}
+
+/// `debuglocals([level])` (`0x00819A60`): 5.0's dump of the named locals and upvalues at the
+/// stack level, and no values at all outside the engine's dispatch to the global error handler.
+///
+/// Wrath's stock `Blizzard_DebugTools.lua` stores the answer in
+/// `_ScriptErrorsFrame.locals[index]` and feeds it to a five-`%s` `string.format` (`:398`, `:406`,
+/// `:432-439`), so an answer of nil here fails the handler itself. The one string this returns at
+/// an out-of-range level is the reference's own answer there (`lua_getstack` fails and the empty
+/// buffer is pushed, `:735-755`); it is not a placeholder. Under this engine's deferred dispatch
+/// the stock call's level 4 names no frame at all (the handler runs after the raising stack has
+/// unwound), so the Locals and Stack panes stay empty until dispatch can run at the raise site.
+fn install_debuglocals(lua: &Lua) -> mlua::Result<()> {
+    lua.globals()
+        .set("debuglocals", lua.create_function(debuglocals)?)
+}
+
+fn debuglocals(lua: &Lua, level: Option<Value>) -> mlua::Result<MultiValue> {
+    let mut out = MultiValue::new();
+    // `0x819A69`: `if (!s_inErrorHandler) return 0`.
+    let in_handler = lua
+        .app_data_ref::<ErrorHandlerFlag>()
+        .is_some_and(|f| f.0.get());
+    if !in_handler {
+        return Ok(out);
+    }
+    // `lua_tonumber(L, 1)`; absent, non-numeric and non-positive all clamp to 1 (`0x819A71`).
+    let level = match level {
+        Some(v) => lua.coerce_number(v)?.unwrap_or(0.0),
+        None => 0.0,
+    };
+    let level = if level <= 0.0 { 1 } else { level as usize };
+    // Past the bottom, or a tail-replaced level, answers the empty string, as `lua_getstack`
+    // failing leaves the reference's buffer.
+    let scope = lua.inspect_scope(level).unwrap_or_default();
+    let mut dump = Dump::new(4096); // `char buffer[4096]`, `0x819A7D`
+    for (name, value) in &scope.locals {
+        dump.pack(lua, name, value, 0)?;
+    }
+    for (name, value) in &scope.upvalues {
+        dump.pack(lua, name, value, 0)?;
+    }
+    out.push_back(Value::String(lua.create_string(dump.text)?));
+    Ok(out)
+}
+
+/// The dump's bounded text, appended a line at a time as `FrameScript_PackVariable` appends to
+/// its 4096-byte buffer.
+struct Dump {
+    text: std::string::String,
+    left: usize,
+}
+
+impl Dump {
+    fn new(cap: usize) -> Dump {
+        Dump {
+            text: std::string::String::new(),
+            left: cap,
+        }
+    }
+
+    fn full(&self) -> bool {
+        self.left == 0
+    }
+
+    fn push(&mut self, line: &str) {
+        if self.left == 0 {
+            return;
+        }
+        let mut take = line.len().min(self.left);
+        while take > 0 && !line.is_char_boundary(take) {
+            take -= 1;
+        }
+        if take == 0 {
+            // A multi-byte character wider than what is left: the buffer is done.
+            self.left = 0;
+            return;
+        }
+        self.text.push_str(&line[..take]);
+        self.left -= take;
+    }
+
+    /// One `name = value` line, as `FrameScript_PackVariable` writes it (`0x819300`): a table's
+    /// entries only at depth 0 (the stock packer stops one level down), and no `tostring`, no
+    /// metamethod, no `pcall`. A raw `next` failure is the caller's error, as `lua_next` raises.
+    fn pack(&mut self, lua: &Lua, name: &str, value: &Value, depth: usize) -> mlua::Result<()> {
+        if self.full() {
+            return Ok(());
+        }
+        let indent = " ".repeat(depth);
+        let line = match value {
+            // A table streams its header and closing brace around its children, as `0x819300`
+            // does (`SStrPack` of the header, the entries, then the brace), so the children land
+            // between them in the buffer. The other values are one line.
+            Value::Table(t) => {
+                self.push(&format!("{indent}{name} = <table> {{\n"));
+                if depth == 0 && !self.full() {
+                    for pair in t.pairs::<Value, Value>() {
+                        let (key, value) = pair?;
+                        let Some(key) = key_text(&key) else { continue };
+                        self.pack(lua, &key, &value, depth + 1)?;
+                        if self.full() {
+                            break;
+                        }
+                    }
+                }
+                self.push(&format!("{indent}}}\n"));
+                return Ok(());
+            }
+            Value::Nil => format!("{indent}{name} = nil\n"),
+            Value::Boolean(b) => format!("{indent}{name} = {b}\n"),
+            Value::Integer(_) | Value::Number(_) => {
+                format!("{indent}{name} = {}\n", number_text(lua, value)?)
+            }
+            Value::String(s) => format!("{indent}{name} = \"{}\"\n", s.to_string_lossy()),
+            // `FrameScript_PackVariable`'s light/userdata case, and 5.0's type names for the rest.
+            Value::Function(f) => {
+                let info = f.info();
+                format!(
+                    "{indent}{name} = <function> defined {}:{}\n",
+                    info.source.as_deref().unwrap_or("=[C]"),
+                    info.line_defined.map_or(-1, |line| line as i64)
+                )
+            }
+            Value::LightUserData(_) => format!("{indent}{name} = <userdata>\n"),
+            Value::Thread(_) => format!("{indent}{name} = <thread>\n"),
+            Value::Error(_) => format!("{indent}{name} = <{}>\n", value.type_name()),
+        };
+        self.push(&line);
+        Ok(())
+    }
+}
+
+/// A number's text as `lua_tostring` writes it: `%.14g`, the VM's own formatter.
+fn number_text(lua: &Lua, value: &Value) -> mlua::Result<std::string::String> {
+    Ok(lua
+        .coerce_string(value.clone())?
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default())
+}
+
+/// A table key as `FrameScript_PackVariable` names it: an integer through `%d`, a string as
+/// written. Other keys have no `%s` form there; they are skipped rather than invented.
+fn key_text(key: &Value) -> Option<std::string::String> {
+    match key {
+        Value::Integer(i) => Some((*i as i32).to_string()),
+        Value::Number(n) => Some((*n as i32).to_string()),
+        Value::String(s) => Some(s.to_string_lossy()),
+        _ => None,
+    }
 }
 
 /// `debugprofilestart`/`debugprofilestop` (`0x702840`/`0x702860`), the two real `debug*` verbs:
@@ -137,6 +285,18 @@ fn install_profile(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Whether the engine is dispatching to the global error handler, the reference's
+/// `s_inErrorHandler` (`0x00D3F79C`) set around its handler call (`0x819730`). An app-data value of
+/// its own, per VM: `debuglocals` reads it from a shared borrow, which may be held across the
+/// handler call (benilla-mlua keeps each app-data type in its own cell).
+pub(super) struct ErrorHandlerFlag(pub(super) Cell<bool>);
+
+impl Default for ErrorHandlerFlag {
+    fn default() -> Self {
+        Self(Cell::new(false))
+    }
+}
+
 /// The handler `seterrorhandler` holds, `None` until one is given.
 pub(super) fn error_handler(lua: &Lua) -> Option<mlua::Function> {
     lua.named_registry_value::<Option<mlua::Function>>(super::REG_ERRORHANDLER)
@@ -150,6 +310,8 @@ pub(super) fn error_handler(lua: &Lua) -> Option<mlua::Function> {
 /// (`BasicControls.xml:16`), so every addon finds that. `seterrorhandler` takes a function alone
 /// and raises its `Usage:` on anything else, nil included, so the slot can never be cleared.
 fn install_error_handler(lua: &Lua) -> mlua::Result<()> {
+    // Born clear; a fork re-installs it beside the profiler's and call host's slots.
+    lua.set_app_data(ErrorHandlerFlag::default());
     let g = lua.globals();
     g.set(
         "seterrorhandler",

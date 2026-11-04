@@ -960,9 +960,11 @@ impl UiScript {
         // What waits is the original's host's, and its handlers' values its VM's.
         model.script_calls.clear();
         lua.set_app_data(model);
-        // A fork is a VM of its own, so it carries the profiler's slot and the call host's.
+        // A fork is a VM of its own, so it carries the profiler's slot, the call host's and the
+        // error-dispatch flag's.
         handler_prof::install(&lua);
         host::install(&lua);
+        lua.set_app_data(stdlib::ErrorHandlerFlag::default());
         UiScript {
             lua,
             instructions: Default::default(),
@@ -1774,6 +1776,14 @@ impl UiScript {
     /// dialog (`BasicControls.xml:16`). With none installed the error stays on the host channel,
     /// [`UiScript::errors`], alone; a handler that raises is recorded there only and stops the
     /// batch, so the path cannot recurse.
+    ///
+    /// The handler runs with [`stdlib::ErrorHandlerFlag`] set, which is what lets `debuglocals`
+    /// answer at all, mirroring `s_inErrorHandler` around the reference's call
+    /// (`FrameScript.cpp:1123-1129`). The flag is restored on the error path too, unlike the
+    /// reference's `lua_call` longjmp leak: a later directly called handler must read as outside.
+    /// Because this dispatch runs after the raising call has unwound, the stock handler's
+    /// `debuglocals(4)` names no frame here and its dump is empty; the Locals/Stack panes stay
+    /// empty until an error handler can run at the raise site.
     pub fn dispatch_script_errors_to_handler(&mut self) {
         let pending = std::mem::take(&mut self.model_mut().pending_error_dispatch);
         if pending.is_empty() {
@@ -1782,10 +1792,18 @@ impl UiScript {
         let Some(handler) = stdlib::error_handler(&self.lua) else {
             return;
         };
+        let flag = self.lua.app_data_ref::<stdlib::ErrorHandlerFlag>();
         for arg in pending {
+            let was = flag.as_ref().is_some_and(|f| f.0.get());
+            if let Some(f) = &flag {
+                f.0.set(true);
+            }
             let ran = host::unheld(&self.lua, || {
                 arg.value(&self.lua).and_then(|v| handler.call::<()>(v))
             });
+            if let Some(f) = &flag {
+                f.0.set(was);
+            }
             if let Err(e) = ran {
                 self.model_mut()
                     .errors

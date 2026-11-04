@@ -479,6 +479,14 @@ pub struct FrameInfo {
     pub func: Value,
 }
 
+/// The named variables a frame holds, as 5.0's `lua_getlocal` and `lua_getupvalue` walk them.
+/// Names are the prototype's bytes, as written; a native's upvalues carry 5.0's empty name.
+#[derive(Clone, Debug, Default)]
+pub struct FrameScope {
+    pub locals: Vec<(Vec<u8>, Value)>,
+    pub upvalues: Vec<(Vec<u8>, Value)>,
+}
+
 /// What a call produced, for the dispatch loop.
 enum Called {
     /// A Lua frame was pushed; run it.
@@ -2264,6 +2272,46 @@ impl Vm {
             }
         }
         None
+    }
+
+    /// The locals and upvalues of the frame `level` up, as `lua_getlocal` and `lua_getupvalue`
+    /// read them (`debuglocals`'s walk): the locals whose `Proto::locvars` span holds the frame's
+    /// current instruction, each from its register, then the running closure's upvalues. `None`
+    /// past the bottom of the stack, or for a level a tail call replaced; a native has no locals,
+    /// and its upvalues answer 5.0's empty name.
+    pub fn frame_scope(&self, level: usize) -> Option<FrameScope> {
+        let fi = self.frame_at_level(level)?;
+        let f = &self.frames[fi];
+        let mut locals = Vec::new();
+        // SAFETY: a live frame's code is alive (see `Frame::proto`).
+        if let Some(p) = unsafe { f.proto.as_ref() } {
+            let pc = f.pc().saturating_sub(1);
+            let base = f.base();
+            for l in &p.locvars {
+                // `luaF_getlocalname`'s liveness test, with the register the declaration holds
+                // (the same as the active-local ordinal, which 5.0 indexes the frame by).
+                if (l.startpc as usize) <= pc && pc < (l.endpc as usize) {
+                    if let Some(&v) = self.stack.get(base + l.reg as usize) {
+                        locals.push((l.name.to_vec(), v));
+                    }
+                }
+            }
+        }
+        let upvalues: Vec<(Vec<u8>, Value)> = match self.heap.func(f.func) {
+            FuncObj::Lua(l) => l
+                .proto()
+                .upval_names
+                .iter()
+                .zip(l.upvals())
+                .map(|(name, &u)| (name.to_vec(), self.read_upvalue(u)))
+                .collect(),
+            // 5.1's `aux_upvalue` names a C closure's upvalues `""`.
+            FuncObj::Native { upvals, .. } => upvals
+                .iter()
+                .map(|&v| (Vec::new(), v))
+                .collect(),
+        };
+        Some(FrameScope { locals, upvalues })
     }
 
     fn describe(&self, i: usize) -> FrameInfo {

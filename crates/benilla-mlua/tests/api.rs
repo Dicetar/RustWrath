@@ -1,6 +1,6 @@
 //! The API answers as mlua 0.11's does over the C Lua build, for the calls benilla makes.
 
-use benilla_mlua::{Function, Lua};
+use benilla_mlua::{Function, Lua, Value};
 
 /// `Debug::function` is the function running at the level: `lua_getinfo(L, "f", ar)`.
 #[test]
@@ -20,6 +20,45 @@ fn a_stack_level_names_its_function() {
         .unwrap();
     assert_eq!(mine, seen);
     assert_eq!(caller, f);
+}
+
+/// `inspect_scope` is `lua_getlocal`/`lua_getupvalue` at one level: the active locals by name and
+/// the running closure's upvalues.
+#[test]
+fn a_stack_level_names_its_active_locals_and_upvalues() {
+    let lua = Lua::new();
+    let seen = lua
+        .create_function(|lua, ()| {
+            let scope = lua.inspect_scope(1).expect("the caller's frame");
+            let names = scope
+                .locals
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            let a = scope
+                .locals
+                .iter()
+                .find(|(name, _)| name.as_str() == "a")
+                .map(|(_, value)| value.clone())
+                .expect("the local `a`");
+            let up = scope
+                .upvalues
+                .iter()
+                .find(|(name, _)| name.as_str() == "up")
+                .map(|(_, value)| value.clone())
+                .expect("the upvalue `up`");
+            Ok((names, a, up))
+        })
+        .unwrap();
+    lua.globals().set("seen", seen).unwrap();
+    let (names, a, up): (String, Value, Value) = lua
+        .load("local up = 10 local function F() local a, b = 1, 2 if up then end return seen() end return F()")
+        .eval()
+        .unwrap();
+    assert_eq!(names, "a,b");
+    assert!(matches!(a, Value::Integer(1)), "{a:?}");
+    assert!(matches!(up, Value::Integer(10)), "{up:?}");
 }
 
 /// An index the host makes with no Lua running raises a plain type error, as `lua_gettable`

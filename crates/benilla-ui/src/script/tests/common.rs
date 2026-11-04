@@ -54,3 +54,8 @@ pub(super) fn script() -> UiScript {
     s.register_cvars([("UberTooltips", "1")]);
     s
 }
+
+/// A VM under the 3.3.5a contract, where `debuglocals` and the Wrath stdlib are installed.
+pub(super) fn wrath_script() -> UiScript {
+    UiScript::with_target(crate::script::UiTarget::Wrath335).expect("construct a Wrath UiScript")
+}

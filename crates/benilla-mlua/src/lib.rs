@@ -971,6 +971,27 @@ impl Lua {
         Some(f(&Debug { info, lua: self }))
     }
 
+    /// The named locals and upvalues of the stack level `level` up, as `lua_getlocal` and
+    /// `lua_getupvalue` read them: a `debuglocals` dump's source. `None` past the bottom of the
+    /// stack, or for a level a tail call replaced; a native frame has no locals. Names are the
+    /// prototype's bytes, lossily decoded, and values are rooted handles like any other.
+    pub fn inspect_scope(&self, level: usize) -> Option<FrameScope> {
+        let scope = self.vm().frame_scope(level)?;
+        let name = |n: Vec<u8>| std::string::String::from_utf8_lossy(&n).into_owned();
+        Some(FrameScope {
+            locals: scope
+                .locals
+                .into_iter()
+                .map(|(n, v)| (name(n), self.wrap(v)))
+                .collect(),
+            upvalues: scope
+                .upvalues
+                .into_iter()
+                .map(|(n, v)| (name(n), self.wrap(v)))
+                .collect(),
+        })
+    }
+
     /// Run `callback` once for every `triggers.every_nth_instruction` instructions, counted as
     /// 5.1 counts them, at the next loop back edge, call or return rather than the exact
     /// instruction (`benilla_lua::vm::Hook`). An error it answers is no Lua error, as mlua's is:
@@ -2301,6 +2322,16 @@ impl<T> DerefMut for AppDataRefMut<'_, T> {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Debugging
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The named variables of one stack level, as [`Lua::inspect_scope`] answers them.
+#[derive(Clone, Debug, Default)]
+pub struct FrameScope {
+    /// The active locals, in declaration order, each from its register.
+    pub locals: Vec<(std::string::String, Value)>,
+    /// The running function's upvalues, in declaration order; a C closure's carry 5.0's empty
+    /// name.
+    pub upvalues: Vec<(std::string::String, Value)>,
+}
 
 /// One stack level.
 pub struct Debug<'a> {

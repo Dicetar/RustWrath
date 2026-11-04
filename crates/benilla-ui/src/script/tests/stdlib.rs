@@ -1,7 +1,7 @@
 //! The WoW stdlib: positional `format`, the bare-global aliases, the sandbox, `debugstack`,
 //! `GetTime`, `time`/`date`, `RunScript` and the Lua 5.0 dialect.
 
-use super::common::script;
+use super::common::{script, wrath_script};
 
 // ── format's positional items ──
 
@@ -88,6 +88,28 @@ fn stdlib_aliases_and_helpers() {
     "#,
     )
     .unwrap();
+}
+
+/// `debuglocals` (`0x819A60`) answers no values at all outside the engine's dispatch to the
+/// global error handler — not one nil, which is what made the stock five-`%s` format fail.
+#[test]
+fn debuglocals_answers_no_values_outside_the_error_handler() {
+    let s = wrath_script();
+    assert_eq!(
+        s.eval::<i64>("return select('#', debuglocals(1))")
+            .unwrap(),
+        0,
+        "outside the handler the reference returns 0 values"
+    );
+    assert!(s.eval::<bool>("return debuglocals() == nil").unwrap());
+    // A script calling the handler directly is outside the engine's dispatch, as in 3.3.5.
+    s.run(
+        "Captured = 'unset' \
+         seterrorhandler(function(m) Captured = debuglocals(1) end) \
+         geterrorhandler()('direct')",
+    )
+    .unwrap();
+    assert!(s.eval::<bool>("return Captured == nil").unwrap());
 }
 
 // ── Sandbox holes ──
