@@ -5809,7 +5809,7 @@ fn wrath_apply_world(world: &mut World) {
                     pairs.push((131, display));
                     pairs.push((132, display));
                     debug!(
-                        "wrath: player {guid:#x} has no delivered display id; using ChrRaces body display {display} (race {race}, sex {sex})",
+                        "wrath: player {guid:#x} has no delivered display id; using the ChrRaces body display (race {race}, sex {sex})",
                         guid = remote.guid
                     );
                 }

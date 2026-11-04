@@ -491,9 +491,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                             Value::String(s) => s.to_str().ok(),
                             _ => None,
                         };
-                        if name0.is_some_and(|n| by_name(&model, n).is_some()) {
+                        if name0.as_ref().is_some_and(|n| by_name(&model, n).is_some()) {
                             arg0
-                        } else if name1.is_some_and(|n| by_name(&model, n).is_some()) {
+                        } else if name1.as_ref().is_some_and(|n| by_name(&model, n).is_some()) {
                             arg1
                         } else if name0.is_some() {
                             arg0
