@@ -56,6 +56,9 @@ pub struct ScrollingMessageState {
     pub lines_gen: u64,
     /// `fadingEnabled` (ctor 1).
     pub fading_enabled: bool,
+    /// `m_hyperlinksEnabled` (ctor true): whether the frame turns its markup into clickable
+    /// hyperlinks. benilla's hyperlink spans are app-fed, so this only records the flag.
+    pub hyperlinks_enabled: bool,
     /// The write position (`+0x344`): the ring slot of the newest line, from 0 and wrapping at
     /// `max_lines` (`0x788183`-`0x788198`); −1 when empty (`0x7878d7`, `0x787f95`, `0x7882d8`).
     pub write_pos: i32,
@@ -101,6 +104,7 @@ impl Default for ScrollingMessageState {
             time_visible: 10.0,
             fade_duration: 3.0,
             fading_enabled: true,
+            hyperlinks_enabled: true,
             lines_gen: 0,
             write_pos: -1,
             anchor: 0,

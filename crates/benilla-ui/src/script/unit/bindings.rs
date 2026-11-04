@@ -1093,5 +1093,31 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // UnitDetailedThreatSituation(unit [, mob]) (`0x613b40`): five values on a live threat, none
+    // when there is no mob or no threat. benilla projects no threat table, so the reference's
+    // empty (no mob) answer is the correct one; never a fabricated status.
+    g.set(
+        "UnitDetailedThreatSituation",
+        lua.create_function(|lua, args: mlua::MultiValue| {
+            let unit = args.get(0).cloned().unwrap_or(mlua::Value::Nil);
+            let unit = crate::script::binding_abi::string_arg(
+                lua,
+                unit,
+                r#"Usage: UnitDetailedThreatSituation("unit" [, "mob"])"#,
+            )?;
+            if let Some(mob) = args.get(1) {
+                if !matches!(mob, mlua::Value::Nil) {
+                    let _ = crate::script::binding_abi::string_arg(
+                        lua,
+                        mob.clone(),
+                        r#"Usage: UnitDetailedThreatSituation("unit" [, "mob"])"#,
+                    )?;
+                }
+            }
+            let _ = unit;
+            Ok(mlua::MultiValue::new())
+        })?,
+    )?;
+
     Ok(())
 }

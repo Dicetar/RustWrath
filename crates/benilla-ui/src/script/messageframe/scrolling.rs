@@ -301,6 +301,30 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             })
         })?,
     )?;
+    // `m_hyperlinksEnabled` (ctor true): SetHyperlinksEnabled stores the flag and refreshes the
+    // hyperlink buttons; benilla's spans are app-fed, so the flag is recorded and the refresh
+    // is a no-op, but the verb still runs.
+    m.set(
+        "SetHyperlinksEnabled",
+        lua.create_function(|lua, (this, value): (Table, mlua::Value)| {
+            let on = match value {
+                mlua::Value::Boolean(b) => b,
+                mlua::Value::Number(n) => n != 0.0,
+                mlua::Value::Integer(n) => n != 0,
+                mlua::Value::Nil => true,
+                _ => true,
+            };
+            with_smf(lua, &this, |smf| smf.hyperlinks_enabled = on)
+        })?,
+    )?;
+    m.set(
+        "GetHyperlinksEnabled",
+        lua.create_function(|lua, this: Table| {
+            with_smf(lua, &this, |smf| {
+                crate::script::binding_abi::flag(smf.hyperlinks_enabled)
+            })
+        })?,
+    )?;
     // XML's `displayDuration` is the Lua `TimeVisible`. SetTimeVisible (`0x793b00`) and
     // SetFadeDuration (`0x793cb0`) take a `lua_isnumber` argument, else raise their usage line
     // (`0x87b918`, `0x87b93c`), and store it as f32 with no clamp (`0x793ba6`, `0x793d56`).

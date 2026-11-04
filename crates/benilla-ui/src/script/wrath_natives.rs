@@ -812,6 +812,92 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
     )?;
 
+    // Voice chat is permanently absent, but ChannelFrame still calls these display/voice verbs.
+    // `GetActiveVoiceChannel` answers nil and `GetChannelDisplayInfo` an empty (out-of-range)
+    // list, as a client with no display channels; `GetVoiceSessionInfo` answers nil.
+    lua.globals().set(
+        "GetActiveVoiceChannel",
+        lua.create_function(|_, ()| Ok(mlua::Value::Nil))?,
+    )?;
+    lua.globals().set(
+        "GetChannelDisplayInfo",
+        lua.create_function(|lua, index: mlua::Value| {
+            let _ = crate::script::binding_abi::number_arg(
+                lua,
+                index,
+                "Usage: GetChannelDisplayInfo(index)",
+            )?;
+            // No display channels: every 1-based index is past the end.
+            Ok(mlua::MultiValue::new())
+        })?,
+    )?;
+    lua.globals().set(
+        "GetVoiceSessionInfo",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::Value::Nil))?,
+    )?;
+
+    // Possess bar: benilla has no possessed unit, so `GetPossessInfo` answers three nils, the
+    // stock BonusActionBarFrame's empty bar.
+    lua.globals().set(
+        "GetPossessInfo",
+        lua.create_function(|lua, index: mlua::Value| {
+            let n = crate::script::binding_abi::number_arg(
+                lua,
+                index,
+                "Usage: GetPossessInfo(index)",
+            )?;
+            if n == 0.0 {
+                return Err(mlua::Error::runtime("Usage: GetPossessInfo(index)"));
+            }
+            Ok((
+                mlua::Value::Nil,
+                mlua::Value::Nil,
+                mlua::Value::Nil,
+            ))
+        })?,
+    )?;
+
+    // LFG/dungeon finder is not wired; the stock frames see an empty dungeon list, no
+    // backfill, no deserter timer and no lock info. `GetAvailableRoles` still follows the
+    // character's class, as the reference reads ChrClasses.dbc.
+    lua.globals().set(
+        "CanPartyLFGBackfill",
+        lua.create_function(|_, ()| Ok(false))?,
+    )?;
+    lua.globals().set(
+        "GetNumRandomDungeons",
+        lua.create_function(|_, ()| Ok(0i64))?,
+    )?;
+    lua.globals().set(
+        "GetLFGDeserterExpiration",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::MultiValue::new()))?,
+    )?;
+    lua.globals().set(
+        "RequestLFDPlayerLockInfo",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
+    )?;
+    lua.globals().set(
+        "GetAvailableRoles",
+        lua.create_function(|lua, _: mlua::MultiValue| {
+            let class_id = lua
+                .app_data_ref::<super::Model>()
+                .map(|m| m.player_req.class_id)
+                .unwrap_or(0);
+            let roles = match class_id {
+                1 | 6 => 0x0b_u8,
+                2 | 11 => 0x0f_u8,
+                5 | 7 => 0x0d_u8,
+                3 | 4 | 8 | 9 => 0x09_u8,
+                _ => 0_u8,
+            };
+            Ok((
+                roles & 0x02 != 0,
+                roles & 0x04 != 0,
+                roles & 0x08 != 0,
+            ))
+        })?,
+    )?;
+
     super::input_verbs::install_wrath(lua)?;
 
     Ok(())

@@ -796,7 +796,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     g.set(
         "QuestMapUpdateAllQuests",
-        lua.create_function(|_, ()| Ok(()))?,
+        lua.create_function(|_, ()| Ok(0i64))?,
+    )?;
+    // Dungeon floor count and battlefield vehicle count: benilla has no dungeon-map floors
+    // and no battlefield vehicles, so the stock maps see zero of each.
+    g.set(
+        "GetNumDungeonMapLevels",
+        lua.create_function(|_, ()| Ok(0i64))?,
+    )?;
+    g.set(
+        "GetNumBattlefieldVehicles",
+        lua.create_function(|_, ()| Ok(0i64))?,
     )?;
     }
 

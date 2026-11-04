@@ -98,6 +98,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| submit(lua, TutorialCall::Reset))?,
     )?;
 
+    // `TriggerTutorial(id)` (`0x4b5390`): 1-based, as `FlagTutorial`; queues a fire-once
+    // tutorial trigger for the app's feed. No bank mutation here; the published id comes from
+    // the engine's fire-once test.
+    g.set(
+        "TriggerTutorial",
+        lua.create_function(|lua, n: mlua::Value| {
+            let n = number_arg(lua, n, "Usage: TriggerTutorial(\"tutorial\")")?;
+            let id = n.wrapping_sub(1);
+            if !(0..TUTORIAL_IDS as i64).contains(&id) {
+                return Ok(());
+            }
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.tutorial_triggers.push(id as u32);
+            Ok(())
+        })?,
+    )?;
+
     Ok(())
 }
 
