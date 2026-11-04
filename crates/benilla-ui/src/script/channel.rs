@@ -652,6 +652,131 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         )?;
     }
 
+    // `GetNumDisplayChannels()` (`0x00504E10`): rebuild the display list, then push its count.
+    // Bounded subset: a group header, a world/zone header, a custom header, then the confirmed
+    // joined channels in slot order. Party/raid/battleground rows and their collapse state are
+    // intentionally omitted — this model has no owner for them — so the group header's child count
+    // is always 0 here.
+    g.set(
+        "GetNumDisplayChannels",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let confirmed = model
+                .joined_channels
+                .iter()
+                .filter(|s| s.as_ref().is_some_and(|c| c.confirmed))
+                .count();
+            Ok(3 + confirmed as f64)
+        })?,
+    )?;
+
+    // `GetChannelDisplayInfo(index)` (`0x004FF580`): non-number -> usage error; out of range -> no
+    // values; otherwise exactly nine values. Header rows carry the (possibly localized) category
+    // name, `header = 1`, a nil collapse, a nil channel number, the child count (or nil at 0),
+    // nil active/category/voice. Channel rows carry the slot name, a nil header/collapse/count/
+    // active, the 1-based slot as channelNumber, `CHANNEL_CATEGORY_WORLD`/`CUSTOM` as category,
+    // and nil voice values.
+    g.set(
+        "GetChannelDisplayInfo",
+        lua.create_function(|lua, index: Value| {
+            let n = super::binding_abi::number_arg(
+                lua,
+                index,
+                "Usage: GetChannelDisplayInfo(index)",
+            )?;
+            let pos = match usize::try_from(n as i64 - 1) {
+                Ok(p) => p,
+                Err(_) => return Ok(MultiValue::new()),
+            };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let confirmed: Vec<(usize, &JoinedChannel)> = model
+                .joined_channels
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| s.as_ref().filter(|c| c.confirmed).map(|c| (i, c)))
+                .collect();
+            let zone_count = confirmed.iter().filter(|(_, c)| c.id != 0).count();
+            let custom_count = confirmed.iter().filter(|(_, c)| c.id == 0).count();
+            let total = 3 + confirmed.len();
+            if pos >= total {
+                return Ok(MultiValue::new());
+            }
+            let localized = |key: &str| {
+                lua.globals()
+                    .get::<String>(key)
+                    .unwrap_or_else(|_| key.to_string())
+            };
+            let mut out = Vec::with_capacity(9);
+            match pos {
+                0 => {
+                    out.push(Value::String(lua.create_string(&localized(
+                        "CHANNEL_CATEGORY_GROUP",
+                    ))?));
+                    out.push(Value::Number(1.0));
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    out.push(Value::Nil); // group has no party/raid/bg rows in this subset
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                }
+                1 => {
+                    out.push(Value::String(lua.create_string(&localized(
+                        "CHANNEL_CATEGORY_WORLD",
+                    ))?));
+                    out.push(Value::Number(1.0));
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    if zone_count > 0 {
+                        out.push(Value::Number(zone_count as f64));
+                    } else {
+                        out.push(Value::Nil);
+                    }
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                }
+                2 => {
+                    out.push(Value::String(lua.create_string(&localized(
+                        "CHANNEL_CATEGORY_CUSTOM",
+                    ))?));
+                    out.push(Value::Number(1.0));
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    if custom_count > 0 {
+                        out.push(Value::Number(custom_count as f64));
+                    } else {
+                        out.push(Value::Nil);
+                    }
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                }
+                p => {
+                    let (slot, ch) = confirmed[p - 3];
+                    out.push(Value::String(lua.create_string(&ch.name)?));
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    out.push(Value::Number((slot + 1) as f64));
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                    let cat = if ch.id != 0 {
+                        "CHANNEL_CATEGORY_WORLD"
+                    } else {
+                        "CHANNEL_CATEGORY_CUSTOM"
+                    };
+                    out.push(Value::String(lua.create_string(cat)?));
+                    out.push(Value::Nil);
+                    out.push(Value::Nil);
+                }
+            }
+            Ok(MultiValue::from_vec(out))
+        })?,
+    )?;
+
     Ok(())
 }
 
@@ -944,5 +1069,147 @@ mod command_tests {
         let e = s.run("LeaveChannelByName()").unwrap_err();
         assert!(e.to_string().contains("Usage: LeaveChannelByName"), "{e}");
         assert_eq!(s.arity("LeaveChannelByName('x')").unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JoinedChannel;
+    use crate::script::UiScript;
+    use mlua::Value;
+
+    fn slot(name: &str, id: u32, confirmed: bool) -> Option<JoinedChannel> {
+        Some(JoinedChannel {
+            name: name.into(),
+            id,
+            confirmed,
+        })
+    }
+
+    fn vals(s: &UiScript, i: i64) -> Vec<Value> {
+        s.eval(&format!("return {{GetChannelDisplayInfo({})}}", i))
+            .unwrap()
+    }
+
+    fn strv(v: &Value) -> Option<String> {
+        match v {
+            Value::String(t) => Some(t.to_str().unwrap().to_string()),
+            _ => None,
+        }
+    }
+
+    fn numv(v: &Value) -> Option<f64> {
+        match v {
+            Value::Number(n) => Some(*n),
+            Value::Integer(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn no_joined_channels_gives_three_headers() {
+        let mut s = UiScript::new().unwrap();
+        s.run(
+            "CHANNEL_CATEGORY_GROUP = 'Group' \
+             CHANNEL_CATEGORY_WORLD = 'World' \
+             CHANNEL_CATEGORY_CUSTOM = 'Custom'",
+        )
+        .unwrap();
+        assert_eq!(s.eval::<f64>("return GetNumDisplayChannels()").unwrap(), 3.0);
+        for i in 1..=3 {
+            let v = vals(&s, i);
+            assert_eq!(v.len(), 9, "index {i}");
+            assert_eq!(numv(&v[1]).unwrap(), 1.0);
+            assert!(matches!(v[2], Value::Nil));
+            assert!(matches!(v[3], Value::Nil));
+            assert!(matches!(v[4], Value::Nil));
+        }
+    }
+
+    #[test]
+    fn one_zone_and_one_custom_give_five_rows() {
+        let mut s = UiScript::new().unwrap();
+        s.run(
+            "CHANNEL_CATEGORY_GROUP = 'Group' \
+             CHANNEL_CATEGORY_WORLD = 'World' \
+             CHANNEL_CATEGORY_CUSTOM = 'Custom'",
+        )
+        .unwrap();
+        s.set_joined_channels(vec![
+            slot("ZoneChan", 1, true),
+            slot("CustomChan", 0, true),
+        ]);
+        assert_eq!(s.eval::<f64>("return GetNumDisplayChannels()").unwrap(), 5.0);
+
+        let g = vals(&s, 1);
+        assert_eq!(g.len(), 9);
+        assert_eq!(strv(&g[0]).unwrap(), "Group");
+        assert_eq!(numv(&g[1]).unwrap(), 1.0);
+        assert!(matches!(g[2], Value::Nil));
+        assert!(matches!(g[3], Value::Nil));
+        assert!(matches!(g[4], Value::Nil));
+        assert!(matches!(g[5], Value::Nil));
+        assert!(matches!(g[6], Value::Nil));
+        assert!(matches!(g[7], Value::Nil));
+        assert!(matches!(g[8], Value::Nil));
+
+        let z = vals(&s, 2);
+        assert_eq!(strv(&z[0]).unwrap(), "World");
+        assert_eq!(numv(&z[1]).unwrap(), 1.0);
+        assert!(matches!(z[3], Value::Nil));
+        assert_eq!(numv(&z[4]).unwrap(), 1.0);
+        assert!(matches!(z[6], Value::Nil));
+
+        let c = vals(&s, 3);
+        assert_eq!(strv(&c[0]).unwrap(), "Custom");
+        assert_eq!(numv(&c[4]).unwrap(), 1.0);
+
+        let zr = vals(&s, 4);
+        assert_eq!(zr.len(), 9);
+        assert_eq!(strv(&zr[0]).unwrap(), "ZoneChan");
+        assert!(matches!(zr[1], Value::Nil));
+        assert!(matches!(zr[2], Value::Nil));
+        assert_eq!(numv(&zr[3]).unwrap(), 1.0);
+        assert!(matches!(zr[4], Value::Nil));
+        assert!(matches!(zr[5], Value::Nil));
+        assert_eq!(strv(&zr[6]).unwrap(), "CHANNEL_CATEGORY_WORLD");
+        assert!(matches!(zr[7], Value::Nil));
+        assert!(matches!(zr[8], Value::Nil));
+
+        let cr = vals(&s, 5);
+        assert_eq!(strv(&cr[0]).unwrap(), "CustomChan");
+        assert_eq!(numv(&cr[3]).unwrap(), 2.0);
+        assert_eq!(strv(&cr[6]).unwrap(), "CHANNEL_CATEGORY_CUSTOM");
+    }
+
+    #[test]
+    fn out_of_range_returns_no_values() {
+        let s = UiScript::new().unwrap();
+        assert_eq!(s.arity("GetChannelDisplayInfo(99)").unwrap(), 0);
+        assert_eq!(s.arity("GetChannelDisplayInfo(0)").unwrap(), 0);
+    }
+
+    #[test]
+    fn non_number_raises_usage() {
+        let s = UiScript::new().unwrap();
+        let e = s.run("GetChannelDisplayInfo('x')").unwrap_err();
+        assert!(
+            e.to_string().contains("Usage: GetChannelDisplayInfo(index)"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn unconfirmed_slot_is_excluded() {
+        let mut s = UiScript::new().unwrap();
+        s.set_joined_channels(vec![
+            slot("Pending", 1, false),
+            slot("CustomChan", 0, true),
+        ]);
+        assert_eq!(s.eval::<f64>("return GetNumDisplayChannels()").unwrap(), 4.0);
+        let z = vals(&s, 2);
+        assert!(matches!(z[4], Value::Nil));
+        let c = vals(&s, 3);
+        assert_eq!(numv(&c[4]).unwrap(), 1.0);
     }
 }

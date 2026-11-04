@@ -868,23 +868,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // Voice chat is permanently absent, but ChannelFrame still calls these display/voice verbs.
-    // `GetActiveVoiceChannel` answers nil and `GetChannelDisplayInfo` an empty (out-of-range)
-    // list, as a client with no display channels; `GetVoiceSessionInfo` answers nil.
+    // `GetActiveVoiceChannel` answers nil and `GetVoiceSessionInfo` answers nil. The real
+    // `GetChannelDisplayInfo` (and `GetNumDisplayChannels`) are installed by `channel::install`.
     lua.globals().set(
         "GetActiveVoiceChannel",
         lua.create_function(|_, ()| Ok(mlua::Value::Nil))?,
-    )?;
-    lua.globals().set(
-        "GetChannelDisplayInfo",
-        lua.create_function(|lua, index: mlua::Value| {
-            let _ = crate::script::binding_abi::number_arg(
-                lua,
-                index,
-                "Usage: GetChannelDisplayInfo(index)",
-            )?;
-            // No display channels: every 1-based index is past the end.
-            Ok(mlua::MultiValue::new())
-        })?,
     )?;
     lua.globals().set(
         "GetVoiceSessionInfo",
