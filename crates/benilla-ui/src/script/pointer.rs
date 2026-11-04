@@ -13,11 +13,332 @@ use mlua::Value;
 
 use crate::layout::Rect;
 use crate::order;
-use crate::widget::{ButtonState, FrameHandle};
+use crate::widget::{ButtonState, FrameHandle, FrameKind};
 
 use super::clip::{hit_clip, hit_rect};
 use super::tick::verb;
 use super::{button, cursor, editbox, event, protected, Model, UiScript};
+
+// ── Bounded pointer evidence (D08) ───────────────────────────────────────────────────────────
+//
+// One press or release edge leaves a fixed-size, name-free fact set behind. The app maps it once
+// into the retained `UiHitEvidence`; nothing here is serialized and no frame name or exact rect
+// leaf survives beyond the call.
+
+/// Which edge of a physical click a fact set describes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiEdge {
+    Press,
+    #[default]
+    Release,
+}
+
+/// The coarse, allowlisted family of a frame name: the same closed list the app exports as
+/// `UiTarget`. Classification reads the transient name and keeps only this value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiFamily {
+    World,
+    QuestLog,
+    Quest,
+    Merchant,
+    Loot,
+    SpellBook,
+    Character,
+    Other,
+    #[default]
+    NoNamedFrame,
+}
+
+impl UiFamily {
+    /// The family of a frame's global name, or [`UiFamily::NoNamedFrame`] when it has none. A name
+    /// outside the list is [`UiFamily::Other`], never retained.
+    pub fn of_name(name: Option<&str>) -> UiFamily {
+        match name {
+            None => UiFamily::NoNamedFrame,
+            Some(name) if name.starts_with("QuestLog") => UiFamily::QuestLog,
+            Some(name) if name.starts_with("Quest") => UiFamily::Quest,
+            Some(name) if name.starts_with("Merchant") => UiFamily::Merchant,
+            Some(name) if name.starts_with("Loot") => UiFamily::Loot,
+            Some(name) if name.starts_with("SpellBook") => UiFamily::SpellBook,
+            Some(name) if name.starts_with("Character") => UiFamily::Character,
+            Some("WorldFrame") => UiFamily::World,
+            Some(_) => UiFamily::Other,
+        }
+    }
+
+    /// Whether this is a recognised panel family (not `Other`/`NoNamedFrame`).
+    pub fn recognized(self) -> bool {
+        !matches!(self, UiFamily::Other | UiFamily::NoNamedFrame)
+    }
+}
+
+/// Coarse state of the effective hit rect against the screen root. No coordinates are kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiBoundsState {
+    #[default]
+    Unresolved,
+    Empty,
+    OffScreen,
+    Partial,
+    OnScreen,
+}
+
+/// Coarse size class of the effective hit rect's largest span, in root units.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiBoundsBucket {
+    #[default]
+    None,
+    Tiny,
+    Small,
+    Medium,
+    Large,
+    Fullscreen,
+}
+
+/// Which transitions of this button a frame registers for `OnClick` (`RegisterForClicks`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiClickMask {
+    #[default]
+    None,
+    Down,
+    Up,
+    Both,
+}
+
+/// The first gate that stopped the click slot, in code order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiClickBlock {
+    #[default]
+    None,
+    LayoutDrag,
+    WorldHook,
+    TitleMove,
+    PressTargetNone,
+    Disabled,
+    NotRegistered,
+    CursorOutside,
+    FrameGone,
+    CaptureLost,
+    NotPushed,
+    DragStarted,
+    HandlerMissing,
+    HandlerError,
+}
+
+/// Why a frame that contained the point under its script-space rect did not take the hit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiBlockReason {
+    /// The frame's first non-scroll ancestor's hit rect excluded the point.
+    OutsideClip,
+    /// The frame is in a scroll subtree whose non-scroll ancestor chain ran out, so the probe
+    /// misses whatever the point (an unresolved clip owner).
+    ClipUnresolved,
+    /// The point is inside the frame rect but outside its `SetHitRectInsets` hit rect.
+    HitInsets,
+    /// The frame is visible at the point but not mouse-enabled.
+    NotMouseEnabled,
+    /// A nameplate vetoed the hit (a ground-targeted spell armed).
+    NameplateVeto,
+}
+
+/// A frame reference without its name: its run-local id (never exported), widget kind and family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiFrameFacts {
+    pub id: u32,
+    pub kind: FrameKind,
+    pub family: UiFamily,
+}
+
+/// The first frame that contained the point but failed the effective hit, with its reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiBlockerFacts {
+    pub reason: UiBlockReason,
+    pub frame: UiFrameFacts,
+}
+
+/// The bounded fact set a press or release edge leaves on [`Model`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiHitFacts {
+    pub edge: UiEdge,
+    /// The topmost frame that took the point; `None` on a miss or an edge that skipped the walk.
+    pub hit: Option<UiFrameFacts>,
+    /// Nearest recognised ancestor-or-self family; [`UiFamily::Other`] when none.
+    pub owner: UiFamily,
+    /// Ancestor hops to `owner`, capped at 15; `0xff` when no frame was probed.
+    pub owner_hops: u8,
+    /// Only on a miss: the first frame whose rect contained the point but whose effective hit
+    /// excluded it.
+    pub blocker: Option<UiBlockerFacts>,
+    pub bounds: UiBoundsState,
+    pub bounds_bucket: UiBoundsBucket,
+    pub clicks: UiClickMask,
+    pub onclick_present: bool,
+    pub onclick_ran: bool,
+    pub handler_error: bool,
+    pub engine_click: bool,
+    pub blocked: UiClickBlock,
+    /// The frame this edge's press/release went to: the held capture, else the point's hit.
+    pub press_target: Option<UiFrameFacts>,
+    pub press_same_frame: bool,
+    pub press_contains: bool,
+    pub capture_lost: bool,
+    pub double_click: bool,
+    /// The hit frame after its own handlers ran.
+    pub visible_after: bool,
+    pub alive_after: bool,
+}
+
+impl Default for UiHitFacts {
+    fn default() -> UiHitFacts {
+        UiHitFacts {
+            edge: UiEdge::Release,
+            hit: None,
+            owner: UiFamily::Other,
+            owner_hops: 0xff,
+            blocker: None,
+            bounds: UiBoundsState::Unresolved,
+            bounds_bucket: UiBoundsBucket::None,
+            clicks: UiClickMask::None,
+            onclick_present: false,
+            onclick_ran: false,
+            handler_error: false,
+            engine_click: false,
+            blocked: UiClickBlock::None,
+            press_target: None,
+            press_same_frame: false,
+            press_contains: false,
+            capture_lost: false,
+            double_click: false,
+            visible_after: false,
+            alive_after: false,
+        }
+    }
+}
+
+/// A frame's id, kind and family, without retaining its name.
+fn frame_facts(model: &Model, h: FrameHandle) -> Option<UiFrameFacts> {
+    let frame = model.arena.frame(h)?;
+    let id = model.frame_to_id.get(&h).copied()?;
+    Some(UiFrameFacts {
+        id,
+        kind: frame.kind,
+        family: UiFamily::of_name(frame.name.as_deref()),
+    })
+}
+
+/// The nearest recognised ancestor-or-self family and the hops to it, capped at 15. An unnamed or
+/// unrecognised frame is walked past; when the chain ends without one the answer is
+/// [`UiFamily::Other`] with the depth reached (capped). No arena scan.
+fn owner_family(model: &Model, h: FrameHandle) -> (UiFamily, u8) {
+    let mut cur = Some(h);
+    let mut hops = 0u8;
+    while let Some(x) = cur {
+        let Some(frame) = model.arena.frame(x) else {
+            break;
+        };
+        let family = UiFamily::of_name(frame.name.as_deref());
+        if family.recognized() {
+            return (family, hops);
+        }
+        cur = frame.parent;
+        if hops == 15 {
+            break;
+        }
+        hops += 1;
+    }
+    (UiFamily::Other, hops)
+}
+
+/// The effective hit rect's coarse state against the screen root and its size bucket. No numbers
+/// leave this function.
+fn bounds_facts(model: &Model, h: FrameHandle) -> (UiBoundsState, UiBoundsBucket) {
+    let Some(rect) = model.frame_rect(h) else {
+        return (UiBoundsState::Unresolved, UiBoundsBucket::None);
+    };
+    let hit = hit_rect(model, h, rect);
+    if hit.right <= hit.left || hit.top <= hit.bottom {
+        return (UiBoundsState::Empty, UiBoundsBucket::None);
+    }
+    let span = (hit.right - hit.left).max(hit.top - hit.bottom);
+    let bucket = if span <= 32.0 {
+        UiBoundsBucket::Tiny
+    } else if span <= 128.0 {
+        UiBoundsBucket::Small
+    } else if span <= 384.0 {
+        UiBoundsBucket::Medium
+    } else if span <= 768.0 {
+        UiBoundsBucket::Large
+    } else {
+        UiBoundsBucket::Fullscreen
+    };
+    let screen = model.screen;
+    let left = hit.left.max(screen.left);
+    let right = hit.right.min(screen.right);
+    let bottom = hit.bottom.max(screen.bottom);
+    let top = hit.top.min(screen.top);
+    let state = if right <= left || top <= bottom {
+        UiBoundsState::OffScreen
+    } else if left > hit.left || right < hit.right || bottom > hit.bottom || top < hit.top {
+        UiBoundsState::Partial
+    } else {
+        UiBoundsState::OnScreen
+    };
+    (state, bucket)
+}
+
+/// `RegisterForClicks` for this button, as the two `wants_click` probes see it.
+fn click_mask(model: &Model, h: FrameHandle, button: &str) -> UiClickMask {
+    let down = button::wants_click(model, h, &format!("{button}Down"));
+    let up = button::wants_click(model, h, &format!("{button}Up"));
+    match (down, up) {
+        (true, true) => UiClickMask::Both,
+        (true, false) => UiClickMask::Down,
+        (false, true) => UiClickMask::Up,
+        (false, false) => UiClickMask::None,
+    }
+}
+
+/// Whether a Lua `OnClick`-equivalent handler (or hook) is bound: the Wrath three-script slot,
+/// else `OnClick`. Read from the registry, never the name.
+pub(super) fn has_click_handler(lua: &mlua::Lua, id: u32) -> bool {
+    let wrath = lua
+        .app_data_ref::<Model>()
+        .expect("model app_data")
+        .target
+        == super::UiTarget::Wrath335;
+    if wrath {
+        ["PreClick", "OnClick", "PostClick"]
+            .into_iter()
+            .any(|script| event::has_widget_handler(lua, id, script))
+    } else {
+        event::has_widget_handler(lua, id, "OnClick")
+    }
+}
+
+/// Why `fh` contained the point yet did not take it, in probe order. `None` when the frame is not
+/// at the point or the probe would have hit it. One extra rect test per visited frame, only when
+/// evidence collection is requested.
+fn blocker_reason(model: &Model, fh: FrameHandle, x: f32, y: f32) -> Option<UiBlockReason> {
+    let rect = model.frame_rect(fh)?;
+    if !point_in_rect(rect, x, y) {
+        return None;
+    }
+    if !model.arena.is_mouse_enabled(fh) {
+        return Some(UiBlockReason::NotMouseEnabled);
+    }
+    if model.nameplates.vetoes(fh) {
+        return Some(UiBlockReason::NameplateVeto);
+    }
+    if !point_in_rect(hit_rect(model, fh, rect), x, y) {
+        return Some(UiBlockReason::HitInsets);
+    }
+    match hit_clip(model, fh) {
+        None => Some(UiBlockReason::ClipUnresolved),
+        Some(None) => None,
+        Some(Some(clip)) if !point_in_rect(clip, x, y) => Some(UiBlockReason::OutsideClip),
+        Some(Some(_)) => None,
+    }
+}
 
 /// The double-click interval, 300 ms, a constant in the Button mouse-up dispatcher `0x7792d0`
 /// (`0x77937b cmp ecx, 0x12c` on the `0x42c010` millisecond clock). It is not the OS double-click
@@ -117,7 +438,7 @@ impl UiScript {
     /// The handle of the frame that captures `(x, y)`, for a caller that checks it against a
     /// handle set taken earlier (an anonymous frame has no name). Needs [`Self::resolve`] first.
     pub fn hit_test_frame(&self, x: f32, y: f32) -> Option<FrameHandle> {
-        self.hover_walk(x, y).0
+        self.hover_walk(x, y, false).0
     }
 
     /// The hover walk's probes: the capture frame's first (`[root+0x80]`, `0x7661ba`–`0x7661ca`),
@@ -125,7 +446,14 @@ impl UiScript {
     /// first frame whose probe takes the point, and whether a `Minimap` was probed and missed it,
     /// which then drops its blip (`0x4eb0c0`). A frame that takes the hit ends the sweep, so a
     /// window over the Minimap keeps it from the sweep's probe; a held capture is probed anyway.
-    fn hover_walk(&self, x: f32, y: f32) -> (Option<FrameHandle>, bool, Option<FrameHandle>) {
+    /// `collect` asks for the first frame that contained the point but failed the effective hit,
+    /// with its reason; only a press/click asks, so the per-move walk pays nothing.
+    fn hover_walk(
+        &self,
+        x: f32,
+        y: f32,
+        collect: bool,
+    ) -> (Option<FrameHandle>, bool, Option<(FrameHandle, UiBlockReason)>) {
         let model = self.model_ref();
         let sorted = order::pick_order(&model.arena);
         let blip_held = model.minimap_blip.is_some();
@@ -150,8 +478,27 @@ impl UiScript {
                     .frame_rect(fh)
                     .is_some_and(|r| point_in_rect(hit_rect(&model, fh, r), x, y));
             let hit = contains_rect && frame_contains(&model, fh, x, y);
-            if contains_rect && !hit && clipped.get().is_none() {
-                clipped.set(Some(fh));
+            if !hit && collect {
+                if let Some(reason) = blocker_reason(&model, fh, x, y) {
+                    // Prefer the first clip candidate so the legacy `clipped` flag keeps its
+                    // meaning when a design/veto frame happens to sit above it.
+                    let clip = matches!(
+                        reason,
+                        UiBlockReason::OutsideClip | UiBlockReason::ClipUnresolved
+                    );
+                    let replace = match clipped.get() {
+                        None => true,
+                        Some((_, previous)) => {
+                            clip && !matches!(
+                                previous,
+                                UiBlockReason::OutsideClip | UiBlockReason::ClipUnresolved
+                            )
+                        }
+                    };
+                    if replace {
+                        clipped.set(Some((fh, reason)));
+                    }
+                }
             }
             if blip_held && indexed && !hit && is_minimap_handle(&model, fh) {
                 minimap_missed.set(true);
@@ -198,7 +545,7 @@ impl UiScript {
         }
         // A drag-active EditBox extends its selection on every move (`0x77a860`).
         editbox::drag_update(&self.lua, x, y);
-        let (new_handle, minimap_missed, _) = self.hover_walk(x, y);
+        let (new_handle, minimap_missed, _) = self.hover_walk(x, y, false);
         let new_id = new_handle.and_then(|h| self.model_ref().frame_to_id.get(&h).copied());
         // The Minimap's probe runs in the sweep, ahead of the leave and the enter.
         if minimap_missed {
@@ -344,6 +691,12 @@ impl UiScript {
     /// `"<Button>ButtonUp"`. Its `down` argument is not 1.12, whose firer (`0x779540`) passes only
     /// the button name. Returns whether the UI consumed the event.
     pub fn mouse_button(&mut self, x: f32, y: f32, button: &str, down: bool) -> bool {
+        // The edge's witness, defaulted first so every early return publishes current facts
+        // instead of leaving the previous edge's behind.
+        let mut facts = UiHitFacts {
+            edge: if down { UiEdge::Press } else { UiEdge::Release },
+            ..UiHitFacts::default()
+        };
         // ── The layout drag, ahead of everything ─────────────────────────────────────────────────
         //
         // With `SetLayoutMode` on, a press with Control (`0x41f8f0(1)`) or Alt (`0x41f8f0(2)`) held
@@ -354,22 +707,39 @@ impl UiScript {
             let (_, ctrl, alt) = self.model_ref().modifiers;
             if self.model_ref().layout_mode != 0 && (ctrl || alt) {
                 let target = self.layout_drag_target(x, y);
-                let mut model = self.model_mut();
-                model.cursor_pos = (x, y);
                 if let Some(h) = target {
-                    crate::script::object::movable::start_layout_drag(&mut model, h, (x, y), ctrl);
+                    facts.press_target = frame_facts(&self.model_ref(), h);
                 }
+                {
+                    let mut model = self.model_mut();
+                    model.cursor_pos = (x, y);
+                    if let Some(h) = target {
+                        crate::script::object::movable::start_layout_drag(&mut model, h, (x, y), ctrl);
+                    }
+                }
+                facts.blocked = UiClickBlock::LayoutDrag;
+                self.publish_hit(facts);
                 return true;
             }
         }
-        let (hit_handle, _, clipped_handle) = self.hover_walk(x, y);
+        let (hit_handle, _, blocker) = self.hover_walk(x, y, true);
         let hit_id = hit_handle.and_then(|h| self.model_ref().frame_to_id.get(&h).copied());
-        let clipped_id = clipped_handle.and_then(|h| self.model_ref().frame_to_id.get(&h).copied());
         {
-            let mut model = self.model_mut();
-            model.last_ui_hit = hit_id;
-            model.last_ui_clipped = clipped_id;
-            model.last_handler_invoked = false;
+            let model = self.model_ref();
+            facts.hit = hit_handle.and_then(|h| frame_facts(&model, h));
+            if let Some(h) = hit_handle.or(blocker.map(|(h, _)| h)) {
+                let (owner, hops) = owner_family(&model, h);
+                facts.owner = owner;
+                facts.owner_hops = hops;
+            }
+            facts.blocker = blocker.and_then(|(h, reason)| {
+                frame_facts(&model, h).map(|frame| UiBlockerFacts { reason, frame })
+            });
+            if let Some(h) = hit_handle.or(blocker.map(|(h, _)| h)) {
+                let (state, bucket) = bounds_facts(&model, h);
+                facts.bounds = state;
+                facts.bounds_bucket = bucket;
+            }
         }
         // ── The press target: the capture, else the hover ──────────────────────────────────────
         //
@@ -419,15 +789,57 @@ impl UiScript {
         } else {
             (None, false)
         };
+        if down {
+            let model = self.model_ref();
+            facts.press_target = press_target.and_then(|h| frame_facts(&model, h));
+            facts.press_same_frame = press_target.is_some() && press_target == hit_handle;
+            facts.press_contains = press_target.is_some_and(|h| frame_contains(&model, h, x, y));
+            facts.clicks = press_target.map_or(UiClickMask::None, |h| click_mask(&model, h, button));
+        }
         if hooked {
             // `ClearCursor(1, 1)` at `0x492bb5`; the handler returns without a capture, a raise or
             // a press slot, so no frame sees this press and its release finds none to go to.
             self.model_mut().cursor_pos = (x, y);
             verb(&self.lua, cursor::clear_cursor);
+            facts.press_target = None;
+            facts.press_contains = false;
+            facts.press_same_frame = false;
+            facts.clicks = UiClickMask::None;
+            facts.blocked = UiClickBlock::WorldHook;
+            self.publish_hit(facts);
             return true;
         }
         let press_id: Option<u32> =
             press_target.and_then(|h| self.model_ref().frame_to_id.get(&h).copied());
+        // The press slot's gates, evaluated in the client's order for the witness: an enabled
+        // button, the button registered for this press edge, and the cursor inside it.
+        if down {
+            let (enabled, visual, contains, registered_down) =
+                press_target.map_or((false, false, false, false), |h| {
+                    let model = self.model_ref();
+                    (
+                        button::is_enabled(&model, h),
+                        button::wants_press_visual(&model, h, button),
+                        frame_contains(&model, h, x, y),
+                        button::wants_click(&model, h, &format!("{button}Down")),
+                    )
+                });
+            facts.blocked = if press_target.is_none() {
+                UiClickBlock::PressTargetNone
+            } else if !enabled {
+                UiClickBlock::Disabled
+            } else if !visual {
+                UiClickBlock::NotRegistered
+            } else if !contains {
+                UiClickBlock::CursorOutside
+            } else if !registered_down {
+                UiClickBlock::NotRegistered
+            } else {
+                UiClickBlock::None
+            };
+            facts.onclick_present = registered_down
+                && press_id.is_some_and(|id| has_click_handler(&self.lua, id));
+        }
         // ── The raise, first ────────────────────────────────────────────────────────────────────
         //
         // `0x76a5b0` is called unguarded at `0x766392` (the toplevel walk is inside `0x7650f0`),
@@ -448,6 +860,8 @@ impl UiScript {
             if self.title_region_hit(h, x, y) {
                 self.model_mut().cursor_pos = (x, y);
                 crate::script::object::movable::start_title_move(&mut self.model_mut(), h);
+                facts.blocked = UiClickBlock::TitleMove;
+                self.publish_hit(facts);
                 return true;
             }
         }
@@ -466,9 +880,22 @@ impl UiScript {
                 .as_ref()
                 .is_some_and(|m| m.auto_stop)
         {
-            let mut model = self.model_mut();
-            model.moving = None;
-            model.mouse_down_on.remove(button);
+            {
+                let model = self.model_ref();
+                let pressed = release_target(&model, button);
+                facts.press_target = pressed.and_then(|h| frame_facts(&model, h));
+                facts.press_same_frame = pressed.is_some() && pressed == hit_handle;
+                facts.press_contains = pressed.is_some_and(|h| frame_contains(&model, h, x, y));
+                facts.clicks =
+                    pressed.map_or(UiClickMask::None, |h| click_mask(&model, h, button));
+            }
+            {
+                let mut model = self.model_mut();
+                model.moving = None;
+                model.mouse_down_on.remove(button);
+            }
+            facts.blocked = UiClickBlock::TitleMove;
+            self.publish_hit(facts);
             return true;
         }
         // The frame this release goes to, read before the borrow below drains `mouse_down_on`.
@@ -485,9 +912,13 @@ impl UiScript {
             Ok(s) => Value::String(s),
             Err(e) => {
                 self.push_error(e);
+                self.publish_hit(facts);
                 return hit_id.is_some();
             }
         };
+        let mut release_pressed: Option<FrameHandle> = None;
+        let mut release_started = false;
+        let mut release_capture_lost = false;
         let mut press_art: Option<crate::widget::FrameHandle> = None;
         #[allow(clippy::type_complexity)]
         let (
@@ -556,6 +987,14 @@ impl UiScript {
                 // The pressed frame hid (`None` entry): the capture is gone, so nothing of this
                 // release runs, the world click included (`over_world(None)` would take it).
                 let capture_lost = entry == Some(None);
+                release_pressed = pressed;
+                release_capture_lost = capture_lost;
+                facts.press_target = pressed.and_then(|h| frame_facts(&model, h));
+                facts.press_same_frame = pressed.is_some() && pressed == hit_handle;
+                facts.press_contains = pressed.is_some_and(|h| frame_contains(&model, h, x, y));
+                facts.clicks =
+                    pressed.map_or(UiClickMask::None, |h| click_mask(&model, h, button));
+                facts.capture_lost = capture_lost;
                 // `0x7664bb` clears the capture only when no button is still held, so a chorded
                 // release keeps it.
                 if model.mouse_down_on.is_empty() {
@@ -567,6 +1006,7 @@ impl UiScript {
                 }
                 let release = cursor::take_drag(&mut model, button);
                 let started = release.as_ref().is_some_and(|r| r.started);
+                release_started = started;
                 // The world drop: a completed left click on the world, never a drag release, which
                 // keeps carrying (`0x495300` runs on the WorldFrame click release). The world is
                 // `over_world`, not "no frame": the stock `WorldFrame` covers the screen.
@@ -581,6 +1021,23 @@ impl UiScript {
                 (None, release, dropped, None, pressed.filter(|_| !started), None, None)
             }
         };
+        if !down {
+            facts.blocked = if release_capture_lost {
+                UiClickBlock::CaptureLost
+            } else if release_pressed.is_none() {
+                UiClickBlock::PressTargetNone
+            } else if release_started {
+                UiClickBlock::DragStarted
+            } else {
+                UiClickBlock::None
+            };
+            if release_pressed.is_some() {
+                let id =
+                    release_pressed.and_then(|h| self.model_ref().frame_to_id.get(&h).copied());
+                facts.onclick_present = matches!(facts.clicks, UiClickMask::Up | UiClickMask::Both)
+                    && id.is_some_and(|id| has_click_handler(&self.lua, id));
+            }
+        }
         // A track press's value jump fires `OnValueChanged` first, outside the borrow.
         if let Some((id, value)) = slider_jump {
             if let Err(e) = event::fire_widget_handler(
@@ -655,7 +1112,22 @@ impl UiScript {
             // Button. The mouse raises the gate's click flag around the slot
             // (`0x779275`-`0x77928b`); `Click()` does not.
             let _click = protected::raise(&self.lua, protected::Event::Click);
-            button::click_button(&self.lua, id, button, down, false);
+            let outcome = button::click_button(&self.lua, id, button, down, false);
+            facts.onclick_present = outcome.handler_present;
+            facts.onclick_ran = outcome.handler_ran;
+            facts.engine_click = outcome.engine_click;
+            facts.handler_error = outcome.handler_error;
+            if facts.blocked == UiClickBlock::None {
+                facts.blocked = if outcome.disabled {
+                    UiClickBlock::Disabled
+                } else if outcome.handler_error {
+                    UiClickBlock::HandlerError
+                } else if !outcome.handler_ran && !outcome.engine_click {
+                    UiClickBlock::HandlerMissing
+                } else {
+                    UiClickBlock::None
+                };
+            }
         }
         // The press art last (`0x7792b1` follows the Down click `0x779285`): `OnMouseDown`
         // (`0x76bf70`, at the top of the slot) and a Down `OnClick` see the button unpushed, and
@@ -664,12 +1136,26 @@ impl UiScript {
             button::edge(&mut self.model_mut(), h, ButtonState::on_mouse_down);
         }
         if let Some(h) = released {
-            self.release_slot(h, button, (x, y), now, &btn);
+            let outcome = self.release_slot(h, button, (x, y), now, &btn);
+            facts.onclick_present = outcome.handler_present;
+            facts.onclick_ran = outcome.handler_ran;
+            facts.engine_click = outcome.engine_click;
+            facts.handler_error = outcome.handler_error;
+            facts.double_click = outcome.double_click;
+            facts.blocked = outcome.blocked;
+        }
+        if let Some(h) = hit_handle {
+            let model = self.model_ref();
+            facts.alive_after = model.arena.frame(h).is_some();
+            facts.visible_after =
+                facts.alive_after && model.arena.frame(h).is_some_and(|f| f.effective_visible);
         }
         // A world-frame hit is not the UI consuming the event: the reference runs its
         // `OnMouseDown` without consuming (`0x483c40`), then the `BUTTON1`/`BUTTON2` binding, the
         // world click. Only a world drop counts.
-        hit_id.is_some_and(|id| !self.is_world_frame(id)) || world_dropped
+        let consumed = hit_id.is_some_and(|id| !self.is_world_frame(id)) || world_dropped;
+        self.publish_hit(facts);
+        consumed
     }
 
     /// The Button release slot `0x7792d0` past its base (`0x76c040`: `OnMouseUp`, which the caller
@@ -680,7 +1166,7 @@ impl UiScript {
     /// not disabled (`0x7793c2`..`0x7793d4`), on every path that got past the pushed gate and
     /// wherever the cursor is. So a handler reads PUSHED, and what it sets (a lock, a disable)
     /// decides the tail. The state is read here, after `OnMouseUp`, so a script that un-pushes the
-    /// button there cancels the click.
+    /// button there cancels the click. Returns the bounded handler/gate outcome for the witness.
     fn release_slot(
         &mut self,
         h: crate::widget::FrameHandle,
@@ -688,20 +1174,24 @@ impl UiScript {
         (x, y): (f32, f32),
         now: f64,
         btn: &Value,
-    ) {
-        let (click, double) = {
+    ) -> button::ClickOutcome {
+        let mut outcome = button::ClickOutcome::default();
+        if self.model_ref().arena.frame(h).is_none() {
+            outcome.blocked = UiClickBlock::FrameGone;
+            return outcome;
+        }
+        let (pushed, contains, up, double) = {
             let model = self.model_ref();
-            if model.arena.frame(h).is_none() {
-                return;
-            }
-            let clicks = button::release_may_click(&model, h)
-                && frame_contains(&model, h, x, y)
-                && button::wants_click(&model, h, &format!("{button}Up"));
+            let pushed = button::release_may_click(&model, h);
+            let contains = pushed && frame_contains(&model, h, x, y);
+            let up = button::wants_click(&model, h, &format!("{button}Up"));
             // The double click: `0x77938d` fires `OnDoubleClick` instead of the second `OnClick`
             // (`0x77939d jmp 0x7793b5` skips the single leg), only for a frame with an
             // `OnDoubleClick` script (`[+0x4d4] != 0`) whose last click was within the interval.
             // What suppresses the click suppresses it too.
-            let double = clicks
+            let double = pushed
+                && contains
+                && up
                 && model
                     .scripts
                     .get(&h)
@@ -710,21 +1200,54 @@ impl UiScript {
                     .last_click
                     .get(&h)
                     .is_some_and(|&t| now - t <= DOUBLE_CLICK_SECS);
-            (clicks, double)
+            (pushed, contains, up, double)
+        };
+        outcome.blocked = if !pushed {
+            UiClickBlock::NotPushed
+        } else if !contains {
+            UiClickBlock::CursorOutside
+        } else if !up {
+            UiClickBlock::NotRegistered
+        } else {
+            UiClickBlock::None
         };
         let id = self.model_ref().frame_to_id.get(&h).copied();
+        // The handler this edge would fire: `OnDoubleClick` when the detector chose it, else the
+        // `OnClick` slot. Bound is not the same as run.
+        if let Some(id) = id {
+            outcome.handler_present = if double {
+                event::has_widget_handler(&self.lua, id, "OnDoubleClick")
+            } else if up {
+                has_click_handler(&self.lua, id)
+            } else {
+                false
+            };
+        }
+        let click = outcome.blocked == UiClickBlock::None;
         if let (true, Some(id)) = (click, id) {
             // The release raises the click flag around slot `+0x98` or `+0x94` (`0x779352`-`0x7793b8`).
             let _click = protected::raise(&self.lua, protected::Event::Click);
             if double {
-                self.model_mut().last_handler_invoked = true;
-                if let Err(e) =
-                    event::fire_widget_handler(&self.lua, id, "OnDoubleClick", vec![btn.clone()])
-                {
-                    self.push_error(e);
+                outcome.double_click = true;
+                if outcome.handler_present {
+                    outcome.handler_ran = true;
+                    if let Err(e) = event::fire_widget_handler(
+                        &self.lua,
+                        id,
+                        "OnDoubleClick",
+                        vec![btn.clone()],
+                    ) {
+                        outcome.handler_error = true;
+                        self.push_error(e);
+                    }
                 }
             } else {
-                button::click_button(&self.lua, id, button, false, false);
+                let result = button::click_button(&self.lua, id, button, false, false);
+                outcome.handler_present = result.handler_present;
+                outcome.handler_ran = result.handler_ran;
+                outcome.engine_click = result.engine_click;
+                outcome.handler_error = result.handler_error;
+                outcome.disabled = result.disabled;
             }
             // A double clears the stamp (`0x779393`), so clicks pair: four fast clicks are click,
             // double, click, double. A single stamps the detector (`0x7793af`) whether or not an
@@ -738,8 +1261,36 @@ impl UiScript {
                 }
             }
         }
+        if click {
+            if outcome.disabled {
+                outcome.blocked = UiClickBlock::Disabled;
+            } else if outcome.handler_error {
+                outcome.blocked = UiClickBlock::HandlerError;
+            } else if !outcome.handler_ran && !outcome.engine_click {
+                outcome.blocked = UiClickBlock::HandlerMissing;
+            }
+        }
         // The release edge, `SetButtonState(NORMAL)` (`0x7793de`).
         button::edge(&mut self.model_mut(), h, ButtonState::on_mouse_up);
+        outcome
+    }
+
+    /// Publish the edge's bounded facts and the three legacy fields they supersede. Called on
+    /// every `mouse_button` return path so a skipped walk never leaves the previous edge's facts.
+    fn publish_hit(&self, facts: UiHitFacts) {
+        let mut model = self.model_mut();
+        model.last_ui_hit = facts.hit.map(|f| f.id);
+        model.last_ui_clipped = facts
+            .blocker
+            .filter(|b| {
+                matches!(
+                    b.reason,
+                    UiBlockReason::OutsideClip | UiBlockReason::ClipUnresolved
+                )
+            })
+            .map(|b| b.frame.id);
+        model.last_handler_invoked = facts.onclick_ran || facts.engine_click;
+        model.last_hit = facts;
     }
 
     /// Fire `OnDragStop` on a gesture's source, the one place a started drag ends; a source that

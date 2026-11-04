@@ -208,6 +208,7 @@ pub(crate) enum Stage {
         button: UiButton,
         target: UiTarget,
         consumed: bool,
+        witness: UiHitEvidence,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
         ui_dispatch_id: u64,
@@ -219,6 +220,7 @@ pub(crate) enum Stage {
         visible: Option<bool>,
         clipped: bool,
         handler_invoked: bool,
+        witness: UiHitEvidence,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
         ui_dispatch_id: u64,
@@ -466,6 +468,328 @@ pub(crate) enum UiTarget {
     World,
     Other,
     NoNamedFrame,
+}
+
+// ── Bounded pointer witness (D08) ───────────────────────────────────────────────────────────
+//
+// One press or release edge is explainable from these fixed-size values. They carry no frame
+// name, id, exact rect, GUID or text: the coarse family/kind, the first frame that contained the
+// point but failed the effective hit, a coarse bounds state/size bucket, the click registration,
+// the handler facts and the first blocking gate.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum UiEdge {
+    Press,
+    Release,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum UiClickMask {
+    None,
+    Down,
+    Up,
+    Both,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum UiFrameKind {
+    Frame,
+    Button,
+    CheckButton,
+    LootButton,
+    EditBox,
+    ScrollFrame,
+    Slider,
+    StatusBar,
+    Model,
+    Tooltip,
+    Minimap,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct UiFrameRef {
+    pub kind: UiFrameKind,
+    pub family: UiTarget,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum UiBlockReason {
+    OutsideClip,
+    ClipUnresolved,
+    HitInsets,
+    NotMouseEnabled,
+    NameplateVeto,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct UiBlocker {
+    pub reason: UiBlockReason,
+    pub frame: UiFrameRef,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum UiBoundsState {
+    Unresolved,
+    Empty,
+    OffScreen,
+    Partial,
+    OnScreen,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum UiBoundsBucket {
+    None,
+    Tiny,
+    Small,
+    Medium,
+    Large,
+    Fullscreen,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum UiClickBlock {
+    None,
+    LayoutDrag,
+    WorldHook,
+    TitleMove,
+    PressTargetNone,
+    Disabled,
+    NotRegistered,
+    CursorOutside,
+    FrameGone,
+    CaptureLost,
+    NotPushed,
+    DragStarted,
+    HandlerMissing,
+    HandlerError,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct UiHitEvidence {
+    pub edge: UiEdge,
+    /// Topmost frame that took the point; `None` on a miss or an unevaluated edge.
+    pub hit: Option<UiFrameRef>,
+    /// Nearest recognized ancestor-or-self family; `UiTarget::Other` when none.
+    pub owner: UiTarget,
+    /// Ancestor hops to `owner`, `0..=15`; `0xff` when no frame.
+    pub owner_hops: u8,
+    /// First frame whose rect contained the point but effective hit excluded it, only on a miss.
+    pub blocker: Option<UiBlocker>,
+    pub bounds: UiBoundsState,
+    pub bounds_bucket: UiBoundsBucket,
+    /// Which edges are registered for this button (`RegisterForClicks`).
+    pub clicks: UiClickMask,
+    pub onclick_present: bool,
+    pub onclick_ran: bool,
+    pub handler_error: bool,
+    /// The engine click action ran (LootButton take, CheckButton toggle) without a Lua handler.
+    pub engine_click: bool,
+    /// The first gate that stopped the click slot; `None` when the slot was evaluated.
+    pub blocked: UiClickBlock,
+    /// Coarse family/kind of the press target on a release row; the frame the press went to on a
+    /// press row.
+    pub press_target: Option<UiFrameRef>,
+    pub press_same_frame: bool,
+    pub press_contains: bool,
+    pub capture_lost: bool,
+    pub double_click: bool,
+    /// Hit frame facts after its handlers ran; `visible`/`hit` stay capture-time.
+    pub visible_after: bool,
+    pub alive_after: bool,
+}
+
+impl UiHitEvidence {
+    /// The legacy `target` projection: the hit's coarse family, else no named frame.
+    pub(crate) fn legacy_target(self) -> UiTarget {
+        self.hit.map_or(UiTarget::NoNamedFrame, |frame| frame.family)
+    }
+
+    /// The legacy `visible` projection: capture-time, so a hit is visible and a miss is unknown.
+    pub(crate) fn legacy_visible(self) -> Option<bool> {
+        self.hit.map(|_| true)
+    }
+
+    /// The legacy `clipped` projection: a miss whose first candidate failed on its clip.
+    pub(crate) fn legacy_clipped(self) -> bool {
+        self.blocker.is_some_and(|blocker| {
+            matches!(
+                blocker.reason,
+                UiBlockReason::OutsideClip | UiBlockReason::ClipUnresolved
+            )
+        })
+    }
+
+    /// The legacy `handler_invoked` projection.
+    pub(crate) fn legacy_handler_invoked(self) -> bool {
+        self.onclick_ran || self.engine_click
+    }
+}
+
+impl From<benilla_ui::script::UiEdge> for UiEdge {
+    fn from(value: benilla_ui::script::UiEdge) -> UiEdge {
+        match value {
+            benilla_ui::script::UiEdge::Press => UiEdge::Press,
+            benilla_ui::script::UiEdge::Release => UiEdge::Release,
+        }
+    }
+}
+
+impl From<benilla_ui::script::UiClickMask> for UiClickMask {
+    fn from(value: benilla_ui::script::UiClickMask) -> UiClickMask {
+        match value {
+            benilla_ui::script::UiClickMask::None => UiClickMask::None,
+            benilla_ui::script::UiClickMask::Down => UiClickMask::Down,
+            benilla_ui::script::UiClickMask::Up => UiClickMask::Up,
+            benilla_ui::script::UiClickMask::Both => UiClickMask::Both,
+        }
+    }
+}
+
+impl From<benilla_ui::widget::FrameKind> for UiFrameKind {
+    fn from(value: benilla_ui::widget::FrameKind) -> UiFrameKind {
+        use benilla_ui::widget::FrameKind;
+        match value {
+            FrameKind::Frame | FrameKind::WorldFrame => UiFrameKind::Frame,
+            FrameKind::Button => UiFrameKind::Button,
+            FrameKind::CheckButton => UiFrameKind::CheckButton,
+            FrameKind::LootButton => UiFrameKind::LootButton,
+            FrameKind::EditBox => UiFrameKind::EditBox,
+            FrameKind::ScrollFrame => UiFrameKind::ScrollFrame,
+            FrameKind::Slider => UiFrameKind::Slider,
+            FrameKind::StatusBar => UiFrameKind::StatusBar,
+            FrameKind::Model
+            | FrameKind::PlayerModel
+            | FrameKind::DressUpModel
+            | FrameKind::TabardModel => UiFrameKind::Model,
+            FrameKind::GameTooltip => UiFrameKind::Tooltip,
+            FrameKind::Minimap => UiFrameKind::Minimap,
+            FrameKind::MessageFrame
+            | FrameKind::ScrollingMessageFrame
+            | FrameKind::ColorSelect
+            | FrameKind::SimpleHtml
+            | FrameKind::MovieFrame
+            | FrameKind::Cooldown => UiFrameKind::Other,
+        }
+    }
+}
+
+impl From<benilla_ui::script::UiFamily> for UiTarget {
+    fn from(value: benilla_ui::script::UiFamily) -> UiTarget {
+        use benilla_ui::script::UiFamily;
+        match value {
+            UiFamily::World => UiTarget::World,
+            UiFamily::QuestLog => UiTarget::QuestLog,
+            UiFamily::Quest => UiTarget::Quest,
+            UiFamily::Merchant => UiTarget::Merchant,
+            UiFamily::Loot => UiTarget::Loot,
+            UiFamily::SpellBook => UiTarget::SpellBook,
+            UiFamily::Character => UiTarget::Character,
+            UiFamily::Other => UiTarget::Other,
+            UiFamily::NoNamedFrame => UiTarget::NoNamedFrame,
+        }
+    }
+}
+
+impl From<benilla_ui::script::UiBlockReason> for UiBlockReason {
+    fn from(value: benilla_ui::script::UiBlockReason) -> UiBlockReason {
+        use benilla_ui::script::UiBlockReason as Engine;
+        match value {
+            Engine::OutsideClip => UiBlockReason::OutsideClip,
+            Engine::ClipUnresolved => UiBlockReason::ClipUnresolved,
+            Engine::HitInsets => UiBlockReason::HitInsets,
+            Engine::NotMouseEnabled => UiBlockReason::NotMouseEnabled,
+            Engine::NameplateVeto => UiBlockReason::NameplateVeto,
+        }
+    }
+}
+
+impl From<benilla_ui::script::UiBoundsState> for UiBoundsState {
+    fn from(value: benilla_ui::script::UiBoundsState) -> UiBoundsState {
+        use benilla_ui::script::UiBoundsState as Engine;
+        match value {
+            Engine::Unresolved => UiBoundsState::Unresolved,
+            Engine::Empty => UiBoundsState::Empty,
+            Engine::OffScreen => UiBoundsState::OffScreen,
+            Engine::Partial => UiBoundsState::Partial,
+            Engine::OnScreen => UiBoundsState::OnScreen,
+        }
+    }
+}
+
+impl From<benilla_ui::script::UiBoundsBucket> for UiBoundsBucket {
+    fn from(value: benilla_ui::script::UiBoundsBucket) -> UiBoundsBucket {
+        use benilla_ui::script::UiBoundsBucket as Engine;
+        match value {
+            Engine::None => UiBoundsBucket::None,
+            Engine::Tiny => UiBoundsBucket::Tiny,
+            Engine::Small => UiBoundsBucket::Small,
+            Engine::Medium => UiBoundsBucket::Medium,
+            Engine::Large => UiBoundsBucket::Large,
+            Engine::Fullscreen => UiBoundsBucket::Fullscreen,
+        }
+    }
+}
+
+impl From<benilla_ui::script::UiClickBlock> for UiClickBlock {
+    fn from(value: benilla_ui::script::UiClickBlock) -> UiClickBlock {
+        use benilla_ui::script::UiClickBlock as Engine;
+        match value {
+            Engine::None => UiClickBlock::None,
+            Engine::LayoutDrag => UiClickBlock::LayoutDrag,
+            Engine::WorldHook => UiClickBlock::WorldHook,
+            Engine::TitleMove => UiClickBlock::TitleMove,
+            Engine::PressTargetNone => UiClickBlock::PressTargetNone,
+            Engine::Disabled => UiClickBlock::Disabled,
+            Engine::NotRegistered => UiClickBlock::NotRegistered,
+            Engine::CursorOutside => UiClickBlock::CursorOutside,
+            Engine::FrameGone => UiClickBlock::FrameGone,
+            Engine::CaptureLost => UiClickBlock::CaptureLost,
+            Engine::NotPushed => UiClickBlock::NotPushed,
+            Engine::DragStarted => UiClickBlock::DragStarted,
+            Engine::HandlerMissing => UiClickBlock::HandlerMissing,
+            Engine::HandlerError => UiClickBlock::HandlerError,
+        }
+    }
+}
+
+impl From<benilla_ui::script::UiFrameFacts> for UiFrameRef {
+    fn from(value: benilla_ui::script::UiFrameFacts) -> UiFrameRef {
+        UiFrameRef {
+            kind: value.kind.into(),
+            family: value.family.into(),
+        }
+    }
+}
+
+impl From<benilla_ui::script::UiHitFacts> for UiHitEvidence {
+    fn from(value: benilla_ui::script::UiHitFacts) -> UiHitEvidence {
+        UiHitEvidence {
+            edge: value.edge.into(),
+            hit: value.hit.map(UiFrameRef::from),
+            owner: value.owner.into(),
+            owner_hops: value.owner_hops,
+            blocker: value.blocker.map(|blocker| UiBlocker {
+                reason: blocker.reason.into(),
+                frame: blocker.frame.into(),
+            }),
+            bounds: value.bounds.into(),
+            bounds_bucket: value.bounds_bucket.into(),
+            clicks: value.clicks.into(),
+            onclick_present: value.onclick_present,
+            onclick_ran: value.onclick_ran,
+            handler_error: value.handler_error,
+            engine_click: value.engine_click,
+            blocked: value.blocked.into(),
+            press_target: value.press_target.map(UiFrameRef::from),
+            press_same_frame: value.press_same_frame,
+            press_contains: value.press_contains,
+            capture_lost: value.capture_lost,
+            double_click: value.double_click,
+            visible_after: value.visible_after,
+            alive_after: value.alive_after,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -862,6 +1186,7 @@ pub(crate) struct UiDispatchToken {
     pub visible: Option<bool>,
     pub clipped: bool,
     pub handler_invoked: bool,
+    pub witness: UiHitEvidence,
 }
 
 #[derive(Debug)]
@@ -1495,18 +1820,21 @@ impl Source {
 }
 
 impl Source {
+    /// Record one press edge from its bounded witness. `target`, `visible`, `clipped` and
+    /// `handler_invoked` are projections of the witness, not separate observations.
     pub(crate) fn record_ui_press(
         &self,
         scope: Option<(u64, u64)>,
         button: UiButton,
-        target: UiTarget,
         consumed: bool,
+        witness: UiHitEvidence,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
     ) -> u64 {
         let id = self.0.ui_dispatch_counter.fetch_add(1, Ordering::Relaxed) + 1;
         let reload_generation = self.0.reload_generation.load(Ordering::Acquire);
         let elapsed_ms = self.0.origin.elapsed().as_millis() as u64;
+        let target = witness.legacy_target();
         let token = UiDispatchToken {
             id,
             elapsed_ms,
@@ -1516,9 +1844,10 @@ impl Source {
             button,
             target,
             consumed,
-            visible: None,
-            clipped: false,
-            handler_invoked: consumed,
+            visible: witness.legacy_visible(),
+            clipped: witness.legacy_clipped(),
+            handler_invoked: witness.legacy_handler_invoked(),
+            witness,
         };
         if let Ok(mut guard) = self.0.ui_dispatches.lock() {
             if guard.len() >= 8 {
@@ -1530,6 +1859,7 @@ impl Source {
             button,
             target,
             consumed,
+            witness,
             egui_pointer_over_last_sample,
             vm_session,
             ui_dispatch_id: id,
@@ -1537,21 +1867,23 @@ impl Source {
         id
     }
 
+    /// Record one release edge from its bounded witness, with the same projections.
     pub(crate) fn record_ui_click(
         &self,
         scope: Option<(u64, u64)>,
         button: UiButton,
-        target: UiTarget,
         consumed: bool,
-        visible: Option<bool>,
-        clipped: bool,
-        handler_invoked: bool,
+        witness: UiHitEvidence,
         egui_pointer_over_last_sample: Option<bool>,
         vm_session: u64,
     ) -> u64 {
         let id = self.0.ui_dispatch_counter.fetch_add(1, Ordering::Relaxed) + 1;
         let reload_generation = self.0.reload_generation.load(Ordering::Acquire);
         let elapsed_ms = self.0.origin.elapsed().as_millis() as u64;
+        let target = witness.legacy_target();
+        let visible = witness.legacy_visible();
+        let clipped = witness.legacy_clipped();
+        let handler_invoked = witness.legacy_handler_invoked();
         let token = UiDispatchToken {
             id,
             elapsed_ms,
@@ -1564,6 +1896,7 @@ impl Source {
             visible,
             clipped,
             handler_invoked,
+            witness,
         };
         if let Ok(mut guard) = self.0.ui_dispatches.lock() {
             if guard.len() >= 8 {
@@ -1578,6 +1911,7 @@ impl Source {
             visible,
             clipped,
             handler_invoked,
+            witness,
             egui_pointer_over_last_sample,
             vm_session,
             ui_dispatch_id: id,

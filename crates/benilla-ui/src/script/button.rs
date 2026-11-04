@@ -1202,6 +1202,25 @@ pub(super) fn wants_press_visual(model: &Model, h: FrameHandle, button: &str) ->
     }
 }
 
+/// The bounded result of one `click_button` call. No error text, name or handler identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ClickOutcome {
+    /// An `OnClick`-equivalent handler (or hook) is bound for this edge.
+    pub handler_present: bool,
+    /// That handler was actually invoked.
+    pub handler_ran: bool,
+    /// An engine click action ran (LootButton take, CheckButton toggle).
+    pub engine_click: bool,
+    /// One of this edge's own script fires raised a caught `mlua` error.
+    pub handler_error: bool,
+    /// The click slot ran but the frame was disabled, so nothing fired.
+    pub disabled: bool,
+    /// The release slot chose `OnDoubleClick` instead of `OnClick`.
+    pub double_click: bool,
+    /// The first gate that stopped the click slot; `None` when it was evaluated.
+    pub blocked: super::pointer::UiClickBlock,
+}
+
 /// The click shared by the input path and `Click()`: a CheckButton toggles first, enabled or not
 /// (`0x785550`), a disabled Button fires nothing more, then `OnClick` gets the button name alone
 /// as `arg1` (`0x779540` fires it with the format `"%s"`); `down`, true only for a click a
@@ -1210,7 +1229,14 @@ pub(super) fn wants_press_visual(model: &Model, h: FrameHandle, button: &str) ->
 /// PUSHED. `scripted` marks a Lua `Click()`
 /// (`0x7826c0` passes 1, the mouse `0x779280`/`0x7793a4` pass 0): a LootButton then does nothing at
 /// all, not even its `OnClick` (`0x4c182b`); every other kind ignores it.
-pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripted: bool) {
+pub(super) fn click_button(
+    lua: &Lua,
+    id: u32,
+    button: &str,
+    down: bool,
+    scripted: bool,
+) -> ClickOutcome {
+    let mut outcome = ClickOutcome::default();
     // A hyperlink button's click slot (`+0x94`, `0x7a3510`) is its text frame's
     // `OnHyperlinkClick`, in place of the Button's `OnClick` firer.
     let target = lua
@@ -1220,13 +1246,22 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
         .get(&id)
         .copied();
     if target.is_some_and(|h| super::hyperlink::click(lua, h, button)) {
-        return;
+        return outcome;
     }
+    let wrath = lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335;
+    let handler_present = if wrath {
+        ["PreClick", "OnClick", "PostClick"]
+            .into_iter()
+            .any(|script| event::has_widget_handler(lua, id, script))
+    } else {
+        event::has_widget_handler(lua, id, "OnClick")
+    };
     let mut take_loot = None;
+    let mut is_check = false;
     let fire = {
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         let Some(&h) = model.id_to_frame.get(&id) else {
-            return;
+            return outcome;
         };
         let is_loot = model
             .arena
@@ -1234,7 +1269,7 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
             .is_some_and(|f| f.kind == crate::widget::FrameKind::LootButton);
         if is_loot {
             if scripted {
-                return;
+                return outcome;
             }
             // Deviation: the slot is read before the handler, where the reference reads it after
             // (`[esi+0x4dc]`), because reading first keeps the borrow simple and no stock handler
@@ -1249,9 +1284,9 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
             }
         }
         let Some(frame) = model.arena.frame_mut(h) else {
-            return;
+            return outcome;
         };
-        let is_check = frame.kind == FrameKind::CheckButton;
+        is_check = frame.kind == FrameKind::CheckButton;
         let (fire, writes) = match &mut frame.kind_state {
             // A CheckButton's click slot (`0x785550`) toggles (`0x785566`) before the base click
             // (`0x779540`), which runs nothing for a disabled button (`0x779552`): the toggle has
@@ -1270,21 +1305,18 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
         super::region::apply_shown_writes(&mut model, writes);
         fire
     };
+    outcome.handler_present = handler_present;
+    outcome.disabled = !fire;
+    // The CheckButton's toggle is an engine click action even when the handler gate refuses.
+    outcome.engine_click = is_check;
     if !fire {
-        return;
+        return outcome;
     }
     let btn = match lua.create_string(button) {
         Ok(s) => Value::String(s),
-        Err(_) => return,
+        Err(_) => return outcome,
     };
-    let wrath = lua.app_data_ref::<Model>().expect("model").target == super::UiTarget::Wrath335;
-    let invoked = if wrath {
-        ["PreClick", "OnClick", "PostClick"]
-            .into_iter()
-            .any(|script| event::has_widget_handler(lua, id, script))
-    } else {
-        event::has_widget_handler(lua, id, "OnClick")
-    } || take_loot.is_some();
+    let invoked = handler_present || take_loot.is_some();
     if invoked {
         lua.app_data_mut::<Model>()
             .expect("model app_data")
@@ -1294,14 +1326,15 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
         let arguments = vec![btn, Value::Boolean(down)];
         for script in ["PreClick", "OnClick", "PostClick"] {
             if let Err(error) = event::fire_widget_handler(lua, id, script, arguments.clone()) {
+                outcome.handler_error = true;
                 lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
             }
         }
-    } else {
-        if let Err(error) = event::fire_widget_handler(lua, id, "OnClick", vec![btn]) {
-            lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
-        }
+    } else if let Err(error) = event::fire_widget_handler(lua, id, "OnClick", vec![btn]) {
+        outcome.handler_error = true;
+        lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
     }
+    outcome.handler_ran = handler_present;
     // A nameplate click selects its unit, from the pointer or `Click()` alike (the plate's
     // override `0x7cb910` chains the base), after the handler so an erroring hook cannot eat it. A
     // press selects nothing: the plate registers Up clicks only (`0x7cb637`).
@@ -1311,6 +1344,7 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
     // The take runs whatever the handler did (`0x4c1867`), inside the click: a row whose `OnClick`
     // errored still loots, and the click's next listener reads what the take did.
     if let Some(slot) = take_loot {
+        outcome.engine_click = true;
         // The slot is 0-based; the call speaks the 1-based row.
         let take = super::ScriptCall::Loot(super::loot::LootCall::Take(slot + 1));
         if let Err(e) = super::calls::submit(lua, take) {
@@ -1319,4 +1353,5 @@ pub(super) fn click_button(lua: &Lua, id: u32, button: &str, down: bool, scripte
                 .record_lua_error(&e);
         }
     }
+    outcome
 }

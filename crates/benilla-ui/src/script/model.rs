@@ -6,7 +6,8 @@ use crate::widget::{FrameHandle, RegionHandle, WidgetArena};
 use super::{
     auction, backdrop, bank, camera_view, char_stats, chat_window, colorselect, container, craft,
     cursor, death, follow, gossip, guild, item_calls, item_text, loot, loot_roll, macros, mail,
-    merchant, parse_unit_token_for, party, petition, pvp, quest, quest_log, reputation, simplehtml,
+    merchant, parse_unit_token_for, party, petition, pointer::UiHitFacts, pvp, quest, quest_log,
+    reputation, simplehtml,
     skills, slider, social, spellbook, stable, taxi, trade, tradeskill, trainer, weapon_enchant,
     ActionSlot, AuraState, FontObject, ItemTemplateView, MusicRequest, PlayerReqState, RegionData,
     ScriptValue, SoundRequest, UnitBase, UnitState, UnitTokenParse,
@@ -375,6 +376,9 @@ pub(crate) struct Model {
     pub(crate) last_ui_clipped: Option<u32>,
     /// Whether the most recent click dispatch invoked a Lua handler.
     pub(crate) last_handler_invoked: bool,
+    /// The bounded fact set the most recent press/release edge left. The three fields above are
+    /// compatibility projections of it.
+    pub(crate) last_hit: UiHitFacts,
 
     /// Frames the last resolve resized, `(id, width, height)` in layout units, owed `OnSizeChanged`
     /// outside it.
@@ -1485,6 +1489,7 @@ impl Model {
             last_ui_hit: None,
             last_ui_clipped: None,
             last_handler_invoked: false,
+            last_hit: UiHitFacts::default(),
             pending_size_changed: Vec::new(),
             content_writes: Vec::new(),
             layout_force: Vec::new(),
