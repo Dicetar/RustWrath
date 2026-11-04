@@ -22,6 +22,32 @@ pub(crate) const MAX_OPEN_INTERACTIONS: usize = 64;
 /// Maximum run-local NPC aliases retained in the alias ring.
 const MAX_NPC_ALIASES: usize = 256;
 
+/// Closed coarse reason for a rejected reducer call. `Other` is used when the reducer error is
+/// untyped or cannot be safely classified without inspecting free-form text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum ReducerReason {
+    Truncated,
+    TrailingBytes,
+    UnterminatedString,
+    InvalidCount,
+    InvalidValue,
+    Other,
+}
+
+impl ReducerReason {
+    pub(crate) fn from_decode_failure(reason: benilla_protocol_wrath::gameplay::DecodeFailure) -> Self {
+        use benilla_protocol_wrath::gameplay::DecodeFailure as D;
+        match reason {
+            D::Truncated => Self::Truncated,
+            D::TrailingBytes => Self::TrailingBytes,
+            D::UnterminatedString => Self::UnterminatedString,
+            D::InvalidCount => Self::InvalidCount,
+            D::InvalidValue => Self::InvalidValue,
+            D::Other => Self::Other,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum Stage {
     Intent,
@@ -164,7 +190,7 @@ pub(crate) enum Stage {
     AssetWindow { failures: u64, missed: u64, window_ms: u64 },
     PacketReceived { opcode: u16 },
     ReducerAccepted { opcode: u16 },
-    ReducerRejected { opcode: u16 },
+    ReducerRejected { opcode: u16, reason: ReducerReason },
     GameplayDecoded { opcode: u16 },
     /// A gameplay decoder rejected the packet body. `decoder` and `reason` are closed values and
     /// `remaining_bytes` is a length only; no body bytes, server text or decoder message is kept.

@@ -55,7 +55,10 @@ impl<'a> Reader<'a> {
         Reader { p, at: 0 }
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let s = self.p.get(self.at..self.at + n).ok_or_else(|| anyhow::anyhow!("payload cut short"))?;
+        let s = self
+    .p
+    .get(self.at..self.at + n)
+    .ok_or_else(|| crate::gameplay::DecodeError::truncated(self.p.len().saturating_sub(self.at)))?;
         self.at += n;
         Ok(s)
     }

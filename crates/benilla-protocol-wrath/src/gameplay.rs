@@ -28,12 +28,28 @@ const MAX_REPORTED_REMAINING: usize = 4096;
 /// rejected packet can be attributed without exporting source or server text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum DecoderFamily {
+    QuestList,
+    QuestGreeting,
     QuestDetails,
-    QuestOffer,
     QuestProgress,
+    QuestRequestItems,
+    QuestOffer,
+    QuestOfferReward,
+    QuestInvalid,
+    QuestGiverInvalid,
+    QuestFailed,
+    QuestGiverFailed,
+    QuestLogFull,
     QuestTemplate,
+    Gossip,
+    GossipMenu,
     Loot,
+    LootResponse,
     Vendor,
+    VendorList,
+    Inventory,
+    ItemPush,
+    InventoryPush,
     Spell,
     Other,
 }
@@ -58,7 +74,7 @@ pub enum DecodeFailure {
 /// A typed gameplay decode failure. The variant is closed; `detail` stays a static local
 /// description and never carries packet bytes or server text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DecodeError {
+pub(crate) struct DecodeError {
     reason: DecodeFailure,
     /// Bounded count of bytes not consumed by the decoder, when it is meaningful.
     remaining: Option<u32>,
@@ -68,7 +84,7 @@ struct DecodeError {
 }
 
 impl DecodeError {
-    fn new(reason: DecodeFailure, remaining: Option<usize>, detail: &'static str) -> Self {
+    pub(crate) fn new(reason: DecodeFailure, remaining: Option<usize>, detail: &'static str) -> Self {
         Self {
             reason,
             remaining: remaining
@@ -78,28 +94,28 @@ impl DecodeError {
         }
     }
 
-    fn with_value(mut self, value: u32) -> Self {
+    pub(crate) fn with_value(mut self, value: u32) -> Self {
         self.value = Some(value);
         self
     }
 
-    fn truncated(remaining: usize) -> Self {
+    pub(crate) fn truncated(remaining: usize) -> Self {
         Self::new(DecodeFailure::Truncated, Some(remaining), "payload cut short")
     }
 
-    fn unterminated(remaining: usize) -> Self {
+    pub(crate) fn unterminated(remaining: usize) -> Self {
         Self::new(DecodeFailure::UnterminatedString, Some(remaining), "unterminated string")
     }
 
-    fn trailing(remaining: usize) -> Self {
+    pub(crate) fn trailing(remaining: usize) -> Self {
         Self::new(DecodeFailure::TrailingBytes, Some(remaining), "trailing bytes after record")
     }
 
-    fn invalid_count(detail: &'static str) -> Self {
+    pub(crate) fn invalid_count(detail: &'static str) -> Self {
         Self::new(DecodeFailure::InvalidCount, None, detail)
     }
 
-    fn invalid_value(detail: &'static str) -> Self {
+    pub(crate) fn invalid_value(detail: &'static str) -> Self {
         Self::new(DecodeFailure::InvalidValue, None, detail)
     }
 }
@@ -125,6 +141,19 @@ pub fn classify_decode_failure(error: &anyhow::Error) -> DecodeFailure {
         .unwrap_or(DecodeFailure::Other)
 }
 
+/// Classify a reducer failure by walking its error chain for a typed [`DecodeError`].
+///
+/// This never inspects free-form error text: it only downcasts typed failures. A reducer
+/// error that is untyped or has no typed cause returns [`DecodeFailure::Other`].
+pub fn classify_reduce_failure(error: &anyhow::Error) -> DecodeFailure {
+    for cause in error.chain() {
+        if let Some(failure) = cause.downcast_ref::<DecodeError>() {
+            return failure.reason;
+        }
+    }
+    classify_decode_failure(error)
+}
+
 /// The bounded undecoded-byte count at the failure point, when the decoder reported one.
 ///
 /// This is only a length. It never identifies or carries the bytes themselves.
@@ -141,10 +170,15 @@ pub fn decode_remaining_bytes(error: &anyhow::Error) -> Option<u32> {
 pub fn decoder_family(opcode: u16) -> DecoderFamily {
     use crate::opcode::*;
     match opcode {
+        SMSG_QUESTGIVER_QUEST_LIST => DecoderFamily::QuestGreeting,
         SMSG_QUESTGIVER_QUEST_DETAILS => DecoderFamily::QuestDetails,
         SMSG_QUESTGIVER_REQUEST_ITEMS => DecoderFamily::QuestProgress,
         SMSG_QUESTGIVER_OFFER_REWARD => DecoderFamily::QuestOffer,
+        SMSG_QUESTGIVER_QUEST_INVALID => DecoderFamily::QuestGiverInvalid,
+        SMSG_QUESTGIVER_QUEST_FAILED => DecoderFamily::QuestGiverFailed,
+        SMSG_QUESTLOG_FULL => DecoderFamily::QuestLogFull,
         SMSG_QUEST_QUERY_RESPONSE => DecoderFamily::QuestTemplate,
+        SMSG_GOSSIP_MESSAGE | SMSG_GOSSIP_COMPLETE => DecoderFamily::Gossip,
         SMSG_LOOT_RESPONSE
         | SMSG_LOOT_RELEASE_RESPONSE
         | SMSG_LOOT_REMOVED
@@ -157,10 +191,13 @@ pub fn decoder_family(opcode: u16) -> DecoderFamily {
         SMSG_LIST_INVENTORY | SMSG_BUY_ITEM | SMSG_BUY_FAILED | SMSG_SELL_ITEM => {
             DecoderFamily::Vendor
         }
+        SMSG_INVENTORY_CHANGE_FAILURE => DecoderFamily::Inventory,
+        SMSG_ITEM_PUSH_RESULT => DecoderFamily::ItemPush,
         SMSG_CAST_FAILED
         | SMSG_SPELL_START
         | SMSG_SPELL_GO
         | SMSG_SPELL_FAILED_OTHER
+        | SMSG_SPELL_FAILURE
         | SMSG_SPELL_DELAYED
         | SMSG_SPELL_COOLDOWN
         | MSG_CHANNEL_START

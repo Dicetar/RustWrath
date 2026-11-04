@@ -7638,7 +7638,13 @@ pub fn run_session_with_cancel(
                         let stage = if reduced.is_ok() {
                             crate::quest_trace::Stage::ReducerAccepted { opcode: p.opcode }
                         } else {
-                            crate::quest_trace::Stage::ReducerRejected { opcode: p.opcode }
+                            let reason = reduced
+                                .as_ref()
+                                .err()
+                                .map(benilla_protocol_wrath::gameplay::classify_reduce_failure)
+                                .map(crate::quest_trace::ReducerReason::from_decode_failure)
+                                .unwrap_or(crate::quest_trace::ReducerReason::Other);
+                            crate::quest_trace::Stage::ReducerRejected { opcode: p.opcode, reason }
                         };
                         trace.observe(scope, None, stage);
                     }
