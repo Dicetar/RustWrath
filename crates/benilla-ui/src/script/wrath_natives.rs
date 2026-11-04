@@ -841,7 +841,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "GetPossessInfo",
         lua.create_function(|lua, index: mlua::Value| {
-            let n = crate::script::binding_abi::number_arg(
+            // Reference gate: lua_tonumber(L, 1) == 0.0 (0x5D5820), read as a number before
+            // truncation.
+            let n = crate::script::binding_abi::float_arg(
                 lua,
                 index,
                 "Usage: GetPossessInfo(index)",
@@ -857,9 +859,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // LFG/dungeon finder is not wired; the stock frames see an empty dungeon list, no
-    // backfill, no deserter timer and no lock info. `GetAvailableRoles` still follows the
-    // character's class, as the reference reads ChrClasses.dbc.
+    // LFG/dungeon finder is not wired: the stock frames see an empty dungeon list, no
+    // backfill, and no deserter timer. `RequestLFDPlayerLockInfo` returns false because no
+    // CMSG_LFG_PLAYER_LOCK_INFO_REQUEST is sent (reference 0x5569D0 returns true only
+    // after sending it). `GetAvailableRoles` still follows the character's class, as the
+    // reference reads ChrClasses.dbc.
     lua.globals().set(
         "CanPartyLFGBackfill",
         lua.create_function(|_, ()| Ok(false))?,
@@ -868,9 +872,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetNumRandomDungeons",
         lua.create_function(|_, ()| Ok(0i64))?,
     )?;
+    // `GetLFGDeserterExpiration` (0x5580E0): the deserter aura 71041's end time in seconds,
+    // or no values when the player lacks it (or before world entry, when player_auras is empty).
     lua.globals().set(
         "GetLFGDeserterExpiration",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::MultiValue::new()))?,
+        lua.create_function(|lua, _: mlua::MultiValue| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            for aura in &model.player_auras {
+                if aura.spell_id == 71041 {
+                    return Ok(mlua::MultiValue::from_vec(vec![mlua::Value::Number(
+                        aura.expiration_time,
+                    )]));
+                }
+            }
+            Ok(mlua::MultiValue::new())
+        })?,
     )?;
     lua.globals().set(
         "RequestLFDPlayerLockInfo",

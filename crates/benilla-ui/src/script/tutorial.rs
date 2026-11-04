@@ -12,6 +12,8 @@ use super::Model;
 
 /// `FlagTutorial`'s bound, `0 ≤ n − 1 < 0x32`: the fifty tutorials `GlobalStrings.lua` names.
 const TUTORIAL_IDS: i32 = 0x32;
+/// `TriggerTutorial`'s bound (0x5308D0): 0-based ids 0..=59.
+const TUTORIAL_IDS_MAX: i32 = 60;
 
 /// A tutorial writer, which the call host applies inside the call
 /// ([`super::ScriptCall::Tutorial`]).
@@ -106,7 +108,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, n: mlua::Value| {
             let n = number_arg(lua, n, "Usage: TriggerTutorial(\"tutorial\")")?;
             let id = n.wrapping_sub(1);
-            if !(0..TUTORIAL_IDS as i64).contains(&id) {
+            // The reference's TriggerTutorial (0x5308D0) allows 0-based ids through 59; this is
+            // not FlagTutorial's 0x32 (50) GlobalStrings-name limit.
+            if !(0..TUTORIAL_IDS_MAX).contains(&id) {
                 return Ok(());
             }
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");

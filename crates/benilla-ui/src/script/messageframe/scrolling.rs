@@ -307,12 +307,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     m.set(
         "SetHyperlinksEnabled",
         lua.create_function(|lua, (this, value): (Table, mlua::Value)| {
+            // Lua truthiness: only true and nonzero numbers are true; nil/false/0 and any other
+            // value are false here, matching lua_toboolean's false leg for nil/false/0.
             let on = match value {
                 mlua::Value::Boolean(b) => b,
                 mlua::Value::Number(n) => n != 0.0,
                 mlua::Value::Integer(n) => n != 0,
-                mlua::Value::Nil => true,
-                _ => true,
+                _ => false,
             };
             with_smf(lua, &this, |smf| smf.hyperlinks_enabled = on)
         })?,
