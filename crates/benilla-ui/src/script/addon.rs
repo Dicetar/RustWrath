@@ -419,7 +419,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             for dep in &model.addons[i].dependencies {
                 out.push(lua_str(lua, dep)?);
             }
-            Ok(MultiValue::from_iter(out))
+            Ok(MultiValue::from_vec(out))
         })?,
     )?;
 
@@ -452,6 +452,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // setter as the caller spelled it (`0x6f3690`), installed or not: the setter never checks the
     // installed list, and a name its hash lacks gets a new node (`0x51eaf2`, allocated `0x51eb62`,
     // appended at the tail with the state at `0x51eb6f`).
+    // In Wrath 3.3.5a, signatures allow `EnableAddOn(indexOrName [, characterOrAll])` or glue-style
+    // `EnableAddOn(character, indexOrName)`.
     for (name, on, usage) in [
         ("EnableAddOn", true, USAGE_ENABLE),
         ("DisableAddOn", false, USAGE_DISABLE),
@@ -460,13 +462,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             name,
             lua.create_function(move |lua, args: MultiValue| {
                 let mut model = lua.app_data_mut::<Model>().expect("model");
-                let key = if model.target == super::UiTarget::Wrath335
-                    && args.len() >= 2
-                    && !matches!(args.get(1), None | Some(Value::Nil))
-                    && matches!(args.front(), Some(Value::String(_) | Value::Nil))
-                    && lua.coerce_number(args.front().cloned().unwrap_or(Value::Nil))?.is_none()
-                {
-                    args.get(1).cloned().unwrap_or(Value::Nil)
+                let key = if model.target == super::UiTarget::Wrath335 && args.len() >= 2 {
+                    let arg0 = args.front().cloned().unwrap_or(Value::Nil);
+                    let arg1 = args.get(1).cloned().unwrap_or(Value::Nil);
+                    let arg0_num = lua.coerce_number(arg0.clone())?.is_some();
+                    let arg1_num = lua.coerce_number(arg1.clone())?.is_some();
+                    if arg0_num {
+                        arg0
+                    } else if arg1_num {
+                        arg1
+                    } else {
+                        let name0 = match &arg0 {
+                            Value::String(s) => s.to_str().ok(),
+                            _ => None,
+                        };
+                        let name1 = match &arg1 {
+                            Value::String(s) => s.to_str().ok(),
+                            _ => None,
+                        };
+                        if name0.is_some_and(|n| by_name(&model, n).is_some()) {
+                            arg0
+                        } else if name1.is_some_and(|n| by_name(&model, n).is_some()) {
+                            arg1
+                        } else if name0.is_some() {
+                            arg0
+                        } else {
+                            arg1
+                        }
+                    }
                 } else {
                     args.front().cloned().unwrap_or(Value::Nil)
                 };
@@ -585,7 +608,7 @@ fn install_wrath(lua: &Lua, g: &mlua::Table) -> mlua::Result<()> {
             for dep in &model.addons[i].optional_dependencies {
                 out.push(lua_str(lua, dep)?);
             }
-            Ok(MultiValue::from_iter(out))
+            Ok(MultiValue::from_vec(out))
         })?,
     )?;
 

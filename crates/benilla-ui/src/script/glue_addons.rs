@@ -1203,6 +1203,19 @@ mod tests {
             "MyWrathAddon-hello-wrath-30300"
         );
 
+        // 3. In-game 3.3.5a EnableAddOn / DisableAddOn supports both EnableAddOn(name, character)
+        // and EnableAddOn(character, name), plus boolean flags.
+        ingame.eval::<()>("DisableAddOn('MyWrathAddon', 'Player')").unwrap();
+        assert_eq!(
+            ingame.eval::<f64>("return GetAddOnEnableState('Player', 'MyWrathAddon')").unwrap(),
+            0.0
+        );
+        ingame.eval::<()>("EnableAddOn('MyWrathAddon', true)").unwrap();
+        assert_eq!(
+            ingame.eval::<f64>("return GetAddOnEnableState('Player', 'MyWrathAddon')").unwrap(),
+            2.0
+        );
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
