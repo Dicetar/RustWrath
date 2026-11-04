@@ -72,6 +72,7 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("showNewbieTips", "1"),
     ("locale", "enUS"),
     ("previewTalents", "0"),
+    ("talentPointsSpent", "0"),
     ("fctSpellMechanics", "0"),
     ("showDispelDebuffs", "0"),
     ("scriptErrors", "0"),

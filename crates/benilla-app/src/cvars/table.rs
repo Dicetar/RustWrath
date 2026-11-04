@@ -1015,6 +1015,11 @@ pub(crate) const REGISTERED: &[Registered] = &[
         "3.3.5a 12340 TalentFrame: Talent preview mode",
     ),
     ours(
+        "talentPointsSpent",
+        "0",
+        "3.3.5a 12340 TalentFrame: Whether the player has spent talent points",
+    ),
+    ours(
         "fctSpellMechanics",
         "0",
         "3.3.5a 12340 CombatText: Floating combat text spell mechanics",

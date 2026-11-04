@@ -184,11 +184,22 @@ fn rebuild_index(model: &mut Model) {
     if let Some(reply) = model.addon_reply.take() {
         apply_reply(&mut model.addons, &reply);
         model.addon_reply = Some(reply);
+        if model.target == super::UiTarget::Wrath335 {
+            for a in &mut model.addons {
+                if a.chain || a.signature_ok {
+                    a.corrupt = false;
+                    a.hidden = true;
+                    a.enabled = true;
+                    a.security = AddonSecurity::Secure;
+                }
+            }
+        }
     } else if model.target == super::UiTarget::Wrath335 {
         for a in &mut model.addons {
             a.corrupt = false;
             if a.chain || a.signature_ok {
                 a.hidden = true;
+                a.enabled = true;
                 a.security = AddonSecurity::Secure;
             } else {
                 a.hidden = false;

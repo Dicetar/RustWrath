@@ -793,8 +793,13 @@ pub(super) fn load_third_party(
         &store_nodes(identity, roster),
     );
     let character = identity.map(|(_, c)| c.as_str());
+    let wrath = crate::wrath::selected_from_env();
     for (info, addon) in infos.iter_mut().zip(addons.iter()) {
-        info.enabled = store.enabled_for(&info.name, addon.toc.default_state(), character);
+        if wrath && info.chain {
+            info.enabled = true;
+        } else {
+            info.enabled = store.enabled_for(&info.name, addon.toc.default_state(), character);
+        }
     }
     let all_roots = roots();
     let mut roots_iter = all_roots.into_iter();

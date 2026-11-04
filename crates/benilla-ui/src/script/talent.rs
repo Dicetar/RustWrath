@@ -168,24 +168,36 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     g.set(
         "GetNumTalentTabs",
-        lua.create_function(|lua, ()| {
+        lua.create_function(|lua, args: MultiValue| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if model.target == super::UiTarget::Wrath335 {
+                let is_pet = matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+                if is_pet {
+                    return Ok(0i64);
+                }
+            }
             Ok(model.talents.tabs.len() as i64)
         })?,
     )?;
 
     // Name, the tab's `SpellIcon.dbc` path (nil for an id the table lacks), points spent and the
     // background (`0x4f30cb`-`0x4f3121`). Out of range answers nil, nil, 0, nil (`0x4f3132`).
+    // In Wrath 3.3.5a (`TalentFrameBase.lua`), a 5th return `previewPointsSpent` (0) is read.
     g.set(
         "GetTalentTabInfo",
-        lua.create_function(|lua, i: Value| {
+        lua.create_function(|lua, args: MultiValue| {
             // `is-number` else `Usage: GetTalentTabInfo(index)` (`0x84cdd4`, `0x4f3059`).
+            let i = args.front().cloned().unwrap_or(Value::Nil);
             let i = binding_abi::index_arg(lua, i, "Usage: GetTalentTabInfo(index)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let wrath = model.target == super::UiTarget::Wrath335;
             let Some(tab) = i.checked_sub(1).and_then(|n| model.talents.tabs.get(n)) else {
+                if wrath {
+                    return Ok(super::binding_abi::tuple(&[None, None, Some(0), None, Some(0)]));
+                }
                 return Ok(super::binding_abi::tuple(&[None, None, Some(0), None]));
             };
-            Ok(MultiValue::from_vec(vec![
+            let mut out = vec![
                 Value::String(lua.create_string(&tab.name)?),
                 match &tab.texture {
                     Some(texture) => Value::String(lua.create_string(texture)?),
@@ -193,14 +205,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 },
                 Value::Integer(i64::from(tab.points_spent)),
                 Value::String(lua.create_string(&tab.background)?),
-            ]))
+            ];
+            if wrath {
+                out.push(Value::Integer(0));
+            }
+            Ok(MultiValue::from_vec(out))
         })?,
     )?;
 
     g.set(
         "GetNumTalents",
-        lua.create_function(|lua, tab: Value| {
+        lua.create_function(|lua, args: MultiValue| {
             // `is-number` else `Usage: GetNumTalents(tabIndex)` (`0x84cdf4`, `0x4f3177`).
+            let tab = args.front().cloned().unwrap_or(Value::Nil);
             let tab = binding_abi::index_arg(lua, tab, "Usage: GetNumTalents(tabIndex)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let n = tab
@@ -213,15 +230,32 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     g.set(
         "GetTalentInfo",
-        lua.create_function(|lua, (tab, i): (Value, Value)| {
+        lua.create_function(|lua, args: MultiValue| {
             // Both `is-number` else `Usage: GetTalentInfo(tabIndex, talentIndex)` (`0x84ce14`,
             // `0x4f34ae`).
+            let tab = args.front().cloned().unwrap_or(Value::Nil);
+            let i = args.get(1).cloned().unwrap_or(Value::Nil);
             let tab =
                 binding_abi::index_arg(lua, tab, "Usage: GetTalentInfo(tabIndex, talentIndex)")?;
             let i = binding_abi::index_arg(lua, i, "Usage: GetTalentInfo(tabIndex, talentIndex)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let wrath = model.target == super::UiTarget::Wrath335;
             let Some(t) = talent_at(&model, tab, i) else {
                 // `0x4f3454`: nil, nil, 1, 1, 0, 0, nil, nil.
+                if wrath {
+                    return Ok(super::binding_abi::tuple(&[
+                        None,
+                        None,
+                        Some(1),
+                        Some(1),
+                        Some(0),
+                        Some(0),
+                        None,
+                        None,
+                        Some(0),
+                        None,
+                    ]));
+                }
                 return Ok(super::binding_abi::tuple(&[
                     None,
                     None,
@@ -237,7 +271,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Some(tex) => Value::String(lua.create_string(tex)?),
                 None => Value::Nil,
             };
-            Ok(MultiValue::from_vec(vec![
+            let mut out = vec![
                 Value::String(lua.create_string(&t.name)?),
                 texture,
                 Value::Integer(i64::from(t.tier)),
@@ -246,16 +280,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Value::Integer(i64::from(t.max_rank)),
                 flag(t.exceptional),
                 flag(t.meets_prereq),
-            ]))
+            ];
+            if wrath {
+                out.push(Value::Integer(i64::from(t.rank)));
+                out.push(flag(t.meets_prereq));
+            }
+            Ok(MultiValue::from_vec(out))
         })?,
     )?;
 
     // Flat (tier, column, isLearnable) triplets, as `Blizzard_TalentUI.lua:385` walks them.
     g.set(
         "GetTalentPrereqs",
-        lua.create_function(|lua, (tab, i): (Value, Value)| {
+        lua.create_function(|lua, args: MultiValue| {
             // `is-number` on args 1 and 2 else `Usage: GetTalentPrereqs(tabIndex, talentIndex)`
             // (`0x84ce40`, `0x4f3686`).
+            let tab = args.front().cloned().unwrap_or(Value::Nil);
+            let i = args.get(1).cloned().unwrap_or(Value::Nil);
             let tab =
                 binding_abi::index_arg(lua, tab, "Usage: GetTalentPrereqs(tabIndex, talentIndex)")?;
             let i =
@@ -278,9 +319,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // (vmangos `Player::LearnTalent`).
     g.set(
         "LearnTalent",
-        lua.create_function(|lua, (tab, i): (Value, Value)| {
+        lua.create_function(|lua, args: MultiValue| {
             // `is-number` on args 1 and 2 else `Usage: LearnTalent(tabIndex, talentIndex)`
             // (`0x84ce70`, `0x4f380c`).
+            let tab = args.front().cloned().unwrap_or(Value::Nil);
+            let i = args.get(1).cloned().unwrap_or(Value::Nil);
             let tab =
                 binding_abi::index_arg(lua, tab, "Usage: LearnTalent(tabIndex, talentIndex)")?;
             let i = binding_abi::index_arg(lua, i, "Usage: LearnTalent(tabIndex, talentIndex)")?;
@@ -331,6 +374,132 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        install_wrath(lua, &g)?;
+    }
+
+    Ok(())
+}
+
+/// Wrath 3.3.5a talent spec group, preview points, and glyph socket bindings consumed by
+/// `Blizzard_TalentUI` and `Blizzard_GlyphUI`.
+fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
+    g.set(
+        "GetNumTalentGroups",
+        lua.create_function(|_, _: MultiValue| Ok(1i64))?,
+    )?;
+    g.set(
+        "GetActiveTalentGroup",
+        lua.create_function(|_, _: MultiValue| Ok(1i64))?,
+    )?;
+    g.set(
+        "SetActiveTalentGroup",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+    g.set(
+        "GetUnspentTalentPoints",
+        lua.create_function(|lua, args: MultiValue| {
+            let is_inspect = matches!(args.front(), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+            let is_pet = matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+            if is_inspect || is_pet {
+                return Ok(0i64);
+            }
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(i64::from(model.talents.points.0))
+        })?,
+    )?;
+    g.set(
+        "GetPreviewTalentPointsSpent",
+        lua.create_function(|_, _: MultiValue| Ok(0i64))?,
+    )?;
+    g.set(
+        "GetGroupPreviewTalentPointsSpent",
+        lua.create_function(|_, _: MultiValue| Ok(0i64))?,
+    )?;
+    g.set(
+        "AddPreviewTalentPoints",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+    g.set(
+        "ResetPreviewTalentPoints",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+    g.set(
+        "ResetGroupPreviewTalentPoints",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+    g.set(
+        "LearnPreviewTalents",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+    g.set(
+        "GetTalentLink",
+        lua.create_function(|lua, args: MultiValue| {
+            let tab = args.front().cloned().unwrap_or(Value::Nil);
+            let i = args.get(1).cloned().unwrap_or(Value::Nil);
+            let Ok(tab) = binding_abi::index_arg(lua, tab, "Usage: GetTalentLink(tabIndex, talentIndex)") else {
+                return Ok(Value::Nil);
+            };
+            let Ok(i) = binding_abi::index_arg(lua, i, "Usage: GetTalentLink(tabIndex, talentIndex)") else {
+                return Ok(Value::Nil);
+            };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(t) = talent_at(&model, tab, i) else {
+                return Ok(Value::Nil);
+            };
+            let rank = i64::from(t.rank).saturating_sub(1);
+            let link = format!("|cff4e96f7|Htalent:{}:{rank}|h[{}]|h|r", t.talent_id, t.name);
+            Ok(Value::String(lua.create_string(&link)?))
+        })?,
+    )?;
+
+    // `Blizzard_GlyphUI` socket queries (`GlyphFrame.lua`).
+    g.set(
+        "GetNumGlyphSockets",
+        lua.create_function(|_, _: MultiValue| Ok(6i64))?,
+    )?;
+    g.set(
+        "GetGlyphSocketInfo",
+        lua.create_function(|_, args: MultiValue| {
+            let socket = match args.front() {
+                Some(Value::Integer(n)) => *n,
+                Some(Value::Number(n)) => *n as i64,
+                _ => 1,
+            };
+            // Standard 3.3.5a glyph socket layout: 1, 4, 6 are Major (1); 2, 3, 5 are Minor (2).
+            let glyph_type = match socket {
+                2 | 3 | 5 => 2i64,
+                _ => 1i64,
+            };
+            Ok(MultiValue::from_vec(vec![
+                Value::Nil,
+                Value::Integer(glyph_type),
+                Value::Nil,
+                Value::Nil,
+            ]))
+        })?,
+    )?;
+    g.set(
+        "GetGlyphLink",
+        lua.create_function(|lua, _: MultiValue| Ok(Value::String(lua.create_string("")?)))?,
+    )?;
+    g.set(
+        "GlyphMatchesSocket",
+        lua.create_function(|_, _: MultiValue| Ok(false))?,
+    )?;
+    g.set(
+        "PlaceGlyphInSocket",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+    g.set(
+        "RemoveGlyphFromSocket",
+        lua.create_function(|_, _: MultiValue| Ok(()))?,
+    )?;
+    g.set(
+        "SpellCanTargetGlyph",
+        lua.create_function(|_, _: MultiValue| Ok(false))?,
+    )?;
+
     Ok(())
 }
 
@@ -338,9 +507,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 pub(super) fn install_tooltip_method(lua: &Lua, m: &Table) -> mlua::Result<()> {
     m.set(
         "SetTalent",
-        lua.create_function(|lua, (this, tab, i): (Table, Value, Value)| {
+        lua.create_function(|lua, (this, args): (Table, MultiValue)| {
             // `is-number` on args 2 and 3 else `Usage: SetTalent(tabIndex, talentIndex)`
             // (`0x85555c`, `0x535394`).
+            let tab = args.front().cloned().unwrap_or(Value::Nil);
+            let i = args.get(1).cloned().unwrap_or(Value::Nil);
             let tab = binding_abi::index_arg(lua, tab, "Usage: SetTalent(tabIndex, talentIndex)")?;
             let i = binding_abi::index_arg(lua, i, "Usage: SetTalent(tabIndex, talentIndex)")?;
             let (display, ranks, reqs, mut lines) = {

@@ -84,12 +84,13 @@ impl super::UiScript {
 /// The registry as the load law reads it from the glue (`0x46d542`): each row enabled when the
 /// query for no character, over every node, answers nonzero (`0x51e824`), nothing loaded.
 fn gate_rows<'a>(model: &'a Model, store: &EnableStore) -> Vec<GateRow<'a>> {
+    let wrath = model.target == super::UiTarget::Wrath335;
     model
         .addons
         .iter()
         .map(|a| GateRow {
             name: &a.name,
-            enabled: store.enabled_for(&a.name, a.default_state, None),
+            enabled: (wrath && a.chain) || store.enabled_for(&a.name, a.default_state, None),
             interface: a.interface,
             load_on_demand: a.load_on_demand,
             banned: a.security == AddonSecurity::Banned,
