@@ -296,8 +296,9 @@ fn texture_schema() -> Schema {
     for i in 0..4 {
         s.add_field(SchemaField::new(format!("DoodadWeight{i}"), FieldType::UInt32));
     }
+    // Density is column 9, TerrainID (TerrainType.dbc) is column 10 in the 12340 layout.
     s.add_field(SchemaField::new("Density", FieldType::UInt32));
-    s.add_field(SchemaField::new("Sound", FieldType::UInt32));
+    s.add_field(SchemaField::new("TerrainID", FieldType::UInt32));
     s
 }
 

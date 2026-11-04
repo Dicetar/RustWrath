@@ -1,5 +1,5 @@
-//! Creature voice: `CreatureDisplayInfo.SoundID` to `CreatureSoundData.dbc`, 30 `u32` columns of
-//! per-display voice kits whose names are the community's, since a DBC carries none. Column 22
+//! Creature voice: `CreatureDisplayInfo.SoundID` to `CreatureSoundData.dbc`, 38 columns of
+//! per-display voice kits whose names are the community's, since a DBC carries none. Column 23
 //! (`NPCSoundID`) is empty on every row and unread. A display whose own `SoundID` is 0, nearly
 //! every one, resolves through `CreatureModelData.SoundID` (col 13), as the client does.
 
@@ -38,13 +38,13 @@ pub struct CreatureVoice {
     pub impact_type: u32,
     pub jump_start: u32,
     pub jump_end: u32,
-    /// Column 27, the bark on an attack order: `SMSG_PET_ACTION_SOUND`'s `PET_TALK_ATTACK`, bark
+    /// Column 28, the bark on an attack order: `SMSG_PET_ACTION_SOUND`'s `PET_TALK_ATTACK`, bark
     /// state 2 of `0x623a40` (`0x623ad3` reads `[row+0x6c]`).
     pub pet_attack: u32,
-    /// Column 28, the bark acknowledging an ordered spell: `PET_TALK_SPECIAL_SPELL`, bark state 1
+    /// Column 29, the bark acknowledging an ordered spell: `PET_TALK_SPECIAL_SPELL`, bark state 1
     /// (`0x623ac8` reads `[row+0x70]`).
     pub pet_order: u32,
-    /// Column 29, `SMSG_PET_DISMISS_SOUND`'s parting line: `0x604140` reads `[row+0x74]`
+    /// Column 30, `SMSG_PET_DISMISS_SOUND`'s parting line: `0x604140` reads `[row+0x74]`
     /// (`0x6041c4`, `0x6041dc`) and plays it at a bare world position, since the pet is gone.
     pub pet_dismiss: u32,
 }
@@ -97,7 +97,7 @@ fn cdi_schema() -> Schema {
 
 fn cmd_schema() -> Schema {
     let mut s = Schema::new("CreatureModelData");
-    for i in 0..16 {
+    for i in 0..28 {
         s.add_field(SchemaField::new(format!("f{i}"), FieldType::UInt32));
     }
     s

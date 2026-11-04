@@ -776,7 +776,7 @@ fn schema_for(dbc_name: &str) -> Option<Schema> {
     }
 
     if base.eq_ignore_ascii_case("TaxiPathNode.dbc") {
-        // 9 fields, as `taxi.rs` loads them.
+        // 11 fields, as `taxi.rs` loads them.
         let mut s = Schema::new("TaxiPathNode");
         for name in ["ID", "PathID", "NodeIndex", "MapID"] {
             s.add_field(SchemaField::new(name, FieldType::UInt32));

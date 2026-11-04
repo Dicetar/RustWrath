@@ -1,7 +1,7 @@
 //! The zone audio tables: `AreaTable` (the row an MCNK `areaId` names) joined to `ZoneMusic`,
-//! `SoundAmbience` and `ZoneIntroMusicTable`. `AreaTable.dbc` has 25 columns in 5875, not the 28
-//! of later builds: the eleven `area_schema` names, `AreaName_lang` (11-19), `FactionGroupMask`
-//! and `LiquidTypeID[4]`.
+//! `SoundAmbience` and `ZoneIntroMusicTable`. This project targets 3.3.5a `AreaTable.dbc`, which has
+//! 36 columns: 11 base fields, 16 localized `AreaName` offsets plus flags, `FactionGroupMask`,
+//! `LiquidTypeID[4]`, `MinElevation`, `AmbientMultiplier` and `LightID`.
 
 use std::collections::HashMap;
 

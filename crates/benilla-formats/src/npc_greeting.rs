@@ -1,6 +1,6 @@
 //! The NPC greeting voice, a per-display property apart from the body vocals of
-//! [`crate::creature_sound`]: `UNIT_FIELD_DISPLAYID` → `CreatureDisplayInfo.dbc` field 11
-//! (`NPCSoundID`, row `+0x2c`; loader `0x542e90`, 12 columns) → `NPCSounds.dbc` (`0x54afa0`: `ID`,
+//! [`crate::creature_sound`]: `UNIT_FIELD_DISPLAYID` → `CreatureDisplayInfo.dbc` field 12
+//! (`NPCSoundID`, row `+0x30`; loader `0x542e90`, 16 columns) → `NPCSounds.dbc` (`0x54afa0`: `ID`,
 //! `hello`, `goodbye`, `pissed`, and `ack`, 0 on every row and never read). Each is a
 //! `SoundEntries` kit of type 17, no-duplicates (`0x20`), cut off at 45 yd, a 3D emitter at the NPC
 //! (`0x7a5b10`). `CreatureSoundData.NPCSoundID` is not on the path (`0x60c3b0`, `0x623910`).
@@ -27,7 +27,7 @@ pub struct NpcGreeting {
     pub pissed: u32,
 }
 
-/// Display id → greeting kits, joined through `CreatureDisplayInfo` field 11 → `NPCSounds`.
+/// Display id → greeting kits, joined through `CreatureDisplayInfo` field 12 → `NPCSounds`.
 pub struct NpcGreetingCatalog {
     display_to_sound: HashMap<u32, u32>,
     rows: HashMap<u32, NpcGreeting>,
@@ -59,7 +59,7 @@ fn npcsounds_schema() -> Schema {
 
 fn cdi_schema() -> Schema {
     let mut s = Schema::new("CreatureDisplayInfo");
-    for i in 0..12 {
+    for i in 0..16 {
         s.add_field(SchemaField::new(format!("f{i}"), FieldType::UInt32));
     }
     s
@@ -90,7 +90,7 @@ pub fn load_npc_greeting_catalog(chain: &mut Chain) -> Result<NpcGreetingCatalog
     let rs = parse(&bytes, cdi_schema(), "CreatureDisplayInfo")?;
     let mut display_to_sound = HashMap::new();
     for r in rs.records() {
-        let (Some(id), Some(npc_sound)) = (u32_at(r, 0), u32_at(r, 11)) else {
+        let (Some(id), Some(npc_sound)) = (u32_at(r, 0), u32_at(r, 12)) else {
             continue;
         };
         if npc_sound != 0 {
