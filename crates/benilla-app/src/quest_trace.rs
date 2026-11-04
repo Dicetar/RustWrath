@@ -549,6 +549,7 @@ pub(crate) enum UiBoundsBucket {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum UiClickBlock {
+    /// No concrete gate stopped the click slot and a handler run or engine click followed.
     None,
     LayoutDrag,
     WorldHook,
@@ -561,7 +562,9 @@ pub(crate) enum UiClickBlock {
     CaptureLost,
     NotPushed,
     DragStarted,
+    /// The slot ran, no Lua handler was bound and no engine click ran.
     HandlerMissing,
+    /// The slot ran and one of that edge's own script fires raised a local error.
     HandlerError,
 }
 
@@ -585,10 +588,14 @@ pub(crate) struct UiHitEvidence {
     pub handler_error: bool,
     /// The engine click action ran (LootButton take, CheckButton toggle) without a Lua handler.
     pub engine_click: bool,
-    /// The first gate that stopped the click slot; `None` when the slot was evaluated.
+    /// A concrete gate that stopped the click slot; else the slot's own verdict,
+    /// [`UiClickBlock::HandlerMissing`] or [`UiClickBlock::HandlerError`], when it ran without
+    /// producing a handler or engine click; else [`UiClickBlock::None`] when a handler or engine
+    /// click ran.
     pub blocked: UiClickBlock,
-    /// Coarse family/kind of the press target on a release row; the frame the press went to on a
-    /// press row.
+    /// The frame this edge's press/release went to: `held.or(hover)` on a press row (which can
+    /// differ from `hit` under a held capture; `press_same_frame` makes that explicit), and the
+    /// release target on a release row.
     pub press_target: Option<UiFrameRef>,
     pub press_same_frame: bool,
     pub press_contains: bool,

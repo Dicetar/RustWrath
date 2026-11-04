@@ -231,7 +231,8 @@ pub(super) fn feed_ui_input(
             .or_else(crate::target::hover_probe_point)
             .filter(|_| !synthetic)
         {
-            // The window cursor in the root's y-up 768-high units, `GetCursorPosition`'s answer.
+            // The window cursor in the root's y-up units (`Model::screen`, source root
+            // `[0, 0, 768, 1024]`: 1024 wide by 768 tall), `GetCursorPosition`'s answer.
             let Vec2 { x, y } = super::window_to_ui(window.height(), cursor);
             // `WOW_HIT_COST=1` meters this call's per-frame hit-test rebuild, one line a second.
             static HIT_COST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

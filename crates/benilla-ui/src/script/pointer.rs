@@ -105,9 +105,11 @@ pub enum UiClickMask {
     Both,
 }
 
-/// The first gate that stopped the click slot, in code order.
+/// The first gate that stopped the click slot, in code order; or the slot's own verdict when it
+/// ran without producing a handler or engine click.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UiClickBlock {
+    /// No concrete gate stopped the click slot and a handler run or engine click followed.
     #[default]
     None,
     LayoutDrag,
@@ -121,7 +123,9 @@ pub enum UiClickBlock {
     CaptureLost,
     NotPushed,
     DragStarted,
+    /// The slot ran, no Lua handler was bound and no engine click ran.
     HandlerMissing,
+    /// The slot ran and one of that edge's own script fires raised a local error.
     HandlerError,
 }
 
@@ -177,7 +181,8 @@ pub struct UiHitFacts {
     pub handler_error: bool,
     pub engine_click: bool,
     pub blocked: UiClickBlock,
-    /// The frame this edge's press/release went to: the held capture, else the point's hit.
+    /// The frame this edge's press/release went to: the held capture, else the point's hit on a
+    /// press row (so it can differ from `hit`), and the release target on a release row.
     pub press_target: Option<UiFrameFacts>,
     pub press_same_frame: bool,
     pub press_contains: bool,
@@ -249,8 +254,9 @@ fn owner_family(model: &Model, h: FrameHandle) -> (UiFamily, u8) {
     (UiFamily::Other, hops)
 }
 
-/// The effective hit rect's coarse state against the screen root and its size bucket. No numbers
-/// leave this function.
+/// The effective hit rect's coarse state against the screen root `Model::screen` (the source root
+/// `[0, 0, 768, 1024]`: 1024 wide by 768 tall; the host can set another aspect) and its size
+/// bucket. No numbers leave this function.
 fn bounds_facts(model: &Model, h: FrameHandle) -> (UiBoundsState, UiBoundsBucket) {
     let Some(rect) = model.frame_rect(h) else {
         return (UiBoundsState::Unresolved, UiBoundsBucket::None);
