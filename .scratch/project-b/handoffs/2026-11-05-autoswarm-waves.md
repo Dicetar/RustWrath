@@ -63,6 +63,29 @@
   from known spells and the pet talent tab is not yet exposed by `wrath_natives.rs`.
 - No live client, login, server/DB or combat session was started.
 
+## Wave 2a — social, party, raid, channel and guild inbound
+
+- Added `crates/benilla-protocol-wrath/src/gameplay/social.rs`: 12340 group invite/notices,
+  full `SMSG_GROUP_LIST` (roles, group guid, counter, LFG tail, loot and all three difficulty
+  bytes), masked party-member stats (plain and `_FULL`), who/whois, unified contact list,
+  friend status, channel notify/list, guild info/roster/event/command, raid target update and
+  ready-check request/answer.
+- Added the corresponding opcodes and `ServerEvent`/app translation. The existing party,
+  social, channel and guild owners receive `SessionEvent::GroupList`, `PartyMemberStats`,
+  `WhoResults`, `FriendList`/`IgnoreList`, `FriendStatus`, `ChannelNotify`/`ChannelList`,
+  `GuildInfo`/`GuildRoster`/`GuildEvent`/`GuildCommandResult`, `RaidTargetSet`/`List` and
+  ready-check events.
+- Fixed the generated social test fixture's status/HP mask (`0x11` advertised power while the
+  body carried HP); the decoder itself was not loosened.
+
+Evidence:
+- `cargo test -p benilla-protocol-wrath gameplay::social::tests` — 14 passed.
+- `cargo check -p benilla-app --lib` — completed after the app translation.
+- Source-only caveats: 12340 `SMSG_WHOIS` is free-form text and crosses as
+  `SessionEvent::WhoisText`; the donor social UI has no console text consumer yet. Guild bank
+  tab rights, contact notes, party LFG roles/difficulties and 64-slot aura tails are retained
+  by the decoders but not all are represented in the donor UI state.
+
 ### Mechanical compile repair
 
 `crates/benilla-assets` test fixtures were missing the newly required `LooseFiles::extra_addons`

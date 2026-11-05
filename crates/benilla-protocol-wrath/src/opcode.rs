@@ -486,3 +486,32 @@ pub const SMSG_AUCTION_COMMAND_RESULT: u16 = 0x25B;
 pub const SMSG_AUCTION_LIST_RESULT: u16 = 0x25C;
 pub const SMSG_AUCTION_OWNER_LIST_RESULT: u16 = 0x25D;
 pub const SMSG_AUCTION_BIDDER_LIST_RESULT: u16 = 0x265;
+
+/// 12340 social, group, raid, channel and guild replies (`Opcodes.h`; layouts in
+/// `gameplay/social.rs`). The MSG_* raid verbs are bidirectional, so server-reply arms use
+/// distinct `u16` names while the client verbs above keep their `u32` constants.
+pub const SMSG_GROUP_INVITE: u16 = 0x06F;
+pub const SMSG_GROUP_CANCEL: u16 = 0x071;
+pub const SMSG_GROUP_DECLINE: u16 = 0x074;
+pub const SMSG_GROUP_UNINVITE: u16 = 0x077;
+pub const SMSG_GROUP_SET_LEADER: u16 = 0x079;
+pub const SMSG_GROUP_DESTROYED: u16 = 0x07C;
+pub const SMSG_GROUP_LIST: u16 = 0x07D;
+pub const SMSG_PARTY_COMMAND_RESULT: u16 = 0x07F;
+pub const SMSG_PARTY_MEMBER_STATS: u16 = 0x07E;
+pub const SMSG_PARTY_MEMBER_STATS_FULL: u16 = 0x2F2;
+pub const SMSG_WHO: u16 = 0x063;
+pub const SMSG_WHOIS: u16 = 0x065;
+pub const SMSG_CONTACT_LIST: u16 = 0x067;
+pub const SMSG_FRIEND_STATUS: u16 = 0x068;
+pub const SMSG_CHANNEL_NOTIFY: u16 = 0x099;
+pub const SMSG_CHANNEL_LIST: u16 = 0x09B;
+pub const SMSG_GUILD_INFO: u16 = 0x088;
+pub const SMSG_GUILD_ROSTER: u16 = 0x08A;
+pub const SMSG_GUILD_EVENT: u16 = 0x092;
+pub const SMSG_GUILD_COMMAND_RESULT: u16 = 0x093;
+pub const SMSG_GUILD_INVITE: u16 = 0x083;
+pub const SMSG_GUILD_DECLINE: u16 = 0x086;
+pub const MSG_RAID_TARGET_UPDATE_SERVER: u16 = 0x321;
+pub const MSG_RAID_READY_CHECK_SERVER: u16 = 0x322;
+pub const MSG_RAID_READY_CHECK_CONFIRM_SERVER: u16 = 0x323;

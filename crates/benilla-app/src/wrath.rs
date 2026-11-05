@@ -3917,6 +3917,313 @@ fn translate_gameplay(
                 },
             }]
         }
+        WrathGameplayEvent::GroupInvite(invite) => vec![SessionEvent::GroupInvite {
+            inviter: invite.inviter,
+        }],
+        WrathGameplayEvent::GroupDecline { name } => vec![SessionEvent::GroupDecline { name }],
+        WrathGameplayEvent::GroupUninvited => vec![SessionEvent::GroupUninvited],
+        WrathGameplayEvent::GroupLeaderChanged { name } => {
+            vec![SessionEvent::GroupLeaderChanged { name }]
+        }
+        WrathGameplayEvent::GroupDestroyed => vec![SessionEvent::GroupDestroyed],
+        WrathGameplayEvent::GroupList(list) => vec![wrath_group_list(*list)],
+        WrathGameplayEvent::PartyCommandResult {
+            operation,
+            member,
+            result,
+            value,
+        } => {
+            if value != 0 {
+                debug!("wrath: party command result carries LFD value {value}");
+            }
+            vec![SessionEvent::PartyCommandResult {
+                operation,
+                member,
+                result,
+            }]
+        }
+        WrathGameplayEvent::PartyMemberStats(stats) => vec![wrath_party_stats(*stats)],
+        WrathGameplayEvent::Who(who) => vec![wrath_who(*who)],
+        WrathGameplayEvent::Whois(whois) => vec![SessionEvent::WhoisText { text: whois.text }],
+        WrathGameplayEvent::ContactList(list) => wrath_contacts(*list),
+        WrathGameplayEvent::FriendStatus(status) => {
+            vec![SessionEvent::FriendStatus(wrath_friend_status(status))]
+        }
+        WrathGameplayEvent::ChannelNotify(notify) => vec![wrath_channel_notify(*notify)],
+        WrathGameplayEvent::ChannelList(list) => vec![SessionEvent::ChannelList {
+            channel: list.channel,
+            flags: list.flags,
+            members: list.members,
+        }],
+        WrathGameplayEvent::GuildInfo(info) => vec![SessionEvent::GuildInfo(wrath_guild_info(info))],
+        WrathGameplayEvent::GuildRoster(roster) => {
+            vec![SessionEvent::GuildRoster(wrath_guild_roster(*roster))]
+        }
+        WrathGameplayEvent::GuildEvent(event) => {
+            vec![SessionEvent::GuildEvent(
+                benilla_protocol::messages::GuildEventNotice {
+                    event: event.event,
+                    params: event.args,
+                    guid: event.guid,
+                },
+            )]
+        }
+        WrathGameplayEvent::GuildCommandResult(result) => {
+            vec![SessionEvent::GuildCommandResult(
+                benilla_protocol::messages::GuildCommandResult {
+                    command: result.command,
+                    name: result.name,
+                    result: result.error,
+                },
+            )]
+        }
+        WrathGameplayEvent::RaidTargetUpdate(update) => vec![match update {
+            gameplay::social::RaidTargetUpdate::Set { icon, guid, .. } => {
+                SessionEvent::RaidTargetSet { icon, guid }
+            }
+            gameplay::social::RaidTargetUpdate::List { entries } => {
+                SessionEvent::RaidTargetList { entries }
+            }
+        }],
+        WrathGameplayEvent::RaidReadyCheck(check) => vec![match check {
+            // 12340's request names the initiator; the donor event is a plain prompt.
+            gameplay::social::RaidReadyCheck::Request { .. } => SessionEvent::ReadyCheckRequest,
+            gameplay::social::RaidReadyCheck::Answer { guid, ready } => {
+                SessionEvent::ReadyCheckAnswer { guid, ready }
+            }
+        }],
+    }
+}
+
+fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEvent {
+    let members = list
+        .members
+        .into_iter()
+        .map(|member| benilla_protocol::messages::GroupMemberEntry {
+            name: member.name,
+            guid: member.guid,
+            status: member.status,
+            // The donor row packs the subgroup and assistant bit into one byte; 12340 sends
+            // subgroup, member flags and LFG roles separately.
+            flags: (member.sub_group & 0x7) | (member.flags & 0x80),
+        })
+        .collect();
+    let loot = list.loot.map(|loot| benilla_protocol::messages::GroupLootInfo {
+        method: loot.method,
+        master: loot.master,
+        threshold: loot.threshold,
+    });
+    SessionEvent::GroupList {
+        group_type: list.group_type,
+        own_flags: list.flags,
+        members,
+        leader: list.leader_guid,
+        loot,
+    }
+}
+
+fn wrath_party_stats(stats: gameplay::social::PartyMemberStats) -> SessionEvent {
+    let f = stats.fields;
+    let mut info = benilla_protocol::messages::PartyMemberStatsInfo {
+        status: f.status.map(|status| status as u8),
+        cur_hp: f.cur_hp.map(|value| value.min(u32::from(u16::MAX)) as u16),
+        max_hp: f.max_hp.map(|value| value.min(u32::from(u16::MAX)) as u16),
+        power_type: f.power_type,
+        cur_power: f.cur_power,
+        max_power: f.max_power,
+        level: f.level,
+        zone: f.zone,
+        position: f.position.map(|(x, y)| (x as i16, y as i16)),
+        ..Default::default()
+    };
+    if let Some(auras) = f.auras {
+        info.auras = Some(
+            auras
+                .auras
+                .iter()
+                .filter(|aura| aura.slot < 32)
+                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
+                .collect(),
+        );
+        info.auras_negative = Some(
+            auras
+                .auras
+                .iter()
+                .filter(|aura| (32..48).contains(&aura.slot))
+                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
+                .collect(),
+        );
+    }
+    info.pet_guid = f.pet_guid;
+    info.pet_name = f.pet_name;
+    info.pet_model_id = f.pet_model_id;
+    info.pet_cur_hp = f.pet_cur_hp.map(|value| value.min(u32::from(u16::MAX)) as u16);
+    info.pet_max_hp = f.pet_max_hp.map(|value| value.min(u32::from(u16::MAX)) as u16);
+    info.pet_power_type = f.pet_power_type;
+    info.pet_cur_power = f.pet_cur_power;
+    info.pet_max_power = f.pet_max_power;
+    if let Some(auras) = f.pet_auras {
+        info.pet_auras = Some(
+            auras
+                .auras
+                .iter()
+                .filter(|aura| aura.slot < 32)
+                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
+                .collect(),
+        );
+        info.pet_auras_negative = Some(
+            auras
+                .auras
+                .iter()
+                .filter(|aura| (32..48).contains(&aura.slot))
+                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
+                .collect(),
+        );
+    }
+    SessionEvent::PartyMemberStats {
+        guid: stats.guid,
+        full: stats.full,
+        info: Box::new(info),
+    }
+}
+
+fn wrath_who(who: gameplay::social::WhoResults) -> SessionEvent {
+    SessionEvent::WhoResults(benilla_protocol::messages::WhoResults {
+        displayed: who.shown,
+        total: who.total,
+        entries: who
+            .players
+            .into_iter()
+            .map(|player| benilla_protocol::messages::WhoEntry {
+                name: player.name,
+                guild: player.guild,
+                level: player.level,
+                class: player.class,
+                race: player.race,
+                zone: player.zone,
+            })
+            .collect(),
+    })
+}
+
+fn wrath_contacts(list: gameplay::social::ContactList) -> Vec<SessionEvent> {
+    let mut friends = Vec::new();
+    let mut ignores = Vec::new();
+    for contact in list.contacts {
+        if contact.flags & 0x1 != 0 {
+            let friend = contact.friend.unwrap_or(gameplay::social::FriendInfo {
+                status: 0,
+                area: None,
+                level: None,
+                class: None,
+            });
+            friends.push(benilla_protocol::messages::FriendEntry {
+                guid: contact.guid,
+                status: friend.status,
+                area: friend.area.unwrap_or(0),
+                level: friend.level.unwrap_or(0),
+                class: friend.class.unwrap_or(0),
+            });
+        }
+        if contact.flags & 0x2 != 0 {
+            ignores.push(contact.guid);
+        }
+    }
+    vec![
+        SessionEvent::FriendList { friends },
+        SessionEvent::IgnoreList { guids: ignores },
+    ]
+}
+
+fn wrath_friend_status(
+    status: gameplay::social::FriendStatus,
+) -> benilla_protocol::messages::FriendStatusUpdate {
+    benilla_protocol::messages::FriendStatusUpdate {
+        result: status.result,
+        guid: status.guid,
+        online: status
+            .online
+            .map(|friend| benilla_protocol::messages::FriendOnline {
+                status: friend.status,
+                area: friend.area.unwrap_or(0),
+                level: friend.level.unwrap_or(0),
+                class: friend.class.unwrap_or(0),
+            }),
+    }
+}
+
+fn wrath_channel_notify(
+    notify: gameplay::social::ChannelNotify,
+) -> SessionEvent {
+    use benilla_protocol::messages::ChannelNoticeTail as Out;
+    use gameplay::social::ChannelNotifyTail as In;
+    let tail = match notify.tail {
+        In::None => Out::Empty,
+        In::Guid { guid } => Out::Guid(guid),
+        In::Joined { flags, .. } => Out::YouJoined {
+            flags: u32::from(flags),
+        },
+        In::Left { .. } => Out::Empty,
+        In::PlayerName { name } => Out::Name(name),
+        In::Kicked { player, actor } => Out::Actors {
+            target: player,
+            source: actor,
+        },
+        In::ModeChange {
+            guid,
+            old_flags,
+            new_flags,
+        } => Out::ModeChange {
+            guid,
+            old_flags,
+            new_flags,
+        },
+    };
+    SessionEvent::ChannelNotify {
+        notice: notify.notice,
+        channel: notify.channel,
+        tail,
+    }
+}
+
+fn wrath_guild_info(info: gameplay::social::GuildInfoWire) -> benilla_protocol::messages::GuildInfo {
+    // `AppendPackedTime` packs the client's WowTime: year-2000, month, day and time of day.
+    let year = ((info.created_at >> 24) & 0x1F) + 2000;
+    let month = ((info.created_at >> 20) & 0xF) + 1;
+    let day = ((info.created_at >> 14) & 0x3F) + 1;
+    benilla_protocol::messages::GuildInfo {
+        name: info.name,
+        created_day: day,
+        created_month: month,
+        created_year: year,
+        member_count: info.member_count,
+        account_count: info.account_count,
+    }
+}
+
+fn wrath_guild_roster(
+    roster: gameplay::social::GuildRosterWire,
+) -> benilla_protocol::messages::GuildRoster {
+    benilla_protocol::messages::GuildRoster {
+        motd: roster.motd,
+        info: roster.guild_info,
+        rank_rights: roster.ranks.into_iter().map(|rank| rank.rights).collect(),
+        members: roster
+            .members
+            .into_iter()
+            .map(|member| benilla_protocol::messages::GuildRosterMember {
+                guid: member.guid,
+                presence: member.status,
+                name: member.name,
+                rank_id: member.rank,
+                level: member.level as u8,
+                class: member.class as u8,
+                zone: member.zone,
+                last_online_days: member.last_online_days.unwrap_or(0.0),
+                public_note: member.note,
+                officer_note: member.officer_note,
+            })
+            .collect(),
     }
 }
 

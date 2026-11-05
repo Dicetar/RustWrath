@@ -16,6 +16,7 @@ use crate::cast_failure;
 pub mod economy;
 mod movement;
 pub mod pet_talent;
+pub mod social;
 pub use movement::{MonsterFacing, MonsterMove};
 
 /// The largest undecoded-byte count reported with a typed decode failure.
@@ -55,6 +56,7 @@ pub enum DecoderFamily {
     Spell,
     PetTalent,
     Economy,
+    Social,
     Other,
 }
 
@@ -234,6 +236,31 @@ pub fn decoder_family(opcode: u16) -> DecoderFamily {
         | SMSG_AUCTION_BIDDER_LIST_RESULT
         | SMSG_SHOW_BANK
         | SMSG_BUY_BANK_SLOT_RESULT => DecoderFamily::Economy,
+        SMSG_GROUP_INVITE
+        | SMSG_GROUP_CANCEL
+        | SMSG_GROUP_DECLINE
+        | SMSG_GROUP_UNINVITE
+        | SMSG_GROUP_SET_LEADER
+        | SMSG_GROUP_DESTROYED
+        | SMSG_GROUP_LIST
+        | SMSG_PARTY_COMMAND_RESULT
+        | SMSG_PARTY_MEMBER_STATS
+        | SMSG_PARTY_MEMBER_STATS_FULL
+        | SMSG_WHO
+        | SMSG_WHOIS
+        | SMSG_CONTACT_LIST
+        | SMSG_FRIEND_STATUS
+        | SMSG_CHANNEL_NOTIFY
+        | SMSG_CHANNEL_LIST
+        | SMSG_GUILD_INFO
+        | SMSG_GUILD_ROSTER
+        | SMSG_GUILD_EVENT
+        | SMSG_GUILD_COMMAND_RESULT
+        | SMSG_GUILD_INVITE
+        | SMSG_GUILD_DECLINE
+        | MSG_RAID_TARGET_UPDATE_SERVER
+        | MSG_RAID_READY_CHECK_SERVER
+        | MSG_RAID_READY_CHECK_CONFIRM_SERVER => DecoderFamily::Social,
         _ => DecoderFamily::Other,
     }
 }
@@ -1959,6 +1986,51 @@ pub enum ServerEvent {
         kind: AuctionListKind,
         list: Box<economy::AuctionList>,
     },
+    /// `SMSG_GROUP_INVITE`: invite state, inviter, LFG dungeon metadata and the final word.
+    GroupInvite(social::GroupInvite),
+    /// `SMSG_GROUP_DECLINE`: the declining player's name.
+    GroupDecline { name: String },
+    /// `SMSG_GROUP_UNINVITE`: empty body.
+    GroupUninvited,
+    /// `SMSG_GROUP_SET_LEADER`: the new leader's name.
+    GroupLeaderChanged { name: String },
+    /// `SMSG_GROUP_DESTROYED`: empty body.
+    GroupDestroyed,
+    /// `SMSG_GROUP_LIST`: the 12340 roster with roles, group guid, counter, LFG and difficulty.
+    GroupList(Box<social::GroupList>),
+    /// `SMSG_PARTY_COMMAND_RESULT`: operation, member, result and the 12340 LFD value.
+    PartyCommandResult {
+        operation: u32,
+        member: String,
+        result: u32,
+        value: u32,
+    },
+    /// `SMSG_PARTY_MEMBER_STATS` / `_FULL`: masked 12340 member fields.
+    PartyMemberStats(Box<social::PartyMemberStats>),
+    /// `SMSG_WHO`: the displayed rows and true match total.
+    Who(Box<social::WhoResults>),
+    /// `SMSG_WHOIS`: 12340's free-form text.
+    Whois(social::WhoisResult),
+    /// `SMSG_CONTACT_LIST`: friends, ignores and muted contacts with notes.
+    ContactList(Box<social::ContactList>),
+    /// `SMSG_FRIEND_STATUS`: the result-specific optional note/online tail.
+    FriendStatus(social::FriendStatus),
+    /// `SMSG_CHANNEL_NOTIFY`: notice and typed tail.
+    ChannelNotify(Box<social::ChannelNotify>),
+    /// `SMSG_CHANNEL_LIST`: the display channel and its members.
+    ChannelList(Box<social::ChannelList>),
+    /// `SMSG_GUILD_INFO`: name, creation time, member and account counts.
+    GuildInfo(social::GuildInfoWire),
+    /// `SMSG_GUILD_ROSTER`: full 12340 roster with ten ranks and bank-tab rights.
+    GuildRoster(Box<social::GuildRosterWire>),
+    /// `SMSG_GUILD_EVENT`: event id, up to three strings and an event-specific guid.
+    GuildEvent(social::GuildEventWire),
+    /// `SMSG_GUILD_COMMAND_RESULT`: command, member name and result.
+    GuildCommandResult(social::GuildCommandResultWire),
+    /// `MSG_RAID_TARGET_UPDATE`: full list or the single-pair delta.
+    RaidTargetUpdate(social::RaidTargetUpdate),
+    /// `MSG_RAID_READY_CHECK` / `_CONFIRM`: request or answer.
+    RaidReadyCheck(social::RaidReadyCheck),
 }
 
 /// Which of 12340's three auction pages a list reply belongs to.
@@ -2187,6 +2259,53 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
                 list: Box::new(list),
             }
         }),
+        SMSG_GROUP_INVITE => social::read_group_invite(body).map(ServerEvent::GroupInvite),
+        SMSG_GROUP_DECLINE => social::read_group_decline(body)
+            .map(|name| ServerEvent::GroupDecline { name }),
+        SMSG_GROUP_UNINVITE => social::read_group_uninvite(body).map(|()| ServerEvent::GroupUninvited),
+        SMSG_GROUP_SET_LEADER => social::read_group_set_leader(body)
+            .map(|name| ServerEvent::GroupLeaderChanged { name }),
+        SMSG_GROUP_DESTROYED => {
+            social::read_group_destroyed(body).map(|()| ServerEvent::GroupDestroyed)
+        }
+        SMSG_GROUP_LIST => {
+            social::read_group_list(body).map(|list| ServerEvent::GroupList(Box::new(list)))
+        }
+        SMSG_PARTY_COMMAND_RESULT => social::read_party_command_result(body).map(
+            |(operation, member, result, value)| ServerEvent::PartyCommandResult {
+                operation,
+                member,
+                result,
+                value,
+            },
+        ),
+        SMSG_PARTY_MEMBER_STATS => social::read_party_member_stats(body)
+            .map(|stats| ServerEvent::PartyMemberStats(Box::new(stats))),
+        SMSG_PARTY_MEMBER_STATS_FULL => social::read_party_member_stats_full(body)
+            .map(|stats| ServerEvent::PartyMemberStats(Box::new(stats))),
+        SMSG_WHO => social::read_who(body).map(|who| ServerEvent::Who(Box::new(who))),
+        SMSG_WHOIS => social::read_whois(body).map(ServerEvent::Whois),
+        SMSG_CONTACT_LIST => {
+            social::read_contact_list(body).map(|list| ServerEvent::ContactList(Box::new(list)))
+        }
+        SMSG_FRIEND_STATUS => social::read_friend_status(body).map(ServerEvent::FriendStatus),
+        SMSG_CHANNEL_NOTIFY => social::read_channel_notify(body)
+            .map(|notice| ServerEvent::ChannelNotify(Box::new(notice))),
+        SMSG_CHANNEL_LIST => social::read_channel_list(body)
+            .map(|list| ServerEvent::ChannelList(Box::new(list))),
+        SMSG_GUILD_INFO => social::read_guild_info(body).map(ServerEvent::GuildInfo),
+        SMSG_GUILD_ROSTER => social::read_guild_roster(body)
+            .map(|roster| ServerEvent::GuildRoster(Box::new(roster))),
+        SMSG_GUILD_EVENT => social::read_guild_event(body).map(ServerEvent::GuildEvent),
+        SMSG_GUILD_COMMAND_RESULT => {
+            social::read_guild_command_result(body).map(ServerEvent::GuildCommandResult)
+        }
+        MSG_RAID_TARGET_UPDATE_SERVER => {
+            social::read_raid_target_update(body).map(ServerEvent::RaidTargetUpdate)
+        }
+        MSG_RAID_READY_CHECK_SERVER | MSG_RAID_READY_CHECK_CONFIRM_SERVER => {
+            social::read_raid_ready_check(body).map(ServerEvent::RaidReadyCheck)
+        }
         _ => return None,
     })
 }
