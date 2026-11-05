@@ -35,7 +35,7 @@ Legend: Partial = component source exists, not accepted behavior; Broken = a con
 | Release movement | Walk/fall/swim/fly/transport/forced motion | Issue 18; issues 23/24 cover a subset | Shared controller and Wrath wire adapter | Partial with concrete R01 defect | GAP |
 | Release combat | All required class/resource/combat state | Issue 18; issue 25 covers a subset | Spell/attack codecs and existing spell owners | Partial; auras/cooldowns/class semantics remain | GAP |
 | Release pets | Companion control/ownership/persistence | Issue 18; behavior children pending | No complete Wrath pet path established by this review | Unknown | GAP |
-| Release economy | Inventory/equipment/bank/services/trade/mail/auction | Issue 18; issue 26 covers a subset | Item/container ECS, lossless Wrath bank/bag owner, donor projection | Partial with R06 (bank/bag source-migrated; item enchant tail deferred); R02 source-repaired; broad service paths open | GAP |
+| Release economy | Inventory/equipment/bank/services/trade/mail/auction | Issue 18; issue 26 covers a subset | Item/container ECS, lossless Wrath bank/bag and item-payload owner, donor projection | Partial with R06 (bank/bag and item payload source-migrated); R02 source-repaired; broad service paths open | GAP |
 | Release progression | Talents/glyphs/dual spec/skills/reputation | Issue 18; behavior children pending | Catalog support and donor UI owners | Partial; catalog parsing is not progression behavior | GAP |
 | Release professions | Learn/gather/craft/material/refusal workflows | Issue 18; behavior children pending | Skill/focus/mechanic catalogs, donor trade-skill owners | Partial; authoritative Wrath behavior not established | GAP |
 | Release interaction | Quest variants, objects, loot rules and services | Issue 18; issue 26 covers a subset | Gossip/quest/loot codec, narrowed object templates | Partial; variant/service/object semantics open | GAP |
@@ -93,11 +93,10 @@ gameplay was run. Contract: [lossless Wrath inventory](rfc-lossless-wrath-invent
 | INV-19 read-only count/find/walk consumers | `WrathInventory::apply` -> `PlayerInventory` -> `ui_items::*_in_player` | action-bar state/identity/recount, item lane, quest log, tradeskill, craft, auction bid, mail stationery, spell tooltip reagents, shapeshift, lock openers, `GetItemCount`, death self-res | bank-scoped counts see 25..28 and bank bag 7; all mask-0 walks see keyring 17..32; `find_item`/`action_count`/`stack_counts` stay bank-excluded by reference; donor 24/6/16 unchanged | SOURCE-REPAIRED (was donor 24/6) | SOURCE-OBSERVED; NOT RUN |
 | INV-20 typed clear precedence | `PlayerInventory::typed` over `WrathInventory::presence` | every `*_in_player` reader | observed `Some(0)` reads 0 and does not fall back; never-observed falls back to the donor projection | SOURCE-REPAIRED (was clear-as-miss) | SOURCE-OBSERVED; NOT RUN |
 
-Follow-up row (not this package): the raw player window stays `0..1171`, so
-`PLAYER_FIELD_COMBAT_RATING_1` (1231..), `PLAYER_FIELD_MAX_LEVEL` (1279) and
-`PLAYER_FIELD_DAILY_QUESTS_1` (1280..1304) read 0. Extending the window to `PLAYER_END` (1326)
-would change several UI reads and needs its own consumer evidence; it is deliberately not
-bundled with R06.
+Follow-up row (not this package): the raw player window now carries `0..PLAYER_END` (`0..1326`)
+after the main overlay, so the combat-rating, max-level and daily-quest tail is retained. Their
+UI consumers, the visible-item projection and the item-text path remain source-observed only and
+need a focused compile and runtime pass.
 
 ## Decision and test linkage
 

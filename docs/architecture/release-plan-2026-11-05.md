@@ -6,7 +6,7 @@
 
 **Historical planning record below:** the original review examined `dbaf8eac` and was published at `0bb7f4f79185da8cbeab6c7f439712a78121e9b2`. Its phase names and original suggested assignments are retained for provenance. Use the linked backlog for current dispatch. Both reviews are source-only.
 
-One required addon has a separate native dependency: the installed WM_Multiclass glue/world UI calls `MulticlassRequest` and `MulticlassPoll` over the owned 0x51b/0x51a protocol. Those host bindings are absent from the reviewed fork. Package U4 owns this replacement blocker independently of Spellwright self-whisper.
+One required addon has a separate native dependency: the installed WM_Multiclass glue/world UI calls `MulticlassRequest` and `MulticlassPoll` over the owned 0x51b/0x51a protocol. Those host bindings are source-added in the main overlay, but remain unverified. Package U4 owns this replacement blocker independently of Spellwright self-whisper.
 
 ## What counts as released
 
