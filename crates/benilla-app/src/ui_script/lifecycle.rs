@@ -104,15 +104,6 @@ pub(super) fn install_glue_side_vm(world: &mut World, screen: &str) {
     }
 }
 
-/// Build and install a boot VM, the one a `ReloadUI()` holds between its teardown and its load:
-/// the strings the feeds resolve lines from and the emote tokens `/`-commands are built from
-/// (`ui_chat::commands`), no frames and no font objects.
-fn install_boot_vm(world: &mut World) {
-    if let Some(script) = strings_vm(world) {
-        world.insert_non_send_resource(script);
-    }
-}
-
 /// A boot VM: `GlobalStrings.lua` and the emote tokens, for a reader that needs them where the
 /// world holds the glue VM. `None` (the world's VM removed) when
 /// the VM cannot start.
@@ -218,6 +209,24 @@ fn new_vm<E: std::fmt::Display>(
     world: &mut World,
     make: fn() -> Result<UiScript, E>,
 ) -> Option<UiScript> {
+    match build_vm(world, make) {
+        Some(script) => Some(script),
+        None => {
+            world.remove_non_send_resource::<UiScript>();
+            None
+        }
+    }
+}
+
+/// Build and seat a VM **without** touching the world's installed one.
+///
+/// This is the candidate half of a reload: a VM that cannot start leaves the live UI exactly where
+/// it was, so the failure is reportable instead of destructive. `None` also logs the reason, with
+/// the same wording the destructive [`new_vm`] path always used.
+fn build_vm<E: std::fmt::Display>(
+    world: &mut World,
+    make: fn() -> Result<UiScript, E>,
+) -> Option<UiScript> {
     // The client globals the VM holds that no rebuild resets: `[0xcf4d24]`, written only by
     // `SetEuropeanNumbers` (`0x771c40`), outlives a `ReloadUI` and a logout.
     let european_numbers = world
@@ -227,7 +236,6 @@ fn new_vm<E: std::fmt::Display>(
         Ok(s) => s,
         Err(e) => {
             error!("ui_script: VM init failed: {e}");
-            world.remove_non_send_resource::<UiScript>();
             return None;
         }
     };
@@ -531,13 +539,33 @@ pub(crate) fn load_ingame_ui_on_world_entry(world: &mut World) {
 
 /// [`load_ingame_ui_on_world_entry`] under the `"player"` its edge has.
 fn load_ingame_ui_seated(world: &mut World, seat: LoadSeat) {
+    load_ingame_ui_seated_with(world, seat, None);
+}
+
+/// [`load_ingame_ui_seated`] with an already-built VM.
+///
+/// A `ReloadUI()` prepares its candidate VM before it tears anything down, so the load installs
+/// that VM instead of minting a second one after the tear-down. The VM that failed to start is
+/// then, by construction, the one that never replaced the live UI.
+fn load_ingame_ui_seated_with(world: &mut World, seat: LoadSeat, prepared: Option<UiScript>) {
     // The parked VM goes back into the world, where the CVar fold reads it; a reload has none
     // parked and uses the live one.
     unpark_glue_vm(world);
     if !ui_wanted(world) {
+        // Nothing loads a UI in a capture run. A reload's candidate is dropped here; the VM the
+        // reload retired is removed with it rather than left installed in its shut-down state.
+        if prepared.is_some() {
+            world.remove_non_send_resource::<UiScript>();
+        }
+        drop(prepared);
         return;
     }
-    mint_entry_vm(world);
+    match prepared {
+        Some(script) => {
+            world.insert_non_send_resource(script);
+        }
+        None => mint_entry_vm(world),
+    }
     let Some(mut script) = world.remove_non_send_resource::<UiScript>() else {
         warn!("ui_script: entering the world with no VM — the in-game UI will not load");
         return;
@@ -1160,6 +1188,12 @@ pub(crate) struct ReloadUiPending(pub(crate) bool);
 /// ours fire from [`crate::ui_unit`]'s feed on the new VM's first `Update`, once it has re-seated
 /// the player. In-world only, as the reference's gate (`0x494a50(0xa)`) is; elsewhere the request
 /// is dropped, and the glue's own rebuild is [`super::glue::run_pending_glue_rebuild`]'s.
+///
+/// The reload is staged before it is destructive. A candidate content revision and a candidate VM
+/// are prepared while the live UI still runs; only when both are ready does the single boundary
+/// below fire the old session's shutdown, swap the content revision and install the candidate. A
+/// refusal therefore costs nothing: the live VM, its addon enable state and its saved variables are
+/// exactly as they were, and [`UiReloadFailure`] says why (so a second attempt is diagnosable too).
 pub(crate) fn run_pending_reload(world: &mut World) {
     if !std::mem::take(&mut world.resource_mut::<ReloadUiPending>().0) {
         return;
@@ -1172,7 +1206,42 @@ pub(crate) fn run_pending_reload(world: &mut World) {
         info!("ui_script: ReloadUI outside the world — dropped");
         return;
     }
-    info!("ui_script: ReloadUI — ending the UI session and building a new one");
+    info!("ui_script: ReloadUI — staging a candidate session before the live one is touched");
+
+    // 1. Content: staged and validated off to the side. Nothing live changes on a refusal.
+    let staged_content =
+        match benilla_assets::ProfileAssetReader::registered(benilla_assets::MPQ_SOURCE) {
+            Some(reader) => match reader.stage_content_revision(RELOAD_CONTENT_INPUTS) {
+                Ok(staged) => Some((reader, staged)),
+                Err(error) => {
+                    refuse_reload(world, format!("the candidate content revision is not coherent: {error}"));
+                    return;
+                }
+            },
+            // No profile route in this run (no `mpq://` source was registered): there is no
+            // revision to stage, and the reload runs on the content it already has.
+            None => None,
+        };
+
+    // 2. Remembered state: the live VM's saved variables and addon enable state are written now,
+    //    so a candidate that never comes up cannot cost them, and the file the reloaded UI reads
+    //    back is checked while the live VM is still there to rewrite it.
+    if let Err(reason) = save_live_ui_state(world) {
+        refuse_reload(world, reason);
+        return;
+    }
+
+    // 3. The candidate VM, built and proved able to execute with the live UI untouched. `new_vm`
+    //    would remove the installed VM on failure; this path must not.
+    let candidate = match prepare_reload_vm(world) {
+        Ok(script) => script,
+        Err(reason) => {
+            refuse_reload(world, reason);
+            return;
+        }
+    };
+
+    // ── One boundary. Nothing above this line destroyed the live UI. ─────────────────────────
     let reload_trace = world.get_resource::<crate::quest_trace::Source>().cloned();
     let reload_scope = world
         .get_resource::<crate::wrath::WrathWorldView>()
@@ -1201,18 +1270,47 @@ pub(crate) fn run_pending_reload(world: &mut World) {
         );
     }
     // The old VM's pending quest presentation is superseded. Transport receipts remain the
-    // recorder's evidence; they are not cancelled and never resent by the replacement VM.
+    // recorder's evidence; they are not cancelled and never resent by the replacement VM, and the
+    // authoritative in-flight casts and quests are not touched by a VM swap at all.
     if let Some(mut giver) = world.get_resource_mut::<crate::ui_quest::QuestGiver>() {
         giver.supersede_pending_on_reload();
     }
-    // A boot VM, never the glue's: the reload builds no glue (`0x495664` then `0x495669`), and the
-    // load replaces this VM at once.
+    // The dying session's shutdown: `PLAYER_LOGOUT`, the folds and the saved writes, all on the
+    // old content revision, which every reader can still serve.
     close_ui_session(world, ShutdownRoot::Reload);
+    // The content revision swaps here: after the old session's handlers ran on it, and before the
+    // new VM reads a single file. The profile reader and the synchronous chain move together, so
+    // no read can see one revision's archive list with the other's bytes.
+    if let Some((reader, staged)) = staged_content {
+        match reader.commit_content_revision(staged) {
+            Ok(committed) => {
+                let provenance = committed.provenance();
+                let chain = committed.chain;
+                match world.get_resource::<benilla_assets::WorldAssets>() {
+                    Some(assets) => match assets.chain.lock() {
+                        Ok(mut active) => *active = chain,
+                        Err(poisoned) => *poisoned.into_inner() = chain,
+                    },
+                    None => warn!(
+                        "ui_script: ReloadUI adopted {provenance} but no world assets hold a chain to swap"
+                    ),
+                }
+                info!("ui_script: ReloadUI adopted {provenance}");
+            }
+            Err(error) => {
+                // The UI still reloads; the content does not change. That keeps the revision
+                // coherent instead of mixing the old chain with a new profile.
+                warn!("ui_script: ReloadUI kept the previous content revision: {error}");
+            }
+        }
+    }
     if let Some(trace) = world.get_resource::<crate::quest_trace::Source>() {
         trace.advance_reload_generation();
     }
-    install_boot_vm(world);
-    load_ingame_ui_seated(world, LoadSeat::Live);
+    // The single VM swap: the candidate replaces the shut-down live VM, and the load runs on it.
+    load_ingame_ui_seated_with(world, LoadSeat::Live, Some(candidate));
+    // The candidate is up: the refusal record no longer describes this UI.
+    world.remove_resource::<UiReloadFailure>();
     // Separate evidence: the VM now installed reports its own session. A reload that ran does
     // not by itself prove the new VM loaded successfully.
     if let Some(trace) = reload_trace {
@@ -1239,6 +1337,107 @@ pub(crate) fn run_pending_reload(world: &mut World) {
     if seated {
         world.write_message(crate::net::WorldEnterCascadeMessage);
     }
+}
+
+/// The inputs a reloaded UI's load reads from the patch chain: its error strings and its emote
+/// command table. A candidate revision that cannot serve one of these would come up with dead
+/// error lines or dead `/sit`-style commands, so it is refused before the live UI is touched. Only
+/// inputs the active revision serves today are enforced, so a profile that never had one is not
+/// refused forever.
+const RELOAD_CONTENT_INPUTS: &[&str] = &[
+    "Interface\\FrameXML\\GlobalStrings.lua",
+    "Interface\\FrameXML\\ChatFrame.lua",
+];
+
+/// A refused `ReloadUI()`: what was asked for, why it was refused, and how many refusals in a row
+/// the UI has seen. Kept until a reload succeeds, so a second failure is as diagnosable as the
+/// first.
+#[derive(Resource, Default, Debug)]
+pub(crate) struct UiReloadFailure {
+    pub(crate) refused_attempts: u32,
+    pub(crate) last_reason: Option<String>,
+}
+
+fn refuse_reload(world: &mut World, reason: String) {
+    let mut failure = world
+        .remove_resource::<UiReloadFailure>()
+        .unwrap_or_default();
+    failure.refused_attempts = failure.refused_attempts.saturating_add(1);
+    failure.last_reason = Some(reason);
+    error!(
+        "ui_script: ReloadUI refused (attempt {}): {} — the live UI is untouched",
+        failure.refused_attempts,
+        failure
+            .last_reason
+            .as_deref()
+            .unwrap_or("no reason recorded")
+    );
+    world.insert_resource(failure);
+}
+
+/// Write the live VM's remembered state before a reload may destroy it, and check the file the
+/// reloaded UI will read back.
+///
+/// No `PLAYER_LOGOUT` here: that event belongs to the boundary, where the dying UI still runs
+/// against the old content revision. These are the two plain writes whose loss would be visible
+/// (the saved settings and the addon enable state), so they happen before any teardown.
+fn save_live_ui_state(world: &mut World) -> Result<(), String> {
+    let identity = world
+        .get_resource::<AddOnIdentity>()
+        .and_then(|id| id.0.clone());
+    crate::script_calls::with_hosted_vm(world, |script| {
+        if let Some(script) = script {
+            crate::ui_saved::save(script);
+            addons::save_enable_state(script, identity.as_ref());
+        }
+    });
+    let Some(path) = crate::local_state::saved_variables_path() else {
+        return Ok(());
+    };
+    // A hard read failure is the one refusal: the reloaded UI would start from defaults and the
+    // shutdown write is held for a file it could not read, which looks like lost settings even
+    // though they are on disk. The fix (permissions, another process) is outside the reload.
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "saved variables at {} cannot be read back ({error}); a reload would start from \
+                 defaults",
+                path.display()
+            ))
+        }
+    };
+    // Compatibility report, not a refusal: the flat reader tolerates lines outside its shape and
+    // the load keeps a copy of such a file before rewriting it.
+    let outside = bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            !line.is_empty() && !line.starts_with(b"--") && !line.contains(&b'=')
+        })
+        .count();
+    if outside > 0 {
+        warn!(
+            "ui_script: ReloadUI: {outside} saved-variable line(s) are outside this build's flat \
+             reader; the load keeps a copy of the file as it is"
+        );
+    }
+    Ok(())
+}
+
+/// The reload's candidate VM, built and seated off to the side. The live VM is untouched, so a
+/// failure here is reported rather than paid for.
+fn prepare_reload_vm(world: &mut World) -> Result<UiScript, String> {
+    let mut script = build_vm(world, make_ingame_vm)
+        .ok_or_else(|| "the candidate VM did not start".to_owned())?;
+    crate::ui_macro::install_icon_source(world, &mut script);
+    // A VM that cannot execute is not a usable candidate, and this is the cheapest proof of that
+    // before the live UI is retired. The file load itself still runs after the swap.
+    script
+        .eval::<i64>("return 1")
+        .map_err(|error| format!("the candidate VM cannot execute Lua: {error}"))?;
+    Ok(script)
 }
 
 /// `AppExit`, the quit root, read as a message because a quit from in-world never leaves
@@ -1832,6 +2031,133 @@ mod tests {
         );
     }
 
+    /// A reload stages its candidate before anything is torn down. When the saved-variables file
+    /// the reloaded UI would read back cannot be read, the reload is refused: the live VM keeps
+    /// running, its saved state is already written, and the refusal is recorded so a second
+    /// attempt is as diagnosable as the first.
+    #[test]
+    fn a_refused_reload_keeps_the_live_vm_and_its_saved_state() {
+        use crate::local_state::test_env::{EnvGuard, ENV_LOCK};
+        let _l = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = std::env::temp_dir().join(format!(
+            "benilla-reload-refused-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("the pinned state folder");
+        // A directory where the flat file belongs: `fs::read` fails with something other than
+        // "not found", which is the one saved-variables state a reload refuses.
+        std::fs::create_dir_all(home.join("saved-variables.lua")).expect("the misplaced file");
+        let _capture = EnvGuard::unset("WOW_CAPTURE");
+        let _home = EnvGuard::set("BENILLA_HOME", home.to_str().expect("temp path is UTF-8"));
+
+        let mut world = World::new();
+        world.insert_resource(State::new(crate::client_state::ClientState::InWorld));
+        world.insert_resource(crate::run_mode::CaptureMode);
+        let live = UiScript::new().unwrap();
+        let live_session = live.session();
+        world.insert_non_send_resource(live);
+        let (trace, _history) = crate::quest_trace::new_pair();
+        world.insert_resource(trace.clone());
+
+        for attempt in 1..=2 {
+            world.insert_resource(ReloadUiPending(true));
+            run_pending_reload(&mut world);
+            assert!(!world.resource::<ReloadUiPending>().0, "the request is consumed");
+            let failure = world
+                .get_resource::<UiReloadFailure>()
+                .expect("a refusal is recorded");
+            assert_eq!(
+                failure.refused_attempts, attempt,
+                "each refused attempt is counted, so the second is diagnosable"
+            );
+            assert!(
+                failure
+                    .last_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("saved variables")),
+                "{:?}",
+                failure.last_reason
+            );
+        }
+        assert_eq!(
+            world.non_send_resource::<UiScript>().session(),
+            live_session,
+            "the live VM was never replaced"
+        );
+        assert_eq!(
+            trace.reload_generation(),
+            0,
+            "a refused reload consumes no VM generation"
+        );
+    }
+
+    /// A reload whose candidate is ready runs the boundary once: the retired VM is gone, the
+    /// generation advances, and the stale refusal record is cleared. A capture world builds no UI,
+    /// so the candidate itself is dropped there; the assertions are about the boundary, not the
+    /// file load that a real run additionally performs.
+    #[test]
+    fn a_ready_candidate_reload_crosses_one_boundary_and_clears_the_refusal_record() {
+        use crate::local_state::test_env::{EnvGuard, ENV_LOCK};
+        use crate::net::WorldEnterCascadeMessage;
+        let _l = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // No pinned state folder: the reload's saved-variables step is a no-op here, and no other
+        // test's `BENILLA_HOME` can leak into this one.
+        let _home = EnvGuard::unset("BENILLA_HOME");
+        let _capture = EnvGuard::unset("WOW_CAPTURE");
+        let mut world = World::new();
+        world.insert_resource(State::new(crate::client_state::ClientState::InWorld));
+        world.insert_resource(crate::run_mode::CaptureMode);
+        world.init_resource::<Messages<WorldEnterCascadeMessage>>();
+        world.init_resource::<super::super::SweptWorlds>();
+        world.init_resource::<super::super::LeavingWorldArmed>();
+        world
+            .resource_mut::<super::super::LeavingWorldArmed>()
+            .arm();
+        let live = UiScript::new().unwrap();
+        let live_session = live.session();
+        world.insert_non_send_resource(live);
+        let (trace, _history) = crate::quest_trace::new_pair();
+        world.insert_resource(trace.clone());
+        world.insert_resource(UiReloadFailure {
+            refused_attempts: 2,
+            last_reason: Some("an earlier refusal".to_owned()),
+        });
+
+        world.insert_resource(ReloadUiPending(true));
+        run_pending_reload(&mut world);
+
+        assert!(!world.resource::<ReloadUiPending>().0, "the reload ran");
+        assert!(
+            world.get_resource::<UiReloadFailure>().is_none(),
+            "a successful reload clears the refusal record"
+        );
+        assert_eq!(trace.reload_generation(), 1, "one generation per reload");
+        assert!(
+            world.get_non_send_resource::<UiScript>().is_none(),
+            "the retired VM is gone rather than left installed"
+        );
+        assert_ne!(
+            world
+                .get_non_send_resource::<UiScript>()
+                .map(UiScript::session),
+            Some(live_session),
+            "no path keeps the retired session installed"
+        );
+        assert_eq!(
+            world
+                .resource_mut::<Messages<WorldEnterCascadeMessage>>()
+                .drain()
+                .count(),
+            0,
+            "no player is seated, so no world-enter cascade is written"
+        );
+    }
+
     /// The agreements are read from their CVars before the first screen is set (`0x46a400` at
     /// `0x402b36`, `SET_GLUE_SCREEN` at `0x402b65`): a returning player's login shows the boxes,
     /// not the EULA, and a first launch still shows the EULA.
@@ -1972,8 +2298,9 @@ mod tests {
     }
 
     /// Only the in-game state registers the macro verbs (`RegisterMacroFunctions` `0x4f1b90`, from
-    /// `0x490297`), so the world-entry VM gets the icon chooser's source and the glue VM and a
-    /// reload's boot VM get none.
+    /// `0x490297`), so the world-entry VM gets the icon chooser's source and the glue VM gets none.
+    /// A `ReloadUI()` prepares the same kind of VM the entry does, so the VM that runs after a
+    /// reload has it too.
     #[test]
     fn only_the_entry_vm_gets_the_macro_icon_source() {
         use crate::client_state::ClientState;
@@ -1986,8 +2313,9 @@ mod tests {
         world.insert_resource(State::new(ClientState::Login));
         setup_script(&mut world);
         assert!(!has(&world), "the glue VM");
-        install_boot_vm(&mut world);
-        assert!(!has(&world), "a boot VM");
+        let candidate = prepare_reload_vm(&mut world).expect("a reload candidate VM");
+        world.insert_non_send_resource(candidate);
+        assert!(has(&world), "the reload candidate is an entry VM");
         mint_entry_vm(&mut world);
         assert!(has(&world), "the world-entry VM");
     }

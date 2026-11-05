@@ -310,6 +310,11 @@ pub(crate) struct SessionReplies {
     closed_pushes: u64,
     peak: usize,
     delivered: u64,
+    /// The scope the app has adopted. A reply older than it can no longer be applied, so it is
+    /// dropped where it is produced rather than occupying a bounded delivery slot.
+    adopted: Option<(u64, u64)>,
+    /// The session is over: only terminal and forced edges are still accepted.
+    retired: bool,
 }
 
 impl SessionReplies {
@@ -318,7 +323,19 @@ impl SessionReplies {
             self.closed_pushes += 1;
             return;
         }
-        match session_class(&event.event) {
+        let class = session_class(&event.event);
+        if self.retired && !event.force && class != SessionClass::Terminal {
+            // The session that produced this reply has ended; its state can no longer be applied.
+            self.dropped += 1;
+            return;
+        }
+        if let Some(scope) = self.adopted {
+            if class != SessionClass::Terminal && SessionReplies::superseded(scope, &event) {
+                self.dropped += 1;
+                return;
+            }
+        }
+        match class {
             SessionClass::Terminal => self.push_terminal(event),
             SessionClass::Observation => {
                 if let Some(key) = observation_key(&event.event) {
@@ -429,17 +446,35 @@ impl SessionReplies {
         self.throttled = false;
     }
 
-    /// Prune replies already older than the scope just adopted. Forced edges keep their
-    /// "deliver even when stale" contract and are left for the dispatcher to judge.
-    fn drop_older_than(&mut self, session_epoch: u64, world_generation: u64) {
+    /// Whether an event belongs to a scope the consumer has already left. Forced edges keep
+    /// their "deliver even when stale" contract: a terminal must land whatever the scope was.
+    fn superseded(scope: (u64, u64), event: &WrathSessionEvent) -> bool {
+        !event.force
+            && (event.session_epoch < scope.0
+                || (event.session_epoch == scope.0 && event.world_generation < scope.1))
+    }
+
+    /// Adopt a newer world scope: prune the replies it already supersedes and drop later ones at
+    /// the producer, so a retired world's reply never takes a delivery slot or reaches the
+    /// dispatcher. Terminal edges keep their reserved slots.
+    fn adopt_scope(&mut self, session_epoch: u64, world_generation: u64) -> u64 {
+        let scope = (session_epoch, world_generation);
+        self.adopted = Some(scope);
         let before = self.fifo.len();
-        self.fifo.retain(|queued| {
-            queued.force
-                || !(queued.session_epoch < session_epoch
-                    || (queued.session_epoch == session_epoch
-                        && queued.world_generation < world_generation))
-        });
-        self.dropped += (before - self.fifo.len()) as u64;
+        self.fifo
+            .retain(|queued| !SessionReplies::superseded(scope, queued));
+        let dropped = (before - self.fifo.len()) as u64;
+        self.dropped += dropped;
+        dropped
+    }
+
+    /// Retire the scope for good: only terminals and forced edges are delivered from here on.
+    /// The queued backlog is stale by definition; the reserved terminal slots are kept.
+    fn retire_scope(&mut self) -> u64 {
+        self.retired = true;
+        let dropped = self.fifo.len() as u64;
+        self.clear_backlog();
+        dropped
     }
 
     fn stats(&self) -> SessionReplyStats {
@@ -962,11 +997,13 @@ impl WrathWmActions {
     }
 
     /// Terminal scope loss: every remaining intent becomes `Unknown`, because a command may
-    /// already have reached the server. Nothing is replayed.
-    fn fail_all(&mut self, status: ActionStatus, detail: &str) {
+    /// already have reached the server. Nothing is replayed. Returns how many were answered.
+    fn retire_all(&mut self, status: ActionStatus, detail: &str) -> usize {
         let ids: Vec<String> = self.pending.keys().cloned().collect();
+        let mut retired = 0;
         for id in ids {
             if let Some(pending) = self.pending.remove(&id) {
+                retired += 1;
                 self.answer(
                     id,
                     status,
@@ -979,6 +1016,65 @@ impl WrathWmActions {
         }
         self.cancelled.clear();
         self.last_cast_spell = None;
+        retired
+    }
+
+    /// Terminal retirement of the intents admitted against a world scope at or before `retired`.
+    /// An intent admitted against a newer scope is left alone: a delayed old-scope event must not
+    /// answer work that belongs to the replacement world. Each intent is removed before it is
+    /// answered, so a repeat call resolves nothing.
+    fn retire_scope(&mut self, retired: (u64, u64), status: ActionStatus, detail: &str) -> usize {
+        let ids: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| {
+                scope_at_or_before(retired, (pending.session_epoch, pending.world_generation))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut retired_count = 0;
+        for id in ids {
+            if let Some(pending) = self.pending.remove(&id) {
+                retired_count += 1;
+                if let ActionIntent::Cast { spell_id, .. } = &pending.intent {
+                    if self.last_cast_spell == Some(*spell_id) {
+                        self.last_cast_spell = None;
+                    }
+                }
+                self.answer(
+                    id,
+                    status,
+                    pending.session_epoch,
+                    pending.world_generation,
+                    None,
+                    Some(detail.to_owned()),
+                );
+            }
+        }
+        // An admission-level cancellation whose request never arrived cannot match a request from
+        // the scope that replaced it, and the platform's own cancellation path clears this list.
+        self.cancelled.clear();
+        self.last_cast_spell = None;
+        retired_count
+    }
+
+    /// Answer publisher proposals that were queued for a scope the app has left. None of them
+    /// reached a command owner, so no command was dispatched and `Rejected` is the honest terminal
+    /// state. Returns how many were answered; the channel is drained exactly once.
+    fn refuse_unadmitted(&mut self, detail: &str) -> usize {
+        let requests: Vec<_> = self.requests.try_iter().collect();
+        let refused = requests.len();
+        for request in requests {
+            self.answer(
+                request.request_id,
+                ActionStatus::Rejected,
+                request.session_epoch,
+                request.world_generation,
+                None,
+                Some(detail.to_owned()),
+            );
+        }
+        refused
     }
 
     /// Bind a newly observed cast START to the oldest admitted cast intent of that spell. The
@@ -1217,6 +1313,10 @@ pub struct WrathControl {
     /// A world entry was observed for the current worker. A later loss is recovery, not
     /// admission, and must not consume the admission retry budget.
     entered_world: bool,
+    /// The ended session's delivery state was retired at the one barrier. Set by the terminal arm
+    /// (and by a shutdown stop); a panicked worker that never drained a terminal leaves it false,
+    /// so the Net drain's fallback runs the barrier once for that case.
+    ended_retirement_done: bool,
     /// The existing glue returned to character selection after the clean logout. A replacement
     /// is admitted only after that visible stop, not merely because a terminal frame arrived.
     left_world: bool,
@@ -1248,6 +1348,70 @@ pub struct WrathControl {
     /// The typed action seam shared with every publisher this worker replaces. The app's own
     /// ends live in [`WrathWmActions`].
     wm_actions: Option<ActionBridge>,
+}
+
+/// Which boundary is closing a delivery scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeliveryScopeEnd {
+    /// A world generation changed while the session (and its worker) continue. `retired` is the
+    /// scope whose intents, receipts and replies can no longer be answered; `adopted` is the one
+    /// the app reads from now on.
+    WorldTransfer {
+        retired: (u64, u64),
+        adopted: (u64, u64),
+    },
+    /// The session and its worker ended.
+    SessionEnded,
+}
+
+/// What one [`WrathControl::retire_scoped_delivery`] resolved. Every count is terminal: an intent,
+/// proposal, outbound command or ask is accounted for exactly once, and a repeated call for the
+/// same state resolves nothing (only `publishers_pending` can stay non-zero while a handle that
+/// already missed the worker's stop window keeps finishing).
+///
+/// A count is not a success claim: `actions` and `unadmitted` are answered `Unknown`/`Rejected`
+/// because the scope ended, not because the command ran.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ScopedDeliveryRetirement {
+    /// Admitted WM intents answered at the barrier.
+    pub actions: usize,
+    /// Publisher proposals that never reached admission, answered `Rejected`.
+    pub unadmitted: usize,
+    /// Outbound commands dropped before the worker wrote them; their receipts were answered.
+    pub outbound: usize,
+    /// The select screen's ask channel was closed with the retired scope.
+    pub parked: bool,
+    /// Queued replies discarded because the adopted or retired scope supersedes them.
+    pub replies: u64,
+    /// Publisher retirements that reported stopped and were dropped.
+    pub publishers_finished: usize,
+    /// Publisher retirements still running; replacement admission waits for them.
+    pub publishers_pending: usize,
+}
+
+/// Discard queued outbound commands for a retired scope, answering every carried receipt with one
+/// terminal delivery. Returns how many entries were retired.
+///
+/// A command the worker never wrote can no longer be written, so `Rejected(ScopeChanged)` is its
+/// honest terminal state. A command with neither a receipt nor a trace has no observer at all;
+/// dropping it is still terminal, and it is counted the same way.
+fn retire_outbound_deliveries(
+    queue: &mut VecDeque<WrathOutbound>,
+    refusal: crate::net::CommandRefusal,
+) -> usize {
+    let retired = queue.len();
+    for outbound in queue.drain(..) {
+        if let Some(receipt) = outbound.receipt.as_ref() {
+            // The receipt owns its interaction trace; reporting through it keeps one terminal
+            // delivery per interaction (the same rule the dispatcher applies).
+            receipt.report(crate::net::CommandDelivery::Rejected(refusal));
+        } else if let Some(trace) = outbound.trace.as_ref() {
+            trace.record(crate::quest_trace::Stage::Delivery(
+                crate::net::CommandDelivery::Rejected(refusal),
+            ));
+        }
+    }
+    retired
 }
 
 impl WrathControl {
@@ -1330,14 +1494,13 @@ impl WrathControl {
         self.retry_at = None;
         self.entered_world = false;
         self.left_world = false;
+        self.ended_retirement_done = false;
         self.cancel = Arc::new(AtomicBool::new(false));
         let cancel = Arc::clone(&self.cancel);
         let commands = self.commands.clone();
-        if let Some(commands) = commands.as_ref() {
-            if let Ok(mut queue) = commands.lock() {
-                queue.clear();
-            }
-        }
+        // A fresh worker is a fresh scope: anything still queued belongs to the scope that ended
+        // and can no longer be written. Its receipts are answered rather than silently dropped.
+        self.retire_outbox(crate::net::CommandRefusal::ScopeChanged);
         let replies = Arc::new(Mutex::new(SessionReplies::default()));
         self.session_events = Some(Arc::clone(&replies));
         self.session_events_tx = Some(Arc::clone(&replies));
@@ -1425,10 +1588,24 @@ impl WrathControl {
     /// Bounded app-owned stop: signal the loop and join for a short grace period. A worker still
     /// inside a blocking socket read remains in `retiring`; no replacement can overlap it.
     pub fn stop(&mut self) {
+        self.stop_with_delivery(None);
+    }
+
+    /// [`Self::stop`] with the typed action seam, so a shutdown retires pending intents and
+    /// proposals instead of leaving them for a follower that never comes.
+    fn stop_with_delivery(&mut self, actions: Option<&mut WrathWmActions>) {
         self.shutdown = true;
         self.restart_allowed = false;
         self.retry_at = None;
         self.cancel.store(true, Ordering::SeqCst);
+        // Retire the whole scope before the join: a receipt, intent or ask with no author left
+        // must still end in a terminal state, and the reply queue must stop taking new work.
+        self.retire_scoped_delivery(
+            DeliveryScopeEnd::SessionEnded,
+            actions,
+            "the client is shutting down",
+        );
+        self.ended_retirement_done = true;
         // Close the reply queue before the join. A worker that pushes during teardown must not
         // fabricate an overflow terminal, and no consumer is left to drain what it sends.
         self.close_session_replies();
@@ -1526,23 +1703,96 @@ impl WrathControl {
         }
     }
 
-    /// Drop every queued reply once the session has ended. The terminal edges are kept, so they
-    /// are still delivered; only the work that a finished session makes stale is discarded.
-    fn clear_session_replies_after_terminal(&mut self) {
-        if let Some(replies) = self.session_events.as_ref() {
-            if let Ok(mut replies) = replies.lock() {
-                replies.clear_backlog();
-            }
+    /// Drain the worker's publisher-retirement handoff and drop the handles that reported stopped.
+    /// Returns how many completed. A handle still running stays in `publisher_retiring`, which
+    /// blocks replacement admission until it reports stopped; nothing is joined here, because this
+    /// runs on the render thread.
+    fn collect_publisher_retirements(&mut self) -> usize {
+        if let Some(receiver) = self.publisher_retire_rx.as_ref() {
+            let handed: Vec<_> = receiver.try_iter().collect();
+            self.publisher_retiring.extend(handed);
+        }
+        let before = self.publisher_retiring.len();
+        self.publisher_retiring
+            .retain(|retirement| !retirement.is_finished());
+        before - self.publisher_retiring.len()
+    }
+
+    /// Drop the queued outbound commands of a scope that no longer exists, reporting a terminal
+    /// delivery to every carried receipt. Returns how many entries were retired.
+    fn retire_outbox(&mut self, refusal: crate::net::CommandRefusal) -> usize {
+        let Some(commands) = self.commands.as_ref() else {
+            return 0;
+        };
+        match commands.lock() {
+            Ok(mut queue) => retire_outbound_deliveries(&mut queue, refusal),
+            Err(poisoned) => retire_outbound_deliveries(&mut poisoned.into_inner(), refusal),
         }
     }
 
-    /// Drop replies already older than the scope the Net drain has just adopted.
-    fn drop_session_replies_older_than(&mut self, session_epoch: u64, world_generation: u64) {
+    /// Retire every delivery that belongs to a scope the app has left, exactly once.
+    ///
+    /// This is the single barrier the world-transfer, logout and shutdown paths call at the point
+    /// the old scope is closed or the new one adopted:
+    ///
+    /// * admitted WM intents are answered with a terminal status (`Unknown`: the command may have
+    ///   reached the server) and removed;
+    /// * publisher proposals still queued in the action channel never reached a command owner, so
+    ///   they are answered `Rejected` and removed — otherwise a stale proposal would be admitted
+    ///   into the next world;
+    /// * queued outbound commands are dropped with `Rejected(ScopeChanged)` reported to their
+    ///   receipts (a silent drop would lose the interaction's only terminal delivery);
+    /// * the select screen's ask channel is closed with the session that served it;
+    /// * the bounded reply queue keeps its caps and reserved terminal slots, and drops what the
+    ///   adopted scope already supersedes (or accepts nothing but terminals after a session end);
+    /// * publisher retirements are drained and retained until they actually stop.
+    ///
+    /// It never blocks the render thread and never fabricates a success. The state it resolves is
+    /// consumed, so a second call for the same scope cannot answer an action or a receipt twice;
+    /// only a publisher retirement that is still stopping shows up again.
+    fn retire_scoped_delivery(
+        &mut self,
+        end: DeliveryScopeEnd,
+        actions: Option<&mut WrathWmActions>,
+        reason: &str,
+    ) -> ScopedDeliveryRetirement {
+        let mut report = ScopedDeliveryRetirement::default();
+
+        if let Some(actions) = actions {
+            report.actions = match end {
+                DeliveryScopeEnd::SessionEnded => {
+                    actions.retire_all(ActionStatus::Unknown, reason)
+                }
+                DeliveryScopeEnd::WorldTransfer { retired, .. } => {
+                    actions.retire_scope(retired, ActionStatus::Unknown, reason)
+                }
+            };
+            report.unadmitted = actions.refuse_unadmitted(reason);
+        }
+
+        report.outbound = self.retire_outbox(crate::net::CommandRefusal::ScopeChanged);
+        // The ask channel belongs to the link that served the select screen. A queued ask (an
+        // Enter, a Delete) must never be served by the scope that replaces it.
+        report.parked = self.park_commands.take().is_some();
+
         if let Some(replies) = self.session_events.as_ref() {
             if let Ok(mut replies) = replies.lock() {
-                replies.drop_older_than(session_epoch, world_generation);
+                report.replies = match end {
+                    DeliveryScopeEnd::SessionEnded => replies.retire_scope(),
+                    DeliveryScopeEnd::WorldTransfer { adopted, .. } => {
+                        replies.adopt_scope(adopted.0, adopted.1)
+                    }
+                };
             }
         }
+
+        report.publishers_finished = self.collect_publisher_retirements();
+        report.publishers_pending = self.publisher_retiring.len();
+
+        if report != ScopedDeliveryRetirement::default() {
+            debug!("wrath: retired delivery scope ({end:?}): {report:?}");
+        }
+        report
     }
 
     fn session_events_empty(&self) -> bool {
@@ -1801,6 +2051,7 @@ impl Plugin for WrathNetPlugin {
             retry_at: None,
             terminal_ready: true,
             entered_world: false,
+            ended_retirement_done: false,
             left_world: false,
             shutdown: false,
             last_error: None,
@@ -1910,14 +2161,7 @@ fn wrath_session_ownership(
     // Publishers that missed the worker's bounded stop are retained until they report stopped;
     // replacement admission waits for the list to empty, because a dropped handle is not proof
     // of retirement.
-    let handed_off: Vec<_> = match control.publisher_retire_rx.as_ref() {
-        Some(receiver) => receiver.try_iter().collect(),
-        None => Vec::new(),
-    };
-    control.publisher_retiring.extend(handed_off);
-    control
-        .publisher_retiring
-        .retain(|retirement| !retirement.is_finished());
+    control.collect_publisher_retirements();
     if control.worker.as_ref().is_some_and(|w| w.is_finished()) {
         let panicked = match control.worker.take() {
             Some(handle) => handle.join().is_err(),
@@ -2637,9 +2881,13 @@ fn vendor_row(view: &WrathWorldView, vendor: u64, entry: u32) -> Option<u32> {
 
 /// Application exit owns a bounded stop of the session thread; dropping a running `JoinHandle`
 /// alone is not cancellation.
-fn wrath_shutdown_on_exit(mut control: ResMut<WrathControl>, mut exits: MessageReader<AppExit>) {
+fn wrath_shutdown_on_exit(
+    mut control: ResMut<WrathControl>,
+    mut actions: Option<ResMut<WrathWmActions>>,
+    mut exits: MessageReader<AppExit>,
+) {
     if exits.read().next().is_some() {
-        control.stop();
+        control.stop_with_delivery(actions.as_deref_mut());
     }
 }
 
@@ -5822,6 +6070,12 @@ fn scope_is_older(
         || (event_epoch == current_epoch && event_world < current_world)
 }
 
+/// Whether `candidate` belongs to `scope` or a scope before it. Used to fence a retirement to the
+/// intents the retired scope actually admitted.
+fn scope_at_or_before(scope: (u64, u64), candidate: (u64, u64)) -> bool {
+    candidate.0 < scope.0 || (candidate.0 == scope.0 && candidate.1 <= scope.1)
+}
+
 /// Deliver Wrath replies after the Net stage has adopted the matching world scope. This is the
 /// only path for Wrath gameplay replies; the stock 1.12 inbound channel is not used, so a queued
 /// old-world reply cannot overtake the transfer teardown.
@@ -6456,19 +6710,20 @@ fn wrath_net_drain(
         match event {
             WrathFeedEvent::Phase { phase, .. } => view.phase = Some(phase),
             WrathFeedEvent::WorldTransfer { session_epoch, world_generation, map_id } => {
-                // Same-frame teardown: old-scope entities are gone before Input runs. An intent
-                // admitted against the retired world can never be answered by the new one, so it
-                // becomes Unknown here and is never replayed.
-                // Replies already older than the scope just adopted are pruned here rather than
-                // occupying delivery slots; the dispatcher would reject them anyway. Forced edges
-                // keep their "deliver even when stale" contract and stay for `scope_is_older`.
-                control.drop_session_replies_older_than(session_epoch, world_generation);
-                if let Some(actions) = actions.as_deref_mut() {
-                    actions.fail_all(
-                        ActionStatus::Unknown,
-                        "world scope changed before an authoritative result",
-                    );
-                }
+                // Same-frame teardown: old-scope entities are gone before Input runs. Everything
+                // the retired world could still answer is retired at one barrier: an intent
+                // admitted against it becomes Unknown and is never replayed, a receipt that never
+                // reached the wire is answered, and a reply already older than the adopted scope
+                // is dropped rather than occupying a delivery slot. Forced edges keep their
+                // "deliver even when stale" contract and stay for `scope_is_older`.
+                control.retire_scoped_delivery(
+                    DeliveryScopeEnd::WorldTransfer {
+                        retired: (view.session_epoch, view.world_generation),
+                        adopted: (session_epoch, world_generation),
+                    },
+                    actions.as_deref_mut(),
+                    "world scope changed before an authoritative result",
+                );
                 for event in crate::wrath_native::invalidate_presentation(
                     &mut *view,
                     crate::wrath_native::WrathScopeLoss::WorldTransfer,
@@ -6582,9 +6837,19 @@ fn wrath_net_drain(
             WrathFeedEvent::SessionEnded { result, end: _, session_epoch, world_generation } => {
                 control.ended = true;
                 control.terminal_ready = true;
-                // The terminal is a session barrier: whatever reply was queued behind it is
-                // stale now. The terminal edges themselves are kept and delivered first.
-                control.clear_session_replies_after_terminal();
+                // Whether this link served the select screen is decided before the barrier: the
+                // ask channel is retired by the same barrier, and the loss policy below must not
+                // mistake a retired parked link for a boot dial.
+                let parked_link = control.park_commands.is_some();
+                // The terminal is a session barrier: whatever reply, receipt or intent was queued
+                // behind it belongs to a session that no longer exists. The reserved terminal
+                // slots are kept and delivered first; everything else is retired exactly once.
+                control.retire_scoped_delivery(
+                    DeliveryScopeEnd::SessionEnded,
+                    actions.as_deref_mut(),
+                    "session ended before an authoritative result",
+                );
+                control.ended_retirement_done = true;
                 // The entry message may still be in the Bevy message queue; the view already
                 // records that the player actually entered this world.
                 control.entered_world |= view.entered_world;
@@ -6605,7 +6870,7 @@ fn wrath_net_drain(
                 } else if control.restart_allowed
                     && !control.entered_world
                     && control.restart_attempts > 0
-                    && control.park_commands.is_none()
+                    && !parked_link
                 {
                     // A fresh-session admission failed before any world entry: retry it on the
                     // frame loop with a bounded budget. Once a world was entered, a loss is
@@ -6618,12 +6883,6 @@ fn wrath_net_drain(
                     control.retry_at = None;
                 }
                 control.entered_world = false;
-                if let Some(actions) = actions.as_deref_mut() {
-                    actions.fail_all(
-                        ActionStatus::Unknown,
-                        "session ended before an authoritative result",
-                    );
-                }
                 for event in crate::wrath_native::invalidate_presentation(
                     &mut *view,
                     crate::wrath_native::WrathScopeLoss::SessionEnded,
@@ -6815,11 +7074,16 @@ fn wrath_net_drain(
     // A worker can exit after its final event was already drained (or panicked without one). The
     // exposed view is invalid on that terminal edge even when no digest follows.
     if control.ended {
-        if let Some(actions) = actions.as_deref_mut() {
-            actions.fail_all(
-                ActionStatus::Unknown,
+        // The terminal arm already retired this scope; this is the fallback for a worker that
+        // ended without one (a panic or a feed overflow). It runs once per ended scope, never per
+        // frame, and catches anything the dead publisher proposed after the terminal.
+        if !control.ended_retirement_done {
+            control.retire_scoped_delivery(
+                DeliveryScopeEnd::SessionEnded,
+                actions.as_deref_mut(),
                 "session ended before an authoritative result",
             );
+            control.ended_retirement_done = true;
         }
         for event in crate::wrath_native::invalidate_presentation(
             &mut *view,
@@ -6857,15 +7121,17 @@ fn wrath_net_drain(
     let Some(digest) = control.take_digest() else { return };
     let new_session = digest.session_epoch != view.session_epoch;
     if new_session {
-        if let Some(actions) = actions.as_deref_mut() {
-            actions.fail_all(
-                ActionStatus::Unknown,
-                "world scope changed before an authoritative result",
-            );
-        }
-        // A replacement session restarts its epoch, world generation and revision counters.
-        // Adopt them as a new scope rather than comparing them with the retired session's
-        // monotonic values.
+        // A replacement session restarts its epoch, world generation and revision counters, so
+        // its scope is compared as a new one, never with the retired session's monotonic values.
+        // Everything the old scope could still answer is retired at the one barrier.
+        control.retire_scoped_delivery(
+            DeliveryScopeEnd::WorldTransfer {
+                retired: (view.session_epoch, view.world_generation),
+                adopted: (digest.session_epoch, digest.world_generation),
+            },
+            actions.as_deref_mut(),
+            "world scope changed before an authoritative result",
+        );
         for event in crate::wrath_native::invalidate_presentation(
             &mut *view,
             crate::wrath_native::WrathScopeLoss::SessionReplaced,
@@ -6888,12 +7154,14 @@ fn wrath_net_drain(
             return; // stale world scope
         }
         if digest.world_generation != view.world_generation {
-            if let Some(actions) = actions.as_deref_mut() {
-                actions.fail_all(
-                    ActionStatus::Unknown,
-                    "world scope changed before an authoritative result",
-                );
-            }
+            control.retire_scoped_delivery(
+                DeliveryScopeEnd::WorldTransfer {
+                    retired: (view.session_epoch, view.world_generation),
+                    adopted: (digest.session_epoch, digest.world_generation),
+                },
+                actions.as_deref_mut(),
+                "world scope changed before an authoritative result",
+            );
             for event in crate::wrath_native::invalidate_presentation(
                 &mut *view,
                 crate::wrath_native::WrathScopeLoss::WorldTransfer,
@@ -7337,7 +7605,13 @@ fn wrath_apply_world(world: &mut World) {
         }
         if let Some(input) = world.get_resource::<WrathInput>() {
             if let Ok(mut queue) = input.0.lock() {
-                queue.clear();
+                // The Net drain already retired this scope's outbox; this is the same terminal
+                // rule for anything queued after it. A receipt that never reached the wire is
+                // answered here instead of vanishing with the queue.
+                retire_outbound_deliveries(
+                    &mut queue,
+                    crate::net::CommandRefusal::ScopeChanged,
+                );
             }
         }
         if let Some(mut bags) = world.get_resource_mut::<crate::item_watch::BagCache>() {
@@ -10649,6 +10923,7 @@ mod command_tap_tests {
                 retry_at: None,
                 terminal_ready: true,
                 entered_world: false,
+                ended_retirement_done: false,
                 left_world: false,
                 shutdown: false,
                 last_error: None,
@@ -10875,7 +11150,7 @@ mod reply_queue_tests {
         replies.push(forced(SessionEvent::LoginStage {
             stage: benilla_protocol::LoginStage::Connecting,
         }));
-        replies.drop_older_than(2, 1);
+        replies.adopt_scope(2, 1);
         assert_eq!(replies.len(), 2, "the two older replies are gone");
         let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
         assert!(matches!(drained[0].event, SessionEvent::AttackStart { attacker: 3, .. }));
@@ -10941,4 +11216,298 @@ mod reply_queue_tests {
     }
 }
 
+/// The scoped delivery barrier: world transfer, logout and shutdown resolve every outstanding
+/// receipt, WM action and parked ask exactly once with a terminal state, and never let a retired
+/// scope's reply reach the replacement world. Source-level cases only: no build or test run is
+/// claimed here (see the package-B handoff).
+#[cfg(test)]
+mod scoped_delivery_tests {
+    use super::*;
+
+    fn control() -> (WrathControl, Receiver<WrathParkedCommand>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        (
+            WrathControl {
+                config: None,
+                trace: None,
+                worker: None,
+                retiring: None,
+                feed: None,
+                cancel: Arc::new(AtomicBool::new(false)),
+                commands: None,
+                ended: false,
+                restart_allowed: false,
+                restart_attempts: 0,
+                retry_at: None,
+                terminal_ready: true,
+                entered_world: false,
+                ended_retirement_done: false,
+                left_world: false,
+                shutdown: false,
+                last_error: None,
+                session_events: None,
+                session_events_tx: None,
+                reply_stats: SessionReplyStats::default(),
+                park_commands: Some(tx),
+                publisher_retiring: Vec::new(),
+                publisher_retire_rx: None,
+                wm_actions: None,
+            },
+            rx,
+        )
+    }
+
+    fn actions() -> (
+        WrathWmActions,
+        Sender<ActionResult>,
+        Receiver<ActionResult>,
+        Sender<ActionRequest>,
+    ) {
+        let (requests_tx, requests_rx) = crossbeam_channel::unbounded();
+        let (_cancels_tx, cancels_rx) = crossbeam_channel::unbounded::<String>();
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        (
+            WrathWmActions {
+                requests: requests_rx,
+                cancels: cancels_rx,
+                results: results_tx.clone(),
+                pending: BTreeMap::new(),
+                cancelled: Vec::new(),
+                last_cast_spell: None,
+                next_admission: 2,
+                received: 1,
+                refused: 0,
+                completed: 0,
+            },
+            results_tx,
+            results_rx,
+            requests_tx,
+        )
+    }
+
+    fn admit_cast(
+        actions: &mut WrathWmActions,
+        id: &str,
+        session_epoch: u64,
+        world_generation: u64,
+    ) {
+        actions.pending.insert(
+            id.to_owned(),
+            PendingWmAction {
+                intent: ActionIntent::Cast {
+                    spell_id: 133,
+                    target: Some(0x22),
+                },
+                player_guid: 0x1,
+                cast_spell: Some(133),
+                cast_attempt: None,
+                cast_count: None,
+                admitted: 1,
+                deadline: Instant::now() + Duration::from_secs(30),
+                session_epoch,
+                world_generation,
+            },
+        );
+    }
+
+    fn scoped(session_epoch: u64, world_generation: u64) -> WrathSessionEvent {
+        WrathSessionEvent {
+            login_generation: None,
+            session_epoch,
+            world_generation,
+            event: SessionEvent::AttackStart {
+                attacker: 1,
+                victim: 2,
+            },
+            force: false,
+        }
+    }
+
+    fn queued_receipt(
+        outbox: &WrathOutbox,
+        session_epoch: u64,
+        world_generation: u64,
+    ) -> Receiver<crate::net::CommandDelivery> {
+        let (results, receiver) = crossbeam_channel::bounded(2);
+        outbox.lock().unwrap().push_back(WrathOutbound {
+            opcode: benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_ACCEPT_QUEST,
+            payload: vec![0; 8],
+            movement: false,
+            movement_seq: None,
+            enqueued_at: None,
+            receipt: Some(crate::net::CommandReceipt {
+                trace: None,
+                enforce_scope: true,
+                session_epoch,
+                world_generation,
+                npc: 0x22,
+                quest: 7,
+                results,
+            }),
+            trace: None,
+            enforce_scope: true,
+        });
+        receiver
+    }
+
+    /// A transfer retires the intent admitted against the old world and closes the select
+    /// screen's ask channel; the answer carries the retired scope, not the adopted one.
+    #[test]
+    fn a_world_transfer_retires_a_pending_action_and_the_parked_link() {
+        let (mut control, park_rx) = control();
+        let (mut actions, _results_tx, results, _requests) = actions();
+        admit_cast(&mut actions, "cast-1", 1, 1);
+
+        let report = control.retire_scoped_delivery(
+            DeliveryScopeEnd::WorldTransfer {
+                retired: (1, 1),
+                adopted: (1, 2),
+            },
+            Some(&mut actions),
+            "world scope changed before an authoritative result",
+        );
+
+        assert_eq!(report.actions, 1);
+        assert!(actions.pending.is_empty(), "the intent is consumed, not replayed");
+        let answer = results.try_recv().expect("one terminal answer");
+        assert_eq!(answer.request_id, "cast-1");
+        assert_eq!(answer.status, ActionStatus::Unknown);
+        assert_eq!((answer.session_epoch, answer.world_generation), (1, 1));
+        assert!(results.try_recv().is_err(), "exactly one terminal answer");
+        assert!(control.park_commands.is_none(), "the ask channel is closed");
+        assert!(
+            matches!(
+                park_rx.try_recv(),
+                Err(crossbeam_channel::TryRecvError::Disconnected)
+            ),
+            "a parked ask can never be served by the replacement world"
+        );
+    }
+
+    /// A logout answers a receipt that never reached the wire and keeps the terminal slots that
+    /// carry the session's end.
+    #[test]
+    fn a_logout_retires_a_pending_receipt_and_keeps_its_terminal() {
+        let (mut control, _park_rx) = control();
+        let outbox: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
+        control.commands = Some(Arc::clone(&outbox));
+        let receipt = queued_receipt(&outbox, 1, 1);
+        let replies = Arc::new(Mutex::new(SessionReplies::default()));
+        control.session_events = Some(Arc::clone(&replies));
+        control.session_events_tx = Some(Arc::clone(&replies));
+        {
+            let mut queue = replies.lock().unwrap();
+            queue.push(scoped(1, 1));
+            queue.push(WrathSessionEvent::forced(SessionEvent::LoggedOut));
+        }
+
+        let report = control.retire_scoped_delivery(
+            DeliveryScopeEnd::SessionEnded,
+            None,
+            "session ended before an authoritative result",
+        );
+
+        assert_eq!(report.outbound, 1);
+        assert!(outbox.lock().unwrap().is_empty());
+        assert_eq!(
+            receipt.try_recv(),
+            Ok(crate::net::CommandDelivery::Rejected(
+                crate::net::CommandRefusal::ScopeChanged
+            )),
+            "a receipt the worker never wrote gets one terminal refusal"
+        );
+        assert!(receipt.try_recv().is_err(), "not answered twice");
+        assert_eq!(report.replies, 1, "the queued old-scope reply is discarded");
+        let drained = replies.lock().unwrap().take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        assert_eq!(drained.len(), 1);
+        assert!(
+            matches!(drained[0].event, SessionEvent::LoggedOut),
+            "the reserved terminal slot survives the retirement"
+        );
+    }
+
+    /// A second retirement of the same scope resolves nothing, and a reply the retired scope
+    /// pushes afterwards never takes a delivery slot.
+    #[test]
+    fn a_second_retirement_resolves_nothing_and_a_late_reply_is_not_delivered() {
+        let (mut control, _park_rx) = control();
+        let replies = Arc::new(Mutex::new(SessionReplies::default()));
+        control.session_events = Some(Arc::clone(&replies));
+        control.session_events_tx = Some(Arc::clone(&replies));
+        let (mut actions, _results_tx, results, _requests) = actions();
+        admit_cast(&mut actions, "cast-1", 1, 1);
+
+        let first = control.retire_scoped_delivery(
+            DeliveryScopeEnd::WorldTransfer {
+                retired: (1, 1),
+                adopted: (1, 2),
+            },
+            Some(&mut actions),
+            "world scope changed before an authoritative result",
+        );
+        assert_eq!(first.actions, 1);
+        assert_eq!(results.try_recv().map(|a| a.request_id), Ok("cast-1".to_owned()));
+
+        let second = control.retire_scoped_delivery(
+            DeliveryScopeEnd::WorldTransfer {
+                retired: (1, 1),
+                adopted: (1, 2),
+            },
+            Some(&mut actions),
+            "world scope changed before an authoritative result",
+        );
+        assert_eq!(second, ScopedDeliveryRetirement::default());
+        assert!(results.try_recv().is_err(), "no action is resolved twice");
+
+        // The old worker can still push across the barrier's race window; the adopted scope
+        // rejects it at the producer, while the current scope's reply goes through.
+        {
+            let mut queue = replies.lock().unwrap();
+            queue.push(scoped(1, 1));
+            queue.push(scoped(1, 2));
+        }
+        let drained = replies.lock().unwrap().take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        assert_eq!(drained.len(), 1, "only the adopted scope's reply is delivered");
+        assert_eq!(drained[0].world_generation, 2);
+    }
+
+    /// The shutdown path takes the same barrier, so an intent queued for a session that is going
+    /// away is answered instead of being stranded for a follower that never comes.
+    #[test]
+    fn the_shutdown_barrier_answers_unadmitted_proposals() {
+        let (mut control, _park_rx) = control();
+        let (mut actions, _results_tx, results, requests) = actions();
+        admit_cast(&mut actions, "cast-1", 1, 1);
+        requests
+            .send(ActionRequest {
+                request_id: "cast-2".to_owned(),
+                session_epoch: 1,
+                world_generation: 1,
+                player_guid: 0x1,
+                deadline_unix_ms: 0,
+                intent: ActionIntent::CastCancel,
+            })
+            .unwrap();
+
+        let report = control.retire_scoped_delivery(
+            DeliveryScopeEnd::SessionEnded,
+            Some(&mut actions),
+            "the client is shutting down",
+        );
+
+        assert_eq!(report.actions, 1);
+        assert_eq!(report.unadmitted, 1);
+        let mut answered: Vec<_> = results.try_iter().collect();
+        answered.sort_by(|a, b| a.request_id.cmp(&b.request_id));
+        assert_eq!(answered.len(), 2);
+        assert_eq!(answered[0].request_id, "cast-1");
+        assert_eq!(answered[1].request_id, "cast-2");
+        assert_eq!(answered[0].status, ActionStatus::Unknown);
+        assert_eq!(
+            answered[1].status,
+            ActionStatus::Rejected,
+            "a proposal that never reached a command owner was never dispatched"
+        );
+    }
+}
 

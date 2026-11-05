@@ -15,9 +15,9 @@ use serde::Serialize;
 #[cfg(feature = "dev")]
 use serde::Deserialize;
 #[cfg(feature = "dev")]
-use std::time::Duration;
+use std::sync::Condvar;
 #[cfg(feature = "dev")]
-use std::sync::atomic::{AtomicBool, AtomicU8};
+use std::time::Duration;
 
 use crate::net::CommandDelivery;
 
@@ -1376,9 +1376,113 @@ struct Ingress {
     #[cfg(feature = "dev")]
     asset_profile: Option<String>,
     #[cfg(feature = "dev")]
-    exporting: AtomicBool,
+    export_gate: Mutex<ExportStatus>,
     #[cfg(feature = "dev")]
-    export_status: AtomicU8,
+    export_finished: Condvar,
+}
+
+/// The one writer gate shared by the manual export and the `AppExit` export.
+///
+/// Only one snapshot is written at a time: the first caller to take the gate owns the directory
+/// for its own attempt, and a second manual export is refused instead of queued. The exit path
+/// waits a bounded turn for an in-flight writer rather than writing beside it, so two snapshots
+/// can never interleave and a finished file always carries the header of the snapshot that
+/// actually wrote it. Dropping the writer without `finish` (a failed thread spawn, a panicking
+/// writer) releases the gate as `Failed`: a released gate never reports a success it did not see.
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExportStatus {
+    Idle,
+    Saving,
+    Saved,
+    Failed,
+}
+
+/// How long the exit snapshot waits for an in-flight writer before it gives that writer the turn.
+#[cfg(feature = "dev")]
+const EXPORT_EXIT_WAIT: Duration = Duration::from_secs(5);
+
+#[cfg(feature = "dev")]
+struct ExportWriter {
+    ingress: Arc<Ingress>,
+    result: ExportStatus,
+}
+
+#[cfg(feature = "dev")]
+impl ExportWriter {
+    /// Take the gate. `wait` bounds the wait for an in-flight writer (`None` refuses at once).
+    fn acquire(ingress: &Arc<Ingress>, wait: Option<Duration>) -> Result<Self, String> {
+        let mut status = ingress
+            .export_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deadline = wait.map(|wait| Instant::now() + wait);
+        while *status == ExportStatus::Saving {
+            let Some(deadline) = deadline else {
+                return Err("A report is already being saved".into());
+            };
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(
+                    "A report writer is still running; the exit snapshot did not start".into(),
+                );
+            }
+            let (guard, outcome) = ingress
+                .export_finished
+                .wait_timeout(status, deadline - now)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            status = guard;
+            if outcome.timed_out() && *status == ExportStatus::Saving {
+                return Err(
+                    "A report writer is still running; the exit snapshot did not start".into(),
+                );
+            }
+        }
+        *status = ExportStatus::Saving;
+        Ok(Self {
+            ingress: Arc::clone(ingress),
+            result: ExportStatus::Failed,
+        })
+    }
+
+    fn finish(&mut self, result: &anyhow::Result<std::path::PathBuf>) {
+        match result {
+            Ok(_) => self.result = ExportStatus::Saved,
+            Err(error) => warn!("quest diagnostics export failed: {error:#}"),
+        }
+    }
+}
+
+#[cfg(feature = "dev")]
+impl Drop for ExportWriter {
+    fn drop(&mut self) {
+        *self
+            .ingress
+            .export_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.result;
+        self.ingress.export_finished.notify_all();
+    }
+}
+
+/// Start the background snapshot's writer thread. The seam exists so a unit test can force the
+/// platform's spawn failure and prove the gate is released without a live thread.
+#[cfg(feature = "dev")]
+fn spawn_export_writer(job: impl FnOnce() + Send + 'static) -> std::io::Result<std::thread::JoinHandle<()>> {
+    #[cfg(test)]
+    if FORCE_EXPORT_SPAWN_FAILURE.with(|flag| flag.replace(false)) {
+        drop(job);
+        return Err(std::io::Error::other("test: export writer spawn refused"));
+    }
+    std::thread::Builder::new()
+        .name("interaction-diagnostics-export".into())
+        .spawn(job)
+}
+
+// Thread-local so a test's forced failure cannot leak into a test running beside it.
+#[cfg(all(test, feature = "dev"))]
+thread_local! {
+    static FORCE_EXPORT_SPAWN_FAILURE: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
 #[derive(Resource, Clone, Debug)]
@@ -5890,11 +5994,17 @@ impl History {
     }
 
     pub(crate) fn export_status(&self) -> &'static str {
-        match self.source.0.export_status.load(Ordering::Acquire) {
-            1 => "Saving report…",
-            2 => "Report saved in Logs/InteractionDiagnostics.",
-            3 => "Report could not be saved. See the client log.",
-            _ => "",
+        match *self
+            .source
+            .0
+            .export_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            ExportStatus::Saving => "Saving report…",
+            ExportStatus::Saved => "Report saved in Logs/InteractionDiagnostics.",
+            ExportStatus::Failed => "Report could not be saved. See the client log.",
+            ExportStatus::Idle => "",
         }
     }
 
@@ -6861,6 +6971,11 @@ impl History {
 
     /// Save an allowlisted snapshot synchronously (used on application exit so the process does not
     /// terminate before the background writer finishes).
+    ///
+    /// The exit snapshot takes the same gate as the background writer: it waits a bounded turn for
+    /// an in-flight writer and then writes its own complete file. If the turn expires the exit
+    /// snapshot does not start at all — a second writer beside the first would interleave the
+    /// directory, which is worse than the already-complete file the in-flight writer leaves.
     pub(crate) fn export_sync(
         &self,
         build: benilla_world::build_id::BuildId,
@@ -6870,24 +6985,10 @@ impl History {
             .ok_or_else(|| "Local report storage is unavailable".to_owned())?
             .join("Logs")
             .join("InteractionDiagnostics");
-        for _ in 0..100 {
-            if !self.source.0.exporting.swap(true, Ordering::AcqRel) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        self.source.0.export_status.store(1, Ordering::Release);
+        let mut writer = ExportWriter::acquire(&self.source.0, Some(EXPORT_EXIT_WAIT))?;
         let (header, rows) = self.build_export_payload(build, protocol_mode);
         let result = Self::write_export_snapshot(&directory, header, &rows);
-        let status = match &result {
-            Ok(_) => 2,
-            Err(error) => {
-                warn!("quest diagnostics export failed: {error:#}");
-                3
-            }
-        };
-        self.source.0.export_status.store(status, Ordering::Release);
-        self.source.0.exporting.store(false, Ordering::Release);
+        writer.finish(&result);
         result.map_err(|e| e.to_string())
     }
 
@@ -6896,29 +6997,17 @@ impl History {
         let directory = crate::local_state::home()
             .ok_or_else(|| "Local report storage is unavailable".to_owned())?
             .join("Logs").join("InteractionDiagnostics");
-        if self.source.0.exporting.swap(true, Ordering::AcqRel) {
-            return Err("A report is already being saved".into());
-        }
-        self.source.0.export_status.store(1, Ordering::Release);
-        let ingress = self.source.0.clone();
+        let mut writer = ExportWriter::acquire(&self.source.0, None)?;
         let (header, rows) = self.build_export_payload(build, protocol_mode);
-        let spawn = std::thread::Builder::new()
-            .name("interaction-diagnostics-export".into())
-            .spawn(move || {
-                let result = Self::write_export_snapshot(&directory, header, &rows);
-                let status = match result {
-                    Ok(_) => 2,
-                    Err(error) => {
-                        warn!("quest diagnostics export failed: {error:#}");
-                        3
-                    }
-                };
-                ingress.export_status.store(status, Ordering::Release);
-                ingress.exporting.store(false, Ordering::Release);
-            });
+        let spawn = spawn_export_writer(move || {
+            let result = Self::write_export_snapshot(&directory, header, &rows);
+            writer.finish(&result);
+            // `writer` drops here: the gate is released with the outcome the write reported.
+        });
         if let Err(error) = spawn {
-            self.source.0.export_status.store(3, Ordering::Release);
-            self.source.0.exporting.store(false, Ordering::Release);
+            // The failed spawn dropped the job, and with it the writer, so the gate is already
+            // free and reports `Failed`. Nothing was written.
+            warn!("quest diagnostics writer could not start: {error}");
             return Err(error.to_string());
         }
         Ok(())
@@ -6964,9 +7053,9 @@ pub(crate) fn new_pair() -> (Source, History) {
             Some("stock-discovery".into())
         },
         #[cfg(feature = "dev")]
-        exporting: AtomicBool::new(false),
+        export_gate: Mutex::new(ExportStatus::Idle),
         #[cfg(feature = "dev")]
-        export_status: AtomicU8::new(0),
+        export_finished: Condvar::new(),
     }));
     let history = History {
         source: source.clone(),
@@ -8775,6 +8864,182 @@ mod tests {
                 "once slot removal, XP, money, and item push arrive, turn-in is verified: {turn_ins:?}"
             );
         }
+    }
+}
+
+/// The one writer gate: a manual export, the `AppExit` export and a background export share it, so
+/// two snapshots can never interleave in the directory and the gate is never lost to a failed
+/// thread start. No sleeps: the writer handoffs are ordered by a barrier and channels.
+#[cfg(all(test, feature = "dev"))]
+mod export_gate_tests {
+    use super::*;
+    use crate::local_state::test_env::{EnvGuard, ENV_LOCK};
+    use std::sync::Barrier;
+
+    fn pins_home(tag: &str) -> (std::path::PathBuf, EnvGuard) {
+        let home = std::env::temp_dir().join(format!("benilla-{tag}-{}", std::process::id()));
+        let guard = EnvGuard::set("BENILLA_HOME", home.to_str().expect("temp path is UTF-8"));
+        (home, guard)
+    }
+
+    fn drain_all(history: &mut History) {
+        for _ in 0..8 {
+            drain_history(history);
+        }
+    }
+
+    /// Every line of a snapshot file, checked the way a reader checks it: the header first, one
+    /// `(sequence, event)` row per later line, and a final newline so no row was cut short.
+    fn read_snapshot(path: &std::path::Path) -> (serde_json::Value, usize) {
+        let text = std::fs::read_to_string(path).expect("snapshot is readable");
+        assert!(text.ends_with('\n'), "a written snapshot ends with a whole line");
+        let mut lines = text.lines();
+        let header: serde_json::Value =
+            serde_json::from_str(lines.next().expect("header line")).expect("header parses");
+        let mut rows = 0;
+        for line in lines {
+            assert!(!line.is_empty(), "no blank line inside a snapshot");
+            let row: serde_json::Value = serde_json::from_str(line).expect("row parses");
+            assert!(
+                row.as_array().is_some_and(|pair| pair.len() == 2 && pair[0].is_u64()),
+                "a row is one (sequence, event) pair: {line}"
+            );
+            rows += 1;
+        }
+        (header, rows)
+    }
+
+    #[test]
+    fn a_manual_export_refuses_while_a_writer_holds_the_gate() {
+        let _l = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_home, _guard) = pins_home("export-refusal");
+        let (source, history) = new_pair();
+        let held = ExportWriter::acquire(&source.0, None).expect("first writer takes the gate");
+        assert_eq!(history.export_status(), "Saving report…");
+        assert_eq!(
+            history.export(Default::default(), "test").unwrap_err(),
+            "A report is already being saved",
+            "a second non-waiting export returns the existing refusal"
+        );
+        drop(held);
+        assert_eq!(history.export_status(), "Report could not be saved. See the client log.");
+    }
+
+    #[test]
+    fn the_exit_export_waits_a_bounded_turn_and_then_writes_its_own_whole_file() {
+        let _l = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_home, _guard) = pins_home("export-exit");
+        let (source, history) = new_pair();
+        let mut history = history;
+        source.observe(Some((1, 1)), Some(7), Stage::QuestSlotAdded);
+        source.observe(Some((1, 1)), Some(7), Stage::JournalProjection);
+        drain_all(&mut history);
+        let held = ExportWriter::acquire(&source.0, None).expect("first writer takes the gate");
+        // The bounded turn is honoured: while the gate is held, the exit snapshot does not start
+        // beside the first writer.
+        let refusal = ExportWriter::acquire(&source.0, Some(Duration::from_millis(20)))
+            .err()
+            .expect("the exit snapshot cannot start while a writer holds the gate");
+        assert!(refusal.contains("exit snapshot did not start"), "{refusal}");
+        drop(held);
+        // With the turn free, the exit snapshot writes one complete file of its own.
+        let path = history
+            .export_sync(Default::default(), "test")
+            .expect("the exit snapshot writes once the gate is free");
+        let (header, rows) = read_snapshot(&path);
+        assert_eq!(header["schema"], "rustwrath.interaction-diagnostics.v1");
+        assert_eq!(header["protocol_mode"], "test");
+        assert_eq!(
+            header["highest_retained_sequence"].as_u64(),
+            Some(rows as u64),
+            "the header and the rows came from the same snapshot"
+        );
+        assert_eq!(history.export_status(), "Report saved in Logs/InteractionDiagnostics.");
+    }
+
+    #[test]
+    fn two_concurrent_writers_share_one_gate_and_each_file_is_whole() {
+        let _l = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (home, _guard) = pins_home("export-two-writers");
+        let directory = home.join("Logs").join("InteractionDiagnostics");
+        let (source, history) = new_pair();
+        let mut history = history;
+        for _ in 0..3 {
+            source.observe(Some((1, 1)), Some(7), Stage::QuestSlotAdded);
+        }
+        drain_all(&mut history);
+        // The gate-holding writer starts first and the manual attempt can only run while it holds
+        // the gate: the barrier orders the two, the channel proves the refusal happened inside the
+        // hold, and no sleep is part of the correctness. The payload is snapshotted before the
+        // thread starts because `History` owns the receiver and is intentionally not `Clone`.
+        let (background_header, background_rows) =
+            history.build_export_payload(Default::default(), "test");
+        let barrier = Arc::new(Barrier::new(2));
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel::<String>();
+        let background = {
+            let source = source.clone();
+            let barrier = Arc::clone(&barrier);
+            let directory = directory.clone();
+            std::thread::spawn(move || {
+                let mut writer =
+                    ExportWriter::acquire(&source.0, None).expect("background writer takes the gate");
+                barrier.wait();
+                let refusal = attempt_rx.recv().expect("the manual attempt reports");
+                let result =
+                    History::write_export_snapshot(&directory, background_header, &background_rows);
+                writer.finish(&result);
+                (refusal, result.map_err(|e| format!("{e:#}")))
+            })
+        };
+        barrier.wait();
+        let refusal = history
+            .export(Default::default(), "test")
+            .expect_err("the manual export cannot start while the gate is held");
+        attempt_tx.send(refusal.clone()).expect("background still holds");
+        let (background_refusal, background_result) = background.join().expect("writer thread");
+        assert_eq!(background_refusal, "A report is already being saved");
+        let first = background_result.expect("the gate holder's snapshot is written");
+        // Serialized, not interleaved: the exit snapshot then takes its own turn.
+        let second = history
+            .export_sync(Default::default(), "test")
+            .expect("the exit snapshot takes the gate after the first writer released it");
+        assert_ne!(first, second, "two snapshots are two files, not one rewritten file");
+        let (first_header, first_rows) = read_snapshot(&first);
+        let (second_header, second_rows) = read_snapshot(&second);
+        assert_eq!(first_rows, 3);
+        assert_eq!(second_rows, 3);
+        assert_eq!(first_header["schema"], second_header["schema"]);
+        // The guard is not lost: it is free again once both writers finished.
+        let free = ExportWriter::acquire(&source.0, None).expect("the gate is free after both writers");
+        drop(free);
+    }
+
+    #[test]
+    fn a_failed_writer_spawn_releases_the_gate_without_a_success() {
+        let _l = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_home, _guard) = pins_home("export-spawn-failure");
+        let (source, history) = new_pair();
+        FORCE_EXPORT_SPAWN_FAILURE.with(|flag| flag.set(true));
+        let error = history
+            .export(Default::default(), "test")
+            .expect_err("the forced spawn failure is reported");
+        assert!(error.contains("spawn refused"), "{error}");
+        assert_eq!(
+            history.export_status(),
+            "Report could not be saved. See the client log.",
+            "a writer that never ran cannot report success"
+        );
+        let free = ExportWriter::acquire(&source.0, None)
+            .expect("the failed spawn released the gate deterministically");
+        drop(free);
     }
 }
 
