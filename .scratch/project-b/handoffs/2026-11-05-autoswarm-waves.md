@@ -134,6 +134,59 @@ Evidence:
   not owner-approved release policy.
 - Wave 4 W commit: `c9151421`, pushed to `origin/main`.
 
+## Wave 3 — scoped delivery, recorder export guard and coherent reload
+
+- `crates/benilla-app/src/wrath.rs`: one `retire_scoped_delivery` barrier now covers world
+  transfer, logout/session end, start/stop and shutdown; outstanding receipts, WM proposals,
+  parked links and publisher handles are answered once at the boundary, and old-scope replies
+  cannot mutate the adopted scope. `WrathWmActions::retire_all/retire_scope/refuse_unadmitted`
+  and `SessionReplies::adopt_scope/retire_scope/superseded` carry the terminal state.
+- `crates/benilla-app/src/quest_trace.rs`: manual, background and `AppExit` exports share one
+  condvar writer gate; failed spawn releases it; the final snapshot cannot be dropped or
+  interleaved.
+- `crates/benilla-assets/src/profile_source.rs`: staged content revisions validate DBC/model/
+  texture/UI inputs off the active revision and commit whole; failed candidates leave the old
+  chain active.
+- `crates/benilla-app/src/ui_script/lifecycle.rs`: `ReloadUI` stages saved state and a candidate
+  VM before the single teardown boundary; refusal keeps the live VM and records the attempt.
+
+Evidence:
+- `cargo test -p benilla-app scoped_delivery_tests` — 4 passed.
+- `cargo test -p benilla-app export_gate_tests` — 4 passed.
+- `cargo test -p benilla-app a_refused_reload_keeps_the_live_vm_and_its_saved_state` — 1 passed.
+- `cargo test -p benilla-app a_ready_candidate_reload_crosses_one_boundary_and_clears_the_refusal_record` — 1 passed.
+- `cargo test -p benilla-assets profile_source::tests` — 9 passed.
+- Remaining limits: profile and `WorldAssets.chain` are swapped adjacently under two locks, so
+  one instant of mixed visibility remains possible across threads; the successful commit was
+  not exercised against a real MPQ archive; a post-boundary FrameXML failure is not rollback-able;
+  saved-state staging only runs with a registered `mpq://` profile reader. No live reload was run.
+- Wave 3 ledger commit: `a83a4d04`, pushed to `origin/main`.
+- Wave 3 T2/H2 commit: `1b44a70c`, pushed to `origin/main`.
+
+## Wave 4 — movement and Souls-combat seams
+
+- `crates/benilla-hotpatch/src/lib.rs`: added `MovementModuleV1` staging/validation/commit/
+  unload with typed refusals, finite/step/speed/facing/flag checks and no pose-history impact.
+- `crates/benilla-app/src/player/controller.rs`: `evaluate_movement_intent`, bounded
+  `apply_movement_correction` and flag merging; `wrath_stream_movement` remains the sole writer
+  and an absent processor preserves baseline behavior.
+- `crates/benilla-app/src/combat_mode.rs`: typed combat proposal/settlement state machine and
+  `evaluate_combat_intent`/`apply_authoritative_combat_result`; server results alone settle a
+  window, with duplicate/late/death/disconnect handling and no local stamina/damage debit.
+
+Evidence:
+- `cargo test -p benilla-hotpatch movement_` — 6 passed.
+- `cargo test -p benilla-app movement_module_tests` — 6 passed.
+- `cargo test -p benilla-app souls_seam_tests` — 7 passed.
+- Remaining limits: no production movement host/controller adapter yet (the `player::controller`
+  module is private and the Bevy hotpatch bridge is absent), so the resource is normally absent
+  and the controller runs `Disabled`; no movement DLL was built or loaded and no packet was
+  observed. Combat has no module runner or server mode/ack receiver; the mode remains refused by
+  default and no action is sent. No client or live session was run.
+- Wave 4 M/E commit: `8260cf79`, pushed to `origin/main`.
+- Final joined-tree evidence: `cargo check --workspace --all-targets` passed; log
+  `.scratch/project-b/check-final-2026-11-05.log`.
+
 ### Mechanical compile repair
 
 `crates/benilla-assets` test fixtures were missing the newly required `LooseFiles::extra_addons`
