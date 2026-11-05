@@ -12,7 +12,9 @@ them. Source-only except for the explicitly authorized `cargo check`/focused tes
 | base `origin/main` | `46430054d72d659ce816cc072d7c0835f0bd9278` |
 | `fix/release-main-compile-2026-11-05` | see remote HEAD |
 
-Commits: `4dc3de48` hotpatch, `6a5613ce` wrath, `7a523692` inventory, `bff4d0b1` docs.
+Commits: `4dc3de48` hotpatch, `6a5613ce` wrath, `7a523692` inventory, `bff4d0b1` docs,
+`aa70d62f` UI compile paths, `a718aff5` glue-VM test, `c0970a74` app compile paths, then this
+handoff. The branch is linear on `46430054` and fast-forwards `main`.
 
 ## Verified findings and repairs
 
