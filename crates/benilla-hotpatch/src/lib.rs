@@ -1,5 +1,5 @@
 //! Local trusted modules only. Validation/rollback is not isolation from native memory faults.
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use benilla_hotpatch_abi::{BoneLocal, EntryPoint, Header, PoseFrame, ProcessPose, RigSpan, ENTRY};
 use libloading::Library;
 use serde::Deserialize;
@@ -332,10 +332,22 @@ impl Host {
         if bones.is_empty() {
             return Ok(false);
         }
+        // Validate the host frame before touching `pending`, `active`, or `previous` so a
+        // malformed caller span or non-finite input bone never drains rollback history.
+        if bones.len() > u32::MAX as usize || rigs.len() > u32::MAX as usize {
+            bail!("pose batch exceeds u32 ABI counts");
+        }
+        if !rigs.iter().all(|rig| rig.valid(bones.len())) {
+            bail!("host rig span out of bounds for {} bones", bones.len());
+        }
+        if !bones.iter().all(BoneLocal::valid) {
+            bail!("host input bone contains non-finite or zero-norm transform");
+        }
         if let Some(candidate) = self.pending.take() {
             match candidate.evaluate(bones, rigs, seconds, output) {
                 Ok(()) => {
                     if let Some(old) = self.active.replace(candidate) {
+                        self.previous.retain(|m| m.digest != old.digest);
                         self.previous.push_back(old);
                     }
                     while self.previous.len() > 3 {
@@ -352,7 +364,7 @@ impl Host {
                 }
             }
         }
-        while let Some(module) = self.active.take() {
+        if let Some(module) = self.active.take() {
             match module.evaluate(bones, rigs, seconds, output) {
                 Ok(()) => {
                     self.active = Some(module);
@@ -364,20 +376,27 @@ impl Host {
                         "active module {} failed; restoring a previous module: {error:#}",
                         module.revision
                     ));
-                    match self.previous.pop_back() {
-                        Some(previous) => {
-                            let restored_digest = previous.digest_bytes();
-                            self.active = Some(previous);
-                            self.push_restore(RestoreOutcome::Restored {
-                                failed_digest,
-                                restored_digest,
-                            });
-                        }
-                        None => {
-                            self.active = None;
-                            self.push_restore(RestoreOutcome::Unavailable { failed_digest });
+                    while let Some(previous) = self.previous.pop_back() {
+                        match previous.evaluate(bones, rigs, seconds, output) {
+                            Ok(()) => {
+                                let restored_digest = previous.digest_bytes();
+                                self.active = Some(previous);
+                                self.push_restore(RestoreOutcome::Restored {
+                                    failed_digest,
+                                    restored_digest,
+                                });
+                                return Ok(true);
+                            }
+                            Err(prev_error) => {
+                                self.active_failure = Some(format!(
+                                    "active module {} failed ({error:#}); predecessor {} also failed: {prev_error:#}",
+                                    module.revision, previous.revision
+                                ));
+                            }
                         }
                     }
+                    self.active = None;
+                    self.push_restore(RestoreOutcome::Unavailable { failed_digest });
                 }
             }
         }
@@ -540,5 +559,40 @@ mod tests {
         assert!(host.observed.is_none());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn host_evaluate_rejects_malformed_rig_spans_and_non_finite_bones_before_module_dispatch() {
+        let mut host = Host::new(std::env::temp_dir());
+        let mut output = Vec::new();
+        let valid_bone = BoneLocal {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        };
+        let bad_span = RigSpan {
+            first_bone: 0,
+            bone_count: 2,
+        };
+        let err = host
+            .evaluate(&[valid_bone], &[bad_span], 0.0, &mut output)
+            .expect_err("out-of-bounds RigSpan must fail host pre-validation");
+        assert!(err.to_string().contains("host rig span out of bounds"));
+
+        let nan_bone = BoneLocal {
+            translation: [f32::NAN, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        };
+        let good_span = RigSpan {
+            first_bone: 0,
+            bone_count: 1,
+        };
+        let err = host
+            .evaluate(&[nan_bone], &[good_span], 0.0, &mut output)
+            .expect_err("NaN input bone must fail host pre-validation");
+        assert!(err
+            .to_string()
+            .contains("host input bone contains non-finite"));
     }
 }

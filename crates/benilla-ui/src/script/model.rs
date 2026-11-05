@@ -561,6 +561,10 @@ pub(crate) struct Model {
     pub(crate) camera_view_requests: Vec<camera_view::CameraViewRequest>,
     /// The glue core's slots and request queue; empty in an in-game VM.
     pub(crate) glue: super::glue_core::GlueCore,
+    /// Bounded WMC1 v3 multiclass request and reply queues for `WM_Multiclass`.
+    pub(crate) multiclass_next_serial: u32,
+    pub(crate) multiclass_requests: std::collections::VecDeque<(u16, u32, u64, u32, u32)>,
+    pub(crate) multiclass_replies: std::collections::VecDeque<(u16, u16, u32, Vec<u8>)>,
     /// `PLAYER_LOGIN`'s one-shot, the reference's `[0xb4e260]`: armed by the UI load, spent by
     /// the next world-enter cascade ([`super::UiScript::fire_world_enter`]).
     pub(crate) player_login_armed: bool,
@@ -1589,6 +1593,9 @@ impl Model {
             follow_requests: Vec::new(),
             camera_view_requests: Vec::new(),
             glue: Default::default(),
+            multiclass_next_serial: 1,
+            multiclass_requests: std::collections::VecDeque::new(),
+            multiclass_replies: std::collections::VecDeque::new(),
             player_login_armed: false,
             honor: None,
             inspect_honor: None,

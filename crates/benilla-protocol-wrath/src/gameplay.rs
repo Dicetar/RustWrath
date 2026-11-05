@@ -805,6 +805,343 @@ pub fn set_action_button(button: u8, packed: u32) -> Vec<u8> {
     p
 }
 
+/// `CMSG_LEARN_TALENT` (`TalentHandler.cpp:27`): `u32 talent_id, u32 requested_rank` (0-based).
+pub fn encode_learn_talent(talent_id: u32, rank: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(8);
+    p.extend_from_slice(&talent_id.to_le_bytes());
+    p.extend_from_slice(&rank.to_le_bytes());
+    p
+}
+
+/// `CMSG_PET_ACTION` (`PetHandler.cpp:95`): `u64 pet_guid, u32 data, u64 target_guid`.
+pub fn encode_pet_action(pet_guid: u64, packed: u32, target_guid: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(20);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.extend_from_slice(&packed.to_le_bytes());
+    p.extend_from_slice(&target_guid.to_le_bytes());
+    p
+}
+
+/// `CMSG_PET_SET_ACTION` (`PetHandler.cpp:365`): `u64 pet_guid` followed by 1 or 2 `(u32 position, u32 action)` pairs.
+pub fn encode_pet_set_action(pet_guid: u64, entries: &[(u32, u32)]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(8 + entries.len() * 8);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    for &(position, packed) in entries {
+        p.extend_from_slice(&position.to_le_bytes());
+        p.extend_from_slice(&packed.to_le_bytes());
+    }
+    p
+}
+
+/// `CMSG_PET_CAST_SPELL` (`PetHandler.cpp:544`): `u64 pet_guid, u8 cast_count, u32 spell_id, u8 cast_flags, SpellCastTargets`.
+pub fn encode_pet_cast_spell(
+    pet_guid: u64,
+    cast_count: u8,
+    spell_id: u32,
+    target: CastTarget,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(32);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.push(cast_count);
+    p.extend_from_slice(&spell_id.to_le_bytes());
+    p.push(0); // cast_flags
+    write_cast_target(&mut p, target);
+    p
+}
+
+/// `CMSG_PET_STOP_ATTACK` (`PetHandler.cpp:74`), `CMSG_PET_ABANDON` (`PetHandler.cpp:434`),
+/// `CMSG_PET_UNLEARN` (`PetHandler.cpp:695`), `MSG_LIST_STABLED_PETS` (`NPCHandler.cpp:477`),
+/// `CMSG_STABLE_PET` (`NPCHandler.cpp:518`), `CMSG_BUY_STABLE_SLOT` (`NPCHandler.cpp:667`): single `u64` guid.
+pub fn encode_guid_only(guid: u64) -> Vec<u8> {
+    guid.to_le_bytes().to_vec()
+}
+
+/// `CMSG_PET_CANCEL_AURA` (`PetHandler.cpp:651`): `u64 pet_guid, u32 spell_id`.
+pub fn encode_pet_cancel_aura(pet_guid: u64, spell_id: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.extend_from_slice(&spell_id.to_le_bytes());
+    p
+}
+
+/// `CMSG_PET_SPELL_AUTOCAST` (`PetHandler.cpp:616`): `u64 pet_guid, u32 spell_id, u8 state`.
+pub fn encode_pet_spell_autocast(pet_guid: u64, spell_id: u32, enabled: bool) -> Vec<u8> {
+    let mut p = Vec::with_capacity(13);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.extend_from_slice(&spell_id.to_le_bytes());
+    p.push(u8::from(enabled));
+    p
+}
+
+/// `CMSG_PET_RENAME` (`PetHandler.cpp:462`): `u64 pet_guid, cstring name, u8 is_declined (0)`.
+pub fn encode_pet_rename(pet_guid: u64, name: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(10 + name.len());
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.push(0); // is_declined = 0
+    p
+}
+
+/// `CMSG_UNSTABLE_PET` (`NPCHandler.cpp:580`) and `CMSG_STABLE_SWAP_PET` (`NPCHandler.cpp:708`):
+/// `u64 npc_guid, u32 pet_number`.
+pub fn encode_stable_pet_slot(npc: u64, pet_number: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&npc.to_le_bytes());
+    p.extend_from_slice(&pet_number.to_le_bytes());
+    p
+}
+
+/// `CMSG_PET_NAME_QUERY` (`PetHandler.cpp:327`): `u32 pet_number, u64 pet_guid`.
+pub fn pet_name_query(pet_number: u32, pet_guid: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&pet_number.to_le_bytes());
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p
+}
+
+/// `CMSG_ITEM_NAME_QUERY` (`ItemHandler.cpp:1449`): `u32 item_id, u64 item_guid(0)`.
+pub fn item_name_query(item_id: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&item_id.to_le_bytes());
+    p.extend_from_slice(&0u64.to_le_bytes());
+    p
+}
+
+/// `CMSG_TEXT_EMOTE` (`ChatHandler.cpp:544`): `u32 text_emote, u32 emote_num, u64 target`.
+pub fn text_emote(text_emote: u32, emote_num: u32, target: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(16);
+    p.extend_from_slice(&text_emote.to_le_bytes());
+    p.extend_from_slice(&emote_num.to_le_bytes());
+    p.extend_from_slice(&target.to_le_bytes());
+    p
+}
+
+/// `CMSG_SET_FACTION_ATWAR` (`CharacterHandler.cpp:1503`) and `CMSG_SET_FACTION_INACTIVE` (`CharacterHandler.cpp:1514`):
+/// `u32 rep_list_id, u8 flag`.
+pub fn set_faction_flag(rep_list_id: u32, flag: u8) -> Vec<u8> {
+    let mut p = Vec::with_capacity(5);
+    p.extend_from_slice(&rep_list_id.to_le_bytes());
+    p.push(flag);
+    p
+}
+
+/// `CMSG_CONTACT_LIST` (`SocialHandler.cpp:33`): `u32 social_mask` (`0x07` = friends | ignored | muted).
+pub fn contact_list(flags: u32) -> Vec<u8> {
+    flags.to_le_bytes().to_vec()
+}
+
+/// `CMSG_ADD_FRIEND` (`SocialHandler.cpp:69`): `cstring name, cstring note`.
+pub fn add_friend(name: &str, note: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(name.len() + note.len() + 2);
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.extend_from_slice(note.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_CHAT_IGNORED` (`ChatHandler.cpp:657`): `u64 sender_guid, u8 unk(0)`.
+pub fn chat_ignored(guid: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9);
+    p.extend_from_slice(&guid.to_le_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_GROUP_INVITE` (`GroupHandler.cpp:47`): `cstring name, u32 proposed_roles(0)`.
+pub fn group_invite(name: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(name.len() + 5);
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p
+}
+
+/// `CMSG_GROUP_ACCEPT` (`GroupHandler.cpp:193`): `u32 unk(0)`.
+pub fn group_accept() -> Vec<u8> {
+    0u32.to_le_bytes().to_vec()
+}
+
+/// `CMSG_GROUP_UNINVITE_GUID` (`GroupHandler.cpp:251`): `u64 guid, cstring reason("")`.
+pub fn group_uninvite_guid(guid: u64, reason: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9 + reason.len());
+    p.extend_from_slice(&guid.to_le_bytes());
+    p.extend_from_slice(reason.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_LOOT_METHOD` (`GroupHandler.cpp:458`): `u32 method, u64 master_guid, u32 threshold`.
+pub fn loot_method(method: u32, master: u64, threshold: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(16);
+    p.extend_from_slice(&method.to_le_bytes());
+    p.extend_from_slice(&master.to_le_bytes());
+    p.extend_from_slice(&threshold.to_le_bytes());
+    p
+}
+
+/// `CMSG_GROUP_CHANGE_SUB_GROUP` (`GroupHandler.cpp:427`): `cstring name, u8 group`.
+pub fn group_change_sub_group(name: &str, group: u8) -> Vec<u8> {
+    let mut p = Vec::with_capacity(name.len() + 2);
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.push(group);
+    p
+}
+
+/// `CMSG_GROUP_SWAP_SUB_GROUP` (`GroupHandler.cpp:443`): `cstring name1, cstring name2`.
+pub fn cstring_pair(first: &str, second: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(first.len() + second.len() + 2);
+    p.extend_from_slice(first.as_bytes());
+    p.push(0);
+    p.extend_from_slice(second.as_bytes());
+    p.push(0);
+    p
+}
+
+/// Single NUL-terminated string payload.
+pub fn cstring_single(s: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(s.len() + 1);
+    p.extend_from_slice(s.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `MSG_MINIMAP_PING` (`GroupHandler.cpp:691`): `f32 x, f32 y`.
+pub fn minimap_ping(x: f32, y: f32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(8);
+    p.extend_from_slice(&x.to_le_bytes());
+    p.extend_from_slice(&y.to_le_bytes());
+    p
+}
+
+/// `MSG_RAID_TARGET_UPDATE` (`GroupHandler.cpp:718`): `u8 icon_index, u64 target` (or `0xFF` to query).
+pub fn set_raid_target(icon: u8, target: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9);
+    p.push(icon);
+    p.extend_from_slice(&target.to_le_bytes());
+    p
+}
+
+/// `CMSG_LOOT_MASTER_GIVE` (`LootHandler.cpp:526`): `u64 loot_guid, u8 slot_id, u64 target_guid`.
+pub fn loot_master_give(loot_guid: u64, slot_id: u8, target_guid: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(17);
+    p.extend_from_slice(&loot_guid.to_le_bytes());
+    p.push(slot_id);
+    p.extend_from_slice(&target_guid.to_le_bytes());
+    p
+}
+
+/// `CMSG_ACTIVATETAXI` (`TaxiHandler.cpp:175`): `u64 npc_guid, u32 source_node, u32 dest_node`.
+pub fn activate_taxi(npc: u64, source: u32, dest: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(16);
+    p.extend_from_slice(&npc.to_le_bytes());
+    p.extend_from_slice(&source.to_le_bytes());
+    p.extend_from_slice(&dest.to_le_bytes());
+    p
+}
+
+/// `CMSG_ACTIVATETAXIEXPRESS` (`TaxiHandler.cpp:124`): `u64 npc_guid, u32 node_count, [u32 node]*`.
+pub fn activate_taxi_express(npc: u64, nodes: &[u32]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12 + nodes.len() * 4);
+    p.extend_from_slice(&npc.to_le_bytes());
+    p.extend_from_slice(&(nodes.len() as u32).to_le_bytes());
+    for &node in nodes {
+        p.extend_from_slice(&node.to_le_bytes());
+    }
+    p
+}
+
+/// `CMSG_JOIN_CHANNEL` (`ChannelHandler.cpp:27`): `u32 channel_id(0), u8 has_voice(0), u8 joined_by_zone(0), cstring name, cstring password`.
+pub fn join_channel(name: &str, password: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(8 + name.len() + password.len());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.push(0);
+    p.push(0);
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.extend_from_slice(password.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_LEAVE_CHANNEL` (`ChannelHandler.cpp:54`): `u32 channel_id(0), cstring name`.
+pub fn leave_channel(name: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(5 + name.len());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p
+}
+
+/// WMC1 v3 (`MulticlassProtocol.h`): 4-byte magic `"WMC1"`, version `3`, 28-byte request on
+/// `0x51B`, and reply capped at 4096 bytes on `0x51A`.
+pub const MULTICLASS_MAGIC: [u8; 4] = *b"WMC1";
+pub const MULTICLASS_VERSION: u16 = 3;
+pub const MULTICLASS_REQUEST_LEN: usize = 28;
+pub const MULTICLASS_MAX_REPLY_LEN: usize = 4096;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MulticlassReply {
+    pub op: u16,
+    pub status: u16,
+    pub serial: u32,
+    pub body: Vec<u8>,
+}
+
+/// Encode a 28-byte WMC1 v3 request (`MulticlassProtocol.h`, `MulticlassTransport.cpp::CanPacketReceive`):
+/// `[magic: "WMC1", version: u16(3), op: u16, serial: u32, character_guid: u64, arg0: u32, arg1: u32]`.
+pub fn encode_multiclass_request(
+    op: u16,
+    serial: u32,
+    character_guid: u64,
+    arg0: u32,
+    arg1: u32,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(MULTICLASS_REQUEST_LEN);
+    p.extend_from_slice(&MULTICLASS_MAGIC);
+    p.extend_from_slice(&MULTICLASS_VERSION.to_le_bytes());
+    p.extend_from_slice(&op.to_le_bytes());
+    p.extend_from_slice(&serial.to_le_bytes());
+    p.extend_from_slice(&character_guid.to_le_bytes());
+    p.extend_from_slice(&arg0.to_le_bytes());
+    p.extend_from_slice(&arg1.to_le_bytes());
+    debug_assert_eq!(p.len(), MULTICLASS_REQUEST_LEN);
+    p
+}
+
+/// Validate and decode a WMC1 v3 reply on `0x51A` (`MulticlassTransport.cpp::CanPacketSend`):
+/// enforces the 4096-byte ceiling, `"WMC1"` magic, and version `3`.
+pub fn accept_multiclass_reply(payload: &[u8]) -> Result<MulticlassReply> {
+    if payload.len() > MULTICLASS_MAX_REPLY_LEN {
+        return Err(DecodeError::invalid_count("multiclass reply exceeds 4096-byte cap")
+            .with_value(payload.len() as u32)
+            .into());
+    }
+    let mut r = Reader::new(payload);
+    let magic = r.take(4)?;
+    if magic != MULTICLASS_MAGIC {
+        return Err(DecodeError::invalid_value("multiclass reply magic mismatch").into());
+    }
+    let version = r.u16()?;
+    if version != MULTICLASS_VERSION {
+        return Err(DecodeError::invalid_value("multiclass reply version mismatch")
+            .with_value(u32::from(version))
+            .into());
+    }
+    let op = r.u16()?;
+    let status = r.u16()?;
+    let serial = r.u32()?;
+    let body = r.take(r.remaining())?.to_vec();
+    Ok(MulticlassReply {
+        op,
+        status,
+        serial,
+        body,
+    })
+}
+
 fn guid_quest(npc: u64, quest: u32) -> Vec<u8> {
     let mut p = Vec::with_capacity(12);
     p.extend_from_slice(&npc.to_le_bytes());
@@ -4103,5 +4440,58 @@ mod tests {
         }
         truncated.extend_from_slice(&4u32.to_le_bytes()); // claims 4 stats, 0 follow
         assert!(read_item_info(&truncated).is_err());
+    }
+
+    #[test]
+    fn learn_talent_and_pet_orders_match_12340_wire_layouts() {
+        let talent = encode_learn_talent(161, 3);
+        assert_eq!(talent.len(), 8);
+        assert_eq!(u32::from_le_bytes(le::<4>(&talent[0..4])), 161);
+        assert_eq!(u32::from_le_bytes(le::<4>(&talent[4..8])), 3);
+
+        let pet_act = encode_pet_action(0xF140_0000_0000_0010, 0x0700_0002, 0x0000_0000_0000_0099);
+        assert_eq!(pet_act.len(), 20);
+        assert_eq!(u64::from_le_bytes(le::<8>(&pet_act[0..8])), 0xF140_0000_0000_0010);
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_act[8..12])), 0x0700_0002);
+        assert_eq!(u64::from_le_bytes(le::<8>(&pet_act[12..20])), 0x0000_0000_0000_0099);
+
+        let pet_set = encode_pet_set_action(0xF140_0000_0000_0010, &[(2, 0x0100_0011)]);
+        assert_eq!(pet_set.len(), 16);
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_set[8..12])), 2);
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_set[12..16])), 0x0100_0011);
+
+        let pet_rename = encode_pet_rename(0xF140_0000_0000_0010, "Fang");
+        assert_eq!(&pet_rename[8..], b"Fang\0\0");
+    }
+
+    #[test]
+    fn multiclass_wmc1_v3_codec_enforces_header_and_size_bounds() {
+        let req = encode_multiclass_request(1, 42, 0x1234, 7, 9);
+        assert_eq!(req.len(), MULTICLASS_REQUEST_LEN);
+        assert_eq!(&req[0..4], b"WMC1");
+        assert_eq!(u16::from_le_bytes(le::<2>(&req[4..6])), 3);
+        assert_eq!(u16::from_le_bytes(le::<2>(&req[6..8])), 1);
+        assert_eq!(u32::from_le_bytes(le::<4>(&req[8..12])), 42);
+        assert_eq!(u64::from_le_bytes(le::<8>(&req[12..20])), 0x1234);
+
+        let mut reply = Vec::new();
+        reply.extend_from_slice(b"WMC1");
+        reply.extend_from_slice(&3u16.to_le_bytes());
+        reply.extend_from_slice(&2u16.to_le_bytes()); // op
+        reply.extend_from_slice(&0u16.to_le_bytes()); // status OK
+        reply.extend_from_slice(&42u32.to_le_bytes()); // serial
+        reply.extend_from_slice(b"payload");
+        let parsed = accept_multiclass_reply(&reply).expect("valid WMC1 v3 reply");
+        assert_eq!(parsed.op, 2);
+        assert_eq!(parsed.status, 0);
+        assert_eq!(parsed.serial, 42);
+        assert_eq!(parsed.body, b"payload");
+
+        let mut bad_ver = reply.clone();
+        bad_ver[4] = 2;
+        assert!(accept_multiclass_reply(&bad_ver).is_err());
+
+        let oversized = vec![0u8; MULTICLASS_MAX_REPLY_LEN + 1];
+        assert!(accept_multiclass_reply(&oversized).is_err());
     }
 }

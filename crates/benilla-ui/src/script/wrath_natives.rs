@@ -961,6 +961,74 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     super::input_verbs::install_wrath(lua)?;
+    install_multiclass(lua)?;
+
+    Ok(())
+}
+
+/// WMC1 v3 (`MulticlassRequest` / `MulticlassPoll`) bindings shared by the Wrath in-game
+/// (`WM_Multiclass.lua`) and glue (`multiclass_glue.lua`) Lua environments.
+pub(super) fn install_multiclass(lua: &Lua) -> mlua::Result<()> {
+    const MAX_MULTICLASS_QUEUE: usize = 16;
+
+    lua.globals().set(
+        "MulticlassRequest",
+        lua.create_function(
+            |lua, (op, arg0, arg1, guid): (u16, Option<u32>, Option<u32>, Option<u64>)| {
+                let mut model = lua.app_data_mut::<super::Model>().expect("model");
+                let serial = model.multiclass_next_serial.wrapping_add(1).max(1);
+                model.multiclass_next_serial = serial;
+                let char_guid = guid.unwrap_or_else(|| {
+                    if model.player_guid != 0 {
+                        model.player_guid
+                    } else {
+                        model
+                            .glue
+                            .characters
+                            .get(model.glue.selected_character.saturating_sub(1))
+                            .map(|c| c.guid)
+                            .unwrap_or(0)
+                    }
+                });
+                if model.multiclass_requests.len() >= MAX_MULTICLASS_QUEUE {
+                    model.multiclass_requests.pop_front();
+                }
+                model.multiclass_requests.push_back((
+                    op,
+                    serial,
+                    char_guid,
+                    arg0.unwrap_or(0),
+                    arg1.unwrap_or(0),
+                ));
+                Ok((true, serial))
+            },
+        )?,
+    )?;
+
+    lua.globals().set(
+        "MulticlassPoll",
+        lua.create_function(|lua, wanted_serial: Option<u32>| {
+            let reply = {
+                let mut model = lua.app_data_mut::<super::Model>().expect("model");
+                match wanted_serial {
+                    Some(target) => model
+                        .multiclass_replies
+                        .iter()
+                        .position(|(_, _, serial, _)| *serial == target)
+                        .and_then(|idx| model.multiclass_replies.remove(idx)),
+                    None => model.multiclass_replies.pop_front(),
+                }
+            };
+            let mut out = MultiValue::new();
+            if let Some((op, status, serial, payload)) = reply {
+                out.push_back(Value::Integer(i64::from(op)));
+                out.push_back(Value::Integer(i64::from(status)));
+                out.push_back(Value::Integer(i64::from(serial)));
+                out.push_back(Value::String(lua.create_string(&payload)?));
+            }
+            Ok(out)
+        })?,
+    )?;
 
     Ok(())
 }
@@ -999,6 +1067,27 @@ impl super::UiScript {
     /// `g_charTitlesDB.m_maxID + 1` (`0x005165E0`).
     pub fn set_title_count(&mut self, count: u32) {
         self.model_mut().title_count = count;
+    }
+
+    /// Drain queued `MulticlassRequest(op, arg0, arg1)` entries as `(op, serial, character_guid, arg0, arg1)`.
+    pub fn take_multiclass_requests(&mut self) -> Vec<(u16, u32, u64, u32, u32)> {
+        self.model_mut().multiclass_requests.drain(..).collect()
+    }
+
+    /// Enqueue a validated `SMSG_MULTICLASS_REPLY` (`0x51A`) frame `(op, status, serial, body)` for `MulticlassPoll`.
+    pub fn push_multiclass_reply(&mut self, op: u16, status: u16, serial: u32, payload: Vec<u8>) {
+        let mut model = self.model_mut();
+        if model.multiclass_replies.len() >= 16 {
+            model.multiclass_replies.pop_front();
+        }
+        model.multiclass_replies.push_back((op, status, serial, payload));
+    }
+
+    /// Clear queued multiclass requests and replies across world/character transitions.
+    pub fn clear_multiclass_state(&mut self) {
+        let mut model = self.model_mut();
+        model.multiclass_requests.clear();
+        model.multiclass_replies.clear();
     }
 }
 
@@ -1780,5 +1869,34 @@ mod tests {
             host.asked.iter().all(|&g| g == PLAYER || g == PARTY1),
             "host is asked only for resolved guids"
         );
+    }
+
+    #[test]
+    fn wrath_multiclass_request_and_poll_round_trip_in_world_and_glue() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.seat_player_guid(0x0102_0304_0506_0708);
+        let (ok, serial): (bool, u32) = s
+            .eval("return MulticlassRequest(1, 2, 9)")
+            .expect("MulticlassRequest in world VM");
+        assert!(ok);
+        assert_eq!(serial, 1);
+        assert_eq!(
+            s.take_multiclass_requests(),
+            vec![(1, 1, 0x0102_0304_0506_0708, 2, 9)]
+        );
+        assert_eq!(s.arity("MulticlassPoll()").unwrap(), 0);
+        s.push_multiclass_reply(1, 0, 1, b"WMC1".to_vec());
+        let (op, status, got_serial, payload): (u16, u16, u32, String) = s
+            .eval("return MulticlassPoll(1)")
+            .expect("MulticlassPoll in world VM");
+        assert_eq!((op, status, got_serial, payload.as_bytes()), (1, 0, 1, b"WMC1".as_slice()));
+
+        let mut glue = UiScript::new_glue_with_target(UiTarget::Wrath335).unwrap();
+        let (ok_glue, serial_glue): (bool, u32) = glue
+            .eval("return MulticlassRequest(6, 11, 0, 42)")
+            .expect("MulticlassRequest in glue VM");
+        assert!(ok_glue);
+        assert_eq!(serial_glue, 1);
+        assert_eq!(glue.take_multiclass_requests(), vec![(6, 1, 42, 11, 0)]);
     }
 }

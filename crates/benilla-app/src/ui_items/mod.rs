@@ -445,7 +445,7 @@ fn walk_inventory_filtered<T>(
 /// The Wrath possession query includes broken items; donor action/reagent walks keep their
 /// whole-item gate. Charge reads use the same template and instance facts as action_count.
 fn possession_count(
-    store: &ObjectFields,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     items: &Items,
     entry: u32,
@@ -458,8 +458,7 @@ fn possession_count(
     };
     let mut total = 0u32;
     let mut available = true;
-    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
-    walk_inventory_filtered::<()>(&donor, objects, scope, WRATH_KEYRING_SLOTS, |_| true, |_, _, guid| {
+    walk_inventory_filtered::<()>(inv, objects, scope, WRATH_KEYRING_SLOTS, |_| true, |_, _, guid| {
         let amount = (|| {
             let fields = objects.object(guid)?;
             if fields.object_entry()? != entry {

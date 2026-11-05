@@ -20,9 +20,8 @@ use benilla_protocol::messages::{BAG_PLAYER_INVENTORY, SLOT_BAG_FIRST, SLOT_PACK
 use benilla_protocol::ObjectFields;
 use benilla_protocol_wrath::fields;
 
-/// The dense player window the digest carries. Kept at the 1.12-compatible 0..1171 range for this
-/// package; the always-zero max-level/daily/combat-rating tail is a separate defect.
-pub(crate) const PLAYER_WINDOW_END: u16 = 1171;
+/// The dense player window the digest carries (`0..PLAYER_END` = `0..1326`).
+pub(crate) const PLAYER_WINDOW_END: u16 = fields::PLAYER_END;
 
 /// 3.3.5 capacities (`WoW/Common/ComponentCore/Types.h:100-117`, AzerothCore `Player.h:697-717`).
 pub(crate) const WRATH_EQUIPMENT_SLOTS: u8 = 19;

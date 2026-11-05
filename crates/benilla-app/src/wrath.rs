@@ -549,6 +549,15 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// Validated `SMSG_MULTICLASS_REPLY` (`0x51A`, WMC1 v3) frame for `MulticlassPoll`.
+    MulticlassReply {
+        op: u16,
+        status: u16,
+        serial: u32,
+        payload: Vec<u8>,
+        session_epoch: u64,
+        world_generation: u64,
+    },
 }
 
 impl WrathFeedEvent {
@@ -847,6 +856,7 @@ pub(crate) enum WrathParkedCommand {
     Delete(u64),
     Realm(benilla_protocol::RealmInfo),
     RefreshRealms,
+    MulticlassRequest(Vec<u8>),
 }
 
 #[derive(Resource)]
@@ -1596,6 +1606,8 @@ pub struct WrathWorldView {
     pub last_cast_end: Option<crate::wrath_native::WrathCastEnded>,
     /// The last native inventory failure with identities/tail; transient display state.
     pub last_inventory_failure: Option<crate::wrath_native::WrathInventoryFailure>,
+    /// Bounded WMC1 v3 (`SMSG_MULTICLASS_REPLY`, `0x51A`) replies awaiting `MulticlassPoll`.
+    pub multiclass_replies: VecDeque<(u16, u16, u32, Vec<u8>)>,
     /// Monotonic cast count for `CMSG_CAST_SPELL`.
     pub next_cast_count: u8,
 }
@@ -1621,6 +1633,7 @@ impl Default for WrathWorldView {
             channels: BTreeMap::new(),
             last_cast_end: None,
             last_inventory_failure: None,
+            multiclass_replies: VecDeque::new(),
             next_cast_count: 1,
             empty: (),
         }
@@ -4425,6 +4438,502 @@ fn wrath_tap_commands(
                     &text,
                 ),
             )),
+            ClientCommand::LearnTalent { talent_id, rank } => Some((
+                benilla_protocol_wrath::opcode::CMSG_LEARN_TALENT,
+                gameplay::encode_learn_talent(talent_id, rank),
+            )),
+            ClientCommand::PetAction {
+                pet_guid,
+                packed,
+                target_guid,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PET_ACTION,
+                gameplay::encode_pet_action(pet_guid, packed, target_guid),
+            )),
+            ClientCommand::PetSetAction { pet_guid, entries } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PET_SET_ACTION,
+                gameplay::encode_pet_set_action(pet_guid, &entries),
+            )),
+            ClientCommand::PetCastSpell {
+                pet_guid,
+                spell_id,
+                target,
+                ..
+            } => wrath_cast_target(target).map(|target| {
+                let count = view.next_cast_count;
+                admitted_wire_count = Some(count);
+                view.next_cast_count = count.wrapping_add(1).max(1);
+                (
+                    benilla_protocol_wrath::opcode::CMSG_PET_CAST_SPELL,
+                    gameplay::encode_pet_cast_spell(pet_guid, count, spell_id, target),
+                )
+            }),
+            ClientCommand::PetStopAttack { pet_guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PET_STOP_ATTACK,
+                gameplay::encode_guid_only(pet_guid),
+            )),
+            ClientCommand::PetCancelAura { pet_guid, spell_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PET_CANCEL_AURA,
+                gameplay::encode_pet_cancel_aura(pet_guid, spell_id),
+            )),
+            ClientCommand::PetSpellAutocast {
+                pet_guid,
+                spell_id,
+                enabled,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PET_SPELL_AUTOCAST,
+                gameplay::encode_pet_spell_autocast(pet_guid, spell_id, enabled),
+            )),
+            ClientCommand::PetAbandon { pet_guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PET_ABANDON,
+                gameplay::encode_guid_only(pet_guid),
+            )),
+            ClientCommand::PetRename { pet_guid, name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PET_RENAME,
+                gameplay::encode_pet_rename(pet_guid, &name),
+            )),
+            ClientCommand::RequestPetInfo => Some((
+                benilla_protocol_wrath::opcode::CMSG_REQUEST_PET_INFO,
+                Vec::new(),
+            )),
+            ClientCommand::PetUnlearn { trainer } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PET_UNLEARN,
+                gameplay::encode_guid_only(trainer),
+            )),
+            ClientCommand::ListStabledPets { npc } => Some((
+                benilla_protocol_wrath::opcode::MSG_LIST_STABLED_PETS,
+                gameplay::encode_guid_only(npc),
+            )),
+            ClientCommand::StablePet { npc } => Some((
+                benilla_protocol_wrath::opcode::CMSG_STABLE_PET,
+                gameplay::encode_guid_only(npc),
+            )),
+            ClientCommand::UnstablePet { npc, pet_number } => Some((
+                benilla_protocol_wrath::opcode::CMSG_UNSTABLE_PET,
+                gameplay::encode_stable_pet_slot(npc, pet_number),
+            )),
+            ClientCommand::BuyStableSlot { npc } => Some((
+                benilla_protocol_wrath::opcode::CMSG_BUY_STABLE_SLOT,
+                gameplay::encode_guid_only(npc),
+            )),
+            ClientCommand::StableSwapPet { npc, pet_number } => Some((
+                benilla_protocol_wrath::opcode::CMSG_STABLE_SWAP_PET,
+                gameplay::encode_stable_pet_slot(npc, pet_number),
+            )),
+            ClientCommand::PetNameQuery {
+                pet_number,
+                pet_guid,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PET_NAME_QUERY,
+                gameplay::pet_name_query(pet_number, pet_guid),
+            )),
+            ClientCommand::ItemNameQuery { item_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_ITEM_NAME_QUERY,
+                gameplay::item_name_query(item_id),
+            )),
+            ClientCommand::GuildQuery { guild_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_QUERY,
+                guild_id.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::TogglePvp { enable } => Some((
+                benilla_protocol_wrath::opcode::CMSG_TOGGLE_PVP,
+                enable.map_or_else(Vec::new, |v| vec![u8::from(v)]),
+            )),
+            ClientCommand::ToggleHelm => Some((
+                benilla_protocol_wrath::opcode::CMSG_SHOWING_HELM,
+                vec![1],
+            )),
+            ClientCommand::ToggleCloak => Some((
+                benilla_protocol_wrath::opcode::CMSG_SHOWING_CLOAK,
+                vec![1],
+            )),
+            ClientCommand::Emote { emote_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_EMOTE,
+                emote_id.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::TextEmote {
+                text_emote,
+                emote_num,
+                target,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_TEXT_EMOTE,
+                gameplay::text_emote(text_emote, emote_num, target),
+            )),
+            ClientCommand::Inspect { target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_INSPECT,
+                gameplay::encode_guid_only(target),
+            )),
+            ClientCommand::InspectHonorStats { target } => Some((
+                benilla_protocol_wrath::opcode::MSG_INSPECT_HONOR_STATS,
+                gameplay::encode_guid_only(target),
+            )),
+            ClientCommand::UnlearnSkill { skill_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_UNLEARN_SKILL,
+                skill_id.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::SetFactionAtWar { rep_list_id, flags } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SET_FACTION_ATWAR,
+                gameplay::set_faction_flag(rep_list_id, flags),
+            )),
+            ClientCommand::SetFactionInactive {
+                rep_list_id,
+                inactive,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SET_FACTION_INACTIVE,
+                gameplay::set_faction_flag(rep_list_id, u8::from(inactive)),
+            )),
+            ClientCommand::SetWatchedFaction { faction_index } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SET_WATCHED_FACTION,
+                faction_index.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::NextCinematicCamera => Some((
+                benilla_protocol_wrath::opcode::CMSG_NEXT_CINEMATIC_CAMERA,
+                Vec::new(),
+            )),
+            ClientCommand::CompleteCinematic => Some((
+                benilla_protocol_wrath::opcode::CMSG_COMPLETE_CINEMATIC,
+                Vec::new(),
+            )),
+            ClientCommand::TutorialFlag { flag } => Some((
+                benilla_protocol_wrath::opcode::CMSG_TUTORIAL_FLAG,
+                flag.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::TutorialClear => Some((
+                benilla_protocol_wrath::opcode::CMSG_TUTORIAL_CLEAR,
+                Vec::new(),
+            )),
+            ClientCommand::TutorialReset => Some((
+                benilla_protocol_wrath::opcode::CMSG_TUTORIAL_RESET,
+                Vec::new(),
+            )),
+            ClientCommand::RequestRaidInfo => Some((
+                benilla_protocol_wrath::opcode::CMSG_REQUEST_RAID_INFO,
+                Vec::new(),
+            )),
+            ClientCommand::ResetInstances => Some((
+                benilla_protocol_wrath::opcode::CMSG_RESET_INSTANCES,
+                Vec::new(),
+            )),
+            ClientCommand::FriendListRequest => Some((
+                benilla_protocol_wrath::opcode::CMSG_CONTACT_LIST,
+                gameplay::contact_list(0x07),
+            )),
+            ClientCommand::AddFriend { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_ADD_FRIEND,
+                gameplay::add_friend(&name, ""),
+            )),
+            ClientCommand::DelFriend { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_DEL_FRIEND,
+                gameplay::encode_guid_only(guid),
+            )),
+            ClientCommand::AddIgnore { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_ADD_IGNORE,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::DelIgnore { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_DEL_IGNORE,
+                gameplay::encode_guid_only(guid),
+            )),
+            ClientCommand::ChatIgnored { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHAT_IGNORED,
+                gameplay::chat_ignored(guid),
+            )),
+            ClientCommand::Whois { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_WHOIS,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GroupInvite { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_INVITE,
+                gameplay::group_invite(&name),
+            )),
+            ClientCommand::GroupAccept => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_ACCEPT,
+                gameplay::group_accept(),
+            )),
+            ClientCommand::GroupDecline => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_DECLINE,
+                Vec::new(),
+            )),
+            ClientCommand::GroupUninvite { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_UNINVITE,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GroupUninviteGuid { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_UNINVITE_GUID,
+                gameplay::group_uninvite_guid(guid, ""),
+            )),
+            ClientCommand::LootMethod {
+                method,
+                master,
+                threshold,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_LOOT_METHOD,
+                gameplay::loot_method(method, master, threshold),
+            )),
+            ClientCommand::GroupLeave => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_DISBAND,
+                Vec::new(),
+            )),
+            ClientCommand::GroupRaidConvert => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_RAID_CONVERT,
+                Vec::new(),
+            )),
+            ClientCommand::GroupChangeSubGroup { name, group } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_CHANGE_SUB_GROUP,
+                gameplay::group_change_sub_group(&name, group),
+            )),
+            ClientCommand::GroupSwapSubGroup { name1, name2 } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_SWAP_SUB_GROUP,
+                gameplay::cstring_pair(&name1, &name2),
+            )),
+            ClientCommand::RequestPartyMemberStats { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_REQUEST_PARTY_MEMBER_STATS,
+                gameplay::encode_guid_only(guid),
+            )),
+            ClientCommand::SetRaidTarget { icon, target } => Some((
+                benilla_protocol_wrath::opcode::MSG_RAID_TARGET_UPDATE,
+                gameplay::set_raid_target(icon, target),
+            )),
+            ClientCommand::RequestRaidTargets => Some((
+                benilla_protocol_wrath::opcode::MSG_RAID_TARGET_UPDATE,
+                vec![0xFF],
+            )),
+            ClientCommand::MinimapPing { x, y } => Some((
+                benilla_protocol_wrath::opcode::MSG_MINIMAP_PING,
+                gameplay::minimap_ping(x, y),
+            )),
+            ClientCommand::ReadyCheckStart => Some((
+                benilla_protocol_wrath::opcode::MSG_RAID_READY_CHECK,
+                Vec::new(),
+            )),
+            ClientCommand::ReadyCheckAnswer { ready } => Some((
+                benilla_protocol_wrath::opcode::MSG_RAID_READY_CHECK,
+                vec![u8::from(ready)],
+            )),
+            ClientCommand::LootMasterGive {
+                loot_guid,
+                slot_id,
+                target_guid,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_LOOT_MASTER_GIVE,
+                gameplay::loot_master_give(loot_guid, slot_id, target_guid),
+            )),
+            ClientCommand::DuelAccepted { arbiter } => Some((
+                benilla_protocol_wrath::opcode::CMSG_DUEL_ACCEPTED,
+                gameplay::encode_guid_only(arbiter),
+            )),
+            ClientCommand::DuelCancelled { arbiter } => Some((
+                benilla_protocol_wrath::opcode::CMSG_DUEL_CANCELLED,
+                gameplay::encode_guid_only(arbiter),
+            )),
+            ClientCommand::TaxiNodeStatusQuery { npc } => Some((
+                benilla_protocol_wrath::opcode::CMSG_TAXINODE_STATUS_QUERY,
+                gameplay::encode_guid_only(npc),
+            )),
+            ClientCommand::TaxiQueryNodes { npc } => Some((
+                benilla_protocol_wrath::opcode::CMSG_TAXIQUERYAVAILABLENODES,
+                gameplay::encode_guid_only(npc),
+            )),
+            ClientCommand::ActivateTaxi { npc, source, dest } => Some((
+                benilla_protocol_wrath::opcode::CMSG_ACTIVATETAXI,
+                gameplay::activate_taxi(npc, source, dest),
+            )),
+            ClientCommand::ActivateTaxiExpress { npc, nodes, .. } => Some((
+                benilla_protocol_wrath::opcode::CMSG_ACTIVATETAXIEXPRESS,
+                gameplay::activate_taxi_express(npc, &nodes),
+            )),
+            ClientCommand::InitiateTrade { target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_INITIATE_TRADE,
+                gameplay::encode_guid_only(target),
+            )),
+            ClientCommand::BeginTrade => Some((
+                benilla_protocol_wrath::opcode::CMSG_BEGIN_TRADE,
+                Vec::new(),
+            )),
+            ClientCommand::BusyTrade => Some((
+                benilla_protocol_wrath::opcode::CMSG_BUSY_TRADE,
+                Vec::new(),
+            )),
+            ClientCommand::IgnoreTrade => Some((
+                benilla_protocol_wrath::opcode::CMSG_IGNORE_TRADE,
+                Vec::new(),
+            )),
+            ClientCommand::AcceptTrade => Some((
+                benilla_protocol_wrath::opcode::CMSG_ACCEPT_TRADE,
+                1u32.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::UnacceptTrade => Some((
+                benilla_protocol_wrath::opcode::CMSG_UNACCEPT_TRADE,
+                Vec::new(),
+            )),
+            ClientCommand::CancelTrade => Some((
+                benilla_protocol_wrath::opcode::CMSG_CANCEL_TRADE,
+                Vec::new(),
+            )),
+            ClientCommand::SetTradeItem {
+                trade_slot,
+                bag,
+                slot,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SET_TRADE_ITEM,
+                vec![trade_slot, bag, slot],
+            )),
+            ClientCommand::ClearTradeItem { trade_slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CLEAR_TRADE_ITEM,
+                vec![trade_slot],
+            )),
+            ClientCommand::SetTradeGold { coinage } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SET_TRADE_GOLD,
+                coinage.to_le_bytes().to_vec(),
+            )),
+            ClientCommand::JoinChannel { name, password } => Some((
+                benilla_protocol_wrath::opcode::CMSG_JOIN_CHANNEL,
+                gameplay::join_channel(&name, &password),
+            )),
+            ClientCommand::LeaveChannel { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_LEAVE_CHANNEL,
+                gameplay::leave_channel(&name),
+            )),
+            ClientCommand::ChannelList { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_LIST,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::ChannelPassword { name, password } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_PASSWORD,
+                gameplay::cstring_pair(&name, &password),
+            )),
+            ClientCommand::ChannelSetOwner { name, target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_SET_OWNER,
+                gameplay::cstring_pair(&name, &target),
+            )),
+            ClientCommand::ChannelOwner { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_OWNER,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::ChannelModerator { name, target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_MODERATOR,
+                gameplay::cstring_pair(&name, &target),
+            )),
+            ClientCommand::ChannelUnmoderator { name, target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_UNMODERATOR,
+                gameplay::cstring_pair(&name, &target),
+            )),
+            ClientCommand::ChannelMute { name, target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_MUTE,
+                gameplay::cstring_pair(&name, &target),
+            )),
+            ClientCommand::ChannelUnmute { name, target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_UNMUTE,
+                gameplay::cstring_pair(&name, &target),
+            )),
+            ClientCommand::ChannelInvite { name, target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_INVITE,
+                gameplay::cstring_pair(&name, &target),
+            )),
+            ClientCommand::ChannelKick { name, target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_KICK,
+                gameplay::cstring_pair(&name, &target),
+            )),
+            ClientCommand::ChannelBan { name, target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_BAN,
+                gameplay::cstring_pair(&name, &target),
+            )),
+            ClientCommand::ChannelUnban { name, target } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_UNBAN,
+                gameplay::cstring_pair(&name, &target),
+            )),
+            ClientCommand::ChannelAnnouncements { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_ANNOUNCEMENTS,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::ChannelModerate { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_CHANNEL_MODERATE,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GuildInvite { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_INVITE,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GuildAccept => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_ACCEPT,
+                Vec::new(),
+            )),
+            ClientCommand::GuildDecline => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_DECLINE,
+                Vec::new(),
+            )),
+            ClientCommand::GuildInfo => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_INFO,
+                Vec::new(),
+            )),
+            ClientCommand::GuildRoster => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_ROSTER,
+                Vec::new(),
+            )),
+            ClientCommand::GuildPromote { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_PROMOTE,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GuildDemote { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_DEMOTE,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GuildLeave => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_LEAVE,
+                Vec::new(),
+            )),
+            ClientCommand::GuildRemove { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_REMOVE,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GuildDisband => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_DISBAND,
+                Vec::new(),
+            )),
+            ClientCommand::GuildLeader { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_LEADER,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GuildMotd { motd } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_MOTD,
+                gameplay::cstring_single(&motd),
+            )),
+            ClientCommand::GuildAddRank { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_ADD_RANK,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GuildDelRank => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_DEL_RANK,
+                Vec::new(),
+            )),
+            ClientCommand::GuildSetPublicNote { name, note } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_SET_PUBLIC_NOTE,
+                gameplay::cstring_pair(&name, &note),
+            )),
+            ClientCommand::GuildSetOfficerNote { name, note } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_SET_OFFICER_NOTE,
+                gameplay::cstring_pair(&name, &note),
+            )),
+            ClientCommand::GuildInfoText { text } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_INFO_TEXT,
+                gameplay::cstring_single(&text),
+            )),
+            ClientCommand::PetitionShowList { npc } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PETITION_SHOWLIST,
+                gameplay::encode_guid_only(npc),
+            )),
+            ClientCommand::PetitionShowSignatures { item } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PETITION_SHOW_SIGNATURES,
+                gameplay::encode_guid_only(item),
+            )),
+            ClientCommand::PetitionDecline { item } => Some((
+                benilla_protocol_wrath::opcode::MSG_PETITION_DECLINE,
+                gameplay::encode_guid_only(item),
+            )),
+            ClientCommand::TurnInPetition { item } => Some((
+                benilla_protocol_wrath::opcode::CMSG_TURN_IN_PETITION,
+                gameplay::encode_guid_only(item),
+            )),
             _ => None,
         };
         if let Some((opcode, payload)) = packet {
@@ -4908,6 +5417,59 @@ fn wrath_dispatch_events(world: &mut World) {
         route_wm_action_outcomes(world, &deliver);
         crate::net::handlers::dispatch(world, deliver);
     }
+
+    // Bridge WMC1 v3 (`MulticlassRequest` / `MulticlassPoll`) between the active Lua VM
+    // (`WM_Multiclass.lua` in-game or `multiclass_glue.lua` at character select) and the
+    // Wrath session transport.
+    let pending_replies: Vec<_> = world
+        .get_resource_mut::<WrathWorldView>()
+        .map(|mut view| view.multiclass_replies.drain(..).collect())
+        .unwrap_or_default();
+    let requests: Vec<_> = world
+        .get_non_send_resource_mut::<Option<benilla_ui::script::UiScript>>()
+        .and_then(|mut opt| {
+            let script = opt.as_mut()?;
+            for (op, status, serial, payload) in pending_replies {
+                script.push_multiclass_reply(op, status, serial, payload);
+            }
+            Some(script.take_multiclass_requests())
+        })
+        .unwrap_or_default();
+    if !requests.is_empty() {
+        let in_world = world
+            .get_resource::<WrathWorldView>()
+            .is_some_and(|v| v.phase == Some(Phase::InWorld));
+        for (op, serial, character_guid, arg0, arg1) in requests {
+            let payload = gameplay::encode_multiclass_request(
+                op,
+                serial,
+                character_guid,
+                arg0,
+                arg1,
+            )
+            .to_vec();
+            if in_world {
+                if let Some(input) = world.get_resource::<WrathInput>() {
+                    if let Ok(mut queue) = input.0.lock() {
+                        queue.push_back(WrathOutbound {
+                            opcode: benilla_protocol_wrath::opcode::CMSG_MULTICLASS_REQUEST,
+                            payload,
+                            movement: false,
+                            movement_seq: None,
+                            enqueued_at: Some(std::time::Instant::now()),
+                            receipt: None,
+                            trace: None,
+                            enforce_scope: false,
+                        });
+                    }
+                }
+            } else if let Some(control) = world.get_resource::<WrathControl>() {
+                if let Some(tx) = control.park_commands.as_ref() {
+                    let _ = tx.send(WrathParkedCommand::MulticlassRequest(payload));
+                }
+            }
+        }
+    }
 }
 
 /// Feed the existing translated replies to the in-flight action set. Only server replies and
@@ -5291,6 +5853,27 @@ fn wrath_net_drain(
                     });
                 }
             }
+            WrathFeedEvent::MulticlassReply {
+                op,
+                status,
+                serial,
+                payload,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    if view.multiclass_replies.len() >= 16 {
+                        view.multiclass_replies.pop_front();
+                    }
+                    view.multiclass_replies
+                        .push_back((op, status, serial, payload));
+                }
+            }
             WrathFeedEvent::ExportSkipped(reason) => {
                 debug!("wrath export skipped: {reason}");
             }
@@ -5356,6 +5939,7 @@ fn wrath_net_drain(
                 view.server_clock = None;
                 view.played_time = None;
                 view.last_inventory_failure = None;
+                view.multiclass_replies.clear();
                 view.session_epoch = 0;
                 view.world_generation = 0;
                 view.state_revision = 0;
@@ -5552,6 +6136,7 @@ fn wrath_net_drain(
         view.server_clock = None;
         view.played_time = None;
         view.last_inventory_failure = None;
+        view.multiclass_replies.clear();
         view.session_epoch = 0;
         view.world_generation = 0;
         view.state_revision = 0;
@@ -5593,6 +6178,7 @@ fn wrath_net_drain(
         view.server_clock = None;
         view.played_time = None;
         view.last_inventory_failure = None;
+        view.multiclass_replies.clear();
         view.last_changes.world_transferred = true;
         view.state_revision = 0;
     } else {
@@ -5698,11 +6284,11 @@ pub(crate) struct WrathQuestSlots(
     pub u32, // Nonempty PLAYER_FIELD_DAILY_QUESTS_1 slots.
 );
 
-/// The active player's raw 3.3.5 field window (0..1171 for this package) with its delivered
-/// mask, the source for the UI contracts the 1.12 descriptor cannot carry. It carries
-/// `PLAYER_CHOSEN_TITLE` (321) and `PLAYER__FIELD_KNOWN_TITLES` (626/628/630), but not the
-/// `PLAYER_FIELD_COMBAT_RATING_1` (1231..), `PLAYER_FIELD_MAX_LEVEL` (1279) or daily-quest tail;
-/// those read 0 and are a separate window-length defect. Kept beside the translated store so
+/// The active player's raw 3.3.5 field window (`0..PLAYER_END` = `0..1326`) with its delivered
+/// mask, the source for the UI contracts the 1.12 descriptor cannot carry:
+/// `PLAYER_CHOSEN_TITLE` (321), `PLAYER__FIELD_KNOWN_TITLES` (626/628/630),
+/// `PLAYER_FIELD_COMBAT_RATING_1` (1231..1256), `PLAYER_FIELD_MAX_LEVEL` (1279) and the
+/// `PLAYER_FIELD_DAILY_QUESTS_1` (1280..1305) tail. Kept beside the translated store so
 /// donor field indices stay untouched.
 #[derive(Component, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WrathPlayerRaw(pub(crate) crate::wrath_inventory::WrathFieldWindow);
@@ -7906,6 +8492,12 @@ pub fn run_session_with_cancel(
                         let failed = logon.refresh_realms().is_err();
                         publish_realms(&logon, failed);
                     }
+                    WrathParkedCommand::MulticlassRequest(payload) => {
+                        world.send(
+                            benilla_protocol_wrath::opcode::CMSG_MULTICLASS_REQUEST,
+                            &payload,
+                        )?;
+                    }
                     _ => {}
                 }
             }
@@ -7921,6 +8513,26 @@ pub fn run_session_with_cancel(
                 Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_ENUM => {
                     records = benilla_protocol_wrath::gameplay::parse_char_enum(&p.payload)?;
                     publish_roster(&records, RosterCause::Asked);
+                }
+                Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_MULTICLASS_REPLY => {
+                    if let Ok(body) =
+                        benilla_protocol_wrath::gameplay::accept_multiclass_reply(&p.payload)
+                    {
+                        if body.len() >= 14 {
+                            let op = u16::from_le_bytes([body[6], body[7]]);
+                            let status = u16::from_le_bytes([body[8], body[9]]);
+                            let serial =
+                                u32::from_le_bytes([body[10], body[11], body[12], body[13]]);
+                            feed.push_event(WrathFeedEvent::MulticlassReply {
+                                op,
+                                status,
+                                serial,
+                                payload: body.to_vec(),
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                        }
+                    }
                 }
                 Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_CREATE
                     || p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_DELETE => {
@@ -8399,6 +9011,26 @@ pub fn run_session_with_cancel(
                         }
                         Err(e) => {
                             debug!("wrath: ignored malformed 0x{:X} gameplay reply: {e}", p.opcode);
+                        }
+                    }
+                }
+                if p.opcode == benilla_protocol_wrath::opcode::SMSG_MULTICLASS_REPLY {
+                    if let Ok(body) =
+                        benilla_protocol_wrath::gameplay::accept_multiclass_reply(&p.payload)
+                    {
+                        if body.len() >= 14 {
+                            let op = u16::from_le_bytes([body[6], body[7]]);
+                            let status = u16::from_le_bytes([body[8], body[9]]);
+                            let serial =
+                                u32::from_le_bytes([body[10], body[11], body[12], body[13]]);
+                            feed.push_event(WrathFeedEvent::MulticlassReply {
+                                op,
+                                status,
+                                serial,
+                                payload: body.to_vec(),
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
                         }
                     }
                 }

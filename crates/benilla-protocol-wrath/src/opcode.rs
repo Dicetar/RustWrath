@@ -294,3 +294,160 @@ pub const SMSG_ADDON_INFO: u16 = 0x2EF;
 /// (`Opcodes.h:1340`): the uncompressed form of SMSG_COMPRESSED_MOVES carrying compound
 /// movement-force states. Not in any stock codec; decoded or tolerated locally.
 pub const SMSG_MULTIPLE_MOVES: u16 = 0x51E;
+
+/// Talents (`TalentHandler.cpp:27`): `[u32 talent_id, u32 requested_rank]`.
+pub const CMSG_LEARN_TALENT: u32 = 0x251;
+
+/// Pet orders, spellbook and stable verbs (`PetHandler.cpp`, `NPCHandler.cpp`).
+pub const CMSG_PET_SET_ACTION: u32 = 0x174;
+pub const CMSG_PET_ACTION: u32 = 0x175;
+pub const CMSG_PET_ABANDON: u32 = 0x176;
+pub const CMSG_PET_RENAME: u32 = 0x177;
+pub const CMSG_PET_CAST_SPELL: u32 = 0x1F0;
+pub const CMSG_PET_CANCEL_AURA: u32 = 0x26B;
+pub const CMSG_REQUEST_PET_INFO: u32 = 0x279;
+pub const CMSG_PET_STOP_ATTACK: u32 = 0x2EA;
+pub const CMSG_PET_UNLEARN: u32 = 0x2F0;
+pub const CMSG_PET_SPELL_AUTOCAST: u32 = 0x2F3;
+pub const MSG_LIST_STABLED_PETS: u32 = 0x26F;
+pub const CMSG_STABLE_PET: u32 = 0x270;
+pub const CMSG_UNSTABLE_PET: u32 = 0x271;
+pub const CMSG_BUY_STABLE_SLOT: u32 = 0x272;
+pub const CMSG_STABLE_SWAP_PET: u32 = 0x275;
+
+/// Queries, emotes, inspection, skills, factions, flags, tutorials, and cinematics.
+pub const CMSG_PET_NAME_QUERY: u32 = 0x052;
+pub const CMSG_GUILD_QUERY: u32 = 0x054;
+pub const CMSG_ITEM_NAME_QUERY: u32 = 0x2C4;
+pub const CMSG_NEXT_CINEMATIC_CAMERA: u32 = 0x0FB;
+pub const CMSG_COMPLETE_CINEMATIC: u32 = 0x0FC;
+pub const CMSG_TUTORIAL_FLAG: u32 = 0x0FE;
+pub const CMSG_TUTORIAL_CLEAR: u32 = 0x0FF;
+pub const CMSG_TUTORIAL_RESET: u32 = 0x100;
+pub const CMSG_EMOTE: u32 = 0x102;
+pub const CMSG_TEXT_EMOTE: u32 = 0x104;
+pub const CMSG_INSPECT: u32 = 0x114;
+pub const MSG_INSPECT_HONOR_STATS: u32 = 0x2D6;
+pub const CMSG_SET_FACTION_ATWAR: u32 = 0x125;
+pub const CMSG_UNLEARN_SKILL: u32 = 0x202;
+pub const CMSG_TOGGLE_PVP: u32 = 0x253;
+pub const CMSG_SHOWING_HELM: u32 = 0x2B9;
+pub const CMSG_SHOWING_CLOAK: u32 = 0x2BA;
+pub const CMSG_REQUEST_RAID_INFO: u32 = 0x2CD;
+pub const CMSG_SET_FACTION_INACTIVE: u32 = 0x317;
+pub const CMSG_SET_WATCHED_FACTION: u32 = 0x318;
+pub const CMSG_RESET_INSTANCES: u32 = 0x31D;
+
+/// Social, group, raid, duel, taxi, trade, mail, auction, channel, guild and petition verbs.
+pub const CMSG_WHO: u32 = 0x062;
+pub const CMSG_WHOIS: u32 = 0x064;
+pub const CMSG_CONTACT_LIST: u32 = 0x066;
+pub const CMSG_ADD_FRIEND: u32 = 0x069;
+pub const CMSG_DEL_FRIEND: u32 = 0x06A;
+pub const CMSG_ADD_IGNORE: u32 = 0x06C;
+pub const CMSG_DEL_IGNORE: u32 = 0x06D;
+pub const CMSG_CHAT_IGNORED: u32 = 0x225;
+
+pub const CMSG_GROUP_INVITE: u32 = 0x06E;
+pub const CMSG_GROUP_ACCEPT: u32 = 0x072;
+pub const CMSG_GROUP_DECLINE: u32 = 0x073;
+pub const CMSG_GROUP_UNINVITE: u32 = 0x075;
+pub const CMSG_GROUP_UNINVITE_GUID: u32 = 0x076;
+pub const CMSG_LOOT_METHOD: u32 = 0x07A;
+pub const CMSG_GROUP_DISBAND: u32 = 0x07B;
+pub const MSG_MINIMAP_PING: u32 = 0x1D5;
+pub const CMSG_GROUP_CHANGE_SUB_GROUP: u32 = 0x27E;
+pub const CMSG_REQUEST_PARTY_MEMBER_STATS: u32 = 0x27F;
+pub const CMSG_GROUP_SWAP_SUB_GROUP: u32 = 0x280;
+pub const CMSG_GROUP_RAID_CONVERT: u32 = 0x28E;
+pub const CMSG_LOOT_MASTER_GIVE: u32 = 0x2A3;
+pub const MSG_RAID_TARGET_UPDATE: u32 = 0x321;
+pub const MSG_RAID_READY_CHECK: u32 = 0x322;
+
+pub const CMSG_GUILD_INVITE: u32 = 0x082;
+pub const CMSG_GUILD_ACCEPT: u32 = 0x084;
+pub const CMSG_GUILD_DECLINE: u32 = 0x085;
+pub const CMSG_GUILD_INFO: u32 = 0x087;
+pub const CMSG_GUILD_ROSTER: u32 = 0x089;
+pub const CMSG_GUILD_PROMOTE: u32 = 0x08B;
+pub const CMSG_GUILD_DEMOTE: u32 = 0x08C;
+pub const CMSG_GUILD_LEAVE: u32 = 0x08D;
+pub const CMSG_GUILD_REMOVE: u32 = 0x08E;
+pub const CMSG_GUILD_DISBAND: u32 = 0x08F;
+pub const CMSG_GUILD_LEADER: u32 = 0x090;
+pub const CMSG_GUILD_MOTD: u32 = 0x091;
+pub const CMSG_SAVE_GUILD_EMBLEM: u32 = 0x1F1;
+pub const CMSG_GUILD_RANK: u32 = 0x231;
+pub const CMSG_GUILD_ADD_RANK: u32 = 0x232;
+pub const CMSG_GUILD_DEL_RANK: u32 = 0x233;
+pub const CMSG_GUILD_SET_PUBLIC_NOTE: u32 = 0x234;
+pub const CMSG_GUILD_SET_OFFICER_NOTE: u32 = 0x235;
+pub const CMSG_GUILD_INFO_TEXT: u32 = 0x2FC;
+
+pub const CMSG_JOIN_CHANNEL: u32 = 0x097;
+pub const CMSG_LEAVE_CHANNEL: u32 = 0x098;
+pub const CMSG_CHANNEL_LIST: u32 = 0x09A;
+pub const CMSG_CHANNEL_PASSWORD: u32 = 0x09C;
+pub const CMSG_CHANNEL_SET_OWNER: u32 = 0x09D;
+pub const CMSG_CHANNEL_OWNER: u32 = 0x09E;
+pub const CMSG_CHANNEL_MODERATOR: u32 = 0x09F;
+pub const CMSG_CHANNEL_UNMODERATOR: u32 = 0x0A0;
+pub const CMSG_CHANNEL_MUTE: u32 = 0x0A1;
+pub const CMSG_CHANNEL_UNMUTE: u32 = 0x0A2;
+pub const CMSG_CHANNEL_INVITE: u32 = 0x0A3;
+pub const CMSG_CHANNEL_KICK: u32 = 0x0A4;
+pub const CMSG_CHANNEL_BAN: u32 = 0x0A5;
+pub const CMSG_CHANNEL_UNBAN: u32 = 0x0A6;
+pub const CMSG_CHANNEL_ANNOUNCEMENTS: u32 = 0x0A7;
+pub const CMSG_CHANNEL_MODERATE: u32 = 0x0A8;
+
+pub const CMSG_INITIATE_TRADE: u32 = 0x116;
+pub const CMSG_BEGIN_TRADE: u32 = 0x117;
+pub const CMSG_BUSY_TRADE: u32 = 0x118;
+pub const CMSG_IGNORE_TRADE: u32 = 0x119;
+pub const CMSG_ACCEPT_TRADE: u32 = 0x11A;
+pub const CMSG_UNACCEPT_TRADE: u32 = 0x11B;
+pub const CMSG_CANCEL_TRADE: u32 = 0x11C;
+pub const CMSG_SET_TRADE_ITEM: u32 = 0x11D;
+pub const CMSG_CLEAR_TRADE_ITEM: u32 = 0x11E;
+pub const CMSG_SET_TRADE_GOLD: u32 = 0x11F;
+
+pub const CMSG_DUEL_ACCEPTED: u32 = 0x16C;
+pub const CMSG_DUEL_CANCELLED: u32 = 0x16D;
+
+pub const CMSG_TAXINODE_STATUS_QUERY: u32 = 0x1AA;
+pub const CMSG_TAXIQUERYAVAILABLENODES: u32 = 0x1AC;
+pub const CMSG_ACTIVATETAXI: u32 = 0x1AD;
+pub const CMSG_ACTIVATETAXIEXPRESS: u32 = 0x312;
+
+pub const CMSG_PETITION_SHOWLIST: u32 = 0x1BB;
+pub const CMSG_PETITION_BUY: u32 = 0x1BD;
+pub const CMSG_PETITION_SHOW_SIGNATURES: u32 = 0x1BE;
+pub const CMSG_PETITION_SIGN: u32 = 0x1C0;
+pub const MSG_PETITION_DECLINE: u32 = 0x1C2;
+pub const CMSG_OFFER_PETITION: u32 = 0x1C3;
+pub const CMSG_TURN_IN_PETITION: u32 = 0x1C4;
+pub const CMSG_PETITION_QUERY: u32 = 0x1C6;
+pub const MSG_PETITION_RENAME: u32 = 0x2C1;
+
+pub const CMSG_SEND_MAIL: u32 = 0x238;
+pub const CMSG_GET_MAIL_LIST: u32 = 0x23A;
+pub const CMSG_MAIL_TAKE_MONEY: u32 = 0x245;
+pub const CMSG_MAIL_TAKE_ITEM: u32 = 0x246;
+pub const CMSG_MAIL_MARK_AS_READ: u32 = 0x247;
+pub const CMSG_MAIL_RETURN_TO_SENDER: u32 = 0x248;
+pub const CMSG_MAIL_DELETE: u32 = 0x249;
+pub const CMSG_MAIL_CREATE_TEXT_ITEM: u32 = 0x24A;
+pub const MSG_QUERY_NEXT_MAIL_TIME: u32 = 0x284;
+
+pub const MSG_AUCTION_HELLO: u32 = 0x255;
+pub const CMSG_AUCTION_REMOVE_ITEM: u32 = 0x257;
+pub const CMSG_AUCTION_LIST_OWNER_ITEMS: u32 = 0x259;
+pub const CMSG_AUCTION_PLACE_BID: u32 = 0x25A;
+pub const CMSG_AUCTION_LIST_BIDDER_ITEMS: u32 = 0x264;
+
+/// Negotiated WM_Multiclass extension opcodes (`MulticlassProtocol.h`: WMC1 v3, 28-byte request on
+/// `0x51B`, reply capped at 4096 bytes on `0x51A`). Never emitted in stock baseline without an
+/// explicit `MulticlassRequest` call.
+pub const SMSG_MULTICLASS_REPLY: u16 = 0x51A;
+pub const CMSG_MULTICLASS_REQUEST: u32 = 0x51B;

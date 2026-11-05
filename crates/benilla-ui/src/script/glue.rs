@@ -110,6 +110,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         g.set("GetAccountExpansionLevel", lua.create_function(|lua, ()| {
             Ok(lua.app_data_ref::<Model>().expect("model").glue.account_expansion)
         })?)?;
+        super::wrath_natives::install_multiclass(lua)?;
     }
     g.set(
         "GetScreenWidth",

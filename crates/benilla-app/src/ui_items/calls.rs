@@ -50,7 +50,14 @@ impl ItemSteps<'_, '_> {
 
     pub(crate) fn item_count(&self, id: u32, bank: bool, uses: bool) -> Option<u32> {
         let store = &self.self_q.iter().next()?.0;
-        super::possession_count(store, &self.objects, &self.items, id, bank, uses)
+        let wrath_target =
+            self.inventory.is_some() || crate::wrath::selected_from_env();
+        let inv = crate::wrath_inventory::PlayerInventory::new(
+            store,
+            self.inventory.as_deref(),
+            wrath_target,
+        );
+        super::possession_count(&inv, &self.objects, &self.items, id, bank, uses)
     }
 
     pub(crate) fn item_family(&self, id: u32) -> Option<u32> {
