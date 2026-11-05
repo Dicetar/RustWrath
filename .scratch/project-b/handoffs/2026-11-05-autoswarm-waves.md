@@ -8,6 +8,8 @@
   fast-forward; it was not discarded or stashed.
 - Worker output was reviewed before wiring; workers did not run Cargo, git, or a client. The
   Overseer owned shared-file edits and the Cargo slot.
+- Wave 1 commits: `2bbf4641` (loose-fixture compile repair) and `e308ad6a` (12340 reply
+  decoders and app seam), pushed to `origin/main` as `e308ad6a`.
 - `cargo check --workspace --all-targets` was run on the joined tree. Log:
   `.scratch/project-b/check-wave1-2026-11-05.log` (the checked targets finished; pre-existing
   warning volume is unchanged).
