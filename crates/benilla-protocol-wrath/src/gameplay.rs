@@ -1738,7 +1738,7 @@ pub enum ServerEvent {
         display_id: u32,
         racial_leader: bool,
     },
-    ActionButtons { buttons: Vec<ActionButton> },
+    ActionButtons { state: u8, buttons: Vec<ActionButton> },
     SpellLearned { spell_id: u32 },
     Gossip {
         npc: u64,
@@ -3592,9 +3592,8 @@ fn read_action_buttons(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let state = r.u8()?;
     let mut buttons = Vec::new();
-    if state != 2 {
-        let mut slot = 0u8;
-        while r.remaining() >= 4 {
+    if state <= 1 {
+        for slot in 0..144u8 {
             let packed = r.u32()?;
             if packed != 0 {
                 buttons.push(ActionButton {
@@ -3603,10 +3602,9 @@ fn read_action_buttons(b: &[u8]) -> Result<ServerEvent> {
                     kind: (packed >> 24) as u8,
                 });
             }
-            slot = slot.saturating_add(1);
         }
     }
-    Ok(ServerEvent::ActionButtons { buttons })
+    Ok(ServerEvent::ActionButtons { state, buttons })
 }
 
 fn read_gossip(b: &[u8]) -> Result<ServerEvent> {

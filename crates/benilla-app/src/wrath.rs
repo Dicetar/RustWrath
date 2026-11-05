@@ -3188,7 +3188,7 @@ fn translate_gameplay(
                 })
             }),
         }],
-        WrathGameplayEvent::ActionButtons { buttons } => vec![SessionEvent::ActionButtons {
+        WrathGameplayEvent::ActionButtons { state: 1, buttons } => vec![SessionEvent::ActionButtons {
             buttons: buttons
                 .into_iter()
                 .map(|b| ActionButton {
@@ -3198,6 +3198,9 @@ fn translate_gameplay(
                 })
                 .collect(),
         }],
+        // State 0 is not applied; state 2 marks a spec change in progress. Unknown
+        // states are ignored. None replaces the visible bar.
+        WrathGameplayEvent::ActionButtons { .. } => Vec::new(),
         WrathGameplayEvent::SpellLearned { spell_id } => {
             vec![SessionEvent::SpellLearned { spell_id }]
         }
