@@ -110,6 +110,29 @@ Evidence:
   test-runner argument mistake; this is recorded rather than hidden.
 - The remaining unrun systems test is not claimed.
 - No client, login, server/DB or live session was started.
+- Wave 2b commit: `d1d23f93`, pushed to `origin/main`.
+
+## Wave 4 (early) — Windows release sets
+
+- `tools/release-set.ps1` now builds deterministic SHA-256 manifests, stages immutable version
+  directories outside user config, validates paths/reparse points/disk space/hashes/markers,
+  atomically switches `active-release.json`, and recovers the previous known-good set after a
+  failed activation or startup health check. SHA-256 is explicitly local integrity, not
+  authentication.
+- `tools/launch-client.ps1` keeps the developer `target\debug\benilla.exe` path as default and
+  adds opt-in `-ReleaseRoot`/`-UseReleaseSet`. Release mode validates before launch, keeps data,
+  config and addons in user-owned roots, logs the version/manifest/previous identity, and on a
+  failed startup health check stops the process it started, rolls back once and does not start a
+  second client.
+- `tools/release-set.tests.ps1` is self-contained under `F:\AI\tmp\opencode`.
+
+Evidence:
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\release-set.tests.ps1` —
+  59 passed, 0 failed. No game data, credentials or live client was touched; no launcher run.
+- Owner approval still needed for the default 15-second health window, automatic stop of the
+  just-started process, and `-ConfigRoot` semantics. These are the current published defaults,
+  not owner-approved release policy.
+- Wave 4 W commit: `c9151421`, pushed to `origin/main`.
 
 ### Mechanical compile repair
 
