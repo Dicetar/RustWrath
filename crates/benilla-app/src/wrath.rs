@@ -4327,12 +4327,6 @@ fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::m
     list.mails
         .into_iter()
         .map(|mail| {
-            if !mail.body.is_empty() {
-                debug!(
-                    "wrath: mail {} carries its body inline; the donor inbox fetches bodies separately",
-                    mail.message_id
-                );
-            }
             let item = mail.attachments.first().map(|attachment| {
                 benilla_protocol::messages::MailAttachment {
                     entry: attachment.item_entry,
@@ -4358,6 +4352,7 @@ fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::m
                 sender_guid: mail.sender_guid,
                 sender_id: mail.sender_entry,
                 subject: mail.subject,
+                inline_body: (!mail.body.is_empty()).then_some(mail.body),
                 item_text_id: 0,
                 package: mail.package,
                 stationery: mail.stationery,
@@ -4709,6 +4704,31 @@ fn wrath_tap_commands(
             ClientCommand::LootRelease { guid } => Some((
                 benilla_protocol_wrath::opcode::CMSG_LOOT_RELEASE,
                 gameplay::loot_release(guid),
+            )),
+            // The corresponding AzerothCore handlers read the same mailbox/mail-id
+            // layout as these existing encoders; other mail verbs require Wrath-specific
+            // fields and are intentionally not routed through the donor encoders.
+            ClientCommand::GetMailList { mailbox } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GET_MAIL_LIST,
+                benilla_protocol::messages::get_mail_list(mailbox),
+            )),
+            ClientCommand::SendMail { mailbox, receiver, subject, body, stationery,
+                item_guid, money, cod, .. } => {
+                gameplay::economy::send_mail(mailbox, &receiver, &subject, &body,
+                    stationery, item_guid, money, cod)
+                    .map(|body| (benilla_protocol_wrath::opcode::CMSG_SEND_MAIL, body))
+            }
+            ClientCommand::MailMarkAsRead { mailbox, mail_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_MAIL_MARK_AS_READ,
+                benilla_protocol::messages::mail_mark_as_read(mailbox, mail_id),
+            )),
+            ClientCommand::MailCreateTextItem { mailbox, mail_id, .. } => Some((
+                benilla_protocol_wrath::opcode::CMSG_MAIL_CREATE_TEXT_ITEM,
+                benilla_protocol::messages::mail_mark_as_read(mailbox, mail_id),
+            )),
+            ClientCommand::QueryNextMailTime => Some((
+                benilla_protocol_wrath::opcode::MSG_QUERY_NEXT_MAIL_TIME,
+                Vec::new(),
             )),
             ClientCommand::LootRoll {
                 looted_target,

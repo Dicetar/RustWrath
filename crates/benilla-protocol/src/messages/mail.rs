@@ -65,6 +65,8 @@ pub struct MailListEntry {
     pub sender_guid: Option<u64>,
     pub sender_id: Option<u32>,
     pub subject: String,
+    /// Wrath sends letter text in the list itself; the older protocol queries it by id.
+    pub inline_body: Option<String>,
     /// `0` = no letter body to fetch; nonzero = a [`super::item_text_query`] key.
     pub item_text_id: u32,
     /// The `Package.dbc` id (`[rec+0x118]`), 0 for none; vmangos always sends 0.
@@ -218,6 +220,7 @@ pub(super) fn read_mail_list_result(r: &mut &[u8]) -> io::Result<Vec<MailListEnt
             sender_guid,
             sender_id,
             subject,
+            inline_body: None,
             item_text_id,
             package,
             stationery,

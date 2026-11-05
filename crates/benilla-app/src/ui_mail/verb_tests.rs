@@ -29,6 +29,7 @@ fn entry(message_id: u32, text_id: u32) -> MailListEntry {
         sender_guid: Some(BOB),
         sender_id: None,
         subject: "s".into(),
+        inline_body: None,
         item_text_id: text_id,
         package: 0,
         stationery: 41,
