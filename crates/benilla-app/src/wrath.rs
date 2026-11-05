@@ -6833,6 +6833,7 @@ fn wrath_apply_world(world: &mut World) {
     if self_player_created
         || !item_creates.is_empty()
         || !field_diffs.is_empty()
+        || !row_diffs.is_empty()
         || typed_bank_changed
     {
         let mut stores_by_guid: HashMap<u64, ObjectFields> = HashMap::new();

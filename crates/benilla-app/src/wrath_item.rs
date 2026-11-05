@@ -360,17 +360,27 @@ impl<'a> ItemRead<'a> {
     }
 
     pub(crate) fn creator(&self) -> Option<u64> {
-        self.row
-            .and_then(WrathItemRow::creator)
-            .filter(|&guid| guid != 0)
-            .or_else(|| self.donor.item_creator())
+        match self.row {
+            // A delivered zero is an observed clear. Only a creator the row never delivered
+            // falls back to the donor projection.
+            Some(row) => match row.creator() {
+                Some(0) => None,
+                Some(guid) => Some(guid),
+                None => self.donor.item_creator(),
+            },
+            None => self.donor.item_creator(),
+        }
     }
 
     pub(crate) fn gift_creator(&self) -> Option<u64> {
-        self.row
-            .and_then(WrathItemRow::gift_creator)
-            .filter(|&guid| guid != 0)
-            .or_else(|| self.donor.item_gift_creator())
+        match self.row {
+            Some(row) => match row.gift_creator() {
+                Some(0) => None,
+                Some(guid) => Some(guid),
+                None => self.donor.item_gift_creator(),
+            },
+            None => self.donor.item_gift_creator(),
+        }
     }
 
     pub(crate) fn container_num_slots(&self) -> Option<u32> {
@@ -513,6 +523,23 @@ mod tests {
             0,
             "a delivered clear is not a donor fallback"
         );
+    }
+
+    #[test]
+    fn a_delivered_creator_or_gift_zero_does_not_fall_back_to_donor() {
+        let donor = ObjectFields::from_pairs(&[(fields::ITEM_FIELD_CREATOR, 0x11)]);
+        let row = row(&[
+            (fields::ITEM_FIELD_CREATOR, 0),
+            (fields::ITEM_FIELD_GIFTCREATOR, 0),
+        ]);
+        let read = ItemRead::new(&donor, Some(&row));
+        assert_eq!(read.creator(), None, "creator observed zero");
+        assert_eq!(read.gift_creator(), None, "gift creator observed zero");
+
+        // A row that never delivered them still uses the donor projection.
+        let absent = row(&[]);
+        let read = ItemRead::new(&donor, Some(&absent));
+        assert_eq!(read.creator(), Some(0x11));
     }
 
     #[test]
