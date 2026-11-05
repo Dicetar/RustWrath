@@ -50,7 +50,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use benilla_protocol::{
     messages::ObjectType, wire::Vector3d, Character, CharEnumItem, EntityKind, MoveSpeeds,
-    ObjectFields, RosterCause, SessionEvent,
+    ObjectFields, RosterCause, SessionEvent, TalentGroupInfo,
 };
 use crate::client_state::ClientState;
 use benilla_protocol_wrath::cast_failure;
@@ -3697,6 +3697,368 @@ fn translate_gameplay(
             random_property_id: p.random_property_id as u32,
             count: p.count,
         })],
+        WrathGameplayEvent::PetSpells(spells) => {
+            let spells = *spells;
+            vec![SessionEvent::PetSpells(Box::new(
+                benilla_protocol::messages::PetSpells {
+                    pet_guid: spells.pet_guid,
+                    duration_ms: spells.duration_ms,
+                    state: spells.state,
+                    bar: spells
+                        .bar
+                        .map(benilla_protocol::messages::PetActionEntry::from),
+                    spells: spells
+                        .spells
+                        .into_iter()
+                        .map(benilla_protocol::messages::PetActionEntry::from)
+                        .collect(),
+                    cooldowns: spells
+                        .cooldowns
+                        .into_iter()
+                        .map(|cd| benilla_protocol::messages::PetSpellCooldown {
+                            spell_id: cd.spell_id,
+                            category: cd.category,
+                            spell_cd_ms: cd.spell_cd_ms,
+                            category_cd_ms: cd.category_cd_ms,
+                        })
+                        .collect(),
+                },
+            ))]
+        }
+        WrathGameplayEvent::PetMode(mode) => {
+            vec![SessionEvent::PetMode(benilla_protocol::messages::PetMode {
+                pet_guid: mode.pet_guid,
+                state: mode.state,
+            })]
+        }
+        WrathGameplayEvent::PetActionFeedback { reason } => {
+            vec![SessionEvent::PetActionFeedback { reason }]
+        }
+        WrathGameplayEvent::PetActionSound { pet_guid, talk } => {
+            vec![SessionEvent::PetActionSound {
+                pet_guid,
+                talk: talk as u32,
+            }]
+        }
+        WrathGameplayEvent::PetDismissSound {
+            model_id,
+            position,
+        } => vec![SessionEvent::PetDismissSound {
+            model_id: model_id as u32,
+            position,
+        }],
+        WrathGameplayEvent::PetLearnedSpell { spell_id } => {
+            vec![SessionEvent::PetSpellLearned { spell_id }]
+        }
+        WrathGameplayEvent::PetRemovedSpell { spell_id } => {
+            vec![SessionEvent::PetSpellRemoved { spell_id }]
+        }
+        WrathGameplayEvent::PetGuids { guids } => vec![SessionEvent::PetGuids { guids }],
+        WrathGameplayEvent::TalentsInfo(info) => {
+            let unspent_points = info
+                .player
+                .as_ref()
+                .map(|p| p.unspent_points)
+                .or_else(|| info.pet_talents.as_ref().map(|p| p.unspent_points))
+                .unwrap_or(0);
+            let (active_spec, specs, pet_talents) = if info.pet {
+                (None, Vec::new(), info.pet_talents.map(|p| p.talents).unwrap_or_default())
+            } else if let Some(player) = info.player {
+                (
+                    Some(player.active_spec),
+                    player
+                        .specs
+                        .into_iter()
+                        .map(|spec| TalentGroupInfo {
+                            talents: spec.talents,
+                            glyphs: spec.glyphs,
+                        })
+                        .collect(),
+                    Vec::new(),
+                )
+            } else {
+                (None, Vec::new(), Vec::new())
+            };
+            vec![SessionEvent::TalentInfo {
+                pet: info.pet,
+                unspent_points,
+                active_spec,
+                specs,
+                pet_talents,
+            }]
+        }
+        WrathGameplayEvent::TalentsInvoluntarilyReset { flag } => {
+            vec![SessionEvent::TalentsInvoluntarilyReset { flag }]
+        }
+        WrathGameplayEvent::StableList(list) => {
+            let list = *list;
+            let mut next_stable_slot = 1u8;
+            let pets = list
+                .pets
+                .into_iter()
+                .map(|pet| {
+                    // 3.3.5 sends state (1 current, 2 stabled), not a loyalty id or a slot.
+                    let slot = if pet.state & 1 != 0 {
+                        0
+                    } else {
+                        let slot = next_stable_slot;
+                        next_stable_slot = next_stable_slot.saturating_add(1);
+                        slot
+                    };
+                    benilla_protocol::messages::StabledPet {
+                        pet_number: pet.pet_number,
+                        creature_entry: pet.creature_entry,
+                        level: pet.level,
+                        name: pet.name,
+                        // The 12340 list has no loyalty column; the pet stats owner fills it
+                        // from the live pet where the stock UI asks.
+                        loyalty: 0,
+                        slot,
+                    }
+                })
+                .collect();
+            vec![SessionEvent::ListStabledPets {
+                npc: list.npc_guid,
+                num_stable_slots: list.stable_slots,
+                pets,
+            }]
+        }
+        WrathGameplayEvent::StableResult { result } => {
+            vec![SessionEvent::StableResult { result }]
+        }
+        WrathGameplayEvent::SpellSuperceded {
+            old_spell_id,
+            new_spell_id,
+        } => vec![SessionEvent::SpellSuperceded {
+            old_spell_id,
+            new_spell_id,
+        }],
+        WrathGameplayEvent::SpellRemoved { spell_id } => {
+            vec![SessionEvent::SpellRemoved { spell_id }]
+        }
+        WrathGameplayEvent::TradeStatus { status } => {
+            vec![SessionEvent::TradeStatus {
+                status: wrath_trade_status(status),
+            }]
+        }
+        WrathGameplayEvent::TradeStatusExtended(state) => {
+            vec![SessionEvent::TradeStatusExtended {
+                state: Box::new(wrath_trade_extended(*state)),
+            }]
+        }
+        WrathGameplayEvent::SendMailResult(result) => {
+            vec![SessionEvent::SendMailResult {
+                mail_id: result.mail_id,
+                action: result.action,
+                error: result.error,
+                equip_error: result.equip_error,
+                item: result.item,
+            }]
+        }
+        WrathGameplayEvent::MailList(list) => vec![SessionEvent::MailList {
+            mails: wrath_mail_list(*list),
+        }],
+        WrathGameplayEvent::ReceivedMail { seconds } => {
+            vec![SessionEvent::ReceivedMail { seconds }]
+        }
+        WrathGameplayEvent::NextMailTime { seconds, senders } => {
+            if !senders.is_empty() {
+                debug!(
+                    "wrath: MSG_QUERY_NEXT_MAIL_TIME carries {} recent sender(s), not represented in the 1.12 UI",
+                    senders.len()
+                );
+            }
+            vec![SessionEvent::NextMailTime { seconds }]
+        }
+        WrathGameplayEvent::AuctionHello(hello) => vec![SessionEvent::AuctionHello {
+            auctioneer: hello.auctioneer,
+            house_id: hello.house_id,
+            enabled: hello.enabled,
+        }],
+        WrathGameplayEvent::AuctionCommandResult(result) => {
+            let tail = if result.error == 1 {
+                result
+                    .inventory_error
+                    .map(|result| benilla_protocol::messages::AuctionCommandTail::Inventory { result })
+                    .unwrap_or(benilla_protocol::messages::AuctionCommandTail::Empty)
+            } else if result.error == 0 && result.action != 0 {
+                benilla_protocol::messages::AuctionCommandTail::BidPlaced {
+                    new_min_outbid: result.inventory_error.unwrap_or(0),
+                }
+            } else {
+                benilla_protocol::messages::AuctionCommandTail::Empty
+            };
+            vec![SessionEvent::AuctionCommandResult {
+                auction_id: result.auction_id,
+                action: result.action,
+                error: result.error,
+                tail,
+            }]
+        }
+        WrathGameplayEvent::AuctionList { kind, list } => {
+            let list = *list;
+            let auctions = list
+                .auctions
+                .into_iter()
+                .map(wrath_auction_entry)
+                .collect();
+            vec![match kind {
+                gameplay::AuctionListKind::Browse => SessionEvent::AuctionListResult {
+                    auctions,
+                    total_count: list.total_count,
+                },
+                gameplay::AuctionListKind::Owner => SessionEvent::AuctionOwnerListResult {
+                    auctions,
+                    total_count: list.total_count,
+                },
+                gameplay::AuctionListKind::Bidder => SessionEvent::AuctionBidderListResult {
+                    auctions,
+                    total_count: list.total_count,
+                },
+            }]
+        }
+    }
+}
+
+/// Map the 12340 trade status onto the donor UI's status enum. Codes 22/23 are intentionally
+/// kept as `Unknown`: their 3.3.5 meanings (wrong realm / not on tap list) have no 1.12 arm or
+/// line, and mapping them onto the conjured-only bounce would misreport the refusal.
+fn wrath_trade_status(status: gameplay::economy::TradeStatus) -> benilla_protocol::messages::TradeStatus {
+    use benilla_protocol::messages::TradeStatus as Out;
+    use gameplay::economy::TradeStatus as In;
+    match status {
+        In::Busy => Out::Busy,
+        In::BeginTrade { partner } => Out::BeginTrade { partner },
+        In::OpenWindow { .. } => Out::OpenWindow,
+        In::Canceled => Out::Canceled,
+        In::Accept => Out::Accept,
+        In::Busy2 => Out::Busy2,
+        In::NoTarget => Out::NoTarget,
+        In::BackToTrade => Out::BackToTrade,
+        In::Complete => Out::Complete,
+        In::Rejected => Out::Rejected,
+        In::TargetTooFar => Out::TargetTooFar,
+        In::WrongFaction => Out::WrongFaction,
+        In::CloseWindow {
+            result,
+            item_limit_category,
+            ..
+        } => Out::CloseWindow {
+            result,
+            item_limit_category,
+        },
+        In::IgnoreYou => Out::IgnoreYou,
+        In::YouStunned => Out::YouStunned,
+        In::TargetStunned => Out::TargetStunned,
+        In::YouDead => Out::YouDead,
+        In::TargetDead => Out::TargetDead,
+        In::YouLogout => Out::YouLogout,
+        In::TargetLogout => Out::TargetLogout,
+        In::TrialAccount => Out::TrialAccount,
+        In::WrongRealm { .. } => Out::Unknown(22),
+        In::NotOnTapList { .. } => Out::Unknown(23),
+        In::Unknown(code) => Out::Unknown(code),
+    }
+}
+
+/// Map a 12340 trade side onto the donor state. The 3.3.5 `stateIndex` is the stale-offer guard
+/// the donor calls `sequence`; its per-side state word is the donor's `flag`. Socket-enchant
+/// words are retained by the Wrath decoder but have no donor field, so they are not fabricated
+/// into an enchant.
+fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_protocol::messages::TradeStatusExtended {
+    let mut slots = [None; gameplay::economy::TRADE_SLOT_COUNT];
+    for (out, item) in slots.iter_mut().zip(state.slots) {
+        *out = item.map(|item| benilla_protocol::messages::TradeItem {
+            entry: item.entry,
+            display_id: item.display_id,
+            count: item.count,
+            wrapped: item.wrapped,
+            gift_creator: item.gift_creator,
+            perm_enchant: item.perm_enchant,
+            creator: item.creator,
+            charges: item.charges,
+            suffix_factor: item.suffix_factor,
+            random_prop_id: item.random_prop_id as u32,
+            lock_id: item.lock_id,
+            max_durability: item.max_durability,
+            durability: item.durability,
+        });
+    }
+    benilla_protocol::messages::TradeStatusExtended {
+        their_window: state.their_window,
+        sequence: state.state_index,
+        flag: state.sequence,
+        gold: state.gold,
+        enchant_spell_id: state.enchant_spell_id,
+        slots,
+    }
+}
+
+fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::messages::MailListEntry> {
+    list.mails
+        .into_iter()
+        .map(|mail| {
+            if !mail.body.is_empty() {
+                debug!(
+                    "wrath: mail {} carries its body inline; the donor inbox fetches bodies separately",
+                    mail.message_id
+                );
+            }
+            let item = mail.attachments.first().map(|attachment| {
+                benilla_protocol::messages::MailAttachment {
+                    entry: attachment.item_entry,
+                    perm_enchant: attachment.enchants[0].id,
+                    random_prop_id: attachment.random_prop_id as u32,
+                    suffix_factor: attachment.suffix_factor,
+                    count: u8::try_from(attachment.count).unwrap_or(u8::MAX),
+                    charges: attachment.charges,
+                    durability_max: attachment.max_durability,
+                    durability: attachment.durability,
+                }
+            });
+            if mail.attachments.len() > 1 {
+                debug!(
+                    "wrath: mail {} carries {} attachments; the donor inbox shows the first",
+                    mail.message_id,
+                    mail.attachments.len()
+                );
+            }
+            benilla_protocol::messages::MailListEntry {
+                message_id: mail.message_id,
+                message_type: mail.message_type,
+                sender_guid: mail.sender_guid,
+                sender_id: mail.sender_entry,
+                subject: mail.subject,
+                item_text_id: 0,
+                package: mail.package,
+                stationery: mail.stationery,
+                item,
+                money: mail.money,
+                cod: mail.cod,
+                checked: mail.flags,
+                expire_days: mail.expire_days,
+                mail_template_id: mail.mail_template_id,
+            }
+        })
+        .collect()
+}
+
+fn wrath_auction_entry(entry: gameplay::economy::AuctionEntry) -> benilla_protocol::messages::AuctionListEntry {
+    benilla_protocol::messages::AuctionListEntry {
+        auction_id: entry.auction_id,
+        item_entry: entry.item_entry,
+        perm_enchant: entry.enchants[0].id,
+        random_property_id: entry.random_prop_id,
+        suffix_factor: entry.suffix_factor,
+        count: entry.count,
+        spell_charges: entry.spell_charges,
+        owner_guid: entry.owner_guid,
+        start_bid: entry.start_bid,
+        min_increment: entry.min_increment,
+        buyout: entry.buyout,
+        time_left_ms: entry.time_left_ms,
+        bidder_guid: entry.bidder_guid,
+        current_bid: entry.current_bid,
     }
 }
 

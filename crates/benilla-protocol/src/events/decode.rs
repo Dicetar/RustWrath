@@ -1045,6 +1045,7 @@ pub fn decode(packet: ServerPacket) -> Vec<SessionEvent> {
         } => vec![SessionEvent::AuctionHello {
             auctioneer,
             house_id,
+            enabled: true,
         }],
         ServerPacket::AuctionCommandResult {
             auction_id,

@@ -38,6 +38,15 @@ pub enum CharAction {
     Delete,
 }
 
+/// One 3.3.5 talent spec group from `SMSG_TALENTS_INFO`: the talents learned in that spec
+/// (`Talent.dbc` id and zero-based max rank) and its glyph ids. The app's catalog still owns
+/// names, icons, prerequisites and display order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TalentGroupInfo {
+    pub talents: Vec<(u32, u8)>,
+    pub glyphs: Vec<u16>,
+}
+
 /// A unit's six movement speeds from its `LIVING` block: yd/s, except `turn_rate` in rad/s.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MoveSpeeds {
@@ -594,6 +603,25 @@ pub enum SessionEvent {
     PetActionSound { pet_guid: u64, talk: u32 },
     /// A dismissed pet's sound (`SMSG_PET_DISMISS_SOUND`): the `CreatureModelData` column-29 kit.
     PetDismissSound { model_id: u32, position: [f32; 3] },
+    /// A pet learned a spell (`SMSG_PET_LEARNED_SPELL`, 12340's 32-bit id). The server follows
+    /// it with a whole `SMSG_PET_SPELLS`; this edge is the immediate book notice.
+    PetSpellLearned { spell_id: u32 },
+    /// A pet unlearned a spell (`SMSG_PET_REMOVED_SPELL`); the whole bar follows as above.
+    PetSpellRemoved { spell_id: u32 },
+    /// `SMSG_PET_GUIDS`: the hunter's controlled-pet list, in the server's order.
+    PetGuids { guids: Vec<u64> },
+    /// `SMSG_TALENTS_INFO` for the player (dual-spec groups) or the pet.
+    TalentInfo {
+        pet: bool,
+        unspent_points: u32,
+        /// The active player spec; `None` for the pet form.
+        active_spec: Option<u8>,
+        specs: Vec<TalentGroupInfo>,
+        /// The pet form's single group.
+        pet_talents: Vec<(u32, u8)>,
+    },
+    /// `SMSG_TALENTS_INVOLUNTARILY_RESET`: the server reset talents without a client choice.
+    TalentsInvoluntarilyReset { flag: u8 },
     /// `SMSG_ITEM_NAME_QUERY_RESPONSE`, by entry; `None` is unknown.
     ItemName { entry: u32, name: Option<String> },
     /// `SMSG_ITEM_QUERY_SINGLE_RESPONSE`, by entry; `None` is unknown. Boxed, being wide.
@@ -1190,9 +1218,13 @@ pub enum SessionEvent {
     ReceivedMail { seconds: f32 },
     /// `MSG_QUERY_NEXT_MAIL_TIME`'s reply: `0.0` unread mail, `-86400.0` none; for `HasNewMail()`.
     NextMailTime { seconds: f32 },
-    /// `MSG_AUCTION_HELLO`'s reply, which opens the auction window: the auctioneer and its
-    /// `AuctionHouse.dbc` row (1..7, the deposit and cut rates).
-    AuctionHello { auctioneer: u64, house_id: u32 },
+    /// `MSG_AUCTION_HELLO`'s reply: the auctioneer, its `AuctionHouse.dbc` row (1..7) and
+    /// 3.3.3's enabled byte. 1.12 has no byte and always opens.
+    AuctionHello {
+        auctioneer: u64,
+        house_id: u32,
+        enabled: bool,
+    },
     /// A sell, cancel or bid verdict (`SMSG_AUCTION_COMMAND_RESULT`); `error` selects `tail`,
     /// `auction_id` is 0 on most failures, and several refusals send nothing.
     AuctionCommandResult {

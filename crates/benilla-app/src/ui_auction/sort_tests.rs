@@ -123,6 +123,7 @@ impl House {
         self.dispatch(SessionEvent::AuctionHello {
             auctioneer,
             house_id: 1,
+            enabled: true,
         });
     }
 

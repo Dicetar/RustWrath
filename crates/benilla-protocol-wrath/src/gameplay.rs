@@ -13,7 +13,9 @@ use anyhow::Result;
 
 use crate::cast_failure;
 
+pub mod economy;
 mod movement;
+pub mod pet_talent;
 pub use movement::{MonsterFacing, MonsterMove};
 
 /// The largest undecoded-byte count reported with a typed decode failure.
@@ -51,6 +53,8 @@ pub enum DecoderFamily {
     ItemPush,
     InventoryPush,
     Spell,
+    PetTalent,
+    Economy,
     Other,
 }
 
@@ -202,6 +206,34 @@ pub fn decoder_family(opcode: u16) -> DecoderFamily {
         | SMSG_SPELL_COOLDOWN
         | MSG_CHANNEL_START
         | MSG_CHANNEL_UPDATE => DecoderFamily::Spell,
+        SMSG_PET_SPELLS
+        | SMSG_PET_MODE
+        | SMSG_PET_ACTION_FEEDBACK
+        | SMSG_PET_ACTION_SOUND
+        | SMSG_PET_DISMISS_SOUND
+        | SMSG_PET_LEARNED_SPELL
+        | SMSG_PET_REMOVED_SPELL
+        | SMSG_PET_GUIDS
+        | SMSG_LIST_STABLED_PETS
+        | SMSG_STABLE_RESULT
+        | SMSG_TALENTS_INFO
+        | SMSG_TALENTS_INVOLUNTARILY_RESET
+        | SMSG_LEARNED_SPELL
+        | SMSG_SUPERCEDED_SPELL
+        | SMSG_REMOVED_SPELL => DecoderFamily::PetTalent,
+        SMSG_TRADE_STATUS
+        | SMSG_TRADE_STATUS_EXTENDED
+        | SMSG_SEND_MAIL_RESULT
+        | SMSG_MAIL_LIST_RESULT
+        | MSG_QUERY_NEXT_MAIL_TIME_SERVER
+        | SMSG_RECEIVED_MAIL
+        | MSG_AUCTION_HELLO_SERVER
+        | SMSG_AUCTION_COMMAND_RESULT
+        | SMSG_AUCTION_LIST_RESULT
+        | SMSG_AUCTION_OWNER_LIST_RESULT
+        | SMSG_AUCTION_BIDDER_LIST_RESULT
+        | SMSG_SHOW_BANK
+        | SMSG_BUY_BANK_SLOT_RESULT => DecoderFamily::Economy,
         _ => DecoderFamily::Other,
     }
 }
@@ -1872,6 +1904,69 @@ pub enum ServerEvent {
     BuyBankSlotResult {
         result: u32,
     },
+    /// `SMSG_PET_SPELLS`: the whole bar plus the 12340-only creature family and 32-bit spell ids.
+    PetSpells(Box<pet_talent::PetSpells>),
+    /// `SMSG_PET_MODE`: the packed react/command/flags dword alone.
+    PetMode(pet_talent::PetMode),
+    /// `SMSG_PET_ACTION_FEEDBACK`: one `PET_FEEDBACK_*` reason.
+    PetActionFeedback { reason: u8 },
+    /// `SMSG_PET_ACTION_SOUND`: the pet and its `PetAction` talk selector.
+    PetActionSound { pet_guid: u64, talk: i32 },
+    /// `SMSG_PET_DISMISS_SOUND`: the model id and world position of a dismissed pet.
+    PetDismissSound { model_id: i32, position: [f32; 3] },
+    /// `SMSG_PET_LEARNED_SPELL`: 12340's 32-bit pet spell id (a full bar follows separately).
+    PetLearnedSpell { spell_id: u32 },
+    /// `SMSG_PET_REMOVED_SPELL`: 12340's 32-bit pet spell id.
+    PetRemovedSpell { spell_id: u32 },
+    /// `SMSG_PET_GUIDS`: the hunter's controlled-pet list (`u32 count` + guids).
+    PetGuids { guids: Vec<u64> },
+    /// `SMSG_TALENTS_INFO`: player dual-spec groups or the pet talent group.
+    TalentsInfo(pet_talent::TalentsInfo),
+    /// `SMSG_TALENTS_INVOLUNTARILY_RESET`: the reset flag; no player choice is attached.
+    TalentsInvoluntarilyReset { flag: u8 },
+    /// `MSG_LIST_STABLED_PETS`: the current pet plus the stabled rows and bought slot count.
+    StableList(Box<pet_talent::StableList>),
+    /// `SMSG_STABLE_RESULT`: one `STABLE_*` code.
+    StableResult { result: u8 },
+    /// `SMSG_SUPERCEDED_SPELL`: the old and new rank ids.
+    SpellSuperceded {
+        old_spell_id: u32,
+        new_spell_id: u32,
+    },
+    /// `SMSG_REMOVED_SPELL`: one player spell id.
+    SpellRemoved { spell_id: u32 },
+    /// `SMSG_TRADE_STATUS`: the 12340 status enum and its conditional tail.
+    TradeStatus { status: economy::TradeStatus },
+    /// `SMSG_TRADE_STATUS_EXTENDED`: 7 slots with the 3.3.5 socket-enchant words.
+    TradeStatusExtended(Box<economy::TradeExtended>),
+    /// `SMSG_SEND_MAIL_RESULT`: the action verdict and its optional tail.
+    SendMailResult(Box<economy::SendMailResult>),
+    /// `SMSG_MAIL_LIST_RESULT`: 12340's real/shown counts and up to 12 attachments per mail.
+    MailList(Box<economy::MailList>),
+    /// `SMSG_RECEIVED_MAIL`: the client's display delay.
+    ReceivedMail { seconds: f32 },
+    /// `MSG_QUERY_NEXT_MAIL_TIME`: the next-delivery time and recent senders.
+    NextMailTime {
+        seconds: f32,
+        senders: Vec<economy::MailSenderInfo>,
+    },
+    /// `MSG_AUCTION_HELLO`: the auctioneer, house id and 3.3.3 enabled byte.
+    AuctionHello(economy::AuctionHello),
+    /// `SMSG_AUCTION_COMMAND_RESULT`: the action verdict and inventory-error tail.
+    AuctionCommandResult(economy::AuctionCommandResult),
+    /// One of the three 12340 auction list pages.
+    AuctionList {
+        kind: AuctionListKind,
+        list: Box<economy::AuctionList>,
+    },
+}
+
+/// Which of 12340's three auction pages a list reply belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuctionListKind {
+    Browse,
+    Owner,
+    Bidder,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1965,7 +2060,6 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_CREATURE_QUERY_RESPONSE => read_creature(body),
         SMSG_GAMEOBJECT_QUERY_RESPONSE => read_gameobject(body),
         SMSG_ACTION_BUTTONS => read_action_buttons(body),
-        SMSG_LEARNED_SPELL => u32_body(body).map(|spell_id| ServerEvent::SpellLearned { spell_id }),
         SMSG_GOSSIP_MESSAGE => read_gossip(body),
         SMSG_GOSSIP_COMPLETE => Ok(ServerEvent::GossipComplete),
         SMSG_QUESTGIVER_STATUS => read_questgiver_status(body),
@@ -2022,12 +2116,88 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_PAGE_TEXT_QUERY_RESPONSE => read_page_text(body),
         SMSG_INVENTORY_CHANGE_FAILURE => read_inventory_failure(body),
         SMSG_ITEM_TEXT_QUERY_RESPONSE => read_item_text(body),
-        SMSG_SHOW_BANK => read_show_bank(body),
-        SMSG_BUY_BANK_SLOT_RESULT => u32_body(body).map(|result| ServerEvent::BuyBankSlotResult {
-            result,
+        SMSG_SHOW_BANK => economy::read_show_bank(body)
+            .map(|show| ServerEvent::ShowBank { banker: show.banker }),
+        SMSG_BUY_BANK_SLOT_RESULT => economy::read_buy_bank_slot_result(body)
+            .map(|result| ServerEvent::BuyBankSlotResult { result }),
+        SMSG_PET_SPELLS => pet_talent::read_pet_spells(body)
+            .map(|spells| ServerEvent::PetSpells(Box::new(spells))),
+        SMSG_PET_MODE => pet_talent::read_pet_mode(body).map(ServerEvent::PetMode),
+        SMSG_PET_ACTION_FEEDBACK => pet_talent::read_pet_action_feedback(body)
+            .map(|reason| ServerEvent::PetActionFeedback { reason }),
+        SMSG_PET_ACTION_SOUND => pet_talent::read_pet_action_sound(body)
+            .map(|(pet_guid, talk)| ServerEvent::PetActionSound { pet_guid, talk }),
+        SMSG_PET_DISMISS_SOUND => pet_talent::read_pet_dismiss_sound(body)
+            .map(|(model_id, position)| ServerEvent::PetDismissSound { model_id, position }),
+        SMSG_PET_LEARNED_SPELL => pet_talent::read_pet_learned_spell(body)
+            .map(|spell_id| ServerEvent::PetLearnedSpell { spell_id }),
+        SMSG_PET_REMOVED_SPELL => pet_talent::read_pet_removed_spell(body)
+            .map(|spell_id| ServerEvent::PetRemovedSpell { spell_id }),
+        SMSG_PET_GUIDS => pet_talent::read_pet_guids(body)
+            .map(|guids| ServerEvent::PetGuids { guids }),
+        SMSG_LIST_STABLED_PETS => pet_talent::read_list_stabled_pets(body)
+            .map(|list| ServerEvent::StableList(Box::new(list))),
+        SMSG_STABLE_RESULT => pet_talent::read_stable_result(body)
+            .map(|result| ServerEvent::StableResult { result }),
+        SMSG_TALENTS_INFO => pet_talent::read_talents_info(body).map(ServerEvent::TalentsInfo),
+        SMSG_TALENTS_INVOLUNTARILY_RESET => u8_body(body)
+            .map(|flag| ServerEvent::TalentsInvoluntarilyReset { flag }),
+        SMSG_LEARNED_SPELL => pet_talent::read_learned_spell(body)
+            .map(|learned| ServerEvent::SpellLearned {
+                spell_id: learned.spell_id,
+            }),
+        SMSG_SUPERCEDED_SPELL => pet_talent::read_superceded_spell(body)
+            .map(|(old_spell_id, new_spell_id)| ServerEvent::SpellSuperceded {
+                old_spell_id,
+                new_spell_id,
+            }),
+        SMSG_REMOVED_SPELL => pet_talent::read_removed_spell(body)
+            .map(|spell_id| ServerEvent::SpellRemoved { spell_id }),
+        SMSG_TRADE_STATUS => economy::read_trade_status(body)
+            .map(|status| ServerEvent::TradeStatus { status }),
+        SMSG_TRADE_STATUS_EXTENDED => economy::read_trade_status_extended(body)
+            .map(|state| ServerEvent::TradeStatusExtended(Box::new(state))),
+        SMSG_SEND_MAIL_RESULT => economy::read_send_mail_result(body)
+            .map(|result| ServerEvent::SendMailResult(Box::new(result))),
+        SMSG_MAIL_LIST_RESULT => economy::read_mail_list_result(body)
+            .map(|list| ServerEvent::MailList(Box::new(list))),
+        SMSG_RECEIVED_MAIL => economy::read_received_mail(body)
+            .map(|seconds| ServerEvent::ReceivedMail { seconds }),
+        MSG_QUERY_NEXT_MAIL_TIME_SERVER => economy::read_next_mail_time(body)
+            .map(|(seconds, senders)| ServerEvent::NextMailTime { seconds, senders }),
+        MSG_AUCTION_HELLO_SERVER => economy::read_auction_hello(body)
+            .map(ServerEvent::AuctionHello),
+        SMSG_AUCTION_COMMAND_RESULT => economy::read_auction_command_result(body)
+            .map(ServerEvent::AuctionCommandResult),
+        SMSG_AUCTION_LIST_RESULT => economy::read_auction_list_result(body).map(|list| {
+            ServerEvent::AuctionList {
+                kind: AuctionListKind::Browse,
+                list: Box::new(list),
+            }
+        }),
+        SMSG_AUCTION_OWNER_LIST_RESULT => economy::read_auction_owner_list_result(body).map(|list| {
+            ServerEvent::AuctionList {
+                kind: AuctionListKind::Owner,
+                list: Box::new(list),
+            }
+        }),
+        SMSG_AUCTION_BIDDER_LIST_RESULT => economy::read_auction_bidder_list_result(body).map(|list| {
+            ServerEvent::AuctionList {
+                kind: AuctionListKind::Bidder,
+                list: Box::new(list),
+            }
         }),
         _ => return None,
     })
+}
+
+fn u8_body(b: &[u8]) -> Result<u8> {
+    let mut r = Reader::new(b);
+    let value = r.u8()?;
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
+    Ok(value)
 }
 
 fn read_list_inventory(b: &[u8]) -> Result<ServerEvent> {
@@ -2360,13 +2530,6 @@ fn read_item_text(b: &[u8]) -> Result<ServerEvent> {
         has_text: true,
         item_guid: r.u64()?,
         text: r.cstring()?,
-    })
-}
-
-fn read_show_bank(b: &[u8]) -> Result<ServerEvent> {
-    let mut r = Reader::new(b);
-    Ok(ServerEvent::ShowBank {
-        banker: r.u64()?,
     })
 }
 

@@ -160,7 +160,10 @@ fn auction_hello_reply_wire() {
         SessionEvent::AuctionHello {
             auctioneer,
             house_id,
-        } => assert_eq!((auctioneer, house_id), (AUCTIONEER, 6)),
+            enabled,
+        } => {
+            assert_eq!((auctioneer, house_id, enabled), (AUCTIONEER, 6, true));
+        }
         other => panic!("auction hello event, got {other:?}"),
     }
 }

@@ -451,3 +451,38 @@ pub const CMSG_AUCTION_LIST_BIDDER_ITEMS: u32 = 0x264;
 /// explicit `MulticlassRequest` call.
 pub const SMSG_MULTICLASS_REPLY: u16 = 0x51A;
 pub const CMSG_MULTICLASS_REQUEST: u32 = 0x51B;
+
+/// 12340 pet, talent, stable and progression replies (`Opcodes.h`; producers named beside the
+/// decoders in `gameplay/pet_talent.rs`). The pet bar is a whole-state packet with the Wrath-only
+/// creature-family word; talent info carries both player dual-spec groups and pet talents.
+pub const SMSG_PET_SPELLS: u16 = 0x179;
+pub const SMSG_PET_MODE: u16 = 0x17A;
+pub const SMSG_PET_ACTION_FEEDBACK: u16 = 0x2C6;
+pub const SMSG_PET_ACTION_SOUND: u16 = 0x324;
+pub const SMSG_PET_DISMISS_SOUND: u16 = 0x325;
+pub const SMSG_PET_LEARNED_SPELL: u16 = 0x499;
+pub const SMSG_PET_REMOVED_SPELL: u16 = 0x49A;
+pub const SMSG_PET_GUIDS: u16 = 0x4AA;
+/// `MSG_LIST_STABLED_PETS` is bidirectional. The client verb keeps the `u32` constant above; the
+/// server reply arm matches this `u16` constant so `gameplay::parse` can type-check it directly.
+pub const SMSG_LIST_STABLED_PETS: u16 = 0x26F;
+pub const SMSG_STABLE_RESULT: u16 = 0x273;
+pub const SMSG_TALENTS_INFO: u16 = 0x4C0;
+pub const SMSG_TALENTS_INVOLUNTARILY_RESET: u16 = 0x4FA;
+pub const SMSG_SUPERCEDED_SPELL: u16 = 0x12C;
+pub const SMSG_REMOVED_SPELL: u16 = 0x203;
+
+/// 12340 economy replies: trade, mail and auction (`Opcodes.h`; layouts in
+/// `gameplay/economy.rs`). `MSG_QUERY_NEXT_MAIL_TIME` and `MSG_AUCTION_HELLO` are bidirectional,
+/// so the server-reply arms get distinct `u16` names for the same numeric opcodes.
+pub const SMSG_TRADE_STATUS: u16 = 0x120;
+pub const SMSG_TRADE_STATUS_EXTENDED: u16 = 0x121;
+pub const SMSG_SEND_MAIL_RESULT: u16 = 0x239;
+pub const SMSG_MAIL_LIST_RESULT: u16 = 0x23B;
+pub const MSG_QUERY_NEXT_MAIL_TIME_SERVER: u16 = 0x284;
+pub const SMSG_RECEIVED_MAIL: u16 = 0x285;
+pub const MSG_AUCTION_HELLO_SERVER: u16 = 0x255;
+pub const SMSG_AUCTION_COMMAND_RESULT: u16 = 0x25B;
+pub const SMSG_AUCTION_LIST_RESULT: u16 = 0x25C;
+pub const SMSG_AUCTION_OWNER_LIST_RESULT: u16 = 0x25D;
+pub const SMSG_AUCTION_BIDDER_LIST_RESULT: u16 = 0x265;

@@ -448,8 +448,13 @@ fn on_hello(In(ev): In<SessionEvent>, mut commands: Commands) {
     if let SessionEvent::AuctionHello {
         auctioneer,
         house_id,
+        enabled,
     } = ev
     {
+        if !enabled {
+            debug!("auction house {house_id} at {auctioneer:#x} is disabled");
+            return;
+        }
         commands.queue(move |world: &mut World| {
             super::open_auction(world, auctioneer, house_id);
         });
@@ -841,6 +846,7 @@ mod tests {
             vec![SessionEvent::AuctionHello {
                 auctioneer: 0x10,
                 house_id: 1,
+                enabled: true,
             }],
         );
         assert_eq!(app.world().resource::<AuctionOpen>().auctioneer, Some(0x10));
