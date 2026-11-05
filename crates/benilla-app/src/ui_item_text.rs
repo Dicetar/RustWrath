@@ -17,6 +17,11 @@
 //!
 //! A packet's read, `SMSG_GAMEOBJECT_PAGETEXT`'s, runs on the item-text lane ([`ItemTextLane`]),
 //! so its latch and its `ITEM_TEXT_BEGIN` fire at the packet's place among the other lanes.
+//!
+//! 3.3.5 has a second source: an item instance with `ITEM_FIELD_FLAGS & 0x200` carries text asked
+//! for by item guid (`CMSG_ITEM_TEXT_QUERY` → `SMSG_ITEM_TEXT_QUERY_RESPONSE`). That reply is a
+//! native message, not the 1.12 text-id body cache; [`WrathItemTexts`] owns it by guid, retires it
+//! on scope changes, and [`ReadSource::ItemText`] shows the body or closes on the absent form.
 
 use bevy::prelude::*;
 
@@ -76,10 +81,147 @@ impl PageTexts {
     }
 }
 
-/// Which of the reference's two text sources a session shows; the object decides, not the click.
+/// One resolved `SMSG_ITEM_TEXT_QUERY_RESPONSE` for an item guid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ItemTextReply {
+    /// The instance carries text: the body to show.
+    Text(String),
+    /// The server answered the absent form (`has_text == false`): a clean "no text", not a pending
+    /// query. The 12340 packet carries no guid in this form, so the single in-flight request it
+    /// answers is the one retired.
+    NoText,
+}
+
+/// The Wrath item-text cache (`itemtextcache.wdb`, `0xc0e0c0`), keyed by item guid. The 1.12 mail
+/// body cache is keyed by text id and lives on [`crate::ui_mail::MailOpen`]; 3.3.5 has no instance
+/// text id, so this is the one owner of by-guid bodies.
+///
+/// A read asks `CMSG_ITEM_TEXT_QUERY` once per guid while it is in flight. Scope is the
+/// `(session_epoch, world_generation)` pair: a world transfer or a new session retires every
+/// entry and every in-flight address, as `CGItemText::LeaveWorld` clears the reference's cell.
+#[derive(Resource, Default)]
+pub(crate) struct WrathItemTexts {
+    scope: (u64, u64),
+    entries: std::collections::HashMap<u64, ItemTextReply>,
+    in_flight: std::collections::VecDeque<u64>,
+}
+
+impl WrathItemTexts {
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Adopt `scope`; a changed scope retires the old world's bodies and addresses.
+    pub(crate) fn note_scope(&mut self, scope: (u64, u64)) -> bool {
+        if self.scope != scope {
+            self.scope = scope;
+            self.entries.clear();
+            self.in_flight.clear();
+            return true;
+        }
+        false
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn scope(&self) -> (u64, u64) {
+        self.scope
+    }
+
+    /// The cached answer, asking once on a miss as `ask` says.
+    pub(crate) fn read(&mut self, guid: u64, ask: Ask<'_>) -> Option<&ItemTextReply> {
+        if guid == 0 {
+            return None;
+        }
+        if self.entries.contains_key(&guid) {
+            return self.entries.get(&guid);
+        }
+        let send = match ask {
+            Ask::Read => None,
+            Ask::New(commands) | Ask::Event(commands) => Some(commands),
+        };
+        if let Some(commands) = send {
+            if !self.in_flight.contains(&guid) {
+                debug!("item text: asking text for {guid:#x}");
+                self.in_flight.push_back(guid);
+                let _ = commands
+                    .0
+                    .send(ClientCommand::ItemTextByGuid { item_guid: guid });
+            }
+        }
+        None
+    }
+
+    /// One `WrathItemText` edge. `has_text == false` retires the oldest in-flight request because
+    /// the absent packet names no guid; a present reply names its own. Returns whether the cache
+    /// changed.
+    pub(crate) fn apply(
+        &mut self,
+        text: &crate::wrath_native::WrathItemText,
+        scope: (u64, u64),
+    ) -> bool {
+        if (text.scope.session_epoch, text.scope.world_generation) != scope {
+            return false;
+        }
+        self.scope = scope;
+        if text.has_text {
+            self.in_flight.retain(|&guid| guid != text.item_guid);
+            self.entries
+                .insert(text.item_guid, ItemTextReply::Text(text.text.clone()));
+            true
+        } else if let Some(guid) = self.in_flight.pop_front() {
+            self.entries.insert(guid, ItemTextReply::NoText);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_for_test(&mut self, guid: u64, reply: ItemTextReply) {
+        self.entries.insert(guid, reply);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_flight(&self) -> usize {
+        self.in_flight.len()
+    }
+}
+
+/// The `SMSG_ITEM_TEXT_QUERY_RESPONSE` reader. It is a message edge, not a session-reply queue:
+/// the packet's native feed writes [`crate::wrath_native::WrathItemText`] and this retires it into
+/// the cache. A session's end and a world transfer clear the cache through [`note_scope`].
+fn apply_wrath_item_text(
+    mut texts: ResMut<WrathItemTexts>,
+    mut edges: MessageReader<crate::wrath_native::WrathItemText>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
+) {
+    let scope = view
+        .as_deref()
+        .map(|view| (view.session_epoch, view.world_generation))
+        .unwrap_or((0, 0));
+    for text in edges.read() {
+        texts.apply(text, scope);
+    }
+}
+
+/// The scope handoff that retires a previous world's bodies before any read can see them.
+fn retire_wrath_item_texts(
+    texts: Option<ResMut<WrathItemTexts>>,
+    view: Option<Res<crate::wrath::WrathWorldView>>,
+) {
+    let (Some(mut texts), Some(view)) = (texts, view) else {
+        return;
+    };
+    texts.note_scope((view.session_epoch, view.world_generation));
+}
+
+/// Which of the reference's text sources a session shows; the object decides, not the click.
 pub(crate) enum ReadSource {
-    /// A mail-made letter's `ITEM_FIELD_ITEM_TEXT_ID`: one body and a creator line.
+    /// A mail-made letter's `ITEM_FIELD_ITEM_TEXT_ID`: one body and a creator line. 1.12 only.
     Letter { text_id: u32 },
+    /// 3.3.5's `SMSG_ITEM_TEXT_QUERY_RESPONSE`: one instance body keyed by the item guid and a
+    /// creator line. Readable because `ITEM_FIELD_FLAGS & 0x200` is set.
+    ItemText,
     /// A page chain. `visited` runs from the first page to the one shown, as pages link only
     /// forwards (the reference's array at `0xbc3fd0`); it is empty until the object's template
     /// answers, since the reference asks for the page id at paint time (`0x5f59d0`).
@@ -137,6 +279,12 @@ impl ItemTextOpen {
     /// Read a bag letter; reading the open one again closes it. `true` when it is the open one.
     pub(crate) fn read_letter(&mut self, item_guid: u64, text_id: u32) -> bool {
         self.read(item_guid, ReadSource::Letter { text_id })
+    }
+
+    /// Read a 3.3.5 item's instance text by guid; reading the open one again closes it. `true`
+    /// when it is the open one.
+    pub(crate) fn read_item_text(&mut self, item_guid: u64) -> bool {
+        self.read(item_guid, ReadSource::ItemText)
     }
 
     /// Read a page chain; the begin asks the object's template for the first page. `true` when
@@ -247,6 +395,11 @@ impl ItemTextLane {
 fn drop_item_text_lane(world: &mut World) {
     if let Some(mut lane) = world.get_resource_mut::<ItemTextLane>() {
         lane.0.clear();
+    }
+    // A session's end retires the by-guid bodies with the lane, as `CGItemText::LeaveWorld`
+    // clears the reference's cell and the lane's reads.
+    if let Some(mut texts) = world.get_resource_mut::<WrathItemTexts>() {
+        texts.clear();
     }
 }
 
@@ -403,6 +556,7 @@ fn begin_item_text(
     materials: Option<Res<PageMaterials>>,
     pages: Res<PageTexts>,
     mail: Res<MailOpen>,
+    mut texts: ResMut<WrathItemTexts>,
     net: Res<NetCommands>,
     mut commands: Commands,
 ) {
@@ -431,26 +585,43 @@ fn begin_item_text(
         open.pending = None;
         return;
     }
+    // The 3.3.5 by-guid text: the cache asks once on a miss, and the native answer retires it.
+    // `has_text == false` is a refusal: the reference's `SetItem` returns without registering,
+    // so the reader closes instead of opening an empty frame.
+    if matches!(sess.source, ReadSource::ItemText) {
+        match texts.read(object, ask) {
+            Some(ItemTextReply::Text(_)) => {}
+            Some(ItemTextReply::NoText) => {
+                debug!("item text: {object:#x} answered no text — closing");
+                open.pending = None;
+                return;
+            }
+            None => return, // the by-guid query is in flight
+        }
+    }
     let record = match sess.source {
-        ReadSource::Pages { .. } => TextRecord::Page(readable.page_head),
-        ReadSource::Letter { text_id } => TextRecord::Body(text_id),
+        ReadSource::Pages { .. } => Some(TextRecord::Page(readable.page_head)),
+        ReadSource::Letter { text_id } => Some(TextRecord::Body(text_id)),
+        ReadSource::ItemText => None,
     };
-    let at_hand = !landing.contains(&record)
-        && match record {
-            TextRecord::Page(page_id) => pages.page(page_id, object, ask).is_some(),
-            TextRecord::Body(text_id) => mail
-                .bodies
-                .read(text_id, ask, |commands| {
-                    let _ = commands.0.send(ClientCommand::ItemTextQuery {
-                        text_id,
-                        mail_id: 0,
-                    });
-                })
-                .is_some(),
-        };
-    if !at_hand {
-        sess.awaiting = Some(record);
-        return;
+    if let Some(record) = record {
+        let at_hand = !landing.contains(&record)
+            && match record {
+                TextRecord::Page(page_id) => pages.page(page_id, object, ask).is_some(),
+                TextRecord::Body(text_id) => mail
+                    .bodies
+                    .read(text_id, ask, |commands| {
+                        let _ = commands.0.send(ClientCommand::ItemTextQuery {
+                            text_id,
+                            mail_id: 0,
+                        });
+                    })
+                    .is_some(),
+            };
+        if !at_hand {
+            sess.awaiting = Some(record);
+            return;
+        }
     }
     let begun = ItemTextState {
         item: readable.title,
@@ -489,6 +660,9 @@ fn begin_core(world: &mut World, object: u64, begun: ItemTextState) {
 #[cfg(test)]
 pub(crate) fn read_now(world: &mut World, object_guid: u64) {
     use bevy::ecs::system::RunSystemOnce;
+    if !world.contains_resource::<WrathItemTexts>() {
+        world.init_resource::<WrathItemTexts>();
+    }
     world.resource_mut::<ItemTextOpen>().read_pages(object_guid);
     world.run_system_once(apply_reads).expect("reads");
     world.flush();
@@ -570,6 +744,10 @@ impl Plugin for UiItemTextPlugin {
         app.init_resource::<ItemTextOpen>()
             .init_resource::<ItemTextLane>()
             .init_resource::<PageTexts>()
+            .init_resource::<WrathItemTexts>()
+            // The native item-text feed is a message, not a session-reply queue. Registering it
+            // here keeps a harness that drives the reader without the Wrath net plugin working.
+            .add_message::<crate::wrath_native::WrathItemText>()
             .add_exclusive_lane("item text", peek_item_text, fire_item_text, item_text_reads)
             .add_latched_window::<ItemTextOpen>()
             .add_sweep_leg(SweepLeg::ItemText, sweep_item_text)
@@ -580,8 +758,10 @@ impl Plugin for UiItemTextPlugin {
             .add_systems(
                 Update,
                 // The reads and the begin ahead of the feed, so a read that resolves paints this
-                // frame.
+                // frame. The scope handoff and the native answer land before the begin and feed.
                 (
+                    retire_wrath_item_texts,
+                    apply_wrath_item_text,
                     spill_item_text_lane.run_if(not(crate::ui_script::ingame_ui_up)),
                     apply_reads,
                     begin_item_text,
@@ -661,6 +841,7 @@ fn feed_item_text(
     // The mail session's body cache is the call host's too ([`crate::ui_mail::MailVerbs`]).
     mut vm: crate::script_calls::VmWith<(ResMut<'static, ItemTextOpen>, Res<'static, MailOpen>)>,
     pages: Res<PageTexts>,
+    mut texts: ResMut<WrathItemTexts>,
     objects: Objects,
     items: Res<Items>,
     names: Res<NameCache>,
@@ -722,6 +903,38 @@ fn feed_item_text(
                     .cloned();
                 let Some(text) = body else {
                     return; // body query in flight
+                };
+                (creator, text, 1, false)
+            }
+            // 3.3.5's by-guid instance text. The creator line is the item's own
+            // `ITEM_FIELD_CREATOR`, the same read `ItemTextGetCreator` makes; the body is the
+            // by-guid cache, not the 1.12 text-id one.
+            ReadSource::ItemText => {
+                let creator_guid = objects
+                    .item_read(sess.object_guid)
+                    .and_then(|read| read.creator());
+                let creator = match creator_guid {
+                    None => None, // authorless
+                    Some(guid) => match names.resolve_player(guid, ask) {
+                        Some(name) => Some(name.to_string()),
+                        None => return, // name query in flight
+                    },
+                };
+                let Some(reply) = texts.read(sess.object_guid, ask) else {
+                    return; // by-guid query in flight
+                };
+                let text = match reply {
+                    ItemTextReply::Text(text) => text.clone(),
+                    ItemTextReply::NoText => {
+                        // `begin_item_text` clears a no-text read before it registers; if the
+                        // answer lands after a registration it is still a refusal, and the
+                        // pending read is dropped on the next begin.
+                        debug!(
+                            "item text: {:#x} answered no text — not showing a frame",
+                            sess.object_guid
+                        );
+                        return;
+                    }
                 };
                 (creator, text, 1, false)
             }
@@ -857,6 +1070,7 @@ mod tests {
         app.insert_resource(NetCommands(tx))
             .init_resource::<ItemTextOpen>()
             .init_resource::<PageTexts>()
+            .init_resource::<WrathItemTexts>()
             .init_resource::<MailOpen>()
             .init_resource::<Items>()
             .init_resource::<NameCache>()
@@ -928,6 +1142,7 @@ mod tests {
             .init_resource::<ItemTextOpen>()
             .init_resource::<ItemTextLane>()
             .init_resource::<PageTexts>()
+            .init_resource::<WrathItemTexts>()
             .init_resource::<MailOpen>()
             .init_resource::<Items>()
             .init_resource::<NameCache>()
@@ -1043,6 +1258,142 @@ mod tests {
         let open = world.resource::<ItemTextOpen>();
         let sess = open.pending.as_ref().expect("open");
         assert!(matches!(&sess.source, ReadSource::Pages { visited } if visited.is_empty()));
+    }
+
+    fn wrath_text(guid: u64, has_text: bool, text: &str, scope: (u64, u64)) -> crate::wrath_native::WrathItemText {
+        crate::wrath_native::WrathItemText {
+            scope: crate::wrath_native::WrathScope {
+                session_epoch: scope.0,
+                world_generation: scope.1,
+                state_revision: 1,
+            },
+            item_guid: guid,
+            has_text,
+            text: text.into(),
+        }
+    }
+
+    /// Present, absent and scope retirement for the by-guid cache. The absent packet names no
+    /// guid, so it retires the oldest in-flight request; a reply from another scope is dropped.
+    #[test]
+    fn wrath_item_texts_retire_present_absent_and_scope() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let commands = crate::net::NetCommands(tx);
+        let mut texts = WrathItemTexts::default();
+        texts.note_scope((1, 1));
+
+        // A read-only lookup never asks.
+        assert!(texts.read(0x11, Ask::Read).is_none());
+        assert_eq!(texts.in_flight(), 0);
+
+        // An event lookup asks once and does not duplicate while in flight.
+        assert!(texts.read(0x11, Ask::Event(&commands)).is_none());
+        assert!(texts.read(0x11, Ask::Event(&commands)).is_none());
+        assert_eq!(texts.in_flight(), 1);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::ItemTextByGuid { item_guid: 0x11 })
+        ));
+
+        assert!(texts.apply(&wrath_text(0x11, true, "page", (1, 1)), (1, 1)));
+        assert_eq!(texts.in_flight(), 0);
+        assert!(matches!(
+            texts.read(0x11, Ask::Read),
+            Some(ItemTextReply::Text(body)) if body.as_str() == "page"
+        ));
+
+        // The absent form retires the oldest in-flight request with a clean NoText.
+        assert!(texts.read(0x22, Ask::Event(&commands)).is_none());
+        assert!(texts.apply(&wrath_text(0, false, "", (1, 1)), (1, 1)));
+        assert!(matches!(texts.read(0x22, Ask::Read), Some(ItemTextReply::NoText)));
+
+        // A packet from another session/world is not adopted.
+        assert!(!texts.apply(&wrath_text(0x33, true, "elsewhere", (2, 2)), (1, 1)));
+        assert!(texts.read(0x33, Ask::Read).is_none());
+
+        // A new scope retires both the bodies and the addresses.
+        assert!(texts.note_scope((2, 2)));
+        assert!(texts.read(0x11, Ask::Read).is_none());
+        assert_eq!(texts.in_flight(), 0);
+    }
+
+    /// The reader's by-guid path shows the body and refuses cleanly when the server says the
+    /// instance has no text.
+    #[test]
+    fn a_wrath_item_text_reads_by_guid_and_refuses_no_text() {
+        const READING: u64 = 0x4000_0000_0000_0042;
+        const PLAIN: u64 = 0x4000_0000_0000_0043;
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut app = App::new();
+        app.insert_resource(NetCommands(tx))
+            .init_resource::<ItemTextOpen>()
+            .init_resource::<PageTexts>()
+            .init_resource::<WrathItemTexts>()
+            .init_resource::<MailOpen>()
+            .init_resource::<Items>()
+            .init_resource::<NameCache>()
+            .init_resource::<GameObjectTemplates>()
+            .init_resource::<crate::net::GuidIndex>()
+            .init_resource::<crate::world_state::WorldStates>()
+            .add_systems(
+                Update,
+                (apply_reads, begin_item_text, feed_item_text).chain(),
+            );
+        app.insert_non_send_resource(UiScript::new().unwrap());
+        let template = || {
+            let mut t = crate::items::test_template("Inscription");
+            t.page_material = 0;
+            t
+        };
+        app.world_mut()
+            .resource_mut::<Items>()
+            .insert_template(6_000, Some(template()));
+        // 0x200 is 3.3.5's instance "carries text" bit. No 1.12 text id is present.
+        for guid in [READING, PLAIN] {
+            crate::items::test_spawn_item(
+                app.world_mut(),
+                guid,
+                benilla_protocol::ObjectFields::from_pairs(&[(3, 6_000), (21, 0x200)]),
+                false,
+            );
+        }
+        app.world_mut()
+            .resource_mut::<WrathItemTexts>()
+            .insert_for_test(READING, ItemTextReply::Text("Runic words".into()));
+        app.world_mut()
+            .resource_mut::<WrathItemTexts>()
+            .insert_for_test(PLAIN, ItemTextReply::NoText);
+        app.world_mut()
+            .resource_mut::<ItemTextOpen>()
+            .read_item_text(READING);
+        app.update();
+        app.update();
+        assert!(
+            app.world()
+                .resource::<ItemTextOpen>()
+                .pending
+                .as_ref()
+                .is_some_and(|s| s.registered),
+            "the body begins the reader"
+        );
+        app.world_mut()
+            .resource_mut::<ItemTextOpen>()
+            .read_item_text(READING);
+        app.update();
+        assert!(
+            app.world().resource::<ItemTextOpen>().pending.is_none(),
+            "a re-click closes the open reader"
+        );
+        // The no-text answer drops the pending read instead of showing an empty frame.
+        app.world_mut()
+            .resource_mut::<ItemTextOpen>()
+            .read_item_text(PLAIN);
+        app.update();
+        app.update();
+        assert!(
+            app.world().resource::<ItemTextOpen>().pending.is_none(),
+            "no text is a clean refusal, not a started frame"
+        );
     }
 }
 

@@ -267,13 +267,15 @@ fn resolve_buyback(
     rolls: crate::items::RollCatalogs,
 ) -> MerchantItem {
     let guid = store.player_buyback_slot(idx).unwrap_or(0);
-    let obj = objects.object(guid);
-    let entry = obj.and_then(|o| o.object_entry()).unwrap_or(0);
-    let quantity = obj.and_then(|o| o.item_stack_count()).unwrap_or(1).max(1);
+    let read = objects.item_read(guid);
+    let entry = read
+        .and_then(|read| read.donor().object_entry())
+        .unwrap_or(0);
+    let quantity = read.and_then(|read| read.stack_count()).unwrap_or(1).max(1);
     let template = items.template(entry, guid, ask);
     let name = template.map(|t| {
         if target == benilla_ui::script::UiTarget::Wrath335 {
-            obj.map(|fields| crate::ui_items::object_name(fields, t, rolls))
+            read.map(|read| crate::ui_items::object_name_item(read, t, rolls))
                 .unwrap_or_else(|| t.name.clone())
         } else {
             t.name.clone()
@@ -307,9 +309,13 @@ fn resolve_buyback(
         // Wrath's buyback link comes from the held item object, including its roll.
         // Vanilla does not expose this API.
         link: if target == benilla_ui::script::UiTarget::Wrath335 {
-            obj.zip(template).map(|(fields, template)| {
-                crate::ui_items::object_link_in_target(
-                    target, render_level, fields, Some(template), rolls,
+            read.zip(template).map(|(read, template)| {
+                crate::ui_items::object_link_in_target_item(
+                    target,
+                    render_level,
+                    read,
+                    Some(template),
+                    rolls,
                 )
             })
         } else {
@@ -332,15 +338,15 @@ fn item_repair_cost(
     tables: &RepairTables,
     discount: f64,
 ) -> u32 {
-    let Some(obj) = objects.object(guid) else {
+    let Some(obj) = objects.item_read(guid) else {
         return 0;
     };
-    if obj.item_flags().unwrap_or(0) & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0 {
+    if obj.flags().unwrap_or(0) & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0 {
         return 0;
     }
-    let cur = obj.item_durability().unwrap_or(0);
-    let max = obj.item_max_durability().unwrap_or(0);
-    let entry = obj.object_entry().unwrap_or(0);
+    let cur = obj.durability().unwrap_or(0);
+    let max = obj.max_durability().unwrap_or(0);
+    let entry = obj.donor().object_entry().unwrap_or(0);
     if max == 0 || cur >= max || entry == 0 {
         return 0;
     }

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use benilla_ui::script::{AuraKey, AuraTooltipView, KeyedArg, TextPart, TooltipText};
+use benilla_ui::script::{AuraKey, AuraTooltipView, KeyedArg, TextPart, TooltipText, UiTarget};
 
 use super::spell_deps::{ranged_slot_seen, Chance, Changes, Deps, RangeSeen, Reagents, Seen};
 use crate::items::Items;
@@ -17,7 +17,7 @@ use crate::query_cache::Ask;
 use crate::spell::usable;
 use crate::spell::{SpellLevel, SpellReads, UnitField, Unrecorded};
 use crate::ui_action::{PlayerActions, Spells};
-use crate::ui_items::{count_of, find_item, InventoryScope, ItemSearch};
+use crate::ui_items::{count_of_in_player, find_item_in_player, InventoryScope, ItemSearch};
 use crate::ui_trainer::TrainerTooltipSubjects;
 
 /// The unit a view's caster cells are computed against, the spell builder `0x52e610`'s fourth
@@ -51,6 +51,10 @@ pub(super) struct ViewCtx<'a, 'w, 's> {
     pub(super) attack_target: Option<benilla_formats::RangeUnit>,
     /// The object index the worn-item search and each reagent's carried count resolve through.
     pub(super) objects: &'a Objects<'w, 's>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    pub(super) inventory: Option<&'a crate::wrath_inventory::WrathInventory>,
+    /// The selected host, which sets the view's capacities.
+    pub(super) target: UiTarget,
     pub(super) items: &'a mut Items,
     pub(super) commands: &'a NetCommands,
     pub(super) sub_classes: Option<&'a benilla_formats::ItemSubClassCatalog>,
@@ -322,7 +326,12 @@ pub(super) fn build_view(
             // Red only when no copy is found at all (`0x622270` at mask 0, `0x52ee12`,
             // `0x52f49f`); the count in the line is shown, never compared.
             let short = vctx.store.is_some_and(|s| {
-                find_item(&s.0, vctx.objects, entry, ItemSearch::default()).is_none()
+                let inv = crate::wrath_inventory::PlayerInventory::new(
+                    &s.0,
+                    vctx.inventory,
+                    vctx.target == UiTarget::Wrath335,
+                );
+                find_item_in_player(&inv, vctx.objects, entry, ItemSearch::default()).is_none()
             });
             met &= !short;
             parts.push(if short {
@@ -675,12 +684,19 @@ fn requeue_hits<K: Copy + Eq + std::hash::Hash>(
 pub(super) fn reagent_state(
     entry: u32,
     store: Option<&ObjectStore>,
+    inventory: Option<&crate::wrath_inventory::WrathInventory>,
+    target: UiTarget,
     objects: &Objects,
     items: &Items,
 ) -> (u32, bool) {
     let named = items.template(entry, 0, Ask::Read).is_some();
     let owned = store.map_or(0, |s| {
-        count_of(&s.0, objects, entry, InventoryScope::DEFAULT)
+        let inv = crate::wrath_inventory::PlayerInventory::new(
+            &s.0,
+            inventory,
+            target == UiTarget::Wrath335,
+        );
+        count_of_in_player(&inv, objects, entry, InventoryScope::DEFAULT)
     });
     (owned, named)
 }
@@ -760,6 +776,8 @@ pub(super) fn feed_spell_tooltips(
     // melee range cell reads.
     range_units: crate::spell::RangeUnits,
     objects: Objects,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     home_bind: Option<Res<crate::net::HomeBind>>,
     area_names: Option<Res<crate::ui_quest_log::QuestHeaderNamesRes>>,
     // One tuple param, under Bevy's 16-param ceiling.
@@ -859,6 +877,7 @@ pub(super) fn feed_spell_tooltips(
             .and_then(|id| area_names.as_deref()?.0.resolve(id as i32))
             .map(str::to_string);
         let self_store = self_q.single().ok();
+        let target = script.target();
         // The ranged-slot scale reads the active player's inventory slot 17 (`0x6e36c1`).
         let caster_unit = crate::spell::with_ranged_slot(
             range_units.caster(),
@@ -901,7 +920,19 @@ pub(super) fn feed_spell_tooltips(
         let reagent_state: Reagents = memory
             .reagents
             .keys()
-            .map(|&entry| (entry, reagent_state(entry, self_store, &objects, &items)))
+            .map(|&entry| {
+                (
+                    entry,
+                    reagent_state(
+                        entry,
+                        self_store,
+                        inventory.as_deref(),
+                        target,
+                        &objects,
+                        &items,
+                    ),
+                )
+            })
             .collect();
         changes = changes.with_reagents(&memory.reagents, &reagent_state);
         memory.reagents = reagent_state;
@@ -935,6 +966,8 @@ pub(super) fn feed_spell_tooltips(
                 home_area: home_area.as_deref(),
                 form: self_store.map_or(0, |s| s.0.unit_shapeshift_form()),
                 store: self_store,
+                inventory: inventory.as_deref(),
+                target,
                 caster: ViewCaster::Player,
                 range_caster: caster_unit,
                 attack_target,
@@ -991,7 +1024,14 @@ fn build_views(
         };
         for &entry in deps.reagents() {
             if let std::collections::btree_map::Entry::Vacant(slot) = memory.reagents.entry(entry) {
-                slot.insert(reagent_state(entry, vctx.store, vctx.objects, vctx.items));
+                slot.insert(reagent_state(
+                    entry,
+                    vctx.store,
+                    vctx.inventory,
+                    vctx.target,
+                    vctx.objects,
+                    vctx.items,
+                ));
             }
         }
         built.push((id, view));
@@ -1031,8 +1071,51 @@ mod tests {
             let items = &deps.items;
             let mut state = bevy::ecs::system::SystemState::<Objects>::new(&mut deps.world);
             let objects = state.get(&deps.world);
-            let (owned, _) = reagent_state(17056, Some(&store), &objects, items);
+            let (owned, _) = reagent_state(
+                17056,
+                Some(&store),
+                None,
+                UiTarget::Vanilla112,
+                &objects,
+                items,
+            );
             assert_eq!(owned, 3, "player slot {slot}");
         }
+    }
+
+    /// The migrated spell-tooltip read reaches keyring slot 32 through the typed owner.
+    #[test]
+    fn a_reagent_line_reaches_the_wrath_keyring_tail() {
+        use crate::wrath_inventory::{
+            InventoryAddr, WrathFieldWindow, WrathInventory, PLAYER_WINDOW_END,
+        };
+        let mut deps = crate::items::TestDeps::new();
+        deps.spawn_item(
+            0xA1,
+            ObjectFields::from_pairs(&[(FIELD_OBJECT_ENTRY, 17056), (FIELD_ITEM_STACK_COUNT, 3)]),
+        );
+        let mut values = vec![0u32; usize::from(PLAYER_WINDOW_END)];
+        let mut delivered = vec![0u64; values.len().div_ceil(64)];
+        let lo = usize::from(InventoryAddr::Keyring(31).field_index());
+        values[lo] = 0xA1;
+        values[lo + 1] = 0;
+        for index in [lo, lo + 1] {
+            delivered[index / 64] |= 1u64 << (index % 64);
+        }
+        let mut typed = WrathInventory::default();
+        typed.apply(&WrathFieldWindow::new(values, delivered), (1, 1));
+        let store = ObjectStore(ObjectFields::default());
+        let items = &deps.items;
+        let mut state = bevy::ecs::system::SystemState::<Objects>::new(&mut deps.world);
+        let objects = state.get(&deps.world);
+        let (owned, _) = reagent_state(
+            17056,
+            Some(&store),
+            Some(&typed),
+            UiTarget::Wrath335,
+            &objects,
+            items,
+        );
+        assert_eq!(owned, 3, "keyring slot 32");
     }
 }

@@ -304,10 +304,11 @@ fn gate_item(
     };
     // The item through the object manager (`0x495d95`) and the pending spell's record
     // (`0x495da7`-`0x495dce`): either missing returns with no report and no bind.
-    let Some(fields) = ladder.objects.object(item_guid) else {
+    let Some(read) = ladder.objects.item_read(item_guid) else {
         debug!("ui_action: item pick — no object for item {item_guid:#x}; nothing done");
         return None;
     };
+    let fields = read.donor();
     let Some(def) = ladder
         .spells
         .as_deref()
@@ -330,8 +331,9 @@ fn gate_item(
         inventory_type,
         record_flags,
         // `0x5da2c0`, the same predicate as the tooltip's Soulbound line.
-        already_bound: crate::items::already_bound(fields, record_flags, enchants),
-        existing_enchant: [0u8, 1].map(|slot| crate::items::live_enchant(fields, slot, enchants)),
+        already_bound: crate::items::already_bound_item(read, record_flags, enchants),
+        existing_enchant: [0u8, 1]
+            .map(|slot| crate::items::live_enchant_item(read, slot, enchants)),
     };
     // `EffectMiscValue` is signed; the reference rejects a negative one before the row lookup.
     let new = u32::try_from(def.effect_misc_value[0])

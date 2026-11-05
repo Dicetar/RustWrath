@@ -412,9 +412,16 @@ impl ScriptItemUse<'_, '_> {
                 }
             }
             // vmangos's `CMSG_READ_ITEM` wants a template `PageText`, so a letter's text comes by
-            // item-text query.
+            // item-text query. 3.3.5 has no instance text id: the readable bit is
+            // `ITEM_FIELD_FLAGS & 0x200` and the body is queried by item guid.
             (UseFork::Letter, Some(c)) => {
-                if item_text.read_letter(c.guid, c.item_text_id) {
+                let wrath = script.target() == benilla_ui::script::UiTarget::Wrath335;
+                let reread = if wrath && c.item_text_id == 0 {
+                    item_text.read_item_text(c.guid)
+                } else {
+                    item_text.read_letter(c.guid, c.item_text_id)
+                };
+                if reread {
                     debug!("ui_items: re-click closes the letter {:#x}", c.guid);
                 } else {
                     debug!(
@@ -556,6 +563,16 @@ pub(crate) fn use_fork(
     }
 }
 
+/// 3.3.5's instance text bit (`ITEM_FIELD_FLAGS & 0x200`, `CGItemText::SetItem` /
+/// `Item_C.cpp`). 1.12 has no such instance bit; it carries an owner-only text id instead, so the
+/// two text signals are ORed at the fork.
+pub(crate) const INSTANCE_HAS_ITEM_TEXT: u32 = 0x200;
+
+/// The 1.12 owner-only text id or 3.3.5's instance text bit.
+pub(crate) fn has_item_text(inst_flags: u32, item_text_id: u32) -> bool {
+    item_text_id != 0 || inst_flags & INSTANCE_HAS_ITEM_TEXT != 0
+}
+
 /// [`use_fork`] past the equip fork: the dispatcher's own arms, which `UseInventoryItem` reaches
 /// directly (`0x4c7af0`).
 pub(crate) fn dispatch_fork(
@@ -571,7 +588,7 @@ pub(crate) fn dispatch_fork(
         UseFork::Quest
     } else if t.page_text != 0 {
         UseFork::Read
-    } else if item_text_id != 0 {
+    } else if has_item_text(inst_flags, item_text_id) {
         UseFork::Letter
     } else if t.opens_loot() {
         UseFork::Open
@@ -2598,6 +2615,14 @@ mod bind_confirm_tests {
         }
         crate::ui_items::calls::apply_kept_calls(app.world_mut());
         assert_eq!(rx.try_iter().count(), 0, "a locked item is not used");
+    }
+
+    #[test]
+    fn a_335_instance_text_bit_forks_to_the_reader() {
+        let t = crate::items::test_template("Inscription");
+        assert_eq!(dispatch_fork(&t, INSTANCE_HAS_ITEM_TEXT, 0), UseFork::Letter);
+        assert_eq!(dispatch_fork(&t, 0, 77), UseFork::Letter, "the 1.12 text id");
+        assert_eq!(dispatch_fork(&t, 0, 0), UseFork::Plain);
     }
 
     #[test]

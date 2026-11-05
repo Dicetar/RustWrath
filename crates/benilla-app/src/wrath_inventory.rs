@@ -383,8 +383,12 @@ impl<'a> PlayerInventory<'a> {
         self.wrath
     }
 
+    /// The typed value when the owner observed the address. An observed clear (`Some(0)`) is a
+    /// value, not a miss: it must not fall through to the donor projection, which could still
+    /// hold the slot's previous guid. Only a never-observed address falls back.
     fn typed(&self, addr: InventoryAddr) -> Option<u64> {
-        self.wrath.and_then(|inv| inv.guid(addr))
+        self.wrath
+            .and_then(|inv| inv.presence(addr).map(|value| value.unwrap_or(0)))
     }
 
     pub(crate) fn equipment(&self, i: u8) -> u64 {

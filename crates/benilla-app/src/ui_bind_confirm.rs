@@ -149,14 +149,14 @@ impl BindGate<'_> {
     /// `bonding == 3`, not already bound (`0x5da2c0`) and `suppress == 0`. There is no can-use
     /// (`0x5ea930`) leg: that failure exits `0x5d8d00` before the bind arm.
     pub(crate) fn use_binds(&self, objects: &Objects, items: &Items, item_guid: u64) -> bool {
-        let Some(fields) = objects.object(item_guid) else {
+        let Some(read) = objects.item_read(item_guid) else {
             return false;
         };
-        let Some(entry) = fields.object_entry() else {
+        let Some(entry) = read.donor().object_entry() else {
             return false;
         };
         let flags = crate::items::record_flags(items, entry, item_guid);
-        if crate::items::already_bound(fields, flags, self.enchants.as_deref()) {
+        if crate::items::already_bound_item(read, flags, self.enchants.as_deref()) {
             return false;
         }
         items

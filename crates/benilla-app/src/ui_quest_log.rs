@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ui_items::{count_of, InventoryScope};
+use crate::ui_items::{count_of_in_player, InventoryScope};
 
 use bevy::prelude::*;
 
@@ -276,7 +276,7 @@ mod net {
     use crate::names::NameCache;
     use crate::net::{NetCommands, NetHandlerApp, ObjectStore, Objects, SelfPlayer};
     use crate::query_cache::Ask;
-    use crate::ui_items::{count_of, InventoryScope};
+    use crate::ui_items::{count_of_in_player, InventoryScope};
 
     /// Registers the template, quest-update and session-end handlers.
     pub(super) fn register(app: &mut App) {
@@ -296,6 +296,8 @@ mod net {
         objects: Objects<'w, 's>,
         items: Res<'w, Items>,
         commands: Res<'w, NetCommands>,
+        /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+        inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
     }
 
     impl ItemBook<'_, '_> {
@@ -303,10 +305,15 @@ mod net {
             self.self_q.iter().next().map(|s| &s.0)
         }
 
-        /// `0x622130(inventory, item, 8)`: the banked copies count too.
+        /// `0x622130(inventory, item, 8)`: the banked copies count too, including the Wrath tail.
         fn held(&self, item_id: u32) -> u32 {
             self.store().map_or(0, |store| {
-                count_of(store, &self.objects, item_id, InventoryScope::QUEST_ITEMS)
+                let inv = crate::wrath_inventory::PlayerInventory::new(
+                    store,
+                    self.inventory.as_deref(),
+                    crate::wrath::selected_from_env(),
+                );
+                count_of_in_player(&inv, &self.objects, item_id, InventoryScope::QUEST_ITEMS)
             })
         }
 
@@ -762,6 +769,8 @@ pub(crate) struct QuestLogReads<'w, 's> {
     names: Res<'w, NameCache>,
     // The bag walk behind an item objective's count.
     objects: crate::net::Objects<'w, 's>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
     commands: Res<'w, NetCommands>,
     header_names: Option<Res<'w, QuestHeaderNamesRes>>,
     tag_names: Option<Res<'w, QuestTagNamesRes>>,
@@ -815,6 +824,11 @@ pub(crate) fn feed_quest_log(
             return 0;
         };
         let store = &store.0;
+        let inventory_view = crate::wrath_inventory::PlayerInventory::new(
+            store,
+            reads.inventory.as_deref(),
+            script.target() == benilla_ui::script::UiTarget::Wrath335,
+        );
         let wrath_slots = reads.wrath_slots.iter().next().flatten();
         if let Some(slots) = wrath_slots {
             script.set_quest_player_metadata(slots.1, slots.2);
@@ -1070,7 +1084,12 @@ pub(crate) fn feed_quest_log(
                 .collect::<HashSet<u32>>()
                 .into_iter()
                 .map(|id| {
-                    let count = count_of(store, &reads.objects, id, InventoryScope::QUEST_ITEMS);
+                    let count = count_of_in_player(
+                        &inventory_view,
+                        &reads.objects,
+                        id,
+                        InventoryScope::QUEST_ITEMS,
+                    );
                     (id, count)
                 })
                 .collect();

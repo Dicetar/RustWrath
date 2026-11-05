@@ -20,7 +20,7 @@ use crate::query_cache::Ask;
 use crate::spell::known::{PetReads, PetView};
 use crate::spell::CastCommit;
 use crate::ui_action::{PlayerActions, Spells};
-use crate::ui_items::{count_of, item_icon, InventoryScope};
+use crate::ui_items::{count_of_in_player, item_icon, InventoryScope};
 use crate::ui_spellbook::SkillLines;
 use crate::ui_tradeskill::SpellFocus;
 use crate::ui_unit::UnitFeed;
@@ -240,6 +240,8 @@ fn feed_craft(
     objects: Objects,
     items: Res<Items>,
     commands: Res<NetCommands>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     mut memo: Local<crate::ui_script::VmMemo<CraftMemo>>,
 ) {
     vm.feed(|script, (pet_reads, open), fires| {
@@ -256,6 +258,11 @@ fn feed_craft(
             let spells = spells.as_deref()?;
             let skill_lines = skill_lines.as_deref()?;
             let store = self_store.single().ok()?;
+            let inventory_view = crate::wrath_inventory::PlayerInventory::new(
+                &store.0,
+                inventory.as_deref(),
+                script.target() == benilla_ui::script::UiTarget::Wrath335,
+            );
             let name = skill_lines
                 .catalog
                 .line(line)
@@ -333,7 +340,7 @@ fn feed_craft(
                     let mut reagents = Vec::new();
                     let mut num_available = u32::MAX;
                     for &(entry, need) in d.reagents.iter().filter(|&&(e, n)| e != 0 && n != 0) {
-                        let have = count_of(&store.0, &objects, entry, InventoryScope::DEFAULT);
+                        let have = count_of_in_player(&inventory_view, &objects, entry, InventoryScope::DEFAULT);
                         // A reagent's icon is the shared item chain (`0x5d88b0`) through its
                         // display.
                         let (name, icon) = match items.template(entry, 0, ask) {
@@ -368,7 +375,7 @@ fn feed_craft(
                     }
                     let mut tools_pending = Vec::new();
                     for &t in d.totems.iter().filter(|&&t| t != 0) {
-                        let have = count_of(&store.0, &objects, t, InventoryScope::DEFAULT) > 0;
+                        let have = count_of_in_player(&inventory_view, &objects, t, InventoryScope::DEFAULT) > 0;
                         match items.template(t, 0, ask) {
                             Some(info) => tools.push((info.name.clone(), have)),
                             None => tools_pending.push(t),

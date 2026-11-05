@@ -143,10 +143,15 @@ impl Countdowns {
     }
 }
 
-/// An item entity whose fields or countdown cells were written since the reader last ran.
+/// An item entity whose fields, typed row or countdown cells were written since the reader last
+/// ran.
 type ItemMoved = (
     With<ItemObject>,
-    Or<(Changed<ObjectStore>, Changed<Countdowns>)>,
+    Or<(
+        Changed<ObjectStore>,
+        Changed<crate::wrath_item::WrathItemRow>,
+        Changed<Countdowns>,
+    )>,
 );
 
 /// Whether any item object was created, written or destroyed this frame; the inventory feeds' gate.
@@ -263,10 +268,18 @@ pub(crate) fn gift_creator_name(
     fields: &ObjectFields,
     names: &crate::names::NameCache,
 ) -> Option<String> {
-    if fields.item_flags()? & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED == 0 {
+    gift_creator_name_item(crate::wrath_item::ItemRead::new(fields, None), names)
+}
+
+/// [`gift_creator_name`] over the typed item read.
+pub(crate) fn gift_creator_name_item(
+    read: crate::wrath_item::ItemRead<'_>,
+    names: &crate::names::NameCache,
+) -> Option<String> {
+    if read.flags()? & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED == 0 {
         return None;
     }
-    let giver = fields.item_gift_creator()?;
+    let giver = read.gift_creator()?;
     names.resolve_player(giver, Ask::Read).map(str::to_string)
 }
 
@@ -274,13 +287,18 @@ pub(crate) fn gift_creator_name(
 /// the giver's (`0x52e28d`), 0 where nothing is asked: the tooltip waits on a nonzero one whose
 /// name is not in yet.
 pub(crate) fn creator_guids(fields: &ObjectFields) -> (u64, u64) {
-    let wrapped = fields
-        .item_flags()
+    creator_guids_item(crate::wrath_item::ItemRead::new(fields, None))
+}
+
+/// [`creator_guids`] over the typed item read.
+pub(crate) fn creator_guids_item(read: crate::wrath_item::ItemRead<'_>) -> (u64, u64) {
+    let wrapped = read
+        .flags()
         .is_some_and(|f| f & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0);
     (
-        fields.item_creator().unwrap_or(0),
+        read.creator().unwrap_or(0),
         if wrapped {
-            fields.item_gift_creator().unwrap_or(0)
+            read.gift_creator().unwrap_or(0)
         } else {
             0
         },
@@ -298,9 +316,25 @@ pub(crate) fn already_bound(
     record_flags: u32,
     cat: Option<&Enchants>,
 ) -> bool {
-    fields.item_flags().is_some_and(|f| f & 0x1 != 0)
+    already_bound_item(
+        crate::wrath_item::ItemRead::new(fields, None),
+        record_flags,
+        cat,
+    )
+}
+
+/// [`already_bound`] over the typed item read: a Wrath item walks all twelve instance enchant
+/// slots, and a migrated consumer must not read donor 43..47 as if they were Wrath slots 8..12.
+/// An absent row falls back to the donor seven exactly as before.
+pub(crate) fn already_bound_item(
+    read: crate::wrath_item::ItemRead<'_>,
+    record_flags: u32,
+    cat: Option<&Enchants>,
+) -> bool {
+    read.flags().is_some_and(|f| f & 0x1 != 0)
         || (record_flags & benilla_protocol::messages::ITEM_FLAG_CHARTER == 0
-            && (0..7).any(|slot| live_enchant(fields, slot, cat).is_some_and(|id| binds(id, cat))))
+            && (0..read.enchant_slots())
+                .any(|slot| live_enchant_item(read, slot, cat).is_some_and(|id| binds(id, cat))))
 }
 
 /// The item record's PageText as `0x5d9e10` reads it (`[rec+0x19c]`): the cached template's, 0
@@ -322,7 +356,17 @@ pub(crate) fn record_flags(items: &Items, entry: u32, guid: u64) -> u32 {
 /// One enchant slot as the bind checks read it (`0x495eec`): the raw id must be positive (`jl` at
 /// `0x495ef4`, `0x5da306`) and name a row, where the tooltip line uses `abs(id)`.
 pub(crate) fn live_enchant(fields: &ObjectFields, slot: u8, cat: Option<&Enchants>) -> Option<u32> {
-    let id = u32::try_from(fields.item_enchant(slot)?).ok()?;
+    live_enchant_item(crate::wrath_item::ItemRead::new(fields, None), slot, cat)
+}
+
+/// [`live_enchant`] over the typed item read: the Wrath row supplies slots 8..12 when present, and
+/// its delivered zero is authoritative rather than falling back to a donor neighbour.
+pub(crate) fn live_enchant_item(
+    read: crate::wrath_item::ItemRead<'_>,
+    slot: u8,
+    cat: Option<&Enchants>,
+) -> Option<u32> {
+    let id = u32::try_from(read.enchant(slot)?).ok()?;
     cat.is_some_and(|c| c.0.has_row(id)).then_some(id)
 }
 
@@ -1368,6 +1412,48 @@ mod tests {
         assert!(
             enchant_lines_quiet([(0u8, 12i32, 0u32, None)], cat).is_empty(),
             "…and the rendered lines are empty for it, which is why they are not the source"
+        );
+    }
+
+    /// A Wrath item's slot 8..12 is 43..57; the donor descriptor cannot name it, and donor 43..47
+    /// are property seed/durability, not enchants. The typed read walks all twelve without reading
+    /// those donor columns as slots.
+    #[test]
+    fn a_binding_enchant_in_wrath_slot_eight_binds_only_through_the_typed_row() {
+        let cat = catalog();
+        let cat = Some(&cat);
+        let mut values = vec![0u32; 64];
+        values[43] = 12; // ITEM_FIELD_ENCHANTMENT_8_1, binding row 12
+        let row = crate::wrath_item::WrathItemRow::new(
+            crate::wrath_inventory::WrathFieldWindow::from_dense(values),
+            false,
+            (1, 1),
+        );
+        let donor = ObjectFields::from_pairs(&[]);
+        assert!(
+            !already_bound(&donor, 0, cat),
+            "the donor seven and 43..47 never name this enchant"
+        );
+        assert!(
+            already_bound_item(
+                crate::wrath_item::ItemRead::new(&donor, Some(&row)),
+                0,
+                cat
+            ),
+            "slot 8 binds through the typed row"
+        );
+        let plain = crate::wrath_item::WrathItemRow::new(
+            crate::wrath_inventory::WrathFieldWindow::from_dense(vec![0u32; 64]),
+            false,
+            (1, 1),
+        );
+        assert!(
+            !already_bound_item(
+                crate::wrath_item::ItemRead::new(&donor, Some(&plain)),
+                0,
+                cat
+            ),
+            "zeros name no binding row"
         );
     }
 }

@@ -574,6 +574,8 @@ type MailSession = (ResMut<'static, MailOpen>, ResMut<'static, MailPending>);
 pub(super) fn stationeries(
     catalog: &Stationery,
     self_q: &Query<(&ObjectStore, &crate::net::Guid), With<SelfPlayer>>,
+    inventory: Option<&crate::wrath_inventory::WrathInventory>,
+    target: benilla_ui::script::UiTarget,
     objects: &Objects,
     items: &Items,
     icons: Option<&ItemDisplays>,
@@ -585,8 +587,13 @@ pub(super) fn stationeries(
             continue;
         };
         let carried = store.is_some_and(|s| {
-            crate::ui_items::count_of(
+            let inv = crate::wrath_inventory::PlayerInventory::new(
                 &s.0,
+                inventory,
+                target == benilla_ui::script::UiTarget::Wrath335,
+            );
+            crate::ui_items::count_of_in_player(
+                &inv,
                 objects,
                 row.item,
                 crate::ui_items::InventoryScope::DEFAULT,
@@ -731,6 +738,8 @@ fn feed_mail(
     // The local player, the letter body's `$`-macro subject.
     self_q: Query<(&crate::net::ObjectStore, &crate::net::Guid), With<crate::net::SelfPlayer>>,
     states: Res<crate::world_state::WorldStates>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     extras: MailFeedExtras,
 ) {
     // The session is read and written first, with no Lua running; then the host is lent around
@@ -825,7 +834,17 @@ fn feed_mail(
     let usable = stationery
         .as_deref()
         .filter(|_| !self_q.is_empty())
-        .map(|catalog| stationeries(catalog, &self_q, &objects, &items, icons.as_deref()))
+        .map(|catalog| {
+            stationeries(
+                catalog,
+                &self_q,
+                inventory.as_deref(),
+                script.target(),
+                &objects,
+                &items,
+                icons.as_deref(),
+            )
+        })
         .unwrap_or_default();
 
     let mut host = set.p1();
@@ -950,8 +969,16 @@ mod tests {
                     move |self_q: Query<(&ObjectStore, &crate::net::Guid), With<SelfPlayer>>,
                           objects: Objects,
                           items: Res<Items>| {
-                        stationeries(&catalog, &self_q, &objects, &items, None)
-                            .into_iter()
+                        stationeries(
+                            &catalog,
+                            &self_q,
+                            None,
+                            benilla_ui::script::UiTarget::Vanilla112,
+                            &objects,
+                            &items,
+                            None,
+                        )
+                        .into_iter()
                             .map(|v| v.cost)
                             .collect::<Vec<_>>()
                     },
@@ -1016,8 +1043,16 @@ mod tests {
                 move |self_q: Query<(&ObjectStore, &crate::net::Guid), With<SelfPlayer>>,
                       objects: Objects,
                       items: Res<Items>| {
-                    stationeries(&catalog, &self_q, &objects, &items, None)
-                        .into_iter()
+                    stationeries(
+                        &catalog,
+                        &self_q,
+                        None,
+                        benilla_ui::script::UiTarget::Vanilla112,
+                        &objects,
+                        &items,
+                        None,
+                    )
+                    .into_iter()
                         .map(|v| v.id)
                         .collect::<Vec<_>>()
                 },
