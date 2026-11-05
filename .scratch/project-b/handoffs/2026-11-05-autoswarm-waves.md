@@ -270,14 +270,23 @@ cancelled on the owner's instruction and the remaining edits were completed dire
 - `benilla-ui`: Wrath's in-game event table now admits `COMBAT_LOG_EVENT_UNFILTERED`. Before
   this, `RegisterEvent` silently dropped the name (`0x702140`), so WMBridge could never receive
   the event even if the app fired it.
-- `wrath.rs`/`wrath_combat_log_feed.rs`: the decoded kill becomes scoped `WrathPartyKill` state
-  with a monotonic revision and a UiFeed that fires the stock event exactly once. The payload is
-  the eight values `CombatLogEntry::PushEvent` sends for a spell-less event
+- `wrath.rs`/`wrath_combat_log_feed.rs`: the decoded kill becomes a bounded ordered
+  `WrathWorldView.party_kills` queue with a monotonic revision, not a single replaceable row.
+  Each row stores its scope and `UiClock` receipt time. The UiFeed delivers every resolvable row
+  in order and removes it after signalling, so a burst before one feed keeps all rows up to 32;
+  overflow increments `party_kill_dropped`. A row whose endpoint name has not arrived stays
+  pending for up to five seconds; after that it is discarded and counted in
+  `party_kill_unresolved`. Retired-scope rows are removed without delivery. Because delivered
+  rows are removed, a rebuilt VM cannot replay a kill the previous VM already saw.
+- The payload is the eight values `CombatLogEntry::PushEvent` sends for a spell-less event
   (`UnitCombatLog_C.cpp:1241-1276`): timestamp, `PARTY_KILL`, source guid/name/flags, dest
-  guid/name/flags. Names come from the VM's own unit views or the name cache; an unresolved
-  endpoint suppresses the event instead of inventing a name. Flags carry only the guid-family
-  type bit (`0x400` player, `0x800` creature, `0x1000` pet, `0x4000` gameobject); group
-  affiliation bits are not guessed.
+  guid/name/flags. The source name is resolved for `kill.killer` — a teammate's kill keeps the
+  teammate's name, never the local player's — with the `player` seat used only when the killer is
+  the local player. The destination is resolved for `kill.victim`. Both go through the VM's unit
+  views or the existing `NameCache`; a miss asks through the name-query owner (`Ask::New`) and
+  holds the row instead of inventing a name. Flags carry only the guid-family type bit
+  (`0x400` player, `0x800` creature, `0x1000` pet, `0x4000` gameobject); group affiliation bits
+  are not guessed.
 - The kill also maps onto `SessionEvent::PartyKillLog`, the existing stock chat-line seam.
 - HELLO transport gap, not fixed here: WMBridge builds the HELLO payload before `sendPayload`
   runs, so `transport=` reports the previous attempt. The installed addon cannot be edited. The
@@ -288,15 +297,21 @@ cancelled on the owner's instruction and the remaining edits were completed dire
   field says `CHANNEL`.
 
 Evidence:
-- `cargo test -p benilla-protocol-wrath --lib wrath_party_kill_log` — 1 passed.
-- `cargo test -p benilla-app --lib party_kill` — 2 passed (state/translate and the exact
-  eight-value VM event).
-- `cargo test -p benilla-app --lib combat_log_flags_name_only` — 1 passed.
-- `cargo test -p benilla-ui --lib wrath_admits_the_combat_log_event` — 1 passed.
-- `cargo check -p benilla-app --lib` — exit 0.
-- `cargo check --workspace --all-targets` — exit 0, log
-  `.scratch/project-b/check-u1-2026-11-06.log`.
-- Wave 7 U1 commit: `d904330c`, pushed to `origin/main`.
+- `cargo test -p benilla-protocol-wrath --lib wrath_party_kill_log` - 1 passed.
+- `cargo test -p benilla-app --lib party_kill` - 3 passed (state/translate, queue capacity, and
+  the exact eight-value VM event).
+- `cargo test -p benilla-app --lib source_name_follows_the_killer` - 1 passed (teammate vs self
+  vs unknown endpoint).
+- `cargo test -p benilla-app --lib feed_delivers_a_burst` - 1 passed (two kills in one feed, a
+  late name, and a retired scope in the actual feed path).
+- `cargo test -p benilla-app --lib combat_log_flags_name_only` - 1 passed.
+- `cargo test -p benilla-ui --lib wrath_admits_the_combat_log_event` - 1 passed.
+- `cargo check -p benilla-app --lib` - exit 0.
+- `cargo check --workspace --all-targets` - exit 0, log
+  `.scratch/project-b/check-u1-2026-11-06.log`; post-review log
+  `.scratch/project-b/check-u1b-2026-11-06.log`.
+- Wave 7 U1 commits: `d904330c` then the supervisor-review corrections in `5e82d76e`, pushed to
+  `origin/main`.
 
 Remaining limits: no live client/addon/WMBridge delivery was run; only `PARTY_KILL` is emitted,
 not damage/spell combat-log events; the filtered `COMBAT_LOG_EVENT` name and the HELLO transport
