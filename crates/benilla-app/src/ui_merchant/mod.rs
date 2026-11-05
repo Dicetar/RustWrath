@@ -356,7 +356,7 @@ fn item_repair_cost(
 
 /// Each damaged carried or banked item's cost (`0x4faf30`), keyed as the bindings take it.
 fn repair_costs(
-    store: &benilla_protocol::ObjectFields,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     items: &Items,
     tables: &RepairTables,
@@ -376,19 +376,19 @@ fn repair_costs(
     };
     let mut costs = RepairCosts::default();
     for i in 0..19u8 {
-        if let Some(c) = cost(store.player_inv_slot(i).unwrap_or(0)) {
+        if let Some(c) = cost(inv.equipment(i)) {
             costs.equipped.insert(u32::from(i) + 1, c);
         }
     }
     for i in 0..16u8 {
-        let guid = store.player_pack_slot(i).unwrap_or(0);
+        let guid = inv.backpack(i);
         if let Some(c) = cost(guid) {
             costs.bags.insert((0, u32::from(i) + 1), c);
         }
         costs.own.extend(own(guid));
     }
-    for i in 0..crate::ui_items::BANK_SLOTS {
-        let guid = store.player_bank_slot(i).unwrap_or(0);
+    for i in 0..inv.bank_capacity() {
+        let guid = inv.bank(i);
         if let Some(c) = cost(guid) {
             costs
                 .bags
@@ -396,17 +396,16 @@ fn repair_costs(
         }
         costs.own.extend(own(guid));
     }
-    // Bags 1-4 are inventory slots 19-22, bank bags 5-10 the bank bag slots.
+    // Bags 1-4 are inventory slots 19-22, bank bags 5-11 the bank bag slots (3.3.5 seven).
     let bags = (1..=4u8)
-        .map(|b| (i64::from(b), store.player_inv_slot(18 + b)))
-        .chain((0..crate::ui_items::BANK_BAGS).map(|i| {
+        .map(|b| (i64::from(b), inv.bag_slot(b - 1)))
+        .chain((0..inv.bank_bag_capacity()).map(|i| {
             (
                 crate::ui_items::BANK_BAG_ID_FIRST + i64::from(i),
-                store.player_bank_bag_slot(i),
+                inv.bank_bag(i),
             )
         }));
     for (bag, bag_guid) in bags {
-        let bag_guid = bag_guid.unwrap_or(0);
         if bag_guid == 0 {
             continue;
         }
@@ -560,6 +559,8 @@ fn feed_repair_costs(
         let Some(player) = inv.self_store.iter().next() else {
             return;
         };
+        let player_inv =
+            inv.player(script.target() == benilla_ui::script::UiTarget::Wrath335);
         let vendor = vendor_store(&open, &units);
         // The open vendor's price discount (`0x4faf8a`), 0 with none open.
         let discount = open_vendor_discount(&open, &units, &relations, player);
@@ -595,7 +596,15 @@ fn feed_repair_costs(
             return;
         }
         let costs = tables.as_deref().map_or_else(RepairCosts::default, |t| {
-            repair_costs(&player.0, &inv.objects, &items, t, discount)
+            repair_costs(
+                player_inv
+                    .as_ref()
+                    .expect("the player view is built from the same self store"),
+                &inv.objects,
+                &items,
+                t,
+                discount,
+            )
         });
         let total = if repairer { repair_all_cost(&costs) } else { 0 };
         if memo
@@ -1121,7 +1130,9 @@ mod tests {
             .world_mut()
             .run_system_once(
                 move |objects: Objects, items: Res<Items>, tables: Res<RepairTables>| {
-                    repair_costs(&store, &objects, &items, &tables, steps)
+                    let view =
+                        crate::wrath_inventory::PlayerInventory::new(&store, None, false);
+                    repair_costs(&view, &objects, &items, &tables, steps)
                 },
             )
             .unwrap();

@@ -149,6 +149,8 @@ fn item_watch<'a, 'w, 's>(
                 .map(|s| &s.0)
         },
         items,
+        // The donor 1.12 path has no typed Wrath owner; its seats are all in the projection.
+        inventory: None,
     }
 }
 

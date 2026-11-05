@@ -13,10 +13,10 @@ use super::Model;
 /// The open bank's purchase row, pushed whole by the app.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BankState {
-    /// Purchased bag slots, 0..=6: `PLAYER_BYTES_2` byte 2.
+    /// Purchased bag slots, 0..=7 in 3.3.5 (0..=6 donor): `PLAYER_BYTES_2` byte 2.
     pub num_purchased: u32,
-    /// The next slot's price in copper, `BankBagSlotPrices.dbc` row `num_purchased + 1`; the rows
-    /// past 6 hold 999999999, and 0 means the row is absent.
+    /// The next slot's price in copper, `BankBagSlotPrices.dbc` row `num_purchased + 1`; the
+    /// sentinel rows are still prices, and 0 means the row is absent.
     pub next_cost: u32,
 }
 
@@ -49,16 +49,22 @@ pub enum BankCall {
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
-    // GetNumBankSlots() → numSlots, full: `full` is 1 from six slots up, else nil (`0x4f85b0`:
-    // `cmp esi,6; jl`).
+    // GetNumBankSlots() → numSlots, full: `full` is 1 from seven slots up, else nil
+    // (`CGBankInfo_Scripts.cpp:37-41`: `cmp esi,7; jl`; the donor host keeps its own ceiling).
     g.set(
         "GetNumBankSlots",
         lua.create_function(|lua, ()| {
-            let n = {
+            let (n, full_at) = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.bank.as_ref().map_or(0, |b| b.num_purchased)
+                let n = model.bank.as_ref().map_or(0, |b| b.num_purchased);
+                let full_at = if model.target == crate::script::UiTarget::Wrath335 {
+                    7
+                } else {
+                    6
+                };
+                (n, full_at)
             };
-            let full = if n >= 6 {
+            let full = if n >= full_at {
                 Value::Integer(1)
             } else {
                 Value::Nil

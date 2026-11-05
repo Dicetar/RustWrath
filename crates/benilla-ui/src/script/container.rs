@@ -281,8 +281,8 @@ pub(super) fn item_cooldown_triple(query: Option<(f64, f64, bool)>, now: f64) ->
     }
 }
 
-/// The bank's bags, containers 5-10.
-const BANK_BAGS: std::ops::RangeInclusive<i64> = 5..=10;
+/// The bank's bags, containers 5-11 (3.3.5 has seven; the donor host only exposes five).
+const BANK_BAGS: std::ops::RangeInclusive<i64> = 5..=11;
 
 impl super::Model {
     /// Whether container `id` is a bank bag while no banker is open: the bag lookup every

@@ -779,8 +779,9 @@ pub struct WrathEntity {
     pub create_spline: Option<benilla_protocol_wrath::updates::CreateSplineSnapshot>,
     pub generation: u32,
     /// The player's raw Wrath field window, needed where 1.12 and 3.3.5 pack different field
-    /// indices (quest log, inventory, coinage). Only a player carries it.
-    pub player_fields: Option<Vec<u32>>,
+    /// indices (quest log, inventory, coinage), with the server's delivered mask. Only a player
+    /// carries it.
+    pub player_fields: Option<crate::wrath_inventory::WrathFieldWindow>,
     /// An item or container's raw Wrath field window. The item block is 0..64 and a container
     /// extends it with its slot array; both are translated explicitly rather than copied by
     /// index because the 1.12 item/container layouts differ.
@@ -1797,6 +1798,7 @@ impl Plugin for WrathNetPlugin {
         })
         .init_resource::<WrathWorldView>()
         .init_resource::<WrathAuraAnchors>()
+        .init_resource::<crate::wrath_inventory::WrathInventory>()
         .add_message::<crate::wrath_native::WrathCastEvent>()
         .add_message::<crate::wrath_native::WrathItemText>();
         if self.config.is_some() {
@@ -2585,25 +2587,6 @@ fn chat_type_112(chat_type: u8) -> Option<u8> {
         0x33 => m::CHAT_MSG_PARTY,
         _ => return None,
     })
-}
-
-/// The stock wire position translated to 12340's player array. Bank slots 39-62 and the
-/// inventory/backpack agree; the six stock bank bags 63-68 move to 67-72, and the 1.12 keyring
-/// slots 81-96 (plus the buyback range) move five positions later.
-fn wrath_item_pos(bag: u8, slot: u8) -> (u8, u8) {
-    if (63..=68).contains(&bag) {
-        (bag + 4, slot)
-    } else if bag == 255 && (69..=112).contains(&slot) {
-        (bag, slot + 5)
-    } else {
-        (bag, slot)
-    }
-}
-
-/// 12340 bank bags start at 67 where the stock owner uses 63; slots inside the bank block
-/// (39-66) and the inventory/backpack indices agree, so only the six stock bank bags move.
-fn wrath_bank_bag(bag: u8) -> u8 {
-    wrath_item_pos(bag, 0).0
 }
 
 /// Map the stock item-use target block onto the 12340 writer. A trade-item target needs the real
@@ -4276,7 +4259,9 @@ fn wrath_tap_commands(
             )),
             ClientCommand::AutoStoreBankItem { bag, slot } => Some((
                 benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BANK_ITEM,
-                gameplay::autostore_bank_item(wrath_bank_bag(bag), slot),
+                // `wire_pos_in_target(Wrath335)` already emits the 3.3.5 bank-bag bytes
+                // (67..=73); no donor-to-Wrath shift belongs here.
+                gameplay::autostore_bank_item(bag, slot),
             )),
             ClientCommand::CastSpellGameObject { spell_id, go_guid, .. } => {
                 let count = view.next_cast_count;
@@ -4352,12 +4337,11 @@ fn wrath_tap_commands(
                 ..
             } => match (item_guid, wrath_cast_target(target)) {
                 (Some(item_guid), Some(target)) => {
-                    let (bag, slot) = wrath_item_pos(bag_index, slot);
                     let count = view.next_cast_count;
                     view.next_cast_count = count.wrapping_add(1).max(1);
                     Some((
                         benilla_protocol_wrath::opcode::CMSG_USE_ITEM,
-                        gameplay::use_item(bag, slot, count, spell_id, item_guid, target),
+                        gameplay::use_item(bag_index, slot, count, spell_id, item_guid, target),
                     ))
                 }
                 _ => {
@@ -4367,20 +4351,14 @@ fn wrath_tap_commands(
                     None
                 }
             },
-            ClientCommand::OpenItem { bag_index, slot } => {
-                let (bag, slot) = wrath_item_pos(bag_index, slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_OPEN_ITEM,
-                    gameplay::open_item(bag, slot),
-                ))
-            }
-            ClientCommand::AutoEquipItem { bag_index, slot } => {
-                let (bag, slot) = wrath_item_pos(bag_index, slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_AUTOEQUIP_ITEM,
-                    gameplay::auto_equip_item(bag, slot),
-                ))
-            }
+            ClientCommand::OpenItem { bag_index, slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_OPEN_ITEM,
+                gameplay::open_item(bag_index, slot),
+            )),
+            ClientCommand::AutoEquipItem { bag_index, slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUTOEQUIP_ITEM,
+                gameplay::auto_equip_item(bag_index, slot),
+            )),
             ClientCommand::SwapInvItem { src_slot, dst_slot } => Some((
                 benilla_protocol_wrath::opcode::CMSG_SWAP_INV_ITEM,
                 gameplay::swap_inv_item(dst_slot, src_slot),
@@ -4390,51 +4368,36 @@ fn wrath_tap_commands(
                 dst_slot,
                 src_bag,
                 src_slot,
-            } => {
-                let (dst_bag, dst_slot) = wrath_item_pos(dst_bag, dst_slot);
-                let (src_bag, src_slot) = wrath_item_pos(src_bag, src_slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_SWAP_ITEM,
-                    gameplay::swap_item(dst_bag, dst_slot, src_bag, src_slot),
-                ))
-            }
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SWAP_ITEM,
+                gameplay::swap_item(dst_bag, dst_slot, src_bag, src_slot),
+            )),
             ClientCommand::AutoStoreBagItem {
                 src_bag,
                 src_slot,
                 dst_bag,
-            } => {
-                let (src_bag, src_slot) = wrath_item_pos(src_bag, src_slot);
-                let (dst_bag, _) = wrath_item_pos(dst_bag, 0);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BAG_ITEM,
-                    gameplay::auto_store_bag_item(src_bag, src_slot, dst_bag),
-                ))
-            }
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BAG_ITEM,
+                gameplay::auto_store_bag_item(src_bag, src_slot, dst_bag),
+            )),
             ClientCommand::SplitItem {
                 src_bag,
                 src_slot,
                 dst_bag,
                 dst_slot,
                 count,
-            } => {
-                let (src_bag, src_slot) = wrath_item_pos(src_bag, src_slot);
-                let (dst_bag, dst_slot) = wrath_item_pos(dst_bag, dst_slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_SPLIT_ITEM,
-                    gameplay::split_item(src_bag, src_slot, dst_bag, dst_slot, u32::from(count)),
-                ))
-            }
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SPLIT_ITEM,
+                gameplay::split_item(src_bag, src_slot, dst_bag, dst_slot, u32::from(count)),
+            )),
             ClientCommand::DestroyItem {
                 bag_index,
                 slot,
                 count,
-            } => {
-                let (bag, slot) = wrath_item_pos(bag_index, slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_DESTROYITEM,
-                    gameplay::destroy_item(bag, slot, count),
-                ))
-            }
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_DESTROYITEM,
+                gameplay::destroy_item(bag_index, slot, count),
+            )),
             ClientCommand::SetAmmo { entry } => Some((
                 benilla_protocol_wrath::opcode::CMSG_SET_AMMO,
                 gameplay::set_ammo(entry),
@@ -5735,25 +5698,27 @@ pub(crate) struct WrathQuestSlots(
     pub u32, // Nonempty PLAYER_FIELD_DAILY_QUESTS_1 slots.
 );
 
-/// The active player's raw 3.3.5 field window, the source for the UI contracts the 1.12
-/// descriptor cannot carry: `PLAYER_FIELD_COMBAT_RATING_1` (1231..), `PLAYER_CHOSEN_TITLE`
-/// (321) and `PLAYER__FIELD_KNOWN_TITLES` (626/628/630). Kept beside the translated store so
+/// The active player's raw 3.3.5 field window (0..1171 for this package) with its delivered
+/// mask, the source for the UI contracts the 1.12 descriptor cannot carry. It carries
+/// `PLAYER_CHOSEN_TITLE` (321) and `PLAYER__FIELD_KNOWN_TITLES` (626/628/630), but not the
+/// `PLAYER_FIELD_COMBAT_RATING_1` (1231..), `PLAYER_FIELD_MAX_LEVEL` (1279) or daily-quest tail;
+/// those read 0 and are a separate window-length defect. Kept beside the translated store so
 /// donor field indices stay untouched.
 #[derive(Component, Clone, PartialEq, Eq, Default)]
-pub(crate) struct WrathPlayerRaw(pub(crate) Vec<u32>);
+pub(crate) struct WrathPlayerRaw(pub(crate) crate::wrath_inventory::WrathFieldWindow);
 
 /// Map 12340's `PLAYER_QUEST_LOG_*` block: id, state, two count dwords (four 16-bit counts) and
 /// the deadline, five dwords a slot for twenty-five slots.
-fn wrath_quest_slots(raw: &[u32]) -> [QuestSlotView; QUEST_LOG_SLOTS] {
+fn wrath_quest_slots(raw: &crate::wrath_inventory::WrathFieldWindow) -> [QuestSlotView; QUEST_LOG_SLOTS] {
     std::array::from_fn(|slot| {
         let src = 158 + slot * 5;
-        let quest_id = raw.get(src).copied().unwrap_or(0);
+        let quest_id = raw.word_or_zero(src as u16);
         if quest_id == 0 {
             return QuestSlotView::default();
         }
-        let state = raw.get(src + 1).copied().unwrap_or(0);
-        let counts = u64::from(raw.get(src + 2).copied().unwrap_or(0))
-            | (u64::from(raw.get(src + 3).copied().unwrap_or(0)) << 32);
+        let state = raw.word_or_zero((src + 1) as u16);
+        let counts = u64::from(raw.word_or_zero((src + 2) as u16))
+            | (u64::from(raw.word_or_zero((src + 3) as u16)) << 32);
         let mut counters = [0u8; 4];
         for (i, counter) in counters.iter_mut().enumerate() {
             *counter = ((counts >> (i * 16)) & 0xffff).min(63) as u8;
@@ -5762,7 +5727,7 @@ fn wrath_quest_slots(raw: &[u32]) -> [QuestSlotView; QUEST_LOG_SLOTS] {
             quest_id,
             counters,
             state: (state & 0xff) as u8,
-            timer: raw.get(src + 4).copied().unwrap_or(0),
+            timer: raw.word_or_zero((src + 4) as u16),
         }
     })
 }
@@ -5770,7 +5735,11 @@ fn wrath_quest_slots(raw: &[u32]) -> [QuestSlotView; QUEST_LOG_SLOTS] {
 /// Copy the player inventory bands the 1.12 item owners walk. The 3.3.5 arrays are wider in the
 /// bank (28 -> 24 slots), bank bags (7 -> 6) and otherwise use a different base; every array here
 /// is copied explicitly, with the extra 3.3.5 tail dropped rather than folded into a neighbour.
-fn push_player_inventory_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
+/// The dropped tail lives in [`crate::wrath_inventory::WrathInventory`]; no donor offset moves.
+fn push_player_inventory_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    pairs: &mut Vec<(u16, u32)>,
+) {
     // (3.3.5 base, 1.12 base, dwords copied)
     const BANDS: [(usize, u16, usize); 7] = [
         (324, 486, 46), // equipment + four equipped bags
@@ -5783,8 +5752,11 @@ fn push_player_inventory_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
     ];
     for (src, dst, count) in BANDS {
         for i in 0..count {
-            if let Some(value) = raw.get(src + i) {
-                pairs.push((dst + i as u16, *value));
+            // Only delivered dwords reach the donor projection. The create-shaped ObjectFields
+            // still reads 0 for an absent field, so donor readers see the same value as before,
+            // but the projection no longer claims a delivery the server did not make.
+            if let Some(value) = raw.get((src + i) as u16) {
+                pairs.push((dst + i as u16, value));
             }
         }
     }
@@ -5793,15 +5765,20 @@ fn push_player_inventory_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
 /// The 3.3.5 `PLAYER_VISIBLE_ITEM_*` block into the 1.12 twelve-dword slots: each 3.3.5 slot is
 /// two fields (entry, two packed 16-bit enchants) at 283 + 2n, against 1.12's entry at +2 and its
 /// seven enchant dwords at +3. The perm/temp enchants the glow fold reads land at +3/+4.
-fn push_visible_item_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
+fn push_visible_item_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    pairs: &mut Vec<(u16, u32)>,
+) {
     for slot in 0..19u16 {
         let src = usize::from(
             benilla_protocol_wrath::fields::PLAYER_VISIBLE_ITEM_1_ENTRYID + 2 * slot,
         );
-        let Some(entry) = raw.get(src).copied() else {
-            break;
+        // An undelivered entry is skipped, not treated as the end: a create may omit a zero
+        // slot while a later slot is present.
+        let Some(entry) = raw.get(src as u16) else {
+            continue;
         };
-        let ench = raw.get(src + 1).copied().unwrap_or(0);
+        let ench = raw.word_or_zero((src + 1) as u16);
         let dst = benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 12 * slot;
         pairs.push((dst + 2, entry));
         pairs.push((dst + 3, ench & 0xffff));
@@ -6035,6 +6012,13 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(mut lane) = world.get_resource_mut::<crate::item_lane::ItemLane>() {
             lane.clear();
         }
+        // The typed Wrath inventory is the same scope as the item watchers and item lane: a
+        // transfer or terminal edge retires every address before the next digest can populate it.
+        if let Some(mut inventory) =
+            world.get_resource_mut::<crate::wrath_inventory::WrathInventory>()
+        {
+            inventory.clear();
+        }
         // The retired world's presentation aura anchors die with its entities.
         if let Some(mut anchors) = world.get_resource_mut::<WrathAuraAnchors>() {
             anchors.by_guid.clear();
@@ -6069,10 +6053,12 @@ fn wrath_apply_world(world: &mut World) {
         }
         let mut destroyed_runs = Vec::new();
         if let Some(items) = world.get_resource::<crate::items::Items>() {
+            let inventory = world.get_resource::<crate::wrath_inventory::WrathInventory>();
             let watch = crate::item_watch::Watch {
                 me: Some(player_guid),
                 lookup: |g: u64| stores_by_guid.get(&g),
                 items,
+                inventory,
             };
             for guid in &changes.removed {
                 if index
@@ -6104,6 +6090,7 @@ fn wrath_apply_world(world: &mut World) {
     let mut unit_name_lookups: Vec<(u64, ObjectFields)> = Vec::new();
     let mut go_template_requests: Vec<(u64, ObjectFields)> = Vec::new();
     let mut self_player_created = false;
+    let mut typed_changes: Option<crate::wrath_inventory::InventoryChanges> = None;
 
     for guid in changes.created.iter().chain(changes.updated.iter()) {
         let Some(remote) = entities.get(guid) else {
@@ -6113,6 +6100,23 @@ fn wrath_apply_world(world: &mut World) {
         // ratings, known titles, chosen title). The projection reads this component beside the
         // translated 1.12 descriptor rather than inventing 1.12 indices for them.
         let player_raw = remote.player_fields.clone();
+        // One writer for the typed owner: the self player's delivered inventory window. The
+        // donor projection below stays its existing 24/6/7 shape.
+        if *guid == player_guid
+            && remote.type_id == benilla_protocol_wrath::updates::type_id::PLAYER
+        {
+            if let Some(window) = player_raw.as_ref() {
+                let scope = world
+                    .get_resource::<WrathWorldView>()
+                    .map(|view| (view.session_epoch, view.world_generation))
+                    .unwrap_or((0, 0));
+                let mut inventory = world
+                    .remove_resource::<crate::wrath_inventory::WrathInventory>()
+                    .unwrap_or_default();
+                typed_changes = Some(inventory.apply(window, scope));
+                world.insert_resource(inventory);
+            }
+        }
         if matches!(
             remote.type_id,
             benilla_protocol_wrath::updates::type_id::ITEM
@@ -6244,7 +6248,7 @@ fn wrath_apply_world(world: &mut World) {
             if let Some(bytes) = remote.player_bytes_2 {
                 pairs.push((194, bytes));
             }
-            if let Some(raw) = remote.player_fields.as_deref() {
+            if let Some(raw) = remote.player_fields.as_ref() {
                 // 3.3.5 uses 148 as UNIT_END; 1.12 uses a different player layout. Map the
                 // durable fields the stock quest/loot/player frames read. The descriptor keeps
                 // the 1.12 twenty-slot projection; the full twenty-five go beside it.
@@ -6263,30 +6267,32 @@ fn wrath_apply_world(world: &mut World) {
                     pairs.push(((dst + 1) as u16, packed));
                     pairs.push(((dst + 2) as u16, s.timer));
                 }
-                let max_level = raw.get(benilla_protocol_wrath::fields::PLAYER_FIELD_MAX_LEVEL as usize).copied().unwrap_or(0);
-                let daily_start = benilla_protocol_wrath::fields::PLAYER_FIELD_DAILY_QUESTS_1 as usize;
-                let daily = raw.iter().skip(daily_start).take(25).filter(|&&quest| quest != 0).count() as u32;
+                let max_level = raw.word_or_zero(benilla_protocol_wrath::fields::PLAYER_FIELD_MAX_LEVEL);
+                let daily_start = benilla_protocol_wrath::fields::PLAYER_FIELD_DAILY_QUESTS_1;
+                let daily = (0..25u16)
+                    .filter(|i| raw.word_or_zero(daily_start + i) != 0)
+                    .count() as u32;
                 wrath_slots = Some(WrathQuestSlots(slots, max_level, daily));
                 for (src, dst) in [(25u16, 23u16), (26, 24), (27, 25), (33, 29), (34, 30), (35, 31)] {
-                    if let Some(value) = raw.get(src as usize) {
-                        pairs.push((dst, *value));
+                    if let Some(value) = raw.get(src) {
+                        pairs.push((dst, value));
                     }
                 }
                 // `PLAYER_FLAGS` (3.3.5 150 -> 1.12 190): the ghost bit 0x10 is what the death
                 // owner reads off the self descriptor.
                 if let Some(value) = raw.get(150) {
-                    pairs.push((benilla_protocol::field::FIELD_PLAYER_FLAGS, *value));
+                    pairs.push((benilla_protocol::field::FIELD_PLAYER_FLAGS, value));
                 }
                 push_player_inventory_fields(raw, &mut pairs);
                 push_visible_item_fields(raw, &mut pairs);
                 if let Some(value) = raw.get(634) {
-                    pairs.push((716, *value));
+                    pairs.push((716, value));
                 }
                 if let Some(value) = raw.get(635) {
-                    pairs.push((717, *value));
+                    pairs.push((717, value));
                 }
                 if let Some(value) = raw.get(1170) {
-                    pairs.push((1176, *value));
+                    pairs.push((1176, value));
                 }
             }
         }
@@ -6332,10 +6338,10 @@ fn wrath_apply_world(world: &mut World) {
                     wrath_slots.is_some_and(|slots| old_slots != Some(slots));
                 if *guid == player_guid {
                     let old_raw = world.get::<WrathPlayerRaw>(entity);
-                    let old_xp = old_raw.and_then(|r| r.0.get(634).copied());
-                    let new_xp = player_raw.as_ref().and_then(|r| r.get(634).copied());
-                    let old_money = old_raw.and_then(|r| r.0.get(1170).copied());
-                    let new_money = player_raw.as_ref().and_then(|r| r.get(1170).copied());
+                    let old_xp = old_raw.and_then(|r| r.0.get(634));
+                    let new_xp = player_raw.as_ref().and_then(|r| r.get(634));
+                    let old_money = old_raw.and_then(|r| r.0.get(1170));
+                    let new_money = player_raw.as_ref().and_then(|r| r.get(1170));
                     let scope = world
                         .get_resource::<WrathWorldView>()
                         .map(|v| (v.session_epoch, v.world_generation));
@@ -6759,7 +6765,18 @@ fn wrath_apply_world(world: &mut World) {
         }
     }
 
-    if self_player_created || !item_creates.is_empty() || !field_diffs.is_empty() {
+    let typed_bank_changed = typed_changes.as_ref().is_some_and(|changes| {
+        changes.slots.iter().any(|change| match change.addr {
+            crate::wrath_inventory::InventoryAddr::Bank(i) => i >= 24,
+            crate::wrath_inventory::InventoryAddr::BankBag(i) => i == 6,
+            _ => false,
+        })
+    });
+    if self_player_created
+        || !item_creates.is_empty()
+        || !field_diffs.is_empty()
+        || typed_bank_changed
+    {
         let mut stores_by_guid: HashMap<u64, ObjectFields> = HashMap::new();
         for (&g, &e) in &world.resource::<GuidIndex>().0 {
             if let Some(store) = world.get::<ObjectStore>(e) {
@@ -6767,12 +6784,32 @@ fn wrath_apply_world(world: &mut World) {
             }
         }
         if self_player_created {
-            if let (Some(player_fields), Some(mut bag_cache)) = (
-                stores_by_guid.get(&player_guid),
-                world.get_resource_mut::<crate::item_watch::BagCache>(),
-            ) {
-                let lookup = |g: u64| stores_by_guid.get(&g);
-                bag_cache.seat(player_fields, &lookup);
+            if let Some(player_fields) = stores_by_guid.get(&player_guid) {
+                // The typed owner's 28/7 seats, copied before the BagCache is moved out of the
+                // world. The donor path falls back to its own 24/6 seats.
+                let seats: [u64; 11] = {
+                    let wrath = world.get_resource::<crate::wrath_inventory::WrathInventory>();
+                    let view = crate::wrath_inventory::PlayerInventory::new(
+                        player_fields,
+                        wrath,
+                        crate::wrath::selected_from_env(),
+                    );
+                    std::array::from_fn(|i| match i as u8 + 1 {
+                        1..=4 => view.bag_slot(i as u8),
+                        5..=11 => view.bank_bag(i as u8 - 4),
+                        _ => 0,
+                    })
+                };
+                if let Some(mut bag_cache) =
+                    world.get_resource_mut::<crate::item_watch::BagCache>()
+                {
+                    let lookup = |g: u64| stores_by_guid.get(&g);
+                    bag_cache.seat_with(
+                        11,
+                        &|n| seats[usize::from(n.saturating_sub(1)).min(10)],
+                        &lookup,
+                    );
+                }
             }
         }
         let mut runs_to_push: Vec<crate::item_watch::Run> = Vec::new();
@@ -6784,10 +6821,13 @@ fn wrath_apply_world(world: &mut World) {
                 .remove_resource::<crate::item_watch::BagCache>()
                 .unwrap_or_default();
             if let Some(items) = world.get_resource::<crate::items::Items>() {
+                let inventory =
+                    world.get_resource::<crate::wrath_inventory::WrathInventory>();
                 let watch = crate::item_watch::Watch {
                     me: Some(player_guid),
                     lookup: |g: u64| stores_by_guid.get(&g),
                     items,
+                    inventory,
                 };
                 for guid in &item_creates {
                     if let Some(fields) = stores_by_guid.get(guid) {
@@ -6814,6 +6854,50 @@ fn wrath_apply_world(world: &mut World) {
                                 entry_misses.push((item_guid, new));
                             }
                             runs_to_push.push(run);
+                        }
+                    }
+                }
+                // The four extra bank slots and the seventh bank bag have no donor field, so
+                // their seat runs are generated from the typed owner. They are appended after
+                // the donor-order runs; the 3.3.5 field order for those five addresses is not
+                // observable in the donor projection.
+                if watch.inventory.is_some() {
+                    if let Some(changes) = typed_changes.as_ref() {
+                        let seats: [u64; 11] =
+                            if let Some(player_fields) = stores_by_guid.get(&player_guid) {
+                                let view = crate::wrath_inventory::PlayerInventory::new(
+                                    player_fields,
+                                    watch.inventory,
+                                    true,
+                                );
+                                std::array::from_fn(|i| match i as u8 + 1 {
+                                    1..=4 => view.bag_slot(i as u8),
+                                    5..=11 => view.bank_bag(i as u8 - 4),
+                                    _ => 0,
+                                })
+                            } else {
+                                [0; 11]
+                            };
+                        let seat =
+                            |n: u8| seats[usize::from(n.saturating_sub(1)).min(10)];
+                        for change in &changes.slots {
+                            let extra = match change.addr {
+                                crate::wrath_inventory::InventoryAddr::Bank(i) => i >= 24,
+                                crate::wrath_inventory::InventoryAddr::BankBag(i) => i == 6,
+                                _ => false,
+                            };
+                            if !extra {
+                                continue;
+                            }
+                            if let Some(run) = watch.typed_bank_change(
+                                change.addr,
+                                change.old,
+                                change.new,
+                                &mut bag_cache,
+                                &seat,
+                            ) {
+                                runs_to_push.push(run);
+                            }
                         }
                     }
                 }
@@ -8532,7 +8616,13 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                     .and_then(|m| m.create_spline.clone()),
                 generation: entry.generation,
                 player_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
-                    .then(|| (0..1171).map(|i| entry.field(i).unwrap_or(0)).collect()),
+                    .then(|| {
+                        crate::wrath_inventory::WrathFieldWindow::from_fields(
+                            crate::wrath_inventory::PLAYER_WINDOW_END,
+                            |index| entry.field(index),
+                            |index| entry.field_delivered(index),
+                        )
+                    }),
                 item_fields: matches!(
                     entry.type_id,
                     benilla_protocol_wrath::updates::type_id::ITEM
@@ -8642,7 +8732,7 @@ mod tests {
         raw[last + 2] = 1 | (2 << 16);
         raw[last + 3] = 5 | (6 << 16);
         raw[last + 4] = 777;
-        let slots = wrath_quest_slots(&raw);
+        let slots = wrath_quest_slots(&crate::wrath_inventory::WrathFieldWindow::from_dense(raw));
         assert_eq!(slots.len(), 25);
         assert_eq!(slots[0].quest_id, 57);
         assert_eq!(slots[0].counters[0], 3);
@@ -8663,7 +8753,10 @@ mod tests {
         raw[284] = 0x0002_0001; // perm enchant 1, temp 2
         raw[283 + 2 * 18] = 5976; // tabard, entry
         let mut pairs = Vec::new();
-        push_visible_item_fields(&raw, &mut pairs);
+        push_visible_item_fields(
+            &crate::wrath_inventory::WrathFieldWindow::from_dense(raw),
+            &mut pairs,
+        );
         let at = |slot: u16| {
             benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 12 * slot
         };
@@ -8682,6 +8775,19 @@ mod tests {
         world.init_resource::<crate::player::Player>();
         world.init_resource::<crate::player::OwnControlLost>();
         world.init_resource::<crate::player::StandPending>();
+        world.init_resource::<crate::wrath_inventory::WrathInventory>();
+        {
+            let mut raw = vec![0u32; usize::from(crate::wrath_inventory::PLAYER_WINDOW_END)];
+            let bank = benilla_protocol_wrath::fields::PLAYER_FIELD_BANK_SLOT_1
+                + 2 * 24;
+            raw[usize::from(bank)] = 0x77;
+            let mut inventory = crate::wrath_inventory::WrathInventory::default();
+            inventory.apply(
+                &crate::wrath_inventory::WrathFieldWindow::from_dense(raw),
+                (1, 1),
+            );
+            world.insert_resource(inventory);
+        }
         let outbox: WrathOutbox = Arc::new(Mutex::new(VecDeque::from([WrathOutbound {
             opcode: 1,
             payload: vec![1],
@@ -8715,6 +8821,14 @@ mod tests {
         assert!(world.resource::<GuidIndex>().0.is_empty());
         assert_eq!(world.resource::<SelfGuid>().0, None);
         assert!(!world.resource::<crate::player::Player>().active);
+        assert!(
+            world
+                .resource::<crate::wrath_inventory::WrathInventory>()
+                .iter()
+                .next()
+                .is_none(),
+            "the typed inventory retires with the streamed scope"
+        );
         assert!(outbox.lock().unwrap().is_empty(), "pending actions cleared");
     }
 }

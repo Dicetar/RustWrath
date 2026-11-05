@@ -195,6 +195,16 @@ fn bag_family_name(
     let families = families?;
     let guid = match bag_slot {
         s if (BAG_SLOT_FIRST..BAG_SLOT_FIRST + BAGS).contains(&s) => store.0.player_inv_slot(s),
+        s if crate::wrath::selected_from_env()
+            && (crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST
+                ..crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST
+                    + crate::wrath_inventory::WRATH_BANK_BAG_SLOTS)
+                .contains(&s) =>
+        {
+            store
+                .0
+                .player_bank_bag_slot(s - crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST)
+        }
         s if (BANK_BAG_SLOT_FIRST..BANK_BAG_SLOT_FIRST + BANK_BAGS).contains(&s) => {
             store.0.player_bank_bag_slot(s - BANK_BAG_SLOT_FIRST)
         }

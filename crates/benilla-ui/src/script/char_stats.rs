@@ -259,9 +259,10 @@ pub struct InvSlotView {
 pub const INVENTORY_SLOT_COUNT: usize = 24;
 pub type InventorySlots = [Option<InvSlotView>; INVENTORY_SLOT_COUNT];
 
-/// The six bank-bag slots in button order, live-API ids 64..=69; `None` is empty or unbought.
-/// They are player-descriptor slots, present whether or not the bank window is open.
-pub const BANK_BAG_SLOT_COUNT: usize = 6;
+/// The seven bank-bag slots in button order, live-API ids 68..=74 in 3.3.5 (donor 64..=69);
+/// `None` is empty or unbought. They are player-descriptor slots, present whether or not the bank
+/// window is open.
+pub const BANK_BAG_SLOT_COUNT: usize = 7;
 pub type BankBagSlots = [Option<InvSlotView>; BANK_BAG_SLOT_COUNT];
 
 /// `PaperDollItemFrame.dbc`'s 36 rows as `(SlotName, SlotID, art suffix)`. The texture column
@@ -552,16 +553,21 @@ fn ask_ammo_record(lua: &Lua, token: &Option<String>, slot: i64, view: Option<&I
     }
 }
 
-/// The bank's live-API ids, `BankButtonIDToInvSlotID`'s two bands: 24 vault slots, 6 bag slots.
+/// The bank's live-API ids, `BankButtonIDToInvSlotID`'s two bands. 3.3.5 has 28 vault slots and
+/// seven bag slots (`Types.h:100-117`, `ResolveInventorySlotArg`'s 39..=66 / 67..=73 internal
+/// bands); the donor 1.12 client has 24 and six. These are live ids, i.e. internal slot + 1.
 const BANK_INV_SLOTS: std::ops::RangeInclusive<usize> = 40..=63;
+const BANK_INV_SLOTS_WRATH: std::ops::RangeInclusive<usize> = 40..=67;
 const BANK_BAG_INV_SLOTS: std::ops::RangeInclusive<usize> = 64..=69;
+const BANK_BAG_INV_SLOTS_WRATH: std::ops::RangeInclusive<usize> = 68..=74;
 
 /// The vault's container id; must match `ui_items::BANK_CONTAINER` in the app.
 pub(super) const BANK_CONTAINER: i64 = -1;
 
-/// The keyring's live-API ids: `KeyRingButtonIDToInvSlotID` adds `0x51` to a 1-based button id
-/// (`0x4c818b`), and the slot reader takes 0-based 81..=112 (`0x4c8567`).
+/// The keyring's live-API ids: `ResolveInventorySlotArg` accepts internal 86..=117 in 3.3.5 and
+/// 81..=112 in the donor.
 pub(super) const KEYRING_INV_SLOTS: std::ops::RangeInclusive<usize> = 82..=113;
+pub(super) const KEYRING_INV_SLOTS_WRATH: std::ops::RangeInclusive<usize> = 87..=118;
 
 /// The keyring's container id (`KEYRING_CONTAINER`, `MainMenuBarBagButtons.lua:1`); must match
 /// `ui_items::KEYRING_CONTAINER` in the app, which feeds the keys as that container.
@@ -612,11 +618,36 @@ impl Model {
     /// (`0x6228ad`-`0x6228cf`, the banker guid `[0xbdd038]`), and every getter here reads through
     /// it (`0x4c8449`, `0x4c8cd3`, `SetInventoryItem` at `0x53314e`).
     fn own_inv_slot(&self, slot: usize) -> Option<InvSlotView> {
-        let bank_band = BANK_INV_SLOTS.contains(&slot) || BANK_BAG_INV_SLOTS.contains(&slot);
+        let bank_band =
+            self.bank_inv_slots().contains(&slot) || self.bank_bag_inv_slots().contains(&slot);
         if bank_band && self.bank.is_none() {
             return None;
         }
         self.player_slot_object(slot)
+    }
+
+    fn bank_inv_slots(&self) -> std::ops::RangeInclusive<usize> {
+        if self.target == super::UiTarget::Wrath335 {
+            BANK_INV_SLOTS_WRATH.clone()
+        } else {
+            BANK_INV_SLOTS.clone()
+        }
+    }
+
+    fn bank_bag_inv_slots(&self) -> std::ops::RangeInclusive<usize> {
+        if self.target == super::UiTarget::Wrath335 {
+            BANK_BAG_INV_SLOTS_WRATH.clone()
+        } else {
+            BANK_BAG_INV_SLOTS.clone()
+        }
+    }
+
+    fn keyring_inv_slots(&self) -> std::ops::RangeInclusive<usize> {
+        if self.target == super::UiTarget::Wrath335 {
+            KEYRING_INV_SLOTS_WRATH.clone()
+        } else {
+            KEYRING_INV_SLOTS.clone()
+        }
     }
 
     /// The item object at the active player's live-API id `slot`, with no bank gate: what the
@@ -627,8 +658,9 @@ impl Model {
         if let Some(view) = self.bank_inv_slot(slot) {
             return Some(view);
         }
-        if KEYRING_INV_SLOTS.contains(&slot) {
-            let n = (slot - KEYRING_INV_SLOTS.start() + 1) as u32;
+        let keyring_slots = self.keyring_inv_slots();
+        if keyring_slots.contains(&slot) {
+            let n = (slot - keyring_slots.start() + 1) as u32;
             let keyring = self.containers.get(&KEYRING_CONTAINER)?;
             return keyring.slots.get(&n).map(InvSlotView::from_container_slot);
         }
@@ -642,10 +674,12 @@ impl Model {
         &self,
         slot: usize,
     ) -> Option<&super::container::ContainerSlot> {
-        let (bag, first) = if BANK_INV_SLOTS.contains(&slot) {
-            (BANK_CONTAINER, *BANK_INV_SLOTS.start())
-        } else if KEYRING_INV_SLOTS.contains(&slot) {
-            (KEYRING_CONTAINER, *KEYRING_INV_SLOTS.start())
+        let bank_slots = self.bank_inv_slots();
+        let keyring_slots = self.keyring_inv_slots();
+        let (bag, first) = if bank_slots.contains(&slot) {
+            (BANK_CONTAINER, *bank_slots.start())
+        } else if keyring_slots.contains(&slot) {
+            (KEYRING_CONTAINER, *keyring_slots.start())
         } else {
             return None;
         };
@@ -657,11 +691,13 @@ impl Model {
     /// slots.
     pub(super) fn inv_repair_cost(&self, slot: usize) -> u32 {
         let costs = &self.repair_costs;
-        let cost = if BANK_INV_SLOTS.contains(&slot) {
-            let n = (slot - BANK_INV_SLOTS.start() + 1) as u32;
+        let bank_slots = self.bank_inv_slots();
+        let keyring_slots = self.keyring_inv_slots();
+        let cost = if bank_slots.contains(&slot) {
+            let n = (slot - bank_slots.start() + 1) as u32;
             costs.bags.get(&(BANK_CONTAINER, n))
-        } else if KEYRING_INV_SLOTS.contains(&slot) {
-            let n = (slot - KEYRING_INV_SLOTS.start() + 1) as u32;
+        } else if keyring_slots.contains(&slot) {
+            let n = (slot - keyring_slots.start() + 1) as u32;
             costs.bags.get(&(KEYRING_CONTAINER, n))
         } else {
             u32::try_from(slot)
@@ -675,11 +711,13 @@ impl Model {
     /// live id `slot`: the vault and keyring bands by their container slots, the doll's from the
     /// worn push.
     pub(super) fn inv_slot_cooldown(&self, slot: usize) -> Option<(f64, f64, bool)> {
-        if BANK_INV_SLOTS.contains(&slot) {
-            let n = (slot - BANK_INV_SLOTS.start() + 1) as u32;
+        let bank_slots = self.bank_inv_slots();
+        let keyring_slots = self.keyring_inv_slots();
+        if bank_slots.contains(&slot) {
+            let n = (slot - bank_slots.start() + 1) as u32;
             self.container_cooldowns.get(&(BANK_CONTAINER, n)).copied()
-        } else if KEYRING_INV_SLOTS.contains(&slot) {
-            let n = (slot - KEYRING_INV_SLOTS.start() + 1) as u32;
+        } else if keyring_slots.contains(&slot) {
+            let n = (slot - keyring_slots.start() + 1) as u32;
             self.container_cooldowns
                 .get(&(KEYRING_CONTAINER, n))
                 .copied()
@@ -689,15 +727,17 @@ impl Model {
     }
 
     fn bank_inv_slot(&self, slot: usize) -> Option<InvSlotView> {
-        if BANK_INV_SLOTS.contains(&slot) {
+        let bank_slots = self.bank_inv_slots();
+        let bag_slots = self.bank_bag_inv_slots();
+        if bank_slots.contains(&slot) {
             let vault = self.containers.get(&BANK_CONTAINER)?;
-            let n = (slot - BANK_INV_SLOTS.start() + 1) as u32;
+            let n = (slot - bank_slots.start() + 1) as u32;
             return vault.slots.get(&n).map(InvSlotView::from_container_slot);
         }
-        if BANK_BAG_INV_SLOTS.contains(&slot) {
+        if bag_slots.contains(&slot) {
             // A bank bag is a container, not a slot in one, so this band is its own store; stock
             // picks it up and describes it through this API.
-            let i = slot - BANK_BAG_INV_SLOTS.start();
+            let i = slot - bag_slots.start();
             return self.bank_bag_slots.get(i)?.clone();
         }
         None
@@ -710,9 +750,9 @@ impl Model {
 pub(super) fn inventory_slot_reader_accepts(slot0: i32) -> bool {
     slot0 == -1                            // Lua 0      the ammo leg
         || (0x00..=0x16).contains(&slot0)  // Lua 1..=23   the doll + the four equipped bags
-        || (0x27..=0x3e).contains(&slot0)  // Lua 40..=63  the bank vault
-        || (0x3f..=0x44).contains(&slot0)  // Lua 64..=69  the bank bag slots
-        || (0x51..=0x70).contains(&slot0) // Lua 82..=113 the keyring
+        || (0x27..=0x42).contains(&slot0)  // Lua 40..=67  the bank vault (3.3.5 28 slots)
+        || (0x43..=0x49).contains(&slot0)  // Lua 68..=74  the bank bag slots (3.3.5 seven)
+        || (0x56..=0x75).contains(&slot0) // Lua 87..=118 the keyring (3.3.5 32)
 }
 
 fn link_item_name(link: &str) -> Option<String> {

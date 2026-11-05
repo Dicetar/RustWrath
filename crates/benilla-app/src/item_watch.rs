@@ -145,21 +145,23 @@ impl Run {
     }
 }
 
-/// The bag cache `0xbdd060`: the guids of bags 1 to 10 (the four equipped, then the six bank bags)
-/// as the rescan `0x4f91a0` last stored them. The world-enter cascade's watcher set-up zeroes and
-/// rescans it (`0x4f8cc0`, `0x4f8da6`); a bag seat's watcher rescans it (`0x4f8f66`). A bag in it
-/// has its slots watched (`0x4f932a`, removed at `0x4f9299`) and a number its events carry.
+/// The bag cache `0xbdd060`: the guids of bags 1 to 11 (the four equipped, then the seven bank
+/// bags) as the rescan `0x4f91a0` last stored them. The world-enter cascade's watcher set-up
+/// zeroes and rescans it (`0x4f8cc0`, `0x4f8da6`); a bag seat's watcher rescans it (`0x4f8f66`).
+/// A bag in it has its slots watched (`0x4f932a`, removed at `0x4f9299`) and a number its events
+/// carry. 3.3.5 has seven bank bags, so the donor's ten-slot cache is widened to eleven; the
+/// donor path simply leaves the eleventh empty.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BagCache(
-    pub(crate) [u64; 10],
+    pub(crate) [u64; 11],
     /// Each bag's watched slots: its slot count when the rescan stored it, read off the bag
     /// object (`0x4f92e3`, `0x4f92fd`), and none for a bag the rescan did not find (`0x4f92ec`).
-    pub(crate) [u8; 10],
+    pub(crate) [u8; 11],
 );
 
 impl BagCache {
     /// The guid in the seat of bag `n`, 1 to 10: seat `n + 18` for 1-4, `n + 58` for 5-10
-    /// (`0x4f91f8`, `0x4f9204`).
+    /// (`0x4f91f8`, `0x4f9204`). Donor only; Wrath callers use [`Self::seat_with`].
     fn seat_of(player: &ObjectFields, n: u8) -> u64 {
         seat_guid(player, if n <= 4 { n + 18 } else { n + 58 })
     }
@@ -183,7 +185,7 @@ impl BagCache {
         if me == Some(container) {
             return vec![0];
         }
-        (1..=10)
+        (1..=11)
             .zip(self.0)
             .filter(|&(_, g)| g == container)
             .map(|(n, _)| n)
@@ -201,6 +203,18 @@ impl BagCache {
             .unwrap_or(0)
     }
 
+    /// Store one bag seat and its watched count. Used by the typed Wrath bank-bag change when it
+    /// only needs to refresh one seat without a full rescan. Kept private to the module's tests
+    /// and the typed path below.
+    #[allow(dead_code)]
+    pub(crate) fn set(&mut self, bag: u8, guid: u64, slots: u8) {
+        if (1..=11).contains(&bag) {
+            let index = usize::from(bag - 1);
+            self.0[index] = guid;
+            self.1[index] = slots;
+        }
+    }
+
     /// The rescan `0x4f91a0` over the active player's bag seats: a bag whose guid differs from the
     /// cache fires `BAG_CLOSED` when the old one was not zero (`0x4f9245`, `0x4f92b5`), is stored
     /// (`0x4f92c7`) with its slots watched over the count `lookup` finds (`0x4f92fd`), and fires
@@ -210,10 +224,21 @@ impl BagCache {
         player: &ObjectFields,
         lookup: &dyn Fn(u64) -> Option<&'a ObjectFields>,
     ) -> Vec<BagEvent> {
+        self.rescan_with(10, &|n| Self::seat_of(player, n), lookup)
+    }
+
+    /// [`Self::rescan`] with the caller's bag-seat lookup and bag count. Wrath passes 11 so bag 11
+    /// (player-array seat 73) is covered; the donor path passes 10.
+    pub(crate) fn rescan_with<'a>(
+        &mut self,
+        count: u8,
+        seat: &dyn Fn(u8) -> u64,
+        lookup: &dyn Fn(u64) -> Option<&'a ObjectFields>,
+    ) -> Vec<BagEvent> {
         let mut out = Vec::new();
-        for n in 1..=10u8 {
+        for n in 1..=count.min(11) {
             let i = usize::from(n - 1);
-            let now = Self::seat_of(player, n);
+            let now = seat(n);
             if now == self.0[i] {
                 continue;
             }
@@ -226,6 +251,10 @@ impl BagCache {
                 out.push(BagEvent::Update(i64::from(n)));
             }
         }
+        if count < 11 {
+            self.0[10] = 0;
+            self.1[10] = 0;
+        }
         out
     }
 
@@ -237,7 +266,23 @@ impl BagCache {
         player: &ObjectFields,
         lookup: &dyn Fn(u64) -> Option<&'a ObjectFields>,
     ) {
-        self.0 = std::array::from_fn(|i| Self::seat_of(player, i as u8 + 1));
+        self.seat_with(10, &|n| Self::seat_of(player, n), lookup);
+    }
+
+    /// [`Self::seat`] with the caller's bag-seat lookup and bag count.
+    pub(crate) fn seat_with<'a>(
+        &mut self,
+        count: u8,
+        seat: &dyn Fn(u8) -> u64,
+        lookup: &dyn Fn(u64) -> Option<&'a ObjectFields>,
+    ) {
+        self.0 = std::array::from_fn(|i| {
+            if (i as u8) < count {
+                seat(i as u8 + 1)
+            } else {
+                0
+            }
+        });
         self.1 = self.0.map(|g| slot_count(g, lookup));
     }
 }
@@ -398,6 +443,9 @@ where
     /// `0x468460(guid, TYPEMASK_ITEM)` and kin: a live object's fields.
     pub(crate) lookup: F,
     pub(crate) items: &'a Items,
+    /// The typed Wrath owner, when the selected client is 3.3.5. It lets the watcher find items
+    /// in the four extra bank slots and the seventh bank bag, which the 1.12 projection drops.
+    pub(crate) inventory: Option<&'a crate::wrath_inventory::WrathInventory>,
 }
 
 impl<'a, F> Watch<'a, F>
@@ -592,7 +640,11 @@ where
                             .unwrap_or_default();
                         let run = Run {
                             notice: Some(ItemNotice::Bag { entries }),
-                            bags: bags.rescan(fields, &self.lookup),
+                            bags: bags.rescan_with(
+                                if self.inventory.is_some() { 11 } else { 10 },
+                                &|n| self.bag_seat(fields, n),
+                                &self.lookup,
+                            ),
                             ..Run::default()
                         };
                         out.push((at, run));
@@ -720,6 +772,73 @@ where
         Some(Unlock::Entry(kin(me, &self.lookup, walk, entry)))
     }
 
+    /// The player-array seat of bag `n`, 1..=11: the typed Wrath owner when present, else the
+    /// donor projection's seats. This is the single place the two numbering systems meet.
+    fn bag_seat(&self, player: &ObjectFields, n: u8) -> u64 {
+        if let Some(inv) = self.inventory {
+            match n {
+                1..=4 => inv
+                    .guid(crate::wrath_inventory::InventoryAddr::BagSlot(n - 1))
+                    .unwrap_or(0),
+                5..=11 => inv
+                    .guid(crate::wrath_inventory::InventoryAddr::BankBag(n - 5))
+                    .unwrap_or(0),
+                _ => 0,
+            }
+        } else {
+            BagCache::seat_of(player, n)
+        }
+    }
+
+    /// [`Self::entry_run`] for a typed Wrath address the donor projection does not carry: the
+    /// four extra bank slots and the seventh bank bag. The donor seats 0..112 keep their own
+    /// watcher order; these runs are appended after them.
+    pub(crate) fn typed_bank_change(
+        &self,
+        addr: crate::wrath_inventory::InventoryAddr,
+        old: Option<u64>,
+        new: Option<u64>,
+        bags: &mut BagCache,
+        seat: &dyn Fn(u8) -> u64,
+    ) -> Option<Run> {
+        let old_guid = old.unwrap_or(0);
+        let new_guid = new.unwrap_or(0);
+        match addr {
+            crate::wrath_inventory::InventoryAddr::Bank(_) => {
+                if old_guid == new_guid {
+                    return None;
+                }
+                let mut run = Run {
+                    bags: vec![BagEvent::BankSlots],
+                    ..Run::default()
+                };
+                if new_guid != 0 {
+                    run.unlocks.push(Unlock::Item(new_guid));
+                }
+                Some(run)
+            }
+            crate::wrath_inventory::InventoryAddr::BankBag(_) => {
+                let entries = (self.lookup)(new_guid)
+                    .filter(|f| f.is_container())
+                    .map(|bag| {
+                        let n = bag.container_num_slots().unwrap_or(0).min(36) as u8;
+                        (0..n)
+                            .filter_map(|j| bag.container_slot(j))
+                            .filter_map(|g| self.entry_of(g))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut run = Run {
+                    notice: Some(ItemNotice::Bag { entries }),
+                    ..Run::default()
+                };
+                run.bags = bags.rescan_with(11, seat, &self.lookup);
+                (!run.is_empty()).then_some(run)
+            }
+            _ => None,
+        }
+    }
+
     /// `0x4f9480(guid)`: an item found (`0x4f949c`) whose owner is the active player (`0x4f94b8`)
     /// raises `BAG_UPDATE` for its `ITEM_FIELD_CONTAINED` (`0x4f94cf` → `0x4f9370`); else nothing.
     fn item_bag(&self, guid: u64, bags: &BagCache) -> Option<BagEvent> {
@@ -767,6 +886,7 @@ where
             return Vec::new();
         };
         let item = (self.lookup)(guid).filter(|f| f.is_item());
+        let typed_seat = self.inventory.and_then(|inv| inv.addr_of(guid));
         let seat_of = |g: u64| (0..113u8).find(|&n| seat_guid(me, n) == g);
         let seat = seat_of(guid).or_else(|| {
             let bag = item?.item_contained().unwrap_or(0);
@@ -776,7 +896,12 @@ where
             return vec![signal];
         }
         let mut out = Vec::new();
-        if seat.is_some_and(|n| (39..=68).contains(&n)) {
+        let typed_bank = typed_seat.is_some_and(crate::wrath_inventory::InventoryAddr::is_bank)
+            || item
+                .and_then(|f| f.item_contained())
+                .and_then(|bag| self.inventory.and_then(|inv| inv.addr_of(bag)))
+                .is_some_and(crate::wrath_inventory::InventoryAddr::is_bank);
+        if seat.is_some_and(|n| (39..=68).contains(&n)) || typed_bank {
             out.push(FieldNotice::Player {
                 id: id::PLAYERBANKSLOTS_CHANGED,
             });
@@ -944,6 +1069,7 @@ mod tests {
                 me: Some(ME),
                 lookup: |g| self.objects.get(&g),
                 items: &self.items,
+                inventory: None,
             }
         }
 
@@ -1683,5 +1809,47 @@ mod tests {
         let mut stack = vec![POTION, WORN, INNER, BANKED];
         stack.sort_unstable();
         assert_eq!(kin(&me, &lookup, Walk::Stack, ARROWS_ID), stack);
+    }
+
+    /// The typed Wrath tail has no donor field: a bank slot 25 change still raises the bank
+    /// signal and unlock even when the item's record has not landed yet.
+    #[test]
+    fn a_typed_bank_slot_without_a_record_still_signals() {
+        let w = World::new();
+        let mut bags = BagCache::default();
+        let run = w
+            .watch()
+            .typed_bank_change(
+                crate::wrath_inventory::InventoryAddr::Bank(24),
+                None,
+                Some(0xBEEF),
+                &mut bags,
+                &|_| 0,
+            )
+            .expect("a changed bank slot runs");
+        assert_eq!(run.bags, [BagEvent::BankSlots]);
+        assert_eq!(run.unlocks, [Unlock::Item(0xBEEF)]);
+        assert!(run.notice.is_none());
+    }
+
+    /// The seventh bank bag is a typed container seat: it fires `BAG_UPDATE(11)` and its bag
+    /// notice without requiring the donor cache to have seen a tenth bag.
+    #[test]
+    fn the_seventh_bank_bag_raises_bag_update_eleven() {
+        let w = World::new();
+        let mut bags = BagCache::default();
+        let run = w
+            .watch()
+            .typed_bank_change(
+                crate::wrath_inventory::InventoryAddr::BankBag(6),
+                None,
+                Some(0xBEEF),
+                &mut bags,
+                &|n| if n == 11 { 0xBEEF } else { 0 },
+            )
+            .expect("a changed bank bag runs");
+        assert!(matches!(run.notice, Some(ItemNotice::Bag { .. })));
+        assert!(run.bags.contains(&BagEvent::Update(11)));
+        assert_eq!(bags.0[10], 0xBEEF);
     }
 }

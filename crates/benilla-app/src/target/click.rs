@@ -1051,7 +1051,7 @@ impl Dispatch<'_, '_> {
             .and_then(|item| {
                 let slot0 = u8::try_from(item.slot.saturating_sub(1)).unwrap_or(0);
                 self_store.and_then(|s| {
-                    crate::ui_items::slot_guid(&s.0, item.bag, slot0, &self.go_inputs.objects)
+                    crate::ui_items::slot_guid_donor(&s.0, item.bag, slot0, &self.go_inputs.objects)
                 })
             });
         let ghost = self_store.is_some_and(|s| s.0.player_is_ghost());
