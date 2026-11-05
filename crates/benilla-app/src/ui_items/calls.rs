@@ -91,7 +91,7 @@ impl ItemSteps<'_, '_> {
                 0,
             )),
             super::KEYRING_CONTAINER => Some((
-                free_seats(u32::from(super::WRATH_KEYRING_SLOTS), |i| {
+                free_seats(u32::from(inv.keyring_capacity()), |i| {
                     seat(inv.keyring(i))
                 })?,
                 0x100, // AzerothCore ItemTemplate.h: BAG_FAMILY_MASK_KEYS.

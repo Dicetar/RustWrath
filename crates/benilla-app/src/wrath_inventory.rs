@@ -112,7 +112,7 @@ impl WrathFieldWindow {
         Some(u64::from(low) | (u64::from(high) << 32))
     }
 
-    /// The 0..1171 window a Wrath player digest carries.
+    /// The `PLAYER_WINDOW_END` window a Wrath player digest carries.
     pub(crate) fn player(values: Vec<u32>, delivered: Vec<u64>) -> Option<Self> {
         (values.len() >= usize::from(PLAYER_WINDOW_END)).then(|| Self::new(values, delivered))
     }
@@ -301,7 +301,11 @@ impl WrathInventory {
             let old_entry = self.slots.get(&addr).copied();
             let first = old_entry.is_none();
             let old = old_entry.flatten();
-            if old_entry != Some(new) && (old != new || new.is_some_and(|g| g != 0)) {
+            // A first observation is a presence fact, not a change: an empty slot is not a
+            // clear event, and a delivered guid is the initial value. Later observations
+            // report every value change, including a delivered zero clear.
+            let changed = if first { guid != 0 } else { old != new };
+            if changed {
                 changes.slots.push(InventoryChange {
                     addr,
                     old,
