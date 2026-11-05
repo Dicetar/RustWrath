@@ -20,7 +20,7 @@ Legend: Partial = component source exists, not accepted behavior; Broken = a con
 | C06 | Route water and collision | [21](../../.scratch/project-b/issues/21-route-water-and-collision.md) | MH2O and world asset paths | Partial; structures/navigation route proof pending | GAP |
 | C07 | Render live replicated entities | [22](../../.scratch/project-b/issues/22-live-entities-rendered.md) | WorldDigest → ECS/GuidIndex/ObjectStore | Partial; visible connected lifecycle pending | GAP |
 | C08 | Move/jump and reconcile | [23](../../.scratch/project-b/issues/23-local-movement-and-correction.md) | Player controller → wrath_stream_movement | Broken flag translation, R01 | GAP |
-| C09 | Travel, communicate and reconnect | [24](../../.scratch/project-b/issues/24-route-travel-and-reconnect.md) | Parked character selection; movement path | Partial; route, communication and recovery proof pending | GAP |
+| C09 | Travel, communicate and reconnect | [24](../../.scratch/project-b/issues/24-route-travel-and-reconnect.md) | Parked character selection; movement path; bounded session reply delivery (R04) | Partial; route, communication and recovery proof pending; queue/reconnect source only, runtime UNKNOWN | GAP |
 | C10 | Baseline attack and real spell | [25](../../.scratch/project-b/issues/25-ordinary-combat-slice.md) | Command tap and gameplay codec | Partial; R01/R03/R07 and connected outcome proof | GAP |
 | C11 | Quest, loot, reward persistence | [26](../../.scratch/project-b/issues/26-quest-loot-reward.md) | Quest codec, item/container and inventory projection | Broken item query alignment, R02; persistence pending | GAP |
 | C12 | Death/recovery and refusals | [27](../../.scratch/project-b/issues/27-death-and-recovery.md) | Existing donor owners; Wrath scope lifecycle | Unknown complete Wrath path | GAP |
@@ -45,10 +45,22 @@ Legend: Partial = component source exists, not accepted behavior; Broken = a con
 | Release UI | Stock 3.3.5 UI/API/events/security/addons | Issue 18; early UI-host slice | Addon interface 11200, donor identity/API shapes | Incompatible donor contract found, R05 | GAP |
 | Release controls | Bindings/macros/options/action bars/local state | Issue 18; behavior children pending | Existing persistence and action-button owners | Partial; Wrath reconnect/reload behavior pending | GAP |
 | Release extensions | Exact required WM/addon builds | Issue 18; C13–C17 cover parts | Declared WM addon target list | Unknown exact build/workflow coverage | GAP |
-| Release operations | Bounded queues/install/update/recovery/performance | Issue 18; operational children pending | Lifecycle ownership, profile rollback seam, queue source | Partial; R03/R04, packaging/performance evidence missing | GAP |
+| Release operations | Bounded queues/install/update/recovery/performance | Issue 18; operational children pending | Lifecycle ownership, profile rollback seam, bounded session-reply delivery (R04.a/R04.b) | Partial with R03/R04; packaging/performance evidence missing; session overload source-observed and repaired at source, runtime UNKNOWN | GAP |
 | Platform combat | Negotiated server-authoritative experimental combat | Completion plan section 9 E | Offline model and existing server extension concepts | Model/source only; runtime choice/proof open | GAP |
 | Platform building | Functional persistent building with collision/navigation | Completion plan section 9 B | Existing spawn owners/dynamic GO collision references | Conditional capability; navigation/lifecycle proof open | GAP |
 | Platform generation | Generated spaces through authoritative owners | Completion plan section 9 G | Isolated procgen-v2 data generator | Data only; durable codec/consumer/geometry decisions open | GAP |
+
+## Operational delivery (R04)
+
+Addresses review finding R04 (unbounded gameplay-reply channel, 64/tick drain), re-prioritised to
+P1 by the 2026-11-05 release plan; the dated review's P2 text stays intact. Source anchors are at
+`46fd2f0c`; the review's 2026-10-26 line numbers are historical. Contract:
+[bounded session delivery](bounded-session-delivery.md).
+
+| Row | Producer | Queue | Consumer | Overload terminal behaviour | Scenarios | Evidence |
+|---|---|---|---|---|---|---|
+| R04.a session-reply delivery | `run_session_with_cancel` (`wrath.rs:6975`) via `translate_gameplay` (2325) and the `send_glue` closure (6991) | `SessionReplies` at `wrath.rs:1009`: FIFO cap 4096, 2 reserved terminals, coalesced keys server-clock / played-time / gossip-menu / vendor-stock | `take_session_events` (1132) -> `wrath_dispatch_events` (4272, take at 4281) -> `route_wm_action_outcomes` (4562) -> `net::handlers::dispatch` (`net/handlers.rs:178`) -> glue/UI messages | coalesce observations -> <=50 ms cancel-checked read backpressure -> controlled `SessionEnded` + forced `Disconnected` at the hard cap; never a silent drop of an ordered reply while the session continues | steady state; stall/burst; refusal (`OutboxFull`/`ScopeChanged` unchanged); transfer; reconnect | SOURCE-OBSERVED (baseline) / PROPOSED and implemented at source (this policy) / NOT RUN: compiled, focused check, receiver, visible |
+| R04.b terminal under overload | worker terminal paths (`wrath.rs:1043-1067`, `7819-7826`) and panic synthesis (1529) | reserved terminal slot, delivered before the FIFO, one edge per kind | `wrath_dispatch_events` -> `on_disconnected` (`net/session.rs:345`) -> glue | terminal delivered ahead of the backlog; batch truncated at the terminal; reply/observation backlog discarded once the session ends; a clean logout's `LoggedOut` and its `Disconnected` teardown are both delivered | terminal with 0 backlog; with >4096 backlog; during transfer; during AppExit; worker panic | SOURCE-OBSERVED / implemented at source / NOT RUN |
 
 ## Decision and test linkage
 
