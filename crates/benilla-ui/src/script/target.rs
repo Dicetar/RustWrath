@@ -102,6 +102,9 @@ const WRATH_INGAME_EVENTS: &[&str] = &[
     "CANCEL_SUMMON",
     "CHANNEL_INVITE_REQUEST",
     "CHANNEL_PASSWORD_REQUEST",
+    // WMBridge consumes PARTY_KILL through the unfiltered combat-log event
+    // (`UnitCombatLog_C.cpp:866-887`); the host emits it from the decoded kill packet.
+    "COMBAT_LOG_EVENT_UNFILTERED",
     "CONFIRM_DISENCHANT_ROLL",
     "DISABLE_TAXI_BENCHMARK",
     "ENABLE_TAXI_BENCHMARK",
@@ -213,6 +216,19 @@ mod wrath_regressions {
             assert(GetFramesRegisteredForEvent("RUNE_POWER_UPDATE") == a)
             a:UnregisterAllEvents()
             assert(select('#', GetFramesRegisteredForEvent("RUNE_POWER_UPDATE")) == 0)
+        "#).unwrap();
+    }
+
+    #[test]
+    fn wrath_admits_the_combat_log_event_for_addons() {
+        let script = host();
+        script.run(r#"
+            local listener = CreateFrame("Frame", "WrathCombatLogAdmission")
+            assert(not listener:IsEventRegistered("COMBAT_LOG_EVENT_UNFILTERED"))
+            listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+            assert(listener:IsEventRegistered("COMBAT_LOG_EVENT_UNFILTERED"))
+            listener:UnregisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+            assert(not listener:IsEventRegistered("COMBAT_LOG_EVENT_UNFILTERED"))
         "#).unwrap();
     }
 

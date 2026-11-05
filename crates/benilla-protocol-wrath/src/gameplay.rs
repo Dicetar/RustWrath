@@ -1705,6 +1705,9 @@ pub enum ServerEvent {
         melee_spell_id: u32,
         school: u32,
     },
+    /// `SMSG_PARTYKILLLOG` (`Unit.cpp:14210-14212`): the killing blow credited to the looter.
+    /// The writer sends the killer's raw `u64` and then the victim's.
+    PartyKillLog { killer: u64, victim: u64 },
     CancelCombat,
     AiReaction { unit: u64, reaction: u32 },
     CancelAutoRepeat,
@@ -2170,6 +2173,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         }
         SMSG_AI_REACTION => read_ai_reaction(body),
         SMSG_ATTACKERSTATEUPDATE => read_attacker_state(body),
+        SMSG_PARTYKILLLOG => read_party_kill_log(body),
         SMSG_CANCEL_COMBAT => Ok(ServerEvent::CancelCombat),
         SMSG_CANCEL_AUTO_REPEAT => read_cancel_auto_repeat(body),
         SMSG_PLAY_SPELL_VISUAL => read_play_spell_visual(body),
@@ -2781,6 +2785,15 @@ fn read_attack_stop(b: &[u8]) -> Result<ServerEvent> {
     let attacker = r.packed_guid()?;
     let victim = if r.remaining() == 0 { 0 } else { r.packed_guid()? };
     Ok(ServerEvent::AttackStop { attacker, victim })
+}
+
+/// `SMSG_PARTYKILLLOG` (`Unit.cpp:14210-14212`): two raw `u64` guids, killer first.
+fn read_party_kill_log(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::PartyKillLog {
+        killer: r.u64()?,
+        victim: r.u64()?,
+    })
 }
 
 // `HitInfo` bits whose conditional tails `SendAttackStateUpdate` writes (Unit.h:97-122).
@@ -4295,6 +4308,19 @@ pub fn parse_char_enum(payload: &[u8]) -> Result<Vec<CharEnumRecord>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrath_party_kill_log_reads_the_killer_then_the_victim() {
+        let killer = 0x0000_0000_0000_0011u64;
+        let victim = 0xF130_0000_0000_0022u64;
+        let mut body = Vec::new();
+        body.extend_from_slice(&killer.to_le_bytes());
+        body.extend_from_slice(&victim.to_le_bytes());
+        let event = parse(crate::opcode::SMSG_PARTYKILLLOG, &body)
+            .expect("the opcode is translated")
+            .expect("the 16-byte body is valid");
+        assert_eq!(event, ServerEvent::PartyKillLog { killer, victim });
+    }
 
     #[test]
     fn wrath_monster_move_reaches_the_gameplay_decoder() {

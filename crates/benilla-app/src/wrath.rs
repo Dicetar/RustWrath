@@ -89,6 +89,9 @@ use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, Session
 /// The UI feed that projects the scoped rune/calendar view into the Wrath VM's model.
 #[path = "ui_script/wrath_rune_calendar_feed.rs"]
 mod wrath_rune_calendar_feed;
+/// The UI feed that turns a decoded `SMSG_PARTYKILLLOG` into the stock combat-log event.
+#[path = "ui_script/wrath_combat_log_feed.rs"]
+mod wrath_combat_log_feed;
 
 /// Bounded lifecycle queue depth: lifetimes of interest are short (one world transfer is one
 /// event); 16 gives many frames of headroom at one-event-per-transfer rates.
@@ -604,6 +607,14 @@ pub enum WrathFeedEvent {
     /// `SMSG_ADD_RUNE_POWER`: the mask of runes that just became usable.
     RunePower {
         mask: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_PARTYKILLLOG`: the killing blow credited to a player. Carries the scope so a
+    /// delayed kill from a retired world never reaches the Wrath VM.
+    PartyKillLog {
+        killer: u64,
+        victim: u64,
         session_epoch: u64,
         world_generation: u64,
     },
@@ -1858,6 +1869,18 @@ pub struct WrathPlayedTime {
     pub trigger_script_event: bool,
 }
 
+/// One decoded `SMSG_PARTYKILLLOG` with the world scope it belongs to and a monotonic sequence
+/// the UI feed uses to fire the event exactly once. The sequence never resets, so a teardown that
+/// clears the record cannot make a later kill reuse an old revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathPartyKill {
+    pub killer: u64,
+    pub victim: u64,
+    pub session_epoch: u64,
+    pub world_generation: u64,
+    pub revision: u64,
+}
+
 /// One decoded rune slot with the `GetTime()` anchor its cooldown byte arrived on. `cooldown` is
 /// the writer's 0..255 progress fraction; the presentation derives the start from it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1932,6 +1955,10 @@ pub struct WrathWorldView {
     pub calendar_revision: u64,
     /// The last decoded `SMSG_CALENDAR_COMMAND_RESULT`, cleared with the calendar scope.
     pub last_calendar_command_result: Option<WrathCalendarCommandResult>,
+    /// The last decoded `SMSG_PARTYKILLLOG`; the combat-log feed fires it once per revision.
+    pub party_kill: Option<WrathPartyKill>,
+    /// Monotonic sequence for [`Self::party_kill`], never reset on a scope clear.
+    pub party_kill_revision: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -1970,6 +1997,8 @@ impl Default for WrathWorldView {
             calendar_fetched: false,
             calendar_revision: 0,
             last_calendar_command_result: None,
+            party_kill: None,
+            party_kill_revision: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -2101,13 +2130,27 @@ impl WrathWorldView {
         self.calendar_fetched = true;
     }
 
-    /// Clear every scoped rune/calendar fact on a session end or world transfer.
+    /// Adopt one `SMSG_PARTYKILLLOG`. The sequence is monotonic for the app's lifetime so a
+    /// teardown's clear cannot make a later kill reuse a revision the UI feed has already seen.
+    fn apply_party_kill(&mut self, killer: u64, victim: u64, session_epoch: u64, world_generation: u64) {
+        self.party_kill_revision = self.party_kill_revision.saturating_add(1);
+        self.party_kill = Some(WrathPartyKill {
+            killer,
+            victim,
+            session_epoch,
+            world_generation,
+            revision: self.party_kill_revision,
+        });
+    }
+
+    /// Clear every scoped rune/calendar/party-kill fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
         self.calendar = None;
         self.calendar_fetched = false;
         self.calendar_revision = 0;
         self.last_calendar_command_result = None;
+        self.party_kill = None;
     }
 }
 
@@ -2296,6 +2339,10 @@ impl Plugin for WrathNetPlugin {
             app.add_systems(
                 Update,
                 wrath_rune_calendar_feed::feed.in_set(crate::ui_script::UiFeed),
+            );
+            app.add_systems(
+                Update,
+                wrath_combat_log_feed::feed.in_set(crate::ui_script::UiFeed),
             );
         }
     }
@@ -3159,6 +3206,9 @@ fn translate_gameplay(
         WrathGameplayEvent::AttackStop { attacker, victim } => {
             vec![SessionEvent::AttackStop { attacker, victim }]
         }
+        WrathGameplayEvent::PartyKillLog { killer, victim } => vec![SessionEvent::PartyKillLog(
+            benilla_protocol::messages::PartyKillLog { killer, victim },
+        )],
         WrathGameplayEvent::AttackSwingError(reason) => {
             let reason = match reason {
                 gameplay::AttackSwingError::NotInRange => AttackSwingError::NotInRange,
@@ -7043,6 +7093,21 @@ fn wrath_net_drain(
                     view.apply_rune_power(mask, ui_now_seconds.unwrap_or(0.0));
                 }
             }
+            WrathFeedEvent::PartyKillLog {
+                killer,
+                victim,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_party_kill(killer, victim, session_epoch, world_generation);
+                }
+            }
             WrathFeedEvent::Calendar {
                 calendar,
                 session_epoch,
@@ -10314,6 +10379,23 @@ pub fn run_session_with_cancel(
                                 }
                             }
                         }
+                        Ok(WrathGameplayEvent::PartyKillLog { killer, victim }) => {
+                            feed.push_event(WrathFeedEvent::PartyKillLog {
+                                killer,
+                                victim,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    WrathGameplayEvent::PartyKillLog { killer, victim },
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
                         Ok(WrathGameplayEvent::CalendarSendCalendar(calendar)) => {
                             feed.push_event(WrathFeedEvent::Calendar {
                                 calendar: calendar.clone(),
@@ -11099,6 +11181,41 @@ mod tests {
 
         view.clear_rune_calendar();
         assert!(view.runes.is_empty());
+    }
+
+    /// `SMSG_PARTYKILLLOG` is scoped presentation state: translate it onto the stock event and
+    /// clear the record on a transfer, while the sequence stays monotonic so a later kill cannot
+    /// reuse a revision the UI feed already fired.
+    #[test]
+    fn party_kill_state_translates_to_the_stock_event_and_clears() {
+        let killer = 0x0000_0000_0000_0011;
+        let victim = 0xF130_0000_0000_0022;
+        let mut view = WrathWorldView::default();
+        view.apply_party_kill(killer, victim, 7, 9);
+        let kill = view.party_kill.expect("the decoded kill is retained");
+        assert_eq!((kill.killer, kill.victim), (killer, victim));
+        assert_eq!((kill.session_epoch, kill.world_generation), (7, 9));
+        assert_eq!(kill.revision, 1);
+
+        let translated = translate_gameplay(
+            WrathGameplayEvent::PartyKillLog { killer, victim },
+            0,
+            std::time::Instant::now(),
+        );
+        assert_eq!(translated.len(), 1);
+        assert!(matches!(
+            &translated[0],
+            SessionEvent::PartyKillLog(kill) if kill.killer == killer && kill.victim == victim
+        ));
+
+        view.clear_rune_calendar();
+        assert!(view.party_kill.is_none());
+        view.apply_party_kill(killer, victim, 10, 11);
+        assert_eq!(
+            view.party_kill.expect("a later kill is retained").revision,
+            2,
+            "the sequence never rewinds across a scope clear"
+        );
     }
 
     /// Calendar replies replace the scoped snapshot; a second one never appends to the first.
