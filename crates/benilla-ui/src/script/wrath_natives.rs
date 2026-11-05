@@ -1888,7 +1888,7 @@ mod tests {
             .expect("MulticlassPoll in world VM");
         assert_eq!((op, status, got_serial, payload.as_bytes()), (1, 0, 1, b"WMC1".as_slice()));
 
-        let mut glue = UiScript::new_glue_with_target(UiTarget::Wrath335).unwrap();
+        let mut glue = UiScript::glue_with_target(UiTarget::Wrath335).unwrap();
         let (ok_glue, serial_glue): (bool, u32) = glue
             .eval("return MulticlassRequest(6, 11, 0, 42)")
             .expect("MulticlassRequest in glue VM");
