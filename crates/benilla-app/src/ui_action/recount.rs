@@ -15,7 +15,7 @@ use benilla_ui::script::{ScriptValue, UiScript};
 use crate::items::Items;
 use crate::net::{NetCommands, ObjectStore, Objects, SelfPlayer, WorldEnterCascadeMessage};
 use crate::query_cache::Ask;
-use crate::ui_items::action_count_in_target;
+use crate::ui_items::action_count_in_player;
 
 /// The bar's 120 slots, as Lua action ids.
 const ACTION_SLOTS: std::ops::RangeInclusive<u32> = 1..=120;
@@ -28,6 +28,7 @@ pub(crate) fn recount_item_actions(
     objects: Objects,
     items: Res<Items>,
     commands: Res<NetCommands>,
+    inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
 ) {
     hosted_vm.run(|script| {
         let arrived = arrivals.read().count() > 0;
@@ -40,6 +41,7 @@ pub(crate) fn recount_item_actions(
                 objects: &objects,
                 items: &items,
                 commands: &commands,
+                inventory: inventory.as_deref(),
             };
             arrival_counts(script, &counter);
         }
@@ -74,15 +76,22 @@ pub(crate) struct Counter<'a> {
     pub(crate) objects: &'a Objects<'a, 'a>,
     pub(crate) items: &'a Items,
     pub(crate) commands: &'a NetCommands,
+    /// The typed 3.3.5 inventory owner; `None` on the donor path.
+    pub(crate) inventory: Option<&'a crate::wrath_inventory::WrathInventory>,
 }
 
 impl Counter<'_> {
-    /// `0x4e6d20(entry)`: 0 without an active player, else [`action_count_in_target`] over the entry's
-    /// template, requested here as the reference does (`0x4e6d78`).
+    /// `0x4e6d20(entry)`: 0 without an active player, else [`action_count_in_player`] over the
+    /// entry's template, requested here as the reference does (`0x4e6d78`).
     fn count(&self, target: benilla_ui::script::UiTarget, entry: u32) -> u32 {
         self.store.map_or(0, |s| {
             let template = self.items.template(entry, 0, Ask::Event(self.commands));
-            action_count_in_target(target, &s.0, self.objects, entry, template)
+            let inv = crate::wrath_inventory::PlayerInventory::new(
+                &s.0,
+                self.inventory,
+                target == benilla_ui::script::UiTarget::Wrath335,
+            );
+            action_count_in_player(&inv, self.objects, entry, template)
         })
     }
 }

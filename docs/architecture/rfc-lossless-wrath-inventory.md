@@ -89,7 +89,10 @@ and a visible pickup, not a source ambiguity.
 | `wrath_quest_slots`, visible items, player fields | dense `Vec<u32>` | presence-aware window, `get`/`word_or_zero` |
 | `ui_items::feed` bank/containers | `BANK_SLOTS`/`BANK_BAGS` = 24/6 | `PlayerInventory::bank_capacity()`/`bank_bag_capacity()` = 28/7 |
 | `ui_items::slot_guid` | donor `ObjectFields` | `PlayerInventory` (bank 28, bags 7, keyring 32) |
-| `ui_items::walk_inventory` (shared walks) | donor | stays donor internally; `has_key` uses `has_key_in_player` |
+| `ui_items::walk_inventory` (shared walks) | donor | `walk_inventory_in_player`; every `*_in_player` reader takes `&PlayerInventory`, donor wrappers keep `&ObjectFields` |
+| `count_of` / `action_count` / `stack_counts` / `collect_inventory` / `find_item` | donor 24/6/16 | `*_in_player` variants; bank-scoped counts/collect see 28/7/32, mask-0 walks see the 32-slot keyring |
+| `possession_count` (`GetItemCount`) | donor, hard-coded 32 keyring | typed view; bank-scoped count sees slot 25 and bank bag 7 |
+| `PlayerInventory::typed` | value-or-donor | observed clear (`Some(0)`) wins; only a never-observed address falls back |
 | `has_key_in_target` | donor 24/6 | `has_key_in_player` with the typed owner |
 | `ui_items::container_space` | donor 24/6 | typed 28/7 |
 | `ui_char::bank_bag_slots` | 6 donor slots | 7 typed slots |
@@ -123,12 +126,25 @@ The remaining `slot_guid_donor` users are cursor sale (vendor, from the backpack
 cursor drop, the worn-item use, and probes; none can address the shifted bank/keyring bands, and
 the probes are dev-only. `net/io.rs` is the donor writer and never receives Wrath commands.
 
-**Intentionally left on the donor projection:** the shared `count_of`/`sum_of`/
-`action_count`/`stack_counts`/`collect_inventory`/`find_item` walks, `find_item_in_target`'s
-callers in the action bar/merchant slots, and the cursor sale/drop/probe `slot_guid_donor`
-paths. They see the 24/6 donor bands and the 32-slot keyring, but not the four extra bank slots
-or the seventh bank bag. A follow-up should thread `PlayerInventory` through the action bar,
-tradeskill, auction and tooltip counts; it is not required for the bank window or the bank
+**Read-only consumer migration (inventory-readers package):** the shared walks now take the
+typed view through `*_in_player` variants. Migrated callers: action-bar state (`stack_counts`,
+`find_item` equipment stage), action-bar identity and recount (`action_count`), item lane
+(`count_of`), quest log (`count_of` at `QUEST_ITEMS`), tradeskill and craft recipe reagents/tools,
+auction bid's unique count, mail stationery, spell tooltip reagent/totem lines and
+`reagent_state`, shapeshift reagent stacks, lock openers, `GetItemCount`
+(`possession_count`), and death's `HasSoulstone` collect. `count_of`/`collect_inventory` at
+`QUEST_ITEMS` therefore reach bank slot 25, bank bag 7 and its contents, and all of them reach
+keyring slots 17..32. `find_item`, `action_count` and `stack_counts` keep the reference's mask 0:
+they reach the full 32-slot keyring but deliberately do not enter the bank, as before.
+
+**Still on the donor projection:** the pre-send cast gate (`ui_action::errors`'s totem/reagent
+checks and `spell::cast_send`'s ammo count, both mask 0), the command producers
+`target/click.rs`, `target/lock.rs`, `ui_action/drain.rs` and `ui_petition/steps.rs` (positions and
+wire bytes must not change), `items::disarmed_equipment_slot` (the equipment band 0-18 is identical
+in both projections), the cursor sale/drop `slot_guid_donor` paths, and the dev capture probes.
+
+A follow-up should decide whether any command producer needs the typed view for its own read
+(cursor sale/drop and key-at-object ladder). It is not required for the bank window or the bank
 commands.
 
 ## 5. Invariants
@@ -146,6 +162,8 @@ commands.
    the new create repopulates it.
 9. No inventory backlog: state rides the digest, not the session-reply queue.
 10. Delayed template: a missing template changes no guid; `template_epoch` fills names/icons.
+11. Read-path precedence: an observed clear (`Some(0)`) is a value and never falls back to the
+    donor projection; only a never-observed address does.
 
 ## 6. Tests (added, not run)
 
@@ -157,6 +175,14 @@ commands.
   keyring 32, and the rejection past each band.
 - `ui_items::tests::wrath_find_item_returns_the_335_keyring_position`: the key-at-object walk
   returns `(255, 86)` for a donor keyring key.
+- `ui_items::wrath_read_tests` (added, not run): the quest count/collect walk reaches bank slot
+  25, bank bag 7 and its contents plus keyring slot 32; action/stack counts reach keyring slot 32;
+  `find_item` reaches keyring slot 32 and keeps the mask-0 bank exclusion; `GetItemCount` sees the
+  bank tail only with its bank flag; donor fallback stays 24/6/16 and never invents a tail value;
+  a typed clear does not resurrect a donor guid while a never-observed address still falls back.
+- `ui_tradeskill::tests::a_recipe_counts_a_worn_copy_and_the_keyring_but_not_the_bank` and
+  `ui_tooltip::spell_feed::tests::a_reagent_line_reaches_the_wrath_keyring_tail` (added, not
+  run): the migrated recipe and spell-tooltip callers reach typed keyring slots 30..32.
 - `item_watch::tests`: a typed bank slot without a record still signals/unlocks; bank bag 7
   raises `BAG_UPDATE(11)`.
 - `benilla-ui` tests: `bank_button_ids_follow_the_selected_contract` (68/74 Wrath, 64/69 donor),

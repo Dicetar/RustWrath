@@ -125,9 +125,15 @@ pub(super) fn feed_lock_openers(
             return;
         };
         let skill_catalog = skill_lines.as_deref().map(|s| &s.catalog);
-        let held = crate::ui_items::stack_counts(&store.0, &inv.objects)
-            .into_keys()
-            .collect();
+        let target = script.target();
+        let held = inv
+            .player(target == benilla_ui::script::UiTarget::Wrath335)
+            .map(|view| {
+                crate::ui_items::stack_counts_in_player(&view, &inv.objects)
+                    .into_keys()
+                    .collect()
+            })
+            .unwrap_or_default();
         let state = lock_openers(
             &actions.openers,
             spells.as_deref().map(|s| &s.catalog),

@@ -5,7 +5,7 @@ use super::*;
 use crate::items::Items;
 use crate::net::{NetCommands, ObjectStore, Objects, SelfPlayer};
 use crate::ui_action::{real_spells, PlayerActions, Spells};
-use benilla_ui::script::UiScript;
+use benilla_ui::script::{UiScript, UiTarget};
 
 /// The view alone, read through the shipped strings, for the cell tests; the feed keeps what it
 /// read beside it.
@@ -146,6 +146,8 @@ impl TestCtx {
             ),
             attack_target: None,
             objects,
+            inventory: None,
+            target: UiTarget::Vanilla112,
             items: &mut self.items,
             commands: &self.commands,
             sub_classes,

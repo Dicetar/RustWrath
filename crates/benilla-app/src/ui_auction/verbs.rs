@@ -15,7 +15,7 @@ use crate::items::Items;
 use crate::net::{ClientCommand, NetCommands};
 use crate::query_cache::Ask;
 use crate::ui_action::{show_messages, ui_error_text, MessageSink, Shown, UiError};
-use crate::ui_items::{count_of, InventoryScope};
+use crate::ui_items::{count_of_in_player, InventoryScope};
 
 /// The state the auction verbs read and write: the house's session, the socket, the player's
 /// purse and bags, and where a refusal's line goes.
@@ -28,6 +28,8 @@ pub(crate) struct AuctionVerbs<'w, 's> {
     time: Res<'w, Time>,
     items: Res<'w, Items>,
     objects: crate::net::Objects<'w, 's>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
     sink: MessageSink<'w>,
 }
 
@@ -40,6 +42,7 @@ impl AuctionVerbs<'_, '_> {
             time,
             items,
             objects,
+            inventory,
             sink,
         } = self;
         let Some(auction) = auction.as_deref_mut() else {
@@ -67,7 +70,15 @@ impl AuctionVerbs<'_, '_> {
                 }
             }
             AuctionCall::Bid(bid) => {
-                let refusal = place_bid(auction, commands, items, objects, &bid);
+                let refusal = place_bid(
+                    auction,
+                    commands,
+                    items,
+                    objects,
+                    inventory.as_deref(),
+                    script.target(),
+                    &bid,
+                );
                 if let Some(key) = refusal {
                     show_error(script, sink, key);
                 }
@@ -184,6 +195,8 @@ fn place_bid(
     commands: &NetCommands,
     items: &Items,
     objects: &crate::net::Objects,
+    inventory: Option<&crate::wrath_inventory::WrathInventory>,
+    target: benilla_ui::script::UiTarget,
     bid: &AuctionBid,
 ) -> Option<&'static str> {
     let player = objects.player_fields()?;
@@ -193,7 +206,12 @@ fn place_bid(
     // (`0x4cf892`), equipment, bags, backpack, bank and keyring.
     let unique = || {
         let max = items.template(bid.item_id, 0, Ask::Read)?.max_count as i32;
-        let carried = count_of(player, objects, bid.item_id, InventoryScope::QUEST_ITEMS);
+        let inv = crate::wrath_inventory::PlayerInventory::new(
+            player,
+            inventory,
+            target == benilla_ui::script::UiTarget::Wrath335,
+        );
+        let carried = count_of_in_player(&inv, objects, bid.item_id, InventoryScope::QUEST_ITEMS);
         Some((max, carried as i32))
     };
     match bid.verdict(money, unique) {

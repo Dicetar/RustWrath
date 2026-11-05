@@ -5,14 +5,14 @@
 //! (`GetBonusBarOffset`: the form's `SpellShapeshiftForm.dbc` BonusActionBar column, `0x4e4fc0`).
 
 use crate::query_cache::Ask;
-use crate::ui_items::action_count_in_target;
+use crate::ui_items::action_count_in_player;
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
 use benilla_protocol::messages::{ACTION_KIND_ITEM, ACTION_KIND_SPELL};
 use benilla_ui::script::macro_slot_id;
-use benilla_ui::script::{ActionSlot, ScriptValue};
+use benilla_ui::script::{ActionSlot, ScriptValue, UiTarget};
 
 use crate::entities::ItemDisplays;
 use crate::items::Items;
@@ -77,6 +77,8 @@ pub(super) fn feed_actions(
     items: Res<Items>,
     icons: Option<Res<ItemDisplays>>,
     commands: Res<NetCommands>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     mut memory: Local<crate::ui_script::VmMemo<FeedMemory>>,
     mut sink: MessageSink,
 ) {
@@ -166,6 +168,13 @@ pub(super) fn feed_actions(
         let mut signals = Vec::new();
         let memory = memory.get(script);
         let store = self_q.iter().next();
+        let inventory_view = store.map(|s| {
+            crate::wrath_inventory::PlayerInventory::new(
+                &s.0,
+                inventory.as_deref(),
+                script.target() == UiTarget::Wrath335,
+            )
+        });
         // The identity resolve reruns on a new VM, a bar edit, a macro edit or a landed item
         // template: a template is fetched ask-once, so a cold slot's first resolve only issues the
         // query, and the epoch advance redisplays it, like the reference's cache callback.
@@ -229,8 +238,16 @@ pub(super) fn feed_actions(
                                 icons.as_ref()?.catalog.get(t.display_info_id)?.icon.clone()
                             })
                             .unwrap_or_else(|| MISSING_ITEM_ICON.to_string());
-                        let count = store
-                            .map(|s| action_count_in_target(script.target(), &s.0, &objects, button.action, template.as_ref()))
+                        let count = inventory_view
+                            .as_ref()
+                            .map(|inv| {
+                                action_count_in_player(
+                                    inv,
+                                    &objects,
+                                    button.action,
+                                    template.as_ref(),
+                                )
+                            })
                             .unwrap_or(0);
                         // The Count gate (`0x4e5250`, [`ItemInfo::is_consumable`]) reads the icon's
                         // template, so it rides the same push.
