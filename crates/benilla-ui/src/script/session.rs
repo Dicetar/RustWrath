@@ -62,13 +62,19 @@ impl super::UiScript {
     }
 
     /// The bag watchers' set-up in the world-enter cascade (`0x4f8cc0`): the bag cache zeroed,
-    /// then rescanned (`0x4f8da6` → `0x4f91a0`), so each of bags 1 to 10 the player holds fires
-    /// `BAG_UPDATE` with its number, in order (`0x4f9343`); the backpack, the bank and the keyring
-    /// are no bags of the cache. A bag held is a container pushed for its number.
+    /// then rescanned (`0x4f8da6` → `0x4f91a0`), so each of bags 1 to 10 (donor) / 1 to 11
+    /// (3.3.5) the player holds fires `BAG_UPDATE` with its number, in order (`0x4f9343`); the
+    /// backpack, the bank and the keyring are no bags of the cache. A bag held is a container
+    /// pushed for its number.
     fn bags_enter_world(&mut self) {
         let held: Vec<i64> = {
             let model = self.model_ref();
-            (1..=10)
+            let last = if model.target == super::UiTarget::Wrath335 {
+                11
+            } else {
+                10
+            };
+            (1..=last)
                 .filter(|n| model.containers.contains_key(n))
                 .collect()
         };
@@ -229,5 +235,30 @@ mod tests {
                 "BAG_UPDATE:10"
             ]
         );
+    }
+
+    /// The 3.3.5 cascade reaches the seventh bank bag; the donor one stops at ten.
+    #[test]
+    fn the_wrath_world_enter_updates_the_seventh_bank_bag() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        for bag in [5, 10, 11] {
+            s.set_container(
+                bag,
+                Some(ContainerState {
+                    name: None,
+                    num_slots: 4,
+                    slots: Default::default(),
+                }),
+            );
+        }
+        s.run(
+            "Heard = {} local f = CreateFrame('Frame') f:RegisterEvent('BAG_UPDATE') \
+             f:RegisterEvent('PLAYER_ENTERING_WORLD') \
+             f:SetScript('OnEvent', function() table.insert(Heard, event .. ':' .. tostring(arg1)) end)",
+        )
+        .unwrap();
+        s.fire_world_enter();
+        let heard = s.eval::<Vec<String>>("return Heard").unwrap();
+        assert!(heard.contains(&"BAG_UPDATE:11".to_owned()), "{heard:?}");
     }
 }

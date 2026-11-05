@@ -20,11 +20,11 @@ use super::{
 fn accepts(model: &Model, live: u32) -> bool {
     let wrath = model.target == crate::script::UiTarget::Wrath335;
     (20..=23).contains(&live)
-        || if wrath {
+        || (if wrath {
             (40..=67).contains(&live) || (68..=74).contains(&live) || (87..=118).contains(&live)
         } else {
             (40..=63).contains(&live) || (64..=69).contains(&live) || (82..=113).contains(&live)
-        }
+        })
 }
 
 /// The live container id of a bag slot, the inverse of `ContainerIDToInventoryID`. Deviation:
@@ -43,9 +43,14 @@ fn autostore_container(model: &Model, live: u32) -> Option<i64> {
 /// `Bag0Slot`, the first equipped bag slot: only a container names it in `equip_slots`.
 const BAG0_SLOT: u8 = 20;
 
-/// The bank-bag live ids in either contract: donor 64..=69, 3.3.5 68..=74. The union keeps the
-/// hit test and `fits_slot` working for both hosts; the model only exposes the real buttons.
-pub(super) const BANK_BAG_INV_SLOTS: std::ops::RangeInclusive<u32> = 64..=74;
+/// The bank-bag live ids for the selected contract: donor 64..=69, 3.3.5 68..=74.
+pub(super) fn bank_bag_inv_slots(model: &Model) -> std::ops::RangeInclusive<u32> {
+    if model.target == crate::script::UiTarget::Wrath335 {
+        68..=74
+    } else {
+        64..=69
+    }
+}
 
 /// Whether the held item is a container, the reference's `TYPEMASK_CONTAINER` test (`0x4c7dc4`):
 /// only `INVTYPE_BAG` maps to the bag slots in `FindEquipSlot`, so no other item names Bag0Slot.
@@ -58,8 +63,8 @@ fn is_container(item: &CursorItem) -> bool {
 /// `CursorCanGoInSlot` (`0x5ea720`) passes any item at a bank bag slot, as `IsValidForSlot`
 /// answers 1 for every 0-based slot from 23 (`0x5da215`); the server's `CanBankItem` referees
 /// either way.
-pub(super) fn fits_slot(item: &CursorItem, id: u32) -> bool {
-    if BANK_BAG_INV_SLOTS.contains(&id) {
+pub(super) fn fits_slot(model: &Model, item: &CursorItem, id: u32) -> bool {
+    if bank_bag_inv_slots(model).contains(&id) {
         return is_container(item);
     }
     u8::try_from(id).is_ok_and(|id| item.equip_slots.contains(&id))
@@ -104,7 +109,7 @@ fn put_item(model: &mut Model, dest: Dest) -> bool {
     let bag_guid = match dest {
         Dest::Backpack => None,
         Dest::Slot(live) => {
-            if BANK_BAG_INV_SLOTS.contains(&live) && model.bank.is_none() {
+            if bank_bag_inv_slots(model).contains(&live) && model.bank.is_none() {
                 return false;
             }
             let occupant = usize::try_from(live)
@@ -232,7 +237,7 @@ pub(super) fn pickup_bag_from_slot(lua: &Lua, live: u32) -> mlua::Result<()> {
     let (gated, occupied) = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         let gated =
-            !model.player_control || (BANK_BAG_INV_SLOTS.contains(&live) && model.bank.is_none());
+            !model.player_control || (bank_bag_inv_slots(model).contains(&live) && model.bank.is_none());
         let occupied = usize::try_from(live)
             .ok()
             .and_then(|slot| model.inv_slot("player", slot))

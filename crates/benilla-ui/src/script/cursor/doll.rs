@@ -59,11 +59,11 @@ pub(super) enum DollClick {
 pub(super) fn doll_click(model: &mut Model, id: u32, may_cast: bool) -> DollClick {
     // Head 1 to Tabard 19, the bag slots 20-23, and the bank bag slots, which only `PutItemInBag`
     // reaches (`0x4c7c00` calls `0x4c7300`). Ammo (0) is refused; its leg is not built.
-    if !(1..=23).contains(&id) && !super::bag_verbs::BANK_BAG_INV_SLOTS.contains(&id) {
+    if !(1..=23).contains(&id) && !super::bag_verbs::bank_bag_inv_slots(model).contains(&id) {
         return DollClick::Done(false);
     }
     // A bank bag slot needs the bank open (`0x4c7366`-`0x4c7386`).
-    if super::bag_verbs::BANK_BAG_INV_SLOTS.contains(&id) && model.bank.is_none() {
+    if super::bag_verbs::bank_bag_inv_slots(model).contains(&id) && model.bank.is_none() {
         return DollClick::Done(false);
     }
     // Only a held item (`0x4c769a`) or a held row, a vendor's or the bar's (`0x4c76a5`), takes the
@@ -139,7 +139,7 @@ pub(super) fn doll_click(model: &mut Model, id: u32, may_cast: bool) -> DollClic
             // A misfit (`0x5ea720` false): an equipped item, the 0-based slot below 0x13, goes back
             // with `ClearCursor(1,1)` (`0x4c78e9`, `0x4c794d`); anything else is auto-equipped
             // (`0x4c78ef`, `0x5e1480`).
-            if !super::bag_verbs::fits_slot(&held, id) {
+            if !super::bag_verbs::fits_slot(model, &held, id) {
                 if held.bag == EQUIPMENT_BAG && held.slot <= 19 {
                     clear_cursor(model);
                     return DollClick::Done(true);
@@ -230,7 +230,7 @@ fn equip_held(model: &mut Model, id: u32) -> Option<u64> {
         clear_cursor(model);
         return None;
     }
-    if super::bag_verbs::fits_slot(&held, id) {
+    if super::bag_verbs::fits_slot(model, &held, id) {
         super::swap::swap_and_file(
             model,
             ContainerMove {
@@ -262,7 +262,7 @@ fn auto_equip_unasked(model: &mut Model) {
 /// `InventoryType`.
 pub(super) fn cursor_can_go_in_slot(model: &Model, id: u32) -> bool {
     match &model.cursor {
-        Some(CursorPayload::Item(item)) => super::bag_verbs::fits_slot(item, id),
+        Some(CursorPayload::Item(item)) => super::bag_verbs::fits_slot(model, item, id),
         _ => false,
     }
 }

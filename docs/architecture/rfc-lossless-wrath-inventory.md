@@ -71,12 +71,13 @@ writer, no delta stream, no reordering relative to `wrath_net_drain`.
 `ui_items::wire_pos_in_target(Wrath335, ...)` emits these directly, so the old
 `wrath_item_pos` +4/+5 adapter was removed. Donor `Vanilla112` keeps its own bands.
 
-**Residual runtime check:** the stock `BankButtonIDToInvSlotID` reconstruction
-(`CGBankInfo_Scripts.cpp:20-44`) uses `button + 63` for bags, which contradicts the
-`ResolveInventorySlotArg` band 67..73. This package uses 67..73 (the band the pickup/reader
-functions accept) and keeps the mapping in `wire_pos_in_target`'s Wrath arm and
-`slot_guid`'s `EQUIPMENT_BAG` arm. The exact installed FrameXML button band must be read on the
-runtime machine before claiming the bank-bag button path visible.
+**Reference mapping (resolved):** `CGBankInfo_Scripts.cpp:20-44` computes
+`button = input - 1; slot = button + 63; push slot + 1`, so Wrath bag buttons 5..=11 resolve to
+Lua ids **68..=74** (donor `button + 59` → 64..=69). `ContainerFrame_Scripts.cpp:48-63` computes
+`id = input - 1; slot = id >= 4 ? id + 64 : id + 20`, the same 68..=74. Both `benilla-ui`
+bindings are target-aware (`bank.rs::BankButtonIDToInvSlotID`, `container.rs::
+ContainerIDToInventoryID`). The remaining runtime check is the installed FrameXML's button wiring
+and a visible pickup, not a source ambiguity.
 
 ## 4. Consumer migration
 
@@ -99,6 +100,26 @@ runtime machine before claiming the bank-bag button path visible.
 | `benilla-ui::container` | bank bags 5..10 | 5..11 |
 | `benilla-ui::bank::GetNumBankSlots` | full at 6 | full at 7 in Wrath |
 | `benilla-ui::cursor::bag_verbs` | 64..69 | 68..74 in Wrath, 64..69 donor |
+
+**Stock bindings repaired in the same pass:**
+
+- `BankButtonIDToInvSlotID`: 3.3.5 bag step 63 (5→68, 11→74), donor 59 (5→64, 10→69).
+- `ContainerIDToInventoryID`: 3.3.5 `+64` above 4 (5→68, 11→74), donor `+60`.
+- `GetContainerNumSlots`: accepts bag 11 in Wrath; donor stops at 10.
+- `GetBagName`: names bag 11 in Wrath; donor stops at 10.
+- `UseArm::Withdraw`: bank bags 5..=11 in Wrath; 5..=10 donor.
+- `SetBagPortaitTexture`/`SetBagPortraitTexture`: 1..=11 and `+64` in Wrath; 1..=10 / `+60` donor.
+- `cursor::swap::bag_object`: bag 11 resolves at live id 74 in Wrath; donor stops at 10.
+- `session::bags_enter_world`: fires `BAG_UPDATE(11)` in Wrath.
+- `char_stats::inventory_slot_reader_accepts`: donor 40..=63 / 64..=69 / 82..=113; Wrath 40..=67 / 68..=74 / 87..=118.
+- `container::bank_bag_shut`: donor 5..=10, Wrath 5..=11.
+
+**Command-producing paths audited:** the key-at-object path (`target/click.rs::resolve_go_action`)
+now calls `find_item_in_target` with the selected target, so a keyring key is sent at 86+ rather
+than 81+. `ui_items`/`ui_merchant`/loot item-use producers already use `wire_pos_in_target`.
+The remaining `slot_guid_donor` users are cursor sale (vendor, from the backpack/equipped bands),
+cursor drop, the worn-item use, and probes; none can address the shifted bank/keyring bands, and
+the probes are dev-only. `net/io.rs` is the donor writer and never receives Wrath commands.
 
 **Intentionally left on the donor projection:** the shared `count_of`/`sum_of`/
 `action_count`/`stack_counts`/`collect_inventory`/`find_item` walks, `find_item_in_target`'s
@@ -132,8 +153,16 @@ commands.
   address and asserts the owner is cleared with the scope.
 - `ui_items::tests::wrath_wire_pos_covers_the_28_bank_slots_and_seven_bags`: bank 28, bag 11,
   keyring 32, and the rejection past each band.
+- `ui_items::tests::wrath_find_item_returns_the_335_keyring_position`: the key-at-object walk
+  returns `(255, 86)` for a donor keyring key.
 - `item_watch::tests`: a typed bank slot without a record still signals/unlocks; bank bag 7
   raises `BAG_UPDATE(11)`.
+- `benilla-ui` tests: `bank_button_ids_follow_the_selected_contract` (68/74 Wrath, 64/69 donor),
+  `container_id_to_inventory_id_uses_the_335_step` (5→68, 11→74),
+  `the_seventh_bank_bag_resolves_for_the_wrath_verbs` (`GetContainerNumSlots(11)`,
+  `GetBagName(11)`, withdraw call), `the_seventh_bank_bag_is_a_swap_object_in_wrath`,
+  `the_wrath_world_enter_updates_the_seventh_bank_bag`, and
+  `inventory_slot_reader_bands_follow_the_target` (donor/Wrath whitelists).
 
 ## 7. Deferred S3
 

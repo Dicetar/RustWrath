@@ -746,13 +746,21 @@ impl Model {
 
 /// The inventory-slot reader's whitelist (`0x4c8520`) on its 0-based slot (`0x4c8546`); outside
 /// it the binding raises "Invalid inventory slot in …". The backpack's item slots (23..=38) and
-/// buyback (69..=80) are container-API slots, not in it.
-pub(super) fn inventory_slot_reader_accepts(slot0: i32) -> bool {
+/// buyback (69..=80) are container-API slots, not in it. Donor bands 40..=63 / 64..=69 /
+/// 82..=113; 3.3.5 bands 40..=67 / 68..=74 / 87..=118.
+pub(super) fn inventory_slot_reader_accepts(slot0: i32, target: super::UiTarget) -> bool {
+    let wrath = target == super::UiTarget::Wrath335;
     slot0 == -1                            // Lua 0      the ammo leg
         || (0x00..=0x16).contains(&slot0)  // Lua 1..=23   the doll + the four equipped bags
-        || (0x27..=0x42).contains(&slot0)  // Lua 40..=67  the bank vault (3.3.5 28 slots)
-        || (0x43..=0x49).contains(&slot0)  // Lua 68..=74  the bank bag slots (3.3.5 seven)
-        || (0x56..=0x75).contains(&slot0) // Lua 87..=118 the keyring (3.3.5 32)
+        || (if wrath {
+            (0x27..=0x42).contains(&slot0)  // Lua 40..=67  the bank vault (3.3.5 28 slots)
+                || (0x43..=0x49).contains(&slot0) // Lua 68..=74  the bank bag slots (3.3.5 seven)
+                || (0x56..=0x75).contains(&slot0) // Lua 87..=118 the keyring (3.3.5 32)
+        } else {
+            (0x27..=0x3e).contains(&slot0)  // Lua 40..=63  the donor bank vault
+                || (0x3f..=0x44).contains(&slot0) // Lua 64..=69  the donor bank bag slots
+                || (0x51..=0x70).contains(&slot0) // Lua 82..=113 the donor keyring
+        })
 }
 
 fn link_item_name(link: &str) -> Option<String> {
@@ -1227,7 +1235,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let slot0 =
                 super::binding_abi::number_arg(lua, slot, INVALID_SLOT_GET_INVENTORY_ITEM_COUNT)?;
             let slot0 = slot0.wrapping_sub(1);
-            if !inventory_slot_reader_accepts(slot0) {
+            let target = lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .target;
+            if !inventory_slot_reader_accepts(slot0, target) {
                 return Err(mlua::Error::RuntimeError(
                     INVALID_SLOT_GET_INVENTORY_ITEM_COUNT.into(),
                 ));
@@ -1319,7 +1331,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 INVALID_SLOT_GET_INVENTORY_ITEM_COOLDOWN,
             )?
             .wrapping_sub(1);
-            if !inventory_slot_reader_accepts(slot0) {
+            let target = lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .target;
+            if !inventory_slot_reader_accepts(slot0, target) {
                 return Err(mlua::Error::RuntimeError(
                     INVALID_SLOT_GET_INVENTORY_ITEM_COOLDOWN.into(),
                 ));
@@ -1417,6 +1433,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::inventory_slot_reader_accepts;
+    use crate::script::UiTarget;
+
+    /// The reader's whitelist is the selected contract: donor 40..=63 / 64..=69 / 82..=113,
+    /// 3.3.5 40..=67 / 68..=74 / 87..=118, on the 0-based slot.
+    #[test]
+    fn inventory_slot_reader_bands_follow_the_target() {
+        let donor = UiTarget::Vanilla112;
+        let wrath = UiTarget::Wrath335;
+        assert!(inventory_slot_reader_accepts(62, donor), "donor bank 24");
+        assert!(inventory_slot_reader_accepts(63, donor), "donor bag 1");
+        assert!(!inventory_slot_reader_accepts(69, donor), "donor has no 70");
+        assert!(inventory_slot_reader_accepts(66, wrath), "3.3.5 bank 28");
+        assert!(inventory_slot_reader_accepts(67, wrath), "3.3.5 bag 1");
+        assert!(inventory_slot_reader_accepts(73, wrath), "3.3.5 bag 7");
+        assert!(!inventory_slot_reader_accepts(74, wrath), "3.3.5 has no 75");
+        assert!(inventory_slot_reader_accepts(86, wrath), "3.3.5 keyring 1");
+        assert!(inventory_slot_reader_accepts(117, wrath), "3.3.5 keyring 32");
+        assert!(!inventory_slot_reader_accepts(118, wrath));
+    }
     use super::{
         weapon_subclass_skill, RESISTANCE_INDEX_ERROR, SKILL_UNARMED, STAT_INDEX_ERROR, STAT_USAGE,
     };

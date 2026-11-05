@@ -53,9 +53,16 @@ needed for the bank window or the bank commands.
   mapping, field indices, purchase byte, scope clear, `addr_of`.
 - `wrath::tests::terminal_scope_loss_clears_ecs_and_input_without_a_digest`: seeds a bank slot
   and asserts the owner clears with the scope.
-- `ui_items::tests::wrath_wire_pos_covers_the_28_bank_slots_and_seven_bags`.
+- `ui_items::tests::wrath_wire_pos_covers_the_28_bank_slots_and_seven_bags` and
+  `wrath_find_item_returns_the_335_keyring_position`.
 - `item_watch::tests::a_typed_bank_slot_without_a_record_still_signals` and
   `the_seventh_bank_bag_raises_bag_update_eleven`.
+- `benilla-ui`: `bank_button_ids_follow_the_selected_contract`,
+  `container_id_to_inventory_id_uses_the_335_step`,
+  `the_seventh_bank_bag_resolves_for_the_wrath_verbs`,
+  `the_seventh_bank_bag_is_a_swap_object_in_wrath`,
+  `the_wrath_world_enter_updates_the_seventh_bank_bag`, and
+  `inventory_slot_reader_bands_follow_the_target`.
 
 ## Verification actually performed
 
@@ -69,11 +76,19 @@ needed for the bank window or the bank commands.
   (`ItemTextByGuid` has no producer, `WrathItemText` no reader), random suffix/socket/scaling.
 - `player_fields` stays `0..1171`; `PLAYER_FIELD_MAX_LEVEL` (1279), daily quests (1280..1304)
   and combat ratings (1231..1255) read 0. Separate defect; do not bundle.
-- Exact `BankButtonIDToInvSlotID`/`PaperDollItemFrame` band: `CGBankInfo_Scripts.cpp:28` says
-  `button+63`, while `ResolveInventorySlotArg` accepts 67..73. This package uses 67..73; the
-  installed FrameXML must be read on the runtime machine.
-- Bank slot 25..28/seven-bag acceptance needs an owned character with seven purchased bank-bag
-  slots and a bank item; no server/DB change was made.
+- Reference mapping resolved: `CGBankInfo_Scripts.cpp:20-44` (`button = input - 1; slot = button +
+  63; push slot + 1`) and `ContainerFrame_Scripts.cpp:48-63` (`id - 1`, then `+64` above 4) both
+  give Wrath Lua ids 68..74 (donor 64..69). `BankButtonIDToInvSlotID` and
+  `ContainerIDToInventoryID` are target-aware; only an installed-FrameXML/visible pickup remains.
+  The stock readers were also repaired: `GetContainerNumSlots`/`GetBagName` accept bag 11,
+  `UseArm::Withdraw` and `cursor::swap::bag_object` cover 11, `bags_enter_world` fires
+  `BAG_UPDATE(11)`, `SetBagPortraitTexture` covers 1..=11, and
+  `inventory_slot_reader_accepts`/`bank_bag_shut` are target-aware.
+- `target/click.rs::resolve_go_action` now uses `find_item_in_target` with the selected target,
+  so a keyring key is sent at 86+ rather than 81+. Remaining `slot_guid_donor` users are cursor
+  sale/drop, the worn-item use and dev probes; none can address the shifted bands.
+- Runtime prerequisite: an owned character with seven purchased bank-bag slots and an item in
+  bank slot 25. No server/DB change was made by this package.
 
 ## Runtime acceptance
 

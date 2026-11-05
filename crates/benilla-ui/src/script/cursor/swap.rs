@@ -31,9 +31,10 @@ pub enum Swap {
 /// An equipment position of the player's own list, the side a swap equips into (`0x5e0c9a`-
 /// `0x5e0cd5`): 0-based slots 0 to 22 (the doll and the equipped bags) and 63 to 68 (the bank bag
 /// slots).
-fn equip_position(bag: i64, slot: u32) -> bool {
+fn equip_position(model: &Model, bag: i64, slot: u32) -> bool {
     bag == EQUIPMENT_BAG
-        && ((1..=23).contains(&slot) || super::bag_verbs::BANK_BAG_INV_SLOTS.contains(&slot))
+        && ((1..=23).contains(&slot)
+            || super::bag_verbs::bank_bag_inv_slots(model).contains(&slot))
 }
 
 /// What `SwapItem` finds at the move's other end when exactly one end is an equipment position.
@@ -51,12 +52,20 @@ enum OtherEnd {
 /// Whether container `bag` has an object for `SwapItem`'s lookup by its guid (`0x5e0d1a`): the
 /// active player's own list for the player's slots, the backpack, the vault and the keyring, the
 /// bag item in the container's inventory slot (`ContainerIDToInventoryID`'s two bands) for bags
-/// 1-10.
+/// 1-10 donor / 1-11 3.3.5.
 fn bag_object(model: &Model, bag: i64) -> bool {
+    let wrath = model.target == crate::script::UiTarget::Wrath335;
+    let last = if wrath { 11 } else { 10 };
     match bag {
         EQUIPMENT_BAG | -2..=0 => true,
-        1..=10 => {
-            let live = if bag <= 4 { bag + 19 } else { bag + 59 };
+        1..=last => {
+            let live = if bag <= 4 {
+                bag + 19
+            } else if wrath {
+                bag + 63
+            } else {
+                bag + 59
+            };
             model
                 .player_slot_object(live as usize)
                 .is_some_and(|v| v.guid != 0)
@@ -68,8 +77,8 @@ fn bag_object(model: &Model, bag: i64) -> bool {
 /// The move's other end when exactly one end is an equipment position (`0x5e0ce1`-`0x5e0d69`).
 fn other_end(model: &Model, mv: &ContainerMove) -> OtherEnd {
     let (bag, slot) = match (
-        equip_position(mv.src_bag, mv.src_slot),
-        equip_position(mv.dst_bag, mv.dst_slot),
+        equip_position(model, mv.src_bag, mv.src_slot),
+        equip_position(model, mv.dst_bag, mv.dst_slot),
     ) {
         (true, false) => (mv.dst_bag, mv.dst_slot),
         (false, true) => (mv.src_bag, mv.src_slot),
@@ -138,7 +147,9 @@ impl crate::script::UiScript {
 
 #[cfg(test)]
 mod tests {
-    use crate::script::{ContainerSlot, ContainerState, InvSlotView, InventorySlots, UiScript};
+    use crate::script::{
+        BankBagSlots, ContainerSlot, ContainerState, InvSlotView, InventorySlots, UiScript,
+    };
 
     const HELM: u64 = 0x11;
     const WORN: u64 = 0x31;
@@ -381,5 +392,22 @@ mod tests {
         assert!(s.cursor_item().is_some(), "asked");
         assert_eq!(s.swap_items(mv.clone(), true), super::Swap::Sent(mv));
         assert!(s.cursor_item().is_none(), "the accept's send clears");
+    }
+
+    /// `bag_object` reaches the seventh bank bag through the 3.3.5 live id 74; the donor band
+    /// stops at 10 and an eleventh bag is not a swap object there.
+    #[test]
+    fn the_seventh_bank_bag_is_a_swap_object_in_wrath() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let mut bags: BankBagSlots = Default::default();
+        bags[6] = Some(InvSlotView {
+            item_id: 1,
+            guid: BAG,
+            ..Default::default()
+        });
+        s.set_bank_bag_slots(bags);
+        let model = s.model_ref();
+        assert!(super::bag_object(&*model, 11), "the seventh bag resolves");
+        assert!(!super::bag_object(&model, 12), "no twelfth bag");
     }
 }

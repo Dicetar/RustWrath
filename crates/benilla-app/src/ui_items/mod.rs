@@ -1347,15 +1347,16 @@ impl Plugin for UiItemsPlugin {
 #[cfg(test)]
 mod tests {
     use super::{
-        find_equip_slot, item_use_route, keyring_size, wire_pos, wire_pos_in_target, ItemUse,
-        ItemUseRoute, BANK_CONTAINER, KEYRING_CONTAINER,
+        find_equip_slot, find_item_in_target, item_use_route, keyring_size, wire_pos,
+        wire_pos_in_target, ItemSearch, ItemUse, ItemUseRoute, TestObjects, BANK_CONTAINER,
+        KEYRING_CONTAINER,
     };
-    use benilla_ui::script::EQUIPMENT_BAG;
+    use benilla_protocol::ObjectFields;
+    use benilla_ui::script::{EQUIPMENT_BAG, UiTarget};
 
     /// The 3.3.5 direct player-array bands: 28 bank slots, seven bank bags, 32 keyring slots.
     #[test]
     fn wrath_wire_pos_covers_the_28_bank_slots_and_seven_bags() {
-        use benilla_ui::script::UiTarget;
         assert_eq!(
             wire_pos_in_target(UiTarget::Wrath335, BANK_CONTAINER, 1),
             Some((255, 39))
@@ -1402,6 +1403,35 @@ mod tests {
         assert_eq!(
             wire_pos_in_target(UiTarget::Wrath335, KEYRING_CONTAINER, 32),
             Some((255, 117))
+        );
+    }
+
+    /// The key-at-object path now uses the target-aware walk: a keyring key at donor keyring
+    /// slot 1 is sent at the 3.3.5 array position 86, not 81.
+    #[test]
+    fn wrath_find_item_returns_the_335_keyring_position() {
+        use benilla_protocol::messages::ObjectType;
+        let guid = 0x4000_0000_0000_0101;
+        let mut objs = TestObjects::new();
+        objs.spawn(
+            guid,
+            ObjectFields::from_pairs(&[(2, 0x3), (3, 1234)]).into_created(ObjectType::Item),
+        );
+        let store = ObjectFields::from_pairs(&[
+            (648, guid as u32),
+            (649, (guid >> 32) as u32),
+        ]);
+        let mut objects = objs.get();
+        assert_eq!(
+            find_item_in_target(
+                UiTarget::Wrath335,
+                &store,
+                &objects,
+                1234,
+                ItemSearch::default()
+            ),
+            Some((255, 86, guid)),
+            "the keyring's first 3.3.5 position"
         );
     }
 

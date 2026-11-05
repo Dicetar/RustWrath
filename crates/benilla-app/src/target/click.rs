@@ -1750,7 +1750,13 @@ pub(crate) fn resolve_go_action(
     let Some(store) = me_store else {
         return GoAction::Refuse(None);
     };
-    let Some((bag_index, slot, key_guid)) = crate::ui_items::find_item(
+    let target = if crate::wrath::selected_from_env() {
+        benilla_ui::script::UiTarget::Wrath335
+    } else {
+        benilla_ui::script::UiTarget::Vanilla112
+    };
+    let Some((bag_index, slot, key_guid)) = crate::ui_items::find_item_in_target(
+        target,
         &store.0,
         &inputs.objects,
         key_entry,
