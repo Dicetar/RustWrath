@@ -3436,16 +3436,29 @@ fn translate_gameplay(
                 })
             }),
         }],
-        WrathGameplayEvent::ActionButtons { buttons } => vec![SessionEvent::ActionButtons {
-            buttons: buttons
-                .into_iter()
-                .map(|b| ActionButton {
-                    slot: b.slot,
-                    action: b.action,
-                    kind: b.kind,
-                })
-                .collect(),
-        }],
+        WrathGameplayEvent::ActionButtons { state, buttons } => {
+            vec![SessionEvent::ActionButtonsUpdate {
+                state: match state {
+                    gameplay::ActionButtonState::Snapshot => {
+                        benilla_protocol::events::ActionButtonState::Snapshot
+                    }
+                    gameplay::ActionButtonState::Apply => {
+                        benilla_protocol::events::ActionButtonState::Apply
+                    }
+                    gameplay::ActionButtonState::Pending => {
+                        benilla_protocol::events::ActionButtonState::Pending
+                    }
+                },
+                buttons: buttons
+                    .into_iter()
+                    .map(|b| ActionButton {
+                        slot: b.slot,
+                        action: b.action,
+                        kind: b.kind,
+                    })
+                    .collect(),
+            }]
+        }
         WrathGameplayEvent::SpellLearned { spell_id } => {
             vec![SessionEvent::SpellLearned { spell_id }]
         }

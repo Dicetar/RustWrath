@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use benilla_formats::LearnAnnouncement;
+use benilla_protocol::events::ActionButtonState;
 use benilla_protocol::messages::{ActionButton, SpellCooldown};
 use bevy::prelude::*;
 
@@ -39,9 +40,11 @@ pub(crate) struct CastAtPlayer {
 pub(super) fn register(app: &mut App) {
     use SessionEventKind as K;
     app.add_message::<CastAtPlayer>();
+    app.init_resource::<ActionButtonsPending>();
     app.net_handler(K::Connected, on_world_enter)
         .net_handler(K::SpellBook, on_spell_book)
         .net_handler(K::ActionButtons, on_action_buttons)
+        .net_handler(K::ActionButtonsUpdate, on_action_buttons)
         .net_handler(K::SpellLearned, on_spell_learned)
         .net_handler(K::SpellRemoved, on_spell_removed)
         .net_handler(K::SpellSuperceded, on_spell_superceded)
@@ -150,9 +153,20 @@ fn active_player<'a>(
         .and_then(|&e| stores.get(e).ok())
 }
 
-fn on_action_buttons(In(ev): In<SessionEvent>, mut slots: ResMut<crate::ui_action::ActionSlots>) {
-    if let SessionEvent::ActionButtons { buttons } = ev {
-        action_buttons(buttons, &mut slots);
+fn on_action_buttons(
+    In(ev): In<SessionEvent>,
+    mut slots: ResMut<crate::ui_action::ActionSlots>,
+    mut pending: ResMut<ActionButtonsPending>,
+) {
+    match ev {
+        // The 1.12 packet has no state byte: its full array always replaces the live bar.
+        SessionEvent::ActionButtons { buttons } => {
+            action_buttons(ActionButtonState::Apply, buttons, &mut slots, &mut pending);
+        }
+        SessionEvent::ActionButtonsUpdate { state, buttons } => {
+            action_buttons(state, buttons, &mut slots, &mut pending);
+        }
+        _ => {}
     }
 }
 
@@ -685,11 +699,52 @@ fn spell_book(
     }
 }
 
-/// `SMSG_ACTION_BUTTONS`, at login and on server-side edits, into the action store.
-fn action_buttons(buttons: Vec<ActionButton>, slots: &mut crate::ui_action::ActionSlots) {
-    debug!("net: action bar — {} occupied slots", buttons.len());
-    slots.buttons = buttons.into_iter().map(|b| (b.slot, b)).collect();
-    slots.dirty = true;
+/// The 3.3.5a action bar's pending state (`CGPlayer_C::m_actionButtonsPending`,
+/// `Player_C.cpp:4092`/`4107`) and the last state-0 array, which the reference writes to its
+/// `s_actionButtons` static (`Player_C.cpp:4102-4104`) without applying.
+#[derive(Resource, Default)]
+pub(crate) struct ActionButtonsPending {
+    /// State 2 set it; state 1 clears it; state 0 leaves it as it was.
+    pub pending: bool,
+    /// State 0's full array, held for a later apply; state 1 consumes it by applying.
+    pub held: Option<Vec<ActionButton>>,
+}
+
+/// `SMSG_ACTION_BUTTONS`' state switch (`Player_C.cpp:4084-4124`): state 0 holds the parsed
+/// array, state 1 replaces the live slots and clears the pending flag, state 2 leaves the
+/// slots alone and sets the flag. An empty state-1 array clears the bar, as the server's zero
+/// words do. The 1.12 packet has no state byte and arrives as [`ActionButtonState::Apply`].
+fn action_buttons(
+    state: ActionButtonState,
+    buttons: Vec<ActionButton>,
+    slots: &mut crate::ui_action::ActionSlots,
+    pending: &mut ActionButtonsPending,
+) {
+    match state {
+        ActionButtonState::Snapshot => {
+            debug!(
+                "net: action bar snapshot — {} occupied slot(s) held, live bar unchanged",
+                buttons.len()
+            );
+            pending.held = Some(buttons);
+        }
+        ActionButtonState::Apply => {
+            debug!("net: action bar — {} occupied slots", buttons.len());
+            slots.buttons = buttons.into_iter().map(|b| (b.slot, b)).collect();
+            slots.dirty = true;
+            pending.pending = false;
+            pending.held = None;
+        }
+        ActionButtonState::Pending => {
+            let was_pending = pending.pending;
+            let held = pending.held.as_ref().map_or(0, Vec::len);
+            debug!(
+                "net: action bar pending — {} live slot(s) kept, {held} held, pending {was_pending} -> true",
+                slots.buttons.len()
+            );
+            pending.pending = true;
+        }
+    }
 }
 
 /// `SMSG_LEARNED_SPELL`: the spell joins the book (the spellbook feed diffs it; learning never
@@ -4254,5 +4309,128 @@ mod tests {
             None,
             "the save alone is not the in-flight slot"
         );
+    }
+
+    /// `Slot`/`ActionButton` pair for the action-bar state tests.
+    fn action(slot: u8, id: u32) -> ActionButton {
+        ActionButton {
+            slot,
+            action: id,
+            kind: 0,
+        }
+    }
+
+    /// `Player_C.cpp:4090-4095`: state 2 only sets `m_actionButtonsPending`; it reads no payload
+    /// and never calls `CGActionBar::RemoveAction`, so the previous slot map stands.
+    #[test]
+    fn action_buttons_state_two_keeps_the_live_bar_and_marks_pending() {
+        let mut slots = crate::ui_action::ActionSlots::default();
+        slots.buttons.insert(3, action(3, 6673));
+        let mut pending = ActionButtonsPending::default();
+
+        action_buttons(
+            ActionButtonState::Pending,
+            Vec::new(),
+            &mut slots,
+            &mut pending,
+        );
+
+        assert_eq!(slots.buttons.len(), 1);
+        assert_eq!(slots.buttons.get(&3), Some(&action(3, 6673)));
+        assert!(!slots.dirty, "state 2 must not make the feed rebuild the bar");
+        assert!(pending.pending);
+    }
+
+    /// `Player_C.cpp:4102-4104`: state 0 reads the whole array into `s_actionButtons` and stops
+    /// before the `mode == 1` apply branch, so the live bar keeps its previous slots.
+    #[test]
+    fn action_buttons_state_zero_holds_the_array_without_replacing_the_live_bar() {
+        let mut slots = crate::ui_action::ActionSlots::default();
+        slots.buttons.insert(3, action(3, 6673));
+        let mut pending = ActionButtonsPending::default();
+        let held = vec![action(0, 133), action(143, 117)];
+
+        action_buttons(
+            ActionButtonState::Snapshot,
+            held.clone(),
+            &mut slots,
+            &mut pending,
+        );
+
+        assert_eq!(slots.buttons.len(), 1);
+        assert_eq!(slots.buttons.get(&3), Some(&action(3, 6673)));
+        assert!(!slots.dirty, "state 0 must not make the feed rebuild the bar");
+        assert_eq!(pending.held, Some(held), "the parsed array is retained");
+        assert!(!pending.pending, "state 0 leaves the pending flag alone");
+    }
+
+    /// `Player_C.cpp:4106-4121`: state 1 clears `m_actionButtonsPending` and applies every word,
+    /// including the empty ones (`CGActionBar::RemoveAction`), so an old slot vanishes.
+    #[test]
+    fn action_buttons_state_one_applies_and_clears_pending() {
+        let mut slots = crate::ui_action::ActionSlots::default();
+        slots.buttons.insert(3, action(3, 6673));
+        let mut pending = ActionButtonsPending {
+            pending: true,
+            held: Some(vec![action(0, 133)]),
+        };
+
+        action_buttons(
+            ActionButtonState::Apply,
+            vec![action(0, 133), action(143, 117)],
+            &mut slots,
+            &mut pending,
+        );
+
+        assert_eq!(
+            slots.buttons.get(&0),
+            Some(&action(0, 133)),
+            "slot 0 applies"
+        );
+        assert_eq!(
+            slots.buttons.get(&143),
+            Some(&action(143, 117)),
+            "the last slot applies"
+        );
+        assert!(!slots.buttons.contains_key(&3), "the previous bar is replaced");
+        assert_eq!(slots.buttons.len(), 2);
+        assert!(slots.dirty);
+        assert!(!pending.pending, "state 1 clears the pending flag");
+        assert_eq!(pending.held, None, "the held snapshot is consumed");
+    }
+
+    /// An all-zero state-1 array still applies: the reference calls `RemoveAction` for every
+    /// empty word, so the live bar ends empty and the feed sees the change.
+    #[test]
+    fn action_buttons_state_one_empty_array_clears_the_bar() {
+        let mut slots = crate::ui_action::ActionSlots::default();
+        slots.buttons.insert(3, action(3, 6673));
+        let mut pending = ActionButtonsPending::default();
+
+        action_buttons(
+            ActionButtonState::Apply,
+            Vec::new(),
+            &mut slots,
+            &mut pending,
+        );
+
+        assert!(slots.buttons.is_empty());
+        assert!(slots.dirty);
+    }
+
+    /// A full 144-slot state-1 packet survives parser-to-store with slot 143 in place, not
+    /// clamped or truncated.
+    #[test]
+    fn action_buttons_state_one_keeps_all_144_slots() {
+        let mut slots = crate::ui_action::ActionSlots::default();
+        let mut pending = ActionButtonsPending::default();
+        let all = (0..144u16)
+            .map(|slot| action(slot as u8, 1000 + u32::from(slot)))
+            .collect();
+
+        action_buttons(ActionButtonState::Apply, all, &mut slots, &mut pending);
+
+        assert_eq!(slots.buttons.len(), 144);
+        assert_eq!(slots.buttons.get(&143).map(|b| b.action), Some(1143));
     }
 }

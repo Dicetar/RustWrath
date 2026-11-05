@@ -966,40 +966,129 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+/// One numeric argument to `MulticlassRequest`: absent or `nil` is `None`, a whole number in
+/// `u32` range is `Some`, and anything else is the binding's refusal (`Err`), as the native
+/// callback's `ReadInteger` refuses rather than raises.
+fn multiclass_arg(args: &MultiValue, index: usize) -> Result<Option<u32>, ()> {
+    match args.get(index) {
+        None | Some(Value::Nil) => Ok(None),
+        Some(Value::Integer(value)) => u32::try_from(*value).map(Some).map_err(|_| ()),
+        Some(Value::Number(value)) => {
+            let value = *value;
+            if value.is_finite()
+                && value >= 0.0
+                && value <= f64::from(u32::MAX)
+                && value.trunc() == value
+            {
+                Ok(Some(value as u32))
+            } else {
+                Err(())
+            }
+        }
+        Some(_) => Err(()),
+    }
+}
+
+/// The addon-facing WMC1 v3 frame: `"WMC1"`, version `3`, op `u16`, serial `u32`, status `u16`,
+/// then the reply tail. [`super::UiScript::push_multiclass_reply`]'s payload already starts at the
+/// `count u16` because `benilla_protocol_wrath::gameplay::accept_multiclass_reply` strips the
+/// magic/version header and everything before the body, so the packet is the exact frame that
+/// `WM_Multiclass.lua`'s `receive(hex)` / `multiclass_glue.lua`'s `receive(hex)` parse.
+fn multiclass_packet_hex(op: u16, status: u16, serial: u32, payload: &[u8]) -> String {
+    const MAGIC: u32 = 0x3143_4d57; // "WMC1", little endian.
+    const VERSION: u16 = 3;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut bytes = Vec::with_capacity(14 + payload.len());
+    bytes.extend_from_slice(&MAGIC.to_le_bytes());
+    bytes.extend_from_slice(&VERSION.to_le_bytes());
+    bytes.extend_from_slice(&op.to_le_bytes());
+    bytes.extend_from_slice(&serial.to_le_bytes());
+    bytes.extend_from_slice(&status.to_le_bytes());
+    bytes.extend_from_slice(payload);
+
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[usize::from(byte >> 4)] as char);
+        out.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    out
+}
+
 /// WMC1 v3 (`MulticlassRequest` / `MulticlassPoll`) bindings shared by the Wrath in-game
 /// (`WM_Multiclass.lua`) and glue (`multiclass_glue.lua`) Lua environments.
+///
+/// The installed call is `MulticlassRequest(operation, serial, guid, choice, tokenLow, tokenHigh)`
+/// and it fails unless the binding returns the number `1`. `operation`, `serial` and `guid` are
+/// `u32`, `choice` is a class id in `0..=11`, and the token is a 64-bit value; the world addon
+/// passes a talent id in the `guid` slot and its rank in `tokenLow`, while the glue addon passes
+/// a character GUID and its preview token. The queue tuple's third slot is intentionally a `u64`:
+/// the protocol's 28-byte body is `guid u32` then `choice u8` (plus three reserved bytes) and
+/// `benilla_protocol_wrath::gameplay::encode_multiclass_request` writes that slot low-word-first,
+/// so `character_guid | (choice as u64) << 32` reproduces `guid, choice, 0, 0, 0` byte for byte.
 pub(super) fn install_multiclass(lua: &Lua) -> mlua::Result<()> {
     const MAX_MULTICLASS_QUEUE: usize = 16;
 
     lua.globals().set(
         "MulticlassRequest",
-        lua.create_function(
-            |lua, (op, arg0, arg1, guid): (u16, Option<u32>, Option<u32>, Option<u64>)| {
-                let mut model = lua.app_data_mut::<super::Model>().expect("model");
-                // The serial is allocated then advanced, so the first request is 1 (the
-                // initialised value) rather than 2. `max(1)` keeps a wrapped 0 out of the wire.
-                let serial = model.multiclass_next_serial.max(1);
-                model.multiclass_next_serial = serial.wrapping_add(1).max(1);
-                let char_guid = guid.unwrap_or_else(|| {
-                    if model.unit_guids.player != 0 {
-                        model.unit_guids.player
-                    } else {
-                        model.glue.roster.selected_guid().unwrap_or(0)
-                    }
-                });
-                if model.multiclass_requests.len() >= MAX_MULTICLASS_QUEUE {
-                    model.multiclass_requests.pop_front();
-                }
-                model.multiclass_requests.push_back((
-                    op,
-                    serial,
-                    char_guid,
-                    arg0.unwrap_or(0),
-                    arg1.unwrap_or(0),
-                ));
-                Ok((true, serial))
-            },
-        )?,
+        lua.create_function(|lua, args: MultiValue| {
+            // `ReadInteger` refuses malformed/out-of-range numbers; mirror that with `0` rather
+            // than raising, so the addon's `~= 1` branch stays reachable.
+            let Ok(op) = multiclass_arg(&args, 0) else {
+                return Ok(0i64);
+            };
+            let Some(op) = op.filter(|op| (1..=5).contains(op)) else {
+                return Ok(0i64);
+            };
+            let Ok(serial) = multiclass_arg(&args, 1) else {
+                return Ok(0i64);
+            };
+            let Some(serial) = serial.filter(|serial| *serial != 0) else {
+                return Ok(0i64);
+            };
+            let guid = match multiclass_arg(&args, 2) {
+                Ok(guid) => guid.unwrap_or(0),
+                Err(()) => return Ok(0i64),
+            };
+            let choice = match multiclass_arg(&args, 3) {
+                Ok(choice) => choice.unwrap_or(0),
+                Err(()) => return Ok(0i64),
+            };
+            let token_low = match multiclass_arg(&args, 4) {
+                Ok(token) => token.unwrap_or(0),
+                Err(()) => return Ok(0i64),
+            };
+            let token_high = match multiclass_arg(&args, 5) {
+                Ok(token) => token.unwrap_or(0),
+                Err(()) => return Ok(0i64),
+            };
+            // The native callback's admission rules: a known operation, a class id the wire can
+            // carry, a token only on commit/learn, and a list that carries neither GUID nor class.
+            if choice > 11
+                || (op != 3 && op != 5 && (token_low != 0 || token_high != 0))
+                || (op == 1 && (guid != 0 || choice != 0))
+            {
+                return Ok(0i64);
+            }
+            let mut model = lua.app_data_mut::<super::Model>().expect("model");
+            // The caller owns the serial and correlates the reply itself; only track the next
+            // value it is expected to use, never substitute it for the wire value.
+            model.multiclass_next_serial = model
+                .multiclass_next_serial
+                .max(serial.saturating_add(1))
+                .max(1);
+            if model.multiclass_requests.len() >= MAX_MULTICLASS_QUEUE {
+                model.multiclass_requests.pop_front();
+            }
+            model.multiclass_requests.push_back((
+                op as u16,
+                serial,
+                u64::from(guid) | (u64::from(choice) << 32),
+                token_low,
+                token_high,
+            ));
+            Ok(1i64)
+        })?,
     )?;
 
     lua.globals().set(
@@ -1016,14 +1105,11 @@ pub(super) fn install_multiclass(lua: &Lua) -> mlua::Result<()> {
                     None => model.multiclass_replies.pop_front(),
                 }
             };
-            let mut out = MultiValue::new();
-            if let Some((op, status, serial, payload)) = reply {
-                out.push_back(Value::Integer(i64::from(op)));
-                out.push_back(Value::Integer(i64::from(status)));
-                out.push_back(Value::Integer(i64::from(serial)));
-                out.push_back(Value::String(lua.create_string(&payload)?));
-            }
-            Ok(out)
+            // One value: the bounded WMC1 v3 hex frame, or nil. The addon assigns a single
+            // `MulticlassPoll()` result and stops on `nil`.
+            Ok(reply.map(|(op, status, serial, payload)| {
+                multiclass_packet_hex(op, status, serial, &payload)
+            }))
         })?,
     )?;
 
@@ -1066,12 +1152,18 @@ impl super::UiScript {
         self.model_mut().title_count = count;
     }
 
-    /// Drain queued `MulticlassRequest(op, arg0, arg1)` entries as `(op, serial, character_guid, arg0, arg1)`.
+    /// Drain queued `MulticlassRequest(operation, serial, guid, choice, tokenLow, tokenHigh)`
+    /// entries as `(op, serial, character_guid, arg0, arg1)`: the caller's serial is preserved and
+    /// `character_guid` packs the wire's `guid u32` in the low word and `choice u8` in the high
+    /// word, so `encode_multiclass_request` emits `guid, choice, 0, 0, 0` verbatim. `arg0`/`arg1`
+    /// are the token low/high words (the world addon's rank in the low word).
     pub fn take_multiclass_requests(&mut self) -> Vec<(u16, u32, u64, u32, u32)> {
         self.model_mut().multiclass_requests.drain(..).collect()
     }
 
-    /// Enqueue a validated `SMSG_MULTICLASS_REPLY` (`0x51A`) frame `(op, status, serial, body)` for `MulticlassPoll`.
+    /// Enqueue a validated `SMSG_MULTICLASS_REPLY` (`0x51A`) frame `(op, status, serial, payload)`
+    /// for `MulticlassPoll`; `payload` is the post-serial tail (`count u16` then the body) that
+    /// `accept_multiclass_reply` returns.
     pub fn push_multiclass_reply(&mut self, op: u16, status: u16, serial: u32, payload: Vec<u8>) {
         let mut model = self.model_mut();
         if model.multiclass_replies.len() >= 16 {
@@ -1871,29 +1963,159 @@ mod tests {
     #[test]
     fn wrath_multiclass_request_and_poll_round_trip_in_world_and_glue() {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
-        s.seat_player_guid(0x0102_0304_0506_0708);
-        let (ok, serial): (bool, u32) = s
-            .eval("return MulticlassRequest(1, 2, 9)")
+        // Installed `WM_Multiclass.lua::request`: `(op, serial, talent, selected, rank, zero)`
+        // and it fails unless the binding returns the number 1.
+        let accepted: i64 = s
+            .eval("return MulticlassRequest(4, 7, 0, 1, 0, 0)")
             .expect("MulticlassRequest in world VM");
-        assert!(ok);
-        assert_eq!(serial, 1);
+        assert_eq!(accepted, 1, "the addon tests `~= 1`");
+        assert_eq!(s.arity("MulticlassRequest(5, 8, 1234, 6, 3, 0)").unwrap(), 1);
         assert_eq!(
             s.take_multiclass_requests(),
-            vec![(1, 1, 0x0102_0304_0506_0708, 2, 9)]
+            vec![
+                // `character_guid` packs the caller's guid low-word-first and `selected`/choice
+                // in the high word, which is the protocol's `guid u32, choice u8, reserved[3]`.
+                (4, 7, 1u64 << 32, 0, 0),
+                (5, 8, 1234 | (6u64 << 32), 3, 0),
+            ]
         );
-        assert_eq!(s.arity("MulticlassPoll()").unwrap(), 0);
-        s.push_multiclass_reply(1, 0, 1, b"WMC1".to_vec());
-        let (op, status, got_serial, payload): (u16, u16, u32, String) = s
-            .eval("return MulticlassPoll(1)")
-            .expect("MulticlassPoll in world VM");
-        assert_eq!((op, status, got_serial, payload.as_bytes()), (1, 0, 1, b"WMC1".as_slice()));
 
+        // No reply queued: exactly one nil, not zero values and not the old four-value tuple.
+        assert_eq!(s.arity("MulticlassPoll()").unwrap(), 1);
+        assert_eq!(
+            s.eval::<Option<String>>("return MulticlassPoll()").unwrap(),
+            None
+        );
+
+        // `push_multiclass_reply`'s payload is what `accept_multiclass_reply` returns after the
+        // status/serial: `count u16` then the body. Here op 4, serial 7, status 0, count 1. A
+        // reply for another serial stays queued; the argument selects only the matching one.
+        s.push_multiclass_reply(4, 8, 8, Vec::new());
+        s.push_multiclass_reply(4, 0, 7, vec![1, 0]);
+        let values: mlua::MultiValue = s
+            .eval("return MulticlassPoll(7)")
+            .expect("MulticlassPoll in world VM");
+        assert_eq!(values.len(), 1, "one hex string, never the old four values");
+        let packet = values[0]
+            .as_string()
+            .expect("the poll value is a string")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(packet, "574d4331030004000700000000000100");
+
+        // Decode the frame the way the installed `receive(hex)` does: magic, version, op,
+        // serial/id, status/result, count, then the payload.
+        let (magic, version, op, serial, status, count, tail): (
+            u32,
+            u16,
+            u16,
+            u32,
+            u16,
+            u16,
+            String,
+        ) = s
+            .eval(&format!(
+                r#"
+                local h = "{packet}"
+                local function uint(n)
+                    local value, scale = 0, 1
+                    for _ = 1, n do
+                        value = value + tonumber(h:sub(1, 2), 16) * scale
+                        scale = scale * 256
+                        h = h:sub(3)
+                    end
+                    return value
+                end
+                local magic, version, op, serial, status, count =
+                    uint(4), uint(2), uint(2), uint(4), uint(2), uint(2)
+                return magic, version, op, serial, status, count, h
+                "#
+            ))
+            .expect("Lua decode of the WMC1 packet");
+        assert_eq!(
+            (magic, version, op, serial, status, count),
+            (826_494_295, 3, 4, 7, 0, 1)
+        );
+        assert_eq!(tail, "");
+
+        // The non-zero status path is encoded in the same field order.
+        s.push_multiclass_reply(5, 8, 9, vec![0, 0]);
+        let packet: Option<String> = s.eval("return MulticlassPoll(9)").unwrap();
+        assert_eq!(
+            packet.expect("one WMC1 packet"),
+            "574d4331030005000900000008000000"
+        );
+
+        // The glue VM (`multiclass_glue.lua::request`) uses the same six arguments and serial
+        // correlation: guid, choice, then the preview low/high token.
         let mut glue = UiScript::glue_with_target(UiTarget::Wrath335).unwrap();
-        let (ok_glue, serial_glue): (bool, u32) = glue
-            .eval("return MulticlassRequest(6, 11, 0, 42)")
+        let accepted: i64 = glue
+            .eval("return MulticlassRequest(2, 21, 42, 6, 0, 0)")
             .expect("MulticlassRequest in glue VM");
-        assert!(ok_glue);
-        assert_eq!(serial_glue, 1);
-        assert_eq!(glue.take_multiclass_requests(), vec![(6, 1, 42, 11, 0)]);
+        assert_eq!(accepted, 1);
+        assert_eq!(
+            glue.eval::<i64>("return MulticlassRequest(3, 22, 42, 6, 0x11223344, 0x55667788)")
+                .unwrap(),
+            1
+        );
+        // `request(1)` on open/refresh: list carries neither GUID nor class.
+        assert_eq!(
+            glue.eval::<i64>("return MulticlassRequest(1, 23, 0, 0, 0, 0)")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            glue.take_multiclass_requests(),
+            vec![
+                (2, 21, 42 | (6u64 << 32), 0, 0),
+                (3, 22, 42 | (6u64 << 32), 0x1122_3344, 0x5566_7788),
+                (1, 23, 0, 0, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn wrath_multiclass_request_refuses_and_empty_poll_stays_nil() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        for call in [
+            "MulticlassRequest(0, 0, 0, 0, 0, 0)",  // the native startup probe
+            "MulticlassRequest(9, 1, 0, 1, 0, 0)",  // operation outside 1..=5
+            "MulticlassRequest(4, 0, 0, 1, 0, 0)",  // no caller serial to correlate
+            "MulticlassRequest(4, 1, 0, 12, 0, 0)", // class id beyond the wire mask
+            "MulticlassRequest(2, 1, 42, 6, 7, 0)", // preview carries no token
+            "MulticlassRequest(1, 1, 1, 0, 0, 0)",  // list carries no guid
+            "MulticlassRequest('x', 1, 0, 1, 0, 0)", // non-number is a refusal, not a raise
+            "MulticlassRequest(4, 1, 0, 1, 0, -1)", // negative token
+        ] {
+            assert_eq!(
+                s.eval::<i64>(&format!("return {call}")).unwrap(),
+                0,
+                "{call}"
+            );
+        }
+        assert!(s.take_multiclass_requests().is_empty());
+
+        // Omitted optional arguments are tolerated and extra arguments are ignored, as Lua allows.
+        assert_eq!(s.eval::<i64>("return MulticlassRequest(4, 2)").unwrap(), 1);
+        assert_eq!(
+            s.eval::<i64>("return MulticlassRequest(4, 3, 0, 1, 0, 0, 99)")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            s.take_multiclass_requests(),
+            vec![(4, 2, 0, 0, 0), (4, 3, 1u64 << 32, 0, 0)]
+        );
+
+        // A transition clears pending replies as before; the next poll is still one nil.
+        s.push_multiclass_reply(4, 0, 2, vec![0, 0]);
+        s.clear_multiclass_state();
+        assert_eq!(s.arity("MulticlassPoll()").unwrap(), 1);
+        assert_eq!(
+            s.eval::<Option<String>>("return MulticlassPoll()").unwrap(),
+            None
+        );
+        assert!(s.take_multiclass_requests().is_empty());
     }
 }

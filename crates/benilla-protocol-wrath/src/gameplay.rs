@@ -1204,8 +1204,9 @@ pub fn accept_multiclass_reply(payload: &[u8]) -> Result<MulticlassReply> {
             .into());
     }
     let op = r.u16()?;
-    let status = r.u16()?;
+    // `MulticlassTransport.cpp::Send`: op, requestId (u32), result (u16), then the body.
     let serial = r.u32()?;
+    let status = r.u16()?;
     let body = r.take(r.remaining())?.to_vec();
     Ok(MulticlassReply {
         op,
@@ -1242,11 +1243,40 @@ pub fn pack_guid(guid: u64) -> Vec<u8> {
     out
 }
 
+/// 12340's action-button array size (`Player.h:261` `MAX_ACTION_BUTTONS 144`), the count both
+/// `Player_C.cpp:347` (`s_actionButtons[144]`) and `Player::SendActionButtons`
+/// (`Player.cpp:5572-5579`) use.
+pub const MAX_ACTION_BUTTONS: usize = 144;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActionButton {
     pub slot: u8,
     pub action: u32,
     pub kind: u8,
+}
+
+/// The state byte that opens `SMSG_ACTION_BUTTONS` (`Player_C.cpp:4084-4124`): 0 reads the full
+/// array without applying it, 1 reads and applies it, 2 carries no payload and marks the bar
+/// pending. Values above 2 are ignored before any payload read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionButtonState {
+    /// State 0: read and hold the full array; the live bar is not touched.
+    Snapshot,
+    /// State 1: read and apply the full array, clearing the pending flag.
+    Apply,
+    /// State 2: no payload; set the pending flag and leave the live bar intact.
+    Pending,
+}
+
+impl ActionButtonState {
+    fn from_wire(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Snapshot),
+            1 => Some(Self::Apply),
+            2 => Some(Self::Pending),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1738,7 +1768,12 @@ pub enum ServerEvent {
         display_id: u32,
         racial_leader: bool,
     },
-    ActionButtons { buttons: Vec<ActionButton> },
+    /// `SMSG_ACTION_BUTTONS` with 12340's leading state byte (`Player_C.cpp:4084-4124`). State
+    /// 0 and 1 carry the full 144-word array; state 2 carries no payload and no buttons.
+    ActionButtons {
+        state: ActionButtonState,
+        buttons: Vec<ActionButton>,
+    },
     SpellLearned { spell_id: u32 },
     Gossip {
         npc: u64,
@@ -2169,7 +2204,12 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_NAME_QUERY_RESPONSE => read_name(body),
         SMSG_CREATURE_QUERY_RESPONSE => read_creature(body),
         SMSG_GAMEOBJECT_QUERY_RESPONSE => read_gameobject(body),
-        SMSG_ACTION_BUTTONS => read_action_buttons(body),
+        SMSG_ACTION_BUTTONS => match read_action_buttons(body) {
+            Ok(Some(event)) => Ok(event),
+            // A state byte above 2 consumes nothing and reports nothing (`Player_C.cpp:4098-4100`).
+            Ok(None) => return None,
+            Err(error) => Err(error),
+        },
         SMSG_GOSSIP_MESSAGE => read_gossip(body),
         SMSG_GOSSIP_COMPLETE => Ok(ServerEvent::GossipComplete),
         SMSG_QUESTGIVER_STATUS => read_questgiver_status(body),
@@ -3588,25 +3628,40 @@ fn read_initial_spells(b: &[u8]) -> Result<ServerEvent> {
     })
 }
 
-fn read_action_buttons(b: &[u8]) -> Result<ServerEvent> {
+/// `Player_C.cpp:4084-4124` exactly: the state byte comes first. State 2 (and anything above it,
+/// which `4098-4100` returns on before reading a payload) consumes no words; states 0 and 1 read
+/// the whole server-written array. `Player.cpp:5562-5579` writes exactly
+/// [`MAX_ACTION_BUTTONS`] words for every state but 2, so a short array is truncated and a longer
+/// body is trailing.
+fn read_action_buttons(b: &[u8]) -> Result<Option<ServerEvent>> {
     let mut r = Reader::new(b);
-    let state = r.u8()?;
+    let Some(state) = ActionButtonState::from_wire(r.u8()?) else {
+        return Ok(None);
+    };
+    if state == ActionButtonState::Pending {
+        if r.remaining() != 0 {
+            return Err(DecodeError::trailing(r.remaining()).into());
+        }
+        return Ok(Some(ServerEvent::ActionButtons {
+            state,
+            buttons: Vec::new(),
+        }));
+    }
     let mut buttons = Vec::new();
-    if state != 2 {
-        let mut slot = 0u8;
-        while r.remaining() >= 4 {
-            let packed = r.u32()?;
-            if packed != 0 {
-                buttons.push(ActionButton {
-                    slot,
-                    action: packed & 0x00ff_ffff,
-                    kind: (packed >> 24) as u8,
-                });
-            }
-            slot = slot.saturating_add(1);
+    for slot in 0..MAX_ACTION_BUTTONS {
+        let packed = r.u32()?;
+        if packed != 0 {
+            buttons.push(ActionButton {
+                slot: slot as u8,
+                action: packed & 0x00ff_ffff,
+                kind: (packed >> 24) as u8,
+            });
         }
     }
-    Ok(ServerEvent::ActionButtons { buttons })
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
+    Ok(Some(ServerEvent::ActionButtons { state, buttons }))
 }
 
 fn read_gossip(b: &[u8]) -> Result<ServerEvent> {
@@ -4826,8 +4881,8 @@ mod tests {
         reply.extend_from_slice(b"WMC1");
         reply.extend_from_slice(&3u16.to_le_bytes());
         reply.extend_from_slice(&2u16.to_le_bytes()); // op
+        reply.extend_from_slice(&42u32.to_le_bytes()); // requestId
         reply.extend_from_slice(&0u16.to_le_bytes()); // status OK
-        reply.extend_from_slice(&42u32.to_le_bytes()); // serial
         reply.extend_from_slice(b"payload");
         let parsed = accept_multiclass_reply(&reply).expect("valid WMC1 v3 reply");
         assert_eq!(parsed.op, 2);
@@ -4841,5 +4896,121 @@ mod tests {
 
         let oversized = vec![0u8; MULTICLASS_MAX_REPLY_LEN + 1];
         assert!(accept_multiclass_reply(&oversized).is_err());
+    }
+
+    /// A `SMSG_ACTION_BUTTONS` body for `state` with `count` slot words, `slots` filled in.
+    fn action_buttons_body(state: u8, slots: &[(usize, u32)], count: usize) -> Vec<u8> {
+        let mut body = vec![state];
+        for slot in 0..count {
+            let packed = slots
+                .iter()
+                .find(|(at, _)| *at == slot)
+                .map(|(_, packed)| *packed)
+                .unwrap_or(0);
+            body.extend_from_slice(&packed.to_le_bytes());
+        }
+        body
+    }
+
+    #[test]
+    fn action_buttons_state_one_reads_all_144_slots() {
+        let body = action_buttons_body(
+            1,
+            &[(0, 0x0000_1A11), (143, 0x8000_0075)],
+            MAX_ACTION_BUTTONS,
+        );
+        let event = parse(crate::opcode::SMSG_ACTION_BUTTONS, &body)
+            .expect("action buttons is a decoded opcode")
+            .expect("a full 144-word array is valid");
+        let ServerEvent::ActionButtons { state, buttons } = event else {
+            panic!("wrong action-button event")
+        };
+        assert_eq!(state, ActionButtonState::Apply);
+        assert_eq!(
+            buttons,
+            vec![
+                ActionButton {
+                    slot: 0,
+                    action: 6673,
+                    kind: 0,
+                },
+                ActionButton {
+                    slot: 143,
+                    action: 117,
+                    kind: 0x80,
+                },
+            ],
+            "the last slot survives the boundary and zero words stay empty"
+        );
+    }
+
+    #[test]
+    fn action_buttons_state_zero_carries_the_array_without_applying_it() {
+        let body = action_buttons_body(0, &[(7, 0x4000_0003)], MAX_ACTION_BUTTONS);
+        let event = parse(crate::opcode::SMSG_ACTION_BUTTONS, &body)
+            .expect("decoded")
+            .expect("state 0 still carries the array");
+        let ServerEvent::ActionButtons { state, buttons } = event else {
+            panic!("wrong action-button event")
+        };
+        assert_eq!(state, ActionButtonState::Snapshot);
+        assert_eq!(
+            buttons,
+            vec![ActionButton {
+                slot: 7,
+                action: 3,
+                kind: 0x40,
+            }]
+        );
+    }
+
+    #[test]
+    fn action_buttons_state_two_has_no_payload() {
+        let event = parse(crate::opcode::SMSG_ACTION_BUTTONS, &[2])
+            .expect("decoded")
+            .expect("state 2 is the pending marker");
+        let ServerEvent::ActionButtons { state, buttons } = event else {
+            panic!("wrong action-button event")
+        };
+        assert_eq!(state, ActionButtonState::Pending);
+        assert!(buttons.is_empty());
+
+        let trailing = parse(crate::opcode::SMSG_ACTION_BUTTONS, &[2, 0, 0, 0, 0])
+            .expect("decoded")
+            .expect_err("state 2 consumes no payload");
+        assert_eq!(
+            classify_decode_failure(&trailing),
+            DecodeFailure::TrailingBytes
+        );
+    }
+
+    #[test]
+    fn action_buttons_states_zero_and_one_reject_a_short_or_long_array() {
+        for state in [0u8, 1] {
+            let short = action_buttons_body(state, &[], MAX_ACTION_BUTTONS - 1);
+            let error = parse(crate::opcode::SMSG_ACTION_BUTTONS, &short)
+                .expect("decoded")
+                .expect_err("143 words is not the server's array");
+            assert_eq!(classify_decode_failure(&error), DecodeFailure::Truncated);
+
+            let long = action_buttons_body(state, &[], MAX_ACTION_BUTTONS + 1);
+            let error = parse(crate::opcode::SMSG_ACTION_BUTTONS, &long)
+                .expect("decoded")
+                .expect_err("145 words has trailing bytes");
+            assert_eq!(
+                classify_decode_failure(&error),
+                DecodeFailure::TrailingBytes
+            );
+        }
+    }
+
+    #[test]
+    fn action_buttons_state_above_two_is_ignored_without_a_payload() {
+        for body in [vec![3u8], vec![3u8, 0, 0, 0, 0], vec![255u8]] {
+            assert!(
+                parse(crate::opcode::SMSG_ACTION_BUTTONS, &body).is_none(),
+                "state bytes above 2 are not translated"
+            );
+        }
     }
 }

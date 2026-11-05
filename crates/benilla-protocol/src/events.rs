@@ -151,6 +151,18 @@ pub enum NotifyBlock {
     Create(EntityKind),
 }
 
+/// The state byte that opens 3.3.5a's `SMSG_ACTION_BUTTONS` (`Player_C.cpp:4084-4124`). The 1.12
+/// packet has no state byte and keeps the plain [`SessionEvent::ActionButtons`] variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActionButtonState {
+    /// State 0: the full array was read and held; the live bar was not replaced.
+    Snapshot,
+    /// State 1: the full array was applied and the pending flag cleared.
+    Apply,
+    /// State 2: no payload; the bar is pending and its previous slots stand.
+    Pending,
+}
+
 /// One decoded world-stream event; its fieldless twin [`SessionEventKind`] keys the handler table.
 #[derive(Debug, Clone, strum::EnumDiscriminants)]
 #[strum_discriminants(
@@ -566,7 +578,16 @@ pub enum SessionEvent {
         received_at: Option<std::time::Instant>,
     },
     /// The saved action bar at login (`SMSG_ACTION_BUTTONS`): slots 0..119, 0..11 the main bar.
+    /// This 1.12 packet has no state byte, so it always applies the full array.
     ActionButtons { buttons: Vec<ActionButton> },
+    /// 3.3.5a `SMSG_ACTION_BUTTONS` with its leading state byte (`Player_C.cpp:4084-4124`):
+    /// [`ActionButtonState::Snapshot`] holds the full array without applying it,
+    /// [`ActionButtonState::Apply`] applies it and clears the pending bar, and
+    /// [`ActionButtonState::Pending`] carries no buttons and leaves the live bar intact.
+    ActionButtonsUpdate {
+        state: ActionButtonState,
+        buttons: Vec<ActionButton>,
+    },
     /// A spell learned after login (`SMSG_LEARNED_SPELL`), widened from the wire `u16`.
     SpellLearned { spell_id: u32 },
     /// A spell unlearned (`SMSG_REMOVED_SPELL`), widened from `u16`; a respec sends one per rank.
