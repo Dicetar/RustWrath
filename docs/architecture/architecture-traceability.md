@@ -84,12 +84,12 @@ gameplay was run. Contract: [lossless Wrath inventory](rfc-lossless-wrath-invent
 | INV-10 `HasKey` | `has_key_in_player` | keyring visibility, lock openers | finds keys in 25..28/bag 7 / missing template transient false / reload | SOURCE-REPAIRED (scan was 24/6) | SOURCE-OBSERVED; NOT RUN |
 | INV-11 repair/cooldown scans | `ui_merchant::repair_costs`, `char_stats` bands | repair cost, tooltip cooldown | 28/7 / no vendor refusal change / reload | SOURCE-REPAIRED | SOURCE-OBSERVED; NOT RUN |
 | INV-12 bank events | `item_watch::typed_bank_change`, `BagCache` 11 | `PLAYERBANKSLOTS_CHANGED`, `BAG_UPDATE(11)` | fires for 25..28/bag 7 / no event on unknown / cleared on transfer | SOURCE-REPAIRED | SOURCE-OBSERVED; NOT RUN |
-| INV-13 item enchant slots 1..12 | `push_item_fields` (donor 7 + typed item row) | tooltip/bind/visual | 12 retained in the typed row / no donor write at 43..47 / re-create | DEFERRED (S3); donor still 7 | SOURCE-OBSERVED; NOT RUN |
+| INV-13 item enchant slots 1..12 | `push_item_fields` (donor 7 only; no typed item row yet) | tooltip/bind/visual | 12 not retained yet / no donor write at 43..47 / re-create | DEFERRED (S3); donor still 7 | SOURCE-OBSERVED; NOT RUN |
 | INV-14 `ITEM_FIELD_CREATE_PLAYED_TIME` | `push_item_fields` | none found | retained only if S3 lands / n/a / re-create | DEFERRED (S3) | SOURCE-OBSERVED; NOT RUN |
 | INV-15 item text by guid | `ItemTextByGuid` (no producer) | `WrathItemText` (no reader) | request/response / refusal / reconnect | UNSUPPORTED branch (S3) | SOURCE-OBSERVED; NOT RUN |
 | INV-16 presence/clear | `WrathFieldWindow` | migrated readers | unknown != explicit clear; delivered zero clears; sparse omission retains | SOURCE-REPAIRED (dense zeros before) | SOURCE-OBSERVED; NOT RUN |
 | INV-17 reconnect/transfer retirement | `wrath_apply_world` scope-loss block | owner, `BagCache`, `ItemLane`, containers | clear old scope / no stale event / new create | SOURCE-REPAIRED (owner joins the existing clear) | SOURCE-OBSERVED; NOT RUN |
-| INV-18 item/container ownership | `apply_item_world` + `WrathInventory` address map | `GuidIndex`, `ObjectStore`, typed row | guid/generation identity / a bag move changes one address only / contents not reparented | PARTIAL (S1/S2 state; S3 payload) | SOURCE-OBSERVED; NOT RUN |
+| INV-18 item/container ownership | `apply_item_world` + `WrathInventory` address map | `GuidIndex`, `ObjectStore`, typed address map (item payload S3 deferred) | guid/generation identity / a bag move changes one address only / contents not reparented | PARTIAL (S1/S2 state; S3 payload) | SOURCE-OBSERVED; NOT RUN |
 
 Follow-up row (not this package): the raw player window stays `0..1171`, so
 `PLAYER_FIELD_COMBAT_RATING_1` (1231..), `PLAYER_FIELD_MAX_LEVEL` (1279) and
