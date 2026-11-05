@@ -3,7 +3,9 @@ param(
     [string]$DataPath = 'D:\WOW\world of warcraft 3.3.5a hd\data',
     [string]$AuthServer = '127.0.0.1:3724',
     [string]$WorldServer = '127.0.0.1:8095',
-    [bool]$WithAddons = $true
+    [bool]$WithAddons = $true,
+    [switch]$WithMulticlass,
+    [string]$MulticlassGluePath = 'D:\WOW\wm-project\client_extensions\multiclass\multiclass_glue.lua'
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -15,6 +17,16 @@ if (Get-Process benilla,cargo,rustc -ErrorAction SilentlyContinue) {
     throw 'A client or build is already running. Close it or wait before launching.'
 }
 if (!(Test-Path -LiteralPath $DataPath)) { throw "Game data folder missing: $DataPath" }
+if ($WithMulticlass) {
+    if (!$WithAddons) { throw 'Multiclass requires -WithAddons $true' }
+    if (!(Test-Path -LiteralPath $MulticlassGluePath -PathType Leaf)) {
+        throw "Multiclass Glue script missing: $MulticlassGluePath"
+    }
+    $multiclassToc = Join-Path (Split-Path -Parent $DataPath) 'Interface\AddOns\WM_Multiclass\WM_Multiclass.toc'
+    if (!(Test-Path -LiteralPath $multiclassToc -PathType Leaf)) {
+        throw "Required addon missing: $multiclassToc"
+    }
+}
 
 # A normal player launch never inherits the probe's identity, commands or stop deadline.
 foreach ($entry in @(Get-ChildItem Env: | Where-Object {
@@ -32,6 +44,10 @@ $env:WOW_STOCK_UI = '1'
 $env:WOW_GM = 'off'
 $env:WM_ASSET_MANIFEST = Join-Path $repo 'docs\profiles\wm-hd.mpqlist'
 $env:WM_ASSET_PROFILE = 'wm-hd'
+if ($WithMulticlass) {
+    $env:WOW_WRATH_MULTICLASS = '1'
+    $env:WOW_MULTICLASS_GLUE = (Resolve-Path -LiteralPath $MulticlassGluePath).Path
+}
 
 # Set addons path if present in game install
 if ($WithAddons) {

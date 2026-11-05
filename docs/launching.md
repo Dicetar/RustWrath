@@ -50,7 +50,14 @@ The intended stock workflow is login, optional realm choice, roster selection an
 with character creation/cancel and deletion confirmation on their respective screens.
 These paths remain under active repair; the presence of a button is not acceptance.
 Persistent creation/deletion must be driven by the owner. Settings use local CVar persistence;
-backend wiring must be verified for each option. Multiclassing is deferred.
+backend wiring must be verified for each option.
+
+The source now includes an opt-in WM multiclass host. After building the branch,
+`.\tools\launch-client.ps1 -WithMulticlass` enables it with the installed
+`WM_Multiclass` addon and the local WM Glue script. `-MulticlassGluePath` selects
+another script path. This source change has not been built or runtime-accepted;
+see the [U4 handoff and acceptance cases](architecture/multiclass-host-2026-11-05.md).
+Default launches leave this extension disabled.
 
 ## Testing and troubleshooting
 

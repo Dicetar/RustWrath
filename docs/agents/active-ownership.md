@@ -41,6 +41,13 @@ newer reservation or kill another owner's process to acquire the slot.
 
 ## Current evidence and continuation
 
+- Codex U4 (2026-11-05): native multiclass Request/Poll transport, scoped preview
+  receipts, operations 6/7/8, Glue load and server-owned trainer grouping prepared
+  on `feat/wrath-multiclass-host`, based on the P0 inventory/session integration at
+  `39e3c62a`. Source-only handoff:
+  [multiclass host](../architecture/multiclass-host-2026-11-05.md). No build/client
+  slot reserved; compilation and installed-addon/runtime acceptance remain open.
+
 - D00 default-on recording approved by owner on 2026-11-03, with D01–D07 and Q00–Q04
   correlation and lifecycle continuation added in `crates/benilla-app/src/quest_trace.rs`,
   `target/click.rs`, `ui_quest/{mod,net,verbs}.rs`, `ui_quest_log.rs`, `wrath.rs`, `net.rs`,
