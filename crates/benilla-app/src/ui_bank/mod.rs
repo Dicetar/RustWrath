@@ -7,7 +7,7 @@ use benilla_protocol::messages::bank_slot_result;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use benilla_ui::script::{BankState, UiScript};
+use benilla_ui::script::{BankState, UiScript, UiTarget};
 
 use crate::net::{ClientCommand, NetCommands, ObjectStore, SelfPlayer};
 use crate::ui_script::UiFeed;
@@ -208,8 +208,9 @@ impl BankSteps<'_, '_> {
     }
 
     /// `PurchaseSlot()` (`0x4f86b0`) inside its call: nothing without the active player
-    /// (`0x4f86d6`), control (`0x4f86e3`) or a banker (`0x4f86f4`), or with six slots bought
-    /// (`0x4f8703`); a purse below the next slot's price (`0x4f8690`, 0 with no row) shows
+    /// (`0x4f86d6`), control (`0x4f86e3`) or a banker (`0x4f86f4`), or with all slots bought
+    /// (seven in 3.3.5, six in the donor; `0x4f8703`); a purse below the next slot's price
+    /// (`0x4f8690`, 0 with no row) shows
     /// `ERR_BANKSLOT_INSUFFICIENT_FUNDS` (`0x4f8748`), else `CMSG_BUY_BANK_SLOT` goes out with the
     /// interaction target (`0x4f8785`-`0x4f87a1`).
     pub(crate) fn purchase(&mut self, script: &mut UiScript) {
@@ -221,7 +222,13 @@ impl BankSteps<'_, '_> {
             return;
         }
         let bought = store.0.player_bank_bag_slots_purchased().unwrap_or(0);
-        if bought >= 6 {
+        // 3.3.5 sells seven bank-bag slots; the donor host sells six (`GetNumBankSlots`).
+        let max_bags: u8 = if script.target() == UiTarget::Wrath335 {
+            7
+        } else {
+            6
+        };
+        if bought >= max_bags {
             return;
         }
         let price = self

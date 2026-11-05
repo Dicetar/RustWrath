@@ -15,8 +15,8 @@ use crate::query_cache::Ask;
 use crate::ui_script::gate;
 
 use super::{
-    find_equip_slot, has_key_in_target, keyring_size_in_target, BAGS, BAG_SLOT_FIRST, BANK_BAGS,
-    BANK_BAG_ID_FIRST, BANK_CONTAINER, BANK_SLOTS, KEYRING_CONTAINER, PACK_SLOTS,
+    find_equip_slot, has_key_in_player, keyring_size_in_target, BAGS,
+    BANK_BAG_ID_FIRST, BANK_CONTAINER, KEYRING_CONTAINER, PACK_SLOTS,
 };
 
 /// The doll's equipment slots, 0-based descriptor slots 0..=18 (live-API ids 1..=19).
@@ -1290,6 +1290,8 @@ pub(crate) fn feed_containers(
             props: catalogs.1.as_deref(),
         };
         let player = inv.self_store.iter().next();
+        let player_inv =
+            inv.player(script.target() == benilla_ui::script::UiTarget::Wrath335);
         let mut key_pair = None;
 
         let mut fresh: HashMap<i64, ContainerState> = HashMap::new();
@@ -1302,9 +1304,12 @@ pub(crate) fn feed_containers(
             })
         });
         if let Some(store) = player {
+            let p = player_inv
+                .as_ref()
+                .expect("the player view is built from the same self store");
             let mut slots = HashMap::new();
             for i in 0..PACK_SLOTS {
-                let guid = store.0.player_pack_slot(i).unwrap_or(0);
+                let guid = p.backpack(i);
                 if let Some(slot) = resolve_slot_in_target(
                     script.target(),
                     store.0.unit_level().unwrap_or(0),
@@ -1335,10 +1340,7 @@ pub(crate) fn feed_containers(
 
             // Bags 1..4: each INV bag slot holds a container object with its own slot array.
             for bag in 1..=BAGS {
-                let bag_guid = store
-                    .0
-                    .player_inv_slot(BAG_SLOT_FIRST + bag - 1)
-                    .unwrap_or(0);
+                let bag_guid = p.bag_slot(bag - 1);
                 if bag_guid == 0 {
                     continue; // no bag equipped → absent → GetContainerNumSlots = 0
                 }
@@ -1391,11 +1393,12 @@ pub(crate) fn feed_containers(
                 );
             }
 
-            // The bank, container -1 (the vault) and 5..=10 (its bags), fed whether or not the
-            // window is open: the descriptor streams at login.
+            // The bank, container -1 (the vault) and 5..=11 (its bags), fed whether or not the
+            // window is open: the descriptor streams at login. 3.3.5 has 28 vault slots and
+            // seven bank bags; the typed owner supplies the four/five the donor projection drops.
             let mut slots = HashMap::new();
-            for i in 0..BANK_SLOTS {
-                let guid = store.0.player_bank_slot(i).unwrap_or(0);
+            for i in 0..p.bank_capacity() {
+                let guid = p.bank(i);
                 if let Some(slot) = resolve_slot_in_target(
                     script.target(),
                     store.0.unit_level().unwrap_or(0),
@@ -1419,13 +1422,13 @@ pub(crate) fn feed_containers(
                 BANK_CONTAINER,
                 ContainerState {
                     name: None,
-                    num_slots: u32::from(BANK_SLOTS),
+                    num_slots: u32::from(p.bank_capacity()),
                     slots,
                 },
             );
-            for bank_bag in 0..BANK_BAGS {
+            for bank_bag in 0..p.bank_bag_capacity() {
                 let bag_id = BANK_BAG_ID_FIRST + i64::from(bank_bag);
-                let bag_guid = store.0.player_bank_bag_slot(bank_bag).unwrap_or(0);
+                let bag_guid = p.bank_bag(bank_bag);
                 if bag_guid == 0 {
                     continue; // no bag in the slot → absent → GetContainerNumSlots = 0
                 }
@@ -1483,7 +1486,7 @@ pub(crate) fn feed_containers(
             let size = keyring_size_in_target(script.target(), store.0.unit_level().unwrap_or(1));
             let mut slots = HashMap::new();
             for i in 0..size as u8 {
-                let guid = store.0.player_keyring_slot(i).unwrap_or(0);
+                let guid = p.keyring(i);
                 if let Some(slot) = resolve_slot_in_target(
                     script.target(),
                     store.0.unit_level().unwrap_or(0),
@@ -1514,7 +1517,7 @@ pub(crate) fn feed_containers(
 
             // `HasKey()`, which decides whether the keyring shows at all, pushed with the
             // containers so it is fresh on every `BAG_UPDATE` frame.
-            let key = has_key_in_target(script.target(), &store.0, &inv.objects, &items);
+            let key = has_key_in_player(p, &inv.objects, &items);
             key_pair = Some((memory.had_key, key));
             if key != memory.had_key {
                 gate.audit("feed_containers", "the HasKey() flip");

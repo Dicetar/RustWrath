@@ -749,7 +749,7 @@ fn service_probe(
                 let Some(item_guid) = self_store
                     .single()
                     .ok()
-                    .and_then(|s| crate::ui_items::slot_guid(&s.0, held.bag, slot0, &objects))
+                    .and_then(|s| crate::ui_items::slot_guid_donor(&s.0, held.bag, slot0, &objects))
                 else {
                     error!(
                         "PROBE_SERVICE: FAIL (vendor fork, held cursor) — bag {} slot {} is on the \

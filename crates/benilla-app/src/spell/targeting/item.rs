@@ -162,7 +162,7 @@ pub(crate) fn pick_item(
     let guid = ladder
         .objects
         .player_fields()
-        .and_then(|store| crate::ui_items::slot_guid(store, bag, slot0, &ladder.objects));
+        .and_then(|store| crate::ui_items::slot_guid_donor(store, bag, slot0, &ladder.objects));
     let Some(guid) = guid else {
         debug!("ui_action: item pick on an empty slot (bag {bag} slot {slot}) — mode kept");
         return None;

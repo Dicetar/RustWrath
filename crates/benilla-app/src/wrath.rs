@@ -11,6 +11,10 @@
 //!   (`WrathEvents`, capacity [`WRATH_EVENT_CAPACITY`], oldest dropped). A full slot is never a
 //!   blocked packet loop: observations are latest-only by contract, and a dropped lifecycle
 //!   event is recoverable because the newest full state always follows.
+//! - Translated gameplay replies travel a third, **bounded** queue (`SessionReplies`) that the
+//!   worker never blocks on: lifecycle and reply events keep arrival order, replaceable
+//!   observations coalesce in place, and the session's terminal edges have reserved slots so an
+//!   overloaded or stalled consumer can never delay them (review finding R04).
 //! - The app drains both in the existing `WorldStage::Net` stage â€” before `Input` reads
 //!   position â€” with a per-frame drain bound, so bursts cannot starve input and no-packet frames
 //!   do no work. World-generation changes invalidate the mapped entity set and the pending
@@ -93,6 +97,30 @@ pub const WRATH_NATIVE_EVENT_CAPACITY: usize = 64;
 /// for the next frame instead of starving input (R5 budget; measured, not tuned, per frame).
 pub const WRATH_DRAIN_LIMIT: usize = 64;
 
+// Session-reply delivery (package B, review finding R04). The numbers below are reviewed design
+// choices for bounded ownership, not measurements: no build or runtime profile established them.
+// They are deliberately generous so a stalled main loop rides out a burst without either
+// unbounded growth or a needless disconnect, while a genuinely dead consumer still ends in the
+// controlled terminal path rather than in memory exhaustion.
+
+/// Hard cap on the ordered session-reply FIFO (lifecycle edges plus gameplay replies). Reserved
+/// terminal slots are separate and never counted here.
+pub const WRATH_SESSION_REPLY_CAP: usize = 4096;
+/// Above this depth the producer stops reading between packets until the queue drains.
+pub const WRATH_SESSION_REPLY_HIGH_WATER: usize = 2048;
+/// Backpressure latches until the queue is at or below this depth, so it does not flap.
+pub const WRATH_SESSION_REPLY_LOW_WATER: usize = 1024;
+/// Reserved terminal slots: at most one per terminal kind, and a worker produces at most two
+/// (`LoggedOut` with its `Disconnected` teardown, or a single `LoginFailed`/`Disconnected`).
+pub const WRATH_SESSION_TERMINAL_CAP: usize = 2;
+/// Ceiling for one reply-drain pass when the queue is deep; the floor is [`WRATH_DRAIN_LIMIT`].
+pub const WRATH_DRAIN_CEILING: usize = 512;
+/// Wall-clock budget for one reply-drain pass. A design choice, not a measurement.
+pub const WRATH_DRAIN_BUDGET: Duration = Duration::from_millis(2);
+/// Longest single producer pause while the reply queue is above high water. The pause always ends
+/// between complete packets, re-checks cancellation and never straddles a packet boundary.
+pub const WRATH_REPLY_BACKPRESSURE_SLICE: Duration = Duration::from_millis(50);
+
 /// The longest silent world-server window treated as healthy. A live server answers the 10 s ping
 /// even when gameplay is quiet; socket read timeouts and empty frame ticks are not responses.
 pub const SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -163,6 +191,293 @@ impl WrathSessionEvent {
     fn for_login(mut self, generation: Option<u64>) -> Self {
         self.login_generation = generation;
         self
+    }
+}
+
+/// Delivery class of one translated reply (review finding R04). The class decides eviction and
+/// coalescing only; scope acceptance stays with `scope_is_older` in the Net-stage dispatcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionClass {
+    /// Ends the session: delivered before anything queued behind it and never evicted.
+    Terminal,
+    /// A login/realm/roster/character-action/transfer edge: ordered, never coalesced.
+    Lifecycle,
+    /// A gameplay reply that mutates owning state: ordered, never coalesced.
+    Reply,
+    /// An absolute snapshot a newer one replaces: coalesced in place by key.
+    Observation,
+}
+
+/// Which terminal edge this is, when it is one. A worker emits at most two: `LoggedOut` followed
+/// by the closure's `Disconnected { end: LoggedOut }` teardown (both handlers do different work),
+/// or a single failed-login edge. Anything else is not a terminal.
+fn terminal_index(event: &SessionEvent) -> Option<usize> {
+    match event {
+        SessionEvent::LoggedOut => Some(0),
+        SessionEvent::Disconnected { .. } => Some(1),
+        SessionEvent::LoginFailed { .. } => Some(2),
+        _ => None,
+    }
+}
+
+/// Identity of a replaceable observation. Two events with the same key are the same fact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationKey {
+    ServerClock,
+    PlayedTime,
+    GossipMenu(u64),
+    Vendor(u64),
+}
+
+fn observation_key(event: &SessionEvent) -> Option<ObservationKey> {
+    match event {
+        SessionEvent::ServerUnixTime { .. } => Some(ObservationKey::ServerClock),
+        SessionEvent::PlayedTime { .. } => Some(ObservationKey::PlayedTime),
+        SessionEvent::GossipMenu { npc, .. } => Some(ObservationKey::GossipMenu(*npc)),
+        SessionEvent::VendorInventory { vendor, .. } => Some(ObservationKey::Vendor(*vendor)),
+        _ => None,
+    }
+}
+
+/// Whether `event` is a login/realm/roster/transfer edge rather than a gameplay reply.
+fn is_lifecycle_event(event: &SessionEvent) -> bool {
+    matches!(
+        event,
+        SessionEvent::LoginStage { .. }
+            | SessionEvent::RealmList { .. }
+            | SessionEvent::RealmSplit { .. }
+            | SessionEvent::LoginQueued { .. }
+            | SessionEvent::WorldAuthenticated { .. }
+            | SessionEvent::AddonInfo { .. }
+            | SessionEvent::CharacterList { .. }
+            | SessionEvent::RosterFailed { .. }
+            | SessionEvent::CharActionResult { .. }
+            | SessionEvent::CharRenamed { .. }
+            | SessionEvent::CharacterLoginFailed { .. }
+            | SessionEvent::LogoutResponse { .. }
+            | SessionEvent::LogoutCancelled
+            | SessionEvent::Connected { .. }
+            | SessionEvent::Worldport { .. }
+            | SessionEvent::TransferPending { .. }
+            | SessionEvent::TransferAborted { .. }
+    )
+}
+
+fn session_class(event: &SessionEvent) -> SessionClass {
+    if terminal_index(event).is_some() {
+        SessionClass::Terminal
+    } else if is_lifecycle_event(event) {
+        SessionClass::Lifecycle
+    } else if observation_key(event).is_some() {
+        SessionClass::Observation
+    } else {
+        SessionClass::Reply
+    }
+}
+
+/// Counters copied into [`WrathControl`] for diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SessionReplyStats {
+    pub depth: usize,
+    pub peak: usize,
+    pub coalesced: u64,
+    pub dropped: u64,
+    pub overflowed: u64,
+    pub closed_pushes: u64,
+    pub delivered: u64,
+}
+
+/// Bounded, non-blocking delivery queue for translated replies (R04).
+///
+/// The producer never waits: `push` is O(1) for replies and a small scan for observations. The
+/// consumer drains a bounded slice per frame. Terminal edges live in their own reserved slots, so
+/// an overflowing reply backlog can never prevent the session's end from being delivered.
+///
+/// A fresh queue is created per worker, which is also what keeps the per-worker epoch restart
+/// from aliasing a retired worker's events. `close` makes later pushes no-ops during teardown, so
+/// a worker pushing while the app stops cannot fabricate an overflow terminal.
+#[derive(Default)]
+pub(crate) struct SessionReplies {
+    fifo: VecDeque<WrathSessionEvent>,
+    terminal: VecDeque<WrathSessionEvent>,
+    /// One slot per [`terminal_index`]; a repeated terminal edge is redundant, not a new outcome.
+    seen_terminal: [bool; 3],
+    closed: bool,
+    throttled: bool,
+    coalesced: u64,
+    dropped: u64,
+    overflowed: u64,
+    closed_pushes: u64,
+    peak: usize,
+    delivered: u64,
+}
+
+impl SessionReplies {
+    fn push(&mut self, event: WrathSessionEvent) {
+        if self.closed {
+            self.closed_pushes += 1;
+            return;
+        }
+        match session_class(&event.event) {
+            SessionClass::Terminal => self.push_terminal(event),
+            SessionClass::Observation => {
+                if let Some(key) = observation_key(&event.event) {
+                    if let Some(slot) = self
+                        .fifo
+                        .iter_mut()
+                        .find(|queued| observation_key(&queued.event) == Some(key))
+                    {
+                        // Replace in place: the entry keeps its position, so reply order is
+                        // unchanged, and the newest absolute snapshot wins.
+                        *slot = event;
+                        self.coalesced += 1;
+                        return;
+                    }
+                }
+                self.push_reliable(event);
+            }
+            SessionClass::Lifecycle | SessionClass::Reply => self.push_reliable(event),
+        }
+    }
+
+    fn push_terminal(&mut self, event: WrathSessionEvent) {
+        let Some(index) = terminal_index(&event.event) else {
+            debug_assert!(false, "a non-terminal reached the terminal slot");
+            return;
+        };
+        if self.seen_terminal[index] || self.terminal.len() >= WRATH_SESSION_TERMINAL_CAP {
+            self.dropped += 1;
+            return;
+        }
+        self.seen_terminal[index] = true;
+        self.terminal.push_back(event);
+        self.note_peak();
+    }
+
+    fn push_reliable(&mut self, event: WrathSessionEvent) {
+        if self.fifo.len() >= WRATH_SESSION_REPLY_CAP {
+            // Bound the memory first; the worker turns the sticky flag into a controlled
+            // terminal through the existing error path rather than dropping silently.
+            self.overflowed += 1;
+            self.dropped += 1;
+            return;
+        }
+        self.fifo.push_back(event);
+        self.note_peak();
+    }
+
+    fn note_peak(&mut self) {
+        self.peak = self.peak.max(self.fifo.len() + self.terminal.len());
+    }
+
+    /// Terminals first; any queued reply is superseded by the session's end and discarded.
+    fn take(&mut self, limit: usize, budget: Duration) -> Vec<WrathSessionEvent> {
+        if !self.terminal.is_empty() {
+            let out: Vec<_> = self.terminal.drain(..).collect();
+            self.dropped += self.fifo.len() as u64;
+            self.fifo.clear();
+            self.throttled = false;
+            self.delivered += out.len() as u64;
+            return out;
+        }
+        let started = Instant::now();
+        let mut out = Vec::with_capacity(limit.min(self.fifo.len()));
+        while out.len() < limit {
+            if started.elapsed() >= budget {
+                break;
+            }
+            let Some(event) = self.fifo.pop_front() else {
+                break;
+            };
+            out.push(event);
+        }
+        self.delivered += out.len() as u64;
+        out
+    }
+
+    fn is_empty(&self) -> bool {
+        self.fifo.is_empty() && self.terminal.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.fifo.len() + self.terminal.len()
+    }
+
+    fn overloaded(&self) -> bool {
+        self.overflowed > 0
+    }
+
+    /// True while the producer must keep pausing between packets. Latching on the high/low-water
+    /// pair keeps a queue hovering at the threshold from re-reading one packet per slice.
+    fn producer_should_pause(&mut self) -> bool {
+        if self.fifo.len() >= WRATH_SESSION_REPLY_HIGH_WATER {
+            self.throttled = true;
+        } else if self.fifo.len() <= WRATH_SESSION_REPLY_LOW_WATER {
+            self.throttled = false;
+        }
+        self.throttled
+    }
+
+    fn close(&mut self) {
+        self.closed = true;
+    }
+
+    /// A terminal is a session barrier: queued replies are stale once the session ends.
+    fn clear_backlog(&mut self) {
+        self.dropped += self.fifo.len() as u64;
+        self.fifo.clear();
+        self.throttled = false;
+    }
+
+    /// Prune replies already older than the scope just adopted. Forced edges keep their
+    /// "deliver even when stale" contract and are left for the dispatcher to judge.
+    fn drop_older_than(&mut self, session_epoch: u64, world_generation: u64) {
+        let before = self.fifo.len();
+        self.fifo.retain(|queued| {
+            queued.force
+                || !(queued.session_epoch < session_epoch
+                    || (queued.session_epoch == session_epoch
+                        && queued.world_generation < world_generation))
+        });
+        self.dropped += (before - self.fifo.len()) as u64;
+    }
+
+    fn stats(&self) -> SessionReplyStats {
+        SessionReplyStats {
+            depth: self.len(),
+            peak: self.peak,
+            coalesced: self.coalesced,
+            dropped: self.dropped,
+            overflowed: self.overflowed,
+            closed_pushes: self.closed_pushes,
+            delivered: self.delivered,
+        }
+    }
+}
+
+/// Queue one translated reply under the session's scope tag. The producer never blocks.
+fn push_session_event(
+    replies: &Option<Arc<Mutex<SessionReplies>>>,
+    session: &SessionState,
+    event: SessionEvent,
+) {
+    if let Some(replies) = replies {
+        if let Ok(mut replies) = replies.lock() {
+            replies.push(WrathSessionEvent::scoped(session, event));
+        }
+    }
+}
+
+/// Queue one lifecycle or terminal edge: no scope tags of its own, optional login generation.
+fn push_forced_event(
+    replies: &Option<Arc<Mutex<SessionReplies>>>,
+    event: SessionEvent,
+    login_generation: Option<u64>,
+) {
+    if let Some(replies) = replies {
+        if let Ok(mut replies) = replies.lock() {
+            replies.push(WrathSessionEvent::forced(event).for_login(login_generation));
+        }
     }
 }
 
@@ -464,8 +779,9 @@ pub struct WrathEntity {
     pub create_spline: Option<benilla_protocol_wrath::updates::CreateSplineSnapshot>,
     pub generation: u32,
     /// The player's raw Wrath field window, needed where 1.12 and 3.3.5 pack different field
-    /// indices (quest log, inventory, coinage). Only a player carries it.
-    pub player_fields: Option<Vec<u32>>,
+    /// indices (quest log, inventory, coinage), with the server's delivered mask. Only a player
+    /// carries it.
+    pub player_fields: Option<crate::wrath_inventory::WrathFieldWindow>,
     /// An item or container's raw Wrath field window. The item block is 0..64 and a container
     /// extends it with its slot array; both are translated explicitly rather than copied by
     /// index because the 1.12 item/container layouts differ.
@@ -896,11 +1212,14 @@ pub struct WrathControl {
     /// Terminal failure from the last worker run. A clean end leaves this `None`.
     pub last_error: Option<String>,
     /// Replies for the established `SessionEvent` handlers, tagged by source scope and drained
-    /// in the Net stage rather than through the stock 1.12 inbound channel.
-    session_events: Option<Receiver<WrathSessionEvent>>,
-    /// The app's own end of that tagged channel. A panicked worker never sends its terminal
+    /// in the Net stage rather than through the stock 1.12 inbound channel. One bounded queue is
+    /// created per worker (review finding R04); the producer never waits on the consumer.
+    session_events: Option<Arc<Mutex<SessionReplies>>>,
+    /// The app's own end of that tagged queue. A panicked worker never sends its terminal
     /// event, so the ownership tick synthesizes the forced `Disconnected` through this clone.
-    session_events_tx: Option<Sender<WrathSessionEvent>>,
+    session_events_tx: Option<Arc<Mutex<SessionReplies>>>,
+    /// Last observed delivery counters; logged only when they change.
+    reply_stats: SessionReplyStats,
     /// The running parked session's screen-ask channel. The select screen's next ask lands
     /// here; a dead one (the parked session ended) makes the ask a fresh-admission attempt.
     /// `None` for the boot flow and for any session started without the screen, which is also
@@ -1006,12 +1325,12 @@ impl WrathControl {
                 queue.clear();
             }
         }
-        let (events_out, events_in) = crossbeam_channel::unbounded();
-        self.session_events = Some(events_in);
-        self.session_events_tx = Some(events_out.clone());
+        let replies = Arc::new(Mutex::new(SessionReplies::default()));
+        self.session_events = Some(Arc::clone(&replies));
+        self.session_events_tx = Some(Arc::clone(&replies));
         let (publisher_retire, publisher_retire_rx) = crossbeam_channel::unbounded();
         self.publisher_retire_rx = Some(publisher_retire_rx);
-        let events_out = Some(events_out);
+        let events_out = Some(replies);
         let handle = std::thread::Builder::new()
             .name("wrath-session".to_owned())
             .spawn(move || {
@@ -1040,15 +1359,19 @@ impl WrathControl {
                         world_generation: feed.last_world_generation.load(Ordering::SeqCst),
                     });
                 }
-                if let Some(sink) = events_out.filter(|_| !cancel.load(Ordering::SeqCst)) {
+                if !cancel.load(Ordering::SeqCst) {
                     if config.login_generation.is_some() && result.is_err()
                         && !feed.authenticated.load(Ordering::SeqCst)
                     {
-                        let _ = sink.send(WrathSessionEvent::forced(SessionEvent::LoginFailed {
-                            refusal: None,
-                            reason: result.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default(),
-                            dial: None,
-                        }).for_login(config.login_generation));
+                        push_forced_event(
+                            &events_out,
+                            SessionEvent::LoginFailed {
+                                refusal: None,
+                                reason: result.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default(),
+                                dial: None,
+                            },
+                            config.login_generation,
+                        );
                         return;
                     }
                     let end = if result.is_ok() {
@@ -1060,10 +1383,11 @@ impl WrathControl {
                         .err()
                         .map(|e| format!("{e:#}"))
                         .unwrap_or_else(|| "wrath session ended".to_owned());
-                    let _ = sink.send(WrathSessionEvent::forced(SessionEvent::Disconnected {
-                        reason,
-                        end,
-                    }).for_login(config.login_generation));
+                    push_forced_event(
+                        &events_out,
+                        SessionEvent::Disconnected { reason, end },
+                        config.login_generation,
+                    );
                 }
             })
             .expect("spawn wrath session thread");
@@ -1092,6 +1416,9 @@ impl WrathControl {
         self.restart_allowed = false;
         self.retry_at = None;
         self.cancel.store(true, Ordering::SeqCst);
+        // Close the reply queue before the join. A worker that pushes during teardown must not
+        // fabricate an overflow terminal, and no consumer is left to drain what it sends.
+        self.close_session_replies();
         if let Some(worker) = self.worker.take() {
             self.retiring = Some(worker);
         }
@@ -1130,22 +1457,84 @@ impl WrathControl {
     }
 
     fn take_session_events(&mut self) -> Vec<WrathSessionEvent> {
-        let Some(receiver) = self.session_events.as_ref() else {
+        let Some(replies) = self.session_events.as_ref() else {
             return Vec::new();
         };
-        let mut out = Vec::new();
-        while out.len() < WRATH_DRAIN_LIMIT {
-            match receiver.try_recv() {
-                Ok(event) => out.push(event),
-                Err(_) => break,
+        let (events, stats) = match replies.lock() {
+            Ok(mut replies) => {
+                // A deep queue drains at the ceiling; a normal frame keeps the floor so a burst
+                // still leaves the rest for the next frame instead of starving Input.
+                let limit = if replies.len() > WRATH_DRAIN_LIMIT {
+                    WRATH_DRAIN_CEILING
+                } else {
+                    WRATH_DRAIN_LIMIT
+                };
+                let events = replies.take(limit, WRATH_DRAIN_BUDGET);
+                (events, replies.stats())
+            }
+            Err(_) => return Vec::new(),
+        };
+        self.note_reply_stats(stats);
+        events
+    }
+
+    /// Log delivery health on change rather than per frame.
+    fn note_reply_stats(&mut self, stats: SessionReplyStats) {
+        if stats.overflowed > self.reply_stats.overflowed {
+            warn!(
+                "wrath: session reply backlog exceeded {} entries ({} dropped, {} delivered); \
+                 the session is ending",
+                WRATH_SESSION_REPLY_CAP, stats.dropped, stats.delivered
+            );
+        }
+        if stats.peak >= WRATH_SESSION_REPLY_HIGH_WATER
+            && self.reply_stats.peak < WRATH_SESSION_REPLY_HIGH_WATER
+        {
+            info!(
+                "wrath: session reply backlog peaked at {} entries (now {}, {} coalesced, \
+                 {} delivered)",
+                stats.peak, stats.depth, stats.coalesced, stats.delivered
+            );
+        }
+        if stats.closed_pushes > self.reply_stats.closed_pushes {
+            debug!(
+                "wrath: {} replies pushed after the queue closed",
+                stats.closed_pushes
+            );
+        }
+        self.reply_stats = stats;
+    }
+
+    fn close_session_replies(&mut self) {
+        if let Some(replies) = self.session_events.as_ref() {
+            if let Ok(mut replies) = replies.lock() {
+                replies.close();
             }
         }
-        out
+    }
+
+    /// Drop every queued reply once the session has ended. The terminal edges are kept, so they
+    /// are still delivered; only the work that a finished session makes stale is discarded.
+    fn clear_session_replies_after_terminal(&mut self) {
+        if let Some(replies) = self.session_events.as_ref() {
+            if let Ok(mut replies) = replies.lock() {
+                replies.clear_backlog();
+            }
+        }
+    }
+
+    /// Drop replies already older than the scope the Net drain has just adopted.
+    fn drop_session_replies_older_than(&mut self, session_epoch: u64, world_generation: u64) {
+        if let Some(replies) = self.session_events.as_ref() {
+            if let Ok(mut replies) = replies.lock() {
+                replies.drop_older_than(session_epoch, world_generation);
+            }
+        }
     }
 
     fn session_events_empty(&self) -> bool {
         match self.session_events.as_ref() {
-            Some(receiver) => receiver.is_empty(),
+            Some(replies) => replies.lock().map(|replies| replies.is_empty()).unwrap_or(true),
             None => true,
         }
     }
@@ -1401,6 +1790,7 @@ impl Plugin for WrathNetPlugin {
             last_error: None,
             session_events: None,
             session_events_tx: None,
+            reply_stats: SessionReplyStats::default(),
             park_commands: None,
             publisher_retiring: Vec::new(),
             publisher_retire_rx: None,
@@ -1408,6 +1798,7 @@ impl Plugin for WrathNetPlugin {
         })
         .init_resource::<WrathWorldView>()
         .init_resource::<WrathAuraAnchors>()
+        .init_resource::<crate::wrath_inventory::WrathInventory>()
         .add_message::<crate::wrath_native::WrathCastEvent>()
         .add_message::<crate::wrath_native::WrathItemText>();
         if self.config.is_some() {
@@ -1526,14 +1917,16 @@ fn wrath_session_ownership(
             }
             control.restart_allowed = false;
             control.retry_at = None;
-            if let Some(sink) = control.session_events_tx.as_ref() {
+            if let Some(replies) = control.session_events_tx.as_ref() {
                 let generation = control.config.as_ref().and_then(|c| c.login_generation);
                 let event = WrathSessionEvent::forced(SessionEvent::Disconnected {
                     reason,
                     end: benilla_protocol::SessionEnd::Lost,
                 })
                 .for_login(generation);
-                let _ = sink.send(event);
+                if let Ok(mut replies) = replies.lock() {
+                    replies.push(event);
+                }
             }
         }
         if !control.ended {
@@ -2194,25 +2587,6 @@ fn chat_type_112(chat_type: u8) -> Option<u8> {
         0x33 => m::CHAT_MSG_PARTY,
         _ => return None,
     })
-}
-
-/// The stock wire position translated to 12340's player array. Bank slots 39-62 and the
-/// inventory/backpack agree; the six stock bank bags 63-68 move to 67-72, and the 1.12 keyring
-/// slots 81-96 (plus the buyback range) move five positions later.
-fn wrath_item_pos(bag: u8, slot: u8) -> (u8, u8) {
-    if (63..=68).contains(&bag) {
-        (bag + 4, slot)
-    } else if bag == 255 && (69..=112).contains(&slot) {
-        (bag, slot + 5)
-    } else {
-        (bag, slot)
-    }
-}
-
-/// 12340 bank bags start at 67 where the stock owner uses 63; slots inside the bank block
-/// (39-66) and the inventory/backpack indices agree, so only the six stock bank bags move.
-fn wrath_bank_bag(bag: u8) -> u8 {
-    wrath_item_pos(bag, 0).0
 }
 
 /// Map the stock item-use target block onto the 12340 writer. A trade-item target needs the real
@@ -3885,7 +4259,9 @@ fn wrath_tap_commands(
             )),
             ClientCommand::AutoStoreBankItem { bag, slot } => Some((
                 benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BANK_ITEM,
-                gameplay::autostore_bank_item(wrath_bank_bag(bag), slot),
+                // `wire_pos_in_target(Wrath335)` already emits the 3.3.5 bank-bag bytes
+                // (67..=73); no donor-to-Wrath shift belongs here.
+                gameplay::autostore_bank_item(bag, slot),
             )),
             ClientCommand::CastSpellGameObject { spell_id, go_guid, .. } => {
                 let count = view.next_cast_count;
@@ -3961,12 +4337,11 @@ fn wrath_tap_commands(
                 ..
             } => match (item_guid, wrath_cast_target(target)) {
                 (Some(item_guid), Some(target)) => {
-                    let (bag, slot) = wrath_item_pos(bag_index, slot);
                     let count = view.next_cast_count;
                     view.next_cast_count = count.wrapping_add(1).max(1);
                     Some((
                         benilla_protocol_wrath::opcode::CMSG_USE_ITEM,
-                        gameplay::use_item(bag, slot, count, spell_id, item_guid, target),
+                        gameplay::use_item(bag_index, slot, count, spell_id, item_guid, target),
                     ))
                 }
                 _ => {
@@ -3976,20 +4351,14 @@ fn wrath_tap_commands(
                     None
                 }
             },
-            ClientCommand::OpenItem { bag_index, slot } => {
-                let (bag, slot) = wrath_item_pos(bag_index, slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_OPEN_ITEM,
-                    gameplay::open_item(bag, slot),
-                ))
-            }
-            ClientCommand::AutoEquipItem { bag_index, slot } => {
-                let (bag, slot) = wrath_item_pos(bag_index, slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_AUTOEQUIP_ITEM,
-                    gameplay::auto_equip_item(bag, slot),
-                ))
-            }
+            ClientCommand::OpenItem { bag_index, slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_OPEN_ITEM,
+                gameplay::open_item(bag_index, slot),
+            )),
+            ClientCommand::AutoEquipItem { bag_index, slot } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUTOEQUIP_ITEM,
+                gameplay::auto_equip_item(bag_index, slot),
+            )),
             ClientCommand::SwapInvItem { src_slot, dst_slot } => Some((
                 benilla_protocol_wrath::opcode::CMSG_SWAP_INV_ITEM,
                 gameplay::swap_inv_item(dst_slot, src_slot),
@@ -3999,51 +4368,36 @@ fn wrath_tap_commands(
                 dst_slot,
                 src_bag,
                 src_slot,
-            } => {
-                let (dst_bag, dst_slot) = wrath_item_pos(dst_bag, dst_slot);
-                let (src_bag, src_slot) = wrath_item_pos(src_bag, src_slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_SWAP_ITEM,
-                    gameplay::swap_item(dst_bag, dst_slot, src_bag, src_slot),
-                ))
-            }
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SWAP_ITEM,
+                gameplay::swap_item(dst_bag, dst_slot, src_bag, src_slot),
+            )),
             ClientCommand::AutoStoreBagItem {
                 src_bag,
                 src_slot,
                 dst_bag,
-            } => {
-                let (src_bag, src_slot) = wrath_item_pos(src_bag, src_slot);
-                let (dst_bag, _) = wrath_item_pos(dst_bag, 0);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BAG_ITEM,
-                    gameplay::auto_store_bag_item(src_bag, src_slot, dst_bag),
-                ))
-            }
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUTOSTORE_BAG_ITEM,
+                gameplay::auto_store_bag_item(src_bag, src_slot, dst_bag),
+            )),
             ClientCommand::SplitItem {
                 src_bag,
                 src_slot,
                 dst_bag,
                 dst_slot,
                 count,
-            } => {
-                let (src_bag, src_slot) = wrath_item_pos(src_bag, src_slot);
-                let (dst_bag, dst_slot) = wrath_item_pos(dst_bag, dst_slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_SPLIT_ITEM,
-                    gameplay::split_item(src_bag, src_slot, dst_bag, dst_slot, u32::from(count)),
-                ))
-            }
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SPLIT_ITEM,
+                gameplay::split_item(src_bag, src_slot, dst_bag, dst_slot, u32::from(count)),
+            )),
             ClientCommand::DestroyItem {
                 bag_index,
                 slot,
                 count,
-            } => {
-                let (bag, slot) = wrath_item_pos(bag_index, slot);
-                Some((
-                    benilla_protocol_wrath::opcode::CMSG_DESTROYITEM,
-                    gameplay::destroy_item(bag, slot, count),
-                ))
-            }
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_DESTROYITEM,
+                gameplay::destroy_item(bag_index, slot, count),
+            )),
             ClientCommand::SetAmmo { entry } => Some((
                 benilla_protocol_wrath::opcode::CMSG_SET_AMMO,
                 gameplay::set_ammo(entry),
@@ -4837,10 +5191,14 @@ fn wrath_net_drain(
         }
         match event {
             WrathFeedEvent::Phase { phase, .. } => view.phase = Some(phase),
-            WrathFeedEvent::WorldTransfer { world_generation, map_id, .. } => {
+            WrathFeedEvent::WorldTransfer { session_epoch, world_generation, map_id } => {
                 // Same-frame teardown: old-scope entities are gone before Input runs. An intent
                 // admitted against the retired world can never be answered by the new one, so it
                 // becomes Unknown here and is never replayed.
+                // Replies already older than the scope just adopted are pruned here rather than
+                // occupying delivery slots; the dispatcher would reject them anyway. Forced edges
+                // keep their "deliver even when stale" contract and stay for `scope_is_older`.
+                control.drop_session_replies_older_than(session_epoch, world_generation);
                 if let Some(actions) = actions.as_deref_mut() {
                     actions.fail_all(
                         ActionStatus::Unknown,
@@ -4939,6 +5297,9 @@ fn wrath_net_drain(
             WrathFeedEvent::SessionEnded { result, end: _, session_epoch, world_generation } => {
                 control.ended = true;
                 control.terminal_ready = true;
+                // The terminal is a session barrier: whatever reply was queued behind it is
+                // stale now. The terminal edges themselves are kept and delivered first.
+                control.clear_session_replies_after_terminal();
                 // The entry message may still be in the Bevy message queue; the view already
                 // records that the player actually entered this world.
                 control.entered_world |= view.entered_world;
@@ -5337,25 +5698,27 @@ pub(crate) struct WrathQuestSlots(
     pub u32, // Nonempty PLAYER_FIELD_DAILY_QUESTS_1 slots.
 );
 
-/// The active player's raw 3.3.5 field window, the source for the UI contracts the 1.12
-/// descriptor cannot carry: `PLAYER_FIELD_COMBAT_RATING_1` (1231..), `PLAYER_CHOSEN_TITLE`
-/// (321) and `PLAYER__FIELD_KNOWN_TITLES` (626/628/630). Kept beside the translated store so
+/// The active player's raw 3.3.5 field window (0..1171 for this package) with its delivered
+/// mask, the source for the UI contracts the 1.12 descriptor cannot carry. It carries
+/// `PLAYER_CHOSEN_TITLE` (321) and `PLAYER__FIELD_KNOWN_TITLES` (626/628/630), but not the
+/// `PLAYER_FIELD_COMBAT_RATING_1` (1231..), `PLAYER_FIELD_MAX_LEVEL` (1279) or daily-quest tail;
+/// those read 0 and are a separate window-length defect. Kept beside the translated store so
 /// donor field indices stay untouched.
 #[derive(Component, Clone, PartialEq, Eq, Default)]
-pub(crate) struct WrathPlayerRaw(pub(crate) Vec<u32>);
+pub(crate) struct WrathPlayerRaw(pub(crate) crate::wrath_inventory::WrathFieldWindow);
 
 /// Map 12340's `PLAYER_QUEST_LOG_*` block: id, state, two count dwords (four 16-bit counts) and
 /// the deadline, five dwords a slot for twenty-five slots.
-fn wrath_quest_slots(raw: &[u32]) -> [QuestSlotView; QUEST_LOG_SLOTS] {
+fn wrath_quest_slots(raw: &crate::wrath_inventory::WrathFieldWindow) -> [QuestSlotView; QUEST_LOG_SLOTS] {
     std::array::from_fn(|slot| {
         let src = 158 + slot * 5;
-        let quest_id = raw.get(src).copied().unwrap_or(0);
+        let quest_id = raw.word_or_zero(src as u16);
         if quest_id == 0 {
             return QuestSlotView::default();
         }
-        let state = raw.get(src + 1).copied().unwrap_or(0);
-        let counts = u64::from(raw.get(src + 2).copied().unwrap_or(0))
-            | (u64::from(raw.get(src + 3).copied().unwrap_or(0)) << 32);
+        let state = raw.word_or_zero((src + 1) as u16);
+        let counts = u64::from(raw.word_or_zero((src + 2) as u16))
+            | (u64::from(raw.word_or_zero((src + 3) as u16)) << 32);
         let mut counters = [0u8; 4];
         for (i, counter) in counters.iter_mut().enumerate() {
             *counter = ((counts >> (i * 16)) & 0xffff).min(63) as u8;
@@ -5364,7 +5727,7 @@ fn wrath_quest_slots(raw: &[u32]) -> [QuestSlotView; QUEST_LOG_SLOTS] {
             quest_id,
             counters,
             state: (state & 0xff) as u8,
-            timer: raw.get(src + 4).copied().unwrap_or(0),
+            timer: raw.word_or_zero((src + 4) as u16),
         }
     })
 }
@@ -5372,7 +5735,11 @@ fn wrath_quest_slots(raw: &[u32]) -> [QuestSlotView; QUEST_LOG_SLOTS] {
 /// Copy the player inventory bands the 1.12 item owners walk. The 3.3.5 arrays are wider in the
 /// bank (28 -> 24 slots), bank bags (7 -> 6) and otherwise use a different base; every array here
 /// is copied explicitly, with the extra 3.3.5 tail dropped rather than folded into a neighbour.
-fn push_player_inventory_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
+/// The dropped tail lives in [`crate::wrath_inventory::WrathInventory`]; no donor offset moves.
+fn push_player_inventory_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    pairs: &mut Vec<(u16, u32)>,
+) {
     // (3.3.5 base, 1.12 base, dwords copied)
     const BANDS: [(usize, u16, usize); 7] = [
         (324, 486, 46), // equipment + four equipped bags
@@ -5385,8 +5752,11 @@ fn push_player_inventory_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
     ];
     for (src, dst, count) in BANDS {
         for i in 0..count {
-            if let Some(value) = raw.get(src + i) {
-                pairs.push((dst + i as u16, *value));
+            // Only delivered dwords reach the donor projection. The create-shaped ObjectFields
+            // still reads 0 for an absent field, so donor readers see the same value as before,
+            // but the projection no longer claims a delivery the server did not make.
+            if let Some(value) = raw.get((src + i) as u16) {
+                pairs.push((dst + i as u16, value));
             }
         }
     }
@@ -5395,15 +5765,20 @@ fn push_player_inventory_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
 /// The 3.3.5 `PLAYER_VISIBLE_ITEM_*` block into the 1.12 twelve-dword slots: each 3.3.5 slot is
 /// two fields (entry, two packed 16-bit enchants) at 283 + 2n, against 1.12's entry at +2 and its
 /// seven enchant dwords at +3. The perm/temp enchants the glow fold reads land at +3/+4.
-fn push_visible_item_fields(raw: &[u32], pairs: &mut Vec<(u16, u32)>) {
+fn push_visible_item_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    pairs: &mut Vec<(u16, u32)>,
+) {
     for slot in 0..19u16 {
         let src = usize::from(
             benilla_protocol_wrath::fields::PLAYER_VISIBLE_ITEM_1_ENTRYID + 2 * slot,
         );
-        let Some(entry) = raw.get(src).copied() else {
-            break;
+        // An undelivered entry is skipped, not treated as the end: a create may omit a zero
+        // slot while a later slot is present.
+        let Some(entry) = raw.get(src as u16) else {
+            continue;
         };
-        let ench = raw.get(src + 1).copied().unwrap_or(0);
+        let ench = raw.word_or_zero((src + 1) as u16);
         let dst = benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 12 * slot;
         pairs.push((dst + 2, entry));
         pairs.push((dst + 3, ench & 0xffff));
@@ -5637,6 +6012,13 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(mut lane) = world.get_resource_mut::<crate::item_lane::ItemLane>() {
             lane.clear();
         }
+        // The typed Wrath inventory is the same scope as the item watchers and item lane: a
+        // transfer or terminal edge retires every address before the next digest can populate it.
+        if let Some(mut inventory) =
+            world.get_resource_mut::<crate::wrath_inventory::WrathInventory>()
+        {
+            inventory.clear();
+        }
         // The retired world's presentation aura anchors die with its entities.
         if let Some(mut anchors) = world.get_resource_mut::<WrathAuraAnchors>() {
             anchors.by_guid.clear();
@@ -5671,10 +6053,12 @@ fn wrath_apply_world(world: &mut World) {
         }
         let mut destroyed_runs = Vec::new();
         if let Some(items) = world.get_resource::<crate::items::Items>() {
+            let inventory = world.get_resource::<crate::wrath_inventory::WrathInventory>();
             let watch = crate::item_watch::Watch {
                 me: Some(player_guid),
                 lookup: |g: u64| stores_by_guid.get(&g),
                 items,
+                inventory,
             };
             for guid in &changes.removed {
                 if index
@@ -5706,6 +6090,7 @@ fn wrath_apply_world(world: &mut World) {
     let mut unit_name_lookups: Vec<(u64, ObjectFields)> = Vec::new();
     let mut go_template_requests: Vec<(u64, ObjectFields)> = Vec::new();
     let mut self_player_created = false;
+    let mut typed_changes: Option<crate::wrath_inventory::InventoryChanges> = None;
 
     for guid in changes.created.iter().chain(changes.updated.iter()) {
         let Some(remote) = entities.get(guid) else {
@@ -5715,6 +6100,23 @@ fn wrath_apply_world(world: &mut World) {
         // ratings, known titles, chosen title). The projection reads this component beside the
         // translated 1.12 descriptor rather than inventing 1.12 indices for them.
         let player_raw = remote.player_fields.clone();
+        // One writer for the typed owner: the self player's delivered inventory window. The
+        // donor projection below stays its existing 24/6/7 shape.
+        if *guid == player_guid
+            && remote.type_id == benilla_protocol_wrath::updates::type_id::PLAYER
+        {
+            if let Some(window) = player_raw.as_ref() {
+                let scope = world
+                    .get_resource::<WrathWorldView>()
+                    .map(|view| (view.session_epoch, view.world_generation))
+                    .unwrap_or((0, 0));
+                let mut inventory = world
+                    .remove_resource::<crate::wrath_inventory::WrathInventory>()
+                    .unwrap_or_default();
+                typed_changes = Some(inventory.apply(window, scope));
+                world.insert_resource(inventory);
+            }
+        }
         if matches!(
             remote.type_id,
             benilla_protocol_wrath::updates::type_id::ITEM
@@ -5846,7 +6248,7 @@ fn wrath_apply_world(world: &mut World) {
             if let Some(bytes) = remote.player_bytes_2 {
                 pairs.push((194, bytes));
             }
-            if let Some(raw) = remote.player_fields.as_deref() {
+            if let Some(raw) = remote.player_fields.as_ref() {
                 // 3.3.5 uses 148 as UNIT_END; 1.12 uses a different player layout. Map the
                 // durable fields the stock quest/loot/player frames read. The descriptor keeps
                 // the 1.12 twenty-slot projection; the full twenty-five go beside it.
@@ -5865,30 +6267,32 @@ fn wrath_apply_world(world: &mut World) {
                     pairs.push(((dst + 1) as u16, packed));
                     pairs.push(((dst + 2) as u16, s.timer));
                 }
-                let max_level = raw.get(benilla_protocol_wrath::fields::PLAYER_FIELD_MAX_LEVEL as usize).copied().unwrap_or(0);
-                let daily_start = benilla_protocol_wrath::fields::PLAYER_FIELD_DAILY_QUESTS_1 as usize;
-                let daily = raw.iter().skip(daily_start).take(25).filter(|&&quest| quest != 0).count() as u32;
+                let max_level = raw.word_or_zero(benilla_protocol_wrath::fields::PLAYER_FIELD_MAX_LEVEL);
+                let daily_start = benilla_protocol_wrath::fields::PLAYER_FIELD_DAILY_QUESTS_1;
+                let daily = (0..25u16)
+                    .filter(|i| raw.word_or_zero(daily_start + i) != 0)
+                    .count() as u32;
                 wrath_slots = Some(WrathQuestSlots(slots, max_level, daily));
                 for (src, dst) in [(25u16, 23u16), (26, 24), (27, 25), (33, 29), (34, 30), (35, 31)] {
-                    if let Some(value) = raw.get(src as usize) {
-                        pairs.push((dst, *value));
+                    if let Some(value) = raw.get(src) {
+                        pairs.push((dst, value));
                     }
                 }
                 // `PLAYER_FLAGS` (3.3.5 150 -> 1.12 190): the ghost bit 0x10 is what the death
                 // owner reads off the self descriptor.
                 if let Some(value) = raw.get(150) {
-                    pairs.push((benilla_protocol::field::FIELD_PLAYER_FLAGS, *value));
+                    pairs.push((benilla_protocol::field::FIELD_PLAYER_FLAGS, value));
                 }
                 push_player_inventory_fields(raw, &mut pairs);
                 push_visible_item_fields(raw, &mut pairs);
                 if let Some(value) = raw.get(634) {
-                    pairs.push((716, *value));
+                    pairs.push((716, value));
                 }
                 if let Some(value) = raw.get(635) {
-                    pairs.push((717, *value));
+                    pairs.push((717, value));
                 }
                 if let Some(value) = raw.get(1170) {
-                    pairs.push((1176, *value));
+                    pairs.push((1176, value));
                 }
             }
         }
@@ -5934,10 +6338,10 @@ fn wrath_apply_world(world: &mut World) {
                     wrath_slots.is_some_and(|slots| old_slots != Some(slots));
                 if *guid == player_guid {
                     let old_raw = world.get::<WrathPlayerRaw>(entity);
-                    let old_xp = old_raw.and_then(|r| r.0.get(634).copied());
-                    let new_xp = player_raw.as_ref().and_then(|r| r.get(634).copied());
-                    let old_money = old_raw.and_then(|r| r.0.get(1170).copied());
-                    let new_money = player_raw.as_ref().and_then(|r| r.get(1170).copied());
+                    let old_xp = old_raw.and_then(|r| r.0.get(634));
+                    let new_xp = player_raw.as_ref().and_then(|r| r.get(634));
+                    let old_money = old_raw.and_then(|r| r.0.get(1170));
+                    let new_money = player_raw.as_ref().and_then(|r| r.get(1170));
                     let scope = world
                         .get_resource::<WrathWorldView>()
                         .map(|v| (v.session_epoch, v.world_generation));
@@ -6361,7 +6765,18 @@ fn wrath_apply_world(world: &mut World) {
         }
     }
 
-    if self_player_created || !item_creates.is_empty() || !field_diffs.is_empty() {
+    let typed_bank_changed = typed_changes.as_ref().is_some_and(|changes| {
+        changes.slots.iter().any(|change| match change.addr {
+            crate::wrath_inventory::InventoryAddr::Bank(i) => i >= 24,
+            crate::wrath_inventory::InventoryAddr::BankBag(i) => i == 6,
+            _ => false,
+        })
+    });
+    if self_player_created
+        || !item_creates.is_empty()
+        || !field_diffs.is_empty()
+        || typed_bank_changed
+    {
         let mut stores_by_guid: HashMap<u64, ObjectFields> = HashMap::new();
         for (&g, &e) in &world.resource::<GuidIndex>().0 {
             if let Some(store) = world.get::<ObjectStore>(e) {
@@ -6369,12 +6784,32 @@ fn wrath_apply_world(world: &mut World) {
             }
         }
         if self_player_created {
-            if let (Some(player_fields), Some(mut bag_cache)) = (
-                stores_by_guid.get(&player_guid),
-                world.get_resource_mut::<crate::item_watch::BagCache>(),
-            ) {
-                let lookup = |g: u64| stores_by_guid.get(&g);
-                bag_cache.seat(player_fields, &lookup);
+            if let Some(player_fields) = stores_by_guid.get(&player_guid) {
+                // The typed owner's 28/7 seats, copied before the BagCache is moved out of the
+                // world. The donor path falls back to its own 24/6 seats.
+                let seats: [u64; 11] = {
+                    let wrath = world.get_resource::<crate::wrath_inventory::WrathInventory>();
+                    let view = crate::wrath_inventory::PlayerInventory::new(
+                        player_fields,
+                        wrath,
+                        crate::wrath::selected_from_env(),
+                    );
+                    std::array::from_fn(|i| match i as u8 + 1 {
+                        1..=4 => view.bag_slot(i as u8),
+                        5..=11 => view.bank_bag(i as u8 - 4),
+                        _ => 0,
+                    })
+                };
+                if let Some(mut bag_cache) =
+                    world.get_resource_mut::<crate::item_watch::BagCache>()
+                {
+                    let lookup = |g: u64| stores_by_guid.get(&g);
+                    bag_cache.seat_with(
+                        11,
+                        &|n| seats[usize::from(n.saturating_sub(1)).min(10)],
+                        &lookup,
+                    );
+                }
             }
         }
         let mut runs_to_push: Vec<crate::item_watch::Run> = Vec::new();
@@ -6386,10 +6821,13 @@ fn wrath_apply_world(world: &mut World) {
                 .remove_resource::<crate::item_watch::BagCache>()
                 .unwrap_or_default();
             if let Some(items) = world.get_resource::<crate::items::Items>() {
+                let inventory =
+                    world.get_resource::<crate::wrath_inventory::WrathInventory>();
                 let watch = crate::item_watch::Watch {
                     me: Some(player_guid),
                     lookup: |g: u64| stores_by_guid.get(&g),
                     items,
+                    inventory,
                 };
                 for guid in &item_creates {
                     if let Some(fields) = stores_by_guid.get(guid) {
@@ -6416,6 +6854,50 @@ fn wrath_apply_world(world: &mut World) {
                                 entry_misses.push((item_guid, new));
                             }
                             runs_to_push.push(run);
+                        }
+                    }
+                }
+                // The four extra bank slots and the seventh bank bag have no donor field, so
+                // their seat runs are generated from the typed owner. They are appended after
+                // the donor-order runs; the 3.3.5 field order for those five addresses is not
+                // observable in the donor projection.
+                if watch.inventory.is_some() {
+                    if let Some(changes) = typed_changes.as_ref() {
+                        let seats: [u64; 11] =
+                            if let Some(player_fields) = stores_by_guid.get(&player_guid) {
+                                let view = crate::wrath_inventory::PlayerInventory::new(
+                                    player_fields,
+                                    watch.inventory,
+                                    true,
+                                );
+                                std::array::from_fn(|i| match i as u8 + 1 {
+                                    1..=4 => view.bag_slot(i as u8),
+                                    5..=11 => view.bank_bag(i as u8 - 4),
+                                    _ => 0,
+                                })
+                            } else {
+                                [0; 11]
+                            };
+                        let seat =
+                            |n: u8| seats[usize::from(n.saturating_sub(1)).min(10)];
+                        for change in &changes.slots {
+                            let extra = match change.addr {
+                                crate::wrath_inventory::InventoryAddr::Bank(i) => i >= 24,
+                                crate::wrath_inventory::InventoryAddr::BankBag(i) => i == 6,
+                                _ => false,
+                            };
+                            if !extra {
+                                continue;
+                            }
+                            if let Some(run) = watch.typed_bank_change(
+                                change.addr,
+                                change.old,
+                                change.new,
+                                &mut bag_cache,
+                                &seat,
+                            ) {
+                                runs_to_push.push(run);
+                            }
                         }
                     }
                 }
@@ -6977,7 +7459,7 @@ pub fn run_session_with_cancel(
     config: &WrathSessionConfig,
     cancel: &AtomicBool,
     commands: Option<WrathOutbox>,
-    events_out: Option<Sender<WrathSessionEvent>>,
+    events_out: Option<Arc<Mutex<SessionReplies>>>,
     parked: Option<ParkedInput>,
     publisher_retire: Option<Sender<benilla_wm_native::PublisherRetirement>>,
 ) -> anyhow::Result<()> {
@@ -6989,9 +7471,7 @@ pub fn run_session_with_cancel(
     };
 
     let send_glue = |event| {
-        if let Some(sink) = events_out.as_ref() {
-            let _ = sink.send(WrathSessionEvent::forced(event).for_login(config.login_generation));
-        }
+        push_forced_event(&events_out, event, config.login_generation);
     };
     send_glue(SessionEvent::LoginStage { stage: benilla_protocol::LoginStage::Connecting });
     let mut logon = benilla_protocol_wrath::logon::logon(&config.auth_addr, &config.account, &config.password)?;
@@ -7340,17 +7820,22 @@ pub fn run_session_with_cancel(
         );
     }
     let publish_roster = |records: &[gameplay::CharEnumRecord], cause| {
-        if let Some(sink) = events_out.as_ref() {
-            let _ = sink.send(WrathSessionEvent::scoped(
-                &session,
-                SessionEvent::CharacterList {
-                    characters: roster_from(records),
-                    realm: Some(realm_view(&realm)),
-                    cause,
-                    epoch: session.epoch(),
-                    generation: config.login_generation.unwrap_or(0),
-                },
-            ).for_login(config.login_generation));
+        if let Some(replies) = events_out.as_ref() {
+            if let Ok(mut replies) = replies.lock() {
+                replies.push(
+                    WrathSessionEvent::scoped(
+                        &session,
+                        SessionEvent::CharacterList {
+                            characters: roster_from(records),
+                            realm: Some(realm_view(&realm)),
+                            cause,
+                            epoch: session.epoch(),
+                            generation: config.login_generation.unwrap_or(0),
+                        },
+                    )
+                    .for_login(config.login_generation),
+                );
+            }
         }
     };
     // The parked session publishes the fresh roster as the reply the screen's ask ordered; the
@@ -7497,6 +7982,17 @@ pub fn run_session_with_cancel(
             native.invalidate_scope();
             publisher.retire_all();
             return Ok(());
+        }
+        // Bounded ownership (R04): once the reply queue overflowed, ordered replies have already
+        // been lost. End the session through the one terminal path instead of continuing to read
+        // and silently discarding gameplay state.
+        if let Some(replies) = events_out.as_ref() {
+            if replies.lock().map(|replies| replies.overloaded()).unwrap_or(false) {
+                anyhow::bail!(
+                    "session reply backlog exceeded {WRATH_SESSION_REPLY_CAP} entries; \
+                     ordered reply delivery was lost"
+                );
+            }
         }
         if let Some(commands) = commands.as_ref() {
             let pending: Vec<_> = commands
@@ -7656,6 +8152,35 @@ pub fn run_session_with_cancel(
             ping_seq += 1;
             last_ping = std::time::Instant::now();
         }
+        // Bounded-ownership backpressure (R04): while the reply queue is above its high-water
+        // mark, stop reading in short slices. The pause always begins between complete packets,
+        // so the framing contract of `world::recv` (`read_exact` across a packet boundary is
+        // fatal) is untouched; it ends within `WRATH_REPLY_BACKPRESSURE_SLICE`, re-checks
+        // cancellation, and never suppresses a ping or an outbound command.
+        if let Some(replies) = events_out.as_ref() {
+            let paused_at = Instant::now();
+            loop {
+                let above = replies
+                    .lock()
+                    .map(|mut replies| replies.producer_should_pause())
+                    .unwrap_or(false);
+                if !above || cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                if paused_at.elapsed() >= WRATH_REPLY_BACKPRESSURE_SLICE {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        // The pause is cancel-aware, but the check must be repeated here: falling through to
+        // `world.recv()` would block for the socket read timeout after a stop request and extend
+        // `AppExit`/stop latency. Same clean exit as the top-of-loop cancellation block.
+        if cancel.load(Ordering::SeqCst) {
+            native.invalidate_scope();
+            publisher.retire_all();
+            return Ok(());
+        }
         match world.recv() {
             Ok(p) => {
                 let received_at = Instant::now();
@@ -7717,16 +8242,13 @@ pub fn run_session_with_cancel(
                                 session_epoch: session.epoch(),
                                 world_generation: session.world_generation(),
                             });
-                            if let Some(events_out) = events_out.as_ref() {
-                                if session.player_guid().is_some() {
-                                    for event in translate_gameplay(
-                                        event,
-                                        session.player_guid().unwrap_or(0),
-                                        received_at,
-                                    ) {
-                                        let _ = events_out
-                                            .send(WrathSessionEvent::scoped(&session, event));
-                                    }
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
                                 }
                             }
                         }
@@ -7742,16 +8264,13 @@ pub fn run_session_with_cancel(
                                 session_epoch: session.epoch(),
                                 world_generation: session.world_generation(),
                             });
-                            if let Some(events_out) = events_out.as_ref() {
-                                if session.player_guid().is_some() {
-                                    for event in translate_gameplay(
-                                        event,
-                                        session.player_guid().unwrap_or(0),
-                                        received_at,
-                                    ) {
-                                        let _ = events_out
-                                            .send(WrathSessionEvent::scoped(&session, event));
-                                    }
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
                                 }
                             }
                         }
@@ -7765,16 +8284,13 @@ pub fn run_session_with_cancel(
                                 session_epoch: session.epoch(),
                                 world_generation: session.world_generation(),
                             });
-                            if let Some(events_out) = events_out.as_ref() {
-                                if session.player_guid().is_some() {
-                                    for event in translate_gameplay(
-                                        event,
-                                        session.player_guid().unwrap_or(0),
-                                        received_at,
-                                    ) {
-                                        let _ = events_out
-                                            .send(WrathSessionEvent::scoped(&session, event));
-                                    }
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
                                 }
                             }
                         }
@@ -7803,26 +8319,22 @@ pub fn run_session_with_cancel(
                                     },
                                 },
                             );
-                            if let Some(events_out) = events_out.as_ref() {
-                                if session.player_guid().is_some() {
-                                    for event in translate_gameplay(
-                                        event,
-                                        session.player_guid().unwrap_or(0),
-                                        received_at,
-                                    ) {
-                                        let _ = events_out
-                                            .send(WrathSessionEvent::scoped(&session, event));
-                                    }
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
                                 }
                             }
                         }
                         Ok(WrathGameplayEvent::LoggedOut) => {
                             logged_out = true;
-                            if let Some(events_out) = events_out.as_ref() {
-                                let _ = events_out.send(WrathSessionEvent::forced(
-                                    SessionEvent::LoggedOut,
-                                ));
-                            }
+                            // The logout edge; the worker's exit then publishes the
+                            // `Disconnected { end: LoggedOut }` teardown as the second, distinct
+                            // terminal. Both handlers do different work, so both are delivered.
+                            push_forced_event(&events_out, SessionEvent::LoggedOut, None);
                         }
                         Ok(event) => {
                             if let WrathGameplayEvent::VendorInventory { vendor, items } = &event {
@@ -7875,16 +8387,13 @@ pub fn run_session_with_cancel(
                                     );
                                 }
                             }
-                            if let Some(events_out) = events_out.as_ref() {
-                                if session.player_guid().is_some() {
-                                    for event in translate_gameplay(
-                                        event,
-                                        session.player_guid().unwrap_or(0),
-                                        received_at,
-                                    ) {
-                                        let _ = events_out
-                                            .send(WrathSessionEvent::scoped(&session, event));
-                                    }
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    event,
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
                                 }
                             }
                         }
@@ -8107,7 +8616,13 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                     .and_then(|m| m.create_spline.clone()),
                 generation: entry.generation,
                 player_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
-                    .then(|| (0..1171).map(|i| entry.field(i).unwrap_or(0)).collect()),
+                    .then(|| {
+                        crate::wrath_inventory::WrathFieldWindow::from_fields(
+                            crate::wrath_inventory::PLAYER_WINDOW_END,
+                            |index| entry.field(index),
+                            |index| entry.field_delivered(index),
+                        )
+                    }),
                 item_fields: matches!(
                     entry.type_id,
                     benilla_protocol_wrath::updates::type_id::ITEM
@@ -8217,7 +8732,7 @@ mod tests {
         raw[last + 2] = 1 | (2 << 16);
         raw[last + 3] = 5 | (6 << 16);
         raw[last + 4] = 777;
-        let slots = wrath_quest_slots(&raw);
+        let slots = wrath_quest_slots(&crate::wrath_inventory::WrathFieldWindow::from_dense(raw));
         assert_eq!(slots.len(), 25);
         assert_eq!(slots[0].quest_id, 57);
         assert_eq!(slots[0].counters[0], 3);
@@ -8238,7 +8753,10 @@ mod tests {
         raw[284] = 0x0002_0001; // perm enchant 1, temp 2
         raw[283 + 2 * 18] = 5976; // tabard, entry
         let mut pairs = Vec::new();
-        push_visible_item_fields(&raw, &mut pairs);
+        push_visible_item_fields(
+            &crate::wrath_inventory::WrathFieldWindow::from_dense(raw),
+            &mut pairs,
+        );
         let at = |slot: u16| {
             benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 12 * slot
         };
@@ -8257,6 +8775,19 @@ mod tests {
         world.init_resource::<crate::player::Player>();
         world.init_resource::<crate::player::OwnControlLost>();
         world.init_resource::<crate::player::StandPending>();
+        world.init_resource::<crate::wrath_inventory::WrathInventory>();
+        {
+            let mut raw = vec![0u32; usize::from(crate::wrath_inventory::PLAYER_WINDOW_END)];
+            let bank = benilla_protocol_wrath::fields::PLAYER_FIELD_BANK_SLOT_1
+                + 2 * 24;
+            raw[usize::from(bank)] = 0x77;
+            let mut inventory = crate::wrath_inventory::WrathInventory::default();
+            inventory.apply(
+                &crate::wrath_inventory::WrathFieldWindow::from_dense(raw),
+                (1, 1),
+            );
+            world.insert_resource(inventory);
+        }
         let outbox: WrathOutbox = Arc::new(Mutex::new(VecDeque::from([WrathOutbound {
             opcode: 1,
             payload: vec![1],
@@ -8290,6 +8821,14 @@ mod tests {
         assert!(world.resource::<GuidIndex>().0.is_empty());
         assert_eq!(world.resource::<SelfGuid>().0, None);
         assert!(!world.resource::<crate::player::Player>().active);
+        assert!(
+            world
+                .resource::<crate::wrath_inventory::WrathInventory>()
+                .iter()
+                .next()
+                .is_none(),
+            "the typed inventory retires with the streamed scope"
+        );
         assert!(outbox.lock().unwrap().is_empty(), "pending actions cleared");
     }
 }
@@ -8518,6 +9057,7 @@ mod command_tap_tests {
                 last_error: None,
                 session_events: None,
                 session_events_tx: None,
+                reply_stats: SessionReplyStats::default(),
                 park_commands: Some(tx),
                 publisher_retiring: Vec::new(),
                 publisher_retire_rx: None,
@@ -8550,6 +9090,257 @@ mod command_tap_tests {
         control.park_serve(true, WrathParkedCommand::Enumerate);
         assert!(control.worker.is_none());
         assert!(control.park_commands.is_none());
+    }
+}
+
+/// Delivery-queue behaviour for review finding R04. These are source-level cases only: no build
+/// or test run is claimed for them (see the package-B handoff).
+#[cfg(test)]
+mod reply_queue_tests {
+    use super::*;
+
+    fn scoped(session_epoch: u64, world_generation: u64, event: SessionEvent) -> WrathSessionEvent {
+        WrathSessionEvent {
+            login_generation: None,
+            session_epoch,
+            world_generation,
+            event,
+            force: false,
+        }
+    }
+
+    fn forced(event: SessionEvent) -> WrathSessionEvent {
+        WrathSessionEvent::forced(event)
+    }
+
+    fn reply(attacker: u64) -> WrathSessionEvent {
+        scoped(1, 1, SessionEvent::AttackStart { attacker, victim: 2 })
+    }
+
+    fn clock(unix_time: u32) -> WrathSessionEvent {
+        scoped(1, 1, SessionEvent::ServerUnixTime { unix_time })
+    }
+
+    fn unix_time(event: &WrathSessionEvent) -> Option<u32> {
+        match event.event {
+            SessionEvent::ServerUnixTime { unix_time } => Some(unix_time),
+            _ => None,
+        }
+    }
+
+    fn disconnected() -> WrathSessionEvent {
+        forced(SessionEvent::Disconnected {
+            reason: "lost".to_owned(),
+            end: benilla_protocol::SessionEnd::Lost,
+        })
+    }
+
+    #[test]
+    fn the_three_terminal_kinds_win_over_a_full_reply_backlog() {
+        let mut replies = SessionReplies::default();
+        for i in 0..1000 {
+            replies.push(reply(i));
+        }
+        replies.push(forced(SessionEvent::LoggedOut));
+        assert_eq!(replies.len(), 1001);
+        let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        assert_eq!(drained.len(), 1, "a terminal ends the batch");
+        assert!(matches!(drained[0].event, SessionEvent::LoggedOut));
+        assert!(replies.is_empty(), "the superseded backlog is discarded");
+        assert_eq!(replies.stats().dropped, 1000);
+    }
+
+    /// A clean logout legitimately produces two terminal edges: `LoggedOut` (the logout edge) and
+    /// the closure's `Disconnected { end: LoggedOut }` (the world teardown). Both handlers do
+    /// different work, so both are delivered; a repeated edge of either kind is dropped.
+    #[test]
+    fn a_clean_logout_delivers_the_logout_edge_and_its_teardown_once_each() {
+        let mut replies = SessionReplies::default();
+        replies.push(forced(SessionEvent::LoggedOut));
+        replies.push(forced(SessionEvent::Disconnected {
+            reason: "wrath session ended".to_owned(),
+            end: benilla_protocol::SessionEnd::LoggedOut,
+        }));
+        replies.push(forced(SessionEvent::LoggedOut));
+        let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        assert_eq!(drained.len(), 2);
+        assert!(matches!(drained[0].event, SessionEvent::LoggedOut));
+        assert!(matches!(drained[1].event, SessionEvent::Disconnected { .. }));
+        assert_eq!(replies.stats().dropped, 1, "the repeated LoggedOut");
+        assert!(replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET).is_empty());
+    }
+
+    #[test]
+    fn observations_coalesce_in_place_and_keep_their_position() {
+        let mut replies = SessionReplies::default();
+        replies.push(reply(1));
+        replies.push(clock(10));
+        replies.push(reply(3));
+        replies.push(clock(20));
+        assert_eq!(replies.len(), 3, "the second clock replaced the first");
+        let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        assert_eq!(drained.len(), 3);
+        assert!(matches!(drained[0].event, SessionEvent::AttackStart { attacker: 1, .. }));
+        assert_eq!(unix_time(&drained[1]), Some(20), "newest value, original position");
+        assert!(matches!(drained[2].event, SessionEvent::AttackStart { attacker: 3, .. }));
+        assert_eq!(replies.stats().coalesced, 1);
+    }
+
+    #[test]
+    fn gossip_and_vendor_observations_coalesce_per_npc_and_per_vendor() {
+        let mut replies = SessionReplies::default();
+        replies.push(scoped(1, 1, SessionEvent::GossipMenu {
+            npc: 7,
+            text_id: 1,
+            options: Vec::new(),
+            quests: Vec::new(),
+        }));
+        replies.push(scoped(1, 1, SessionEvent::VendorInventory {
+            vendor: 9,
+            items: Vec::new(),
+        }));
+        replies.push(scoped(1, 1, SessionEvent::GossipMenu {
+            npc: 7,
+            text_id: 2,
+            options: Vec::new(),
+            quests: Vec::new(),
+        }));
+        replies.push(scoped(1, 1, SessionEvent::VendorInventory {
+            vendor: 9,
+            items: Vec::new(),
+        }));
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies.stats().coalesced, 2);
+    }
+
+    #[test]
+    fn the_reply_cap_is_hard_and_reports_the_controlled_outcome() {
+        let mut replies = SessionReplies::default();
+        for i in 0..WRATH_SESSION_REPLY_CAP {
+            replies.push(reply(i as u64));
+        }
+        assert!(!replies.overloaded());
+        replies.push(reply(u64::MAX));
+        assert!(replies.overloaded(), "the worker turns this into a terminal");
+        assert_eq!(replies.len(), WRATH_SESSION_REPLY_CAP, "memory stays bounded");
+        // The reserved terminal slots still fit at the cap and are delivered first.
+        replies.push(disconnected());
+        let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(drained[0].event, SessionEvent::Disconnected { .. }));
+        assert!(replies.is_empty());
+    }
+
+    #[test]
+    fn a_closed_queue_accepts_nothing_and_never_fabricates_an_overflow_terminal() {
+        let mut replies = SessionReplies::default();
+        replies.close();
+        for i in 0..(WRATH_SESSION_REPLY_CAP + 10) {
+            replies.push(reply(i as u64));
+        }
+        replies.push(disconnected());
+        assert!(!replies.overloaded(), "teardown pushes are not an overload");
+        assert!(replies.is_empty());
+        assert_eq!(replies.stats().closed_pushes, WRATH_SESSION_REPLY_CAP as u64 + 11);
+    }
+
+    #[test]
+    fn producer_backpressure_latches_between_high_and_low_water() {
+        let mut replies = SessionReplies::default();
+        for i in 0..(WRATH_SESSION_REPLY_HIGH_WATER - 1) {
+            replies.push(reply(i as u64));
+        }
+        assert!(!replies.producer_should_pause());
+        replies.push(reply(0));
+        assert!(replies.producer_should_pause(), "high water reached");
+        let _ = replies.take(
+            WRATH_SESSION_REPLY_HIGH_WATER - WRATH_SESSION_REPLY_LOW_WATER - 1,
+            WRATH_DRAIN_BUDGET,
+        );
+        assert!(
+            replies.producer_should_pause(),
+            "between the marks the latch holds, so the producer does not flap"
+        );
+        // Drain in bounded slices (a single pass may stop on its wall budget, so loop rather
+        // than assume the whole backlog left in one call).
+        while !replies.is_empty() {
+            let _ = replies.take(WRATH_DRAIN_CEILING, WRATH_DRAIN_BUDGET);
+        }
+        assert!(!replies.producer_should_pause(), "low water releases the latch");
+    }
+
+    #[test]
+    fn a_transfer_prunes_only_strictly_older_replies_and_keeps_forced_edges() {
+        let mut replies = SessionReplies::default();
+        replies.push(scoped(1, 0, SessionEvent::AttackStart { attacker: 1, victim: 2 }));
+        replies.push(scoped(2, 0, SessionEvent::AttackStart { attacker: 2, victim: 2 }));
+        replies.push(scoped(2, 1, SessionEvent::AttackStart { attacker: 3, victim: 2 }));
+        replies.push(forced(SessionEvent::LoginStage {
+            stage: benilla_protocol::LoginStage::Connecting,
+        }));
+        replies.drop_older_than(2, 1);
+        assert_eq!(replies.len(), 2, "the two older replies are gone");
+        let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        assert!(matches!(drained[0].event, SessionEvent::AttackStart { attacker: 3, .. }));
+        assert!(matches!(drained[1].event, SessionEvent::LoginStage { .. }));
+    }
+
+    #[test]
+    fn the_drain_is_bounded_by_the_ceiling_and_the_budget() {
+        let mut replies = SessionReplies::default();
+        for i in 0..1000 {
+            replies.push(reply(i));
+        }
+        // One pass never exceeds the ceiling; the wall budget may end it earlier, so the two
+        // sides are checked against each other rather than against an exact count.
+        let drained = replies.take(WRATH_DRAIN_CEILING, WRATH_DRAIN_BUDGET);
+        assert!(!drained.is_empty());
+        assert!(drained.len() <= WRATH_DRAIN_CEILING);
+        assert_eq!(drained.len() + replies.len(), 1000);
+    }
+
+    #[test]
+    fn classification_names_every_terminal_kind_and_keeps_inventory_replies_ordered() {
+        assert_eq!(session_class(&SessionEvent::LoggedOut), SessionClass::Terminal);
+        assert_eq!(
+            session_class(&SessionEvent::Disconnected {
+                reason: String::new(),
+                end: benilla_protocol::SessionEnd::Lost,
+            }),
+            SessionClass::Terminal
+        );
+        assert_eq!(
+            session_class(&SessionEvent::LoginFailed {
+                refusal: None,
+                reason: String::new(),
+                dial: None,
+            }),
+            SessionClass::Terminal
+        );
+        assert_eq!(
+            session_class(&SessionEvent::Worldport {
+                map_id: 0,
+                position: [0.0; 3],
+                orientation: 0.0,
+                needs_ack: false,
+            }),
+            SessionClass::Lifecycle
+        );
+        assert_eq!(
+            session_class(&SessionEvent::ServerUnixTime { unix_time: 0 }),
+            SessionClass::Observation
+        );
+        // Inventory replies are ordered outcomes, never coalesced.
+        assert_eq!(
+            session_class(&SessionEvent::InventoryFailure {
+                reason: 0,
+                required_level: None,
+                item_guid: 0,
+                item2_guid: 0,
+                bag_slot: 0,
+            }),
+            SessionClass::Reply
+        );
     }
 }
 

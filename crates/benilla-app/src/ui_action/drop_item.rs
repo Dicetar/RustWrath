@@ -132,7 +132,7 @@ impl PetLeg<'_> {
         };
         let slot0 = u8::try_from(held.slot.saturating_sub(1)).unwrap_or(0);
         let Some(item_guid) =
-            crate::ui_items::slot_guid(&self.me_store.0, held.bag, slot0, &cast.ladder.objects)
+            crate::ui_items::slot_guid_donor(&self.me_store.0, held.bag, slot0, &cast.ladder.objects)
         else {
             return; // the slot emptied: silent
         };

@@ -45,6 +45,8 @@ R02 evidence: `crates/benilla-protocol-wrath/src/gameplay.rs:769–799`; server 
 
 R03/R04 evidence: `wrath.rs:482`, `592`, `1477–1483`, `2293–2298`. A valid source interleaving is an action burst leaving 64+ entries before the Stream stage; its next movement write removes the earliest entry regardless of opcode. The worker may drain earlier in a particular run, but no ordering guarantee prevents this interleaving.
 
+R04 status note (2026-11-05): re-prioritised to P1 by the 2026-11-05 release plan; the unbounded reply channel is replaced at source by a bounded, non-blocking queue with reserved terminal slots (see [bounded session delivery](bounded-session-delivery.md) and traceability rows R04.a/R04.b). This is a source repair only: no compilation, focused check, receiver or visible-run evidence exists, so the review finding is not closed.
+
 R05 evidence: `crates/benilla-ui/src/script/addon_gate.rs:14,108`; `script/client.rs:10–12,134–144`; donor surface/event-shape tests in `benilla-app/src/ui_script/mod.rs:935–954`. These tests are valuable for donor behavior; they cannot establish a different version's contract.
 
 R06 evidence: `wrath.rs::push_player_inventory_fields` maps only 24 bank slots and six bank bags; `push_item_fields` projects only the smaller donor enchant window. See the existing item-replication checkpoint for declared omissions. R07: `gameplay.rs::read_initial_spells` and `wrath.rs:981`. R08: `benilla-profile::Profile::reload`, `benilla-assets/src/profile_source.rs::ProfileAssetReader::reload` and the separately opened catalog chain. R09: `benilla-procgen/src/lib.rs::ProcgenOutput` and `docs/procgen/design.md`. R10: producer contract versus current observation constants and later checkpoints.

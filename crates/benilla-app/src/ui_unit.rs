@@ -1310,7 +1310,7 @@ fn player_snapshot(
     // `GetGuildInfo`: the public guild fields (191/192) joined against the lazy guild cache.
     s.guild = crate::ui_guild::unit_guild(&store.0, guild, commands);
     if let Some(raw) = raw {
-        let field = |index: u16| raw.0.get(index as usize).copied().unwrap_or(0);
+        let field = |index: u16| raw.0.word_or_zero(index);
         s.combat_ratings = std::array::from_fn(|i| {
             field(benilla_protocol_wrath::fields::PLAYER_FIELD_COMBAT_RATING_1 + i as u16)
         });

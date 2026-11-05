@@ -1051,7 +1051,7 @@ impl Dispatch<'_, '_> {
             .and_then(|item| {
                 let slot0 = u8::try_from(item.slot.saturating_sub(1)).unwrap_or(0);
                 self_store.and_then(|s| {
-                    crate::ui_items::slot_guid(&s.0, item.bag, slot0, &self.go_inputs.objects)
+                    crate::ui_items::slot_guid_donor(&s.0, item.bag, slot0, &self.go_inputs.objects)
                 })
             });
         let ghost = self_store.is_some_and(|s| s.0.player_is_ghost());
@@ -1750,7 +1750,13 @@ pub(crate) fn resolve_go_action(
     let Some(store) = me_store else {
         return GoAction::Refuse(None);
     };
-    let Some((bag_index, slot, key_guid)) = crate::ui_items::find_item(
+    let target = if crate::wrath::selected_from_env() {
+        benilla_ui::script::UiTarget::Wrath335
+    } else {
+        benilla_ui::script::UiTarget::Vanilla112
+    };
+    let Some((bag_index, slot, key_guid)) = crate::ui_items::find_item_in_target(
+        target,
         &store.0,
         &inputs.objects,
         key_entry,

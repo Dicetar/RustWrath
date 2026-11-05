@@ -597,8 +597,9 @@ impl ObjectFields {
     pub fn player_facial_hair(&self) -> Option<u8> {
         self.player_bytes_2().map(|b| (b & 0xff) as u8)
     }
-    /// `PLAYER_BYTES_2` byte 2 (`Player.h:347`): bank bag slots bought, of 6; this delta is the
-    /// only reply to a successful `CMSG_BUY_BANK_SLOT` (`PLAYERBANKBAGSLOTS_CHANGED`).
+    /// `PLAYER_BYTES_2` byte 2 (`Player.h:347`): bank bag slots bought, of 7 in 3.3.5 (6 in the
+    /// donor); this delta is the only reply to a successful `CMSG_BUY_BANK_SLOT`
+    /// (`PLAYERBANKBAGSLOTS_CHANGED`).
     pub fn player_bank_bag_slots_purchased(&self) -> Option<u8> {
         self.player_bytes_2().map(|b| ((b >> 16) & 0xff) as u8)
     }

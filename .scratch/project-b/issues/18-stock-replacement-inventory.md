@@ -34,4 +34,24 @@ Execution checks described above are acceptance requirements, not authorization.
 
 Handoff: exact source identity and changed paths; externally visible behavior; evidence actually collected; unresolved acceptance; next dependent slice. Close only after acceptance is supported. See [the completion plan](D:/WOW/PROJECT_B_COMPLETION_PLAN.md) for the mandatory full stock-client replacement release gate.
 
+## Inventory family (R06)
+
+Source-level package A (2026-11-05, stacked on `47cba738`): the typed Wrath inventory owner
+(`crates/benilla-app/src/wrath_inventory.rs`) now carries 28 bank slots, seven bank bags, the
+32-slot keyring and presence-aware item addresses; the donor projection remains 24/6/7 and is
+never widened into occupied item offsets. Bank/bag consumers migrated at source: bank containers
+and `GetContainerNumSlots(-1)=28`, bags 5..11, 7th purchase/full state, deposit/withdraw wire
+39..66 and 67..73, bank-bag button band, `HasKey`, repair/cooldown scans,
+`PLAYERBANKSLOTS_CHANGED`/`BAG_UPDATE`, `ui_bank`, `ui_items`, `ui_char`, `ui_merchant` and the
+`benilla-ui` script ranges. The item payload tail (12 enchant slots, create-played-time, item text
+by guid) is deferred as S3; the general `count_of`/`find_item`/action-bar walks remain donor and
+are named in the RFC.
+
+Evidence: SOURCE-OBSERVED only. Not compiled, not focused-checked, not receiver-verified, not
+visible gameplay. Acceptance boxes stay unchecked. Runtime acceptance needs an owned character
+with an item in bank slot 25 and a bag in bank bag slot 7 (seven purchased bank-bag slots); no
+server/DB change was made. Contract and 18-row ledger:
+[lossless Wrath inventory](../architecture/rfc-lossless-wrath-inventory.md) and
+[traceability](../architecture/architecture-traceability.md).
+
 

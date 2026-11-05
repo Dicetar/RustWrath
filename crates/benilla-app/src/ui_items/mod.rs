@@ -114,67 +114,128 @@ pub(crate) fn wire_pos(bag: i64, slot1: u32) -> Option<(u8, u8)> {
 pub(crate) fn wire_pos_in_target(target: UiTarget, bag: i64, slot1: u32) -> Option<(u8, u8)> {
     let keyring_slots = keyring_span(target);
     let slot0 = u8::try_from(slot1.checked_sub(1)?).ok()?;
-    match bag {
-        0 if slot0 < PACK_SLOTS => Some((BAG_PLAYER_INVENTORY, SLOT_PACK_FIRST + slot0)),
-        1..=4 if slot0 < 36 => Some((SLOT_BAG_FIRST + (bag as u8 - 1), slot0)),
-        BANK_CONTAINER if slot0 < BANK_SLOTS => {
-            Some((BAG_PLAYER_INVENTORY, BANK_SLOT_FIRST + slot0))
-        }
-        5..=10 if slot0 < 36 => {
-            Some((BANK_BAG_SLOT_FIRST + (bag - BANK_BAG_ID_FIRST) as u8, slot0))
-        }
-        KEYRING_CONTAINER if slot0 < keyring_slots => {
-            Some((BAG_PLAYER_INVENTORY, KEYRING_SLOT_FIRST + slot0))
-        }
-        EQUIPMENT_BAG if (1..=23).contains(&slot1) || (64..=69).contains(&slot1) => {
-            Some((BAG_PLAYER_INVENTORY, slot0))
-        }
-        _ => None,
+    match target {
+        UiTarget::Vanilla112 => match bag {
+            0 if slot0 < PACK_SLOTS => Some((BAG_PLAYER_INVENTORY, SLOT_PACK_FIRST + slot0)),
+            1..=4 if slot0 < 36 => Some((SLOT_BAG_FIRST + (bag as u8 - 1), slot0)),
+            BANK_CONTAINER if slot0 < BANK_SLOTS => {
+                Some((BAG_PLAYER_INVENTORY, BANK_SLOT_FIRST + slot0))
+            }
+            5..=10 if slot0 < 36 => {
+                Some((BANK_BAG_SLOT_FIRST + (bag - BANK_BAG_ID_FIRST) as u8, slot0))
+            }
+            KEYRING_CONTAINER if slot0 < keyring_slots => {
+                Some((BAG_PLAYER_INVENTORY, KEYRING_SLOT_FIRST + slot0))
+            }
+            EQUIPMENT_BAG if (1..=23).contains(&slot1) || (64..=69).contains(&slot1) => {
+                Some((BAG_PLAYER_INVENTORY, slot0))
+            }
+            _ => None,
+        },
+        // 3.3.5 direct player-array positions: bank 39..=66, bank bags 67..=73, buyback
+        // 74..=85, keyring 86..=117. The bank-bag buttons carry the Lua id 68..=74, i.e. the
+        // 3.3.5 array seat 67..=73; `ResolveInventorySlotArg` subtracts one before the client
+        // reads the array.
+        UiTarget::Wrath335 => match bag {
+            0 if slot0 < PACK_SLOTS => Some((BAG_PLAYER_INVENTORY, SLOT_PACK_FIRST + slot0)),
+            1..=4 if slot0 < 36 => Some((SLOT_BAG_FIRST + (bag as u8 - 1), slot0)),
+            BANK_CONTAINER if slot0 < crate::wrath_inventory::WRATH_BANK_SLOTS => Some((
+                BAG_PLAYER_INVENTORY,
+                crate::wrath_inventory::WRATH_BANK_SLOT_FIRST + slot0,
+            )),
+            5..=11 if slot0 < 36 => Some((
+                crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST + (bag - 5) as u8,
+                slot0,
+            )),
+            KEYRING_CONTAINER if slot0 < keyring_slots => Some((
+                BAG_PLAYER_INVENTORY,
+                crate::wrath_inventory::WRATH_KEYRING_SLOT_FIRST + slot0,
+            )),
+            EQUIPMENT_BAG if (1..=23).contains(&slot1) => {
+                Some((BAG_PLAYER_INVENTORY, slot0))
+            }
+            EQUIPMENT_BAG
+                if (u32::from(crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST) + 1
+                    ..=u32::from(crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST)
+                        + u32::from(crate::wrath_inventory::WRATH_BANK_BAG_SLOTS))
+                    .contains(&slot1) =>
+            {
+                // The Lua id is internal + 1 (68..=74), so `slot0` is the 3.3.5 array seat.
+                Some((BAG_PLAYER_INVENTORY, slot0))
+            }
+            _ => None,
+        },
     }
 }
 
 /// The item guid in a Lua-space bag slot; for [`EQUIPMENT_BAG`], `slot0` is the wire slot, as in
-/// [`wire_pos`].
+/// [`wire_pos`]. The typed Wrath owner supplies the 28 bank slots and seven bank bags; the donor
+/// `ObjectStore` is the fallback for the shared bands and for donor sessions.
 pub(crate) fn slot_guid(
-    store: &ObjectFields,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     bag: i64,
     slot0: u8,
     objects: &Objects,
 ) -> Option<u64> {
     match bag {
-        0 => store.player_pack_slot(slot0).filter(|g| *g != 0),
+        0 => (inv.backpack(slot0) != 0).then(|| inv.backpack(slot0)),
         1..=4 => {
-            let bag_guid = store
-                .player_inv_slot(BAG_SLOT_FIRST + bag as u8 - 1)
-                .filter(|g| *g != 0)?;
-            objects
-                .object(bag_guid)?
-                .container_slot(slot0)
-                .filter(|g| *g != 0)
+            let bag_guid = inv.bag_slot(bag as u8 - 1);
+            (bag_guid != 0).then_some(bag_guid).and_then(|bag_guid| {
+                objects
+                    .object(bag_guid)?
+                    .container_slot(slot0)
+                    .filter(|g| *g != 0)
+            })
         }
-        BANK_CONTAINER => store.player_bank_slot(slot0).filter(|g| *g != 0),
-        KEYRING_CONTAINER => store.player_keyring_slot(slot0).filter(|g| *g != 0),
-        5..=10 => {
-            let bag_guid = store
-                .player_bank_bag_slot((bag - BANK_BAG_ID_FIRST) as u8)
-                .filter(|g| *g != 0)?;
-            objects
-                .object(bag_guid)?
-                .container_slot(slot0)
-                .filter(|g| *g != 0)
+        BANK_CONTAINER => (inv.bank(slot0) != 0).then(|| inv.bank(slot0)),
+        KEYRING_CONTAINER => (inv.keyring(slot0) != 0).then(|| inv.keyring(slot0)),
+        5..=11 => {
+            let bag_guid = inv.bank_bag((bag - BANK_BAG_ID_FIRST) as u8);
+            (bag_guid != 0).then_some(bag_guid).and_then(|bag_guid| {
+                objects
+                    .object(bag_guid)?
+                    .container_slot(slot0)
+                    .filter(|g| *g != 0)
+            })
         }
-        // The doll: the bank-bag buttons (wire 63..68) read their own array, since the INV
-        // array's accessor caps at 23.
-        EQUIPMENT_BAG
-            if (BANK_BAG_SLOT_FIRST..BANK_BAG_SLOT_FIRST + BANK_BAGS).contains(&slot0) =>
-        {
-            store
-                .player_bank_bag_slot(slot0 - BANK_BAG_SLOT_FIRST)
-                .filter(|g| *g != 0)
+        // The doll: the bank-bag buttons read their own array, since the inventory accessor
+        // caps at 23. 3.3.5 array slots are 67..73; the donor band is 63..68.
+        EQUIPMENT_BAG => {
+            if slot0 < 23 {
+                return (inv.equipment(slot0) != 0).then(|| inv.equipment(slot0));
+            }
+            let first = if inv.bank_bag_capacity()
+                == crate::wrath_inventory::WRATH_BANK_BAG_SLOTS
+            {
+                crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST
+            } else {
+                BANK_BAG_SLOT_FIRST
+            };
+            slot0
+                .checked_sub(first)
+                .filter(|i| *i < inv.bank_bag_capacity())
+                .and_then(|i| (inv.bank_bag(i) != 0).then(|| inv.bank_bag(i)))
         }
-        EQUIPMENT_BAG => store.player_inv_slot(slot0).filter(|g| *g != 0),
         _ => None,
     }
+}
+
+/// [`slot_guid`] with the donor descriptor only. For paths that do not carry the typed owner
+/// (cursor sale/drop, probes, the worn-item use): they resolve the shared bands and the 32
+/// keyring slots, but not the four extra bank slots or the seventh bank bag.
+pub(crate) fn slot_guid_donor(
+    store: &ObjectFields,
+    bag: i64,
+    slot0: u8,
+    objects: &Objects,
+) -> Option<u64> {
+    let view = crate::wrath_inventory::PlayerInventory::new(
+        store,
+        None,
+        crate::wrath::selected_from_env(),
+    );
+    slot_guid(&view, bag, slot0, objects)
 }
 
 /// An item template's icon path: its `DisplayInfoID` joined through `ItemDisplayInfo.dbc`. The
@@ -202,7 +263,8 @@ pub(crate) struct InventoryScope {
     bags: bool,
     /// `0x04`: the backpack, slots 23-38.
     backpack: bool,
-    /// `0x08`: bank items (39-62) and the six bank-bag slots (63-68) with their contents.
+    /// `0x08`: bank items (3.3.5 39-66, donor 39-62) and the bank-bag slots (3.3.5 67-73,
+    /// donor 63-68) with their contents.
     bank: bool,
     /// `0x40`: the keyring band.
     keyring: bool,
@@ -259,11 +321,19 @@ fn walk_inventory<T>(
     scope: InventoryScope,
     raw: impl FnMut(u8, u8, u64) -> Option<T>,
 ) -> Option<T> {
-    walk_inventory_filtered(store, objects, scope, KEYRING_SLOTS, item_is_whole, raw)
+    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
+    walk_inventory_filtered(
+        &donor,
+        objects,
+        scope,
+        donor.keyring_capacity(),
+        item_is_whole,
+        raw,
+    )
 }
 
 fn walk_inventory_filtered<T>(
-    store: &ObjectFields,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     scope: InventoryScope,
     keyring_slots: u8,
@@ -297,7 +367,7 @@ fn walk_inventory_filtered<T>(
 
     if scope.equipment {
         for i in 0..EQUIPMENT_SLOTS {
-            let guid = store.player_inv_slot(i).unwrap_or(0);
+            let guid = inv.equipment(i);
             if guid != 0 {
                 if let Some(hit) = visit(BAG_PLAYER_INVENTORY, i, guid) {
                     return Some(hit);
@@ -308,7 +378,7 @@ fn walk_inventory_filtered<T>(
     if scope.bags {
         for bag in 0..BAGS {
             let bag_slot = BAG_SLOT_FIRST + bag;
-            let bag_guid = store.player_inv_slot(bag_slot).unwrap_or(0);
+            let bag_guid = inv.bag_slot(bag);
             if bag_guid == 0 {
                 continue;
             }
@@ -326,7 +396,7 @@ fn walk_inventory_filtered<T>(
     }
     if scope.backpack {
         for i in 0..PACK_SLOTS {
-            let guid = store.player_pack_slot(i).unwrap_or(0);
+            let guid = inv.backpack(i);
             if guid != 0 {
                 if let Some(hit) = visit(BAG_PLAYER_INVENTORY, SLOT_PACK_FIRST + i, guid) {
                     return Some(hit);
@@ -335,17 +405,17 @@ fn walk_inventory_filtered<T>(
         }
     }
     if scope.bank {
-        for i in 0..BANK_SLOTS {
-            let guid = store.player_bank_slot(i).unwrap_or(0);
+        for i in 0..inv.bank_capacity() {
+            let guid = inv.bank(i);
             if guid != 0 {
-                if let Some(hit) = visit(BAG_PLAYER_INVENTORY, BANK_SLOT_FIRST + i, guid) {
+                if let Some(hit) = visit(BAG_PLAYER_INVENTORY, inv.bank_slot_first() + i, guid) {
                     return Some(hit);
                 }
             }
         }
-        for bag in 0..BANK_BAGS {
-            let bag_slot = BANK_BAG_SLOT_FIRST + bag;
-            let bag_guid = store.player_bank_bag_slot(bag).unwrap_or(0);
+        for bag in 0..inv.bank_bag_capacity() {
+            let bag_slot = inv.bank_bag_slot_first() + bag;
+            let bag_guid = inv.bank_bag(bag);
             if bag_guid == 0 || !whole(bag_guid) {
                 continue;
             }
@@ -359,9 +429,11 @@ fn walk_inventory_filtered<T>(
     }
     if scope.keyring {
         for i in 0..keyring_slots {
-            let guid = store.player_keyring_slot(i).unwrap_or(0);
+            let guid = inv.keyring(i);
             if guid != 0 {
-                if let Some(hit) = visit(BAG_PLAYER_INVENTORY, KEYRING_SLOT_FIRST + i, guid) {
+                if let Some(hit) =
+                    visit(BAG_PLAYER_INVENTORY, inv.keyring_slot_first() + i, guid)
+                {
                     return Some(hit);
                 }
             }
@@ -386,7 +458,8 @@ fn possession_count(
     };
     let mut total = 0u32;
     let mut available = true;
-    walk_inventory_filtered::<()>(store, objects, scope, WRATH_KEYRING_SLOTS, |_| true, |_, _, guid| {
+    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
+    walk_inventory_filtered::<()>(&donor, objects, scope, WRATH_KEYRING_SLOTS, |_| true, |_, _, guid| {
         let amount = (|| {
             let fields = objects.object(guid)?;
             if fields.object_entry()? != entry {
@@ -456,7 +529,12 @@ fn sum_of_in_target(
     weight: impl Fn(&ObjectFields) -> u32,
 ) -> u32 {
     let mut total = 0u32;
-    walk_inventory_filtered::<()>(store, objects, scope, keyring_span(target), item_is_whole, |_, _, guid| {
+    let inv = crate::wrath_inventory::PlayerInventory::new(
+        store,
+        None,
+        target == UiTarget::Wrath335,
+    );
+    walk_inventory_filtered::<()>(&inv, objects, scope, keyring_span(target), item_is_whole, |_, _, guid| {
         if let Some(fields) = objects.object(guid) {
             if fields.object_entry() == Some(entry) {
                 total = total.wrapping_add(weight(fields));
@@ -553,7 +631,12 @@ pub(crate) fn find_item_in_target(
     } else {
         InventoryScope::DEFAULT
     };
-    walk_inventory_filtered(store, objects, scope, keyring_span(target), item_is_whole, |bag, slot, guid| {
+    let inv = crate::wrath_inventory::PlayerInventory::new(
+        store,
+        None,
+        target == UiTarget::Wrath335,
+    );
+    walk_inventory_filtered(&inv, objects, scope, keyring_span(target), item_is_whole, |bag, slot, guid| {
         let f = objects.object(guid)?;
         if f.object_entry() != Some(entry) {
             return None;
@@ -590,12 +673,12 @@ pub(crate) fn collect_inventory(
 /// no key until the answer lands.
 #[cfg(test)]
 pub(crate) fn has_key(store: &ObjectFields, objects: &Objects, items: &Items) -> bool {
-    has_key_in_target(UiTarget::Vanilla112, store, objects, items)
+    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
+    has_key_in_player(&donor, objects, items)
 }
 
-pub(crate) fn has_key_in_target(
-    target: UiTarget,
-    store: &ObjectFields,
+pub(crate) fn has_key_in_player(
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     items: &Items,
 ) -> bool {
@@ -609,28 +692,28 @@ pub(crate) fn has_key_in_target(
     }
     let mut guids = Vec::new();
     for i in 0..EQUIPMENT_SLOTS {
-        guids.push(store.player_inv_slot(i).unwrap_or(0));
+        guids.push(inv.equipment(i));
     }
     for bag in 0..BAGS {
-        let bag_guid = store.player_inv_slot(BAG_SLOT_FIRST + bag).unwrap_or(0);
+        let bag_guid = inv.bag_slot(bag);
         guids.push(bag_guid);
         contents(bag_guid, objects, &mut guids);
     }
     for i in 0..PACK_SLOTS {
-        guids.push(store.player_pack_slot(i).unwrap_or(0));
+        guids.push(inv.backpack(i));
     }
-    for i in 0..BANK_SLOTS {
-        guids.push(store.player_bank_slot(i).unwrap_or(0));
+    for i in 0..inv.bank_capacity() {
+        guids.push(inv.bank(i));
     }
-    for bag in 0..BANK_BAGS {
-        let bag_guid = store.player_bank_bag_slot(bag).unwrap_or(0);
+    for bag in 0..inv.bank_bag_capacity() {
+        let bag_guid = inv.bank_bag(bag);
         guids.push(bag_guid);
         contents(bag_guid, objects, &mut guids);
     }
-    let keyring_slots = keyring_span(target);
-    for i in 0..keyring_slots {
-        guids.push(store.player_keyring_slot(i).unwrap_or(0));
+    for i in 0..inv.keyring_capacity() {
+        guids.push(inv.keyring(i));
     }
+    let wrath = inv.keyring_capacity() == WRATH_KEYRING_SLOTS;
     guids.into_iter().any(|guid| {
         if guid == 0 {
             return false;
@@ -641,9 +724,12 @@ pub(crate) fn has_key_in_target(
         // The bag family getter only reads (`0x5da08d`).
         items
             .template(entry, guid, Ask::Read)
-            .is_some_and(|t| match target {
-                UiTarget::Wrath335 => t.bag_family & 0x100 != 0,
-                UiTarget::Vanilla112 => t.bag_family == BAG_FAMILY_KEYS,
+            .is_some_and(|t| {
+                if wrath {
+                    t.bag_family & 0x100 != 0
+                } else {
+                    t.bag_family == BAG_FAMILY_KEYS
+                }
             })
     })
 }
@@ -1261,10 +1347,93 @@ impl Plugin for UiItemsPlugin {
 #[cfg(test)]
 mod tests {
     use super::{
-        find_equip_slot, item_use_route, keyring_size, wire_pos, ItemUse, ItemUseRoute,
+        find_equip_slot, find_item_in_target, item_use_route, keyring_size, wire_pos,
+        wire_pos_in_target, ItemSearch, ItemUse, ItemUseRoute, TestObjects, BANK_CONTAINER,
         KEYRING_CONTAINER,
     };
-    use benilla_ui::script::EQUIPMENT_BAG;
+    use benilla_protocol::ObjectFields;
+    use benilla_ui::script::{EQUIPMENT_BAG, UiTarget};
+
+    /// The 3.3.5 direct player-array bands: 28 bank slots, seven bank bags, 32 keyring slots.
+    #[test]
+    fn wrath_wire_pos_covers_the_28_bank_slots_and_seven_bags() {
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, BANK_CONTAINER, 1),
+            Some((255, 39))
+        );
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, BANK_CONTAINER, 28),
+            Some((255, 66)),
+            "the 28th vault slot"
+        );
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, BANK_CONTAINER, 29),
+            None,
+            "no 29th vault slot"
+        );
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, 5, 1),
+            Some((67, 0)),
+            "bank bag 5 is array seat 67"
+        );
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, 11, 1),
+            Some((73, 0)),
+            "bank bag 11 (the seventh) is array seat 73"
+        );
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, 12, 1),
+            None,
+            "no twelfth bag"
+        );
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, EQUIPMENT_BAG, 68),
+            Some((255, 67)),
+            "bank-bag Lua id 68 is array seat 67"
+        );
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, EQUIPMENT_BAG, 74),
+            Some((255, 73)),
+            "bank-bag Lua id 74 is array seat 73"
+        );
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, KEYRING_CONTAINER, 1),
+            Some((255, 86))
+        );
+        assert_eq!(
+            wire_pos_in_target(UiTarget::Wrath335, KEYRING_CONTAINER, 32),
+            Some((255, 117))
+        );
+    }
+
+    /// The key-at-object path now uses the target-aware walk: a keyring key at donor keyring
+    /// slot 1 is sent at the 3.3.5 array position 86, not 81.
+    #[test]
+    fn wrath_find_item_returns_the_335_keyring_position() {
+        use benilla_protocol::messages::ObjectType;
+        let guid = 0x4000_0000_0000_0101;
+        let mut objs = TestObjects::new();
+        objs.spawn(
+            guid,
+            ObjectFields::from_pairs(&[(2, 0x3), (3, 1234)]).into_created(ObjectType::Item),
+        );
+        let store = ObjectFields::from_pairs(&[
+            (648, guid as u32),
+            (649, (guid >> 32) as u32),
+        ]);
+        let mut objects = objs.get();
+        assert_eq!(
+            find_item_in_target(
+                UiTarget::Wrath335,
+                &store,
+                &objects,
+                1234,
+                ItemSearch::default()
+            ),
+            Some((255, 86, guid)),
+            "the keyring's first 3.3.5 position"
+        );
+    }
 
     /// Both ends of every rung of `GetKeyRingSize` (`ContainerFrame.lua:773`).
     #[test]

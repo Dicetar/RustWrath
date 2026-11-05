@@ -13,22 +13,29 @@ use super::{
 };
 
 /// The ids `PutItemInBag` and `PickupBagFromSlot` take: what their argument reader (`0x4c8520`)
-/// accepts above each floor gate (`0x4c8f1f`, `0x4c8fbf`), so the equipped bags 20-23, the
-/// bank's slots 40-63, its bag slots 64-69 and the keyring 82-113.
-fn accepts(live: u32) -> bool {
+/// accepts above each floor gate (`0x4c8f1f`, `0x4c8fbf`). 3.3.5 bands are the equipped bags
+/// 20-23, the bank's 40-67, its bag slots 68-74 and the keyring 87-118; the donor bands are
+/// narrower. The union is accepted here; the container lookup still refuses a slot that holds no
+/// bag.
+fn accepts(model: &Model, live: u32) -> bool {
+    let wrath = model.target == crate::script::UiTarget::Wrath335;
     (20..=23).contains(&live)
-        || (40..=63).contains(&live)
-        || (64..=69).contains(&live)
-        || (82..=113).contains(&live)
+        || (if wrath {
+            (40..=67).contains(&live) || (68..=74).contains(&live) || (87..=118).contains(&live)
+        } else {
+            (40..=63).contains(&live) || (64..=69).contains(&live) || (82..=113).contains(&live)
+        })
 }
 
 /// The live container id of a bag slot, the inverse of `ContainerIDToInventoryID`. Deviation:
 /// an auto-store into a bank item or keyring slot sends nothing, because no container id names
 /// it and no stock caller passes one; the reference sends it and the server refuses.
-fn autostore_container(live: u32) -> Option<i64> {
+fn autostore_container(model: &Model, live: u32) -> Option<i64> {
+    let wrath = model.target == crate::script::UiTarget::Wrath335;
     match live {
         20..=23 => Some(i64::from(live) - 19),
-        64..=69 => Some(i64::from(live) - 59),
+        _ if wrath && (68..=74).contains(&live) => Some(i64::from(live) - 63),
+        _ if !wrath && (64..=69).contains(&live) => Some(i64::from(live) - 59),
         _ => None,
     }
 }
@@ -36,8 +43,14 @@ fn autostore_container(live: u32) -> Option<i64> {
 /// `Bag0Slot`, the first equipped bag slot: only a container names it in `equip_slots`.
 const BAG0_SLOT: u8 = 20;
 
-/// The six bank bag slots' ids (`BankButtonIDToInvSlotID(1..6, isBag)`).
-pub(super) const BANK_BAG_INV_SLOTS: std::ops::RangeInclusive<u32> = 64..=69;
+/// The bank-bag live ids for the selected contract: donor 64..=69, 3.3.5 68..=74.
+pub(super) fn bank_bag_inv_slots(model: &Model) -> std::ops::RangeInclusive<u32> {
+    if model.target == crate::script::UiTarget::Wrath335 {
+        68..=74
+    } else {
+        64..=69
+    }
+}
 
 /// Whether the held item is a container, the reference's `TYPEMASK_CONTAINER` test (`0x4c7dc4`):
 /// only `INVTYPE_BAG` maps to the bag slots in `FindEquipSlot`, so no other item names Bag0Slot.
@@ -50,8 +63,8 @@ fn is_container(item: &CursorItem) -> bool {
 /// `CursorCanGoInSlot` (`0x5ea720`) passes any item at a bank bag slot, as `IsValidForSlot`
 /// answers 1 for every 0-based slot from 23 (`0x5da215`); the server's `CanBankItem` referees
 /// either way.
-pub(super) fn fits_slot(item: &CursorItem, id: u32) -> bool {
-    if BANK_BAG_INV_SLOTS.contains(&id) {
+pub(super) fn fits_slot(model: &Model, item: &CursorItem, id: u32) -> bool {
+    if bank_bag_inv_slots(model).contains(&id) {
         return is_container(item);
     }
     u8::try_from(id).is_ok_and(|id| item.equip_slots.contains(&id))
@@ -69,7 +82,7 @@ enum Dest {
 /// consumed against an occupied slot, else false (nil). An empty cursor's nil is what lets
 /// `BagSlotButton_OnClick` open the bag.
 pub(super) fn put_item_in_bag(model: &mut Model, live: u32) -> bool {
-    accepts(live) && put_item(model, Dest::Slot(live))
+    accepts(model, live) && put_item(model, Dest::Slot(live))
 }
 
 /// `PutItemInBackpack()`, the worker on the player's own guid (`0x4c7ed0`): the empty-slot leg is
@@ -96,7 +109,7 @@ fn put_item(model: &mut Model, dest: Dest) -> bool {
     let bag_guid = match dest {
         Dest::Backpack => None,
         Dest::Slot(live) => {
-            if BANK_BAG_INV_SLOTS.contains(&live) && model.bank.is_none() {
+            if bank_bag_inv_slots(model).contains(&live) && model.bank.is_none() {
                 return false;
             }
             let occupant = usize::try_from(live)
@@ -153,7 +166,7 @@ fn place_held(model: &mut Model, dest: Dest, held: CursorItem) -> bool {
     // (`0x4c7cea`-`0x4c7cf6`), the backpack's being the player's, where only an item from the
     // backpack's own slots 23-38 cancels (`0x4c7cf8`-`0x4c7d0f`).
     let own_bag = match dest {
-        Dest::Slot(live) => autostore_container(live) == Some(held.bag),
+        Dest::Slot(live) => autostore_container(model, live) == Some(held.bag),
         Dest::Backpack => held.bag == 0,
     };
     if own_bag {
@@ -192,7 +205,7 @@ fn place_held(model: &mut Model, dest: Dest, held: CursorItem) -> bool {
     // a split. The client picks no slot: the store carries none, the split carries `0xFF`.
     let dst_bag = match dest {
         Dest::Backpack => 0,
-        Dest::Slot(live) => match autostore_container(live) {
+        Dest::Slot(live) => match autostore_container(model, live) {
             Some(bag) => bag,
             None => return false,
         },
@@ -218,13 +231,13 @@ fn place_held(model: &mut Model, dest: Dest, held: CursorItem) -> bool {
 /// picked up, its setter's clear dropping any other payload. It never places or swaps, and the
 /// client has no empty-bag rule: the server refuses with `EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS`.
 pub(super) fn pickup_bag_from_slot(lua: &Lua, live: u32) -> mlua::Result<()> {
-    if !accepts(live) {
+    if !accepts(model, live) {
         return Ok(());
     }
     let (gated, occupied) = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
         let gated =
-            !model.player_control || (BANK_BAG_INV_SLOTS.contains(&live) && model.bank.is_none());
+            !model.player_control || (bank_bag_inv_slots(model).contains(&live) && model.bank.is_none());
         let occupied = usize::try_from(live)
             .ok()
             .and_then(|slot| model.inv_slot("player", slot))

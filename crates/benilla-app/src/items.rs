@@ -180,6 +180,25 @@ pub(crate) struct Inventory<'w, 's> {
         Query<'w, 's, (), (With<crate::net::SelfPlayer>, Changed<ObjectStore>)>,
     pub(crate) objects: Objects<'w, 's>,
     pub(crate) changes: ItemChanges<'w, 's>,
+    /// The typed 3.3.5 inventory owner. Present in a Wrath session; donor readers see `None` and
+    /// fall back to the 1.12 projection.
+    pub(crate) wrath: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
+}
+
+impl Inventory<'_, '_> {
+    /// The read-only player-inventory view: the donor descriptor plus, when present, the typed
+    /// owner. `wrath_target` is `UiTarget::Wrath335` for the selected 3.3.5 host.
+    pub(crate) fn player(
+        &self,
+        wrath_target: bool,
+    ) -> Option<crate::wrath_inventory::PlayerInventory<'_>> {
+        let store = self.self_store.iter().next()?;
+        Some(crate::wrath_inventory::PlayerInventory::new(
+            &store.0,
+            self.wrath.as_deref(),
+            wrath_target,
+        ))
+    }
 }
 
 /// The Copy slice of an [`ItemInfo`] that equipment rendering and combat animation read.
