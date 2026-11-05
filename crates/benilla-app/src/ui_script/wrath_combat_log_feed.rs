@@ -1,143 +1,158 @@
-//! Project the scoped `SMSG_PARTYKILLLOG` into the Wrath VM's `COMBAT_LOG_EVENT_UNFILTERED`
-//! contract. The decoded kill is proof of a `PARTY_KILL`; names come from the VM's own unit views
-//! or the existing name cache, never from a guess. An unresolved endpoint suppresses the event
-//! instead of emitting a fabricated name the bridge would trust.
+//! Project queued `SMSG_PARTYKILLLOG` rows into the Wrath VM's `COMBAT_LOG_EVENT_UNFILTERED`
+//! contract. A kill is an ordered event, not a replaceable snapshot: the view keeps a bounded
+//! pending queue and this feed removes each row only after it has been signalled. The decoded
+//! packet proves the kill; both endpoint names still come from the VM's own unit views or the
+//! existing name-query cache, never from a guess.
 
 use bevy::prelude::*;
-use benilla_protocol::guid;
-use benilla_ui::script::{ScriptValue, UiTarget};
+use benilla_ui::script::{ScriptValue, UiScript, UiTarget};
 
 use crate::names::NameCache;
+use crate::net::NetCommands;
 use crate::query_cache::Ask;
 use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
-use crate::wrath::WrathWorldView;
+use crate::wrath::{WrathPartyKill, WrathWorldView, PARTY_KILL_NAME_RETRY_SECONDS};
 
-/// The VM a kill was last signalled to and the highest revision already fired. A rebuilt VM starts
-/// at the current revision so a reconnect never replays a kill the previous VM already saw.
+/// Capacity loss and unresolved-name counts already reported, so each diagnostic is logged once
+/// per scope rather than every frame.
 #[derive(Default)]
 pub(crate) struct CombatLogMemo {
-    vm: Option<u64>,
-    revision: u64,
+    dropped: u64,
+    unresolved: u64,
 }
 
 pub(crate) fn feed(
     mut vm: VmWith<(
-        Option<Res<'static, WrathWorldView>>,
+        Option<ResMut<'static, WrathWorldView>>,
         Option<Res<'static, UiClock>>,
         Option<Res<'static, NameCache>>,
+        Option<Res<'static, NetCommands>>,
     )>,
     mut memo: Local<CombatLogMemo>,
 ) {
-    vm.feed(|script, (world, clock, names), fires| {
+    vm.feed(|script, (mut world, clock, names, net), fires| {
         let Some(script) = script.filter(|script| script.target() == UiTarget::Wrath335) else {
-            *memo = CombatLogMemo::default();
             return;
         };
-        let Some(world) = world.as_deref() else {
-            *memo = CombatLogMemo::default();
+        let Some(world) = world.as_deref_mut() else {
             return;
         };
         if world.phase != Some(benilla_protocol_wrath::session::Phase::InWorld)
             || world.player_guid == 0
         {
-            *memo = CombatLogMemo::default();
             return;
         }
 
-        if memo.vm != Some(script.session()) {
-            *memo = CombatLogMemo {
-                vm: Some(script.session()),
-                revision: world.party_kill.map_or(0, |kill| kill.revision),
+        if world.party_kill_dropped > memo.dropped {
+            debug!(
+                dropped = world.party_kill_dropped,
+                "wrath: combat-log queue capacity lost kills"
+            );
+        }
+        memo.dropped = world.party_kill_dropped;
+        if world.party_kill_unresolved > memo.unresolved {
+            debug!(
+                unresolved = world.party_kill_unresolved,
+                "wrath: combat-log kills discarded after name resolution timed out"
+            );
+        }
+        memo.unresolved = world.party_kill_unresolved;
+
+        let now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
+        let ask = match net.as_deref() {
+            Some(net) => Ask::New(net),
+            None => Ask::Read,
+        };
+        let mut index = 0;
+        while index < world.party_kills.len() {
+            let kill = world.party_kills[index];
+            if kill.session_epoch != world.session_epoch
+                || kill.world_generation != world.world_generation
+            {
+                // A row from a retired world is never delivered into the replacement chain.
+                world.party_kills.remove(index);
+                continue;
+            }
+            let source = endpoint_name(script, world, names.as_deref(), kill.killer, ask);
+            let target = endpoint_name(script, world, names.as_deref(), kill.victim, ask);
+            let (Some(source), Some(target)) = (source, target) else {
+                let age = if kill.received_at > 0.0 && now >= kill.received_at {
+                    now - kill.received_at
+                } else {
+                    0.0
+                };
+                if age > PARTY_KILL_NAME_RETRY_SECONDS {
+                    world.party_kills.remove(index);
+                    world.party_kill_unresolved = world.party_kill_unresolved.saturating_add(1);
+                } else {
+                    index += 1;
+                }
+                continue;
             };
+            let timestamp = if kill.received_at > 0.0 {
+                kill.received_at
+            } else {
+                now
+            };
+            fires.post(
+                "COMBAT_LOG_EVENT_UNFILTERED",
+                combat_log_args(timestamp, &kill, &source, &target),
+            );
+            world.party_kills.remove(index);
         }
-
-        let Some(kill) = world.party_kill else {
-            return;
-        };
-        if kill.revision <= memo.revision
-            || kill.session_epoch != world.session_epoch
-            || kill.world_generation != world.world_generation
-        {
-            return;
-        }
-        memo.revision = kill.revision;
-
-        // The bridge compares the source name against `UnitName("player")`, so the VM's own seat
-        // is authoritative; the cache is the fallback for a frame before the unit feed lands.
-        let player_name = script
-            .unit_view("player")
-            .and_then(|unit| unit.name)
-            .filter(|name| !name.is_empty())
-            .or_else(|| {
-                names
-                    .as_deref()
-                    .and_then(|names| names.resolve_player(world.player_guid, Ask::Read))
-                    .map(str::to_owned)
-            });
-        let Some(player_name) = player_name else {
-            return;
-        };
-
-        let victim_name = script
-            .unit_view_by_guid(kill.victim)
-            .and_then(|unit| unit.name)
-            .filter(|name| !name.is_empty())
-            .or_else(|| {
-                names.as_deref().and_then(|names| {
-                    if guid::is_player(kill.victim) {
-                        names
-                            .resolve_player(kill.victim, Ask::Read)
-                            .map(str::to_owned)
-                    } else {
-                        let entry = world
-                            .entities
-                            .get(&kill.victim)
-                            .and_then(|unit| unit.entry)
-                            .or_else(|| guid::entry(kill.victim))?;
-                        names
-                            .resolve_creature(entry, kill.victim, Ask::Read)
-                            .map(str::to_owned)
-                    }
-                })
-            });
-        let Some(victim_name) = victim_name else {
-            return;
-        };
-
-        let timestamp = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
-        fires.post(
-            "COMBAT_LOG_EVENT_UNFILTERED",
-            combat_log_args(
-                timestamp,
-                kill.killer,
-                kill.victim,
-                &player_name,
-                &victim_name,
-            ),
-        );
     });
 }
 
+/// Resolve one endpoint for the event. The local player's seat has its own view; every other unit
+/// is looked up by its own guid. The cache read asks through the existing name-query owner when
+/// `ask` admits it, so a kill whose name has not arrived yet stays pending instead of being sent
+/// with the wrong name.
+fn endpoint_name(
+    script: &UiScript,
+    world: &WrathWorldView,
+    names: Option<&NameCache>,
+    unit: u64,
+    ask: Ask<'_>,
+) -> Option<String> {
+    if unit == world.player_guid {
+        if let Some(name) = script
+            .unit_view("player")
+            .and_then(|player| player.name)
+            .filter(|name| !name.is_empty())
+        {
+            return Some(name);
+        }
+    }
+    if let Some(name) = script
+        .unit_view_by_guid(unit)
+        .and_then(|unit| unit.name)
+        .filter(|name| !name.is_empty())
+    {
+        return Some(name);
+    }
+    names
+        .and_then(|names| names.resolve_unit(unit, None, ask))
+        .map(str::to_owned)
+}
+
 /// The exactly eight values `CombatLogEntry::PushEvent` sends for a spell-less event
-/// (`UnitCombatLog_C.cpp:1241-1276`): an unresolved endpoint is dropped by the caller, never
-/// replaced with a placeholder.
+/// (`UnitCombatLog_C.cpp:1241-1276`).
 fn combat_log_args(
     timestamp: f64,
-    killer: u64,
-    victim: u64,
-    player_name: &str,
-    victim_name: &str,
+    kill: &WrathPartyKill,
+    source_name: &str,
+    target_name: &str,
 ) -> Vec<ScriptValue> {
     vec![
         ScriptValue::Number(timestamp),
         ScriptValue::Str("PARTY_KILL".to_owned()),
-        ScriptValue::Str(guid_hex(killer)),
-        ScriptValue::Str(player_name.to_owned()),
-        ScriptValue::Int(combat_log_flags(killer)),
-        ScriptValue::Str(guid_hex(victim)),
-        ScriptValue::Str(victim_name.to_owned()),
-        ScriptValue::Int(combat_log_flags(victim)),
+        ScriptValue::Str(guid_hex(kill.killer)),
+        ScriptValue::Str(source_name.to_owned()),
+        ScriptValue::Int(combat_log_flags(kill.killer)),
+        ScriptValue::Str(guid_hex(kill.victim)),
+        ScriptValue::Str(target_name.to_owned()),
+        ScriptValue::Int(combat_log_flags(kill.victim)),
     ]
 }
 
@@ -150,6 +165,7 @@ fn guid_hex(guid: u64) -> String {
 /// need the party/raid owner and are deliberately absent rather than guessed; the bridge checks
 /// names and guids, not these flags.
 fn combat_log_flags(guid: u64) -> i64 {
+    use benilla_protocol::guid;
     if guid::is_player(guid) {
         0x400
     } else if guid::is_pet(guid) {
@@ -166,7 +182,47 @@ fn combat_log_flags(guid: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use benilla_ui::script::UiScript;
+    use benilla_ui::script::{UnitState, UiScript};
+
+    fn script_with_units() -> UiScript {
+        let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        let unit = |name: &str, guid: u64| UnitState {
+            name: Some(name.to_owned()),
+            guid,
+            ..UnitState::default()
+        };
+        script.set_unit("player", Some(unit("Firna", 0x11)));
+        script.set_unit("party1", Some(unit("Teammate", 0x22)));
+        script.set_unit_by_guid(0x22, Some(unit("Teammate", 0x22)));
+        script
+    }
+
+    fn world(player_guid: u64) -> WrathWorldView {
+        let mut world = WrathWorldView::default();
+        world.player_guid = player_guid;
+        world
+    }
+
+    #[test]
+    fn source_name_follows_the_killer_not_the_local_player() {
+        let script = script_with_units();
+        let world = world(0x11);
+        assert_eq!(
+            endpoint_name(&script, &world, None, 0x22, Ask::Read).as_deref(),
+            Some("Teammate"),
+            "a teammate's kill keeps the teammate's name"
+        );
+        assert_eq!(
+            endpoint_name(&script, &world, None, 0x11, Ask::Read).as_deref(),
+            Some("Firna"),
+            "the local player falls back to the player seat"
+        );
+        assert_eq!(
+            endpoint_name(&script, &world, None, 0x33, Ask::Read),
+            None,
+            "an unknown endpoint stays unresolved instead of borrowing a name"
+        );
+    }
 
     #[test]
     fn party_kill_event_has_the_eight_wrath_combat_log_values() {
@@ -184,15 +240,17 @@ mod tests {
             )
             .unwrap();
 
+        let kill = WrathPartyKill {
+            killer: 0x0000_0000_0000_0011,
+            victim: 0xF130_0000_0000_0022,
+            session_epoch: 1,
+            world_generation: 2,
+            revision: 3,
+            received_at: 1234.5,
+        };
         scope.fire_event(
             "COMBAT_LOG_EVENT_UNFILTERED",
-            combat_log_args(
-                1234.5,
-                0x0000_0000_0000_0011,
-                0xF130_0000_0000_0022,
-                "Firna",
-                "Kobold Vermin",
-            ),
+            combat_log_args(1234.5, &kill, "Firna", "Kobold Vermin"),
         );
 
         let event: String = scope.eval("return Fired[1]").unwrap();
@@ -214,6 +272,108 @@ mod tests {
         assert_eq!(dest_guid, "0xF130000000000022");
         assert_eq!(dest_name, "Kobold Vermin");
         assert_eq!(dest_flags, 0x800);
+    }
+
+    #[test]
+    fn feed_delivers_a_burst_waits_for_late_names_and_retires_stale_scopes() {
+        use crate::ui_script::UiClock;
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::prelude::App;
+
+        let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        let player = UnitState {
+            name: Some("Firna".to_owned()),
+            guid: 0x11,
+            ..UnitState::default()
+        };
+        script.set_unit("player", Some(player));
+        script
+            .run(
+                r#"
+                SEEN = 0
+                local listener = CreateFrame("Frame", "WrathCombatLogFeedTest")
+                listener:SetScript("OnEvent", function() SEEN = SEEN + 1 end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+        let mut world = WrathWorldView::default();
+        world.phase = Some(benilla_protocol_wrath::session::Phase::InWorld);
+        world.player_guid = 0x11;
+        world.session_epoch = 4;
+        world.world_generation = 5;
+        world.party_kills.push_back(WrathPartyKill {
+            killer: 0x11,
+            victim: 0xF130_0000_0000_0022,
+            session_epoch: 4,
+            world_generation: 5,
+            revision: 1,
+            received_at: 97.0,
+        });
+        world.party_kills.push_back(WrathPartyKill {
+            killer: 0x11,
+            victim: 0xF130_0000_0000_0023,
+            session_epoch: 4,
+            world_generation: 5,
+            revision: 2,
+            received_at: 97.0,
+        });
+        // A retired-scope row is dropped, never delivered.
+        world.party_kills.push_back(WrathPartyKill {
+            killer: 0x11,
+            victim: 0xF130_0000_0000_0024,
+            session_epoch: 3,
+            world_generation: 3,
+            revision: 3,
+            received_at: 97.0,
+        });
+
+        let mut app = App::new();
+        app.insert_resource(world)
+            .insert_resource(UiClock {
+                ui_now: 100.0,
+                ..Default::default()
+            })
+            .init_resource::<NameCache>()
+            .insert_non_send_resource(script);
+        app.world_mut().run_system_once(feed).unwrap();
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 0, "unknown victim names hold delivery");
+        }
+        {
+            let world = app.world().resource::<WrathWorldView>();
+            assert_eq!(world.party_kills.len(), 2, "the stale row is gone, the live burst remains");
+        }
+        app.world_mut()
+            .non_send_resource_mut::<UiScript>()
+            .set_unit_by_guid(0xF130_0000_0000_0022, Some(UnitState {
+                name: Some("Kobold Vermin".to_owned()),
+                guid: 0xF130_0000_0000_0022,
+                ..UnitState::default()
+            }));
+        app.world_mut().run_system_once(feed).unwrap();
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 1, "the late name releases one kill");
+        }
+        app.world_mut()
+            .non_send_resource_mut::<UiScript>()
+            .set_unit_by_guid(0xF130_0000_0000_0023, Some(UnitState {
+                name: Some("Kobold Worker".to_owned()),
+                guid: 0xF130_0000_0000_0023,
+                ..UnitState::default()
+            }));
+        app.world_mut().run_system_once(feed).unwrap();
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(script.eval::<i64>("return SEEN").unwrap(), 2, "the second kill still arrives");
+            assert_eq!(
+                app.world().resource::<WrathWorldView>().party_kills.len(),
+                0,
+                "delivered rows are removed, so a rebuilt VM cannot replay them"
+            );
+        }
     }
 
     #[test]

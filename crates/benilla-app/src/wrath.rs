@@ -103,6 +103,12 @@ pub const WRATH_NATIVE_EVENT_CAPACITY: usize = 64;
 /// Per-frame drain bound for the Net-stage system: a burst longer than this leaves the rest
 /// for the next frame instead of starving input (R5 budget; measured, not tuned, per frame).
 pub const WRATH_DRAIN_LIMIT: usize = 64;
+/// Pending `SMSG_PARTYKILLLOG` rows kept for the UI feed. A burst larger than this drops the
+/// oldest rows and reports the loss through `WrathWorldView::party_kill_dropped`.
+pub const PARTY_KILL_CAPACITY: usize = 32;
+/// How long an undelivered kill may wait for an endpoint name before it is discarded as
+/// unresolved. Names usually land from the create/name-query path within a frame or two.
+pub const PARTY_KILL_NAME_RETRY_SECONDS: f64 = 5.0;
 
 // Session-reply delivery (package B, review finding R04). The numbers below are reviewed design
 // choices for bounded ownership, not measurements: no build or runtime profile established them.
@@ -1869,16 +1875,19 @@ pub struct WrathPlayedTime {
     pub trigger_script_event: bool,
 }
 
-/// One decoded `SMSG_PARTYKILLLOG` with the world scope it belongs to and a monotonic sequence
-/// the UI feed uses to fire the event exactly once. The sequence never resets, so a teardown that
-/// clears the record cannot make a later kill reuse an old revision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One decoded `SMSG_PARTYKILLLOG` with the world scope it belongs to, the UI clock at decode,
+/// and a monotonic sequence the UI feed uses to deliver each kill exactly once. The sequence
+/// never resets, so a teardown that clears the pending queue cannot make a later kill reuse an
+/// old revision.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WrathPartyKill {
     pub killer: u64,
     pub victim: u64,
     pub session_epoch: u64,
     pub world_generation: u64,
     pub revision: u64,
+    /// `UiClock::ui_now` when the packet was decoded; 0 when no clock existed yet.
+    pub received_at: f64,
 }
 
 /// One decoded rune slot with the `GetTime()` anchor its cooldown byte arrived on. `cooldown` is
@@ -1955,10 +1964,15 @@ pub struct WrathWorldView {
     pub calendar_revision: u64,
     /// The last decoded `SMSG_CALENDAR_COMMAND_RESULT`, cleared with the calendar scope.
     pub last_calendar_command_result: Option<WrathCalendarCommandResult>,
-    /// The last decoded `SMSG_PARTYKILLLOG`; the combat-log feed fires it once per revision.
-    pub party_kill: Option<WrathPartyKill>,
-    /// Monotonic sequence for [`Self::party_kill`], never reset on a scope clear.
+    /// The decoded kills waiting for the UI feed. A kill is an ordered event, not a replaceable
+    /// snapshot: a burst before one feed preserves every row up to [`PARTY_KILL_CAPACITY`].
+    pub party_kills: VecDeque<WrathPartyKill>,
+    /// Monotonic sequence for [`Self::party_kills`], never reset on a scope clear.
     pub party_kill_revision: u64,
+    /// Kills dropped because the pending queue was full.
+    pub party_kill_dropped: u64,
+    /// Kills dropped because neither endpoint name resolved within the retry window.
+    pub party_kill_unresolved: u64,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -1997,8 +2011,10 @@ impl Default for WrathWorldView {
             calendar_fetched: false,
             calendar_revision: 0,
             last_calendar_command_result: None,
-            party_kill: None,
+            party_kills: VecDeque::new(),
             party_kill_revision: 0,
+            party_kill_dropped: 0,
+            party_kill_unresolved: 0,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -2132,14 +2148,27 @@ impl WrathWorldView {
 
     /// Adopt one `SMSG_PARTYKILLLOG`. The sequence is monotonic for the app's lifetime so a
     /// teardown's clear cannot make a later kill reuse a revision the UI feed has already seen.
-    fn apply_party_kill(&mut self, killer: u64, victim: u64, session_epoch: u64, world_generation: u64) {
+    /// The pending queue is bounded; overflow drops the oldest row and records the loss.
+    fn apply_party_kill(
+        &mut self,
+        killer: u64,
+        victim: u64,
+        session_epoch: u64,
+        world_generation: u64,
+        received_at: f64,
+    ) {
         self.party_kill_revision = self.party_kill_revision.saturating_add(1);
-        self.party_kill = Some(WrathPartyKill {
+        if self.party_kills.len() >= PARTY_KILL_CAPACITY {
+            self.party_kills.pop_front();
+            self.party_kill_dropped = self.party_kill_dropped.saturating_add(1);
+        }
+        self.party_kills.push_back(WrathPartyKill {
             killer,
             victim,
             session_epoch,
             world_generation,
             revision: self.party_kill_revision,
+            received_at,
         });
     }
 
@@ -2150,7 +2179,9 @@ impl WrathWorldView {
         self.calendar_fetched = false;
         self.calendar_revision = 0;
         self.last_calendar_command_result = None;
-        self.party_kill = None;
+        self.party_kills.clear();
+        self.party_kill_dropped = 0;
+        self.party_kill_unresolved = 0;
     }
 }
 
@@ -7105,7 +7136,13 @@ fn wrath_net_drain(
                     session_epoch,
                     world_generation,
                 ) {
-                    view.apply_party_kill(killer, victim, session_epoch, world_generation);
+                    view.apply_party_kill(
+                        killer,
+                        victim,
+                        session_epoch,
+                        world_generation,
+                        ui_now_seconds.unwrap_or(0.0),
+                    );
                 }
             }
             WrathFeedEvent::Calendar {
@@ -11183,19 +11220,19 @@ mod tests {
         assert!(view.runes.is_empty());
     }
 
-    /// `SMSG_PARTYKILLLOG` is scoped presentation state: translate it onto the stock event and
-    /// clear the record on a transfer, while the sequence stays monotonic so a later kill cannot
-    /// reuse a revision the UI feed already fired.
+    /// `SMSG_PARTYKILLLOG` is scoped presentation state: translate it onto the stock event,
+    /// preserve a burst as ordered rows, and clear the queue on a transfer while the sequence
+    /// stays monotonic so a later kill cannot reuse a revision the UI feed already fired.
     #[test]
     fn party_kill_state_translates_to_the_stock_event_and_clears() {
         let killer = 0x0000_0000_0000_0011;
         let victim = 0xF130_0000_0000_0022;
         let mut view = WrathWorldView::default();
-        view.apply_party_kill(killer, victim, 7, 9);
-        let kill = view.party_kill.expect("the decoded kill is retained");
+        view.apply_party_kill(killer, victim, 7, 9, 100.0);
+        let kill = *view.party_kills.front().expect("the decoded kill is retained");
         assert_eq!((kill.killer, kill.victim), (killer, victim));
         assert_eq!((kill.session_epoch, kill.world_generation), (7, 9));
-        assert_eq!(kill.revision, 1);
+        assert_eq!((kill.revision, kill.received_at), (1, 100.0));
 
         let translated = translate_gameplay(
             WrathGameplayEvent::PartyKillLog { killer, victim },
@@ -11208,13 +11245,33 @@ mod tests {
             SessionEvent::PartyKillLog(kill) if kill.killer == killer && kill.victim == victim
         ));
 
+        // A second kill before the feed is a second row, not a replacement.
+        view.apply_party_kill(killer, victim, 7, 9, 100.5);
+        assert_eq!(view.party_kills.len(), 2);
+        assert_eq!(view.party_kills[1].revision, 2);
+
         view.clear_rune_calendar();
-        assert!(view.party_kill.is_none());
-        view.apply_party_kill(killer, victim, 10, 11);
+        assert!(view.party_kills.is_empty());
+        view.apply_party_kill(killer, victim, 10, 11, 101.0);
         assert_eq!(
-            view.party_kill.expect("a later kill is retained").revision,
-            2,
+            view.party_kills.front().expect("a later kill is retained").revision,
+            3,
             "the sequence never rewinds across a scope clear"
+        );
+    }
+
+    /// The pending queue is bounded and reports overflow instead of silently losing a burst.
+    #[test]
+    fn party_kill_queue_reports_capacity_loss() {
+        let mut view = WrathWorldView::default();
+        for index in 0..(PARTY_KILL_CAPACITY + 3) {
+            view.apply_party_kill(1, 2, 7, 9, index as f64);
+        }
+        assert_eq!(view.party_kills.len(), PARTY_KILL_CAPACITY);
+        assert_eq!(view.party_kill_dropped, 3);
+        assert_eq!(
+            view.party_kills.front().expect("the first three were dropped").received_at,
+            3.0
         );
     }
 
