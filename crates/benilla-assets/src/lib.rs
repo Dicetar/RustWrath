@@ -386,6 +386,7 @@ mod tests {
             mpq: mpq.clone(),
             loose: LooseFiles {
                 addons: None,
+                extra_addons: Vec::new(),
                 install: Some(Arc::new(cell)),
             },
         };

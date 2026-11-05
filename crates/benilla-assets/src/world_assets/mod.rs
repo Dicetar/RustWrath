@@ -1095,6 +1095,7 @@ mod tests {
         std::fs::write(addons.join("Jukebox").join("Track.mp3"), b"ID3!").unwrap();
         let folder = LooseFiles {
             addons: Some(addons.clone()),
+            extra_addons: Vec::new(),
             install: None,
         };
         let none = LooseFiles::default();
@@ -1241,6 +1242,7 @@ mod tests {
         let cell = LooseIndexCell::new(move || LooseIndex::build(Some(&root), &root.join("Data")));
         let loose = LooseFiles {
             addons: Some(addons.0.clone()),
+            extra_addons: Vec::new(),
             install: Some(Arc::new(cell)),
         };
         let logo = "Interface\\Glues\\Common\\Glues-WoW-Logo.blp";
@@ -1279,6 +1281,7 @@ mod tests {
         );
         let no_folder = LooseFiles {
             addons: None,
+            extra_addons: Vec::new(),
             install: loose.install.clone(),
         };
         assert_eq!(
@@ -1306,6 +1309,7 @@ mod tests {
         let cell = LooseIndexCell::new(move || LooseIndex::build(Some(&root), &root.join("Data")));
         let loose = LooseFiles {
             addons: None,
+            extra_addons: Vec::new(),
             install: Some(Arc::new(cell)),
         };
         let back = "Interface\\Glues\\Loose\\Custom";
@@ -1459,6 +1463,7 @@ mod tests {
         let chain = Mutex::new(Chain::open(&data).expect("open the chain"));
         let loose = LooseFiles {
             addons: Some(corpus),
+            extra_addons: Vec::new(),
             install: None,
         };
         for name in ["Ready", "Waiting", "NotReady"] {
@@ -1488,6 +1493,7 @@ mod tests {
         std::fs::write(dir.join("Odd.tga"), refused_tga(6, 8, &[0; 192])).unwrap();
         let loose = LooseFiles {
             addons: Some(addons.0.clone()),
+            extra_addons: Vec::new(),
             install: None,
         };
         let icon = "Interface\\AddOns\\Foo\\Icon";
@@ -1592,6 +1598,7 @@ mod tests {
         std::fs::write(dir.join("Only.tga"), tiny_blp(16, 16, 1)).unwrap();
         let loose = LooseFiles {
             addons: Some(addons.0.clone()),
+            extra_addons: Vec::new(),
             install: None,
         };
         let load = |name: &str| {
@@ -1628,6 +1635,7 @@ mod tests {
         std::fs::write(dir.join("Mask.tga"), refused_tga(16, 8, &[0; 512])).unwrap();
         let loose = LooseFiles {
             addons: Some(addons.0.clone()),
+            extra_addons: Vec::new(),
             install: None,
         };
         let (w, h, rgba) = mask_rgba(
@@ -1667,6 +1675,7 @@ mod tests {
         std::fs::write(dir.join("Odd.blp"), tiny_blp(64, 64, 5)).unwrap();
         let loose = LooseFiles {
             addons: Some(addons.0.clone()),
+            extra_addons: Vec::new(),
             install: None,
         };
         let red = |name: &str| {
@@ -1697,6 +1706,7 @@ mod tests {
         std::fs::write(dir.join("Fake.blp"), decodable_tga(32, 32)).unwrap();
         let loose = LooseFiles {
             addons: Some(addons.0.clone()),
+            extra_addons: Vec::new(),
             install: None,
         };
         let pic = |name: &str| {
@@ -1773,6 +1783,7 @@ mod tests {
         std::fs::write(dir.join("Odd.tga"), refused_tga(6, 8, &[0; 192])).unwrap();
         let loose = LooseFiles {
             addons: Some(addons.0.clone()),
+            extra_addons: Vec::new(),
             install: None,
         };
         let probe = SpriteProbe::default();
