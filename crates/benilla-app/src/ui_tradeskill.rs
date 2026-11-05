@@ -1191,6 +1191,53 @@ mod tests {
         assert_eq!(read(17, 18), (2, true), "worn copies");
         assert_eq!(read(81, 82), (2, true), "the keyring");
         assert_eq!(read(39, 40), (0, false), "the bank is outside mask 0");
+
+        // The typed Wrath view reaches the same two copies in keyring slots 31 and 30, which the
+        // donor 16-slot band cannot address.
+        use crate::wrath_inventory::{
+            InventoryAddr, PlayerInventory, WrathFieldWindow, WrathInventory, PLAYER_WINDOW_END,
+        };
+        let mut values = vec![0u32; usize::from(PLAYER_WINDOW_END)];
+        let mut delivered = vec![0u64; values.len().div_ceil(64)];
+        for (addr, guid) in [
+            (InventoryAddr::Keyring(31), 0x4000_0000_0000_0001u64),
+            (InventoryAddr::Keyring(30), 0x4000_0000_0000_0002),
+        ] {
+            let lo = usize::from(addr.field_index());
+            values[lo] = guid as u32;
+            values[lo + 1] = (guid >> 32) as u32;
+            for index in [lo, lo + 1] {
+                delivered[index / 64] |= 1u64 << (index % 64);
+            }
+        }
+        let mut typed = WrathInventory::default();
+        typed.apply(&WrathFieldWindow::new(values, delivered), (1, 1));
+        let store = ObjectStore(ObjectFields::default());
+        deps.with_objects(|objects, items, commands| {
+            let inv = PlayerInventory::new(&store.0, Some(&typed), true);
+            let r = resolve_recipe(
+                SPELL,
+                0,
+                &spells,
+                &lines,
+                None,
+                None,
+                None,
+                &store,
+                &inv,
+                objects,
+                items,
+                Ask::New(commands),
+                &cooldowns,
+                (Instant::now(), 0.0),
+            )
+            .expect("a recipe");
+            assert_eq!(
+                (r.reagents[0].have, r.tools[0].1),
+                (2, true),
+                "typed keyring slots 31/30"
+            );
+        });
     }
 
     /// `CloseTradeSkill` signals `TRADE_SKILL_CLOSE` in the verb (`0x4fc884`), so the feed that

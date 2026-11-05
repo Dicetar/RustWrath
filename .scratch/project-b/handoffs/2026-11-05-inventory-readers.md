@@ -103,6 +103,11 @@ walks:
   on/off).
 - `a_typed_clear_does_not_resurrect_a_donor_value`.
 
+Caller-level additions: `ui_tradeskill::tests::a_recipe_counts_a_worn_copy_and_the_keyring_but_not_the_bank`
+now also drives `resolve_recipe` with a typed keyring at slots 31/30;
+`ui_tooltip::spell_feed::tests::a_reagent_line_reaches_the_wrath_keyring_tail` drives
+`reagent_state` at typed keyring slot 32.
+
 Existing caller tests were updated for the new signatures only (death self-res,
 tradeskill `resolve_recipe`, mail `stationeries`, tooltip `reagent_state`/`ViewCtx`).
 

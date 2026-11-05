@@ -178,6 +178,9 @@ commands.
   `find_item` reaches keyring slot 32 and keeps the mask-0 bank exclusion; `GetItemCount` sees the
   bank tail only with its bank flag; donor fallback stays 24/6/16 and never invents a tail value;
   a typed clear does not resurrect a donor guid while a never-observed address still falls back.
+- `ui_tradeskill::tests::a_recipe_counts_a_worn_copy_and_the_keyring_but_not_the_bank` and
+  `ui_tooltip::spell_feed::tests::a_reagent_line_reaches_the_wrath_keyring_tail` (added, not
+  run): the migrated recipe and spell-tooltip callers reach typed keyring slots 30..32.
 - `item_watch::tests`: a typed bank slot without a record still signals/unlocks; bank bag 7
   raises `BAG_UPDATE(11)`.
 - `benilla-ui` tests: `bank_button_ids_follow_the_selected_contract` (68/74 Wrath, 64/69 donor),

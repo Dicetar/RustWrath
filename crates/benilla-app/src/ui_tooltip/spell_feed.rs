@@ -1082,4 +1082,40 @@ mod tests {
             assert_eq!(owned, 3, "player slot {slot}");
         }
     }
+
+    /// The migrated spell-tooltip read reaches keyring slot 32 through the typed owner.
+    #[test]
+    fn a_reagent_line_reaches_the_wrath_keyring_tail() {
+        use crate::wrath_inventory::{
+            InventoryAddr, WrathFieldWindow, WrathInventory, PLAYER_WINDOW_END,
+        };
+        let mut deps = crate::items::TestDeps::new();
+        deps.spawn_item(
+            0xA1,
+            ObjectFields::from_pairs(&[(FIELD_OBJECT_ENTRY, 17056), (FIELD_ITEM_STACK_COUNT, 3)]),
+        );
+        let mut values = vec![0u32; usize::from(PLAYER_WINDOW_END)];
+        let mut delivered = vec![0u64; values.len().div_ceil(64)];
+        let lo = usize::from(InventoryAddr::Keyring(31).field_index());
+        values[lo] = 0xA1;
+        values[lo + 1] = 0;
+        for index in [lo, lo + 1] {
+            delivered[index / 64] |= 1u64 << (index % 64);
+        }
+        let mut typed = WrathInventory::default();
+        typed.apply(&WrathFieldWindow::new(values, delivered), (1, 1));
+        let store = ObjectStore(ObjectFields::default());
+        let items = &deps.items;
+        let mut state = bevy::ecs::system::SystemState::<Objects>::new(&mut deps.world);
+        let objects = state.get(&deps.world);
+        let (owned, _) = reagent_state(
+            17056,
+            Some(&store),
+            Some(&typed),
+            UiTarget::Wrath335,
+            &objects,
+            items,
+        );
+        assert_eq!(owned, 3, "keyring slot 32");
+    }
 }
