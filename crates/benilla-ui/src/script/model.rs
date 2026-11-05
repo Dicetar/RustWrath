@@ -109,6 +109,25 @@ impl HandlerArg {
     }
 }
 
+/// One decoded `SMSG_RESYNC_RUNES`/`SMSG_CONVERT_RUNE` slot as the UI model holds it. `cooldown`
+/// is the writer's 0..255 progress byte, not milliseconds; `received_at` is the `GetTime()`
+/// seconds at which that byte was decoded, so `GetRuneCooldown` can derive the start time.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub(crate) struct RuneSlotState {
+    pub(crate) rune_type: u8,
+    pub(crate) cooldown: u8,
+    pub(crate) received_at: f64,
+}
+
+/// The decoded `SMSG_CALENDAR_SEND_CALENDAR` facts the stock date and invite-count natives read.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub(crate) struct CalendarState {
+    pub(crate) server_time: u32,
+    pub(crate) zone_time: u32,
+    pub(crate) pending_invites: usize,
+    pub(crate) revision: u64,
+}
+
 /// The Rust-side model behind the Lua VM, in `lua.app_data`. It holds no Lua handles, each of
 /// which is a collector root.
 #[derive(Clone)]
@@ -565,6 +584,16 @@ pub(crate) struct Model {
     pub(crate) multiclass_next_serial: u32,
     pub(crate) multiclass_requests: std::collections::VecDeque<(u16, u32, u64, u32, u32)>,
     pub(crate) multiclass_replies: std::collections::VecDeque<(u16, u16, u32, Vec<u8>)>,
+    /// The decoded Death Knight rune slots, `None` until `SMSG_RESYNC_RUNES` establishes the
+    /// class's real layout. Convert and rune-power replies update this same vector.
+    pub(crate) runes: Option<Vec<RuneSlotState>>,
+    /// The last decoded calendar reply; `None` before the first `SMSG_CALENDAR_SEND_CALENDAR`.
+    pub(crate) calendar: Option<CalendarState>,
+    /// The world scope the calendar/rune feeds belong to. `OpenCalendar()` tags its fetch with
+    /// it, and the Wrath tap refuses a request from a retired scope.
+    pub(crate) wrath_scope: Option<(u64, u64)>,
+    /// `OpenCalendar()` fetch requests, carrying the scope they were written under.
+    pub(crate) calendar_fetches: std::collections::VecDeque<(u64, u64)>,
     /// `PLAYER_LOGIN`'s one-shot, the reference's `[0xb4e260]`: armed by the UI load, spent by
     /// the next world-enter cascade ([`super::UiScript::fire_world_enter`]).
     pub(crate) player_login_armed: bool,
@@ -1596,6 +1625,10 @@ impl Model {
             multiclass_next_serial: 1,
             multiclass_requests: std::collections::VecDeque::new(),
             multiclass_replies: std::collections::VecDeque::new(),
+            runes: None,
+            calendar: None,
+            wrath_scope: None,
+            calendar_fetches: std::collections::VecDeque::new(),
             player_login_armed: false,
             honor: None,
             inspect_honor: None,

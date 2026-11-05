@@ -1875,6 +1875,12 @@ pub(crate) enum ClientCommand {
     },
     /// `CMSG_QUERY_TIME`, answered into [`ServerWallClock`].
     QueryTime,
+    /// `CMSG_CALENDAR_GET_CALENDAR`, the real `OpenCalendar()` fetch. The scope is carried so
+    /// the Wrath tap refuses a request written before a session or world transfer.
+    OpenCalendar {
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `CMSG_INSPECT`: the window paints from the streamed `PLAYER_VISIBLE_ITEM_*` fields; the
     /// send also sets our selection server-side (`MiscHandler.cpp:945`).
     Inspect {

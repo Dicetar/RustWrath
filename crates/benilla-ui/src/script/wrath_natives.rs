@@ -173,6 +173,32 @@ fn lfg_party_aura(lua: &Lua, token: Value, spell_id: u32, usage: &'static str) -
     )]))
 }
 
+/// The 3.3.5 rune recharge window the client's `CGRuneInfo::ResyncRunes` uses to turn the writer's
+/// 0..255 progress byte into a `GetTime()` start (`RuneInfo.cpp:411`: `10000.0f * progress`).
+/// `GetRuneCooldown`'s second return is the same ten-second recharge for a death knight.
+const RUNE_RECHARGE_SECONDS: f64 = 10.0;
+
+/// `WowTime::WowDecodeTime` (`WowTime.cpp:364-399`) plus `CalendarGetDate`'s one-based shape
+/// (`Calendar_Scripts.cpp:75-80`): weekday, month, day and year, or zero/1999 for a field the
+/// writer marked unknown. A missing calendar reply is handled by the caller and returns four
+/// zeros, the stock clock frame's load-time answer.
+fn calendar_date(zone_time: u32) -> (i64, i64, i64, i64) {
+    let field = |shift: u32, mask: u32, sentinel: u32| -> i64 {
+        let value = (zone_time >> shift) & mask;
+        if value == sentinel {
+            -1
+        } else {
+            i64::from(value)
+        }
+    };
+    (
+        field(11, 7, 7) + 1,
+        field(20, 0xf, 0xf) + 1,
+        field(14, 0x3f, 0x3f) + 1,
+        field(24, 0x1f, 0x1f) + 2000,
+    )
+}
+
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `IsStereoVideoAvailable` (`VideoOptionsPanels.lua:571`): the stereo-3D path needs glasses
     // driver hardware the real client probes for at boot; benilla has no stereo renderer, so the
@@ -700,7 +726,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // before that every field is zero, as the stock clock frame reads it at load.
     lua.globals().set(
         "CalendarGetDate",
-        lua.create_function(|_, ()| Ok((0i64, 0i64, 0i64, 0i64)))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model
+                .calendar
+                .map_or((0i64, 0i64, 0i64, 0i64), |calendar| {
+                    calendar_date(calendar.zone_time)
+                }))
+        })?,
     )?;
 
     // `BNGetMaxPlayersInConversation` (`BNConversations.lua:3`, the chunk's top level): the
@@ -766,7 +799,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // `CalendarGetNumPendingInvites` (`GameTime.lua:157`): pending calendar invites count.
     lua.globals().set(
         "CalendarGetNumPendingInvites",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(0i64))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model
+                .calendar
+                .map_or(0i64, |calendar| calendar.pending_invites as i64))
+        })?,
     )?;
 
     // `IsXPUserDisabled` (`MainMenuBar.lua:344`): whether XP gain is locked at NPC.
@@ -803,17 +841,83 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: mlua::MultiValue| Ok((false, "", 0i64, 0i64, "")))?,
     )?;
 
-    // `GetRuneType` (`RuneFrame.lua:71`): Death Knight rune types (1=Blood, 2=Unholy, 3=Frost, 4=Death).
+    // `GetRuneType` (`ScriptEvents_Scripts.cpp:3035-3052`): the decoded 0-based `RuneType` plus
+    // one, from `CGRuneInfo::m_runes`. The slot argument is 1-based FrameXML order, and the
+    // decoded layout is the server's (blood/unholy/frost/death), never a fixed class grouping.
     lua.globals().set(
         "GetRuneType",
-        lua.create_function(|_, slot: Option<usize>| {
-            let rune_type = match slot.unwrap_or(1) {
-                1 | 2 => 1,
-                3 | 4 => 2,
-                5 | 6 => 3,
-                _ => 1,
+        lua.create_function(|lua, slot: Value| -> mlua::Result<MultiValue> {
+            let slot = crate::script::binding_abi::number_arg(
+                lua,
+                slot,
+                "Usage: GetRuneType(slot)",
+            )?;
+            let index = slot - 1;
+            if !(0..=7).contains(&index) {
+                return Ok(MultiValue::new());
+            }
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(runes) = model.runes.as_deref() else {
+                return Ok(MultiValue::new());
             };
-            Ok(rune_type)
+            let Some(rune) = runes.get(index as usize) else {
+                return Ok(MultiValue::new());
+            };
+            Ok(MultiValue::from_vec(vec![Value::Number(
+                f64::from(rune.rune_type) + 1.0,
+            )]))
+        })?,
+    )?;
+    // `GetRuneCooldown` (`ScriptEvents_Scripts.cpp:3097-3122`): start, duration and ready, all on
+    // the `GetTime()` clock. `ResyncRunes` stores `now - 10000 ms * progress`, so the start is the
+    // decode clock minus the fraction of the ten-second recharge. No state yet is the reference's
+    // no-player answer: no values.
+    lua.globals().set(
+        "GetRuneCooldown",
+        lua.create_function(|lua, slot: Value| -> mlua::Result<MultiValue> {
+            let slot = crate::script::binding_abi::number_arg(
+                lua,
+                slot,
+                "Usage: GetRuneCooldown(slot)",
+            )?;
+            let index = slot - 1;
+            if !(0..=7).contains(&index) {
+                return Err(mlua::Error::runtime("Invalid slot"));
+            }
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(runes) = model.runes.as_deref() else {
+                return Ok(MultiValue::new());
+            };
+            let Some(rune) = runes.get(index as usize) else {
+                return Ok(MultiValue::new());
+            };
+            // The writer's byte is a 0..255 progress fraction. Divide by the exact range rather
+            // than a truncated decimal constant so 255 is ready at the decode instant instead of
+            // missing by a floating-point epsilon.
+            let progress = f64::from(rune.cooldown) / 255.0;
+            let start = rune.received_at - progress * RUNE_RECHARGE_SECONDS;
+            let ready = start + RUNE_RECHARGE_SECONDS <= model.now;
+            Ok(MultiValue::from_vec(vec![
+                Value::Number(start),
+                Value::Number(RUNE_RECHARGE_SECONDS),
+                Value::Boolean(ready),
+            ]))
+        })?,
+    )?;
+    // `OpenCalendar` (`Calendar_Scripts.cpp:1855-1861`): the stock frame's only fetch. The request
+    // is tagged with the world scope the feed pushed, so a calendar opened across a transfer is
+    // refused by the Wrath tap instead of fetching the replacement world under the old UI.
+    lua.globals().set(
+        "OpenCalendar",
+        lua.create_function(|lua, _: mlua::MultiValue| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if let Some(scope) = model.wrath_scope {
+                if model.calendar_fetches.len() >= 4 {
+                    model.calendar_fetches.pop_front();
+                }
+                model.calendar_fetches.push_back(scope);
+            }
+            Ok(())
         })?,
     )?;
 
@@ -1177,6 +1281,109 @@ impl super::UiScript {
         let mut model = self.model_mut();
         model.multiclass_requests.clear();
         model.multiclass_replies.clear();
+    }
+
+    /// Seat the world scope the `OpenCalendar()` fetch is tagged with. A changed scope drops any
+    /// request written under the old one; the feed itself clears the rune/calendar model on the
+    /// same transfer.
+    pub fn set_wrath_scope(&mut self, session_epoch: u64, world_generation: u64) {
+        let mut model = self.model_mut();
+        let scope = Some((session_epoch, world_generation));
+        if model.wrath_scope != scope {
+            model.wrath_scope = scope;
+            model.calendar_fetches.clear();
+        }
+    }
+
+    /// Replace the rune slots with a decoded `SMSG_RESYNC_RUNES` snapshot. Each tuple is
+    /// `(rune_type, cooldown byte, GetTime seconds at decode)`.
+    pub fn set_runes(&mut self, slots: &[(u8, u8, f64)]) {
+        self.model_mut().runes = Some(
+            slots
+                .iter()
+                .map(|&(rune_type, cooldown, received_at)| {
+                    super::model::RuneSlotState {
+                        rune_type,
+                        cooldown,
+                        received_at,
+                    }
+                })
+                .collect(),
+        );
+    }
+
+    /// `SMSG_CONVERT_RUNE`: the slot keeps its cooldown and gains the decoded type.
+    pub fn apply_rune_convert(&mut self, rune: u8, rune_type: u8, received_at: f64) {
+        let mut model = self.model_mut();
+        if let Some(slot) = model
+            .runes
+            .as_mut()
+            .and_then(|runes| runes.get_mut(usize::from(rune)))
+        {
+            slot.rune_type = rune_type;
+            if slot.received_at <= 0.0 {
+                slot.received_at = received_at;
+            }
+        }
+    }
+
+    /// `SMSG_ADD_RUNE_POWER`: every masked rune is fully recharged. The reference applies the
+    /// same full-progress treatment (`RuneInfo.cpp:419-432`), represented here by the writer's
+    /// 255 fraction at the decode clock.
+    pub fn apply_rune_power(&mut self, mask: u32, received_at: f64) {
+        let mut model = self.model_mut();
+        let Some(runes) = model.runes.as_mut() else {
+            return;
+        };
+        for (index, slot) in runes.iter_mut().enumerate() {
+            if index < 32 && mask & (1u32 << index) != 0 {
+                slot.cooldown = 255;
+                slot.received_at = received_at;
+            }
+        }
+    }
+
+    /// Drop the rune slots on a scope change. The next `SMSG_RESYNC_RUNES` establishes the
+    /// class's real layout again.
+    pub fn clear_runes(&mut self) {
+        self.model_mut().runes = None;
+    }
+
+    /// Replace the calendar with a decoded `SMSG_CALENDAR_SEND_CALENDAR` snapshot. `revision`
+    /// advances once per reply, so a second fetch replaces the first without appending rows.
+    pub fn set_calendar(
+        &mut self,
+        server_time: u32,
+        zone_time: u32,
+        pending_invites: usize,
+        revision: u64,
+    ) {
+        self.model_mut().calendar = Some(super::model::CalendarState {
+            server_time,
+            zone_time,
+            pending_invites,
+            revision,
+        });
+    }
+
+    /// Drop the calendar before the first reply and on a scope change.
+    pub fn clear_calendar(&mut self) {
+        self.model_mut().calendar = None;
+    }
+
+    /// Clear every scoped rune/calendar fact, including the scope `OpenCalendar()` tags with.
+    pub fn clear_wrath_scoped_ui(&mut self) {
+        let mut model = self.model_mut();
+        model.runes = None;
+        model.calendar = None;
+        model.wrath_scope = None;
+        model.calendar_fetches.clear();
+    }
+
+    /// Drain `OpenCalendar()` requests as `(session_epoch, world_generation)`; the app sends each
+    /// as `ClientCommand::OpenCalendar`, where the Wrath tap enforces the same scope.
+    pub fn take_calendar_fetches(&mut self) -> Vec<(u64, u64)> {
+        self.model_mut().calendar_fetches.drain(..).collect()
     }
 }
 
@@ -1688,9 +1895,9 @@ mod tests {
         assert_eq!(s.eval::<i64>("return GetAccountExpansionLevel()").unwrap(), 1);
         assert_eq!(s.eval::<String>("return UnitGroupRolesAssigned('player')").unwrap(), "NONE");
         assert_eq!(s.eval::<i64>("return GetNumTrackedAchievements(false)").unwrap(), 0);
-        assert_eq!(s.eval::<i64>("return GetRuneType(1)").unwrap(), 1);
-        assert_eq!(s.eval::<i64>("return GetRuneType(3)").unwrap(), 2);
-        assert_eq!(s.eval::<i64>("return GetRuneType(5)").unwrap(), 3);
+        // No rune state has arrived: the reference answers no values, not a guessed class layout.
+        assert_eq!(s.arity("GetRuneType(1)").unwrap(), 0);
+        assert_eq!(s.arity("GetRuneCooldown(1)").unwrap(), 0);
         assert_eq!(s.eval::<bool>("return IsXPUserDisabled()").unwrap(), false);
         assert_eq!(s.eval::<bool>("return IsLoggedIn()").unwrap(), true);
     }
@@ -2117,5 +2324,125 @@ mod tests {
             None
         );
         assert!(s.take_multiclass_requests().is_empty());
+    }
+
+    /// A six-rune death knight: resync establishes the server's own type order; a convert only
+    /// changes the type, rune power recharges the masked slots, and no state yet is no values.
+    #[test]
+    fn wrath_rune_natives_read_resync_convert_and_power() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        assert_eq!(s.arity("GetRuneType(1)").unwrap(), 0);
+        assert_eq!(s.arity("GetRuneCooldown(1)").unwrap(), 0);
+
+        s.set_now(100.0);
+        // Deliberately non-standard order: the decoded type is authoritative, not slot groups.
+        s.set_runes(&[
+            (0, 0, 100.0),
+            (0, 255, 100.0),
+            (1, 128, 100.0),
+            (2, 64, 100.0),
+            (3, 0, 100.0),
+            (2, 255, 100.0),
+        ]);
+        assert_eq!(s.eval::<f64>("return GetRuneType(1)").unwrap(), 1.0);
+        assert_eq!(s.eval::<f64>("return GetRuneType(2)").unwrap(), 1.0);
+        assert_eq!(s.eval::<f64>("return GetRuneType(3)").unwrap(), 2.0);
+        assert_eq!(s.eval::<f64>("return GetRuneType(5)").unwrap(), 4.0);
+        assert_eq!(s.eval::<f64>("return GetRuneType(6)").unwrap(), 3.0);
+
+        let (start, duration, ready): (f64, f64, bool) =
+            s.eval("return GetRuneCooldown(1)").unwrap();
+        assert!((start - 100.0).abs() < 1e-9, "fresh rune starts now: {start}");
+        assert_eq!(duration, 10.0);
+        assert!(!ready, "a just-used rune is not ready");
+        let (start, duration, ready): (f64, f64, bool) =
+            s.eval("return GetRuneCooldown(2)").unwrap();
+        assert!((start - 90.0).abs() < 1e-9, "full progress is ready: {start}");
+        assert_eq!(duration, 10.0);
+        assert!(ready);
+
+        // `SMSG_CONVERT_RUNE`: the slot keeps its cooldown and takes the new type.
+        s.set_now(110.0);
+        s.apply_rune_convert(0, 3, 110.0);
+        assert_eq!(s.eval::<f64>("return GetRuneType(1)").unwrap(), 4.0);
+        let (start, _, ready): (f64, f64, bool) = s.eval("return GetRuneCooldown(1)").unwrap();
+        assert!((start - 100.0).abs() < 1e-9, "convert must not reset the cooldown");
+        assert!(ready, "a fully elapsed ten-second recharge is ready");
+
+        // `SMSG_ADD_RUNE_POWER`: slot 3 (index 2) becomes ready at the decode clock.
+        s.apply_rune_power(1 << 2, 110.0);
+        let (start, duration, ready): (f64, f64, bool) =
+            s.eval("return GetRuneCooldown(3)").unwrap();
+        assert!((start - 100.0).abs() < 1e-9);
+        assert_eq!(duration, 10.0);
+        assert!(ready);
+
+        // The reference's invalid slot raises; an out-of-range type read is empty, not a guess.
+        assert!(s.run("GetRuneCooldown(9)").is_err());
+        assert_eq!(s.arity("GetRuneType(9)").unwrap(), 0);
+    }
+
+    /// Calendar date and pending-invite count come from the decoded reply and stay zero/empty
+    /// before it. A second reply replaces the first date/count rather than appending.
+    #[test]
+    fn wrath_calendar_natives_read_the_decoded_snapshot() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        assert_eq!(s.arity("CalendarGetDate()").unwrap(), 4);
+        assert_eq!(
+            s.eval::<(i64, i64, i64, i64)>("return CalendarGetDate()")
+                .unwrap(),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            s.eval::<i64>("return CalendarGetNumPendingInvites()").unwrap(),
+            0
+        );
+
+        // Friday 2026-11-06 14:30, `WowTime::WowEncodeTime` bit layout.
+        s.set_calendar(1_700_000_000, 0x1AA1_6B9E, 2, 1);
+        assert_eq!(
+            s.eval::<(i64, i64, i64, i64)>("return CalendarGetDate()")
+                .unwrap(),
+            (6, 11, 6, 2026)
+        );
+        assert_eq!(
+            s.eval::<i64>("return CalendarGetNumPendingInvites()").unwrap(),
+            2
+        );
+
+        // A later fetch replaces the snapshot: the count is not added to the previous one.
+        s.set_calendar(1_700_100_000, 0x1AA1_6B9E, 0, 2);
+        assert_eq!(
+            s.eval::<i64>("return CalendarGetNumPendingInvites()").unwrap(),
+            0
+        );
+
+        s.clear_calendar();
+        assert_eq!(
+            s.eval::<(i64, i64, i64, i64)>("return CalendarGetDate()")
+                .unwrap(),
+            (0, 0, 0, 0)
+        );
+    }
+
+    /// `OpenCalendar()` tags the fetch with the scope the feed pushed; without a live scope the
+    /// stock call is a no-op, and clearing the scope drops an already queued request.
+    #[test]
+    fn wrath_open_calendar_tags_its_fetch_with_the_world_scope() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.run("OpenCalendar()").unwrap();
+        assert!(s.take_calendar_fetches().is_empty());
+
+        s.set_wrath_scope(7, 9);
+        s.run("OpenCalendar()").unwrap();
+        assert_eq!(s.take_calendar_fetches(), vec![(7, 9)]);
+        assert!(s.take_calendar_fetches().is_empty(), "one fetch per call");
+
+        s.run("OpenCalendar()").unwrap();
+        s.clear_wrath_scoped_ui();
+        assert!(
+            s.take_calendar_fetches().is_empty(),
+            "a transfer drops the old scope's fetch"
+        );
     }
 }

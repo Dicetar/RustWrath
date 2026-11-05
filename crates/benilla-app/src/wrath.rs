@@ -86,6 +86,10 @@ use benilla_protocol::messages::{
 
 use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, SessionState};
 
+/// The UI feed that projects the scoped rune/calendar view into the Wrath VM's model.
+#[path = "ui_script/wrath_rune_calendar_feed.rs"]
+mod wrath_rune_calendar_feed;
+
 /// Bounded lifecycle queue depth: lifetimes of interest are short (one world transfer is one
 /// event); 16 gives many frames of headroom at one-event-per-transfer rates.
 pub const WRATH_EVENT_CAPACITY: usize = 16;
@@ -581,6 +585,40 @@ pub enum WrathFeedEvent {
         total: u32,
         level: u32,
         trigger_script_event: bool,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_RESYNC_RUNES`: the class's full rune layout and each 0..255 cooldown fraction.
+    RuneState {
+        runes: Vec<gameplay::wrath_systems::RuneSlot>,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_CONVERT_RUNE`: one slot's new type; its cooldown is unchanged.
+    RuneConvert {
+        rune: u8,
+        rune_type: u8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_ADD_RUNE_POWER`: the mask of runes that just became usable.
+    RunePower {
+        mask: u32,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_CALENDAR_SEND_CALENDAR`: the full scoped calendar snapshot.
+    Calendar {
+        calendar: Box<gameplay::wrath_systems::CalendarSendCalendar>,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_CALENDAR_COMMAND_RESULT`: the last calendar action's answer.
+    CalendarCommandResult {
+        command: u32,
+        reserved: u8,
+        error: u32,
+        param: Option<String>,
         session_epoch: u64,
         world_generation: u64,
     },
@@ -1820,6 +1858,40 @@ pub struct WrathPlayedTime {
     pub trigger_script_event: bool,
 }
 
+/// One decoded rune slot with the `GetTime()` anchor its cooldown byte arrived on. `cooldown` is
+/// the writer's 0..255 progress fraction; the presentation derives the start from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrathRuneSlot {
+    pub rune_type: u8,
+    pub cooldown: u8,
+    pub received_at: f64,
+}
+
+/// The decoded `SMSG_CALENDAR_SEND_CALENDAR` snapshot, kept as the wire delivered it. The UI
+/// reads the date from `zone_time` and pending invites from `invites`; the other rows stay here
+/// for the calendar windows that need them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrathCalendar {
+    pub server_time: u32,
+    pub zone_time: u32,
+    pub invites: Vec<gameplay::wrath_systems::CalendarInvite>,
+    pub events: Vec<gameplay::wrath_systems::CalendarEvent>,
+    pub raid_lockouts: Vec<gameplay::wrath_systems::CalendarRaidLockout>,
+    pub relative_time: u32,
+    pub raid_resets: Vec<gameplay::wrath_systems::CalendarRaidReset>,
+    pub holidays: Vec<gameplay::wrath_systems::CalendarHoliday>,
+}
+
+/// `SMSG_CALENDAR_COMMAND_RESULT`: the server's answer to a calendar action. Stored as the last
+/// decoded result so it is scoped and cleared with the rest of the calendar.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrathCalendarCommandResult {
+    pub command: u32,
+    pub reserved: u8,
+    pub error: u32,
+    pub param: Option<String>,
+}
+
 /// The drained replicated world, as the Input/Stream/Presentation stages read it. Maintained
 /// by the Net-stage drain; a world-generation change clears the entity map before anything
 /// downstream runs this frame.
@@ -1849,6 +1921,17 @@ pub struct WrathWorldView {
     pub server_clock: Option<WrathServerClock>,
     /// The last `/played` answer with its trigger semantics; session-scoped state.
     pub played_time: Option<WrathPlayedTime>,
+    /// The decoded Death Knight runes in wire order, empty until `SMSG_RESYNC_RUNES`. Each slot
+    /// carries the 0..255 cooldown fraction and the `GetTime()` anchor it arrived on.
+    pub runes: Vec<WrathRuneSlot>,
+    /// The last `SMSG_CALENDAR_SEND_CALENDAR` snapshot; `None` before the first reply.
+    pub calendar: Option<WrathCalendar>,
+    /// Whether a calendar reply has established the scoped snapshot.
+    pub calendar_fetched: bool,
+    /// Monotonic per-scope calendar snapshot revision; a second reply replaces at revision + 1.
+    pub calendar_revision: u64,
+    /// The last decoded `SMSG_CALENDAR_COMMAND_RESULT`, cleared with the calendar scope.
+    pub last_calendar_command_result: Option<WrathCalendarCommandResult>,
     /// Presentation mirror of the authority's active casts, keyed by caster, retaining 12340
     /// identity/timing beyond the vanilla cast-bar edges. Written only from resolved snapshots;
     /// never re-resolves wire facts. UI clocks are stamped here, not in the authority.
@@ -1882,6 +1965,11 @@ impl Default for WrathWorldView {
             vendor: None,
             server_clock: None,
             played_time: None,
+            runes: Vec::new(),
+            calendar: None,
+            calendar_fetched: false,
+            calendar_revision: 0,
+            last_calendar_command_result: None,
             casts: BTreeMap::new(),
             channels: BTreeMap::new(),
             last_cast_end: None,
@@ -1956,6 +2044,70 @@ impl WrathWorldView {
             ended.scope.session_epoch == self.session_epoch
                 && ended.scope.world_generation == self.world_generation
         })
+    }
+
+    /// Adopt one `SMSG_RESYNC_RUNES` snapshot. The writer's order is the class's real layout, so
+    /// no slot is synthesized: the vector is exactly the decoded rows.
+    fn apply_rune_state(
+        &mut self,
+        runes: &[gameplay::wrath_systems::RuneSlot],
+        received_at: f64,
+    ) {
+        self.runes = runes
+            .iter()
+            .map(|rune| WrathRuneSlot {
+                rune_type: rune.rune_type,
+                cooldown: rune.cooldown,
+                received_at,
+            })
+            .collect();
+    }
+
+    /// `SMSG_CONVERT_RUNE` changes only the slot's type; its cooldown and anchor stay.
+    fn apply_rune_convert(&mut self, rune: u8, rune_type: u8, received_at: f64) {
+        if let Some(slot) = self.runes.get_mut(usize::from(rune)) {
+            slot.rune_type = rune_type;
+            if slot.received_at <= 0.0 {
+                slot.received_at = received_at;
+            }
+        }
+    }
+
+    /// `SMSG_ADD_RUNE_POWER`: every masked rune is fully recharged, matching the reference's
+    /// 255/full-progress treatment (`RuneInfo.cpp:419-432`).
+    fn apply_rune_power(&mut self, mask: u32, received_at: f64) {
+        for (index, slot) in self.runes.iter_mut().enumerate() {
+            if index < 32 && mask & (1u32 << index) != 0 {
+                slot.cooldown = 255;
+                slot.received_at = received_at;
+            }
+        }
+    }
+
+    /// Adopt one `SMSG_CALENDAR_SEND_CALENDAR` reply. A second reply replaces the snapshot and
+    /// advances the revision; it never appends rows to the previous one.
+    fn apply_calendar(&mut self, calendar: &gameplay::wrath_systems::CalendarSendCalendar) {
+        self.calendar_revision = self.calendar_revision.saturating_add(1);
+        self.calendar = Some(WrathCalendar {
+            server_time: calendar.server_time,
+            zone_time: calendar.zone_time,
+            invites: calendar.invites.clone(),
+            events: calendar.events.clone(),
+            raid_lockouts: calendar.raid_lockouts.clone(),
+            relative_time: calendar.relative_time,
+            raid_resets: calendar.raid_resets.clone(),
+            holidays: calendar.holidays.clone(),
+        });
+        self.calendar_fetched = true;
+    }
+
+    /// Clear every scoped rune/calendar fact on a session end or world transfer.
+    fn clear_rune_calendar(&mut self) {
+        self.runes.clear();
+        self.calendar = None;
+        self.calendar_fetched = false;
+        self.calendar_revision = 0;
+        self.last_calendar_command_result = None;
     }
 }
 
@@ -2139,6 +2291,12 @@ impl Plugin for WrathNetPlugin {
             );
             // After `WorldStage::Input`, which owns the controller that writes `Player`.
             app.add_systems(Update, wrath_stream_movement.in_set(WorldStage::Stream));
+            // The Wrath VM's rune/calendar model reads the scoped view the same frame the Net
+            // stage adopted it, and drains `OpenCalendar()` fetches into the shared command tap.
+            app.add_systems(
+                Update,
+                wrath_rune_calendar_feed::feed.in_set(crate::ui_script::UiFeed),
+            );
         }
     }
 }
@@ -4254,9 +4412,11 @@ fn translate_gameplay(
             }
         }],
         // The 12340 systems below decode exactly and are ready for their app state owners, but
-        // the current 1.12 UI has no LFG, battlefield, calendar or rune view to receive them.
-        // Keep the decoded records in the worker's trace path rather than projecting them into
-        // an unrelated SessionEvent (a notification or chat line would misreport the wire).
+        // the current 1.12 UI has no LFG or battlefield view to receive them. Keep the decoded
+        // records in the worker's trace path rather than projecting them into an unrelated
+        // SessionEvent (a notification or chat line would misreport the wire). Calendar and rune
+        // records are consumed by `WrathWorldView` through `WrathFeedEvent`, so they only return
+        // empty here.
         WrathGameplayEvent::LfgJoinResult(_)
         | WrathGameplayEvent::LfgQueueStatus(_)
         | WrathGameplayEvent::LfgUpdatePlayer(_)
@@ -4268,10 +4428,7 @@ fn translate_gameplay(
         | WrathGameplayEvent::CalendarCommandResult(_)
         | WrathGameplayEvent::RuneConvert(_)
         | WrathGameplayEvent::RuneState(_)
-        | WrathGameplayEvent::RunePower(_) => {
-            debug!("wrath: decoded 12340 LFG/battlefield/calendar/rune reply; no app view owner yet");
-            Vec::new()
-        }
+        | WrathGameplayEvent::RunePower(_) => Vec::new(),
     }
 }
 
@@ -5152,6 +5309,25 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_QUERY_TIME,
                 gameplay::query_time(),
             )),
+            ClientCommand::OpenCalendar {
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    debug!(
+                        "wrath: refusing a calendar fetch from stale scope ({session_epoch}, {world_generation})"
+                    );
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_CALENDAR_GET_CALENDAR,
+                        gameplay::wrath_systems::encode_calendar_get_calendar(),
+                    ))
+                }
+            }
             ClientCommand::RandomRoll { min, max } => Some((
                 u32::from(benilla_protocol_wrath::opcode::MSG_RANDOM_ROLL),
                 gameplay::random_roll(min, max),
@@ -6753,6 +6929,7 @@ fn wrath_net_drain(
                 view.entered_world = false;
                 view.vendor = None;
                 view.last_inventory_failure = None;
+                view.clear_rune_calendar();
                 view.last_changes.world_transferred = true;
             }
             WrathFeedEvent::GossipMenu {
@@ -6820,6 +6997,85 @@ fn wrath_net_drain(
                         total,
                         level,
                         trigger_script_event,
+                    });
+                }
+            }
+            WrathFeedEvent::RuneState {
+                runes,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_rune_state(&runes, ui_now_seconds.unwrap_or(0.0));
+                }
+            }
+            WrathFeedEvent::RuneConvert {
+                rune,
+                rune_type,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_rune_convert(rune, rune_type, ui_now_seconds.unwrap_or(0.0));
+                }
+            }
+            WrathFeedEvent::RunePower {
+                mask,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_rune_power(mask, ui_now_seconds.unwrap_or(0.0));
+                }
+            }
+            WrathFeedEvent::Calendar {
+                calendar,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.apply_calendar(&calendar);
+                }
+            }
+            WrathFeedEvent::CalendarCommandResult {
+                command,
+                reserved,
+                error,
+                param,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.last_calendar_command_result = Some(WrathCalendarCommandResult {
+                        command,
+                        reserved,
+                        error,
+                        param,
                     });
                 }
             }
@@ -6912,6 +7168,7 @@ fn wrath_net_drain(
                 view.vendor = None;
                 view.server_clock = None;
                 view.played_time = None;
+                view.clear_rune_calendar();
                 view.last_inventory_failure = None;
                 view.multiclass_replies.clear();
                 view.session_epoch = 0;
@@ -7114,6 +7371,7 @@ fn wrath_net_drain(
         view.vendor = None;
         view.server_clock = None;
         view.played_time = None;
+        view.clear_rune_calendar();
         view.last_inventory_failure = None;
         view.multiclass_replies.clear();
         view.session_epoch = 0;
@@ -7158,6 +7416,7 @@ fn wrath_net_drain(
         view.vendor = None;
         view.server_clock = None;
         view.played_time = None;
+        view.clear_rune_calendar();
         view.last_inventory_failure = None;
         view.multiclass_replies.clear();
         view.last_changes.world_transferred = true;
@@ -7186,6 +7445,7 @@ fn wrath_net_drain(
             view.entities.clear();
             view.gossip_menu = None;
             view.vendor = None;
+            view.clear_rune_calendar();
             view.last_changes.world_transferred = true;
         }
         if digest.state_revision < view.state_revision {
@@ -10005,6 +10265,90 @@ pub fn run_session_with_cancel(
                                 }
                             }
                         }
+                        Ok(WrathGameplayEvent::RuneState(state)) => {
+                            feed.push_event(WrathFeedEvent::RuneState {
+                                runes: state.runes.clone(),
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    WrathGameplayEvent::RuneState(state),
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::RuneConvert(conversion)) => {
+                            feed.push_event(WrathFeedEvent::RuneConvert {
+                                rune: conversion.rune,
+                                rune_type: conversion.rune_type,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    WrathGameplayEvent::RuneConvert(conversion),
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::RunePower(power)) => {
+                            feed.push_event(WrathFeedEvent::RunePower {
+                                mask: power.mask,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    WrathGameplayEvent::RunePower(power),
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::CalendarSendCalendar(calendar)) => {
+                            feed.push_event(WrathFeedEvent::Calendar {
+                                calendar: calendar.clone(),
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    WrathGameplayEvent::CalendarSendCalendar(calendar),
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
+                        Ok(WrathGameplayEvent::CalendarCommandResult(result)) => {
+                            feed.push_event(WrathFeedEvent::CalendarCommandResult {
+                                command: result.command,
+                                reserved: result.reserved,
+                                error: result.error,
+                                param: result.param.clone(),
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                            if session.player_guid().is_some() {
+                                for event in translate_gameplay(
+                                    WrathGameplayEvent::CalendarCommandResult(result),
+                                    session.player_guid().unwrap_or(0),
+                                    received_at,
+                                ) {
+                                    push_session_event(&events_out, &session, event);
+                                }
+                            }
+                        }
                         Ok(event @ WrathGameplayEvent::InventoryFailure {
                             reason,
                             item,
@@ -10715,6 +11059,123 @@ mod tests {
         );
         assert!(outbox.lock().unwrap().is_empty(), "pending actions cleared");
     }
+
+    /// Rune replies are scoped state, not entities: resync establishes the decoded layout,
+    /// convert changes only the type, rune power recharges the masked slot, and a transfer clears
+    /// everything.
+    #[test]
+    fn rune_feed_state_tracks_resync_convert_and_power() {
+        use benilla_protocol_wrath::gameplay::wrath_systems::RuneSlot;
+
+        let mut view = WrathWorldView::default();
+        assert!(view.runes.is_empty(), "no resync yet: no invented layout");
+
+        view.apply_rune_state(
+            &[
+                RuneSlot { rune_type: 0, cooldown: 0 },
+                RuneSlot { rune_type: 0, cooldown: 128 },
+                RuneSlot { rune_type: 1, cooldown: 255 },
+                RuneSlot { rune_type: 1, cooldown: 0 },
+                RuneSlot { rune_type: 2, cooldown: 64 },
+                RuneSlot { rune_type: 2, cooldown: 255 },
+            ],
+            100.0,
+        );
+        assert_eq!(view.runes.len(), 6);
+        assert_eq!(view.runes[2].rune_type, 1);
+        assert_eq!(view.runes[2].cooldown, 255);
+        assert_eq!(view.runes[4].received_at, 100.0);
+
+        // ConvertRune keeps the cooldown and changes only the type.
+        view.apply_rune_convert(0, 3, 110.0);
+        assert_eq!(view.runes[0].rune_type, 3);
+        assert_eq!(view.runes[0].cooldown, 0);
+        assert_eq!(view.runes[0].received_at, 100.0);
+
+        // AddRunePower marks its masked slot fully recharged at the decode clock.
+        view.apply_rune_power(1 << 3, 110.0);
+        assert_eq!(view.runes[3].cooldown, 255);
+        assert_eq!(view.runes[3].received_at, 110.0);
+
+        view.clear_rune_calendar();
+        assert!(view.runes.is_empty());
+    }
+
+    /// Calendar replies replace the scoped snapshot; a second one never appends to the first.
+    /// The date/count feed clears on a transfer with the rest of the scoped state.
+    #[test]
+    fn calendar_feed_state_replaces_the_snapshot_without_duplicates() {
+        use benilla_protocol_wrath::gameplay::wrath_systems::{
+            CalendarEvent, CalendarInvite, CalendarRaidLockout, CalendarRaidReset,
+        };
+
+        let invite = CalendarInvite {
+            event_id: 5,
+            invite_id: 9,
+            status: 1,
+            rank: 1,
+            invite_type: 1,
+            inviter: 0x0100_0000_0000_0002,
+        };
+        let event = |id: u64, title: &str| CalendarEvent {
+            event_id: id,
+            title: title.to_owned(),
+            event_type: 0,
+            time: 0x1AA1_6B9E,
+            flags: 0,
+            dungeon_id: -1,
+            creator: 0x0200_0000_0000_0001,
+        };
+        let lockout = CalendarRaidLockout {
+            map_id: 571,
+            difficulty: 3,
+            time_left: 3_600,
+            instance_id: 0xFF,
+        };
+        let reset = CalendarRaidReset {
+            map_id: 533,
+            period: 604_800,
+            offset: 0,
+        };
+
+        let mut view = WrathWorldView::default();
+        assert!(!view.calendar_fetched);
+        view.apply_calendar(&gameplay::wrath_systems::CalendarSendCalendar {
+            server_time: 1_700_000_000,
+            zone_time: 0x1AA1_6B9E,
+            invites: vec![invite],
+            events: vec![event(5, "Onyxia")],
+            raid_lockouts: vec![lockout],
+            relative_time: 1_134_028_800,
+            raid_resets: vec![reset],
+            holidays: Vec::new(),
+        });
+        assert!(view.calendar_fetched);
+        assert_eq!(view.calendar_revision, 1);
+        assert_eq!(view.calendar.as_ref().unwrap().invites.len(), 1);
+        assert_eq!(view.calendar.as_ref().unwrap().events.len(), 1);
+
+        view.apply_calendar(&gameplay::wrath_systems::CalendarSendCalendar {
+            server_time: 1_700_100_000,
+            zone_time: 0x1AA1_6B9E,
+            invites: Vec::new(),
+            events: vec![event(6, "Naxxramas"), event(7, "Ulduar")],
+            raid_lockouts: Vec::new(),
+            relative_time: 1_134_028_800,
+            raid_resets: Vec::new(),
+            holidays: Vec::new(),
+        });
+        assert_eq!(view.calendar_revision, 2, "each reply is one revision");
+        let calendar = view.calendar.as_ref().unwrap();
+        assert_eq!(calendar.server_time, 1_700_100_000);
+        assert!(calendar.invites.is_empty(), "the first invite row is gone");
+        assert_eq!(calendar.events.len(), 2, "rows were replaced, not appended");
+
+        view.clear_rune_calendar();
+        assert!(!view.calendar_fetched);
+        assert!(view.calendar.is_none());
+        assert_eq!(view.calendar_revision, 0);
+    }
 }
 
 
@@ -10836,6 +11297,42 @@ mod command_tap_tests {
         assert_eq!(sent[4].opcode, benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_ACCEPT_QUEST);
         assert_eq!(sent[4].payload.len(), 16);
         assert_eq!(sent[5].opcode, benilla_protocol_wrath::opcode::CMSG_LOOT);
+    }
+
+    /// `OpenCalendar()` is the real empty `CMSG_CALENDAR_GET_CALENDAR`; a request written under a
+    /// retired world scope never reaches the wire.
+    #[test]
+    fn open_calendar_sends_the_empty_cmsg_and_refuses_a_stale_scope() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let outbox: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
+        let mut world = World::new();
+        world.insert_resource(NetCommandTap(Some(rx)));
+        world.insert_resource(WrathInput(Arc::clone(&outbox)));
+        let mut view = view(0x22);
+        view.entered_world = true;
+        view.session_epoch = 3;
+        view.world_generation = 4;
+        world.insert_resource(view);
+
+        tx.send(ClientCommand::OpenCalendar {
+            session_epoch: 3,
+            world_generation: 3,
+        })
+        .unwrap();
+        tx.send(ClientCommand::OpenCalendar {
+            session_epoch: 3,
+            world_generation: 4,
+        })
+        .unwrap();
+
+        let _ = world.run_system_once(wrath_tap_commands);
+        let sent: Vec<_> = outbox.lock().unwrap().drain(..).collect();
+        assert_eq!(sent.len(), 1, "the stale fetch is refused");
+        assert_eq!(
+            sent[0].opcode,
+            benilla_protocol_wrath::opcode::CMSG_CALENDAR_GET_CALENDAR
+        );
+        assert!(sent[0].payload.is_empty(), "12340's fetch body is empty");
     }
 
     fn enum_record(guid: u64, level: u8) -> gameplay::CharEnumRecord {
