@@ -221,3 +221,44 @@ Evidence:
 `crates/benilla-assets` test fixtures were missing the newly required `LooseFiles::extra_addons`
 field on `main`; all 12 initializers now supply `Vec::new()`. This is a source-compile repair,
 not profile/reload behavior.
+
+## Wave 6 J4 — rune and calendar UI owners
+
+- `wrath.rs`: `WrathWorldView` now owns the scoped rune slots, the last
+  `SMSG_CALENDAR_SEND_CALENDAR` snapshot and its revision, and the last
+  `SMSG_CALENDAR_COMMAND_RESULT`. `RuneState`/`RuneConvert`/`RunePower`/`Calendar`/
+  `CalendarCommandResult` feed events update that state; every transfer, session end and
+  teardown clears it through `clear_rune_calendar`.
+- `ui_script/wrath_rune_calendar_feed.rs`: one UiFeed system copies the scoped view into the
+  Wrath VM model and drains `OpenCalendar()` fetches. It refuses a fetch whose
+  `(session_epoch, world_generation)` no longer matches the live view before the request
+  reaches `NetCommands`.
+- `wrath_natives.rs`: real `GetRuneType(slot)` (decoded type + 1, 1-based slot),
+  `GetRuneCooldown(slot)` (start/duration/ready on the `GetTime` clock from the writer's
+  0..255 progress byte), `CalendarGetDate()` (WowTime decode of the decoded zone time, zeros
+  before the first reply), `CalendarGetNumPendingInvites()`, and the scoped `OpenCalendar()`
+  fetch. `CalendarGetNumDayEvents`/`CalendarGetDayEvent` were left unbacked rather than
+  synthesized.
+- `net.rs`/`net/io.rs`: `ClientCommand::OpenCalendar` carries its world scope and encodes the
+  real empty `CMSG_CALENDAR_GET_CALENDAR`; the stock 1.12 writer keeps an explicit no-op arm so
+  its match stays exhaustive. The Wrath tap is the only path that writes the opcode.
+- Vehicle natives stay unbacked: no self/inbound vehicle state exists yet, so `UnitInVehicle`
+  and friends were not converted into constants or fake seats.
+
+Evidence:
+- `cargo test -p benilla-ui wrath_rune_natives` — 1 passed.
+- `cargo test -p benilla-ui wrath_calendar_natives` — 1 passed.
+- `cargo test -p benilla-ui wrath_open_calendar` — 1 passed.
+- `cargo test -p benilla-app --lib rune_feed_state` — 1 passed.
+- `cargo test -p benilla-app --lib calendar_feed_state` — 1 passed.
+- `cargo test -p benilla-app --lib open_calendar_sends_the_empty_cmsg_and_refuses_a_stale_scope`
+  — 1 passed.
+- `cargo check --workspace --all-targets` — exit 0, log
+  `.scratch/project-b/check-j4-2026-11-05.log`.
+- Wave 6 J4 commit: `2c74c48f`, pushed to `origin/main`.
+
+Remaining limits: `GetRuneCooldown` uses the base ten-second recharge because no per-rune
+`m_playerRuneRegen1` talent owner is decoded; `CalendarGetDate` reads the calendar reply's
+packed zone time rather than a live `g_clientGameTime` tick; calendar day-event enumeration
+has no model yet; no client, addon or live server session was run. The J4 AutoSwarm worker was
+cancelled on the owner's instruction and the remaining edits were completed directly.
