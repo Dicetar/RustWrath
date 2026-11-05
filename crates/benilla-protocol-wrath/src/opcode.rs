@@ -515,3 +515,35 @@ pub const SMSG_GUILD_DECLINE: u16 = 0x086;
 pub const MSG_RAID_TARGET_UPDATE_SERVER: u16 = 0x321;
 pub const MSG_RAID_READY_CHECK_SERVER: u16 = 0x322;
 pub const MSG_RAID_READY_CHECK_CONFIRM_SERVER: u16 = 0x323;
+
+/// 12340 Dungeon Finder, battleground/arena, calendar, rune and vehicle wire (`Opcodes.h`;
+/// layouts in `gameplay/wrath_systems.rs`). `MSG_PVP_LOG_DATA` is bidirectional, so its reply
+/// arm gets a distinct `u16` name.
+pub const CMSG_LFG_JOIN: u32 = 0x35C;
+pub const CMSG_LFG_LEAVE: u32 = 0x35D;
+pub const SMSG_LFG_PROPOSAL_UPDATE: u16 = 0x361;
+pub const CMSG_LFG_PROPOSAL_RESULT: u32 = 0x362;
+pub const SMSG_LFG_JOIN_RESULT: u16 = 0x364;
+pub const SMSG_LFG_QUEUE_STATUS: u16 = 0x365;
+pub const CMSG_SET_LFG_COMMENT: u32 = 0x366;
+pub const SMSG_LFG_UPDATE_PLAYER: u16 = 0x367;
+pub const SMSG_LFG_UPDATE_PARTY: u16 = 0x368;
+pub const CMSG_LFG_SET_ROLES: u32 = 0x36A;
+pub const SMSG_BATTLEFIELD_STATUS: u16 = 0x2D4;
+pub const CMSG_BATTLEFIELD_PORT: u32 = 0x2D5;
+pub const MSG_PVP_LOG_DATA_SERVER: u16 = 0x2E0;
+pub const CMSG_BATTLEMASTER_JOIN: u32 = 0x2EE;
+pub const CMSG_BATTLEMASTER_JOIN_ARENA: u32 = 0x358;
+pub const CMSG_CALENDAR_GET_CALENDAR: u32 = 0x429;
+pub const CMSG_CALENDAR_EVENT_RSVP: u32 = 0x432;
+pub const SMSG_CALENDAR_SEND_CALENDAR: u16 = 0x436;
+pub const SMSG_CALENDAR_COMMAND_RESULT: u16 = 0x43D;
+pub const CMSG_DISMISS_CONTROLLED_VEHICLE: u32 = 0x46D;
+pub const CMSG_REQUEST_VEHICLE_EXIT: u32 = 0x476;
+pub const CMSG_REQUEST_VEHICLE_PREV_SEAT: u32 = 0x477;
+pub const CMSG_REQUEST_VEHICLE_NEXT_SEAT: u32 = 0x478;
+pub const CMSG_REQUEST_VEHICLE_SWITCH_SEAT: u32 = 0x479;
+pub const SMSG_CONVERT_RUNE: u16 = 0x486;
+pub const SMSG_RESYNC_RUNES: u16 = 0x487;
+pub const SMSG_ADD_RUNE_POWER: u16 = 0x488;
+pub const CMSG_CALENDAR_EVENT_SIGNUP: u32 = 0x4BA;

@@ -3992,6 +3992,25 @@ fn translate_gameplay(
                 SessionEvent::ReadyCheckAnswer { guid, ready }
             }
         }],
+        // The 12340 systems below decode exactly and are ready for their app state owners, but
+        // the current 1.12 UI has no LFG, battlefield, calendar or rune view to receive them.
+        // Keep the decoded records in the worker's trace path rather than projecting them into
+        // an unrelated SessionEvent (a notification or chat line would misreport the wire).
+        WrathGameplayEvent::LfgJoinResult(_)
+        | WrathGameplayEvent::LfgQueueStatus(_)
+        | WrathGameplayEvent::LfgUpdatePlayer(_)
+        | WrathGameplayEvent::LfgUpdateParty(_)
+        | WrathGameplayEvent::LfgProposalUpdate(_)
+        | WrathGameplayEvent::BattlefieldStatus(_)
+        | WrathGameplayEvent::PvpLogData(_)
+        | WrathGameplayEvent::CalendarSendCalendar(_)
+        | WrathGameplayEvent::CalendarCommandResult(_)
+        | WrathGameplayEvent::RuneConvert(_)
+        | WrathGameplayEvent::RuneState(_)
+        | WrathGameplayEvent::RunePower(_) => {
+            debug!("wrath: decoded 12340 LFG/battlefield/calendar/rune reply; no app view owner yet");
+            Vec::new()
+        }
     }
 }
 

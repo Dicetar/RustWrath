@@ -17,6 +17,7 @@ pub mod economy;
 mod movement;
 pub mod pet_talent;
 pub mod social;
+pub mod wrath_systems;
 pub use movement::{MonsterFacing, MonsterMove};
 
 /// The largest undecoded-byte count reported with a typed decode failure.
@@ -57,6 +58,7 @@ pub enum DecoderFamily {
     PetTalent,
     Economy,
     Social,
+    WrathSystems,
     Other,
 }
 
@@ -261,6 +263,18 @@ pub fn decoder_family(opcode: u16) -> DecoderFamily {
         | MSG_RAID_TARGET_UPDATE_SERVER
         | MSG_RAID_READY_CHECK_SERVER
         | MSG_RAID_READY_CHECK_CONFIRM_SERVER => DecoderFamily::Social,
+        SMSG_LFG_JOIN_RESULT
+        | SMSG_LFG_QUEUE_STATUS
+        | SMSG_LFG_UPDATE_PLAYER
+        | SMSG_LFG_UPDATE_PARTY
+        | SMSG_LFG_PROPOSAL_UPDATE
+        | SMSG_BATTLEFIELD_STATUS
+        | MSG_PVP_LOG_DATA_SERVER
+        | SMSG_CALENDAR_SEND_CALENDAR
+        | SMSG_CALENDAR_COMMAND_RESULT
+        | SMSG_CONVERT_RUNE
+        | SMSG_RESYNC_RUNES
+        | SMSG_ADD_RUNE_POWER => DecoderFamily::WrathSystems,
         _ => DecoderFamily::Other,
     }
 }
@@ -2031,6 +2045,30 @@ pub enum ServerEvent {
     RaidTargetUpdate(social::RaidTargetUpdate),
     /// `MSG_RAID_READY_CHECK` / `_CONFIRM`: request or answer.
     RaidReadyCheck(social::RaidReadyCheck),
+    /// `SMSG_LFG_JOIN_RESULT`: the 12340 result/state and an optional party-lock tail.
+    LfgJoinResult(Box<wrath_systems::LfgJoinResult>),
+    /// `SMSG_LFG_QUEUE_STATUS`: the role waits and queue state.
+    LfgQueueStatus(wrath_systems::LfgQueueStatus),
+    /// `SMSG_LFG_UPDATE_PLAYER`: the player's LFG update and gated tail.
+    LfgUpdatePlayer(wrath_systems::LfgUpdatePlayer),
+    /// `SMSG_LFG_UPDATE_PARTY`: the party LFG update and gated tail.
+    LfgUpdateParty(wrath_systems::LfgUpdateParty),
+    /// `SMSG_LFG_PROPOSAL_UPDATE`: the proposal and its per-player votes.
+    LfgProposalUpdate(Box<wrath_systems::LfgProposalUpdate>),
+    /// `SMSG_BATTLEFIELD_STATUS`: a queue slot and the optional queue/status arm.
+    BattlefieldStatus(wrath_systems::BattlefieldStatus),
+    /// `MSG_PVP_LOG_DATA`: the arena tail when present, winner and score rows.
+    PvpLogData(Box<wrath_systems::PvpLogData>),
+    /// `SMSG_CALENDAR_SEND_CALENDAR`: invites, events, lockouts, resets and holidays.
+    CalendarSendCalendar(Box<wrath_systems::CalendarSendCalendar>),
+    /// `SMSG_CALENDAR_COMMAND_RESULT`: command/error and the optional named parameter.
+    CalendarCommandResult(wrath_systems::CalendarCommandResult),
+    /// `SMSG_CONVERT_RUNE`: one rune's new type.
+    RuneConvert(wrath_systems::RuneConvert),
+    /// `SMSG_RESYNC_RUNES`: every rune's type and 0..255 cooldown fraction.
+    RuneState(wrath_systems::RuneState),
+    /// `SMSG_ADD_RUNE_POWER`: the mask of runes that became usable.
+    RunePower(wrath_systems::RunePower),
 }
 
 /// Which of 12340's three auction pages a list reply belongs to.
@@ -2306,6 +2344,34 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         MSG_RAID_READY_CHECK_SERVER | MSG_RAID_READY_CHECK_CONFIRM_SERVER => {
             social::read_raid_ready_check(body).map(ServerEvent::RaidReadyCheck)
         }
+        SMSG_LFG_JOIN_RESULT => wrath_systems::read_lfg_join_result(body)
+            .map(|result| ServerEvent::LfgJoinResult(Box::new(result))),
+        SMSG_LFG_QUEUE_STATUS => {
+            wrath_systems::read_lfg_queue_status(body).map(ServerEvent::LfgQueueStatus)
+        }
+        SMSG_LFG_UPDATE_PLAYER => {
+            wrath_systems::read_lfg_update_player(body).map(ServerEvent::LfgUpdatePlayer)
+        }
+        SMSG_LFG_UPDATE_PARTY => {
+            wrath_systems::read_lfg_update_party(body).map(ServerEvent::LfgUpdateParty)
+        }
+        SMSG_LFG_PROPOSAL_UPDATE => wrath_systems::read_lfg_proposal_update(body)
+            .map(|proposal| ServerEvent::LfgProposalUpdate(Box::new(proposal))),
+        SMSG_BATTLEFIELD_STATUS => {
+            wrath_systems::read_battlefield_status(body).map(ServerEvent::BattlefieldStatus)
+        }
+        MSG_PVP_LOG_DATA_SERVER => {
+            wrath_systems::read_pvp_log_data(body).map(|data| ServerEvent::PvpLogData(Box::new(data)))
+        }
+        SMSG_CALENDAR_SEND_CALENDAR => wrath_systems::read_calendar_send_calendar(body)
+            .map(|calendar| ServerEvent::CalendarSendCalendar(Box::new(calendar))),
+        SMSG_CALENDAR_COMMAND_RESULT => wrath_systems::read_calendar_command_result(body)
+            .map(ServerEvent::CalendarCommandResult),
+        SMSG_CONVERT_RUNE => {
+            wrath_systems::read_convert_rune(body).map(ServerEvent::RuneConvert)
+        }
+        SMSG_RESYNC_RUNES => wrath_systems::read_resync_runes(body).map(ServerEvent::RuneState),
+        SMSG_ADD_RUNE_POWER => wrath_systems::read_add_rune_power(body).map(ServerEvent::RunePower),
         _ => return None,
     })
 }

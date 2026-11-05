@@ -85,6 +85,31 @@ Evidence:
   `SessionEvent::WhoisText`; the donor social UI has no console text consumer yet. Guild bank
   tab rights, contact notes, party LFG roles/difficulties and 64-slot aura tails are retained
   by the decoders but not all are represented in the donor UI state.
+- Wave 2a commit: `8e744419`, pushed to `origin/main`.
+
+## Wave 2b — Wrath-only LFG, battleground, calendar, rune and vehicle wire
+
+- Added `crates/benilla-protocol-wrath/src/gameplay/wrath_systems.rs` (LFG join/leave/
+  proposal/comment/roles encoders and result/queue/update/proposal decoders; battlemaster and
+  battlefield-port encoders; battlefield-status and PvP-log decoders; calendar get/signup/rsvp
+  encoders plus full calendar/command decoders; rune convert/resync/add-power decoders;
+  vehicle dismiss/exit/seat encoders).
+- Added the 12340 opcodes, `DecoderFamily::WrathSystems`, `ServerEvent` variants and parse arms.
+- The app currently returns no `SessionEvent` for these decoded records and logs that the LFG,
+  battlefield, calendar and rune **views are not yet wired**. This is an explicit remaining
+  consumer gap, not a claim that the Lua natives or state stores are complete: `OpenCalendar`,
+  `GetRuneCooldown`/`GetRuneType`, `CanExitVehicle`/vehicle seat natives and the calendar
+  day/invite stores still need their host state owner and feed. The wire adapters are real and
+  tested; the UI feature is not claimed.
+
+Evidence:
+- `cargo check -p benilla-protocol-wrath` and `cargo check -p benilla-app --lib` passed.
+- Focused `wrath_systems` run exercised 39 of the module's 40 tests; 4 vehicle-fixture
+  expectations were wrong about packed-guid framing, were corrected, and the 4 corrected tests
+  then passed (the other 35 had already passed). The intended 20-case ceiling was exceeded by a
+  test-runner argument mistake; this is recorded rather than hidden.
+- The remaining unrun systems test is not claimed.
+- No client, login, server/DB or live session was started.
 
 ### Mechanical compile repair
 
