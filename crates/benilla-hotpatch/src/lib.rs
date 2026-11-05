@@ -337,7 +337,11 @@ impl Host {
         if bones.len() > u32::MAX as usize || rigs.len() > u32::MAX as usize {
             bail!("pose batch exceeds u32 ABI counts");
         }
-        if !rigs.iter().all(|rig| rig.valid(bones.len())) {
+        if !rigs.iter().all(|rig| {
+            (rig.first as usize)
+                .checked_add(rig.count as usize)
+                .is_some_and(|end| end <= bones.len())
+        }) {
             bail!("host rig span out of bounds for {} bones", bones.len());
         }
         if !bones.iter().all(BoneLocal::valid) {
@@ -377,6 +381,11 @@ impl Host {
                         module.revision
                     ));
                     while let Some(previous) = self.previous.pop_back() {
+                        // A retained copy of the failed binary would fail identically. Skip it
+                        // rather than spend this frame re-evaluating an already-known failure.
+                        if failed_digest.is_some() && previous.digest_bytes() == failed_digest {
+                            continue;
+                        }
                         match previous.evaluate(bones, rigs, seconds, output) {
                             Ok(()) => {
                                 let restored_digest = previous.digest_bytes();
@@ -569,10 +578,12 @@ mod tests {
             translation: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0, 1.0, 1.0],
+            parent: -1,
         };
         let bad_span = RigSpan {
-            first_bone: 0,
-            bone_count: 2,
+            entity: 0,
+            first: 0,
+            count: 2,
         };
         let err = host
             .evaluate(&[valid_bone], &[bad_span], 0.0, &mut output)
@@ -583,10 +594,12 @@ mod tests {
             translation: [f32::NAN, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0, 1.0, 1.0],
+            parent: -1,
         };
         let good_span = RigSpan {
-            first_bone: 0,
-            bone_count: 1,
+            entity: 0,
+            first: 0,
+            count: 1,
         };
         let err = host
             .evaluate(&[nan_bone], &[good_span], 0.0, &mut output)
