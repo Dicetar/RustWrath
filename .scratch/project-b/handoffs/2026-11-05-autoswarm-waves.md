@@ -301,3 +301,36 @@ Evidence:
 Remaining limits: no live client/addon/WMBridge delivery was run; only `PARTY_KILL` is emitted,
 not damage/spell combat-log events; the filtered `COMBAT_LOG_EVENT` name and the HELLO transport
 host fix remain open.
+
+## Wave 8 U2 — bounded SecureHandler load surface
+
+- `script/secure.rs`: registers the native `SecureHandlerBaseTemplate`,
+  `SecureHandlerClickTemplate` and `SecureHandlerStateTemplate` names as empty frame templates,
+  so `CreateFrame(..., "SecureHandlerStateTemplate")` resolves instead of raising. Nothing about
+  the returned frame is taint-isolated.
+- `object.rs`: a frame created with one of those templates records its `FrameHandle` and gets
+  the client's `hasSecureHandler` marker field. A plain frame has neither.
+- Globals `RegisterStateDriver(frame, state, condition)` and `UnregisterStateDriver(frame, state)`
+  validate bounded state names and balanced macro-condition strings, then store/remove rows.
+  Nothing evaluates a condition; no controller-tick consumer exists yet.
+- `SecureHandler:WrapScript(frame, script, preBody [, postBody])` validates the owner is one of
+  the marked frames, bounds each body at 4096 bytes and the total stored wraps at 1024, and only
+  stores the snippets. It refuses a plain frame instead of pretending it is secure. The bodies
+  are never evaluated; a test proves a body that would set a global leaves it nil.
+- Explicit unsupported behavior: no secure execution context, no taint propagation through
+  wrapped handlers, no driver evaluation, no `SetFrameRef`/`Execute`/`RunAttribute`/`_onstate-*`
+  dispatch. This lets Bartender4's load-time calls be accepted, not its secure behavior work.
+
+Evidence:
+- `cargo test -p benilla-ui --lib secure::` — 3 passed (template/marker, driver validation and
+  removal with no execution, wrapped-body storage and refusal).
+- `cargo test -p benilla-ui --lib wrath_rune_natives` — 1 passed; `wrath_calendar_natives` — 1
+  passed (J4 regression after the template-table change).
+- `cargo check -p benilla-app --lib` — exit 0.
+- `cargo check --workspace --all-targets` — exit 0, log
+  `.scratch/project-b/check-u2-2026-11-06.log`.
+- Wave 8 U2 commit: `642ea419`, pushed to `origin/main`.
+
+Remaining limits: no actual Bartender4 addon load was run; the state drivers, wrapped bodies and
+secure visibility/click behavior are stored only. Do not claim Bartender4 compatibility from this
+surface.
