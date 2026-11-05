@@ -37,6 +37,17 @@ pub struct Element {
 }
 
 impl Element {
+    /// An empty element for a native virtual template (`SecureHandlerStateTemplate` and its
+    /// siblings have no FrameXML body: the client builds them in C++).
+    pub fn empty(tag: &str) -> Self {
+        Self {
+            tag: tag.to_owned(),
+            attrs: Vec::new(),
+            children: Vec::new(),
+            body: String::new(),
+        }
+    }
+
     /// Case-insensitive attribute lookup.
     pub fn attr(&self, name: &str) -> Option<&str> {
         self.attrs

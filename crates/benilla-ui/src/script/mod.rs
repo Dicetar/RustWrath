@@ -65,6 +65,7 @@ mod addon_enable;
 pub mod addon_gate;
 mod target;
 mod posthook;
+mod secure;
 mod wrath_spell;
 mod wrath_aura;
 pub use wrath_aura::WrathAuraView;
@@ -745,6 +746,11 @@ fn install_framescript(vm: VmKind, target: UiTarget) -> mlua::Result<Lua> {
     // `0x706350`: `CreateFrame`, `CreateFont`, `GetNumFrames`, `EnumerateFrames` (table
     // `0x872e74`), then the widget method tables `0x7a2e70`..`0x78dc60`.
     object::install(&lua)?;
+    // After the frame method table exists: the native secure-handler templates and the
+    // `WrapScript`/`RegisterStateDriver` storage surface. Wrath in-game only.
+    if target == UiTarget::Wrath335 && vm == VmKind::InGame {
+        secure::install(&lua)?;
+    }
     frame_enum::install(&lua)?;
     // After `object`, whose `publish_global` it reuses, and before any FrameXML loads:
     // `Loader::do_font` publishes into the tables this builds.

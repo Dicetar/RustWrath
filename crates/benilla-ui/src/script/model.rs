@@ -128,6 +128,17 @@ pub(crate) struct CalendarState {
     pub(crate) revision: u64,
 }
 
+/// One stored `WrapScript` body. The host keeps it for a future secure boundary but never runs it
+/// from Lua: the execution sandbox is not implemented (`secure::install` documents the refusal).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SecureWrap {
+    /// `FrameHandle::fingerprint_bits` of the frame whose script is wrapped.
+    pub(crate) target: u64,
+    pub(crate) script: String,
+    pub(crate) before: String,
+    pub(crate) after: String,
+}
+
 /// The Rust-side model behind the Lua VM, in `lua.app_data`. It holds no Lua handles, each of
 /// which is a collector root.
 #[derive(Clone)]
@@ -594,6 +605,14 @@ pub(crate) struct Model {
     pub(crate) wrath_scope: Option<(u64, u64)>,
     /// `OpenCalendar()` fetch requests, carrying the scope they were written under.
     pub(crate) calendar_fetches: std::collections::VecDeque<(u64, u64)>,
+    /// Frames created with a native secure-handler template, keyed by
+    /// [`crate::widget::FrameHandle::fingerprint_bits`]. `WrapScript` refuses an owner outside it.
+    pub(crate) secure_frames: HashSet<u64>,
+    /// Validated `RegisterStateDriver(frame, state, condition)` rows. They are stored for a future
+    /// controller tick; no Lua path evaluates them.
+    pub(crate) secure_drivers: HashMap<u64, HashMap<String, String>>,
+    /// Stored `WrapScript` bodies. They are never executed; snippets are bounded at admission.
+    pub(crate) secure_wraps: HashMap<u64, Vec<SecureWrap>>,
     /// `PLAYER_LOGIN`'s one-shot, the reference's `[0xb4e260]`: armed by the UI load, spent by
     /// the next world-enter cascade ([`super::UiScript::fire_world_enter`]).
     pub(crate) player_login_armed: bool,
@@ -1629,6 +1648,9 @@ impl Model {
             calendar: None,
             wrath_scope: None,
             calendar_fetches: std::collections::VecDeque::new(),
+            secure_frames: HashSet::new(),
+            secure_drivers: HashMap::new(),
+            secure_wraps: HashMap::new(),
             player_login_armed: false,
             honor: None,
             inspect_honor: None,

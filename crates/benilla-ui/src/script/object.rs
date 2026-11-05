@@ -935,6 +935,9 @@ pub(super) fn create_frame(
     // The wrapper exists, published under its name, before the template's `OnLoad` runs inside
     // this call, so the handler can reach the frame by name.
     let wrapper = frame_wrapper(lua, id)?;
+    let secure_template = template
+        .as_deref()
+        .is_some_and(super::secure::is_secure_template);
     if let Some(template) = template {
         let report = crate::loader::apply_template(lua, &wrapper, &kind, &template);
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
@@ -946,6 +949,13 @@ pub(super) fn create_frame(
         }
     } else {
         super::tooltip_post_load(lua, &wrapper);
+    }
+    if secure_template {
+        // A real secure handler box in C++ has this marker; the host records the owner so
+        // `WrapScript` can refuse a plain frame instead of pretending it is protected.
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        super::secure::mark_frame(&mut model, h);
+        wrapper.set("hasSecureHandler", true)?;
     }
     // The builder's post-load hook (`0x6ee4ea`) is `CMinimap::LoadXML` (`0x4ee2b0`) for a Minimap:
     // after the `OnLoad`, the two model attributes, which the synthetic node never carries, so
