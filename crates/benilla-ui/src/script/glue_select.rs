@@ -140,6 +140,16 @@ pub(super) const DEG_TO_RAD: f32 = f32::from_bits(0x3c8e_fa35);
 pub(super) const RAD_TO_DEG: f32 = f32::from_bits(0x4265_2ee1);
 
 impl GlueRoster {
+    /// The selected record's guid, none off the roster. The VM facade is
+    /// [`super::UiScript::glue_selected_guid`]; this accessor serves owners that hold only the
+    /// model.
+    pub(crate) fn selected_guid(&self) -> Option<u64> {
+        usize::try_from(self.cells.selected)
+            .ok()
+            .and_then(|i| self.records.get(i))
+            .map(|record| record.character.guid)
+    }
+
     /// `0x473700` on every record and the count to 0 (`0x4723ff`, `0x4725af`).
     fn clear(&mut self) {
         self.records.clear();

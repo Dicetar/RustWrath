@@ -58,7 +58,7 @@ fn bag_object(model: &Model, bag: i64) -> bool {
     let last = if wrath { 11 } else { 10 };
     match bag {
         EQUIPMENT_BAG | -2..=0 => true,
-        1..=last => {
+        1..=11 if bag <= last => {
             let live = if bag <= 4 {
                 bag + 19
             } else if wrath {

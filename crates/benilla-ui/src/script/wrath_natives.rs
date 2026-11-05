@@ -981,15 +981,10 @@ pub(super) fn install_multiclass(lua: &Lua) -> mlua::Result<()> {
                 let serial = model.multiclass_next_serial.max(1);
                 model.multiclass_next_serial = serial.wrapping_add(1).max(1);
                 let char_guid = guid.unwrap_or_else(|| {
-                    if model.player_guid != 0 {
-                        model.player_guid
+                    if model.unit_guids.player != 0 {
+                        model.unit_guids.player
                     } else {
-                        model
-                            .glue
-                            .characters
-                            .get(model.glue.selected_character.saturating_sub(1))
-                            .map(|c| c.guid)
-                            .unwrap_or(0)
+                        model.glue.roster.selected_guid().unwrap_or(0)
                     }
                 });
                 if model.multiclass_requests.len() >= MAX_MULTICLASS_QUEUE {

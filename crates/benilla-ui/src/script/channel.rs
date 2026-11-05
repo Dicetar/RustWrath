@@ -666,7 +666,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .iter()
                 .filter(|s| s.as_ref().is_some_and(|c| c.confirmed))
                 .count();
-            Ok(3 + confirmed as f64)
+            Ok(3.0 + confirmed as f64)
         })?,
     )?;
 

@@ -231,13 +231,13 @@ fn place_held(model: &mut Model, dest: Dest, held: CursorItem) -> bool {
 /// picked up, its setter's clear dropping any other payload. It never places or swaps, and the
 /// client has no empty-bag rule: the server refuses with `EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS`.
 pub(super) fn pickup_bag_from_slot(lua: &Lua, live: u32) -> mlua::Result<()> {
-    if !accepts(model, live) {
-        return Ok(());
-    }
     let (gated, occupied) = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
+        if !accepts(&model, live) {
+            return Ok(());
+        }
         let gated =
-            !model.player_control || (bank_bag_inv_slots(model).contains(&live) && model.bank.is_none());
+            !model.player_control || (bank_bag_inv_slots(&model).contains(&live) && model.bank.is_none());
         let occupied = usize::try_from(live)
             .ok()
             .and_then(|slot| model.inv_slot("player", slot))
