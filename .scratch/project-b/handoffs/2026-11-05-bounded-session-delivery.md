@@ -1,7 +1,12 @@
 # 2026-11-05 — bounded session delivery (package B, R04)
 
-Owner: Worker B (`session-delivery`, AutoSwarm call `call_30e443118721451195dc9342af27f344`).
-Baseline: `46fd2f0c2af476b3659116f0fc8c95900bde95a0`, branch `feat/bounded-session-delivery`.
+Owner: Worker B (`session-delivery`), stable AutoSwarm agent
+`call_30e443118721451195dc9342af27f344`, OpenCode native session
+`ses_e5718555cffeNwOEPT6hXDkxkW`. Phase-2 execution ran as the resume call
+`call_af49da893d2948bb81c25acd7f25ff1d` (`opencode-go/deepseek-v4.1-flash`); the earlier
+free-provider attempt on the same agent never performed phase-1 or phase-2 work and is not the
+owner of this change. Baseline: `46fd2f0c2af476b3659116f0fc8c95900bde95a0`, branch
+`feat/bounded-session-delivery`.
 Scope: source-only. No build, test, linter, type check, client or server run was performed.
 
 ## Changed paths

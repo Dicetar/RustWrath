@@ -8089,6 +8089,14 @@ pub fn run_session_with_cancel(
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
+        // The pause is cancel-aware, but the check must be repeated here: falling through to
+        // `world.recv()` would block for the socket read timeout after a stop request and extend
+        // `AppExit`/stop latency. Same clean exit as the top-of-loop cancellation block.
+        if cancel.load(Ordering::SeqCst) {
+            native.invalidate_scope();
+            publisher.retire_all();
+            return Ok(());
+        }
         match world.recv() {
             Ok(p) => {
                 let received_at = Instant::now();
