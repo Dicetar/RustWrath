@@ -262,3 +262,42 @@ Remaining limits: `GetRuneCooldown` uses the base ten-second recharge because no
 packed zone time rather than a live `g_clientGameTime` tick; calendar day-event enumeration
 has no model yet; no client, addon or live server session was run. The J4 AutoSwarm worker was
 cancelled on the owner's instruction and the remaining edits were completed directly.
+
+## Wave 7 U1 — WMBridge PARTY_KILL combat-log event
+
+- `benilla-protocol-wrath`: added `SMSG_PARTYKILLLOG` (`0x1F5`) and its decoder. The pinned
+  AzerothCore writer sends two raw `u64`s, killer then victim (`Unit.cpp:14210-14212`).
+- `benilla-ui`: Wrath's in-game event table now admits `COMBAT_LOG_EVENT_UNFILTERED`. Before
+  this, `RegisterEvent` silently dropped the name (`0x702140`), so WMBridge could never receive
+  the event even if the app fired it.
+- `wrath.rs`/`wrath_combat_log_feed.rs`: the decoded kill becomes scoped `WrathPartyKill` state
+  with a monotonic revision and a UiFeed that fires the stock event exactly once. The payload is
+  the eight values `CombatLogEntry::PushEvent` sends for a spell-less event
+  (`UnitCombatLog_C.cpp:1241-1276`): timestamp, `PARTY_KILL`, source guid/name/flags, dest
+  guid/name/flags. Names come from the VM's own unit views or the name cache; an unresolved
+  endpoint suppresses the event instead of inventing a name. Flags carry only the guid-family
+  type bit (`0x400` player, `0x800` creature, `0x1000` pet, `0x4000` gameobject); group
+  affiliation bits are not guessed.
+- The kill also maps onto `SessionEvent::PartyKillLog`, the existing stock chat-line seam.
+- HELLO transport gap, not fixed here: WMBridge builds the HELLO payload before `sendPayload`
+  runs, so `transport=` reports the previous attempt. The installed addon cannot be edited. The
+  host-side trigger is `channel.rs` reporting a positive `GetChannelName` id for a join the
+  server has not confirmed; the exact host fix is to make `JoinTemporaryChannel` /
+  `GetChannelName` stay unanswered until the channel notice/ack. `SendAddonMessage("CHANNEL")`
+  itself already refuses, so the addon's delivery falls back to `SELF_WHISPER` while the stale
+  field says `CHANNEL`.
+
+Evidence:
+- `cargo test -p benilla-protocol-wrath --lib wrath_party_kill_log` — 1 passed.
+- `cargo test -p benilla-app --lib party_kill` — 2 passed (state/translate and the exact
+  eight-value VM event).
+- `cargo test -p benilla-app --lib combat_log_flags_name_only` — 1 passed.
+- `cargo test -p benilla-ui --lib wrath_admits_the_combat_log_event` — 1 passed.
+- `cargo check -p benilla-app --lib` — exit 0.
+- `cargo check --workspace --all-targets` — exit 0, log
+  `.scratch/project-b/check-u1-2026-11-06.log`.
+- Wave 7 U1 commit: `d904330c`, pushed to `origin/main`.
+
+Remaining limits: no live client/addon/WMBridge delivery was run; only `PARTY_KILL` is emitted,
+not damage/spell combat-log events; the filtered `COMBAT_LOG_EVENT` name and the HELLO transport
+host fix remain open.
