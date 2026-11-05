@@ -17,7 +17,7 @@ use serde::Deserialize;
 #[cfg(feature = "dev")]
 use std::time::Duration;
 #[cfg(feature = "dev")]
-use std::sync::atomic::{AtomicBool, AtomicU8};
+use std::sync::{Condvar, OnceLock};
 
 use crate::net::CommandDelivery;
 
@@ -1376,9 +1376,50 @@ struct Ingress {
     #[cfg(feature = "dev")]
     asset_profile: Option<String>,
     #[cfg(feature = "dev")]
-    exporting: AtomicBool,
+    export_finished: Condvar,
     #[cfg(feature = "dev")]
-    export_status: AtomicU8,
+    export_status: Mutex<ExportStatus>,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExportStatus { Idle, Saving, Saved, Failed }
+
+/// Owned across the thread handoff. Dropping an unstarted or panicking writer releases its slot.
+#[cfg(feature = "dev")]
+struct ExportWriter {
+    ingress: Arc<Ingress>,
+    result: ExportStatus,
+}
+
+#[cfg(feature = "dev")]
+impl ExportWriter {
+    fn acquire(ingress: &Arc<Ingress>, wait: bool) -> Result<Self, String> {
+        let mut status = ingress.export_status.lock().unwrap();
+        while *status == ExportStatus::Saving {
+            if !wait {
+                return Err("A report is already being saved".into());
+            }
+            status = ingress.export_finished.wait(status).unwrap();
+        }
+        *status = ExportStatus::Saving;
+        Ok(Self { ingress: Arc::clone(ingress), result: ExportStatus::Failed })
+    }
+
+    fn finish(&mut self, result: &anyhow::Result<std::path::PathBuf>) {
+        match result {
+            Ok(_) => self.result = ExportStatus::Saved,
+            Err(error) => warn!("quest diagnostics export failed: {error:#}"),
+        }
+    }
+}
+
+#[cfg(feature = "dev")]
+impl Drop for ExportWriter {
+    fn drop(&mut self) {
+        *self.ingress.export_status.lock().unwrap() = self.result;
+        self.ingress.export_finished.notify_all();
+    }
 }
 
 #[derive(Resource, Clone, Debug)]
@@ -5890,11 +5931,11 @@ impl History {
     }
 
     pub(crate) fn export_status(&self) -> &'static str {
-        match self.source.0.export_status.load(Ordering::Acquire) {
-            1 => "Saving report…",
-            2 => "Report saved in Logs/InteractionDiagnostics.",
-            3 => "Report could not be saved. See the client log.",
-            _ => "",
+        match *self.source.0.export_status.lock().unwrap() {
+            ExportStatus::Saving => "Saving report…",
+            ExportStatus::Saved => "Report saved in Logs/InteractionDiagnostics.",
+            ExportStatus::Failed => "Report could not be saved. See the client log.",
+            ExportStatus::Idle => "",
         }
     }
 
@@ -6814,7 +6855,9 @@ impl History {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let file_hash = std::env::current_exe().ok().and_then(|executable| {
+        static EXECUTABLE_SHA1: OnceLock<String> = OnceLock::new();
+        let file_hash = EXECUTABLE_SHA1.get().cloned().or_else(|| {
+            let executable = std::env::current_exe().ok()?;
             let mut file = std::fs::File::open(executable).ok()?;
             let mut digest = Sha1::new();
             let mut buffer = [0u8; 65536];
@@ -6825,7 +6868,8 @@ impl History {
                 }
                 digest.update(&buffer[..count]);
             }
-            Some(format!("{:x}", digest.finalize()))
+            let hash = format!("{:x}", digest.finalize());
+            Some(EXECUTABLE_SHA1.get_or_init(|| hash).clone())
         });
         if let Some(obj) = header.as_object_mut() {
             obj.insert(
@@ -6870,24 +6914,10 @@ impl History {
             .ok_or_else(|| "Local report storage is unavailable".to_owned())?
             .join("Logs")
             .join("InteractionDiagnostics");
-        for _ in 0..100 {
-            if !self.source.0.exporting.swap(true, Ordering::AcqRel) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        self.source.0.export_status.store(1, Ordering::Release);
+        let mut writer = ExportWriter::acquire(&self.source.0, true)?;
         let (header, rows) = self.build_export_payload(build, protocol_mode);
         let result = Self::write_export_snapshot(&directory, header, &rows);
-        let status = match &result {
-            Ok(_) => 2,
-            Err(error) => {
-                warn!("quest diagnostics export failed: {error:#}");
-                3
-            }
-        };
-        self.source.0.export_status.store(status, Ordering::Release);
-        self.source.0.exporting.store(false, Ordering::Release);
+        writer.finish(&result);
         result.map_err(|e| e.to_string())
     }
 
@@ -6896,29 +6926,16 @@ impl History {
         let directory = crate::local_state::home()
             .ok_or_else(|| "Local report storage is unavailable".to_owned())?
             .join("Logs").join("InteractionDiagnostics");
-        if self.source.0.exporting.swap(true, Ordering::AcqRel) {
-            return Err("A report is already being saved".into());
-        }
-        self.source.0.export_status.store(1, Ordering::Release);
-        let ingress = self.source.0.clone();
+        let mut writer = ExportWriter::acquire(&self.source.0, false)?;
         let (header, rows) = self.build_export_payload(build, protocol_mode);
         let spawn = std::thread::Builder::new()
             .name("interaction-diagnostics-export".into())
             .spawn(move || {
                 let result = Self::write_export_snapshot(&directory, header, &rows);
-                let status = match result {
-                    Ok(_) => 2,
-                    Err(error) => {
-                        warn!("quest diagnostics export failed: {error:#}");
-                        3
-                    }
-                };
-                ingress.export_status.store(status, Ordering::Release);
-                ingress.exporting.store(false, Ordering::Release);
+                writer.finish(&result);
             });
         if let Err(error) = spawn {
-            self.source.0.export_status.store(3, Ordering::Release);
-            self.source.0.exporting.store(false, Ordering::Release);
+            warn!("quest diagnostics writer could not start: {error}");
             return Err(error.to_string());
         }
         Ok(())
@@ -6964,9 +6981,9 @@ pub(crate) fn new_pair() -> (Source, History) {
             Some("stock-discovery".into())
         },
         #[cfg(feature = "dev")]
-        exporting: AtomicBool::new(false),
+        export_finished: Condvar::new(),
         #[cfg(feature = "dev")]
-        export_status: AtomicU8::new(0),
+        export_status: Mutex::new(ExportStatus::Idle),
     }));
     let history = History {
         source: source.clone(),

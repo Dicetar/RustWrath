@@ -23,6 +23,8 @@ pub type ModuleDigest = [u8; 20];
 /// verified content identity (when available) and whether a retained predecessor was promoted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RestoreOutcome {
+    /// A retained predecessor failed validation before it could be restored.
+    PredecessorRejected { digest: Option<ModuleDigest> },
     /// The failed module was replaced by the newest retained predecessor.
     Restored {
         failed_digest: Option<ModuleDigest>,
@@ -117,10 +119,6 @@ impl Loaded {
         seconds: f64,
         output: &mut Vec<BoneLocal>,
     ) -> Result<()> {
-        ensure!(
-            bones.len() <= u32::MAX as usize && rigs.len() <= u32::MAX as usize,
-            "pose frame too large"
-        );
         output.clear();
         output.extend_from_slice(bones);
         let frame = PoseFrame {
@@ -329,12 +327,39 @@ impl Host {
         seconds: f64,
         output: &mut Vec<BoneLocal>,
     ) -> Result<bool> {
+        if !self.has_module() {
+            return Ok(false);
+        }
+        // Validate host-owned inputs before taking any module out of its slot. Trying the
+        // same malformed batch on each predecessor would consume the entire rollback history.
+        ensure!(
+            bones.len() <= u32::MAX as usize && rigs.len() <= u32::MAX as usize,
+            "pose frame too large"
+        );
+        let mut first = 0usize;
+        for rig in rigs {
+            ensure!(rig.first as usize == first, "noncontiguous rig spans");
+            let count = rig.count as usize;
+            let span = bones.get(first..).and_then(|rest| rest.get(..count))
+                .context("rig span exceeds pose buffer")?;
+            ensure!(
+                span.iter().all(|bone| bone.valid()
+                    && (bone.parent < 0 || (bone.parent as usize) < count)),
+                "invalid host bone transform or parent index"
+            );
+            first += count;
+        }
+        ensure!(first == bones.len(), "rig spans do not cover pose buffer");
         if bones.is_empty() {
             return Ok(false);
         }
+        ensure!(seconds.is_finite(), "nonfinite host frame time");
         if let Some(candidate) = self.pending.take() {
             match candidate.evaluate(bones, rigs, seconds, output) {
                 Ok(()) => {
+                    // A -> B -> A consumes one history slot for B. The earlier A is the
+                    // same executable as the new active module and cannot be its fallback.
+                    self.previous.retain(|module| module.digest != candidate.digest);
                     if let Some(old) = self.active.replace(candidate) {
                         self.previous.push_back(old);
                     }
@@ -352,34 +377,37 @@ impl Host {
                 }
             }
         }
-        while let Some(module) = self.active.take() {
+        let mut failed_active = None;
+        let mut next = self.active.take();
+        while let Some(module) = next {
             match module.evaluate(bones, rigs, seconds, output) {
                 Ok(()) => {
+                    if let Some(failed_digest) = failed_active {
+                        self.push_restore(RestoreOutcome::Restored {
+                            failed_digest,
+                            restored_digest: module.digest_bytes(),
+                        });
+                    }
                     self.active = Some(module);
                     return Ok(true);
                 }
                 Err(error) => {
-                    let failed_digest = module.digest_bytes();
-                    self.active_failure = Some(format!(
-                        "active module {} failed; restoring a previous module: {error:#}",
-                        module.revision
-                    ));
-                    match self.previous.pop_back() {
-                        Some(previous) => {
-                            let restored_digest = previous.digest_bytes();
-                            self.active = Some(previous);
-                            self.push_restore(RestoreOutcome::Restored {
-                                failed_digest,
-                                restored_digest,
-                            });
-                        }
-                        None => {
-                            self.active = None;
-                            self.push_restore(RestoreOutcome::Unavailable { failed_digest });
-                        }
+                    if failed_active.is_some() {
+                        self.push_restore(RestoreOutcome::PredecessorRejected {
+                            digest: module.digest_bytes(),
+                        });
+                    } else {
+                        failed_active = Some(module.digest_bytes());
+                        self.active_failure = Some(format!(
+                            "active module {} failed: {error:#}", module.revision
+                        ));
                     }
+                    next = self.previous.pop_back();
                 }
             }
+        }
+        if let Some(failed_digest) = failed_active {
+            self.push_restore(RestoreOutcome::Unavailable { failed_digest });
         }
         Ok(false)
     }

@@ -299,6 +299,12 @@ fn apply_pose(
     let active_failed = !restore_outcomes.is_empty();
     for outcome in restore_outcomes {
         match outcome {
+            RestoreOutcome::PredecessorRejected { digest } => {
+                events.write(HotpatchEvent::FrameFailed {
+                    attempt: attempt_for_digest(runtime, digest),
+                    reason: HotpatchReason::Evaluation,
+                });
+            }
             RestoreOutcome::Restored {
                 failed_digest,
                 restored_digest,
@@ -391,11 +397,12 @@ fn apply_pose(
             }
         }
         Err(error) => {
-            runtime.refresh = false;
+            // A host-input error leaves the candidate staged. Retry it on the full batch.
+            runtime.refresh = runtime.host.has_pending() || runtime.refresh;
             let message = format!("pose frame unchanged: {error:#}");
             if runtime.last_error.as_ref() != Some(&message) {
                 events.write(HotpatchEvent::FrameFailed {
-                    attempt: runtime.active_attempt,
+                    attempt: None,
                     reason: HotpatchReason::Frame,
                 });
             }
