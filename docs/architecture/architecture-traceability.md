@@ -22,7 +22,7 @@ Legend: Partial = component source exists, not accepted behavior; Broken = a con
 | C08 | Move/jump and reconcile | [23](../../.scratch/project-b/issues/23-local-movement-and-correction.md) | Player controller → wrath_stream_movement | Broken flag translation, R01 | GAP |
 | C09 | Travel, communicate and reconnect | [24](../../.scratch/project-b/issues/24-route-travel-and-reconnect.md) | Parked character selection; movement path; bounded session reply delivery (R04) | Partial; route, communication and recovery proof pending; queue/reconnect source only, runtime UNKNOWN | GAP |
 | C10 | Baseline attack and real spell | [25](../../.scratch/project-b/issues/25-ordinary-combat-slice.md) | Command tap and gameplay codec | Partial; R01/R03/R07 and connected outcome proof | GAP |
-| C11 | Quest, loot, reward persistence | [26](../../.scratch/project-b/issues/26-quest-loot-reward.md) | Quest codec, item/container and inventory projection | Broken item query alignment, R02; persistence pending | GAP |
+| C11 | Quest, loot, reward persistence | [26](../../.scratch/project-b/issues/26-quest-loot-reward.md) | Quest codec, item/container ECS, lossless Wrath inventory owner (`wrath_inventory`) and donor projection | Partial; R02 source-repaired at HEAD (`read_item_info` reads 2 damages and rejects oversized stats); R06 bank/enchant loss tracked below; persistence/re-entry pending | GAP |
 | C12 | Death/recovery and refusals | [27](../../.scratch/project-b/issues/27-death-and-recovery.md) | Existing donor owners; Wrath scope lifecycle | Unknown complete Wrath path | GAP |
 | C13 | WM typed action with override | [28](../../.scratch/project-b/issues/28-wm-typed-player-action.md) | Existing WM action owners and native observation source | Unknown complete client action/result path | GAP |
 | C14 | Immutable typed Spellwright publication | [29](../../.scratch/project-b/issues/29-typed-live-graph-publication.md) | Publication contracts/plan; full implementation not audited here | Unknown at current runtime/source integration identity | GAP |
@@ -35,7 +35,7 @@ Legend: Partial = component source exists, not accepted behavior; Broken = a con
 | Release movement | Walk/fall/swim/fly/transport/forced motion | Issue 18; issues 23/24 cover a subset | Shared controller and Wrath wire adapter | Partial with concrete R01 defect | GAP |
 | Release combat | All required class/resource/combat state | Issue 18; issue 25 covers a subset | Spell/attack codecs and existing spell owners | Partial; auras/cooldowns/class semantics remain | GAP |
 | Release pets | Companion control/ownership/persistence | Issue 18; behavior children pending | No complete Wrath pet path established by this review | Unknown | GAP |
-| Release economy | Inventory/equipment/bank/services/trade/mail/auction | Issue 18; issue 26 covers a subset | Item/container ECS and shortened bank projection | Partial with R02/R06; broad service paths open | GAP |
+| Release economy | Inventory/equipment/bank/services/trade/mail/auction | Issue 18; issue 26 covers a subset | Item/container ECS, lossless Wrath bank/bag owner, donor projection | Partial with R06 (bank/bag source-migrated; item enchant tail deferred); R02 source-repaired; broad service paths open | GAP |
 | Release progression | Talents/glyphs/dual spec/skills/reputation | Issue 18; behavior children pending | Catalog support and donor UI owners | Partial; catalog parsing is not progression behavior | GAP |
 | Release professions | Learn/gather/craft/material/refusal workflows | Issue 18; behavior children pending | Skill/focus/mechanic catalogs, donor trade-skill owners | Partial; authoritative Wrath behavior not established | GAP |
 | Release interaction | Quest variants, objects, loot rules and services | Issue 18; issue 26 covers a subset | Gossip/quest/loot codec, narrowed object templates | Partial; variant/service/object semantics open | GAP |
@@ -61,6 +61,41 @@ Contract: [bounded session delivery](bounded-session-delivery.md).
 |---|---|---|---|---|---|---|
 | R04.a session-reply delivery | `run_session_with_cancel` (`wrath.rs:7373`) via `translate_gameplay` (2716) and the `send_glue` closure (7389) | `SessionReplies` (`wrath.rs:300`, created per worker at 1327): FIFO cap 4096, 2 reserved terminals, coalesced keys server-clock / played-time / gossip-menu / vendor-stock | `take_session_events` (1458) -> `wrath_dispatch_events` (4663) -> `route_wm_action_outcomes` (4953) -> `net::handlers::dispatch` (`net/handlers.rs:178`) -> glue/UI messages | coalesce observations -> <=50 ms cancel-checked read backpressure -> controlled `SessionEnded` + forced `Disconnected` at the hard cap; never a silent drop of an ordered reply while the session continues | steady state; stall/burst; refusal (`OutboxFull`/`ScopeChanged` unchanged); transfer; reconnect | SOURCE-OBSERVED (baseline) / PROPOSED and implemented at source (this policy) / NOT RUN: compiled, focused check, receiver, visible |
 | R04.b terminal under overload | worker terminal paths (`wrath.rs:1361-1390`, `8245`) and panic synthesis (1912) | reserved terminal slot, delivered before the FIFO, one edge per kind | `wrath_dispatch_events` -> `on_disconnected` (`net/session.rs:345`) -> glue | terminal delivered ahead of the backlog; batch truncated at the terminal; reply/observation backlog discarded once the session ends; a clean logout's `LoggedOut` and its `Disconnected` teardown are both delivered | terminal with 0 backlog; with >4096 backlog; during transfer; during AppExit; worker panic | SOURCE-OBSERVED / implemented at source / NOT RUN |
+
+## Inventory ownership (R06)
+
+Addresses review finding R06 (four Wrath bank slots and one bank bag dropped by the shared
+inventory projection, plus narrowed item enchant/suffix/socket semantics). The dated review's P1
+release-gap text stays intact; the 2026-11-05 release plan re-prioritises the projection to P0
+fidelity. Status below is source-level; no compilation, focused case, receiver or visible
+gameplay was run. Contract: [lossless Wrath inventory](rfc-lossless-wrath-inventory.md).
+
+| Row | Writer | Readers | Normal / refusal / reconnect / persistence | Status | Evidence |
+|---|---|---|---|---|---|
+| INV-01 bank slots 1..28 | `build_digest` -> `WrathInventory::apply` (`wrath_inventory.rs`), one caller `wrath_apply_world` | bank container feed, `item_watch`, `PlayerInventory` view | 28 delivered slots / absent field = unknown / new create repopulates / server-owned | SOURCE-REPAIRED (was 24/28) | SOURCE-OBSERVED; NOT RUN |
+| INV-02 bank bags 1..7 | same | bank-bag containers 5..11, `BagCache` 11 seats | 7 delivered bags / unbought slot absent / repopulate / server-owned | SOURCE-REPAIRED (was 6/7) | SOURCE-OBSERVED; NOT RUN |
+| INV-03 7th bank-bag purchase | `PLAYER_BYTES_2` byte 2 through the window | `GetNumBankSlots` full at 7, `ui_bank` purchase, DBC price row | buy -> count 7 / insufficient funds unchanged / re-read / persists | SOURCE-REPAIRED (cap/full were 6) | SOURCE-OBSERVED; NOT RUN |
+| INV-04 `GetContainerNumSlots(-1)` | `ui_items::feed` | stock BankFrame | 28 rows / banker-closed semantics unchanged / reload re-push | SOURCE-REPAIRED (was 24) | SOURCE-OBSERVED; reference `ContainerFrame_Scripts.cpp:115`; NOT RUN |
+| INV-05 bank bags 5..11 | `ui_items::feed`, `benilla-ui` container model | ContainerFrame, bag buttons | 7 bags / 12th absent / reload | SOURCE-REPAIRED (was 5..10) | SOURCE-OBSERVED; NOT RUN |
+| INV-06 deposit slot 25..28 | `wire_pos_in_target(Wrath335)` -> tap | `CMSG_AUTOBANK_ITEM` | 39..66 / server refusal surfaces / no replay / server | SOURCE-REPAIRED (rejected before) | SOURCE-OBSERVED; NOT RUN |
+| INV-07 withdraw slot 25..28 | same | `CMSG_AUTOSTORE_BANK_ITEM` | 39..66 / refusal / no replay / server | SOURCE-REPAIRED | SOURCE-OBSERVED; NOT RUN |
+| INV-08 bank bag 7 deposit/withdraw | same | `CMSG_*_BANK_ITEM` | wire 73 / refusal / no replay / server | SOURCE-REPAIRED | SOURCE-OBSERVED; NOT RUN |
+| INV-09 bank-bag button pickup | `BankButtonIDToInvSlotID`/`ContainerIDToInventoryID` (`benilla-ui`, target-aware) + `wire_pos_in_target` + `bag_verbs` | `EQUIPMENT_BAG` moves, `GetContainerNumSlots(11)`, `GetBagName(11)`, withdraw and swap | internal 67..73 / Lua 68..74 in Wrath (donor 63..68 / 64..69); out-of-range refused; reload | SOURCE-REPAIRED; installed-FrameXML/visible pickup remains runtime acceptance | SOURCE-OBSERVED; NOT RUN |
+| INV-10 `HasKey` | `has_key_in_player` | keyring visibility, lock openers | finds keys in 25..28/bag 7 / missing template transient false / reload | SOURCE-REPAIRED (scan was 24/6) | SOURCE-OBSERVED; NOT RUN |
+| INV-11 repair/cooldown scans | `ui_merchant::repair_costs`, `char_stats` bands | repair cost, tooltip cooldown | 28/7 / no vendor refusal change / reload | SOURCE-REPAIRED | SOURCE-OBSERVED; NOT RUN |
+| INV-12 bank events | `item_watch::typed_bank_change`, `BagCache` 11 | `PLAYERBANKSLOTS_CHANGED`, `BAG_UPDATE(11)` | fires for 25..28/bag 7 / no event on unknown / cleared on transfer | SOURCE-REPAIRED | SOURCE-OBSERVED; NOT RUN |
+| INV-13 item enchant slots 1..12 | `push_item_fields` (donor 7 + typed item row) | tooltip/bind/visual | 12 retained in the typed row / no donor write at 43..47 / re-create | DEFERRED (S3); donor still 7 | SOURCE-OBSERVED; NOT RUN |
+| INV-14 `ITEM_FIELD_CREATE_PLAYED_TIME` | `push_item_fields` | none found | retained only if S3 lands / n/a / re-create | DEFERRED (S3) | SOURCE-OBSERVED; NOT RUN |
+| INV-15 item text by guid | `ItemTextByGuid` (no producer) | `WrathItemText` (no reader) | request/response / refusal / reconnect | UNSUPPORTED branch (S3) | SOURCE-OBSERVED; NOT RUN |
+| INV-16 presence/clear | `WrathFieldWindow` | migrated readers | unknown != explicit clear; delivered zero clears; sparse omission retains | SOURCE-REPAIRED (dense zeros before) | SOURCE-OBSERVED; NOT RUN |
+| INV-17 reconnect/transfer retirement | `wrath_apply_world` scope-loss block | owner, `BagCache`, `ItemLane`, containers | clear old scope / no stale event / new create | SOURCE-REPAIRED (owner joins the existing clear) | SOURCE-OBSERVED; NOT RUN |
+| INV-18 item/container ownership | `apply_item_world` + `WrathInventory` address map | `GuidIndex`, `ObjectStore`, typed row | guid/generation identity / a bag move changes one address only / contents not reparented | PARTIAL (S1/S2 state; S3 payload) | SOURCE-OBSERVED; NOT RUN |
+
+Follow-up row (not this package): the raw player window stays `0..1171`, so
+`PLAYER_FIELD_COMBAT_RATING_1` (1231..), `PLAYER_FIELD_MAX_LEVEL` (1279) and
+`PLAYER_FIELD_DAILY_QUESTS_1` (1280..1304) read 0. Extending the window to `PLAYER_END` (1326)
+would change several UI reads and needs its own consumer evidence; it is deliberately not
+bundled with R06.
 
 ## Decision and test linkage
 

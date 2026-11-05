@@ -25,6 +25,8 @@ pub(crate) struct MerchantSteps<'w, 's> {
     trace: Option<Res<'w, crate::quest_trace::Source>>,
     /// Current Wrath scope for scoped merchant interactions.
     wrath: Option<Res<'w, crate::wrath::WrathWorldView>>,
+    /// The typed 3.3.5 inventory owner; `None` on the donor path.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
 }
 
 impl MerchantSteps<'_, '_> {
@@ -82,6 +84,7 @@ impl MerchantSteps<'_, '_> {
             self_q,
             purse,
             trace,
+            inventory,
             ..
         } = self;
         let make_trace = |op: Operation,
@@ -298,14 +301,26 @@ impl MerchantSteps<'_, '_> {
                     );
                     return;
                 };
+                let bank_bag_first = if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+                    crate::wrath_inventory::WRATH_BANK_BAG_SLOT_FIRST
+                } else {
+                    crate::ui_items::BANK_BAG_SLOT_FIRST
+                };
+                let view = crate::wrath_inventory::PlayerInventory::new(
+                    &store.0,
+                    inventory.as_deref(),
+                    script.target() == benilla_ui::script::UiTarget::Wrath335,
+                );
                 let bag_guid = if bag_index == BAG_PLAYER_INVENTORY {
                     Some(guid.0)
-                } else if let Some(bank_bag) =
-                    bag_index.checked_sub(crate::ui_items::BANK_BAG_SLOT_FIRST)
-                {
-                    store.0.player_bank_bag_slot(bank_bag).filter(|g| *g != 0)
+                } else if (19..=22).contains(&bag_index) {
+                    let guid = view.bag_slot(bag_index - 19);
+                    (guid != 0).then_some(guid)
+                } else if let Some(bank_bag) = bag_index.checked_sub(bank_bag_first) {
+                    let guid = view.bank_bag(bank_bag);
+                    (guid != 0).then_some(guid)
                 } else {
-                    store.0.player_inv_slot(bag_index).filter(|g| *g != 0)
+                    None
                 };
                 let Some(bag_guid) = bag_guid else {
                     let trace = guard_trace(Some(Operation::Buy));

@@ -1,10 +1,11 @@
 //! The bank bindings: the app pushes the open bank's snapshot ([`UiScript::set_bank`]), and
 //! `PurchaseSlot` and `CloseBankFrame` hand the host their calls ([`BankCall`]).
 //!
-//! The vault is container `-1` (24 slots) and containers 5..=10 (the six bags), the reference's
-//! own ids (`BankFrame.lua:1-4`), so the container verbs work on it unchanged. The bag items
-//! themselves are inventory slots 64..=69, read through `GetInventoryItem*` as the reference's bank
-//! reads them (`BankFrame.lua:28`); they stream whether or not a banker is open.
+//! The vault is container `-1` (24 donor / 28 3.3.5 slots) and containers 5..=10 (donor) or
+//! 5..=11 (3.3.5) for the bags, the reference's own ids (`BankFrame.lua:1-4`), so the container
+//! verbs work on it unchanged. The bag items themselves are inventory slots 64..=69 (donor) or
+//! 68..=74 (3.3.5), read through `GetInventoryItem*` as the reference's bank reads them
+//! (`BankFrame.lua:28`); they stream whether or not a banker is open.
 
 use mlua::{Lua, MultiValue, Value};
 
@@ -13,10 +14,10 @@ use super::Model;
 /// The open bank's purchase row, pushed whole by the app.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BankState {
-    /// Purchased bag slots, 0..=6: `PLAYER_BYTES_2` byte 2.
+    /// Purchased bag slots, 0..=7 in 3.3.5 (0..=6 donor): `PLAYER_BYTES_2` byte 2.
     pub num_purchased: u32,
-    /// The next slot's price in copper, `BankBagSlotPrices.dbc` row `num_purchased + 1`; the rows
-    /// past 6 hold 999999999, and 0 means the row is absent.
+    /// The next slot's price in copper, `BankBagSlotPrices.dbc` row `num_purchased + 1`; the
+    /// sentinel rows are still prices, and 0 means the row is absent.
     pub next_cost: u32,
 }
 
@@ -49,16 +50,22 @@ pub enum BankCall {
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
 
-    // GetNumBankSlots() → numSlots, full: `full` is 1 from six slots up, else nil (`0x4f85b0`:
-    // `cmp esi,6; jl`).
+    // GetNumBankSlots() → numSlots, full: `full` is 1 from seven slots up, else nil
+    // (`CGBankInfo_Scripts.cpp:37-41`: `cmp esi,7; jl`; the donor host keeps its own ceiling).
     g.set(
         "GetNumBankSlots",
         lua.create_function(|lua, ()| {
-            let n = {
+            let (n, full_at) = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                model.bank.as_ref().map_or(0, |b| b.num_purchased)
+                let n = model.bank.as_ref().map_or(0, |b| b.num_purchased);
+                let full_at = if model.target == crate::script::UiTarget::Wrath335 {
+                    7
+                } else {
+                    6
+                };
+                (n, full_at)
             };
-            let full = if n >= 6 {
+            let full = if n >= full_at {
                 Value::Integer(1)
             } else {
                 Value::Nil
@@ -96,9 +103,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // BankButtonIDToInvSlotID(id, isBag) (`0x4f8530`): `id + 39` for an item button, `id + 59`
-    // for a bag button, whose id is the container id 5..=10 (`BankFrame.xml:372`), the same
-    // arithmetic as `ContainerIDToInventoryID`'s bank-bag arm (`0x4f94e0`). There is no range
-    // check. `isBag` is `lua_isnumber(L, 2)` (`0x4f8576`), not truthiness: `true` takes the item
+    // for a donor bag button and `id + 63` for a 3.3.5 bag button, whose id is the container id
+    // (5..=10 donor, 5..=11 Wrath). The reference's `button = input - 1; slot = button + 63;
+    // push slot + 1` (`CGBankInfo_Scripts.cpp:20-44`) is the same arithmetic and resolves Wrath
+    // bags 5..=11 to Lua ids 68..=74. There is no range check.
+    // `isBag` is `lua_isnumber(L, 2)` (`0x4f8576`), not truthiness: `true` takes the item
     // arm, `0` and `"1"` the bag arm; stock sets `this.isBag = 1` (`BankFrame.lua:24`). Argument 1
     // truncates toward zero (`0x40a2b0`), and its usage string names only `buttonID`.
     g.set(
@@ -112,7 +121,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let is_bag = is_bag
                 .and_then(|v| lua.coerce_number(v).ok().flatten())
                 .is_some();
-            let step = if is_bag { 59 } else { 39 };
+            let wrath = lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .target
+                == super::UiTarget::Wrath335;
+            let step = if is_bag {
+                if wrath { 63 } else { 59 }
+            } else {
+                39
+            };
             Ok(i64::from(n.wrapping_add(step)))
         })?,
     )?;
@@ -401,6 +419,43 @@ mod tests {
         assert!(
             err.contains("Usage: BankButtonIDToInvSlotID(buttonID)"),
             "the reference's own usage string, verbatim: {err}"
+        );
+    }
+
+    /// `button + 63` in 3.3.5 with the 1-based push, `button + 59` in the donor: bag buttons
+    /// 5..=11 map to 68..=74, 5..=10 to 64..=69.
+    #[test]
+    fn bank_button_ids_follow_the_selected_contract() {
+        let donor = UiScript::new().unwrap();
+        assert_eq!(
+            donor
+                .eval::<i64>("return BankButtonIDToInvSlotID(5, 1)")
+                .unwrap(),
+            64,
+            "donor bag 5"
+        );
+        assert_eq!(
+            donor
+                .eval::<i64>("return BankButtonIDToInvSlotID(10, 1)")
+                .unwrap(),
+            69,
+            "donor bag 10"
+        );
+
+        let wrath = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        assert_eq!(
+            wrath
+                .eval::<i64>("return BankButtonIDToInvSlotID(5, 1)")
+                .unwrap(),
+            68,
+            "3.3.5 bag 5"
+        );
+        assert_eq!(
+            wrath
+                .eval::<i64>("return BankButtonIDToInvSlotID(11, 1)")
+                .unwrap(),
+            74,
+            "3.3.5 bag 11"
         );
     }
 }

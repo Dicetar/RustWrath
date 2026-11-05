@@ -33,6 +33,8 @@ pub(crate) struct ItemSteps<'w, 's> {
     trace: Option<Res<'w, crate::quest_trace::Source>>,
     /// Current Wrath scope for scoped equip interactions.
     wrath: Option<Res<'w, crate::wrath::WrathWorldView>>,
+    /// The typed 3.3.5 inventory owner; `None` on the donor path.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
 }
 
 impl ItemSteps<'_, '_> {
@@ -64,26 +66,34 @@ impl ItemSteps<'_, '_> {
         }
 
         let store = &self.self_q.iter().next()?.0;
+        let wrath_target =
+            self.inventory.is_some() || crate::wrath::selected_from_env();
+        let inv = crate::wrath_inventory::PlayerInventory::new(
+            store,
+            self.inventory.as_deref(),
+            wrath_target,
+        );
+        let seat = |value: u64| (value != 0).then_some(value);
         match bag {
             0 => Some((
-                free_seats(u32::from(super::PACK_SLOTS), |i| store.player_pack_slot(i))?,
+                free_seats(u32::from(super::PACK_SLOTS), |i| seat(inv.backpack(i)))?,
                 0,
             )),
             super::BANK_CONTAINER => Some((
-                free_seats(u32::from(super::BANK_SLOTS), |i| store.player_bank_slot(i))?,
+                free_seats(u32::from(inv.bank_capacity()), |i| seat(inv.bank(i)))?,
                 0,
             )),
             super::KEYRING_CONTAINER => Some((
                 free_seats(u32::from(super::WRATH_KEYRING_SLOTS), |i| {
-                    store.player_keyring_slot(i)
+                    seat(inv.keyring(i))
                 })?,
                 0x100, // AzerothCore ItemTemplate.h: BAG_FAMILY_MASK_KEYS.
             )),
-            1..=10 => {
+            1..=11 => {
                 let guid = if bag <= i64::from(super::BAGS) {
-                    store.player_inv_slot(super::BAG_SLOT_FIRST + bag as u8 - 1)?
+                    inv.bag_slot(bag as u8 - 1)
                 } else {
-                    store.player_bank_bag_slot((bag - super::BANK_BAG_ID_FIRST) as u8)?
+                    inv.bank_bag((bag - super::BANK_BAG_ID_FIRST) as u8)
                 };
                 if guid == 0 {
                     return Some((0, 0));
@@ -114,9 +124,18 @@ impl ItemSteps<'_, '_> {
             merchant,
             purse,
             trace,
+            inventory,
             ..
         } = self;
         let store = self_q.iter().next();
+        let wrath_target = inventory.is_some() || crate::wrath::selected_from_env();
+        let player_inv = |store: &ObjectStore| {
+            crate::wrath_inventory::PlayerInventory::new(
+                &store.0,
+                inventory.as_deref(),
+                wrath_target,
+            )
+        };
         match call {
             ItemCall::Move(mv) => send_container_move(target, net, mv),
             // `SwapItem`'s question (`0x5e0ee4`), its dialog up inside the call.
@@ -222,12 +241,14 @@ impl ItemSteps<'_, '_> {
                 let item_guid = match call {
                     ItemCall::Repair { bag, slot } => u8::try_from(slot.saturating_sub(1))
                         .ok()
-                        .and_then(|slot0| slot_guid(&me.0, bag, slot0, objects)),
+                        .and_then(|slot0| slot_guid(&player_inv(me), bag, slot0, objects)),
                     ItemCall::RepairWorn(id) => (1..=19)
                         .contains(&id)
                         .then(|| u8::try_from(id - 1).ok())
                         .flatten()
-                        .and_then(|slot0| slot_guid(&me.0, EQUIPMENT_BAG, slot0, objects)),
+                        .and_then(|slot0| {
+                            slot_guid(&player_inv(me), EQUIPMENT_BAG, slot0, objects)
+                        }),
                     _ => None,
                 };
                 let Some(guid) = item_guid else {
@@ -313,7 +334,7 @@ impl ItemSteps<'_, '_> {
                     return;
                 };
                 let slot0 = u8::try_from(slot.saturating_sub(1)).unwrap_or(0);
-                let guid = store.and_then(|s| slot_guid(&s.0, bag, slot0, objects));
+                let guid = store.and_then(|s| slot_guid(&player_inv(s), bag, slot0, objects));
                 let item = guid
                     .and_then(|guid| objects.object(guid))
                     .and_then(|fields| fields.object_entry());
@@ -360,6 +381,7 @@ impl ItemSteps<'_, '_> {
                     items,
                     net,
                     store,
+                    inventory.as_deref(),
                     answer,
                     trace.as_ref().map(|s| {
                         s.begin_with_details(
@@ -395,6 +417,7 @@ fn answer_pending_equip(
     items: &Items,
     net: &NetCommands,
     store: Option<&ObjectStore>,
+    inventory: Option<&crate::wrath_inventory::WrathInventory>,
     answer: benilla_ui::script::PendingEquipAnswer,
     interaction: Option<crate::quest_trace::Interaction>,
 ) {
@@ -410,7 +433,14 @@ fn answer_pending_equip(
         debug!("ui_items: pending equip {} cancelled", answer.index);
         let at = |bag: i64, slot: u32| {
             let slot0 = u8::try_from(slot.saturating_sub(1)).unwrap_or(0);
-            store.and_then(|s| slot_guid(&s.0, bag, slot0, objects))
+            store.and_then(|s| {
+                let view = crate::wrath_inventory::PlayerInventory::new(
+                    &s.0,
+                    inventory,
+                    crate::wrath::selected_from_env(),
+                );
+                slot_guid(&view, bag, slot0, objects)
+            })
         };
         let locked = match rec {
             PendingEquip::Swap {

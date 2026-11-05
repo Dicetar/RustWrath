@@ -641,11 +641,12 @@ fn inventory_slots(
     inv
 }
 
-/// The six bank-bag slots' views (live ids 64..=69). They are inventory slots, streamed whether
-/// or not a banker is open, and the stock bank reads them through `BankButtonIDToInvSlotID(i, 1)`
-/// (`BankFrame.lua:28-35, 199-204`), so they ride this feed rather than the bank window's state.
+/// The seven bank-bag slots' views (3.3.5 live ids 67..=73; donor 64..=69). They are inventory
+/// slots, streamed whether or not a banker is open, and the stock bank reads them through
+/// `BankButtonIDToInvSlotID(i, 1)` (`BankFrame.lua:28-35, 199-204`), so they ride this feed
+/// rather than the bank window's state.
 fn bank_bag_slots(
-    store: &ObjectStore,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     items: &Items,
     icons: Option<&ItemDisplays>,
@@ -655,9 +656,10 @@ fn bank_bag_slots(
 ) -> BankBagSlots {
     let mut bags: BankBagSlots = Default::default();
     for (i, bag) in bags.iter_mut().enumerate() {
-        let Some(guid) = store.0.player_bank_bag_slot(i as u8).filter(|g| *g != 0) else {
+        let guid = inv.bank_bag(i as u8);
+        if guid == 0 {
             continue;
-        };
+        }
         *bag = slot_view(
             objects,
             items,
@@ -715,6 +717,7 @@ pub(crate) fn feed_char(
             // session starts a fresh VM).
             return;
         };
+        let player_slots = inv.player(script.target() == benilla_ui::script::UiTarget::Wrath335);
 
         // `GetWeaponEnchantInfo`'s data, pushed every frame outside the gate: the remaining time is
         // a live countdown, which the reference also recomputes per call (`0x5d9d00`). Pushed
@@ -789,7 +792,9 @@ pub(crate) fn feed_char(
             classes.as_deref().map(|t| &t.0),
         );
         let mut bank_bags = bank_bag_slots(
-            store,
+            player_slots
+                .as_ref()
+                .expect("the player view is built from the same self store"),
             objects,
             &items,
             icons.as_deref(),

@@ -545,10 +545,14 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     unit,
                     "Usage: SetInventoryItem(unit, slot [, nameOnly])",
                 )?;
+                let target = lua
+                    .app_data_ref::<super::Model>()
+                    .expect("model app_data")
+                    .target;
                 let slot0 = lua
                     .coerce_number(slot)?
                     .map(|n| super::binding_abi::ftol(n - 1.0))
-                    .filter(|&s| super::char_stats::inventory_slot_reader_accepts(s))
+                    .filter(|&s| super::char_stats::inventory_slot_reader_accepts(s, target))
                     .ok_or_else(|| {
                         mlua::Error::runtime("Invalid inventory slot in SetInventoryItem")
                     })?;

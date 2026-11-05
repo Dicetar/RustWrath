@@ -15,7 +15,11 @@ use super::Model;
 /// 0-based slot, `-1` for Lua 0, the ammo leg.
 pub(super) fn inventory_slot_arg(lua: &Lua, v: Value, message: &'static str) -> mlua::Result<i32> {
     let slot0 = number_arg(lua, v, message)?.wrapping_sub(1);
-    if !inventory_slot_reader_accepts(slot0) {
+    let target = lua
+        .app_data_ref::<Model>()
+        .expect("model app_data")
+        .target;
+    if !inventory_slot_reader_accepts(slot0, target) {
         return Err(mlua::Error::RuntimeError(message.into()));
     }
     Ok(slot0)

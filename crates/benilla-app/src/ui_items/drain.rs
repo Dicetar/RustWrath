@@ -80,6 +80,8 @@ pub(crate) struct ScriptItemUse<'w, 's> {
     /// Resident diagnostics for the item-use sell/open paths.
     trace: Option<Res<'w, crate::quest_trace::Source>>,
     wrath: Option<Res<'w, crate::wrath::WrathWorldView>>,
+    /// The typed 3.3.5 inventory owner; `None` on the donor path.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
 }
 
 impl ScriptItemUse<'_, '_> {
@@ -104,7 +106,7 @@ impl ScriptItemUse<'_, '_> {
         let (guid, start_quest, spell_index, use_spell, entry, is_charter) = self_q
             .iter()
             .next()
-            .and_then(|store| slot_guid(&store.0, EQUIPMENT_BAG, slot, &ladder.objects))
+            .and_then(|store| super::slot_guid_donor(&store.0, EQUIPMENT_BAG, slot, &ladder.objects))
             .and_then(|guid| {
                 let entry = ladder.objects.object(guid)?.object_entry()?;
                 // The use only reads (`0x5d8d57`).
@@ -160,6 +162,7 @@ impl ScriptItemUse<'_, '_> {
             gate,
             trace,
             wrath,
+            inventory,
             ..
         } = self;
         let scope = wrath
@@ -196,7 +199,14 @@ impl ScriptItemUse<'_, '_> {
             self_q
                 .iter()
                 .next()
-                .and_then(|store| slot_guid(&store.0, bag, s0, &ladder.objects))
+                .map(|store| {
+                    crate::wrath_inventory::PlayerInventory::new(
+                        &store.0,
+                        inventory.as_deref(),
+                        script.target() == benilla_ui::script::UiTarget::Wrath335,
+                    )
+                })
+                .and_then(|view| slot_guid(&view, bag, s0, &ladder.objects))
                 == Some(item_guid)
         }) && ladder.objects.object(item_guid).is_some();
         let pos = wire_pos_in_target(script.target(), bag, slot);

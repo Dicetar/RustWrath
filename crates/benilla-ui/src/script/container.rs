@@ -1,7 +1,7 @@
 //! The 1.12 bag verbs, all bare globals. The app pushes each bag's resolved snapshot and drains
 //! the intents the verbs queue; the engine holds no item knowledge. Bag ids are the 1.12 client's
-//! (0 the backpack, 1-4 the worn bags, -1 the bank's own slots, 5-10 the bank bags, -2 the
-//! keyring); slots are 1-based.
+//! (0 the backpack, 1-4 the worn bags, -1 the bank's own slots, 5-10 donor / 5-11 3.3.5 the
+//! bank bags, -2 the keyring); slots are 1-based.
 
 use mlua::{Lua, MultiValue, Value};
 
@@ -232,7 +232,7 @@ pub struct RandomPropertyView {
 /// One bag's snapshot: its name, capacity, and occupied slots (1-based).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ContainerState {
-    /// `GetBagName` for bags 1-10 (the bag item's own name); the backpack, the bank and the
+    /// `GetBagName` for bags 1-10 donor / 1-11 3.3.5 (the bag item's own name); the backpack, the bank and the
     /// keyring have none.
     pub name: Option<String>,
     pub num_slots: u32,
@@ -259,7 +259,7 @@ pub struct ContainerMove {
 pub struct BagAutoStore {
     pub src_bag: i64,
     pub src_slot: u32,
-    /// The container id: 0 the backpack, 1-4 a worn bag, 5-10 a bank bag.
+    /// The container id: 0 the backpack, 1-4 a worn bag, 5-10 donor / 5-11 3.3.5 a bank bag.
     pub dst_bag: i64,
     pub count: Option<u32>,
 }
@@ -281,15 +281,24 @@ pub(super) fn item_cooldown_triple(query: Option<(f64, f64, bool)>, now: f64) ->
     }
 }
 
-/// The bank's bags, containers 5-10.
+/// The bank's bags: containers 5..=10 in the donor, 5..=11 in 3.3.5.
 const BANK_BAGS: std::ops::RangeInclusive<i64> = 5..=10;
+const BANK_BAGS_WRATH: std::ops::RangeInclusive<i64> = 5..=11;
 
 impl super::Model {
+    fn bank_bags(&self) -> std::ops::RangeInclusive<i64> {
+        if self.target == super::UiTarget::Wrath335 {
+            BANK_BAGS_WRATH.clone()
+        } else {
+            BANK_BAGS.clone()
+        }
+    }
+
     /// Whether container `id` is a bank bag while no banker is open: the bag lookup every
     /// container binding goes through, `0x4f93e0`, answers no bag for it then (`0x4f93e9`-
     /// `0x4f93f9`, the banker guid `[0xbdd038]`), whatever its bank bag slot holds.
     pub(crate) fn bank_bag_shut(&self, id: i64) -> bool {
-        BANK_BAGS.contains(&id) && self.bank.is_none()
+        self.bank_bags().contains(&id) && self.bank.is_none()
     }
 
     /// The bag a container binding finds for `id` (`0x4f93e0`, through the slot resolver
@@ -303,7 +312,7 @@ impl super::Model {
 
     /// Whether the slot resolver `0x4f9820` finds a list for container `id`: the player's own for
     /// the backpack, the bank and the keyring (`0x4f988d`-`0x4f98c3`), a bag through
-    /// [`Self::bag`] for 1-10 (`0x4f98c5`-`0x4f98f2`), none above.
+    /// [`Self::bag`] for 1-10 donor / 1-11 3.3.5 (`0x4f98c5`-`0x4f98f2`), none above.
     pub(crate) fn bag_resolves(&self, id: i64) -> bool {
         id <= 0 || self.bag(id).is_some()
     }
@@ -534,7 +543,12 @@ fn use_cleared(
         model.item_calls.push(ItemCall::Repair { bag, slot });
         return None;
     }
-    let arm = if bag == -1 || (5..=10).contains(&bag) {
+    let last_bank_bag = if model.target == super::UiTarget::Wrath335 {
+        11
+    } else {
+        10
+    };
+    let arm = if bag == -1 || (5..=last_bank_bag).contains(&bag) {
         UseArm::Withdraw
     } else if model.bank.is_some() {
         UseArm::Deposit
@@ -882,12 +896,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             })?,
         )?;
     }
-    // ContainerIDToInventoryID(containerID) (`0x4f94e0`): `id - 1`, then +20 below 4 else +60, so
-    // the keyring -2 → 17, the backpack 0 → 19, bags 1-4 → 20-23 and bank bags 5-10 → 64-69, with
-    // no special case and no range check.
+    // ContainerIDToInventoryID(containerID) (`0x4f94e0`): `id - 1`, then +20 below 4 else +60
+    // (donor) or +64 (3.3.5; `ContainerFrame_Scripts.cpp:48-63`). So the keyring -2 → 17, the
+    // backpack 0 → 19, bags 1-4 → 20-23 and bank bags 5-10/5-11 → 64-69/68-74, with no special
+    // case and no range check.
+    let wrath = lua
+        .app_data_ref::<Model>()
+        .expect("model app_data")
+        .target
+        == super::UiTarget::Wrath335;
     lua.globals().set(
         "ContainerIDToInventoryID",
-        lua.create_function(|lua, id: Value| {
+        lua.create_function(move |lua, id: Value| {
             let id = super::binding_abi::number_arg(
                 lua,
                 id,
@@ -897,6 +917,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let t = id.wrapping_sub(1);
             Ok(i64::from(if t < 4 {
                 t.wrapping_add(20)
+            } else if wrath {
+                t.wrapping_add(64)
             } else {
                 t.wrapping_add(60)
             }))
@@ -904,9 +926,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // SetBagPortaitTexture(texture, containerID) (`0x4fa4f0`, the reference's spelling): 0 and
-    // below return before the clear (`0x4fa5b9`), 1-10 clear and then set the bag's icon, 11 and
-    // up raise. 12340 (`ContainerFrame_Scripts.cpp:634`, `0x005D7180`) spells it
-    // `SetBagPortraitTexture` (`ContainerFrame.lua:70`).
+    // below return before the clear (`0x4fa5b9`), 1-10 donor / 1-11 3.3.5 clear and then set the
+    // bag's icon, above that raises. 12340 (`ContainerFrame_Scripts.cpp:634`, `0x005D7180`)
+    // spells it `SetBagPortraitTexture` (`ContainerFrame.lua:70`), whose slot check is
+    // `slot >= 11` on the 0-based id, i.e. 1..=11.
     fn install_bag_portrait(
         lua: &Lua,
         name: &str,
@@ -918,7 +941,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             lua.create_function(move |lua, (region, container): (Value, Value)| {
                 let rh = crate::script::region::this_texture(lua, &region)?;
                 let container = i64::from(binding_abi::number_arg(lua, container, usage)?);
-                if container >= 11 {
+                let wrath = lua
+                    .app_data_ref::<Model>()
+                    .expect("model app_data")
+                    .target
+                    == super::UiTarget::Wrath335;
+                if container >= (if wrath { 12 } else { 11 }) {
                     return Err(mlua::Error::runtime(invalid));
                 }
                 if container <= 0 {
@@ -927,6 +955,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let t = container.wrapping_sub(1);
                 let inv = if t < 4 {
                     t.wrapping_add(20)
+                } else if wrath {
+                    t.wrapping_add(64)
                 } else {
                     t.wrapping_add(60)
                 };
@@ -1091,11 +1121,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 bag,
                 "Usage: GetContainerNumSlots(index)",
             )?);
-            // Donor: the backpack, bank and bags 1-10; the keyring reads zero (`0x4f95fb`).
-            // Wrath's stock GetKeyRingSize reads the keyring capacity through this binding.
+            // Donor: the backpack, bank and bags 1-10; 3.3.5 adds the seventh bank bag (11).
+            // The keyring reads zero on the donor and 32 through Wrath's GetKeyRingSize path.
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let first = if model.target == super::UiTarget::Wrath335 { -2 } else { -1 };
-            if !(first..=10).contains(&bag) {
+            let wrath = model.target == super::UiTarget::Wrath335;
+            let first = if wrath { -2 } else { -1 };
+            let last = if wrath { 11 } else { 10 };
+            if !(first..=last).contains(&bag) {
                 return Ok(0);
             }
             Ok(model.bag(bag).map_or(0, |c| c.num_slots))
@@ -1112,15 +1144,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 "Usage: GetBagName(index)",
             )?);
             // Nil with no active player (`0x4fa6cf`), `BACKPACK_TOOLTIP` for the backpack
-            // (`0x4fa6f0`), the bag item's name for 1-10, nil for the bank, the keyring and the
-            // rest (`0x4fa712`, `0x4fa717`).
+            // (`0x4fa6f0`), the bag item's name for 1-10 donor / 1-11 Wrath, nil for the bank,
+            // the keyring and the rest (`0x4fa712`, `0x4fa717`).
             let name = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let last = if model.target == super::UiTarget::Wrath335 {
+                    11
+                } else {
+                    10
+                };
                 match model.bag(bag) {
                     Some(_) if bag == 0 => {
                         Some(super::glue_core::global_text(lua, "BACKPACK_TOOLTIP"))
                     }
-                    Some(c) if (1..=10).contains(&bag) => c.name.clone(),
+                    Some(c) if (1..=last).contains(&bag) => c.name.clone(),
                     _ => None,
                 }
             };
@@ -1481,7 +1518,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 mod tests {
     use super::{ContainerMove, ContainerSlot, ContainerState, PendingWrap, UiCursorMode};
     use crate::script::cursor::split_container_item;
-    use crate::script::{MerchantItem, MerchantState, UiScript};
+    use crate::script::{BankState, MerchantItem, MerchantState, UiScript, UiTarget};
 
     /// `SetCursor` (`0x489490`): nil resets and returns nothing, no argument or a value with no
     /// text raises the usage line, the eight names match without case and answer 1, and any other
@@ -3083,10 +3120,61 @@ mod tests {
         assert_eq!(slot("-2.9"), 17, "-2.9 -> -2, NOT -3");
     }
 
+    /// 3.3.5's `id - 1`, then +64 for the bank bags: container 5 → 68, 11 → 74.
+    #[test]
+    fn container_id_to_inventory_id_uses_the_335_step() {
+        let s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        let slot = |id: &str| {
+            s.eval::<i64>(&format!("return ContainerIDToInventoryID({id})"))
+                .unwrap()
+        };
+        assert_eq!(slot("5"), 68, "3.3.5 bag 5");
+        assert_eq!(slot("11"), 74, "3.3.5 bag 11");
+        assert_eq!(slot("4"), 23, "the equipped bags keep +20");
+    }
+
+    /// The seventh bank bag resolves for the three stock readers and the withdraw arm once the
+    /// banker is open; the donor script has no such bag.
+    #[test]
+    fn the_seventh_bank_bag_resolves_for_the_wrath_verbs() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_bank(Some(BankState {
+            num_purchased: 7,
+            next_cost: 0,
+        }));
+        let mut slots = std::collections::HashMap::new();
+        slots.insert(
+            1,
+            ContainerSlot {
+                item_id: 117,
+                count: 1,
+                guid: 0x10a,
+                ..Default::default()
+            },
+        );
+        s.set_container(
+            11,
+            Some(ContainerState {
+                name: Some("Bank Bag 7".into()),
+                num_slots: 30,
+                slots,
+            }),
+        );
+        assert_eq!(s.eval::<i64>("return GetContainerNumSlots(11)").unwrap(), 30);
+        assert_eq!(
+            s.eval::<String>("return GetBagName(11)").unwrap(),
+            "Bank Bag 7"
+        );
+        s.run("UseContainerItem(11, 1)").unwrap();
+        assert!(
+            s.take_container_uses().contains(&(11, 1)),
+            "the seventh bag's right-click queues the withdraw call"
+        );
+    }
+
     /// A missing or non-number argument raises: the type test's error `0x6f4940` does not return.
     #[test]
-    fn container_id_to_inventory_id_raises_on_a_bad_argument() {
-        let s = UiScript::new().unwrap();
+    fn container_id_to_inventory_id_raises_on_a_bad_argument() {        let s = UiScript::new().unwrap();
         for call in ["ContainerIDToInventoryID()", "ContainerIDToInventoryID({})"] {
             let err = s
                 .eval::<mlua::Value>(&format!("return {call}"))
