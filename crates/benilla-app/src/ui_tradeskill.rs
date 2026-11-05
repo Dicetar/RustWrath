@@ -28,7 +28,7 @@ use crate::net::{NetCommands, NetHandlerApp, ObjectStore, Objects, SelfPlayer};
 use crate::query_cache::Ask;
 use crate::spell::{cast_target, CastCommit, CastLadder};
 use crate::ui_action::{PlayerActions, Spells};
-use crate::ui_items::{count_of, item_icon, InventoryScope};
+use crate::ui_items::{count_of_in_player, item_icon, InventoryScope};
 use crate::ui_script::{SweepApp, SweepLeg};
 use crate::ui_spellbook::SkillLines;
 use crate::ui_unit::UnitFeed;
@@ -313,6 +313,7 @@ fn resolve_recipe(
     icons: Option<&ItemDisplays>,
     subclasses: Option<&crate::ui_items::ItemSubClasses>,
     store: &ObjectStore,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     items: &Items,
     ask: Ask<'_>,
@@ -329,7 +330,7 @@ fn resolve_recipe(
     let mut reagents = Vec::new();
     let mut num_available = u32::MAX;
     for &(entry, need) in d.reagents.iter().filter(|&&(e, n)| e != 0 && n != 0) {
-        let have = count_of(&store.0, objects, entry, InventoryScope::DEFAULT);
+        let have = count_of_in_player(inv, objects, entry, InventoryScope::DEFAULT);
         let (name, icon) = match items.template(entry, 0, ask) {
             Some(t) => (Some(t.name.clone()), item_icon(icons, t.display_info_id)),
             None => (None, None),
@@ -391,7 +392,7 @@ fn resolve_recipe(
     }
     let mut tools_pending = Vec::new();
     for &t in d.totems.iter().filter(|&&t| t != 0) {
-        let have = count_of(&store.0, objects, t, InventoryScope::DEFAULT) > 0;
+        let have = count_of_in_player(inv, objects, t, InventoryScope::DEFAULT) > 0;
         match items.template(t, 0, ask) {
             Some(info) => tools.push((info.name.clone(), have)),
             None => tools_pending.push(t),
@@ -624,6 +625,8 @@ fn feed_trade_skill(
     objects: Objects,
     items: Res<Items>,
     commands: Res<NetCommands>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     clock: Res<crate::ui_script::UiClock>,
     mut memo: Local<crate::ui_script::VmMemo<TradeMemo>>,
     mut engine: Local<TradeEngine>,
@@ -642,6 +645,11 @@ fn feed_trade_skill(
             let spells = spells.as_deref()?;
             let skill_lines = skill_lines.as_deref()?;
             let store = self_store.single().ok()?;
+            let inventory_view = crate::wrath_inventory::PlayerInventory::new(
+                &store.0,
+                inventory.as_deref(),
+                script.target() == benilla_ui::script::UiTarget::Wrath335,
+            );
             let rank = skill_value(store, line);
             let (line_rank, max_rank) = skill_rank(store, line);
             let (race, class) = store.race_class();
@@ -672,6 +680,7 @@ fn feed_trade_skill(
                         icons.as_deref(),
                         subclasses.as_deref(),
                         store,
+                        &inventory_view,
                         &objects,
                         &items,
                         ask,
@@ -1046,6 +1055,7 @@ mod tests {
         let mut cooldowns = crate::spell::Cooldowns::default();
         cooldowns.start_spell(SPELL, &d, 0, t0, None);
         let store = ObjectStore(benilla_protocol::ObjectFields::default());
+        let inv = crate::wrath_inventory::PlayerInventory::new(&store.0, None, false);
         let mut frame = |elapsed: Duration| {
             deps.with_objects(|objects, items, commands| {
                 resolve_recipe(
@@ -1057,6 +1067,7 @@ mod tests {
                     None,
                     None,
                     &store,
+                    &inv,
                     objects,
                     items,
                     Ask::New(commands),
@@ -1154,6 +1165,8 @@ mod tests {
                 .concat(),
             ));
             deps.with_objects(|objects, items, commands| {
+                let inv =
+                    crate::wrath_inventory::PlayerInventory::new(&store.0, None, false);
                 let r = resolve_recipe(
                     SPELL,
                     0,
@@ -1163,6 +1176,7 @@ mod tests {
                     None,
                     None,
                     &store,
+                    &inv,
                     objects,
                     items,
                     Ask::New(commands),

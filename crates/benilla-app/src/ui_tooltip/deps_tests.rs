@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 
 use benilla_protocol::ObjectFields;
-use benilla_ui::script::{AuraKey, AuraTooltipView, SpellTooltipView};
+use benilla_ui::script::{AuraKey, AuraTooltipView, SpellTooltipView, UiTarget};
 
 use super::spell_deps::{Changes, Deps, RangeSeen, Reagents, Seen};
 use super::spell_feed::{
@@ -1163,7 +1163,14 @@ fn a_reagent_moving_requeues_the_views_that_list_it() {
         reagents
             .iter()
             .map(|&e| {
-                let state = reagent_state(e, Some(store), &objects, &t.items);
+                let state = reagent_state(
+                    e,
+                    Some(store),
+                    None,
+                    UiTarget::Vanilla112,
+                    &objects,
+                    &t.items,
+                );
                 (e, state)
             })
             .collect()
@@ -1608,6 +1615,8 @@ fn the_search_answers_the_same_wherever_the_watched_state_is_the_same() {
                             range_caster: RangeUnit::still(1.5),
                             attack_target: None,
                             objects: &objects,
+                            inventory: None,
+                            target: UiTarget::Vanilla112,
                             items: &mut items,
                             commands: &commands,
                             sub_classes: None,

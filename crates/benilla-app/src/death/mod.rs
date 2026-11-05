@@ -171,6 +171,8 @@ struct DeathView<'w, 's> {
     status: Res<'w, crate::net::NetStatus>,
     spells: Option<Res<'w, Spells>>,
     items: Res<'w, crate::items::Items>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
 }
 
 impl DeathView<'_, '_> {
@@ -235,6 +237,8 @@ impl DeathView<'_, '_> {
             // `HasSoulstone()`; the dead gate is first, so the inventory walk runs only while dead.
             self_res_label: resolve_self_res(
                 &store.0,
+                self.inventory.as_deref(),
+                script.target(),
                 &self.objects,
                 &self.items,
                 self.spells.as_deref(),
@@ -465,6 +469,8 @@ impl SelfRes {
 /// ghost's health being 1, else [`self_res`].
 fn resolve_self_res(
     store: &benilla_protocol::ObjectFields,
+    inventory: Option<&crate::wrath_inventory::WrathInventory>,
+    target: benilla_ui::script::UiTarget,
     objects: &Objects,
     items: &crate::items::Items,
     spells: Option<&Spells>,
@@ -472,7 +478,12 @@ fn resolve_self_res(
     if !store.unit_is_dead() {
         return None;
     }
-    self_res(store, objects, items, spells)
+    let inv = crate::wrath_inventory::PlayerInventory::new(
+        store,
+        inventory,
+        target == benilla_ui::script::UiTarget::Wrath335,
+    );
+    self_res(store, &inv, objects, items, spells)
 }
 
 /// The self-resurrection `HasSoulstone()` names and `UseSoulstone()` spends (`0x48ac80`,
@@ -486,6 +497,7 @@ fn resolve_self_res(
 /// (`0x5ed68e`).
 fn self_res(
     store: &benilla_protocol::ObjectFields,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     items: &crate::items::Items,
     spells: Option<&Spells>,
@@ -496,8 +508,8 @@ fn self_res(
             .map_or_else(|| "UNKNOWN".to_owned(), |d| d.name.clone());
         return Some(SelfRes::Spell { spell, label });
     }
-    let slots = crate::ui_items::collect_inventory(
-        store,
+    let slots = crate::ui_items::collect_inventory_in_player(
+        inv,
         objects,
         crate::ui_items::InventoryScope::DEFAULT,
     );
@@ -590,6 +602,8 @@ pub(crate) struct DeathSteps<'w, 's> {
     transforms: Query<'w, 's, &'static Transform>,
     me: Query<'w, 's, Entity, With<SelfPlayer>>,
     net: Res<'w, NetCommands>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
 }
 
 impl DeathSteps<'_, '_> {
@@ -700,10 +714,16 @@ impl DeathSteps<'_, '_> {
     /// at its first gate (`0x5d8d32`), after the cancel. Nothing is cleared here: the server zeroes
     /// the field.
     fn use_soulstone(&mut self, script: &mut UiScript, store: &benilla_protocol::ObjectFields) {
+        let inv = crate::wrath_inventory::PlayerInventory::new(
+            store,
+            self.inventory.as_deref(),
+            script.target() == benilla_ui::script::UiTarget::Wrath335,
+        );
         let res = {
             let ladder = self.cast.p0();
             self_res(
                 store,
+                &inv,
                 &ladder.objects,
                 &ladder.items,
                 ladder.spells.as_deref(),
@@ -1581,7 +1601,14 @@ mod self_res_tests {
             (F_SELF_RES, REINCARNATION),
         ]);
         assert_eq!(
-            resolve_self_res(&alive, &objects, &items, Some(&spells)),
+            resolve_self_res(
+                &alive,
+                None,
+                benilla_ui::script::UiTarget::Vanilla112,
+                &objects,
+                &items,
+                Some(&spells),
+            ),
             None,
             "alive with a self-res owed: nil"
         );
@@ -1592,7 +1619,14 @@ mod self_res_tests {
             (F_SELF_RES, REINCARNATION),
         ]);
         assert_eq!(
-            resolve_self_res(&ghost, &objects, &items, Some(&spells)),
+            resolve_self_res(
+                &ghost,
+                None,
+                benilla_ui::script::UiTarget::Vanilla112,
+                &objects,
+                &items,
+                Some(&spells),
+            ),
             None,
             "a released ghost still holds the field, and still answers nil"
         );
@@ -1603,7 +1637,14 @@ mod self_res_tests {
             (F_SELF_RES, REINCARNATION),
         ]);
         assert_eq!(
-            resolve_self_res(&dead, &objects, &items, Some(&spells)),
+            resolve_self_res(
+                &dead,
+                None,
+                benilla_ui::script::UiTarget::Vanilla112,
+                &objects,
+                &items,
+                Some(&spells),
+            ),
             Some(SelfRes::Spell {
                 spell: REINCARNATION,
                 label: "Reincarnation".into(),
@@ -1621,7 +1662,14 @@ mod self_res_tests {
             ObjectFields::from_pairs(&[(F_MAXHEALTH, 4000), (F_HEALTH, 0), (F_SELF_RES, 999_999)]);
         for spells in [None, Some(catalog([]))] {
             assert_eq!(
-                resolve_self_res(&dead, &objects, &items, spells.as_ref()),
+                resolve_self_res(
+                    &dead,
+                    None,
+                    benilla_ui::script::UiTarget::Vanilla112,
+                    &objects,
+                    &items,
+                    spells.as_ref(),
+                ),
                 Some(SelfRes::Spell {
                     spell: 999_999,
                     label: "UNKNOWN".into(),
@@ -1679,7 +1727,14 @@ mod self_res_tests {
         }
         let dead = ObjectFields::from_pairs(&pairs);
 
-        match resolve_self_res(&dead, &objects, &items, Some(&spells)) {
+        match resolve_self_res(
+            &dead,
+            None,
+            benilla_ui::script::UiTarget::Vanilla112,
+            &objects,
+            &items,
+            Some(&spells),
+        ) {
             Some(SelfRes::Item { entry, label, .. }) => {
                 assert_eq!(
                     entry, 12,
@@ -1693,7 +1748,14 @@ mod self_res_tests {
         // Without it the answer is nil, not the spell leg's "UNKNOWN".
         let bare = ObjectFields::from_pairs(&[(F_MAXHEALTH, 4000), (F_HEALTH, 0)]);
         assert_eq!(
-            resolve_self_res(&bare, &objects, &items, Some(&spells)),
+            resolve_self_res(
+                &bare,
+                None,
+                benilla_ui::script::UiTarget::Vanilla112,
+                &objects,
+                &items,
+                Some(&spells),
+            ),
             None
         );
     }

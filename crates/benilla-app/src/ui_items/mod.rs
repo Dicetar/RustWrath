@@ -310,23 +310,23 @@ fn item_is_whole(fields: &ObjectFields) -> bool {
     !broken && flags & 0x10 == 0
 }
 
-/// The reference's inventory walk (`0x622420`): one ascending pass over the player's slot array,
-/// recursing into each container as it is passed, `scope` gating the sections. `visit` gets the
-/// wire `(bag_index, slot)` and the guid, and returns `Some` to stop. The order is the reference's
-/// and load-bearing: equipment 0-18, each bag slot 19-22 then its contents, backpack 23-38, bank
-/// 39-62, each bank bag 63-68 then its contents, keyring.
-fn walk_inventory<T>(
-    store: &ObjectFields,
+/// The reference's inventory walk (`0x622420`) over any read view: one ascending pass over the
+/// player's slot array, recursing into each container as it is passed, `scope` gating the
+/// sections. `visit` gets the wire `(bag_index, slot)` and the guid, and returns `Some` to stop.
+/// The order is the reference's and load-bearing: equipment 0-18, each bag slot 19-22 then its
+/// contents, backpack 23-38, bank 39-<view end>, each bank bag then its contents, keyring. The
+/// view supplies the donor (24/6/16) or 3.3.5 (28/7/32) capacities and the typed owner.
+fn walk_inventory_in_player<T>(
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     scope: InventoryScope,
     raw: impl FnMut(u8, u8, u64) -> Option<T>,
 ) -> Option<T> {
-    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
     walk_inventory_filtered(
-        &donor,
+        inv,
         objects,
         scope,
-        donor.keyring_capacity(),
+        inv.keyring_capacity(),
         item_is_whole,
         raw,
     )
@@ -445,7 +445,7 @@ fn walk_inventory_filtered<T>(
 /// The Wrath possession query includes broken items; donor action/reagent walks keep their
 /// whole-item gate. Charge reads use the same template and instance facts as action_count.
 fn possession_count(
-    store: &ObjectFields,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     items: &Items,
     entry: u32,
@@ -458,37 +458,43 @@ fn possession_count(
     };
     let mut total = 0u32;
     let mut available = true;
-    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
-    walk_inventory_filtered::<()>(&donor, objects, scope, WRATH_KEYRING_SLOTS, |_| true, |_, _, guid| {
-        let amount = (|| {
-            let fields = objects.object(guid)?;
-            if fields.object_entry()? != entry {
-                return Some(0);
-            }
-            let stack = fields.item_stack_count()?;
-            let uses = if include_uses {
-                let template = items.template(entry, guid, Ask::Read)?;
-                if template.has_finite_charges() {
-                    fields.item_spell_charges(0)?.unsigned_abs()
+    walk_inventory_filtered::<()>(
+        inv,
+        objects,
+        scope,
+        inv.keyring_capacity(),
+        |_| true,
+        |_, _, guid| {
+            let amount = (|| {
+                let fields = objects.object(guid)?;
+                if fields.object_entry()? != entry {
+                    return Some(0);
+                }
+                let stack = fields.item_stack_count()?;
+                let uses = if include_uses {
+                    let template = items.template(entry, guid, Ask::Read)?;
+                    if template.has_finite_charges() {
+                        fields.item_spell_charges(0)?.unsigned_abs()
+                    } else {
+                        1
+                    }
                 } else {
                     1
+                };
+                Some(stack.wrapping_mul(uses))
+            })();
+            match amount {
+                Some(amount) => {
+                    total = total.wrapping_add(amount);
+                    None
                 }
-            } else {
-                1
-            };
-            Some(stack.wrapping_mul(uses))
-        })();
-        match amount {
-            Some(amount) => {
-                total = total.wrapping_add(amount);
-                None
+                None => {
+                    available = false;
+                    Some(())
+                }
             }
-            None => {
-                available = false;
-                Some(())
-            }
-        }
-    });
+        },
+    );
     available.then_some(total)
 }
 
@@ -504,43 +510,39 @@ pub(crate) fn count_of(
     entry: u32,
     scope: InventoryScope,
 ) -> u32 {
-    sum_of(store, objects, entry, scope, |fields| {
+    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
+    count_of_in_player(&donor, objects, entry, scope)
+}
+
+/// [`count_of`] over the typed read view: the donor projection plus, when present, the Wrath
+/// owner's bank/keyring tail. The caller chooses the target's capacities.
+pub(crate) fn count_of_in_player(
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
+    objects: &Objects,
+    entry: u32,
+    scope: InventoryScope,
+) -> u32 {
+    sum_in_player(inv, objects, entry, scope, |fields| {
         fields.item_stack_count().unwrap_or(1)
     })
 }
 
 /// The sum of `weight` over every copy of `entry` within `scope`; a dword add, so it wraps.
-fn sum_of(
-    store: &ObjectFields,
-    objects: &Objects,
-    entry: u32,
-    scope: InventoryScope,
-    weight: impl Fn(&ObjectFields) -> u32,
-) -> u32 {
-    sum_of_in_target(UiTarget::Vanilla112, store, objects, entry, scope, weight)
-}
-
-fn sum_of_in_target(
-    target: UiTarget,
-    store: &ObjectFields,
+fn sum_in_player(
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
     objects: &Objects,
     entry: u32,
     scope: InventoryScope,
     weight: impl Fn(&ObjectFields) -> u32,
 ) -> u32 {
     let mut total = 0u32;
-    let inv = crate::wrath_inventory::PlayerInventory::new(
-        store,
-        None,
-        target == UiTarget::Wrath335,
-    );
-    walk_inventory_filtered::<()>(&inv, objects, scope, keyring_span(target), item_is_whole, |_, _, guid| {
+    walk_inventory_in_player(inv, objects, scope, |_, _, guid| {
         if let Some(fields) = objects.object(guid) {
             if fields.object_entry() == Some(entry) {
                 total = total.wrapping_add(weight(fields));
             }
         }
-        None
+        None::<()>
     });
     total
 }
@@ -567,8 +569,24 @@ pub(crate) fn action_count_in_target(
     entry: u32,
     template: Option<&benilla_protocol::ItemInfo>,
 ) -> u32 {
+    let inv = crate::wrath_inventory::PlayerInventory::new(
+        store,
+        None,
+        target == UiTarget::Wrath335,
+    );
+    action_count_in_player(&inv, objects, entry, template)
+}
+
+/// [`action_count_in_target`] over the typed read view: the action bar's count includes the
+/// Wrath bank/keyring tail the caller's capacities admit.
+pub(crate) fn action_count_in_player(
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
+    objects: &Objects,
+    entry: u32,
+    template: Option<&benilla_protocol::ItemInfo>,
+) -> u32 {
     let charged = template.is_some_and(benilla_protocol::ItemInfo::has_finite_charges);
-    sum_of_in_target(target, store, objects, entry, InventoryScope::DEFAULT, |fields| {
+    sum_in_player(inv, objects, entry, InventoryScope::DEFAULT, |fields| {
         if charged {
             fields.item_spell_charges(0).unwrap_or(0).unsigned_abs()
         } else {
@@ -583,15 +601,25 @@ pub(crate) fn stack_counts(
     store: &ObjectFields,
     objects: &Objects,
 ) -> std::collections::HashMap<u32, u32> {
+    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
+    stack_counts_in_player(&donor, objects)
+}
+
+/// [`stack_counts`] over the typed read view: one walk at mask 0, including the Wrath tail the
+/// view's capacities admit.
+pub(crate) fn stack_counts_in_player(
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
+    objects: &Objects,
+) -> std::collections::HashMap<u32, u32> {
     let mut counts = std::collections::HashMap::new();
-    walk_inventory::<()>(store, objects, InventoryScope::DEFAULT, |_, _, guid| {
+    walk_inventory_in_player(inv, objects, InventoryScope::DEFAULT, |_, _, guid| {
         if let Some(fields) = objects.object(guid) {
             if let Some(entry) = fields.object_entry() {
                 let n = counts.entry(entry).or_insert(0u32);
                 *n = n.wrapping_add(fields.item_stack_count().unwrap_or(1));
             }
         }
-        None
+        None::<()>
     });
     counts
 }
@@ -609,7 +637,7 @@ pub(crate) struct ItemSearch {
 }
 
 /// Where a copy of `entry` is: the wire `(bag_index, slot)` and the instance guid, the first hit
-/// of [`walk_inventory`] (predicate `OBJECT_FIELD_ENTRY` equality). The bank is not in scope.
+/// of the walk (predicate `OBJECT_FIELD_ENTRY` equality). The bank is not in scope.
 pub(crate) fn find_item(
     store: &ObjectFields,
     objects: &Objects,
@@ -626,30 +654,48 @@ pub(crate) fn find_item_in_target(
     entry: u32,
     search: ItemSearch,
 ) -> Option<(u8, u8, u64)> {
-    let scope = if search.equipment_only {
-        InventoryScope::EQUIPMENT_ONLY
-    } else {
-        InventoryScope::DEFAULT
-    };
     let inv = crate::wrath_inventory::PlayerInventory::new(
         store,
         None,
         target == UiTarget::Wrath335,
     );
-    walk_inventory_filtered(&inv, objects, scope, keyring_span(target), item_is_whole, |bag, slot, guid| {
-        let f = objects.object(guid)?;
-        if f.object_entry() != Some(entry) {
-            return None;
-        }
-        // Under the charges filter the instance needs uses left; a container is exempt.
-        if search.live_charges_only
-            && f.container_num_slots().is_none_or(|n| n == 0)
-            && f.item_spell_charges(0).is_some_and(|c| c == 0)
-        {
-            return None;
-        }
-        Some((bag, slot, guid))
-    })
+    find_item_in_player(&inv, objects, entry, search)
+}
+
+/// [`find_item_in_target`] over the typed read view. A first hit in the Wrath tail is addressed
+/// by the 3.3.5 wire position the view's target produced.
+pub(crate) fn find_item_in_player(
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
+    objects: &Objects,
+    entry: u32,
+    search: ItemSearch,
+) -> Option<(u8, u8, u64)> {
+    let scope = if search.equipment_only {
+        InventoryScope::EQUIPMENT_ONLY
+    } else {
+        InventoryScope::DEFAULT
+    };
+    walk_inventory_filtered(
+        inv,
+        objects,
+        scope,
+        inv.keyring_capacity(),
+        item_is_whole,
+        |bag, slot, guid| {
+            let f = objects.object(guid)?;
+            if f.object_entry() != Some(entry) {
+                return None;
+            }
+            // Under the charges filter the instance needs uses left; a container is exempt.
+            if search.live_charges_only
+                && f.container_num_slots().is_none_or(|n| n == 0)
+                && f.item_spell_charges(0).is_some_and(|c| c == 0)
+            {
+                return None;
+            }
+            Some((bag, slot, guid))
+        },
+    )
 }
 
 /// Every occupied slot `scope` reaches, in the walker's order, for a predicate judged afterwards
@@ -659,8 +705,18 @@ pub(crate) fn collect_inventory(
     objects: &Objects,
     scope: InventoryScope,
 ) -> Vec<(u8, u8, u64)> {
+    let donor = crate::wrath_inventory::PlayerInventory::new(store, None, false);
+    collect_inventory_in_player(&donor, objects, scope)
+}
+
+/// [`collect_inventory`] over the typed read view.
+pub(crate) fn collect_inventory_in_player(
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
+    objects: &Objects,
+    scope: InventoryScope,
+) -> Vec<(u8, u8, u64)> {
     let mut out = Vec::new();
-    walk_inventory(store, objects, scope, |bag, slot, guid| {
+    walk_inventory_in_player(inv, objects, scope, |bag, slot, guid| {
         out.push((bag, slot, guid));
         None::<()>
     });
@@ -2223,5 +2279,233 @@ mod count_of_tests {
             2,
             "last backpack slot + last bank bag, with buyback between them untouched"
         );
+    }
+}
+
+/// The typed Wrath read path: the same walks over [`PlayerInventory`], with the owner's 28/7/32
+/// tail. Donor fallback and the explicit-clear rule are pinned here too.
+#[cfg(test)]
+mod wrath_read_tests {
+    use super::{
+        action_count_in_player, collect_inventory_in_player, count_of_in_player,
+        find_item_in_player, possession_count, stack_counts_in_player, InventoryScope, ItemSearch,
+        TestObjects,
+    };
+    use crate::wrath_inventory::{
+        InventoryAddr, PlayerInventory, WrathFieldWindow, WrathInventory, PLAYER_WINDOW_END,
+    };
+    use benilla_protocol::ObjectFields;
+
+    const ENTRY: u16 = 3; // OBJECT_FIELD_ENTRY
+    const STACK: u16 = 14; // ITEM_FIELD_STACK_COUNT
+    const NUM_SLOTS: u16 = 48; // CONTAINER_FIELD_NUM_SLOTS
+    const SLOT_1: u16 = 50; // CONTAINER_FIELD_SLOT_1
+    const BANK_SLOT_1: u16 = 564; // donor PLAYER_FIELD_BANK_SLOT_1 (slots 39..62)
+    const BANK_BAG_SLOT_1: u16 = 612; // donor PLAYER_FIELD_BANKBAG_SLOT_1 (63..68)
+    const KEYRING_SLOT_1: u16 = 648; // donor PLAYER_FIELD_KEYRING_SLOT_1 (81..112)
+
+    const AMMO: u32 = 3_030;
+    const KEY: u32 = 7_146;
+
+    /// A typed owner carrying exactly `pairs`, every other address never observed.
+    fn typed(pairs: &[(InventoryAddr, u64)]) -> WrathInventory {
+        let mut values = vec![0u32; usize::from(PLAYER_WINDOW_END)];
+        let mut delivered = vec![0u64; values.len().div_ceil(64)];
+        for &(addr, guid) in pairs {
+            let lo = usize::from(addr.field_index());
+            values[lo] = guid as u32;
+            values[lo + 1] = (guid >> 32) as u32;
+            for index in [lo, lo + 1] {
+                delivered[index / 64] |= 1u64 << (index % 64);
+            }
+        }
+        let mut inv = WrathInventory::default();
+        inv.apply(&WrathFieldWindow::new(values, delivered), (1, 1));
+        inv
+    }
+
+    fn stack(objects: &mut TestObjects, guid: u64, entry: u32, count: u32) {
+        objects.spawn(
+            guid,
+            ObjectFields::from_pairs(&[(ENTRY, entry), (STACK, count)]),
+        );
+    }
+
+    fn bag(objects: &mut TestObjects, guid: u64, contents: &[(u8, u64)]) {
+        let mut pairs = vec![(ENTRY, 1), (NUM_SLOTS, 16)];
+        for &(i, item_guid) in contents {
+            pairs.push((SLOT_1 + 2 * u16::from(i), item_guid as u32));
+            pairs.push((SLOT_1 + 2 * u16::from(i) + 1, (item_guid >> 32) as u32));
+        }
+        objects.spawn_container(guid, ObjectFields::from_pairs(&pairs));
+    }
+
+    /// A donor descriptor with the item guids at their 1.12 positions.
+    fn donor(bank: &[(u8, u64)], bags: &[(u8, u64)], keyring: &[(u8, u64)]) -> ObjectFields {
+        let mut pairs = Vec::new();
+        let mut seat = |base: u16, slots: &[(u8, u64)]| {
+            for &(i, guid) in slots {
+                let lo = base + 2 * u16::from(i);
+                pairs.push((lo, guid as u32));
+                pairs.push((lo + 1, (guid >> 32) as u32));
+            }
+        };
+        seat(BANK_SLOT_1, bank);
+        seat(BANK_BAG_SLOT_1, bags);
+        seat(KEYRING_SLOT_1, keyring);
+        ObjectFields::from_pairs(&pairs)
+    }
+
+    /// `count_of(QUEST_ITEMS)` and the collect walk reach bank slot 25, bank bag 7 and its
+    /// contents, and keyring slot 32, through the typed owner.
+    #[test]
+    fn the_quest_count_and_collect_walk_reach_the_wrath_tail() {
+        let mut objs = TestObjects::new();
+        stack(&mut objs, 0xB1, AMMO, 2); // bank slot 25
+        stack(&mut objs, 0xB2, AMMO, 1); // bank bag 7 contents
+        stack(&mut objs, 0xB3, AMMO, 4); // keyring slot 32
+        bag(&mut objs, 0xBA, &[(0, 0xB2)]);
+        let inv = typed(&[
+            (InventoryAddr::Bank(25), 0xB1),
+            (InventoryAddr::BankBag(6), 0xBA),
+            (InventoryAddr::Keyring(31), 0xB3),
+        ]);
+        let store = ObjectFields::default();
+        let view = PlayerInventory::new(&store, Some(&inv), true);
+        let objects = objs.get();
+        assert_eq!(
+            count_of_in_player(&view, &objects, AMMO, InventoryScope::QUEST_ITEMS),
+            7,
+            "2 + 1 + 4, all three tail bands"
+        );
+        let seen = collect_inventory_in_player(&view, &objects, InventoryScope::QUEST_ITEMS);
+        assert!(seen.contains(&(255, 39 + 25, 0xB1)), "bank slot 25: {seen:?}");
+        assert!(seen.contains(&(255, 67 + 6, 0xBA)), "bank bag 7: {seen:?}");
+        assert!(
+            seen.contains(&(255, 67 + 6, 0xB2)),
+            "bank bag 7's contents: {seen:?}"
+        );
+        assert!(seen.contains(&(255, 86 + 31, 0xB3)), "keyring slot 32: {seen:?}");
+    }
+
+    /// The action count and the stack map keep mask 0 but still walk all 32 keyring slots.
+    #[test]
+    fn the_action_and_stack_counts_include_the_thirty_two_slot_keyring() {
+        let mut objs = TestObjects::new();
+        stack(&mut objs, 0xB3, AMMO, 4);
+        let inv = typed(&[(InventoryAddr::Keyring(31), 0xB3)]);
+        let store = ObjectFields::default();
+        let view = PlayerInventory::new(&store, Some(&inv), true);
+        let objects = objs.get();
+        assert_eq!(
+            action_count_in_player(&view, &objects, AMMO, None),
+            4,
+            "an action slot's stack count reaches keyring slot 32"
+        );
+        assert_eq!(
+            stack_counts_in_player(&view, &objects).get(&AMMO).copied(),
+            Some(4),
+            "the one-pass stack map reaches it too"
+        );
+    }
+
+    /// `find_item` keeps the reference's mask-0 bank exclusion but widens the keyring to 32.
+    #[test]
+    fn find_item_reaches_keyring_slot_thirty_two_not_the_bank() {
+        let mut objs = TestObjects::new();
+        stack(&mut objs, 0xB3, KEY, 1);
+        stack(&mut objs, 0xB1, KEY, 1);
+        let inv = typed(&[
+            (InventoryAddr::Keyring(31), 0xB3),
+            (InventoryAddr::Bank(25), 0xB1),
+        ]);
+        let store = ObjectFields::default();
+        let view = PlayerInventory::new(&store, Some(&inv), true);
+        let objects = objs.get();
+        assert_eq!(
+            find_item_in_player(&view, &objects, KEY, ItemSearch::default()),
+            Some((255, 86 + 31, 0xB3)),
+            "keyring slot 32 is in mask 0"
+        );
+        let bank_only = typed(&[(InventoryAddr::Bank(25), 0xB1)]);
+        let bank_view = PlayerInventory::new(&store, Some(&bank_only), true);
+        assert_eq!(
+            find_item_in_player(&bank_view, &objects, KEY, ItemSearch::default()),
+            None,
+            "the reference's ordinary search never enters the bank, even in Wrath"
+        );
+    }
+
+    /// With no typed owner the donor 24/6/16 walk answers exactly as before; the Wrath
+    /// capacities do not invent tail values when the owner never observed them.
+    #[test]
+    fn the_donor_fallback_keeps_24_6_16_and_absent_tail_addresses_read_zero() {
+        let mut objs = TestObjects::new();
+        stack(&mut objs, 0xB1, AMMO, 2);
+        stack(&mut objs, 0xB2, AMMO, 1);
+        stack(&mut objs, 0xB3, AMMO, 1);
+        let store = donor(&[(23, 0xB1)], &[(5, 0xBA)], &[(15, 0xB3)]);
+        bag(&mut objs, 0xBA, &[(0, 0xB2)]);
+        let objects = objs.get();
+
+        let donor_view = PlayerInventory::new(&store, None, false);
+        assert_eq!(donor_view.bank_capacity(), 24);
+        assert_eq!(donor_view.bank_bag_capacity(), 6);
+        assert_eq!(donor_view.keyring_capacity(), 16);
+        assert_eq!(
+            count_of_in_player(&donor_view, &objects, AMMO, InventoryScope::QUEST_ITEMS),
+            4
+        );
+
+        // A Wrath target with an empty owner keeps the donor values for shared bands, while the
+        // never-observed tail slots 24..27 and bag 6 stay empty.
+        let empty = WrathInventory::default();
+        let wrath_view = PlayerInventory::new(&store, Some(&empty), true);
+        assert_eq!(wrath_view.bank_capacity(), 28);
+        assert_eq!(wrath_view.bank(23), 0xB1);
+        assert_eq!(wrath_view.bank(25), 0, "never observed, no donor neighbour");
+        assert_eq!(wrath_view.bank_bag(6), 0);
+        assert_eq!(wrath_view.keyring(15), 0xB3);
+        assert_eq!(wrath_view.keyring(31), 0);
+    }
+
+    /// `GetItemCount`'s possession query (`script_calls` -> `ItemSteps::item_count`) walks the same
+    /// typed view: with the bank flag it sees slot 25 and bank bag 7, and the keyring's 32 seats.
+    #[test]
+    fn the_script_item_count_reaches_the_wrath_bank_and_keyring_tail() {
+        let mut objs = TestObjects::new();
+        stack(&mut objs, 0xB1, AMMO, 2); // bank slot 25
+        stack(&mut objs, 0xB2, AMMO, 1); // bank bag 7 contents
+        stack(&mut objs, 0xB3, AMMO, 4); // keyring slot 32
+        bag(&mut objs, 0xBA, &[(0, 0xB2)]);
+        let inv = typed(&[
+            (InventoryAddr::Bank(25), 0xB1),
+            (InventoryAddr::BankBag(6), 0xBA),
+            (InventoryAddr::Keyring(31), 0xB3),
+        ]);
+        let store = ObjectFields::default();
+        let view = PlayerInventory::new(&store, Some(&inv), true);
+        let items = crate::items::Items::default();
+        let objects = objs.get();
+        assert_eq!(
+            possession_count(&view, &objects, &items, AMMO, true, false),
+            Some(7)
+        );
+        assert_eq!(
+            possession_count(&view, &objects, &items, AMMO, false, false),
+            Some(4),
+            "without the bank flag: the keyring tail only"
+        );
+    }
+
+    /// An observed clear is final: it does not fall back to a donor value still sitting in the
+    /// projection. A never-observed address does fall back.
+    #[test]
+    fn a_typed_clear_does_not_resurrect_a_donor_value() {
+        let store = donor(&[(0, 0xD1), (1, 0xD2)], &[], &[]);
+        let inv = typed(&[(InventoryAddr::Bank(0), 0)]);
+        let view = PlayerInventory::new(&store, Some(&inv), true);
+        assert_eq!(view.bank(0), 0, "delivered zero is a clear, not a miss");
+        assert_eq!(view.bank(1), 0xD2, "never observed still reads the donor");
     }
 }

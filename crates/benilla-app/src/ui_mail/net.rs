@@ -40,6 +40,8 @@ struct ListReads<'w, 's> {
     switches: Option<Res<'w, crate::text_filter::TextFilterSwitches>>,
     script: Option<NonSend<'w, benilla_ui::script::UiScript>>,
     props: Option<Res<'w, crate::items::RandomProperties>>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
 }
 
 fn on_mail_list(
@@ -52,9 +54,22 @@ fn on_mail_list(
     if let SessionEvent::MailList { mails } = ev {
         // The usable list's first paper (`[[0xb6ee30]]`, `0x4ad565`-`0x4ad56d`).
         let first_paper = reads.stationery.as_deref().and_then(|catalog| {
-            super::stationeries(catalog, &reads.self_q, &reads.objects, &reads.items, None)
-                .first()
-                .map(|v| v.id)
+            let target = if crate::wrath::selected_from_env() {
+                benilla_ui::script::UiTarget::Wrath335
+            } else {
+                benilla_ui::script::UiTarget::Vanilla112
+            };
+            super::stationeries(
+                catalog,
+                &reads.self_q,
+                reads.inventory.as_deref(),
+                target,
+                &reads.objects,
+                &reads.items,
+                None,
+            )
+            .first()
+            .map(|v| v.id)
         });
         let enabled = reads.switches.as_deref().is_some_and(|s| s.profanity);
         let get_text = |key: &str| {

@@ -124,6 +124,8 @@ pub(crate) struct RunReads<'w, 's> {
     me: Query<'w, 's, &'static ObjectStore, With<SelfPlayer>>,
     trade: crate::ui_trade::TouchReads<'w, 's>,
     sink: crate::ui_action::MessageSink<'w>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
 }
 
 /// The VM, the trade session a run's trade half writes, and the lane, whose trade halves a close
@@ -202,9 +204,16 @@ fn fire_run(vm: &mut RunVm, reads: &mut RunReads, run: Run, touch: Option<TradeT
             return;
         };
         fire_unlocks(script, unlocks);
+        let target = script.target();
         if rebuild == Some(Rebuild::BeforeRecount) {
             rebuild_lists(script, &|entry| {
-                carried(&reads.me, &reads.trade.objects, entry)
+                carried(
+                    &reads.me,
+                    reads.inventory.as_deref(),
+                    target,
+                    &reads.trade.objects,
+                    entry,
+                )
             });
         }
         let counter = crate::ui_action::recount::Counter {
@@ -212,6 +221,7 @@ fn fire_run(vm: &mut RunVm, reads: &mut RunReads, run: Run, touch: Option<TradeT
             objects: &reads.trade.objects,
             items: &reads.trade.items,
             commands: &reads.trade.commands,
+            inventory: reads.inventory.as_deref(),
         };
         for entry in notice.recounts() {
             crate::ui_action::recount::recount(script, &counter, entry);
@@ -226,7 +236,16 @@ fn fire_run(vm: &mut RunVm, reads: &mut RunReads, run: Run, touch: Option<TradeT
     }
     vm.run(|script| {
         if let Some(script) = script {
-            let count = |entry| carried(&reads.me, &reads.trade.objects, entry);
+            let target = script.target();
+            let count = |entry| {
+                carried(
+                    &reads.me,
+                    reads.inventory.as_deref(),
+                    target,
+                    &reads.trade.objects,
+                    entry,
+                )
+            };
             fire_tail(
                 script,
                 &mut reads.sink,
@@ -280,15 +299,22 @@ fn rebuild_lists(script: &mut UiScript, count: &dyn Fn(u32) -> u32) {
     }
 }
 
-/// The player's carried count of an entry, 0 with no active player.
+/// The player's carried count of an entry, 0 with no active player, over the typed read view.
 fn carried(
     me: &Query<&crate::net::ObjectStore, With<crate::net::SelfPlayer>>,
+    inventory: Option<&crate::wrath_inventory::WrathInventory>,
+    target: benilla_ui::script::UiTarget,
     objects: &crate::net::Objects,
     entry: u32,
 ) -> u32 {
     me.iter().next().map_or(0, |s| {
-        crate::ui_items::count_of(
+        let inv = crate::wrath_inventory::PlayerInventory::new(
             &s.0,
+            inventory,
+            target == benilla_ui::script::UiTarget::Wrath335,
+        );
+        crate::ui_items::count_of_in_player(
+            &inv,
             objects,
             entry,
             crate::ui_items::InventoryScope::DEFAULT,

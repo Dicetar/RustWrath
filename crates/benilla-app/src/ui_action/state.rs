@@ -14,7 +14,7 @@
 //! Usability is `IsSpellUsableNow 0x6e3d60` ([`crate::spell::usable`]), auto-repeat the `0xceac30`
 //! key, and range the pre-check `0x6e4440` on the selection ([`crate::spell::range_check`]).
 
-use crate::ui_items::stack_counts;
+use crate::ui_items::stack_counts_in_player;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
@@ -22,7 +22,7 @@ use bevy::prelude::*;
 
 use benilla_formats::RangeTargets;
 use benilla_protocol::messages::{ACTION_KIND_ITEM, ACTION_KIND_SPELL};
-use benilla_ui::script::{macro_slot_id, ActionState};
+use benilla_ui::script::{macro_slot_id, ActionState, UiTarget};
 
 use crate::items::Items;
 use crate::net::{FieldChanged, NetCommands, ObjectStore, SelfPlayer};
@@ -350,6 +350,8 @@ pub(crate) struct ActionStates<'w, 's> {
     commands: Res<'w, NetCommands>,
     // `ItemSubClass.dbc`, whose flags the walk's ammo leg reads.
     sub_classes: Option<Res<'w, crate::ui_items::ItemSubClasses>>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
     memory: ResMut<'w, ActionStateMemory>,
 }
 
@@ -570,6 +572,7 @@ impl ActionStates<'_, '_> {
             items,
             commands,
             sub_classes,
+            inventory,
             memory,
         } = self;
         let ActionStateMemory {
@@ -584,9 +587,19 @@ impl ActionStates<'_, '_> {
         let sub_classes = sub_classes.as_deref().map(|s| &s.0);
         let me = self_q.iter().next();
         let control_lost = own_control.as_ref().is_some_and(|c| c.0);
+        // The read-only view for the bags: the donor descriptor plus the typed Wrath owner when
+        // this session selected the 3.3.5 host.
+        let inventory_view = me.map(|(s, _)| {
+            crate::wrath_inventory::PlayerInventory::new(
+                &s.0,
+                inventory.as_deref(),
+                script.target() == UiTarget::Wrath335,
+            )
+        });
         // The bags, walked once per pass for every reagent and totem count below.
-        let stacks = me
-            .map(|(s, _)| stack_counts(&s.0, objects))
+        let stacks = inventory_view
+            .as_ref()
+            .map(|inv| stack_counts_in_player(inv, objects))
             .unwrap_or_default();
         let selection = &targeting.selection;
         let target = selection
@@ -738,9 +751,9 @@ impl ActionStates<'_, '_> {
                     // `IsEquippedAction`, the green border: `0x622270` at mask 1
                     // (`0x4e5377`-`0x4e5380`), the walker over the worn slots, so a broken copy is
                     // not worn.
-                    st.equipped = me.is_some_and(|(s, _)| {
-                        crate::ui_items::find_item(
-                            &s.0,
+                    st.equipped = inventory_view.as_ref().is_some_and(|inv| {
+                        crate::ui_items::find_item_in_player(
+                            inv,
                             objects,
                             button.action,
                             crate::ui_items::ItemSearch {

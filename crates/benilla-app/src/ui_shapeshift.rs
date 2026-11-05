@@ -142,6 +142,8 @@ fn feed_shapeshift_bar(
     objects: Objects,
     units: Query<&ObjectStore, Without<SelfPlayer>>,
     items: Res<Items>,
+    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     clock: Res<crate::ui_script::UiClock>,
     spell_mods: Res<crate::spell::SpellModifiers>,
     own_control: Option<Res<crate::player::OwnControlLost>>,
@@ -155,6 +157,10 @@ fn feed_shapeshift_bar(
     // with the host lent.
     let Some((fresh, form_byte)) = vm.turn(|script, (cooldowns, selection, relations)| {
         // No VM, no bar.
+        let target = script
+            .as_ref()
+            .map(|s| s.target())
+            .unwrap_or(benilla_ui::script::UiTarget::Vanilla112);
         script?;
         let spells = spells?;
         let store = self_q.iter().next();
@@ -190,8 +196,16 @@ fn feed_shapeshift_bar(
         });
 
         // The bags, walked once for every form's reagent leg.
-        let stacks = store
-            .map(|s| crate::ui_items::stack_counts(&s.0, &objects))
+        let inventory_view = store.map(|s| {
+            crate::wrath_inventory::PlayerInventory::new(
+                &s.0,
+                inventory.as_deref(),
+                target == benilla_ui::script::UiTarget::Wrath335,
+            )
+        });
+        let stacks = inventory_view
+            .as_ref()
+            .map(|inv| crate::ui_items::stack_counts_in_player(inv, &objects))
             .unwrap_or_default();
         let fresh: Vec<ShapeshiftFormView> = rows
             .into_iter()
