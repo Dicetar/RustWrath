@@ -54,14 +54,22 @@ pub(in crate::entities) fn placement(
     }
 }
 
-/// One held slot's enchant ids folded for [`DressKey`], over the seven `CGItem` slots (`0x62ec70`).
+/// One held slot's enchant ids folded for [`DressKey`], over the seven `CGItem` slots (`0x62ec70`),
+/// or the twelve Wrath instance slots when our own item row is present. The broadcast visible-item
+/// block remains the donor source for another player's item.
 fn enchant_fold(
     s: &benilla_protocol::messages::ObjectFields,
     kind: EntityKind,
     slot: usize,
+    read: Option<crate::wrath_item::ItemRead<'_>>,
 ) -> i32 {
     if kind != EntityKind::Player {
         return 0;
+    }
+    if let Some(read) = read.filter(|read| read.row().is_some()) {
+        return (0..read.enchant_slots())
+            .filter_map(|j| read.enchant(j))
+            .fold(0i32, |acc, e| acc.wrapping_mul(31).wrapping_add(e));
     }
     (0..7u8)
         .filter_map(|j| s.player_visible_item_enchant(PLAYER_HELD_SLOTS[slot], j))
@@ -458,9 +466,17 @@ pub(in crate::entities) fn resolve_equipment(
             } else {
                 ItemModelKind::Weapon
             };
+            // Our own equipped item streams as an item object too; on 3.3.5 its typed row is the
+            // only source with all twelve enchant slots. Another player's item keeps the
+            // broadcast visible-item block.
+            let read = (net_entity.kind == EntityKind::Player)
+                .then(|| s.player_inv_slot(PLAYER_HELD_SLOTS[slot]).filter(|&g| g != 0))
+                .flatten()
+                .and_then(|guid| objects.item_read(guid))
+                .filter(|read| read.row().is_some());
             // The dress, above the placement gate; its enchants come off the descriptor, since an
             // enchant raises a model event drawn or not and `visual` exists only for a placed slot.
-            worn[slot] = Some((display, kind, enchant_fold(s, net_entity.kind, slot)));
+            worn[slot] = Some((display, kind, enchant_fold(s, net_entity.kind, slot, read)));
             let live = placement(slot, inv_type, item_sheath, sheath_of(slot, inv_type));
             // The hidden hand's weapon stays where the disarm reflex left it (`0x5ff580`).
             let attach = if hidden == Some(slot) {
@@ -480,8 +496,16 @@ pub(in crate::entities) fn resolve_equipment(
             };
             ensure_item_model(&mut held, display, kind, &asset_server);
             let enchants = (net_entity.kind == EntityKind::Player).then(|| {
-                // All seven `CGItem` slots (`0x62ec70`); 1.12 sends two, PERM and TEMP.
-                (0..7u8).filter_map(|j| s.player_visible_item_enchant(PLAYER_HELD_SLOTS[slot], j))
+                // Twelve when our own 3.3.5 item row is authoritative, else the donor seven
+                // `CGItem` slots (`0x62ec70`); 1.12 broadcasts two, PERM and TEMP.
+                match read {
+                    Some(read) => (0..read.enchant_slots())
+                        .filter_map(|j| read.enchant(j).map(|id| id.unsigned_abs()))
+                        .collect::<Vec<u32>>(),
+                    None => (0..7u8)
+                        .filter_map(|j| s.player_visible_item_enchant(PLAYER_HELD_SLOTS[slot], j))
+                        .collect::<Vec<u32>>(),
+                }
             });
             let visual = resolve_glow(
                 glows.as_deref_mut(),

@@ -782,10 +782,13 @@ pub struct WrathEntity {
     /// indices (quest log, inventory, coinage), with the server's delivered mask. Only a player
     /// carries it.
     pub player_fields: Option<crate::wrath_inventory::WrathFieldWindow>,
-    /// An item or container's raw Wrath field window. The item block is 0..64 and a container
-    /// extends it with its slot array; both are translated explicitly rather than copied by
-    /// index because the 1.12 item/container layouts differ.
-    pub item_fields: Option<Vec<u32>>,
+    /// An item or container's Wrath field window with the reducer's delivered mask. The item block
+    /// is 0..64 and a container extends it to 0..138; both are translated explicitly rather than
+    /// copied by index because the 1.12 item/container layouts differ. Presence is real here:
+    /// `None` in the window is "never delivered", `Some(0)` a delivered clear, and the sparse
+    /// fields 43..57 (Wrath enchant slots 8..12) and 62 (`CREATE_PLAYED_TIME`) survive for the
+    /// typed row even though the donor projection drops them.
+    pub item_fields: Option<crate::wrath_inventory::WrathFieldWindow>,
     /// The unit's visible aura slots from `SMSG_AURA_UPDATE[_ALL]`. The 1.12 bar is descriptor
     /// data, so the translation synthesizes `UNIT_FIELD_AURA`/`AURAFLAGS` from these.
     pub auras: Vec<benilla_protocol_wrath::reducer::AuraSlot>,
@@ -5789,32 +5792,45 @@ fn push_visible_item_fields(
 /// Translate one item/container's Wrath fields into the 1.12 item layout. The first fields
 /// coincide; the enchant array is shorter in 1.12, and the durability/random columns moved after
 /// the two extra 3.3.5 enchant slots. Container fields start at a different base.
-fn push_item_fields(raw: &[u32], container: bool, pairs: &mut Vec<(u16, u32)>) {
+///
+/// Only delivered dwords are projected; an absent field leaves the create-shaped donor descriptor
+/// at 0 without claiming a delivery. Wrath 43..57 are enchant slots 8..12 and have no donor slot:
+/// they are deliberately not written into donor 43..47, which are the property seed, random
+/// properties id, durability and max durability (Wrath 58..61). `CREATE_PLAYED_TIME` (62) has no
+/// 1.12 field and stays in the typed row.
+fn push_item_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    container: bool,
+    pairs: &mut Vec<(u16, u32)>,
+) {
     for src in 6..=21u16 {
-        if let Some(value) = raw.get(src as usize) {
-            pairs.push((src, *value));
+        if let Some(value) = raw.get(src) {
+            pairs.push((src, value));
         }
     }
+    // The seven donor enchant slots: Wrath 22..42, unchanged.
     for i in 0..21u16 {
-        if let Some(value) = raw.get((22 + i) as usize) {
-            pairs.push((22 + i, *value));
+        if let Some(value) = raw.get(22 + i) {
+            pairs.push((22 + i, value));
         }
     }
+    // Property seed, random properties id, durability and max durability. Donor 45 stays unwritten:
+    // 1.12 spells it `ITEM_FIELD_ITEM_TEXT_ID`, which 3.3.5 carries on the item-text query instead.
     for (src, dst) in [(58u16, 43u16), (59, 44), (60, 46), (61, 47)] {
-        if let Some(value) = raw.get(src as usize) {
-            pairs.push((dst, *value));
+        if let Some(value) = raw.get(src) {
+            pairs.push((dst, value));
         }
     }
     if container {
         if let Some(value) = raw.get(64) {
-            pairs.push((48, *value));
+            pairs.push((48, value));
         }
         for i in 0..36u16 {
-            if let Some(value) = raw.get((66 + 2 * i) as usize) {
-                pairs.push((50 + 2 * i, *value));
+            if let Some(value) = raw.get(66 + 2 * i) {
+                pairs.push((50 + 2 * i, value));
             }
-            if let Some(value) = raw.get((67 + 2 * i) as usize) {
-                pairs.push((51 + 2 * i, *value));
+            if let Some(value) = raw.get(67 + 2 * i) {
+                pairs.push((51 + 2 * i, value));
             }
         }
     }
@@ -5871,12 +5887,19 @@ fn diff_fields(old: &ObjectFields, new: &ObjectFields) -> Vec<(u16, u32, u32)> {
 
 /// Spawn or update one item/container entity in the established `ItemObject`/`ObjectStore`
 /// owner. Items carry no `NetEntity` or transform; their GUID identity stays in `GuidIndex`.
+/// The typed [`crate::wrath_item::WrathItemRow`] rides beside the donor projection on the same
+/// entity: the donor store stays the 1.12 view, the row keeps the fields 1.12 has no slot for.
 fn apply_item_world(
     world: &mut World,
     index: &mut HashMap<u64, Entity>,
     guid: u64,
     remote: &WrathEntity,
-) -> (Option<ObjectFields>, ObjectFields) {
+) -> (
+    Option<ObjectFields>,
+    ObjectFields,
+    Option<crate::wrath_item::WrathItemRow>,
+    Option<crate::wrath_item::WrathItemRow>,
+) {
     let container = remote.type_id == benilla_protocol_wrath::updates::type_id::CONTAINER;
     let object_type = if container {
         ObjectType::Container
@@ -5887,7 +5910,7 @@ fn apply_item_world(
     if let Some(entry) = remote.entry {
         pairs.push((3, entry));
     }
-    if let Some(raw) = remote.item_fields.as_deref() {
+    if let Some(raw) = remote.item_fields.as_ref() {
         push_item_fields(raw, container, &mut pairs);
     }
     let fields = ObjectFields::from_pairs(&pairs).into_created(object_type);
@@ -5904,6 +5927,17 @@ fn apply_item_world(
         }
     }
     let old_fields = existing.and_then(|entity| world.get::<ObjectStore>(entity).map(|s| s.0.clone()));
+    let old_row = existing
+        .and_then(|entity| world.get::<crate::wrath_item::WrathItemRow>(entity))
+        .cloned();
+    let scope = world
+        .get_resource::<WrathWorldView>()
+        .map(|view| (view.session_epoch, view.world_generation))
+        .unwrap_or((0, 0));
+    let new_row = remote
+        .item_fields
+        .as_ref()
+        .map(|window| crate::wrath_item::WrathItemRow::new(window.clone(), container, scope));
     if old_fields.as_ref().and_then(ObjectFields::object_entry) != fields.object_entry() {
         if let Some(entry) = fields.object_entry().filter(|&e| e != 0) {
             if let Some(net) = world
@@ -5922,7 +5956,7 @@ fn apply_item_world(
             }
         }
     }
-    match existing {
+    let entity = match existing {
         Some(entity) => {
             let mut e = world.entity_mut(entity);
             e.remove::<NetEntity>();
@@ -5931,6 +5965,7 @@ fn apply_item_world(
                 ItemObject { container },
                 WrathGeneration(remote.generation),
             ));
+            entity
         }
         None => {
             let entity = world
@@ -5944,9 +5979,23 @@ fn apply_item_world(
                 ))
                 .id();
             index.insert(guid, entity);
+            entity
+        }
+    };
+    // Only a changed row is written, so `Changed<WrathItemRow>` is a real instance signal rather
+    // than a per-digest artifact. A row whose field was never delivered stays absent rather than
+    // clearing itself.
+    if new_row.as_ref() != old_row.as_ref() {
+        match new_row.as_ref() {
+            Some(row) => {
+                world.entity_mut(entity).insert(row.clone());
+            }
+            None => {
+                world.entity_mut(entity).remove::<crate::wrath_item::WrathItemRow>();
+            }
         }
     }
-    (old_fields, fields)
+    (old_fields, fields, old_row, new_row)
 }
 
 /// Translate the drained digest into the established `GuidIndex`/`NetEntity`/`ObjectStore` path.
@@ -6086,6 +6135,11 @@ fn wrath_apply_world(world: &mut World) {
     }
 
     let mut item_creates: Vec<u64> = Vec::new();
+    let mut row_diffs: Vec<(
+        u64,
+        Option<crate::wrath_item::WrathItemRow>,
+        Option<crate::wrath_item::WrathItemRow>,
+    )> = Vec::new();
     let mut field_diffs: Vec<(u64, ObjectType, Vec<(u16, u32, u32)>)> = Vec::new();
     let mut unit_name_lookups: Vec<(u64, ObjectFields)> = Vec::new();
     let mut go_template_requests: Vec<(u64, ObjectFields)> = Vec::new();
@@ -6122,7 +6176,11 @@ fn wrath_apply_world(world: &mut World) {
             benilla_protocol_wrath::updates::type_id::ITEM
                 | benilla_protocol_wrath::updates::type_id::CONTAINER
         ) {
-            let (old_item, new_item) = apply_item_world(world, &mut index.0, *guid, remote);
+            let (old_item, new_item, old_row, new_row) =
+                apply_item_world(world, &mut index.0, *guid, remote);
+            if old_row != new_row {
+                row_diffs.push((*guid, old_row, new_row));
+            }
             let item_kind = if remote.type_id == benilla_protocol_wrath::updates::type_id::CONTAINER
             {
                 ObjectType::Container
@@ -6856,6 +6914,49 @@ fn wrath_apply_world(world: &mut World) {
                             runs_to_push.push(run);
                         }
                     }
+                }
+                // Wrath enchant slots 8..12 (fields 43..57) have no donor slot, so the donor
+                // diff above cannot raise the enchantment notice for them. The typed row's band
+                // is the only source. The donor 22..42 band still runs through `field_diffs`;
+                // this covers exactly the part the projection deliberately drops, so no change
+                // is noticed twice.
+                for (guid, old_row, new_row) in &row_diffs {
+                    let Some(fields) = stores_by_guid.get(guid) else {
+                        continue;
+                    };
+                    let Some(old_row) = old_row.as_ref() else {
+                        continue;
+                    };
+                    let Some(new_row) = new_row.as_ref() else {
+                        continue;
+                    };
+                    let read = crate::wrath_item::ItemRead::new(fields, Some(new_row));
+                    if player_guid == 0
+                        || !stores_by_guid.contains_key(&player_guid)
+                        || !fields.is_item()
+                        || read.owner() != Some(player_guid)
+                    {
+                        continue;
+                    }
+                    let Some(entry) = fields.object_entry() else {
+                        continue;
+                    };
+                    let charter = items
+                        .template(entry, 0, Ask::Read)
+                        .is_some_and(|t| t.flags & ITEM_FLAG_CHARTER != 0);
+                    if charter
+                        || !crate::wrath_item::WrathItemRow::enchants_changed(
+                            Some(old_row),
+                            new_row,
+                            7..=11,
+                        )
+                    {
+                        continue;
+                    }
+                    runs_to_push.push(watch.run(
+                        crate::item_watch::ItemNotice::Enchantment { guid: *guid, entry },
+                        &bag_cache,
+                    ));
                 }
                 // The four extra bank slots and the seventh bank bag have no donor field, so
                 // their seat runs are generated from the typed owner. They are appended after
@@ -8628,7 +8729,19 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                     benilla_protocol_wrath::updates::type_id::ITEM
                         | benilla_protocol_wrath::updates::type_id::CONTAINER
                 )
-                .then(|| (0..138).map(|i| entry.field(i).unwrap_or(0)).collect()),
+                .then(|| {
+                    let container = entry.type_id
+                        == benilla_protocol_wrath::updates::type_id::CONTAINER;
+                    crate::wrath_inventory::WrathFieldWindow::from_fields(
+                        if container {
+                            fields::CONTAINER_END
+                        } else {
+                            fields::ITEM_END
+                        },
+                        |index| entry.field(index),
+                        |index| entry.field_delivered(index),
+                    )
+                }),
                 auras: entry.auras.clone(),
                 auras_observed: entry.auras_observed,
                 aura_receipts: entry.aura_receipts.clone(),
@@ -8658,6 +8771,7 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use benilla_protocol_wrath::fields;
 
     #[test]
     fn self_pose_is_not_replayed_by_unrelated_snapshots() {
@@ -8764,6 +8878,152 @@ mod tests {
         assert!(pairs.contains(&(at(0) + 3, 1)));
         assert!(pairs.contains(&(at(0) + 4, 2)));
         assert!(pairs.contains(&(at(18) + 2, 5976)));
+    }
+
+    /// A window where only the supplied `(index, value)` dwords count as delivered.
+    fn item_window(pairs: &[(u16, u32)], end: u16) -> crate::wrath_inventory::WrathFieldWindow {
+        let mut values = vec![0u32; usize::from(end)];
+        let mut delivered = vec![0u64; values.len().div_ceil(64)];
+        for &(index, value) in pairs {
+            let at = usize::from(index);
+            values[at] = value;
+            delivered[at / 64] |= 1u64 << (at % 64);
+        }
+        crate::wrath_inventory::WrathFieldWindow::new(values, delivered)
+    }
+
+    /// Wrath enchant slots 8..12 are 43..57 and have no donor slot. Donor 43..47 must keep the
+    /// property seed, random-properties id, durability and max durability, and neither the Wrath
+    /// enchant band nor `CREATE_PLAYED_TIME` may leak into a donor index.
+    #[test]
+    fn wrath_item_projection_never_folds_enchant_slots_eight_to_twelve_into_donor_43_to_47() {
+        let window = item_window(
+            &[
+                (fields::ITEM_FIELD_ENCHANTMENT_1_1, 2564),
+                (fields::ITEM_FIELD_ENCHANTMENT_8_1, 0x8888),
+                (fields::ITEM_FIELD_ENCHANTMENT_12_3, 0x9999),
+                (fields::ITEM_FIELD_PROPERTY_SEED, 0xAA),
+                (fields::ITEM_FIELD_RANDOM_PROPERTIES_ID, 0xBB),
+                (fields::ITEM_FIELD_DURABILITY, 17),
+                (fields::ITEM_FIELD_MAXDURABILITY, 40),
+                (fields::ITEM_FIELD_CREATE_PLAYED_TIME, 1234),
+            ],
+            fields::ITEM_END,
+        );
+        let mut pairs = Vec::new();
+        push_item_fields(&window, false, &mut pairs);
+        assert!(pairs.contains(&(22, 2564)), "donor slot 0 still lands");
+        assert!(pairs.contains(&(43, 0xAA)), "donor 43 is the property seed");
+        assert!(pairs.contains(&(44, 0xBB)), "donor 44 is the random id");
+        assert!(pairs.contains(&(46, 17)), "donor 46 is durability");
+        assert!(pairs.contains(&(47, 40)), "donor 47 is max durability");
+        assert!(
+            !pairs.iter().any(|&(index, _)| index == 45),
+            "1.12's item-text id stays unwritten"
+        );
+        assert!(
+            !pairs.iter().any(|&(_, value)| value == 0x8888 || value == 0x9999),
+            "Wrath slots 8 and 12 never project"
+        );
+        assert!(
+            !pairs.iter().any(|&(index, _)| index == 62),
+            "CREATE_PLAYED_TIME has no donor index"
+        );
+    }
+
+    /// An undelivered donor field stays absent rather than being written as an observed zero.
+    #[test]
+    fn an_absent_item_field_is_not_projected_as_a_delivered_zero() {
+        let window = item_window(
+            &[(fields::ITEM_FIELD_DURABILITY, 0)],
+            fields::ITEM_END,
+        );
+        let mut pairs = Vec::new();
+        push_item_fields(&window, false, &mut pairs);
+        assert!(pairs.contains(&(46, 0)), "a delivered zero is an observed clear");
+        assert!(
+            !pairs.iter().any(|&(index, _)| index == 47),
+            "max durability was never delivered and writes nothing"
+        );
+        assert!(!pairs.iter().any(|&(index, _)| (22..=42).contains(&index)));
+    }
+
+    /// A container projects its own slot array into donor 48/50..; a non-container never does.
+    #[test]
+    fn container_slots_project_only_for_container_objects() {
+        let window = item_window(
+            &[
+                (fields::CONTAINER_FIELD_NUM_SLOTS, 2),
+                (fields::CONTAINER_FIELD_SLOT_1, 0x11),
+                (fields::CONTAINER_FIELD_SLOT_1 + 2, 0x22),
+            ],
+            fields::CONTAINER_END,
+        );
+        let mut pairs = Vec::new();
+        push_item_fields(&window, true, &mut pairs);
+        assert!(pairs.contains(&(48, 2)));
+        assert!(pairs.contains(&(50, 0x11)));
+        assert!(pairs.contains(&(52, 0x22)));
+
+        let mut item_pairs = Vec::new();
+        push_item_fields(&window, false, &mut item_pairs);
+        assert!(!item_pairs.iter().any(|&(index, _)| index >= 48));
+    }
+
+    /// The typed row rides the existing container entity: same guid keeps the same entity and
+    /// only a changed row is written, while a generation change replaces the entity and its row.
+    #[test]
+    fn an_item_row_keeps_container_identity_and_generation_ownership() {
+        const BAG: u64 = 0x4000_0000_0000_00B1;
+        let base = view(BAG).entities[&BAG].clone();
+        let mut remote = WrathEntity {
+            guid: BAG,
+            type_id: benilla_protocol_wrath::updates::type_id::CONTAINER,
+            entry: Some(100),
+            item_fields: Some(item_window(
+                &[
+                    (fields::CONTAINER_FIELD_NUM_SLOTS, 2),
+                    (fields::CONTAINER_FIELD_SLOT_1, 0x11),
+                ],
+                fields::CONTAINER_END,
+            )),
+            generation: 1,
+            ..base
+        };
+        let mut world = World::new();
+        let mut index = HashMap::new();
+        let (_, _, old_row, new_row) = apply_item_world(&mut world, &mut index, BAG, &remote);
+        assert!(old_row.is_none());
+        assert_eq!(new_row.as_ref().and_then(|row| row.container_slot(0)), Some(0x11));
+        let entity = index[&BAG];
+        assert!(world.get::<crate::wrath_item::WrathItemRow>(entity).is_some());
+
+        // The same generation updates in place; the changed row is the only write.
+        remote.item_fields = Some(item_window(
+            &[
+                (fields::CONTAINER_FIELD_NUM_SLOTS, 2),
+                (fields::CONTAINER_FIELD_SLOT_1, 0x22),
+            ],
+            fields::CONTAINER_END,
+        ));
+        let (_, _, old_row, new_row) = apply_item_world(&mut world, &mut index, BAG, &remote);
+        assert_eq!(index[&BAG], entity, "the container entity is not reparented");
+        assert_eq!(old_row.as_ref().and_then(|row| row.container_slot(0)), Some(0x11));
+        assert_eq!(new_row.as_ref().and_then(|row| row.container_slot(0)), Some(0x22));
+        assert!(world
+            .get::<crate::wrath_item::WrathItemRow>(entity)
+            .is_some_and(|row| row.container_slot(0) == Some(0x22)));
+
+        // A generation change is a new object; the old entity and its row are gone.
+        remote.generation = 2;
+        let (_, _, old_row, _) = apply_item_world(&mut world, &mut index, BAG, &remote);
+        assert!(old_row.is_none(), "the replaced entity's row does not carry over");
+        let replacement = index[&BAG];
+        assert_ne!(replacement, entity);
+        assert!(world.get::<crate::wrath_item::WrathItemRow>(entity).is_none());
+        assert!(world
+            .get::<crate::wrath_item::WrathItemRow>(replacement)
+            .is_some());
     }
 
     #[test]

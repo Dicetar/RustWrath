@@ -1,8 +1,10 @@
-# Lossless Wrath inventory: typed owner and bank/bag consumer migration
+# Lossless Wrath inventory: typed owner and bank/bag/item consumer migration
 
-Status: implemented at source for S1/S2; S3 deferred. Baseline
-`47cba73865a450218b99889cc61e392d7d4ba13c` (stacked on
-`feat/bounded-session-delivery`). No compilation, focused test, client or server run was made.
+Status: S1/S2 implemented at source and S3 added at source (item instance payload, tooltip/bind/
+visual/item-text consumers); no S3 compilation, focused test, client or server run. Baseline
+`39e3c62a43f8967beb74c660fe3a76971d24924a` on `feat/wrath-item-payload` (stacked on the
+S1/S2 branch, base `47cba73865a450218b99889cc61e392d7d4ba13c`). No compilation, focused test,
+client or server run was made for S3.
 
 This contract addresses review finding R06: the shared 1.12 projection kept 24 of 28 bank slots,
 six of seven bank bags and seven of twelve item enchant slots. The donor projection stays exactly
@@ -164,17 +166,76 @@ commands.
   `the_wrath_world_enter_updates_the_seventh_bank_bag`, and
   `inventory_slot_reader_bands_follow_the_target` (donor/Wrath whitelists).
 
-## 7. Deferred S3
+## 7. S3 item payload (source-implemented, not run)
 
-- 12 item enchant slots retained in a typed `WrathItemRow` (`Item_C.cpp` reads 12).
-- `ITEM_FIELD_CREATE_PLAYED_TIME` (62).
-- Item text by guid: `ItemTextByGuid` has no producer and `WrathItemText` no reader; a
-  `MessageReader<WrathItemText>` consumer plus a UI `ItemTextByGuid` send is the next step.
-- `RandomSuffix`, socket/gem, scaling and item-limit columns from the 2026-10-25 checkpoint.
-- Raw player window length: `0..1171` stays; the always-zero `PLAYER_FIELD_MAX_LEVEL`,
-  daily-quest and combat-rating tail is a separate defect (window should be `PLAYER_END` 1326).
+S3 closes the item half of the same loss. The item/container digest now carries a
+`WrathFieldWindow` over `ITEM_END` (64) for items and `CONTAINER_END` (138) for containers, with
+the reducer's delivered mask; the old dense `(0..138).map(unwrap_or(0))` is gone.
 
-## 8. Runtime acceptance (owner-side)
+**Typed row.** `crates/benilla-app/src/wrath_item.rs` defines a `WrathItemRow` component beside
+`ObjectStore` on the existing item/container entity:
+
+- `enchant(slot 0..11)` → `WrathEnchant { id, duration, charges }`, each `Option` per delivered
+  dword (`22 + 3n .. 24 + 3n`); `enchant_id/duration/charges`.
+- `property_seed` (58), `random_properties_id` (59), `durability` (60), `max_durability` (61),
+  `create_played_time` (62).
+- `stack_count` (14), `duration` (15), `spell_charges 0..4` (16..20), `flags` (21),
+  `owner/contained/creator/gift_creator` guid pairs (6..13), `container_num_slots` (64) and the
+  36 container slot pairs (66..137).
+- `ItemRead<'a>` is the donor fallback view: a delivered row field wins (including a delivered
+  zero), and an undelivered field falls back to the translated donor `ObjectFields`. An absent row
+  is exactly today's seven-slot donor read.
+
+**Projection.** `push_item_fields` still writes only the 1.12 layout: donor 6..21, donor 22..42
+(Wrath enchant slots 1..7), and donor 43,44,46,47 from Wrath 58..61. Wrath 43..57 (slots 8..12)
+and 62 are never written into a donor index; donor 45 stays the unwritten 1.12 item-text id.
+Container 64/66..137 still projects to donor 48/50.., on the same container entity. Container
+identity, generation and slot ownership are unchanged.
+
+**Consumers migrated** (all read `ItemRead` where the row is authoritative):
+`ui_items::feed::resolve_slot` and `resolve_slot_in_target` (tooltip text/name/link/durability/
+charges/readable/creator/random properties), `ui_items::object_name/link/link_in_target`
+(constructors now have `_item` forms and donor wrappers), `ui_char::inventory_slot` and
+`weapon_enchant`, `ui_bind_confirm::use_binds`, `spell::targeting::item::gate_item`,
+`entities::item_glow`/`equipment::resolve` (12-slot fold and glow for our own equipped item; the
+broadcast visible-item block remains the other-player fallback), `ui_merchant` buyback/repair, and
+`spell::usable::worn_item_cached`. `items::already_bound_item`/`live_enchant_item` walk all twelve
+slots when a row exists, so donor 43..47 are never read as Wrath enchant slots 8..12.
+
+**Intentionally still donor / unsupported:**
+- `item_watch::kin`/`slot_count` and the shared read-only `count_of`/`sum_of`/`action_count`/
+  `stack_counts`/`find_item`/`collect_inventory` walks (Worker B's surface).
+- `item_watch`'s donor 22..42 enchant notice remains the donor path; the new row-based notice
+  covers exactly 43..57, so no change is noticed twice.
+- Socket/gem, `RandomSuffix` factor, scaling and item-limit columns are not in the 12340 item
+  query response or item descriptor used here. Names are preserved from the profile/checkpoint
+  as unsupported; no field is invented.
+- The seven `Countdowns` enchant cells (`SMSG_ITEM_ENCHANT_TIME_UPDATE`) are the 1.12 array; a
+  Wrath slot 8..12 has a delivered row `duration` but no countdown cell in this pass.
+- `create_played_time` is stored in the row and has no consumer; stated, not fabricated.
+
+**Item text by guid (INV-15).** `ui_item_text` now owns `WrathItemTexts`, a cache keyed by item
+guid with `Text`/`NoText` entries and a single in-flight guid queue. It reads
+`MessageReader<WrathItemText>` on the native message edge (not the session-reply queue), filters
+by `(session_epoch, world_generation)`, and retires entries and in-flight addresses on scope
+change and on `OnExit(InWorld)`. `ClientCommand::ItemTextByGuid` is sent once per guid; the
+absent `has_text == false` form names no guid, so it retires the oldest in-flight request as a
+clean no-text result. `ReadSource::ItemText` uses the 12340 `ITEM_FIELD_FLAGS & 0x200` readable
+bit (`CGItemText::SetItem`, `Item_C.cpp`), which also feeds the bag-read for
+`dispatch_fork`. `begin_item_text` closes on `NoText` without a frame; `feed_item_text` shows the
+body and the item creator line for `Text`. A mail letter on Wrath takes the same by-guid path;
+1.12 keeps `ITEM_FIELD_ITEM_TEXT_ID` and `MailOpen`.
+
+**Tests added, not run:** `wrath_item::tests` (absent vs delivered zero, twelve slots, create
+played time, container ownership of the slot array, donor fallback, delivered-zero-wins,
+random-property fallback/precedence, `0x200` readable, the 43..57 change band); `wrath::tests`
+(donor 43..47 not overwritten, absent field not written, container projection, container
+identity/generation with the row); `items::tests` (a binding enchant in Wrath slot 8 through the
+typed row); `ui_items::drain::tests` (`0x200` forks to the reader); `ui_item_text::tests`
+(present/absent/scope, by-guid read and no-text refusal). See
+`.scratch/project-b/handoffs/2026-11-05-item-payload.md` for the exact unrun list.
+
+## 8. Runtime acceptance (owner-side for S1/S2)
 
 One owner-driven login on a character with an item in **bank slot 25** and a bag in **bank bag
 slot 7** (7 bank-bag slots purchased). Open the bank and verify in one session:
@@ -189,3 +250,10 @@ slot 7** (7 bank-bag slots purchased). Open the bank and verify in one session:
 If no owned character has seven purchased bank bags, the 28-slot checks stand alone and the
 seventh-bag check is blocked on an owner-approved server-state action. This package does not
 create/delete characters, grant slots or touch the DB.
+
+S3 acceptance (source-only until run): on a Wrath character, hover a bag item that has enchants
+outside slots 1..7 and a random suffix; compare the tooltip enchant lines, random-suffix name,
+durability and charges with the item link and the paper doll. Then right-click a readable item
+(3.3.5 `ITEM_FIELD_FLAGS & 0x200`): the stock `ItemTextFrame` shows the body or closes without
+error, and a second read closes it. Reconnect/world-transfer and repeat to show the text cache
+retired rather than serving the old world's body.

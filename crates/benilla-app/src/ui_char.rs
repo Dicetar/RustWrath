@@ -401,45 +401,46 @@ fn slot_view(
     let enchant_ms: [Option<u64>; crate::items::ENCHANT_SLOTS] =
         std::array::from_fn(|s| countdowns.and_then(|c| c.enchant_remaining_display_ms(s as u32)));
     let duration_ms = countdowns.and_then(|c| c.lifetime_remaining_display_ms());
-    let obj = objects.object(guid)?;
+    let read = objects.item_read(guid)?;
+    let obj = read.donor();
     let entry = obj.object_entry()?;
-    let count = obj.item_stack_count().unwrap_or(1).max(1);
+    let count = read.stack_count().unwrap_or(1).max(1);
     // `OBJECT_FIELD_TYPE & TYPEMASK_CONTAINER`, read off the object as `GetInventoryItemCount`'s
     // first fork reads it (`0x4c87a6`).
     let is_container = obj.is_container();
     let content_guids: Vec<u64> = {
-        let slots = obj.container_num_slots().unwrap_or(0).min(36) as u8;
-        (0..slots).filter_map(|s| obj.container_slot(s)).collect()
+        let slots = read.container_num_slots().unwrap_or(0).min(36) as u8;
+        (0..slots).filter_map(|s| read.container_slot(s)).collect()
     };
-    let durability = obj
-        .item_durability()
-        .zip(obj.item_max_durability())
+    let durability = read
+        .durability()
+        .zip(read.max_durability())
         .filter(|&(_, max)| max > 0);
     // `ITEM_FIELD_FLAGS`, for its wrapped (0x08) and force-red (0x10) bits.
-    let flags = obj.item_flags().unwrap_or(0);
-    // Soulbound or carrying a binding enchant (`0x5da2c0`), read off the raw descriptor, never off
-    // the enchant lines below.
-    let already_bound = crate::items::already_bound(
-        obj,
+    let flags = read.flags().unwrap_or(0);
+    // Soulbound or carrying a binding enchant (`0x5da2c0`), read off the raw instance slots, never
+    // off the enchant lines below. A Wrath row walks all twelve.
+    let already_bound = crate::items::already_bound_item(
+        read,
         crate::items::record_flags(items, entry, guid),
         rolls.enchants,
     );
     // Only read: the tooltip build asks the creator (`crate::ui_items::feed::ask_item_build_lookups`).
-    let creator = obj
-        .item_creator()
+    let creator = read
+        .creator()
         .filter(|&g| g != 0)
         .and_then(|g| names.resolve_player(g, Ask::Read).map(str::to_string));
-    let gift_creator = crate::items::gift_creator_name(obj, names);
-    let (creator_guid, gift_creator_guid) = crate::items::creator_guids(obj);
-    // All seven enchant slots: our own gear streams as item objects, where an inspected player's
-    // descriptor carries only two.
+    let gift_creator = crate::items::gift_creator_name_item(read, names);
+    let (creator_guid, gift_creator_guid) = crate::items::creator_guids_item(read);
+    // Every instance enchant slot: twelve with the typed Wrath row (our own gear streams as item
+    // objects), the donor seven otherwise.
     let enchants = crate::items::enchant_lines(
-        (0..7).map(|s| {
+        (0..read.enchant_slots()).map(|s| {
             (
                 s,
-                obj.item_enchant(s).unwrap_or(0),
-                obj.item_enchant_charges(s),
-                enchant_ms[usize::from(s)],
+                read.enchant(s).unwrap_or(0),
+                read.enchant_charges(s),
+                enchant_ms.get(usize::from(s)).copied().flatten(),
             )
         }),
         rolls.enchants,
@@ -448,11 +449,11 @@ fn slot_view(
     let t = items.template(entry, guid, Ask::Read);
     // `GetInventoryItemLink` links the player's own item object (`0x4c8ce2` → `0x52ae00`), its
     // record cached or not.
-    let object_link = crate::ui_items::object_link(obj, t, rolls);
+    let object_link = crate::ui_items::object_link_item(read, t, rolls);
     let (name, quality, display, link, equip_slots, kind, bar_placeable, consumable) = match t {
         Some(t) => {
             // The item object's name (`0x5d8bc0`): the roll's suffix, unless it is wrapped.
-            let name = crate::ui_items::object_name(obj, t, rolls);
+            let name = crate::ui_items::object_name_item(read, t, rolls);
             (
                 Some(name.clone()),
                 t.quality as i32,
@@ -474,8 +475,8 @@ fn slot_view(
         if counts_contents {
             content_guids
                 .iter()
-                .filter_map(|&g| objects.object(g))
-                .map(|o| o.item_stack_count().unwrap_or(1).max(1))
+                .filter_map(|&g| objects.item_read(g))
+                .map(|read| read.stack_count().unwrap_or(1).max(1))
                 .sum()
         } else {
             0
@@ -492,9 +493,9 @@ fn slot_view(
             .then(|| content_guids.iter().filter(|&&g| g != 0).count() as u32),
         use_spell: t.and_then(|t| t.use_spell).map_or(0, |u| u.spell_id),
         spell_0: t.is_some_and(benilla_protocol::ItemInfo::has_spell_0),
-        spell_charges: std::array::from_fn(|i| obj.item_spell_charges(i as u8).unwrap_or(0)),
+        spell_charges: std::array::from_fn(|i| read.spell_charges(i as u8).unwrap_or(0)),
         use_fork: t.map_or(Default::default(), |t| {
-            crate::ui_items::dispatch_fork(t, flags, obj.item_text_id().unwrap_or(0))
+            crate::ui_items::dispatch_fork(t, flags, read.item_text_id().unwrap_or(0))
         }),
         item_id: entry,
         icon,
@@ -517,7 +518,7 @@ fn slot_view(
         gift_creator_guid,
         enchants,
         duration_ms,
-        field_duration: obj.item_duration().unwrap_or(0),
+        field_duration: read.duration().unwrap_or(0),
     })
 }
 
@@ -812,10 +813,17 @@ pub(crate) fn feed_char(
             };
             let render_level = store.0.unit_level().unwrap_or(0);
             for slot in inv.iter_mut().chain(bank_bags.iter_mut()).flatten() {
-                if let Some(fields) = objects.object(slot.guid).filter(|_| slot.guid != 0) {
+                if let Some(read) = objects
+                    .item_read(slot.guid)
+                    .filter(|_| slot.guid != 0)
+                {
                     let template = items.template(slot.item_id, slot.guid, Ask::Read);
-                    let link = crate::ui_items::object_link_in_target(
-                        script.target(), render_level, fields, template, rolls,
+                    let link = crate::ui_items::object_link_in_target_item(
+                        script.target(),
+                        render_level,
+                        read,
+                        template,
+                        rolls,
                     );
                     if slot.link.is_some() {
                         slot.link = Some(link);
@@ -869,11 +877,11 @@ fn weapon_enchant(
     let remaining_ms = objects
         .countdowns(guid)
         .and_then(|c| c.enchant_deadline_ms(u32::from(TEMP_ENCHANTMENT_SLOT)));
-    let obj = objects.object(guid)?;
-    obj.item_enchant(TEMP_ENCHANTMENT_SLOT)?;
+    let read = objects.item_read(guid)?;
+    read.enchant(TEMP_ENCHANTMENT_SLOT)?;
     Some(benilla_ui::script::WeaponEnchant {
         remaining_ms,
-        charges: obj.item_enchant_charges(TEMP_ENCHANTMENT_SLOT),
+        charges: read.enchant_charges(TEMP_ENCHANTMENT_SLOT),
     })
 }
 
