@@ -240,7 +240,7 @@ fn feed_craft(
     objects: Objects,
     items: Res<Items>,
     commands: Res<NetCommands>,
-    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    // The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
     inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     mut memo: Local<crate::ui_script::VmMemo<CraftMemo>>,
 ) {

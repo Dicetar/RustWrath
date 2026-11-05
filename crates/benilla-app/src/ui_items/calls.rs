@@ -136,13 +136,16 @@ impl ItemSteps<'_, '_> {
         } = self;
         let store = self_q.iter().next();
         let wrath_target = inventory.is_some() || crate::wrath::selected_from_env();
-        let player_inv = |store: &ObjectStore| {
-            crate::wrath_inventory::PlayerInventory::new(
-                &store.0,
-                inventory.as_deref(),
-                wrath_target,
-            )
-        };
+        // A named generic function rather than a closure: the returned view borrows both the
+        // store and the typed owner, which a closure cannot express for every call site.
+        fn player_inv<'a>(
+            store: &'a ObjectStore,
+            inventory: Option<&'a crate::wrath_inventory::WrathInventory>,
+            wrath_target: bool,
+        ) -> crate::wrath_inventory::PlayerInventory<'a> {
+            crate::wrath_inventory::PlayerInventory::new(&store.0, inventory, wrath_target)
+        }
+        let typed_inventory = inventory.as_deref();
         match call {
             ItemCall::Move(mv) => send_container_move(target, net, mv),
             // `SwapItem`'s question (`0x5e0ee4`), its dialog up inside the call.
@@ -248,13 +251,20 @@ impl ItemSteps<'_, '_> {
                 let item_guid = match call {
                     ItemCall::Repair { bag, slot } => u8::try_from(slot.saturating_sub(1))
                         .ok()
-                        .and_then(|slot0| slot_guid(&player_inv(me), bag, slot0, objects)),
+                        .and_then(|slot0| {
+                            slot_guid(&player_inv(me, typed_inventory, wrath_target), bag, slot0, objects)
+                        }),
                     ItemCall::RepairWorn(id) => (1..=19)
                         .contains(&id)
                         .then(|| u8::try_from(id - 1).ok())
                         .flatten()
                         .and_then(|slot0| {
-                            slot_guid(&player_inv(me), EQUIPMENT_BAG, slot0, objects)
+                            slot_guid(
+                                &player_inv(me, typed_inventory, wrath_target),
+                                EQUIPMENT_BAG,
+                                slot0,
+                                objects,
+                            )
                         }),
                     _ => None,
                 };
@@ -341,7 +351,9 @@ impl ItemSteps<'_, '_> {
                     return;
                 };
                 let slot0 = u8::try_from(slot.saturating_sub(1)).unwrap_or(0);
-                let guid = store.and_then(|s| slot_guid(&player_inv(s), bag, slot0, objects));
+                let guid = store.and_then(|s| {
+                    slot_guid(&player_inv(s, typed_inventory, wrath_target), bag, slot0, objects)
+                });
                 let item = guid
                     .and_then(|guid| objects.object(guid))
                     .and_then(|fields| fields.object_entry());

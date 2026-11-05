@@ -77,7 +77,7 @@ pub(super) fn feed_actions(
     items: Res<Items>,
     icons: Option<Res<ItemDisplays>>,
     commands: Res<NetCommands>,
-    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    // The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
     inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     mut memory: Local<crate::ui_script::VmMemo<FeedMemory>>,
     mut sink: MessageSink,

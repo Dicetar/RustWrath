@@ -142,7 +142,7 @@ fn feed_shapeshift_bar(
     objects: Objects,
     units: Query<&ObjectStore, Without<SelfPlayer>>,
     items: Res<Items>,
-    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    // The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
     inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     clock: Res<crate::ui_script::UiClock>,
     spell_mods: Res<crate::spell::SpellModifiers>,

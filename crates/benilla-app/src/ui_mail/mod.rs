@@ -738,7 +738,7 @@ fn feed_mail(
     // The local player, the letter body's `$`-macro subject.
     self_q: Query<(&crate::net::ObjectStore, &crate::net::Guid), With<crate::net::SelfPlayer>>,
     states: Res<crate::world_state::WorldStates>,
-    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    // The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
     inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     extras: MailFeedExtras,
 ) {

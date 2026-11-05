@@ -1770,7 +1770,7 @@ mod tests {
         assert_eq!(cache.opens(Some(ME), BAG), [2, 8]);
         assert!(cache.opens(Some(ME), POTION).is_empty());
         cache.seat(&player(&[(20, POTION), (68, BAG)]), &|_| None);
-        assert_eq!(cache.0, [0, POTION, 0, 0, 0, 0, 0, 0, 0, BAG]);
+        assert_eq!(cache.0, [0, POTION, 0, 0, 0, 0, 0, 0, 0, BAG, 0]);
     }
 
     /// The arrival's walk skips the bank and the stack-count write's reaches it (`0x622420`

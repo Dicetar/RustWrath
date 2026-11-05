@@ -561,6 +561,7 @@ fn feed_repair_costs(
             return;
         };
         let (memo, vm_reset) = memo.get_reset(script);
+        let objects_moved = inv.changes.moved();
         // No self store at logout: keep the last push, as `feed_char` does.
         let Some(player) = inv.self_store.iter().next() else {
             return;
@@ -571,7 +572,6 @@ fn feed_repair_costs(
         // The open vendor's price discount (`0x4faf8a`), 0 with none open.
         let discount = open_vendor_discount(&open, &units, &relations, player);
         let repairer = vendor.is_some_and(|store| store.0.unit_npc_flags() & NPC_FLAG_REPAIR != 0);
-        let objects_moved = inv.changes.moved();
         let self_changed = !inv.self_changed.is_empty();
         let templates_moved = memo.templates.moved(items.template_epoch());
         let discount_moved = memo.discount.moved(discount.to_bits());

@@ -528,11 +528,11 @@ mod tests {
     #[test]
     fn a_delivered_creator_or_gift_zero_does_not_fall_back_to_donor() {
         let donor = ObjectFields::from_pairs(&[(fields::ITEM_FIELD_CREATOR, 0x11)]);
-        let row = row(&[
+        let observed = row(&[
             (fields::ITEM_FIELD_CREATOR, 0),
             (fields::ITEM_FIELD_GIFTCREATOR, 0),
         ]);
-        let read = ItemRead::new(&donor, Some(&row));
+        let read = ItemRead::new(&donor, Some(&observed));
         assert_eq!(read.creator(), None, "creator observed zero");
         assert_eq!(read.gift_creator(), None, "gift creator observed zero");
 

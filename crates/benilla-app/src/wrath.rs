@@ -5442,7 +5442,7 @@ fn wrath_dispatch_events(world: &mut World) {
     let requests: Vec<_> = world
         .get_non_send_resource_mut::<Option<benilla_ui::script::UiScript>>()
         .and_then(|mut opt| {
-            let script = opt.as_mut()?;
+            let script = opt.as_mut().as_mut()?;
             for (op, status, serial, payload) in pending_replies {
                 script.push_multiclass_reply(op, status, serial, payload);
             }
@@ -7540,8 +7540,10 @@ fn wrath_apply_world(world: &mut World) {
                         continue;
                     };
                     let charter = items
-                        .template(entry, 0, Ask::Read)
-                        .is_some_and(|t| t.flags & ITEM_FLAG_CHARTER != 0);
+                        .template(entry, 0, crate::query_cache::Ask::Read)
+                        .is_some_and(|t| {
+                            t.flags & benilla_protocol::messages::ITEM_FLAG_CHARTER != 0
+                        });
                     if charter
                         || !crate::wrath_item::WrathItemRow::enchants_changed(
                             Some(old_row),
@@ -9607,7 +9609,7 @@ mod tests {
     #[test]
     fn an_item_row_keeps_container_identity_and_generation_ownership() {
         const BAG: u64 = 0x4000_0000_0000_00B1;
-        let base = view(BAG).entities[&BAG].clone();
+        let base = super::command_tap_tests::view(BAG).entities[&BAG].clone();
         let mut remote = WrathEntity {
             guid: BAG,
             type_id: benilla_protocol_wrath::updates::type_id::CONTAINER,
@@ -9742,7 +9744,7 @@ mod command_tap_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
 
-    fn view(npc: u64) -> WrathWorldView {
+    pub(super) fn view(npc: u64) -> WrathWorldView {
         let mut entities = BTreeMap::new();
         entities.insert(
             npc,

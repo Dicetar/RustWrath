@@ -718,6 +718,7 @@ pub(crate) fn feed_char(
             // session starts a fresh VM).
             return;
         };
+        let objects_moved = inv.changes.moved();
         let player_slots = inv.player(script.target() == benilla_ui::script::UiTarget::Wrath335);
 
         // `GetWeaponEnchantInfo`'s data, pushed every frame outside the gate: the remaining time is
@@ -730,7 +731,6 @@ pub(crate) fn feed_char(
         );
 
         // The gate, around the two snapshot builds only.
-        let objects_moved = inv.changes.moved();
         let templates_moved = memo.items_templates.moved(items.template_epoch());
         let names_moved = memo.names_generation.moved(names.generation());
         // The display epoch, not a per-frame hold-open: the views read whole-second countdowns, so

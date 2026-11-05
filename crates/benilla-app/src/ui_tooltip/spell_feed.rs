@@ -776,7 +776,7 @@ pub(super) fn feed_spell_tooltips(
     // melee range cell reads.
     range_units: crate::spell::RangeUnits,
     objects: Objects,
-    /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
+    // The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
     inventory: Option<Res<crate::wrath_inventory::WrathInventory>>,
     home_bind: Option<Res<crate::net::HomeBind>>,
     area_names: Option<Res<crate::ui_quest_log::QuestHeaderNamesRes>>,
