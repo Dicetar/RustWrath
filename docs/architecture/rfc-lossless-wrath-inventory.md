@@ -241,7 +241,8 @@ slots when a row exists, so donor 43..47 are never read as Wrath enchant slots 8
 - `create_played_time` is stored in the row and has no consumer; stated, not fabricated.
 
 **Item text by guid (INV-15).** `ui_item_text` now owns `WrathItemTexts`, a cache keyed by item
-guid with `Text`/`NoText` entries and a single in-flight guid queue. It reads
+guid with `Text`/`NoText` entries and an in-flight guid FIFO (at most one request per
+guid). It reads
 `MessageReader<WrathItemText>` on the native message edge (not the session-reply queue), filters
 by `(session_epoch, world_generation)`, and retires entries and in-flight addresses on scope
 change and on `OnExit(InWorld)`. `ClientCommand::ItemTextByGuid` is sent once per guid; the
