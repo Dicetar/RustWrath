@@ -3174,7 +3174,8 @@ mod tests {
 
     /// A missing or non-number argument raises: the type test's error `0x6f4940` does not return.
     #[test]
-    fn container_id_to_inventory_id_raises_on_a_bad_argument() {        let s = UiScript::new().unwrap();
+    fn container_id_to_inventory_id_raises_on_a_bad_argument() {
+        let s = UiScript::new().unwrap();
         for call in ["ContainerIDToInventoryID()", "ContainerIDToInventoryID({})"] {
             let err = s
                 .eval::<mlua::Value>(&format!("return {call}"))
