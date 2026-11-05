@@ -29,8 +29,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$launcherRoot = Join-Path $repoRoot 'benilla-config\Logs\Launcher'
-$interactionRoot = Join-Path $repoRoot 'benilla-config\Logs\InteractionDiagnostics'
+$stateRoot = if ($env:BENILLA_HOME) { $env:BENILLA_HOME } else { Join-Path $repoRoot 'benilla-config' }
+$launcherRoot = Join-Path $stateRoot 'Logs\Launcher'
+$interactionRoot = Join-Path $stateRoot 'Logs\InteractionDiagnostics'
 
 if (-not $RunDir) {
     if (-not (Test-Path -LiteralPath $launcherRoot)) {
