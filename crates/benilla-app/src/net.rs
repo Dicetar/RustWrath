@@ -641,6 +641,8 @@ pub struct Objects<'w, 's> {
     index: Res<'w, GuidIndex>,
     stores: Query<'w, 's, &'static ObjectStore>,
     countdowns: Query<'w, 's, &'static crate::items::Countdowns>,
+    /// The typed Wrath instance row, on item/container entities only. Absent in a 1.12 session.
+    item_rows: Query<'w, 's, &'static crate::wrath_item::WrathItemRow>,
     me: Query<'w, 's, Entity, With<SelfPlayer>>,
 }
 
@@ -661,6 +663,21 @@ impl Objects<'_, '_> {
             .0
             .get(&guid)
             .and_then(|&e| self.stores.get(e).ok())
+    }
+
+    /// A streamed item/container's typed 3.3.5 instance row, if the Wrath digest wrote one.
+    pub(crate) fn item_row(&self, guid: u64) -> Option<&crate::wrath_item::WrathItemRow> {
+        self.index
+            .0
+            .get(&guid)
+            .and_then(|&e| self.item_rows.get(e).ok())
+    }
+
+    /// The item/container read that prefers [`Self::item_row`] and falls back to the donor
+    /// descriptor for a field the row never delivered.
+    pub(crate) fn item_read(&self, guid: u64) -> Option<crate::wrath_item::ItemRead<'_>> {
+        let donor = self.object(guid)?;
+        Some(crate::wrath_item::ItemRead::new(donor, self.item_row(guid)))
     }
 
     /// Every streamed object, items included.

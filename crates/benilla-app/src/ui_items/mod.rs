@@ -1041,10 +1041,21 @@ pub(crate) fn object_name(
     template: &benilla_protocol::messages::ItemInfo,
     rolls: crate::items::RollCatalogs,
 ) -> String {
-    rolls.name(
-        &template.name,
-        object_link_numbers(fields, Some(template)).1,
+    object_name_item(
+        crate::wrath_item::ItemRead::new(fields, None),
+        template,
+        rolls,
     )
+}
+
+/// [`object_name`] over the typed item read: the 3.3.5 random-properties id comes from the row when
+/// it delivered one, so donor 43..47 are never read as Wrath enchant slots.
+pub(crate) fn object_name_item(
+    read: crate::wrath_item::ItemRead<'_>,
+    template: &benilla_protocol::messages::ItemInfo,
+    rolls: crate::items::RollCatalogs,
+) -> String {
+    rolls.name(&template.name, object_link_numbers_item(read, Some(template)).1)
 }
 
 /// The three numbers `0x52ae00` passes `0x52adb0` for an item object: the permanent enchant
@@ -1055,23 +1066,34 @@ pub(crate) fn object_link_numbers(
     fields: &ObjectFields,
     template: Option<&benilla_protocol::messages::ItemInfo>,
 ) -> (u32, u32, u32) {
+    object_link_numbers_item(
+        crate::wrath_item::ItemRead::new(fields, None),
+        template,
+    )
+}
+
+/// [`object_link_numbers`] over the typed item read.
+pub(crate) fn object_link_numbers_item(
+    read: crate::wrath_item::ItemRead<'_>,
+    template: Option<&benilla_protocol::messages::ItemInfo>,
+) -> (u32, u32, u32) {
     // No record reads flags 0 (`0x5da2a0`): no charter.
     let charter =
         template.is_some_and(|t| t.flags & benilla_protocol::messages::ITEM_FLAG_CHARTER != 0);
     let wrapped =
-        fields.item_flags().unwrap_or(0) & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0;
+        read.flags().unwrap_or(0) & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0;
     if wrapped {
         return (0, 0, 0);
     }
     let enchant = if charter {
         0
     } else {
-        fields.item_enchant(0).unwrap_or(0) as u32
+        read.enchant(0).unwrap_or(0) as u32
     };
     (
         enchant,
-        fields.item_random_properties_id(),
-        fields.item_property_seed(),
+        read.random_properties_id(),
+        read.property_seed(),
     )
 }
 
@@ -1086,21 +1108,34 @@ pub(crate) fn object_link(
     template: Option<&benilla_protocol::messages::ItemInfo>,
     rolls: crate::items::RollCatalogs,
 ) -> String {
-    let entry = fields.object_entry().unwrap_or(0);
+    object_link_item(
+        crate::wrath_item::ItemRead::new(fields, None),
+        template,
+        rolls,
+    )
+}
+
+/// [`object_link`] over the typed item read.
+pub(crate) fn object_link_item(
+    read: crate::wrath_item::ItemRead<'_>,
+    template: Option<&benilla_protocol::messages::ItemInfo>,
+    rolls: crate::items::RollCatalogs,
+) -> String {
+    let entry = read.donor().object_entry().unwrap_or(0);
     match template {
         Some(t) => {
-            let (enchant, roll, seed) = object_link_numbers(fields, Some(t));
+            let (enchant, roll, seed) = object_link_numbers_item(read, Some(t));
             item_link_full(
                 entry,
                 enchant,
                 roll,
                 seed,
-                &object_name(fields, t, rolls),
+                &object_name_item(read, t, rolls),
                 t.quality,
             )
         }
         None => {
-            let (enchant, roll, seed) = object_link_numbers(fields, None);
+            let (enchant, roll, seed) = object_link_numbers_item(read, None);
             item_link_full(entry, enchant, roll, seed, "", 1)
         }
     }
@@ -1115,17 +1150,40 @@ pub(crate) fn object_link_in_target(
     template: Option<&benilla_protocol::messages::ItemInfo>,
     rolls: crate::items::RollCatalogs,
 ) -> String {
+    object_link_in_target_item(
+        target,
+        render_level,
+        crate::wrath_item::ItemRead::new(fields, None),
+        template,
+        rolls,
+    )
+}
+
+/// [`object_link_in_target`] over the typed item read. The Wrath layout carries the three socket
+/// slots from the instance's enchant slots 2..4; the row is the lossless source for those.
+pub(crate) fn object_link_in_target_item(
+    target: benilla_ui::script::UiTarget,
+    render_level: u32,
+    read: crate::wrath_item::ItemRead<'_>,
+    template: Option<&benilla_protocol::messages::ItemInfo>,
+    rolls: crate::items::RollCatalogs,
+) -> String {
     if target == benilla_ui::script::UiTarget::Vanilla112 {
-        return object_link(fields, template, rolls);
+        return object_link_item(read, template, rolls);
     }
-    let entry = fields.object_entry().unwrap_or(0);
-    let (enchant, property, factor) = object_link_numbers(fields, template);
-    let wrapped = fields.item_flags().unwrap_or(0)
-        & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0;
+    let entry = read.donor().object_entry().unwrap_or(0);
+    let (enchant, property, factor) = object_link_numbers_item(read, template);
+    let wrapped = read.flags().unwrap_or(0) & benilla_protocol::messages::ITEM_DYNFLAG_WRAPPED != 0;
     let gems: [u32; 3] = std::array::from_fn(|index| {
-        if wrapped { 0 } else { fields.item_enchant(index as u8 + 2).unwrap_or(0) as u32 }
+        if wrapped {
+            0
+        } else {
+            read.enchant(index as u8 + 2).unwrap_or(0) as u32
+        }
     });
-    let name = template.map(|template| object_name(fields, template, rolls)).unwrap_or_default();
+    let name = template
+        .map(|template| object_name_item(read, template, rolls))
+        .unwrap_or_default();
     let quality = template.map_or(1, |template| template.quality);
     // AzerothCore 12340 SharedDefines.h: heirlooms share Artifact's light yellow.
     let color = quality_color(if quality == 7 { 6 } else { quality });

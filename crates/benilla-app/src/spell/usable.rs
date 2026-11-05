@@ -201,14 +201,14 @@ pub(crate) fn ammo_refusal(
 /// The worn item `guid` names from the cached records alone: `None` while its object or its
 /// template has not streamed.
 fn worn_item_cached(guid: u64, objects: &Objects, items: &Items) -> Option<WornItem> {
-    let obj = objects.object(guid)?;
-    let t = items.template(obj.object_entry()?, 0, Ask::Read)?;
+    let read = objects.item_read(guid)?;
+    let t = items.template(read.donor().object_entry()?, 0, Ask::Read)?;
     Some(WornItem {
         class: t.class,
         subclass: t.subclass,
         flags: t.flags,
-        durability: obj.item_durability(),
-        max_durability: obj.item_max_durability(),
+        durability: read.durability(),
+        max_durability: read.max_durability(),
     })
 }
 

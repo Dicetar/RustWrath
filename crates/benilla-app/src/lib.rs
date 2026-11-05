@@ -73,6 +73,7 @@ mod item_names;
 mod item_watch;
 mod items;
 mod wrath_inventory;
+mod wrath_item;
 mod lanes;
 mod loading_screen;
 mod local_state;

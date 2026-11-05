@@ -906,55 +906,56 @@ fn resolve_slot(
     // A guid whose create has not landed: the reference finds no item object (`0x6228a0` returns
     // NULL), so `GetContainerItemInfo` pushes nothing (`0x4f96dc`, `0x4f96e0`, `0x4f9810`) and
     // the slot reads empty.
-    let fields = objects.object(guid)?;
+    let read = objects.item_read(guid)?;
+    let fields = read.donor();
     let (entry, count, durability, readable, creator, flags, already_bound, enchant_lines) = (
         fields.object_entry().unwrap_or(0),
-        fields.item_stack_count().unwrap_or(1),
+        read.stack_count().unwrap_or(1),
         // Max 0 is indestructible: no line.
-        fields
-            .item_durability()
-            .zip(fields.item_max_durability())
+        read.durability()
+            .zip(read.max_durability())
             .filter(|&(_, max)| max > 0),
         // `GetContainerItemInfo`'s readable flag (`0x4f97ba`): the cached template's PageText
-        // (`0x5d9e10`), 0 while uncached, else the instance's letter text (`0x4f97c1`).
+        // (`0x5d9e10`), 0 while uncached, else the instance's letter text (`0x4f97c1`). On
+        // 3.3.5 the instance signal is `ITEM_FIELD_FLAGS & 0x200`, not the 1.12 text id.
         crate::items::record_page_text(items, fields.object_entry().unwrap_or(0), guid) != 0
-            || fields.item_text_id().is_some_and(|id| id != 0),
+            || read.has_text(),
         // The creator's name for "<Made by %s>" and "Written by %s", `None` until the
         // name query answers. The tooltip build asks it ([`ask_item_build_lookups`]).
-        fields
-            .item_creator()
+        read.creator()
             .filter(|&g| g != 0)
             .and_then(|g| names.resolve_player(g, Ask::Read).map(str::to_string)),
         // The tooltip's unlocked (0x4) and wrapped (0x8) bits.
-        fields.item_flags().unwrap_or(0),
-        // `0x5da2c0`: soulbound, or carrying a binding enchant, off the raw descriptor.
-        crate::items::already_bound(
-            fields,
+        read.flags().unwrap_or(0),
+        // `0x5da2c0`: soulbound, or carrying a binding enchant, off the raw instance slots.
+        crate::items::already_bound_item(
+            read,
             crate::items::record_flags(items, fields.object_entry().unwrap_or(0), guid),
             rolls.enchants,
         ),
-        // All seven enchant slots with charges and countdowns: our own items stream whole,
-        // where others' carry two slots.
+        // Every instance enchant slot with charges and countdowns: twelve with the typed Wrath
+        // row, the donor seven otherwise. The countdown cells stay seven (the 1.12 array); a
+        // Wrath slot past the seventh has no `SMSG_ITEM_ENCHANT_TIME_UPDATE` cell here.
         crate::items::enchant_lines(
-            (0..7).map(|s| {
+            (0..read.enchant_slots()).map(|s| {
                 (
                     s,
-                    fields.item_enchant(s).unwrap_or(0),
-                    fields.item_enchant_charges(s),
-                    enchant_ms[usize::from(s)],
+                    read.enchant(s).unwrap_or(0),
+                    read.enchant_charges(s),
+                    enchant_ms.get(usize::from(s)).copied().flatten(),
                 )
             }),
             rolls.enchants,
         ),
     );
-    let gift_creator = crate::items::gift_creator_name(fields, names);
-    let (creator_guid, gift_creator_guid) = crate::items::creator_guids(fields);
-    let field_duration = fields.item_duration().unwrap_or(0);
+    let gift_creator = crate::items::gift_creator_name_item(read, names);
+    let (creator_guid, gift_creator_guid) = crate::items::creator_guids_item(read);
+    let field_duration = read.duration().unwrap_or(0);
     // A container's filled seats, which `ClickTradeButton` counts (`0x4bff50`).
     let occupied_seats = fields.is_container().then(|| {
-        let n = fields.container_num_slots().unwrap_or(0).min(36) as u8;
+        let n = read.container_num_slots().unwrap_or(0).min(36) as u8;
         (0..n)
-            .filter(|&j| fields.container_slot(j).is_some_and(|g| g != 0))
+            .filter(|&j| read.container_slot(j).is_some_and(|g| g != 0))
             .count() as u32
     });
     // The guid rides every shape, so the slot's lock reads from its first push.
@@ -971,7 +972,7 @@ fn resolve_slot(
         return Some(ContainerSlot {
             durability: None,
             guid,
-            uncached_link: Some(crate::ui_items::object_link(fields, None, rolls)),
+            uncached_link: Some(crate::ui_items::object_link_item(read, None, rolls)),
             item_id: entry,
             count,
             readable,
@@ -990,7 +991,7 @@ fn resolve_slot(
     };
     Some(ContainerSlot {
         uncached_link: None,
-        use_fork: super::drain::use_fork(&t, flags, fields.item_text_id().unwrap_or(0)),
+        use_fork: super::drain::use_fork(&t, flags, read.item_text_id().unwrap_or(0)),
         item_class: Some(t.class),
         bonding: t.bonding,
         use_spell: t.use_spell.map_or(0, |u| u.spell_id),
@@ -1000,7 +1001,7 @@ fn resolve_slot(
         // The signature count rides beside the id (`0x52ba51`).
         petition: (t.flags & benilla_protocol::messages::ITEM_FLAG_CHARTER != 0)
             .then(|| {
-                let id = fields.item_enchant(0).unwrap_or(0);
+                let id = read.enchant(0).unwrap_or(0);
                 let view = petitions.tooltip_view(id as u32, guid, names, Ask::Read)?;
                 Some(benilla_ui::script::PetitionSlotView {
                     signatures: fields.item_petition_signatures(),
@@ -1018,7 +1019,7 @@ fn resolve_slot(
         item_id: entry,
         // `GetContainerItemLink` links the object (`0x4f997f` → `0x52ae00`); the tooltip reads its
         // name back off it.
-        link: Some(crate::ui_items::object_link(fields, Some(&t), rolls)),
+        link: Some(crate::ui_items::object_link_item(read, Some(&t), rolls)),
         guid,
         readable,
         creator,
@@ -1037,11 +1038,11 @@ fn resolve_slot(
         spell_0: t.has_spell_0(),
         // The tooltip's charges lines (`0x52d9e9`) and the sell price's charge scale
         // (`0x52e43d`) read them (`flds+0x28`).
-        spell_charges: std::array::from_fn(|i| fields.item_spell_charges(i as u8).unwrap_or(0)),
+        spell_charges: std::array::from_fn(|i| read.spell_charges(i as u8).unwrap_or(0)),
         cooldown: use_cooldown(
             &t,
             entry,
-            fields.item_spell_charges(0).unwrap_or(0),
+            read.spell_charges(0).unwrap_or(0),
             cooldowns,
             spells,
             now,
@@ -1074,9 +1075,15 @@ fn resolve_slot_in_target(
         now, ui_now, has_relic_slot,
     )?;
     if target == benilla_ui::script::UiTarget::Wrath335 && slot.item_id != 0 {
-        let fields = objects.object(guid)?;
+        let read = objects.item_read(guid)?;
         let template = items.template(slot.item_id, guid, Ask::Read);
-        let link = super::object_link_in_target(target, render_level, fields, template, rolls);
+        let link = super::object_link_in_target_item(
+            target,
+            render_level,
+            read,
+            template,
+            rolls,
+        );
         if slot.link.is_some() {
             slot.link = Some(link);
         } else {
@@ -1133,11 +1140,11 @@ fn worn_cooldowns(
     (0..WORN_SLOTS)
         .filter_map(|slot0| {
             let guid = store.0.player_inv_slot(slot0).filter(|&g| g != 0)?;
-            let fields = objects.object(guid)?;
-            let entry = fields.object_entry()?;
+            let read = objects.item_read(guid)?;
+            let entry = read.donor().object_entry()?;
             // Only read (`0x4c8b3a`).
             let t = items.template(entry, guid, Ask::Read)?;
-            let charges_left = fields.item_spell_charges(0).unwrap_or(0);
+            let charges_left = read.spell_charges(0).unwrap_or(0);
             let triple = use_cooldown(t, entry, charges_left, cooldowns, spells, now, ui_now)?;
             Some((usize::from(slot0) + 1, triple))
         })
@@ -1164,8 +1171,8 @@ pub(super) fn ask_item_build_lookups(
         // The petition id rides enchantment slot 0 (`0x5ef337`).
         let petition_id = |item| {
             objects
-                .object(item)
-                .and_then(|f| f.item_enchant(0))
+                .item_read(item)
+                .and_then(|read| read.enchant(0))
                 .unwrap_or(0) as u32
         };
         let asks = (script.take_item_name_asks(), script.take_petition_asks());
