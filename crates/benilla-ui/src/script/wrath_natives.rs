@@ -976,8 +976,10 @@ pub(super) fn install_multiclass(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(
             |lua, (op, arg0, arg1, guid): (u16, Option<u32>, Option<u32>, Option<u64>)| {
                 let mut model = lua.app_data_mut::<super::Model>().expect("model");
-                let serial = model.multiclass_next_serial.wrapping_add(1).max(1);
-                model.multiclass_next_serial = serial;
+                // The serial is allocated then advanced, so the first request is 1 (the
+                // initialised value) rather than 2. `max(1)` keeps a wrapped 0 out of the wire.
+                let serial = model.multiclass_next_serial.max(1);
+                model.multiclass_next_serial = serial.wrapping_add(1).max(1);
                 let char_guid = guid.unwrap_or_else(|| {
                     if model.player_guid != 0 {
                         model.player_guid
