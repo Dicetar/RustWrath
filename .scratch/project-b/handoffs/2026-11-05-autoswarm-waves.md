@@ -187,6 +187,35 @@ Evidence:
 - Final joined-tree evidence: `cargo check --workspace --all-targets` passed; log
   `.scratch/project-b/check-final-2026-11-05.log`.
 
+## Wave 5 — installed multiclass contract and action-button state
+
+- `wrath_natives.rs`: `MulticlassRequest` now accepts the installed addon's six arguments, uses
+  the caller's serial, packs guid/choice into the 28-byte WM layout, and returns numeric `1` on
+  admission / `0` on refusal. `MulticlassPoll` returns one bounded lowercase WMC1 v3 hex frame
+  or nil, matching the installed `receive(hex)` parsers. Added the installed-contract and
+  refusal/empty-poll tests.
+- `gameplay.rs`: corrected the WMC1 reply field order to the WM source (`op u16, requestId u32,
+  result u16, body`); this was a real decoder bug, not a parser test.
+- Action buttons: `SMSG_ACTION_BUTTONS` now carries state (`Snapshot`/`Apply`/`Pending`), reads
+  exactly 144 words for states 0/1, no payload for state 2 and ignores >2; the app holds state
+  0, applies only state 1 and leaves the live bar for state 2. Added 5 parser and 5 app tests.
+- Remaining gap: `ActionButtonsPending.pending/held` is not yet consulted by drag/use/unlearn
+  writers (the reference gates those while pending). The 1.12 action-button producer path still
+  uses the old state-free event.
+
+Evidence:
+- `cargo test -p benilla-ui wrath_multiclass --quiet` — exit 0, 2 passed.
+- `cargo test -p benilla-protocol-wrath action_buttons --quiet` — exit 0, 5 passed.
+- `cargo test -p benilla-app action_buttons_state --quiet` — exit 0, 5 passed.
+- `cargo check --workspace --all-targets` passed after the changes; log
+  `.scratch/project-b/check-wave5-2026-11-05.log`.
+- The earlier test-command failure was an actual disk-full condition:
+  `rustc-LLVM ERROR: IO failure on output stream: no space on device` with ~0.8 GB free. The
+  22.4 GB `target/debug/incremental` build cache was removed (no source or backups), freeing
+  ~19.8 GB. The command then exited 0; the tool's transient "Exited with code 1" was the
+  PowerShell pipeline wrapper, not a test failure.
+- Wave 5 commit: `a025e107`, pushed to `origin/main`.
+
 ### Mechanical compile repair
 
 `crates/benilla-assets` test fixtures were missing the newly required `LooseFiles::extra_addons`
