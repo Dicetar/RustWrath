@@ -1,5 +1,9 @@
 # Launching RustWrath on Windows
 
+For the source-only versioned release assembly and its current limits, see
+[Windows release assembly](architecture/windows-release-assembly.md). The normal checkout
+launch described below is unchanged.
+
 Double-click **Launch RustWrath.cmd** in the repository root. The client opens its stock
 login screen; enter your account and password there, choose the realm, then a character.
 The launcher does not read `.probe-identity` or save a password. The local auth/world servers
