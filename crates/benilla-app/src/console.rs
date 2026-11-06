@@ -169,8 +169,13 @@ fn setmap(_world: &mut World, _args: &str) -> Vec<String> {
 /// Run one console line `ConsoleExec` handed on, its replies to the log.
 pub(crate) fn run(world: &mut World, line: &str) {
     for text in execute(world, line) {
-        info!("console: {text}");
+        write_line(&text);
     }
+}
+
+/// The current console output sink, shared by commands and asynchronous server replies.
+pub(crate) fn write_line(text: &str) {
+    info!("console: {text}");
 }
 
 /// Runs one console line `ConsoleExec` handed on, the reference's `ConsoleCommandExecute`

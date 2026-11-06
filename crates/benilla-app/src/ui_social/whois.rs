@@ -10,7 +10,7 @@ pub(super) const HELP: &str =
 
 /// `SendWhoisRequest` (`0x5adee0`): `CMSG_WHOIS` with the whole argument text as one string
 /// (`0x5adf1f`), the empty line too, whether or not a player is active. The answer is the
-/// server's to give an administrator. Nothing is printed.
+/// server's to give an administrator; its asynchronous reply goes to the console sink.
 pub(super) fn whois(world: &mut World, args: &str) -> Vec<String> {
     if let Some(net) = world.get_resource::<NetCommands>() {
         let _ = net.0.send(ClientCommand::Whois {

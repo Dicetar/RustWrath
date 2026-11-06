@@ -719,8 +719,19 @@ pub(crate) mod net {
             .net_handler(K::FriendStatus, on_friend_status)
             .net_handler(K::PlayerName, on_player_name)
             .net_handler(K::WhoResults, on_who)
+            .net_handler(K::WhoisText, on_whois)
             .net_handler(K::LoggedOut, on_session_end)
             .net_handler(K::Disconnected, on_session_end);
+    }
+
+    /// `Packet_SMSG_WHOIS` writes the server's answer to the console, not to chat.
+    fn on_whois(In(ev): In<SessionEvent>) {
+        if let SessionEvent::WhoisText { text } = ev {
+            // The original handler reads into a 256-byte buffer, including its terminator.
+            let mut end = text.len().min(255);
+            while !text.is_char_boundary(end) { end -= 1; }
+            crate::console::write_line(&text[..end]);
+        }
     }
 
     /// The name cache as a handler holds it: the lookup with a callback asks the server on a
