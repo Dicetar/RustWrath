@@ -28,6 +28,9 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: 0
       # Set and empty: no install, as the gates' test-no-install runs.
       WOW_DATA: ""
+      # The repo config selects sccache; the action below installs it and backs it with GHA cache.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,6 +42,8 @@ jobs:
       - name: Toolchain
         run: rustup toolchain install && rustc -V
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: sccache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
@@ -75,6 +80,9 @@ jobs:
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
       WOW_DATA: ""
+      # The repo config selects sccache; the action below installs it and backs it with GHA cache.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,6 +90,8 @@ jobs:
       - name: Toolchain
         run: rustup toolchain install && rustc -V
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: sccache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       # Every crate runs, so one binary's crash does not hide the rest of the workspace.
       - name: test
         run: cargo test --workspace --no-fail-fast

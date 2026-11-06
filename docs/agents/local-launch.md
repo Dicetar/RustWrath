@@ -69,6 +69,11 @@ Set-Location 'D:\Projects\project-b-client'
 cargo build -p benilla --features hotpatch
 ```
 
+The checkout's `.cargo/config.toml` routes Cargo through sccache
+(`build.rustc-wrapper = "sccache"`). If the build shell cannot find the wrapper, install sccache
+or set `RUSTC_WRAPPER` to its full path; do not bypass it. Check `sccache --show-stats` before
+claiming a cache hit. Use `CARGO_INCREMENTAL=0` when a clean build should populate the cache.
+
 The launcher uses `D:\Projects\project-b-client\target\debug\benilla.exe`.
 For a build from a separate worktree, set `CARGO_TARGET_DIR` to
 `D:\Projects\project-b-client\target` in that build shell to update that
