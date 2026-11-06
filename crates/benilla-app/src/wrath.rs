@@ -133,30 +133,6 @@ pub const WRATH_DRAIN_BUDGET: Duration = Duration::from_millis(2);
 /// between complete packets, re-checks cancellation and never straddles a packet boundary.
 pub const WRATH_REPLY_BACKPRESSURE_SLICE: Duration = Duration::from_millis(50);
 
-// Session-reply delivery (package B, review finding R04). The numbers below are reviewed design
-// choices for bounded ownership, not measurements: no build or runtime profile established them.
-// They are deliberately generous so a stalled main loop rides out a burst without either
-// unbounded growth or a needless disconnect, while a genuinely dead consumer still ends in the
-// controlled terminal path rather than in memory exhaustion.
-
-/// Hard cap on the ordered session-reply FIFO (lifecycle edges plus gameplay replies). Reserved
-/// terminal slots are separate and never counted here.
-pub const WRATH_SESSION_REPLY_CAP: usize = 4096;
-/// Above this depth the producer stops reading between packets until the queue drains.
-pub const WRATH_SESSION_REPLY_HIGH_WATER: usize = 2048;
-/// Backpressure latches until the queue is at or below this depth, so it does not flap.
-pub const WRATH_SESSION_REPLY_LOW_WATER: usize = 1024;
-/// Reserved terminal slots: at most one per terminal kind, and a worker produces at most two
-/// (`LoggedOut` with its `Disconnected` teardown, or a single `LoginFailed`/`Disconnected`).
-pub const WRATH_SESSION_TERMINAL_CAP: usize = 2;
-/// Ceiling for one reply-drain pass when the queue is deep; the floor is [`WRATH_DRAIN_LIMIT`].
-pub const WRATH_DRAIN_CEILING: usize = 512;
-/// Wall-clock budget for one reply-drain pass. A design choice, not a measurement.
-pub const WRATH_DRAIN_BUDGET: Duration = Duration::from_millis(2);
-/// Longest single producer pause while the reply queue is above high water. The pause always ends
-/// between complete packets, re-checks cancellation and never straddles a packet boundary.
-pub const WRATH_REPLY_BACKPRESSURE_SLICE: Duration = Duration::from_millis(50);
-
 /// The longest silent world-server window treated as healthy. A live server answers the 10 s ping
 /// even when gameplay is quiet; socket read timeouts and empty frame ticks are not responses.
 pub const SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -4554,23 +4530,23 @@ fn translate_gameplay(
             kill_xp,
             rested_bonus,
             group_rate,
-        } => vec![SessionEvent::XpGain {
+        } => vec![SessionEvent::XpGain(benilla_protocol::messages::XpGain {
             victim,
-            total_xp,
-            kill_xp,
-            rested_bonus,
-            group_rate,
-        }],
+            total: total_xp,
+            base: total_xp.saturating_sub(rested_bonus),
+            kill: kill_xp,
+            group: group_rate,
+        })],
         WrathGameplayEvent::LevelUp {
             new_level,
             health_delta,
             power_deltas,
             stat_deltas,
         } => vec![SessionEvent::LevelUp(benilla_protocol::messages::LevelUpInfo {
-            new_level,
-            health_delta,
-            power_deltas,
-            stat_deltas,
+            level: new_level,
+            health: health_delta as i32,
+            powers: power_deltas.map(|v| v as i32),
+            stats: stat_deltas.map(|v| v as i32),
         })],
         WrathGameplayEvent::SpellHealLog {
             target,
@@ -4578,38 +4554,52 @@ fn translate_gameplay(
             spell_id,
             amount,
             critical,
-        } => vec![SessionEvent::SpellHealLog {
-            target,
-            caster,
-            spell_id,
-            amount,
-            critical,
-        }],
+        } => vec![SessionEvent::SpellHealLog(
+            benilla_protocol::messages::SpellHealLog {
+                target,
+                healer: caster,
+                spell_id,
+                amount,
+                critical,
+            },
+        )],
         WrathGameplayEvent::SpellEnergizeLog {
             target,
             caster,
             spell_id,
             power_type,
             amount,
-        } => vec![SessionEvent::SpellEnergizeLog {
-            target,
-            caster,
-            spell_id,
-            power_type,
-            amount,
-        }],
+        } => vec![SessionEvent::SpellEnergizeLog(
+            benilla_protocol::messages::SpellEnergizeLog {
+                target,
+                caster,
+                spell_id,
+                power: power_type,
+                amount,
+            },
+        )],
         WrathGameplayEvent::InitializeFactions { entries } => {
-            vec![SessionEvent::InitializeFactions { entries }]
+            vec![SessionEvent::Reputations {
+                standings: entries
+                    .into_iter()
+                    .map(|(id, standing)| (id, standing as i32))
+                    .collect(),
+            }]
         }
         WrathGameplayEvent::SetFactionStanding { updates } => {
-            vec![SessionEvent::SetFactionStanding { updates }]
+            vec![SessionEvent::ReputationDelta {
+                standings: updates
+                    .into_iter()
+                    .map(|(id, standing)| (id, standing as i32))
+                    .collect(),
+            }]
         }
         WrathGameplayEvent::PetCastFailed { spell_id, reason } => {
             vec![SessionEvent::PetCastFailed {
                 spell_id,
                 reason: match cast_failure::reason(reason) {
-                    cast_failure::Reason::Vanilla(r) => r,
-                    cast_failure::Reason::Unsupported(_) => 0x1c,
+                    cast_failure::Reason::Vanilla(r) => Some(r),
+                    cast_failure::Reason::Unsupported(_) => None,
                 },
             }]
         }
@@ -4617,9 +4607,8 @@ fn translate_gameplay(
             map_id,
             zone_id,
             states,
-        } => vec![SessionEvent::InitWorldStates {
-            map_id,
-            zone_id,
+        } => vec![SessionEvent::WorldStates {
+            scope: Some((map_id, zone_id)),
             states,
         }],
         WrathGameplayEvent::ForceRunSpeedChange {
@@ -6299,7 +6288,7 @@ fn wrath_tap_commands(
             )),
             ClientCommand::PetitionSign { item, byte } => Some((
                 benilla_protocol_wrath::opcode::CMSG_PETITION_SIGN,
-                gameplay::petition_sign(item, byte),
+                gameplay::petition_sign(item, byte as u8),
             )),
             ClientCommand::OfferPetition { item, player } => Some((
                 benilla_protocol_wrath::opcode::CMSG_OFFER_PETITION,
@@ -6505,10 +6494,22 @@ fn wrath_tap_commands(
                 survey,
                 answers,
                 comment,
-            } => Some((
-                benilla_protocol_wrath::opcode::CMSG_GMSURVEY_SUBMIT,
-                benilla_protocol::messages::gm_survey_submit(survey, &answers, &comment),
-            )),
+            } => {
+                let answers: Vec<benilla_protocol::messages::SurveyAnswer<'_>> = answers
+                    .iter()
+                    .map(
+                        |(question, rating, comment)| benilla_protocol::messages::SurveyAnswer {
+                            question: *question,
+                            rating: *rating,
+                            comment: comment.as_str(),
+                        },
+                    )
+                    .collect();
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_GMSURVEY_SUBMIT,
+                    benilla_protocol::messages::gm_survey_submit(survey, &answers, &comment),
+                ))
+            }
             ClientCommand::ForceSpeedAck {
                 kind,
                 guid,
@@ -6555,8 +6556,8 @@ fn wrath_tap_commands(
                         orientation,
                         pitch,
                         fall_time,
-                        jump.map(|j| (j.velocity, j.sin_angle, j.cos_angle, j.xy_speed)),
-                        transport.map(|t| (t.guid, t.local_pos, t.local_o, t.time_ms)),
+                        jump.map(|j| (j.zspeed, j.sin_angle, j.cos_angle, j.xy_speed)),
+                        transport.map(|t| (t.guid, [t.pos.x, t.pos.y, t.pos.z], t.orientation, 0)),
                     ),
                 ))
             }
@@ -6569,21 +6570,21 @@ fn wrath_tap_commands(
                 pos,
                 orientation,
             } => {
-                use benilla_protocol::messages::MoveModeKind;
+                use benilla_protocol::messages::MoveMode;
                 let opcode = match (mode, apply) {
-                    (MoveModeKind::Root, true) => {
+                    (MoveMode::Root, true) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_MOVE_ROOT_ACK)
                     }
-                    (MoveModeKind::Root, false) => {
+                    (MoveMode::Root, false) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_MOVE_UNROOT_ACK)
                     }
-                    (MoveModeKind::WaterWalk, _) => {
+                    (MoveMode::WaterWalk, _) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_WATER_WALK_ACK)
                     }
-                    (MoveModeKind::FeatherFall, _) => {
+                    (MoveMode::FeatherFall, _) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_FEATHER_FALL_ACK)
                     }
-                    (MoveModeKind::Hover, _) => {
+                    (MoveMode::Hover, _) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_HOVER_ACK)
                     }
                 };
@@ -6617,8 +6618,8 @@ fn wrath_tap_commands(
                     0,
                     pos,
                     orientation,
-                    (launch.vspeed, launch.sin_angle, launch.cos_angle, launch.hspeed),
-                    transport.map(|t| (t.guid, t.local_pos, t.local_o, t.time_ms)),
+                    (launch.zspeed, launch.sin_angle, launch.cos_angle, launch.xy_speed),
+                    transport.map(|t| (t.guid, [t.pos.x, t.pos.y, t.pos.z], t.orientation, 0)),
                 ),
             )),
             ClientCommand::MoveSplineDone {
@@ -12678,6 +12679,7 @@ mod scoped_delivery_tests {
         (
             WrathControl {
                 config: None,
+                multiclass: None,
                 trace: None,
                 worker: None,
                 retiring: None,
@@ -12968,9 +12970,9 @@ mod scoped_delivery_tests {
                 flags: 0x05,
                 level: 60,
                 charges: 3,
-                caster: None,
-                max_duration_ms: None,
-                duration_ms: None,
+                caster: 0,
+                max_duration_ms: 0,
+                duration_ms: 0,
             },
             benilla_protocol_wrath::reducer::AuraSlot {
                 slot: 3,
@@ -12978,9 +12980,9 @@ mod scoped_delivery_tests {
                 flags: 0x02,
                 level: 80,
                 charges: 1,
-                caster: None,
-                max_duration_ms: None,
-                duration_ms: None,
+                caster: 0,
+                max_duration_ms: 0,
+                duration_ms: 0,
             },
         ];
         let mut pairs = Vec::new();
@@ -12990,13 +12992,13 @@ mod scoped_delivery_tests {
         assert_eq!(a0.spell_id, 17);
         assert_eq!(a0.flags, 0x05);
         assert_eq!(a0.level, 60);
-        assert_eq!(a0.applications, 2); // charges(3) - 1 = 2 additional applications
+        assert_eq!(a0.stacks, 2); // charges(3) - 1 = 2 additional applications
 
         let a3 = fields.unit_aura(3).expect("slot 3 aura");
         assert_eq!(a3.spell_id, 139);
         assert_eq!(a3.flags, 0x02);
         assert_eq!(a3.level, 80);
-        assert_eq!(a3.applications, 0);
+        assert_eq!(a3.stacks, 0);
     }
 }
 
