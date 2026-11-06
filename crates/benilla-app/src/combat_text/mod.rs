@@ -130,6 +130,31 @@ const MAX_PER_UNIT: usize = 4;
 /// lane's bottom band ([`crate::ui_pass::overlay_z`]).
 const Z_WORLD_TEXT: u128 = overlay_z::WORLD_TEXT;
 
+/// The world-text raster ceiling, in raster pixels: the reference's font raster tops out at 32 px
+/// and the draw magnifies that raster to the requested screen size (`0x5ca030`'s 32 px cap). UI
+/// FontStrings cap their logical height instead ([`crate::ui_text::FONTSTRING_EM_CAP`]); world
+/// text keeps the cap on the raster and stretches it, so the crit pop at ~70 px is a magnified
+/// 32 px raster, not a fresh 70 px raster.
+const WORLD_TEXT_RASTER_CAP: f32 = 32.0;
+
+/// The raster size to shape at and the factor to stretch its quads by: 1.0 and the true size at or
+/// below the 32 px cap, otherwise 32 px and `target / 32`.
+fn world_text_raster(target_px: f32) -> (f32, f32) {
+    let raster = target_px.clamp(1.0, WORLD_TEXT_RASTER_CAP);
+    (raster, target_px.max(1.0) / raster)
+}
+
+/// Scale a glyph rect about `pivot`; the caller seats the result afterwards, so only the ink's
+/// extent and its horizontal centre must survive.
+fn stretch_rect(rect: Rect, pivot: Vec2, factor: f32) -> Rect {
+    Rect::new(
+        pivot.x + (rect.min.x - pivot.x) * factor,
+        pivot.y + (rect.min.y - pivot.y) * factor,
+        pivot.x + (rect.max.x - pivot.x) * factor,
+        pivot.y + (rect.max.y - pivot.y) * factor,
+    )
+}
+
 /// The first free of the unit's 4 slots; `None` is a hard drop, no eviction (`0x6c73f0`). The
 /// slot is also the seat-order key.
 fn free_slot(texts: &[WorldText], anchor: Entity) -> Option<u8> {
@@ -261,8 +286,9 @@ pub(crate) fn float_combat_text(
         // Constant with distance: the worldtext path has no depth term.
         let size_value = scale_value(t.category, life);
         let target_px = text_px(size_value, viewport);
-        // Deviation: the reference stretches a raster of at most 32 px; each whole-pixel size is
-        // rasterized here, so the crit pop stays crisp.
+        // The reference shapes at most a 32 px raster and magnifies it to the requested size;
+        // above the cap this keeps the crit pop a stretched raster instead of a fresh large one.
+        let (raster_px, stretch) = world_text_raster(target_px);
         let mut e = atlas.lock();
         let mut glyphs = layout_text_quads(
             &mut e,
@@ -277,7 +303,7 @@ pub(crate) fn float_combat_text(
             FontSpec {
                 // The bound face, not a hardcoded Friz: an addon's assignment is what draws.
                 path: font.as_ref().and_then(|f| f.0.as_deref()),
-                height: Some(target_px),
+                height: Some(raster_px),
                 outline: Outline::None,
                 monochrome: false,
                 spacing: 0.0, // one line
@@ -290,6 +316,11 @@ pub(crate) fn float_combat_text(
             crate::ui_text::TextSeat::Exact,
         );
         drop(e);
+        if stretch != 1.0 {
+            for q in &mut glyphs {
+                q.rect = stretch_rect(q.rect, screen, stretch);
+            }
+        }
         let (alpha_text, alpha_shadow) = fade_alpha(cat, elapsed_ms);
         let mut bounds: Option<Rect> = None;
         for q in &mut glyphs {
@@ -488,6 +519,23 @@ impl Plugin for CombatTextPlugin {
 mod tests {
     use super::law::COLOR_SPELL_GOLD;
     use super::*;
+
+    /// The reference's world-text raster tops out at 32 px: below it the true size is shaped,
+    /// above it a 32 px raster is magnified (the crit pop is ~70 px).
+    #[test]
+    fn world_text_raster_caps_at_32_and_stretches_above_it() {
+        // At or below the cap the true-pixel raster is used unchanged.
+        assert_eq!(world_text_raster(23.0), (23.0, 1.0));
+        assert_eq!(world_text_raster(32.0), (32.0, 1.0));
+        // The crit pop (~70 px) shapes at 32 and magnifies by target / 32.
+        let (raster, stretch) = world_text_raster(70.0);
+        assert_eq!(raster, WORLD_TEXT_RASTER_CAP);
+        assert!((stretch - 70.0 / 32.0).abs() < 1e-6);
+        // The magnification keeps the glyph's horizontal centre and scales its extents.
+        let pivot = Vec2::new(100.0, 200.0);
+        let stretched = stretch_rect(Rect::new(90.0, 210.0, 110.0, 230.0), pivot, 2.0);
+        assert_eq!(stretched, Rect::new(80.0, 220.0, 120.0, 260.0));
+    }
 
     /// Headless, and with no attachment on the bare entities the anchor is the feet, so the
     /// snapshot is exactly `z − 1/3`.

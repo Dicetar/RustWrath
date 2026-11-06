@@ -4568,23 +4568,44 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
     for slot in &mut raw {
         *slot = (r.u32()?, r.u32()?, r.u32()?, r.u32()?);
     }
-    // The item requirement block moved after the objectives and is redundant with each
-    // objective's own item fields, which the model already carries.
+    // The item requirement block moved after the objectives. It is not redundant with the
+    // objective quads: 12340 keeps the required ("collect") items in these six pairs, while the
+    // quads' third word is the intermediate drop item (`m_intermediateItemId`), which the client
+    // does not count as a required item. The fixed four-slot donor model carries the collect
+    // items in objective rows that name no creature, GameObject or drop item; the remaining two
+    // of 12340's six pairs have no donor slot and are not exposed (see the quest-log note).
+    let mut collect_items = Vec::with_capacity(6);
     for _ in 0..6 {
-        let _item = r.u32()?;
-        let _count = r.u32()?;
+        let item_id = r.u32()?;
+        let item_count = r.u32()?;
+        if item_id != 0 {
+            collect_items.push((item_id, item_count));
+        }
     }
     let mut texts = Vec::with_capacity(4);
     for _ in 0..4 {
         texts.push(r.cstring()?);
     }
-    let objectives = std::array::from_fn(|i| QuestObjective {
+    let mut objectives = std::array::from_fn(|i| QuestObjective {
         creature_or_go: raw[i].0,
         required_count: raw[i].1,
-        item_id: raw[i].2,
-        item_count: raw[i].3,
+        // The quad's third word is the intermediate drop item, not a required item; it has no
+        // donor objective slot. The collect items below are the required ones.
+        item_id: 0,
+        item_count: 0,
         text: std::mem::take(&mut texts[i]),
     });
+    let mut collect = collect_items.into_iter();
+    for objective in &mut objectives {
+        if objective.creature_or_go != 0 || objective.item_id != 0 {
+            continue;
+        }
+        let Some((item_id, item_count)) = collect.next() else {
+            break;
+        };
+        objective.item_id = item_id;
+        objective.item_count = item_count;
+    }
     if r.at != b.len() {
         return Err(DecodeError::trailing(b.len() - r.at).into());
     }
@@ -5264,6 +5285,50 @@ mod tests {
         }
     }
 
+    /// `SMSG_QUESTGIVER_OFFER_REWARD`'s choice block precedes its mandatory reward block
+    /// (`SendQuestGiverOfferReward`): a reward-choice quest such as 21's three rewards must arrive
+    /// as three choices and keep their order, not disappear into the reward list or the tail.
+    #[test]
+    fn quest_offer_reads_each_choice_and_reward_once_in_packet_order() {
+        let mut b = 0x42u64.to_le_bytes().to_vec();
+        b.extend_from_slice(&21u32.to_le_bytes());
+        b.extend_from_slice(b"Skirmish at Echo Ridge\0Return to the mine.\0");
+        b.push(1);
+        b.extend_from_slice(&0x80008u32.to_le_bytes()); // flags
+        b.extend_from_slice(&0u32.to_le_bytes()); // suggested
+        b.extend_from_slice(&0u32.to_le_bytes()); // emote count
+        b.extend_from_slice(&3u32.to_le_bytes()); // choices
+        for (item, count, display) in [(2186u32, 1u32, 101u32), (2691, 1, 102), (11192, 1, 103)] {
+            b.extend_from_slice(&item.to_le_bytes());
+            b.extend_from_slice(&count.to_le_bytes());
+            b.extend_from_slice(&display.to_le_bytes());
+        }
+        b.extend_from_slice(&1u32.to_le_bytes()); // rewards
+        for word in [3000u32, 2, 104] {
+            b.extend_from_slice(&word.to_le_bytes());
+        }
+        for word in [40u32, 250, 0] {
+            b.extend_from_slice(&word.to_le_bytes());
+        }
+        b.extend_from_slice(&0f32.to_le_bytes()); // honor multiplier
+        for word in [8u32, 0, 0, 0, 0, 0, 0] {
+            b.extend_from_slice(&word.to_le_bytes());
+        }
+        for _ in 0..15 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // reputation arrays
+        }
+        let ServerEvent::QuestOffer(offer) = read_quest_offer(&b).unwrap() else { panic!("offer"); };
+        assert_eq!(
+            offer.choices.iter().map(|i| (i.item_id, i.count)).collect::<Vec<_>>(),
+            [(2186, 1), (2691, 1), (11192, 1)]
+        );
+        assert_eq!(
+            offer.rewards.iter().map(|i| (i.item_id, i.count)).collect::<Vec<_>>(),
+            [(3000, 2)]
+        );
+        assert_eq!(offer.money, 40);
+    }
+
     #[test]
     fn quest_offer_retains_reward_metadata_and_requires_the_full_tail() {
         let mut b = 0x42u64.to_le_bytes().to_vec();
@@ -5332,9 +5397,9 @@ mod tests {
                 b.extend_from_slice(&v.to_le_bytes());
             }
         }
-        for _ in 0..6 {
-            b.extend_from_slice(&0u32.to_le_bytes()); // item requirement id
-            b.extend_from_slice(&0u32.to_le_bytes()); // item requirement count
+        for (item, count) in [(752u32, 12u32), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)] {
+            b.extend_from_slice(&item.to_le_bytes()); // item requirement id
+            b.extend_from_slice(&count.to_le_bytes()); // item requirement count
         }
         b.extend_from_slice(b"One\0Two\0Three\0Four\0");
         let template = read_quest_template(&b).expect("parse");
@@ -5349,6 +5414,8 @@ mod tests {
         assert_eq!(template.objectives[0].creature_or_go, 7);
         assert_eq!(template.objectives[0].required_count, 3);
         assert_eq!(template.objectives[0].text, "One");
+        assert_eq!(template.objectives[1].item_id, 752);
+        assert_eq!(template.objectives[1].item_count, 12);
         assert_eq!(template.objectives[3].text, "Four");
     }
 

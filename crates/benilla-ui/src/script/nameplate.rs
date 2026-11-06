@@ -18,7 +18,7 @@ use crate::widget::{FrameHandle, FrameKind, KindState, RegionHandle, RegionKind}
 
 use super::model::Model;
 use super::UiScript;
-use super::{BlendMode, FontShadow, JustifyV, RegionData, TexCoords};
+use super::{BlendMode, FontShadow, JustifyV, TexCoords};
 
 /// Region 1's art, and the path plate addons identify a plate by.
 pub const BORDER_TEXTURE: &str = "Interface\\Tooltips\\Nameplate-Border";
@@ -489,7 +489,7 @@ impl Plate {
         }
 
         // The ctor's blend modes, one `0x7703f0` call per texture: BLEND, but the glow is ADD
-        // (`0x7cb36a`), which [`is_unpainted_glow`] depends on.
+        // (`0x7cb36a`), so the extract carries its ADD mode through to the additive UI pipeline.
         let border = texture(
             model,
             frame,
@@ -882,14 +882,6 @@ fn font_string(
 /// the frame so an addon's strings on one get it too; a string on the plate's health bar does not.
 pub(super) fn is_world_seated(model: &Model, frame: FrameHandle) -> bool {
     model.nameplates.by_frame.contains_key(&frame) || super::chat_bubble::is_bubble(model, frame)
-}
-
-/// Whether this is the plate's own glow art on its ADD mode, which the quad walk
-/// ([`super::extract`]) skips. Deviation: the reference adds this rim over the bar; we brighten
-/// the bar ([`LIT_BOOST`]), because the rim reads as hard edge lines in our linear-blending
-/// pipeline. The art has no alpha and is mostly black, so as BLEND it would be an opaque box.
-pub(super) fn is_unpainted_glow(data: &RegionData) -> bool {
-    data.blend == BlendMode::Add && data.tex.path().as_deref() == Some(GLOW_TEXTURE)
 }
 
 /// The draw-time multiply of plate fill `rh`'s tint: [`LIT_BOOST`] while its plate is lit.

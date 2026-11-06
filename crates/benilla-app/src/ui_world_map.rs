@@ -405,16 +405,11 @@ fn explored_bit(explored: &[u32], bit: u32) -> bool {
     explored.get(slot).is_some_and(|w| w & (1 << within) != 0)
 }
 
-/// `GetMapLandmarkInfo`'s `textureIndex` (`0x4a8848`-`0x4a8877`): the row's `Icon`, but cell 15
-/// at zone level for a row without `Flags & 0x80`, which the shipped data sets on exactly the
-/// world-state rows.
+/// `GetMapLandmarkInfo`'s `textureIndex` (`0x4a8848`-`0x4a8877`): the row's `Icon`, except at
+/// zone level for a row without `Flags & 0x80`. 3.3.5 answers cell 0 there, the transparent cell
+/// (`WorldMap_Scripts.cpp`), not the 1.12 donor's generic graveyard cell 15.
 fn landmark_texture_index(poi: &benilla_formats::AreaPoi, level: WorldMapLevel) -> u32 {
-    /// The generic zone-level POI cell of `Interface\Minimap\POIIcons`.
-    const ZONE_SUBSTITUTE: u32 = 15;
-    match poi.flags & 0x80 != 0 || level != WorldMapLevel::Zone {
-        true => poi.icon,
-        false => ZONE_SUBSTITUTE,
-    }
+    benilla_ui::script::poi_texture_index(poi.icon, poi.flags, level)
 }
 
 /// Which map the player's position selects (`0x4a6650`), in the Lua-visible encoding; at most one
@@ -934,10 +929,14 @@ mod tests {
     }
 
     #[test]
-    fn the_zone_level_icon_substitution_spares_the_world_state_rows() {
+    fn the_zone_level_icon_gate_drops_rows_without_flags_0x80() {
         let town = poi(0x0d, 0, 0);
         let tower = poi(0x87, 0, 2372);
-        assert_eq!(landmark_texture_index(&town, WorldMapLevel::Zone), 15);
+        assert_eq!(
+            landmark_texture_index(&town, WorldMapLevel::Zone),
+            0,
+            "a normal zone POI gets the transparent cell, never a graveyard cell"
+        );
         assert_eq!(
             landmark_texture_index(&town, WorldMapLevel::Continent),
             town.icon
@@ -954,9 +953,45 @@ mod tests {
             assert_eq!(
                 landmark_texture_index(&tower, level),
                 tower.icon,
-                "Flags & 0x80 escapes the substitution at every level"
+                "Flags & 0x80 keeps the row's own cell at every level"
             );
         }
+    }
+
+    /// The real rows: Goldshire is a normal town (`Flags 0x205`, `Icon 7`), so its zone map shows
+    /// no icon where the old 1.12 substitution painted cell 15's blue graveyard. A battleground
+    /// graveyard row (`Flags 0x284`, `Icon 15`) keeps its own cell.
+    #[test]
+    fn a_normal_poi_does_not_take_the_graveyard_cell_and_a_graveyard_keeps_its_own() {
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_formats::open_chain(&data).expect("chain");
+        let pois = benilla_formats::load_area_poi_catalog(&mut chain).expect("AreaPOI");
+
+        let goldshire = pois.get(7).expect("AreaPOI 7 (Goldshire)");
+        assert_eq!(goldshire.name, "Goldshire");
+        assert_eq!(goldshire.icon, 7, "the real red-flag icon cell");
+        assert_eq!(goldshire.flags, 0x205, "no Flags & 0x80");
+        assert_eq!(
+            landmark_texture_index(goldshire, WorldMapLevel::Zone),
+            0,
+            "cell 0, not the graveyard/tower cell 15"
+        );
+        assert_eq!(
+            landmark_texture_index(goldshire, WorldMapLevel::Continent),
+            7,
+            "on the continent sheet the row keeps its intended cell"
+        );
+
+        let graveyard = pois
+            .rows()
+            .map(|(_, poi)| poi)
+            .find(|poi| poi.flags & 0x80 != 0 && poi.icon == 15)
+            .expect("a real graveyard row carrying cell 15");
+        assert_eq!(
+            landmark_texture_index(graveyard, WorldMapLevel::Zone),
+            15,
+            "Flags & 0x80 keeps the graveyard's own POIIcons cell"
+        );
     }
 
     #[test]
@@ -990,7 +1025,7 @@ mod tests {
         assert_eq!(
             tower.flags & 0x80,
             0x80,
-            "escapes the level-15 substitution"
+            "keeps its own icon under the zone-level gate"
         );
         assert_eq!(tower.area_id, 139, "Eastern Plaguelands");
 
@@ -1056,8 +1091,8 @@ mod tests {
             );
             assert_eq!(
                 landmark_texture_index(city, WorldMapLevel::Zone),
-                15,
-                "and the generic cell inside a zone map"
+                0,
+                "and no icon inside a zone map: a capital row has no Flags & 0x80"
             );
         }
     }

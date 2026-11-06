@@ -20,8 +20,11 @@
 //! Only say, yell, party and monster say/yell bubble: the reference's gate is "sender resolves",
 //! but the wire-type remap (`0x49a870`) that would admit other kinds is untraced.
 //!
-//! Deviation: sizes ride the plates' damped diagonal basis ([`plate_basis`]), not the unbounded
-//! reference law, so bubble text and plate text keep one em at every window size.
+//! Sizes use the reference's unbounded gx basis, `S(v) = v · screenDiagonal / 768`: the frame's
+//! border and the text's em grow with the diagonal without a knee. The nameplates' damped
+//! [`crate::vplates::plate_basis`] deliberately does not apply here, because the reference ties
+//! neither to the other and the damping would shrink the bubble's text against the plates at high
+//! resolutions.
 //!
 //! Not built: the reference also ends a bubble whose speaker's model data is not resident
 //! (`0x7103d0`); here a speaker with no model yet only counts as not drawn.
@@ -36,7 +39,7 @@ use benilla_ui::script::{BubbleGeometry, BubbleState};
 use crate::entities::StandBoxHeight;
 use crate::net::{Embodied, Guid, NetEntity, SelfGuid};
 use crate::ui_chat::{default_color, ChatEventKind};
-use crate::vplates::{gx_px, plate_basis, text_px, VPlateSet, VPlates};
+use crate::vplates::{gx_px, text_px, VPlateSet, VPlates};
 use benilla_world::view::WorldCamera;
 
 /// The two bubble CVars (registrar `0x603280`), booting at the reference's defaults.
@@ -153,7 +156,15 @@ fn sanitize(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The border unit in logical px: `S(16)` in gx for the viewport's aspect, in the damped size
+/// One gx unit in pixels on the reference's unbounded basis: the screen diagonal. `S(v)` is the
+/// diagonal times `v`, so `16` is 16 px at 1024x768 and 30 px at 2560x1440. The nameplates' damped
+/// [`crate::vplates::plate_basis`] is a separate, documented deviation for plate art; the bubble
+/// keeps the reference law.
+fn bubble_basis(viewport: Vec2) -> f32 {
+    viewport.x.hypot(viewport.y)
+}
+
+/// The border unit in logical px: `S(16)` in gx for the viewport's aspect, in the unbounded size
 /// basis. At 4:3 that is a 64th of the width; wider, `S` divides by `1024·A` and so stays 16 of the
 /// 768 units the height spans.
 fn border_px(viewport: Vec2, basis: f32) -> f32 {
@@ -527,7 +538,7 @@ fn drive_bubbles(
     // Everything below is in window px, divided by the seam once for the `WorldFrame`'s units.
     let seam = window.map_or(1.0, |w| crate::ui_script::seam_scale(w.height()));
     let scale = window.map_or(1.0, Window::scale_factor);
-    let basis = plate_basis(viewport);
+    let basis = bubble_basis(viewport);
     feed.geometry = Some(BubbleGeometry {
         border: border_px(viewport, basis) / seam,
         margin: gx_px(MARGIN, basis) / seam,
@@ -654,6 +665,7 @@ impl Plugin for ChatBubblePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vplates::plate_basis;
 
     /// `0x4b1810`: the base, plus the per-word step for each space or tab that ends a word; an
     /// empty buffer lasts 0.
@@ -984,20 +996,31 @@ mod tests {
         assert_eq!(b.stack, [2, 3, 1], "1's new line came after 3's");
     }
 
-    /// `S(16)` (`0x4b09d2`): 16 px at 1024×768, a 64th of the width; at 16:9 under the plate
-    /// knee, 1024×576, 12 px, the 16 of 768 units the height spans, where a 64th of the width
-    /// would be 16; damped past the knee.
+    /// `S(16)` (`0x4b09d2`): 16 px at 1024×768, a 64th of the width; at 16:9 1024×576, 12 px,
+    /// the 16 of 768 units the height spans. At 2560×1440 it is 30 px, the reference's unbounded
+    /// diagonal value, where the plates' damped basis would answer about 25.
     #[test]
     fn border_unit_is_sixteen_script_units() {
         let vp = Vec2::new(1024.0, 768.0);
-        assert_eq!(border_px(vp, plate_basis(vp)), 16.0);
+        assert_eq!(border_px(vp, bubble_basis(vp)), 16.0);
         let vp = Vec2::new(1024.0, 576.0);
-        assert_eq!(border_px(vp, plate_basis(vp)), 12.0);
+        assert_eq!(border_px(vp, bubble_basis(vp)), 12.0);
         let wide = Vec2::new(2560.0, 1440.0);
-        let b = border_px(wide, plate_basis(wide));
+        assert_eq!(border_px(wide, bubble_basis(wide)), 30.0);
         assert!(
-            b > 16.0 && b < 30.0,
-            "damped growth between the native pin and the faithful 30 px, got {b}"
+            text_px(TEXT_H, bubble_basis(wide)) > text_px(TEXT_H, plate_basis(wide)),
+            "the bubble keeps the reference's unbounded em, not the plates' damped one"
         );
+    }
+
+    /// `NAMEPLATE_FONT` at `0.01` gx (`0x4b0b21`): `round(0.01 · diagonal)`, 13 px at 1024×768
+    /// and 22 px at 1920×1080, where the damped plate basis would answer 17.
+    #[test]
+    fn the_bubble_text_is_measured_on_the_unbounded_gx_basis() {
+        let ref43 = bubble_basis(Vec2::new(1024.0, 768.0));
+        assert_eq!(text_px(TEXT_H, ref43), 13.0);
+        let wide = Vec2::new(1920.0, 1080.0);
+        assert_eq!(text_px(TEXT_H, bubble_basis(wide)), 22.0);
+        assert_eq!(text_px(TEXT_H, plate_basis(wide)), 17.0);
     }
 }

@@ -8,10 +8,10 @@
 //! stays on the birth (`0x5ff170`); stages 3/4 re-arm the completed id forever (`0x60ed00`). The
 //! reap plays `Decay` out (`0x614150`); the destructor `0x6203e0` plays nothing.
 //!
-//! Deviation: `Hold` is one repeating play where the reference re-arms it each pass with variation
-//! -1, a weighted random pick, because at most one `Spells\` model authors several variations.
+//! `Hold` re-arms each pass with `variation -1` (`0x5ff170` → `0x7121a0`), a weighted roll even
+//! when the model authors one variation, rather than one repeating play.
 
-use benilla_assets::ModelAnimations;
+use benilla_assets::{AnimRng, ModelAnimations};
 use bevy::animation::{graph::AnimationNodeIndex, RepeatAnimation};
 use bevy::prelude::*;
 
@@ -25,10 +25,12 @@ pub(crate) const ANIM_DECAY: u16 = 159;
 /// The completion callback an effect instance carries (the `model+0x70` registration `0x711bb0`
 /// writes). On every kit-effect root that armed a rig, since the reap needs its player; a missile,
 /// an item glow or the `fxview` fixture is not a `CEffect` and carries none.
-#[derive(Component)]
+#[derive(Clone, Copy, Component)]
 pub(crate) enum FxAnimLife {
     /// Stage 2's birth, waiting for `0x5ff170`'s handover to `Hold`.
     Birth(AnimationNodeIndex),
+    /// A `Hold` pass is running; its completion re-arms the next variation.
+    Holding(AnimationNodeIndex),
     /// Nothing left to advance; the node is kept so a reap can stop it before arming `Decay`.
     Settled(AnimationNodeIndex),
 }
@@ -54,7 +56,7 @@ impl FxAnimLife {
 
     fn armed(&self) -> AnimationNodeIndex {
         match self {
-            Self::Birth(n) | Self::Settled(n) => *n,
+            Self::Birth(n) | Self::Holding(n) | Self::Settled(n) => *n,
         }
     }
 }
@@ -78,6 +80,7 @@ pub(crate) fn advance_fx_anim(
         &ModelAnimations,
         Has<FxDecay>,
     )>,
+    mut rng: Option<ResMut<AnimRng>>,
 ) {
     for (root, mut life, mut player, anims, decaying) in &mut instances {
         if decaying {
@@ -86,8 +89,9 @@ pub(crate) fn advance_fx_anim(
             commands.entity(root).try_remove::<FxAnimLife>();
             continue;
         }
-        let FxAnimLife::Birth(armed) = *life else {
-            continue; // settled: nothing changes on completion
+        let armed = match *life {
+            FxAnimLife::Birth(n) | FxAnimLife::Holding(n) => n,
+            FxAnimLife::Settled(_) => continue, // settled: nothing changes on completion
         };
         // `0x719370`'s fire-once latch: one notification per authored span.
         if !player
@@ -96,21 +100,52 @@ pub(crate) fn advance_fx_anim(
         {
             continue;
         }
-        // `0x5ff170`: arm `Hold` if the model authors it and keep it running (`0x5ff1d0`'s deadline
-        // `node+0x58` is set only at stage 3); otherwise stay parked on the birth.
-        match anims.find(ANIM_HOLD) {
-            Some(hold) => {
-                player.stop(armed);
-                player.play(hold.node).set_repeat(RepeatAnimation::Forever);
-                *life = FxAnimLife::Settled(hold.node);
-                trace_leg("hold", root, ANIM_HOLD);
+        match *life {
+            // `0x5ff170`: arm `Hold` if the model authors it and re-arm it each pass; otherwise
+            // stay parked on the birth (`0x5ff1d0`'s deadline `node+0x58` is set only at stage 3).
+            FxAnimLife::Birth(armed) => {
+                if let Some(next) = hold_pass(&mut player, anims, armed, rng.as_deref_mut()) {
+                    *life = FxAnimLife::Holding(next);
+                    trace_leg("hold", root, ANIM_HOLD);
+                } else {
+                    *life = FxAnimLife::Settled(armed);
+                    trace_leg("park", root, 0);
+                }
             }
-            None => {
-                *life = FxAnimLife::Settled(armed);
-                trace_leg("park", root, 0);
+            // One `Hold` pass ended: re-arm with `variation -1` (`0x7121a0`), not a repeat.
+            FxAnimLife::Holding(armed) => {
+                if let Some(next) = hold_pass(&mut player, anims, armed, rng.as_deref_mut()) {
+                    *life = FxAnimLife::Holding(next);
+                    trace_leg("hold", root, ANIM_HOLD);
+                } else {
+                    *life = FxAnimLife::Settled(armed);
+                    trace_leg("park", root, 0);
+                }
             }
+            FxAnimLife::Settled(_) => {}
         }
     }
+}
+
+/// Re-arm one `Hold` pass, picking a variation with the reference's `variation -1` weighted roll
+/// (`0x7121a0`). The roll runs even with one variation, so the shared stream stays in phase.
+/// Returns the armed node, or `None` when the model no longer authors `Hold`.
+fn hold_pass(
+    player: &mut AnimationPlayer,
+    anims: &ModelAnimations,
+    armed: AnimationNodeIndex,
+    rng: Option<&mut AnimRng>,
+) -> Option<AnimationNodeIndex> {
+    let head = anims.find(ANIM_HOLD)?;
+    let clip = rng
+        .and_then(|r| anims.pick_variation(ANIM_HOLD, r.draw()))
+        .unwrap_or(head);
+    player.stop(armed);
+    player
+        .play(clip.node)
+        .set_repeat(RepeatAnimation::Never)
+        .replay();
+    Some(clip.node)
 }
 
 /// The lifecycle's trace line (`WOW_MOVE_TRACE=<path>`, tag `fx`), one per leg change, beside the
@@ -186,6 +221,63 @@ mod tests {
         let life = FxAnimLife::arm(&mut player, &clip(0, 0, false), FxStage::State);
         assert!(matches!(life, FxAnimLife::Birth(n) if n == AnimationNodeIndex::new(0)));
         assert_eq!(repeat(&player, 0), RepeatAnimation::Never);
+    }
+
+    /// A `Hold` variation with its authored weight.
+    fn hold_clip(node: usize, frequency: u16) -> AnimClip {
+        AnimClip {
+            frequency,
+            ..clip(ANIM_HOLD, node, true)
+        }
+    }
+
+    /// Two passes re-arm separately, each with the shared stream's next variation roll; the
+    /// previous pass is stopped, so this is not one endlessly repeating play.
+    #[test]
+    fn hold_rearms_each_pass_with_a_variation_roll() {
+        let anims = test_anims(&[
+            clip(0, 0, false),
+            hold_clip(1, 0x4000),
+            hold_clip(2, 0x4000),
+        ]);
+        let mut player = AnimationPlayer::default();
+        let mut rng = AnimRng::default();
+        let first = hold_pass(
+            &mut player,
+            &anims,
+            AnimationNodeIndex::new(0),
+            Some(&mut rng),
+        )
+        .expect("the model authors Hold");
+        assert_eq!(
+            first,
+            AnimationNodeIndex::new(1),
+            "seed 1's first roll lands in variation 0"
+        );
+        let second = hold_pass(&mut player, &anims, first, Some(&mut rng))
+            .expect("and re-arms for the next pass");
+        assert_eq!(
+            second,
+            AnimationNodeIndex::new(2),
+            "the second pass rolls variation 1"
+        );
+        assert_ne!(first, second, "a fresh pass, not a repeat of the first");
+        assert_eq!(repeat(&player, 2), RepeatAnimation::Never);
+        assert!(
+            player.animation(first).is_none(),
+            "the previous pass is stopped"
+        );
+
+        // No Hold on the model: the caller's park branch.
+        assert!(
+            hold_pass(
+                &mut player,
+                &test_anims(&[clip(0, 0, false)]),
+                second,
+                Some(&mut rng)
+            )
+            .is_none()
+        );
     }
 
     /// `0x60ed00` re-arms without reading the clamp bit, so a clamping precast repeats.

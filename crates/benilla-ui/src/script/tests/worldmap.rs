@@ -771,6 +771,49 @@ fn the_setter_builds_the_landmarks_before_its_event_fires() {
     );
 }
 
+/// `GetMapLandmarkInfo` takes the row's own `Icon` on the continent and world sheets, but a zone
+/// map only keeps it for `Flags & 0x80`; every other row answers cell 0. The old 1.12
+/// substitution painted cell 15, the blue graveyard/tower cell, over every ordinary town.
+#[test]
+fn a_normal_poi_is_not_painted_with_the_graveyard_cell() {
+    // AreaPOI 7 (Goldshire): Flags 0x205, Icon 7. No Flags & 0x80.
+    assert_eq!(
+        poi_texture_index(7, 0x205, WorldMapLevel::Zone),
+        0,
+        "a normal zone POI gets the transparent cell, not cell 15"
+    );
+    assert_ne!(
+        poi_texture_index(7, 0x205, WorldMapLevel::Zone),
+        15,
+        "never the graveyard/tower cell the donor substituted"
+    );
+    assert_eq!(
+        poi_texture_index(7, 0x205, WorldMapLevel::Continent),
+        7,
+        "the continent sheet keeps the row's intended POIIcons cell"
+    );
+    assert_eq!(poi_texture_index(7, 0x205, WorldMapLevel::World), 7);
+}
+
+/// A real gated row (`Flags & 0x80`), such as a battleground graveyard or a world-state tower,
+/// keeps its own `POIIcons` cell at zone level; the gate must not flatten it to cell 0 or 15.
+#[test]
+fn a_gated_poi_keeps_its_intended_poi_icons_cell() {
+    // AreaPOI 1768 (Northpass Tower): Flags 0x287 carries 0x80, Icon 11.
+    assert_eq!(poi_texture_index(11, 0x287, WorldMapLevel::Zone), 11);
+    assert_eq!(
+        poi_texture_index(11, 0x287, WorldMapLevel::Continent),
+        11
+    );
+    // An Arathi Basin graveyard row carries its own cell, e.g. 15 at Flags 0x284.
+    assert_eq!(poi_texture_index(15, 0x284, WorldMapLevel::Zone), 15);
+    // An instance map is the Zone level; the same gate applies.
+    assert_eq!(
+        poi_texture_index(15, 0x284, WorldMapLevel::of((0, 0, Some(443)))),
+        15
+    );
+}
+
 /// Overlays reveal per the pushed explored bitset: none before a push, the matching subset after,
 /// each with its full info tuple.
 #[test]

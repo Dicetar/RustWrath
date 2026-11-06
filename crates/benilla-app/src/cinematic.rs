@@ -674,6 +674,23 @@ mod tests {
         }
     }
 
+    /// The reference's own two branches: above 4:3 `CinematicFrame.lua:9-19` takes `width / 2`
+    /// for the picture and halves the remainder; at 4:3 and narrower it leaves the XML's
+    /// `1024 x 128`, which is the same 1/6 of the 768-high sheet.
+    #[test]
+    fn the_two_branches_meet_at_four_three() {
+        // 16:10: `(1050 − 1680/2)/2 = 105`, a 2:1 picture.
+        assert_eq!(letterbox_bar(1680.0, 1050.0), 105.0);
+        // 4:3 and narrower: the XML bar's fraction, `128/768`.
+        for (w, h) in [(1024.0, 768.0), (1600.0, 1200.0), (1280.0, 1024.0)] {
+            assert!(
+                (letterbox_bar(w, h) / h - 1.0 / 6.0).abs() < 1e-6,
+                "{w}x{h}: {}",
+                letterbox_bar(w, h)
+            );
+        }
+    }
+
     #[test]
     fn four_three_and_narrower_are_still_letterboxed() {
         // 4:3 at a real resolution.

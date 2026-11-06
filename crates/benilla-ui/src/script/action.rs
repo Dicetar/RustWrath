@@ -780,7 +780,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::ActionSlot;
+    use super::{ActionSlot, ActionState};
     use crate::script::UiScript;
 
     /// A slot word whose top nibble is 4 holds a macro, its id the word without bit 30
@@ -1185,5 +1185,39 @@ mod tests {
             ),
             "{calls:?}"
         );
+    }
+
+    #[test]
+    fn get_action_cooldown_running_spell_returns_start_duration_enabled() {
+        let mut s = UiScript::new().unwrap();
+        s.tick(100.0);
+        s.set_action_state(
+            1,
+            Some(ActionState {
+                cooldown: Some((100_000, 15_000, true)),
+                ..Default::default()
+            }),
+        );
+        let (start, duration, enabled) =
+            s.eval::<(f64, f64, i64)>("return GetActionCooldown(1)").unwrap();
+        assert!((start - 100.0).abs() < 1e-3);
+        assert_eq!(duration, 15.0);
+        assert_eq!(enabled, 1);
+    }
+
+    #[test]
+    fn get_action_cooldown_no_cooldown_does_not_leave_a_stale_sweep() {
+        let mut s = UiScript::new().unwrap();
+        s.tick(100.0);
+        s.set_action_state(
+            1,
+            Some(ActionState {
+                no_cooldown_query: true,
+                ..Default::default()
+            }),
+        );
+        let (start, duration, enabled) =
+            s.eval::<(f64, f64, i64)>("return GetActionCooldown(1)").unwrap();
+        assert_eq!((start, duration, enabled), (0.0, 0.0, 0));
     }
 }

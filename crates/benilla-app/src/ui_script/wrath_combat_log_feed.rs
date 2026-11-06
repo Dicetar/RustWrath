@@ -22,6 +22,10 @@ pub(crate) struct CombatLogMemo {
     unresolved: u64,
 }
 
+/// The visible marker for an endpoint whose name never resolved inside the retry window. It is
+/// the client's own unknown-object spelling, never a guessed player or creature name.
+const UNKNOWN_OBJECT_NAME: &str = "UNKNOWNOBJECT";
+
 pub(crate) fn feed(
     mut vm: VmWith<(
         Option<ResMut<'static, WrathWorldView>>,
@@ -54,7 +58,7 @@ pub(crate) fn feed(
         if world.party_kill_unresolved > memo.unresolved {
             debug!(
                 unresolved = world.party_kill_unresolved,
-                "wrath: combat-log kills discarded after name resolution timed out"
+                "wrath: combat-log kills delivered with an unknown endpoint after name resolution timed out"
             );
         }
         memo.unresolved = world.party_kill_unresolved;
@@ -76,25 +80,39 @@ pub(crate) fn feed(
             }
             let source = endpoint_name(script, world, names.as_deref(), kill.killer, ask);
             let target = endpoint_name(script, world, names.as_deref(), kill.victim, ask);
-            let (Some(source), Some(target)) = (source, target) else {
+            let timestamp = if kill.received_at > 0.0 {
+                kill.received_at
+            } else {
+                now
+            };
+            if source.is_none() || target.is_none() {
                 let age = if kill.received_at > 0.0 && now >= kill.received_at {
                     now - kill.received_at
                 } else {
                     0.0
                 };
                 if age > PARTY_KILL_NAME_RETRY_SECONDS {
-                    world.party_kills.remove(index);
+                    // The retry window is spent. Drop neither the kill nor a name we never
+                    // learned: deliver the event with a visible unknown-endpoint marker for the
+                    // side(s) that did not resolve, then retire the row so a later feed cannot
+                    // replay it. The known endpoint keeps its real name.
+                    fires.post(
+                        "COMBAT_LOG_EVENT_UNFILTERED",
+                        combat_log_args(
+                            timestamp,
+                            &kill,
+                            source.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                            target.as_deref().unwrap_or(UNKNOWN_OBJECT_NAME),
+                        ),
+                    );
                     world.party_kill_unresolved = world.party_kill_unresolved.saturating_add(1);
+                    world.party_kills.remove(index);
                 } else {
                     index += 1;
                 }
                 continue;
-            };
-            let timestamp = if kill.received_at > 0.0 {
-                kill.received_at
-            } else {
-                now
-            };
+            }
+            let (source, target) = (source.unwrap_or_default(), target.unwrap_or_default());
             fires.post(
                 "COMBAT_LOG_EVENT_UNFILTERED",
                 combat_log_args(timestamp, &kill, &source, &target),
@@ -372,6 +390,103 @@ mod tests {
                 app.world().resource::<WrathWorldView>().party_kills.len(),
                 0,
                 "delivered rows are removed, so a rebuilt VM cannot replay them"
+            );
+        }
+    }
+
+    /// A name that never resolves is not silently dropped after the retry window: the kill is
+    /// delivered once with `UNKNOWNOBJECT` for that endpoint, and a later feed cannot replay it.
+    #[test]
+    fn a_never_resolving_name_falls_back_visibly_once() {
+        use crate::ui_script::UiClock;
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::prelude::App;
+
+        let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        script.set_unit(
+            "player",
+            Some(UnitState {
+                name: Some("Firna".to_owned()),
+                guid: 0x11,
+                ..UnitState::default()
+            }),
+        );
+        script
+            .run(
+                r#"
+                SEEN = 0
+                SOURCE = nil
+                DEST = nil
+                local listener = CreateFrame("Frame", "WrathCombatLogFallbackTest")
+                listener:SetScript("OnEvent", function(_, _, _, _, _, source, _, _, dest)
+                    SEEN = SEEN + 1
+                    SOURCE = source
+                    DEST = dest
+                end)
+                listener:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+                "#,
+            )
+            .unwrap();
+        let mut world = WrathWorldView::default();
+        world.phase = Some(benilla_protocol_wrath::session::Phase::InWorld);
+        world.player_guid = 0x11;
+        world.session_epoch = 4;
+        world.world_generation = 5;
+        world.party_kills.push_back(WrathPartyKill {
+            killer: 0x11,
+            victim: 0xF130_0000_0000_0022,
+            session_epoch: 4,
+            world_generation: 5,
+            revision: 1,
+            received_at: 97.0,
+        });
+
+        let mut app = App::new();
+        app.insert_resource(world)
+            .insert_resource(UiClock {
+                ui_now: 97.0 + PARTY_KILL_NAME_RETRY_SECONDS + 0.5,
+                ..Default::default()
+            })
+            .init_resource::<NameCache>()
+            .insert_non_send_resource(script);
+        app.world_mut().run_system_once(feed).unwrap();
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(
+                script.eval::<i64>("return SEEN").unwrap(),
+                1,
+                "the timed-out kill still reaches the combat log"
+            );
+            assert_eq!(
+                script.eval::<String>("return SOURCE").unwrap(),
+                "Firna",
+                "the resolved endpoint keeps its real name"
+            );
+            assert_eq!(
+                script.eval::<String>("return DEST").unwrap(),
+                "UNKNOWNOBJECT",
+                "the unresolved endpoint is marked, never borrowed or guessed"
+            );
+            assert_eq!(
+                app.world().resource::<WrathWorldView>().party_kills.len(),
+                0,
+                "the delivered row is retired"
+            );
+            assert_eq!(
+                app.world().resource::<WrathWorldView>().party_kill_unresolved,
+                1,
+                "the fallback counts as a resolved-with-fallback delivery"
+            );
+        }
+
+        // A second feed has nothing left: the retry/fallback path must not duplicate the event.
+        app.world_mut().run_system_once(feed).unwrap();
+        {
+            let script = app.world().non_send_resource::<UiScript>();
+            assert_eq!(
+                script.eval::<i64>("return SEEN").unwrap(),
+                1,
+                "the fallback event is delivered exactly once"
             );
         }
     }

@@ -31,11 +31,12 @@ use benilla_formats::{CameraShake, CameraShakeCatalog, SpellShakeGroup};
 use crate::creature_anim::{
     footfall_culls, footfall_side, move_flags, AnimSoundEvent, MovementState, SpellKitShake,
 };
-use crate::entities::Creatures;
+use crate::entities::{BoneAttach, Creatures};
 use crate::net::{Embodied, NetEntity, ObjectStore, Spline};
 use crate::player::ViewSubject;
 use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 use benilla_protocol::EntityKind;
+use benilla_world::rig_anim::RigPose;
 use benilla_world::schedule::WorldStage;
 use benilla_world::view::WorldCamera;
 
@@ -284,18 +285,54 @@ fn fire_shakes(
     }
 }
 
+/// `CMissile`'s attach cascade (`0x61ceb0`) as `attach_spell_fx` applies it: the requested tag,
+/// then `0xf`, then `0x13`, then the unit root.
+const SHAKE_ATTACH_FALLBACKS: [u16; 2] = [0xf, 0x13];
+
+/// Where a kit play's shake sits: the first effect node's post-attachment world point, or the
+/// unit's root when the kit created no node.
+///
+/// The reference's object-level play leaves `0x10` on the first effect node only and clears it
+/// after (`PlayEffectName` at `0x743560` ends `*flags = (*flags & ~0x411) | 0x400`), so that node's
+/// `CEffect::PostInitialize` fires the shake. It calls `UpdateAttachment()` first, which writes
+/// `m_position` from the attachment (the `0x6f8c50` function's `m_position = ...` at
+/// `m_attachmentId != -1`), and only then reads `TransformPositionByTransport()` (`0x6f7720`) in
+/// the shake branch (`0x6f9840`). The world plant (`tag == WORLD_EFFECT_TAG`) keeps its
+/// `InitFromUnit` point, the unit's own position. A kit with no effect node takes the
+/// `hasEffect == 0` arm, where the unit path passes the play's `position` or `GetPosition()`.
+fn kit_shake_position(
+    unit: &GlobalTransform,
+    bones: Option<&BoneAttach>,
+    pose: Option<&RigPose>,
+    tag: Option<u16>,
+) -> Vec3 {
+    let root = unit.translation();
+    let Some(tag) = tag else { return root };
+    if tag == benilla_formats::WORLD_EFFECT_TAG {
+        return root;
+    }
+    let (Some(bones), Some(pose)) = (bones, pose) else {
+        return root;
+    };
+    let found = std::iter::once(tag)
+        .chain(SHAKE_ATTACH_FALLBACKS)
+        .find_map(|tag| bones.points.get(&tag).copied());
+    found
+        .and_then(|(bone, offset)| pose.posed_point(unit, bone, offset))
+        .unwrap_or(root)
+}
+
 /// Fire the shake group a spell-visual kit's field 14 names, once per kit play, with no stage test
 /// and no cancel (`0x620e11`, or `0x60f4e6` when the play created no effect node).
 ///
-/// Deviation: the shake spawns at the kit play's position. The reference passes `&node+0x48` to
-/// the shake (`0x620e0e`) before `0x62101d` fills it from the attachment, so a bone-attached first
-/// node (`0x61fdd0`, which never writes it) shakes at the world origin its constructor left
-/// (`0x61f4c1`) and is culled beyond 80 yards of it, silencing 26 of the 58 shipped shake kits;
-/// that is a read before the write, not a behaviour.
+/// The position is the one the reference reads: the first effect node's post-attachment point for
+/// a kit with effects, the unit root (or the play's own world point) for a kit without. The
+/// earlier unit-root read was not at the world origin — the event carries the unit, not the node —
+/// but it ignored the attachment offset the reference's node read includes.
 fn fire_kit_shakes(
     mut events: MessageReader<SpellKitShake>,
     time: Res<Time>,
-    transforms: Query<&GlobalTransform>,
+    units: Query<(&GlobalTransform, Option<&BoneAttach>, Option<&RigPose>)>,
     shakes: Option<Res<Shakes>>,
     mut live: ResMut<CameraShakes>,
 ) {
@@ -306,11 +343,15 @@ fn fire_kit_shakes(
     let now = time.elapsed_secs();
     for ev in events.read() {
         let (group, at) = match *ev {
-            SpellKitShake::Play { entity, group } => {
-                let Ok(t) = transforms.get(entity) else {
+            SpellKitShake::Play {
+                entity,
+                group,
+                attach,
+            } => {
+                let Ok((unit, bones, pose)) = units.get(entity) else {
                     continue; // the unit went away between the kit play and this drain
                 };
-                (group, t.translation())
+                (group, kit_shake_position(unit, bones, pose, attach))
             }
             SpellKitShake::PlayAt { pos, group } => (group, pos),
         };
@@ -682,5 +723,81 @@ mod tests {
             "a ground spline still shakes — Charge is not a taxi"
         );
         assert!(suspended(Some(&swimming), Some(&path(false))), "both");
+    }
+
+    /// A one-bone rest skeleton: bone 0 sits `height` above the unit's root.
+    fn overhead_rig(height: f32) -> RigPose {
+        let skeleton = benilla_assets::ModelSkeleton {
+            joints: vec![benilla_assets::ModelJoint {
+                parent: -1,
+                local_translation: Vec3::Y * height,
+                billboard: None,
+                parent_arm: None,
+            }],
+            spine_bone: None,
+            head_bone: None,
+        };
+        RigPose::new(Entity::PLACEHOLDER, &skeleton)
+    }
+
+    fn bone_at(tag: u16, bone: u16) -> BoneAttach {
+        BoneAttach {
+            points: std::collections::HashMap::from([(tag, (bone, Vec3::ZERO))]),
+            markers: std::collections::HashMap::new(),
+        }
+    }
+
+    /// The reference's `CEffect::PostInitialize`: the node attach writes `m_position` first, then
+    /// the shake reads it. A bone-attached first slot must land on that attachment, not the feet.
+    #[test]
+    fn a_bone_attached_kit_shakes_at_its_post_attachment_point() {
+        let unit = GlobalTransform::from_translation(Vec3::new(100.0, 0.0, 200.0));
+        let bones = bone_at(0x0f, 0);
+        let pose = overhead_rig(1.5);
+        let at = kit_shake_position(&unit, Some(&bones), Some(&pose), Some(0x0f));
+        assert!(
+            (at - Vec3::new(100.0, 1.5, 200.0)).length() < 1e-4,
+            "attached point, not the unit's feet: {at:?}"
+        );
+        // The reported symptom was a world-origin shake culled from the unit. With the eye at the
+        // unit, an origin shake is dead (>80 yd) while the attached point plays.
+        let eye = unit.translation() + Vec3::Y;
+        let mut origin = CameraShakes::default();
+        origin.add(FOOTSTEP_1, Vec3::ZERO, 0.0);
+        assert_eq!(
+            origin.evaluate(eye, 0.0, 0.0, false),
+            Vec3::ZERO,
+            "a world-origin shake would be culled"
+        );
+        let mut s = CameraShakes::default();
+        s.add(FOOTSTEP_1, at, 0.0);
+        assert_ne!(
+            s.evaluate(eye, 0.0, 0.0, false).y,
+            0.0,
+            "and a shake at the attachment is live"
+        );
+    }
+
+    /// A kit with no effect node keeps the unit-root path (`hasEffect == 0`).
+    #[test]
+    fn a_kit_without_an_effect_node_shakes_at_the_unit_root() {
+        let unit = GlobalTransform::from_translation(Vec3::new(100.0, 2.0, 200.0));
+        assert_eq!(
+            kit_shake_position(&unit, None, None, None),
+            Vec3::new(100.0, 2.0, 200.0)
+        );
+    }
+
+    /// The fix moves the seat; it must not remove the 80 yd cull.
+    #[test]
+    fn a_fixed_attachment_point_is_still_culled_past_eighty_yards() {
+        let unit = GlobalTransform::from_translation(Vec3::new(100.0, 0.0, 0.0));
+        let bones = bone_at(0x0f, 0);
+        let pose = overhead_rig(1.5);
+        let at = kit_shake_position(&unit, Some(&bones), Some(&pose), Some(0x0f));
+        let mut s = CameraShakes::default();
+        s.add(FOOTSTEP_1, at, 0.0);
+        assert_eq!(s.evaluate(Vec3::ZERO, 0.0, 0.0, false), Vec3::ZERO);
+        assert_eq!(s.live.len(), 1, "culled, not retired");
     }
 }

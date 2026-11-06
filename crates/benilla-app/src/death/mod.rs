@@ -554,15 +554,30 @@ fn sickness_duration(level: u32, get: &dyn Fn(&str) -> Option<String>) -> Option
     ))
 }
 
+/// The screen pass's gate, `CGWorldFrame::UpdateScreenEffect` (`0x4f88b0`): the `FFXDeath` combine
+/// is on exactly while `PLAYER_FLAGS_GHOST` (`0x10`) is set, and `SetScreenEffect` swaps the pass
+/// with no ramp on either edge (`0x4f7020`). A dead-but-not-released body has no death pass, and
+/// leaving the ghost state turns it off just as sharply.
+fn death_screen_target(ghost: bool) -> f32 {
+    if ghost {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 /// Drive the FFXDeath screen pass off `PLAYER_FLAGS_GHOST`, instant both ways; in the reference
-/// the flag's watcher `0x5ee990` also drives the death light and ambience.
+/// the flag's watcher `0x5ee990` also drives the death light and ambience. A session that is no
+/// longer connected clears the pass, as `Client.cpp:911`'s shutdown does.
 fn drive_death_look(
     self_q: Query<&ObjectStore, With<SelfPlayer>>,
+    status: Res<crate::net::NetStatus>,
     mut ffx: ResMut<benilla_world::ffx_glow::FfxDeathFade>,
 ) {
-    let ghost = ghost_probe()
-        .unwrap_or_else(|| self_q.single().is_ok_and(|store| store.0.player_is_ghost()));
-    let target = if ghost { 1.0 } else { 0.0 };
+    let ghost = status.connected
+        && ghost_probe()
+            .unwrap_or_else(|| self_q.single().is_ok_and(|store| store.0.player_is_ghost()));
+    let target = death_screen_target(ghost);
     if ffx.0 != target {
         ffx.0 = target;
     }
@@ -1555,9 +1570,11 @@ mod self_res_tests {
     use benilla_formats::{SpellCatalog, SpellDisplay};
     use benilla_protocol::messages::{ItemInfo, ItemSpellEntry};
     use benilla_protocol::ObjectFields;
+    use bevy::prelude::*;
 
-    use super::{resolve_self_res, SelfRes, SPELL_EFFECT_SELF_RESURRECT};
+    use super::{death_screen_target, drive_death_look, resolve_self_res, SelfRes, SPELL_EFFECT_SELF_RESURRECT};
     use crate::items::Items;
+    use crate::net::{ObjectStore, SelfPlayer};
     use crate::ui_action::Spells;
 
     /// Reincarnation's effect spell, what the server writes into the field.
@@ -1757,6 +1774,78 @@ mod self_res_tests {
                 Some(&spells),
             ),
             None
+        );
+    }
+
+    /// The ghost/death screen pass is the reference's hard switch: `FFXDeath` on exactly while
+    /// `PLAYER_FLAGS_GHOST` is set (`0x4f88b0` → `0x4f7020`), with no ramp in or out, and off for
+    /// a merely dead body.
+    #[test]
+    fn the_death_screen_gate_is_the_ghost_flag_with_no_ramp() {
+        let mut app = App::new();
+        app.init_resource::<benilla_world::ffx_glow::FfxDeathFade>()
+            .insert_resource(crate::net::NetStatus {
+                connected: true,
+                last_reason: None,
+            })
+            .add_systems(Update, drive_death_look);
+        let me = app
+            .world_mut()
+            .spawn((
+                SelfPlayer,
+                ObjectStore(
+                    ObjectFields::from_pairs(&[(190, 0)])
+                        .into_created(benilla_protocol::messages::ObjectType::Player),
+                ),
+            ))
+            .id();
+
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<benilla_world::ffx_glow::FfxDeathFade>()
+                .0,
+            0.0,
+            "a living body has no death pass"
+        );
+
+        // Dead but unreleased: still no death pass (`UpdateScreenEffect` tests only 0x10).
+        app.world_mut().get_mut::<ObjectStore>(me).unwrap().0 =
+            ObjectFields::from_pairs(&[(22, 0), (28, 100), (190, 0)])
+                .into_created(benilla_protocol::messages::ObjectType::Player);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<benilla_world::ffx_glow::FfxDeathFade>()
+                .0,
+            0.0,
+            "dead is not ghost"
+        );
+
+        app.world_mut().get_mut::<ObjectStore>(me).unwrap().0 =
+            ObjectFields::from_pairs(&[(22, 1), (190, 0x10)])
+                .into_created(benilla_protocol::messages::ObjectType::Player);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<benilla_world::ffx_glow::FfxDeathFade>()
+                .0,
+            1.0,
+            "the ghost flag turns the pass on on its first frame"
+        );
+        assert_eq!(death_screen_target(false), 0.0);
+        assert_eq!(death_screen_target(true), 1.0);
+
+        // Leaving the world while a ghost drops the pass, as the shutdown's
+        // `CGWorldFrame::SetScreenEffect(0)` does (`Client.cpp:911`, `0x4f7020`).
+        app.world_mut().resource_mut::<crate::net::NetStatus>().connected = false;
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<benilla_world::ffx_glow::FfxDeathFade>()
+                .0,
+            0.0,
+            "no session, no death screen"
         );
     }
 }

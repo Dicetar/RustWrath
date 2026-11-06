@@ -88,15 +88,17 @@ pub(in crate::minimap) fn emit_quest_dots(
         let w = bevy_to_wow(tf.translation());
         let d3 =
             ((w[0] - ctx.wx).powi(2) + (w[1] - ctx.wy).powi(2) + (w[2] - ctx.wz).powi(2)).sqrt();
-        if d3 > ctx.radius_yd {
+        let fresh = (d3 <= ctx.radius_yd).then(|| ctx.offset(w));
+        let Some(off) = super::stale_offset(super::DotSource::Unit(npc), fresh, ctx.px_per_yd)
+        else {
             continue;
-        }
+        };
         // The grey `0xffb0b0b0` marks a dot across an interior boundary; the reference decides
         // through `0x670540`, untraced, and this uses an indoor-containment mismatch.
         let grey = unit_indoors(tf.translation()) != player_indoors;
         let tint = if grey { 0xb0 as f32 / 255.0 } else { 1.0 };
         let rect = Rect::from_center_size(
-            ctx.center + ctx.offset(w),
+            ctx.center + off,
             Vec2::splat(ctx.side * (QUEST_DOT_PX / BLIP_BASIS_PX)),
         );
         quads.overlays.push(UiQuad {
@@ -179,36 +181,40 @@ pub(in crate::minimap) fn emit_tracking_dots(
     hover: &mut MinimapBlipHover,
 ) {
     // The unit pass runs even with an empty creature mask: the always-show clauses need none.
-    let mut dot = |guid: u64, tf: &GlobalTransform, cell: [f32; 4], name: DotName| {
-        let w = bevy_to_wow(tf.translation());
-        let d3 =
-            ((w[0] - ctx.wx).powi(2) + (w[1] - ctx.wy).powi(2) + (w[2] - ctx.wz).powi(2)).sqrt();
-        if d3 > ctx.radius_yd {
-            return;
-        }
-        let grey = unit_indoors(tf.translation()) != player_indoors;
-        let tint = if grey { 0xb0 as f32 / 255.0 } else { 1.0 };
-        let rect = Rect::from_center_size(
-            ctx.center + ctx.offset(w),
-            Vec2::splat(ctx.side * (QUEST_DOT_PX / BLIP_BASIS_PX)),
-        );
-        quads.overlays.push(UiQuad {
-            rect,
-            z_key: ctx.z,
-            texture: Some(icons.clone()),
-            uv: UvRect::from_tex_coords(cell),
-            color: [tint, tint, tint, ctx.alpha],
-            ..default()
-        });
-        if let Some(c) = ctx.cursor {
-            if rect.contains(c) {
-                *hover = match name {
-                    DotName::Guid => MinimapBlipHover::Npc(guid, grey),
-                    DotName::Known(n) => MinimapBlipHover::TrackedGo(n, grey),
-                };
+    let mut dot =
+        |key: super::DotSource, tf: &GlobalTransform, cell: [f32; 4], name: DotName| {
+            let w = bevy_to_wow(tf.translation());
+            let d3 = ((w[0] - ctx.wx).powi(2)
+                + (w[1] - ctx.wy).powi(2)
+                + (w[2] - ctx.wz).powi(2))
+            .sqrt();
+            let fresh = (d3 <= ctx.radius_yd).then(|| ctx.offset(w));
+            let Some(off) = super::stale_offset(key, fresh, ctx.px_per_yd) else {
+                return;
+            };
+            let grey = unit_indoors(tf.translation()) != player_indoors;
+            let tint = if grey { 0xb0 as f32 / 255.0 } else { 1.0 };
+            let rect = Rect::from_center_size(
+                ctx.center + off,
+                Vec2::splat(ctx.side * (QUEST_DOT_PX / BLIP_BASIS_PX)),
+            );
+            quads.overlays.push(UiQuad {
+                rect,
+                z_key: ctx.z,
+                texture: Some(icons.clone()),
+                uv: UvRect::from_tex_coords(cell),
+                color: [tint, tint, tint, ctx.alpha],
+                ..default()
+            });
+            if let Some(c) = ctx.cursor {
+                if rect.contains(c) {
+                    *hover = match name {
+                        DotName::Guid(guid) => MinimapBlipHover::Npc(guid, grey),
+                        DotName::Known(n) => MinimapBlipHover::TrackedGo(n, grey),
+                    };
+                }
             }
-        }
-    };
+        };
     // Cell 0, GameObjects. No quest-status check: the GameObject leg (`0x4eab43`) goes straight
     // to `0x5ed2b0` and never reaches the status-7 compare.
     if tracking.resources != 0 {
@@ -221,7 +227,12 @@ pub(in crate::minimap) fn emit_tracking_dots(
                     continue; // template not answered yet
                 };
                 if tracked_resource(tracking.resources, t.lock_id, locks) {
-                    dot(guid.0, tf, TRACKED_GO_CELL, DotName::Known(t.name.clone()));
+                    dot(
+                        super::DotSource::GameObject(guid.0),
+                        tf,
+                        TRACKED_GO_CELL,
+                        DotName::Known(t.name.clone()),
+                    );
                 }
             }
         }
@@ -247,7 +258,12 @@ pub(in crate::minimap) fn emit_tracking_dots(
             .unwrap_or((0, false));
         let creature_type = store.map(|s| types.of(s));
         if tracked_creature(tracking, creature_type, dyn_flags, creeping) {
-            dot(guid.0, tf, TRACKED_UNIT_CELL, DotName::Guid);
+            dot(
+                super::DotSource::Unit(guid.0),
+                tf,
+                TRACKED_UNIT_CELL,
+                DotName::Guid(guid.0),
+            );
         }
     }
 }
@@ -255,7 +271,7 @@ pub(in crate::minimap) fn emit_tracking_dots(
 /// How a tracking dot's hover names itself: a unit resolves by guid through the name cache;
 /// a GameObject's template name is already in hand.
 enum DotName {
-    Guid,
+    Guid(u64),
     Known(String),
 }
 
@@ -272,17 +288,24 @@ pub(in crate::minimap) fn emit_party_dots(
     icons: &Handle<Image>,
     quads: &mut UiQuads,
 ) {
-    for (x, y) in group_positions(group, guids, unit_pos, pet)
+    for (slot, pos) in group_positions(group, guids, unit_pos, pet)
         .into_iter()
-        .flatten()
+        .enumerate()
     {
+        let Some((x, y)) = pos else {
+            continue;
+        };
         let d = ((x - ctx.wx).powi(2) + (y - ctx.wy).powi(2)).sqrt();
-        if d / ctx.radius_yd > super::BLIP_EDGE_RATIO {
+        let fresh =
+            (d / ctx.radius_yd <= super::BLIP_EDGE_RATIO).then(|| ctx.offset([x, y, 0.0]));
+        let Some(off) =
+            super::stale_offset(super::DotSource::Party(slot as u8), fresh, ctx.px_per_yd)
+        else {
             continue; // out of range: the arrow pass drew it
-        }
+        };
         quads.overlays.push(UiQuad {
             rect: Rect::from_center_size(
-                ctx.center + ctx.offset([x, y, 0.0]),
+                ctx.center + off,
                 Vec2::splat(ctx.side * (PARTY_DOT_PX / BLIP_BASIS_PX)),
             ),
             z_key: ctx.z,
@@ -420,6 +443,7 @@ mod tests {
                             cursor: None,
                         };
                         let mut quads = UiQuads::default();
+                        super::super::reset_stale_dots();
                         emit_party_dots(
                             &ctx,
                             &group,

@@ -418,8 +418,9 @@ impl ActionStates<'_, '_> {
         let selection = self.targeting.selection.guid;
         // Ahead of the feed's first pass on a new VM, that pass still meets the VM as new.
         self.memory.vm.get_leaving_reset(script).selection = selection;
-        let now = Instant::now();
-        let clock = self.memory.clock.unwrap_or((now, script.now()));
+        let wall_now = Instant::now();
+        let clock = self.memory.clock.unwrap_or((wall_now, script.now()));
+        let now = clock.0;
         let pass = Pass {
             now,
             clock,
@@ -451,7 +452,8 @@ impl ActionStates<'_, '_> {
         let (memory, new_vm) = self.memory.vm.get_reset(script);
         let cooldowns = &mut *self.cooldowns;
         let (items, commands, spells) = (&*self.items, &*self.commands, &self.spells);
-        let now = Instant::now();
+        let wall_now = Instant::now();
+        let now = clock.0;
         cooldowns.prune(now);
         // The callback `0x6e2f70` that the bag getter's and the bag and inventory tooltips'
         // queries asked, each a lookup with it (`0x6e2f0d`); then every awaited record that
@@ -467,9 +469,9 @@ impl ActionStates<'_, '_> {
         let trace_cd = benilla_assets::trace::enabled()
             && memory
                 .last_cd_trace
-                .is_none_or(|t| now.duration_since(t).as_secs_f32() >= 1.0);
+                .is_none_or(|t| wall_now.duration_since(t).as_secs_f32() >= 1.0);
         if trace_cd {
-            memory.last_cd_trace = Some(now);
+            memory.last_cd_trace = Some(wall_now);
         }
         let control_lost = self.cast_state.2.as_ref().is_some_and(|c| c.0);
         let selection = self.targeting.selection.guid;

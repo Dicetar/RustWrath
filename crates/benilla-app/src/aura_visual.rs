@@ -25,13 +25,21 @@ use benilla_assets::materials::WowModelMaterial;
 use benilla_world::interior::InteriorLit;
 use benilla_world::model_fade::{fade_alpha, FadeMaterials, PendingAppearFade, RenderFade};
 
-/// The aura-alpha ramp, `StartAlphaFade(target, 1000 ms)` (`0x614f80`) eased `clamp01(t)³` by
-/// [`fade_alpha`] (`0x614a90`). A code constant, not a kit column: the ghost kit's proc 14 carries
-/// no `1000.0` yet ramps over the same second.
+/// The aura-alpha ramp, `StartAlphaFade(target, 1000 ms)` (`0x614f80`): the reference's
+/// `CGUnit_C::ApplyModelFade` (`0x71abe0`) hands the alpha to `DoFade`/`ApplyAlpha`
+/// (`0x744030`/`0x743e10`), whose `m_alpha` is an 8-bit byte and whose ramp is the integer
+/// `start + elapsed * (end - start) / duration`, truncated toward zero. There is no easing:
+/// a code constant, not a kit column (the ghost kit's proc 14 carries no `1000.0` yet ramps over
+/// the same second).
 pub(crate) const AURA_ALPHA_FADE_SECS: f32 = 1.0;
 
 /// Under half a step of the tag's 6-bit alpha field (1/64): a ramp this close has arrived.
 const ALPHA_EPS: f32 = 1.0 / 128.0;
+
+/// The reference's alpha byte: `DoFade`'s `(int32_t)(alpha * 255.0f)`, truncating toward zero.
+fn alpha_byte(alpha: f32) -> u8 {
+    (alpha.clamp(0.0, 1.0) * 255.0) as u8
+}
 
 /// One CharProc node a kit installs on a unit, keyed by spell id as the reference keys `node+0x18`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -58,12 +66,13 @@ pub(crate) struct AuraNodes {
     /// `baseAlpha`, the display row's `CreatureModelAlpha / 255` for every unit, players included
     /// (`0x60d2d0`); kept current by [`refresh_base_alpha`].
     base: f32,
-    /// The ramp's live value, which the parts render at.
+    /// The ramp's live value in the reference's byte units, `alpha / 255`.
     current: f32,
-    /// The ramp, `from` to `to` over [`AURA_ALPHA_FADE_SECS`] from `started` (elapsed seconds).
+    /// The ramp's start and target, and its start time and length in seconds.
     from: f32,
     to: f32,
     started: f32,
+    duration: f32,
     /// Whether [`apply_aura_alpha`] owns this unit's parts: while translucent, plus the one frame
     /// at opaque that writes the settled alpha and hands the material back to its light law.
     authoring: bool,
@@ -71,10 +80,11 @@ pub(crate) struct AuraNodes {
 
 impl AuraNodes {
     fn new(base: f32) -> Self {
+        let current = f32::from(alpha_byte(base)) / 255.0;
         Self {
             base,
-            current: base,
-            from: base,
+            current,
+            from: current,
             to: base,
             ..Default::default()
         }
@@ -87,21 +97,39 @@ impl AuraNodes {
         (self.base * head).clamp(0.0, 1.0)
     }
 
-    /// Aim the ramp at the target from where it is now; an unmoved target leaves it alone, so an
-    /// aura refresh does not restart the ease.
+    /// `DoFade`: aim the ramp at the target from the live byte. A target equal to that byte ends
+    /// any ramp at once and leaves its start time alone (`DoFade` returns before stamping
+    /// `m_fadeStartTime`); otherwise a fresh 1 s integer ramp begins, even when the target itself
+    /// has not moved.
     fn retarget(&mut self, now: f32) {
         let target = self.target();
-        if (target - self.to).abs() <= f32::EPSILON {
+        let target_byte = alpha_byte(target);
+        if alpha_byte(self.current) == target_byte {
+            self.to = target;
+            self.from = self.current;
+            self.current = f32::from(target_byte) / 255.0;
+            self.duration = 0.0;
             return;
         }
         self.from = self.current;
         self.to = target;
         self.started = now;
+        self.duration = AURA_ALPHA_FADE_SECS;
     }
 
+    /// `ApplyAlpha`: `start + elapsed * (end - start) / duration` in signed 32-bit integer units,
+    /// or the end byte once `elapsed >= duration`. The result is the reference's `alpha / 255`.
     fn tick(&mut self, now: f32) -> f32 {
-        let t = (now - self.started) / AURA_ALPHA_FADE_SECS;
-        self.current = fade_alpha(self.from, self.to, t);
+        let from = i64::from(alpha_byte(self.from));
+        let to = i64::from(alpha_byte(self.to));
+        let duration_ms = (self.duration * 1000.0).round() as i64;
+        let elapsed_ms = ((now - self.started) * 1000.0).floor() as i64;
+        if duration_ms > 0 && elapsed_ms < duration_ms {
+            let alpha = from + (elapsed_ms * (to - from)) / duration_ms;
+            self.current = alpha.clamp(0, 255) as f32 / 255.0;
+        } else {
+            self.current = to as f32 / 255.0;
+        }
         self.current
     }
 

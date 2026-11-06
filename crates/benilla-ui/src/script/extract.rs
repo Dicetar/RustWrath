@@ -230,13 +230,9 @@ impl UiScript {
                     if data_ref.is_some_and(|d| d.hidden) {
                         continue;
                     }
-                    // Deviation: the nameplate glow is shown but never drawn, because its additive
-                    // rim reads as hard edge lines in our linear-blending pipeline; the lit plate
-                    // brightens its bar instead. It stays a real shown ADD region, as
-                    // `glow:IsShown()` is the mouseover signal 1.12 nameplate addons read.
-                    if data_ref.is_some_and(super::nameplate::is_unpainted_glow) {
-                        continue;
-                    }
+                    // The nameplate glow is a real ADD region: the extract carries its additive
+                    // blend to `ui_quad.wgsl`, which adds the rim in gamma bytes (`SrcAlpha, One`,
+                    // EGxBlend 3), as the reference does at `0x7cb36a`.
                     let mut data = data_ref.cloned().unwrap_or_default();
                     region_tex = data.tex.id();
                     // One hop (region combine `0x772180`): the region's alpha times its owner's

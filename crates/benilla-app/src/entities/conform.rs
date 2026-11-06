@@ -60,14 +60,35 @@ fn conform_rotation(mode: u8, n_local: Vec3) -> Quat {
     }
 }
 
+/// Advance one unit's smoothed up-vector: a first sight seeds at the sampled target, a parked rig
+/// keeps the state it had (no ray), and an awake rig eases toward a fresh target. Returns whether
+/// the ray ran. Re-seeding is therefore first-sight only; a wake continues from the held vector,
+/// as the reference, which samples every unit every frame, would have been easing all along.
+fn update_up(
+    up: &mut Option<Vec3>,
+    parked: bool,
+    decay: f32,
+    sample: impl FnOnce() -> Option<Vec3>,
+) -> bool {
+    if parked && up.is_some() {
+        return false;
+    }
+    let target = sample();
+    let s = up.get_or_insert_with(|| target.unwrap_or(Vec3::Y));
+    if let Some(t) = target {
+        *s = t + (*s - t) * decay;
+    }
+    true
+}
+
 /// Conform every flagged model to the ground under its unit: one face normal per unit from a
 /// down-ray against the decal receivers (the reference averages its walkable contact normals,
 /// `CMovement+0x24`; the two agree on a uniform slope), smoothed on the up-vector.
 ///
-/// Deviation: the reference updates every unit every frame; here only units showing a flagged
-/// visual are tracked, and a parked rig skips its ray and re-seeds at the slope on waking, to bound
-/// the cost at one ray per flagged unit on screen. Nothing shows: an unflagged unit's vector is
-/// never read, and a first-sight seed at the slope seats a mount-up at once, as the reference does.
+/// The reference updates every unit every frame; a parked rig keeps its last up-vector instead of
+/// dropping it (so a wake eases on from the held slope rather than re-seeding at the current one),
+/// and rays only on first sight. An unflagged unit's vector is never read, so the tracking stays
+/// bounded to units showing a flagged visual.
 #[allow(clippy::type_complexity)] // one Bevy system's full input set
 pub(super) fn conform_units(
     time: Res<Time>,
@@ -91,17 +112,15 @@ pub(super) fn conform_units(
         let Ok((unit_tf, parked)) = units.get(node.unit) else {
             continue;
         };
-        if parked {
-            ups.remove(&node.unit);
-            continue;
-        }
         // Sample and smooth once per unit per frame: a unit can host two flagged visuals (a
-        // flagged body over a mount), and stepping twice would square the decay.
+        // flagged body over a mount), and stepping twice would square the decay. A parked unit
+        // already holding a vector takes neither step.
         if seen.insert(node.unit) {
-            // A unit on a flying spline eases level here: its flying pitch and bank are on the unit
-            // transform, from `sample_splines` (`0x7c5490`'s flying branch), whatever the model
-            // flags. The probe misses in the air, so `tilt_target` yields world-up.
-            let target = {
+            let mut up = ups.remove(&node.unit);
+            update_up(&mut up, parked, decay, || {
+                // A unit on a flying spline eases level here: its flying pitch and bank are on the
+                // unit transform, from `sample_splines` (`0x7c5490`'s flying branch), whatever the
+                // model flags. The probe misses in the air, so `tilt_target` yields world-up.
                 let origin = unit_tf.translation + Vec3::Y * TILT_PROBE_UP;
                 let sampled = spatial
                     .cast_ray_predicate(
@@ -114,12 +133,9 @@ pub(super) fn conform_units(
                     )
                     .map(|hit| hit.normal);
                 tilt_target(sampled)
-            };
-            let s = ups
-                .entry(node.unit)
-                .or_insert_with(|| target.unwrap_or(Vec3::Y));
-            if let Some(t) = target {
-                *s = t + (*s - t) * decay;
+            });
+            if let Some(up) = up {
+                ups.insert(node.unit, up);
             }
         }
         let Some(&s) = ups.get(&node.unit) else {
@@ -187,5 +203,59 @@ mod tests {
             "flag 3 reduces to flag 1 without roll"
         );
         assert!(conform_rotation(2, uphill).angle_between(Quat::IDENTITY) < 1e-3);
+    }
+
+    /// A parked rig keeps its slope (no ray); waking eases on from that state instead of
+    /// re-seeding at the new slope, and only a first sight is seeded by a ray.
+    #[test]
+    fn a_parked_rig_holds_its_slope_and_wakes_without_reseeding() {
+        let parked_slope = Vec3::new(0.0, 0.9, 0.3).normalize();
+        let wake_slope = Vec3::new(0.3, 0.9, 0.0).normalize();
+        let mut up = None;
+        let rays = std::cell::Cell::new(0usize);
+        let sample = |slope: Vec3| {
+            rays.set(rays.get() + 1);
+            Some(slope)
+        };
+
+        assert!(update_up(&mut up, false, 0.5, || sample(parked_slope)));
+        assert_eq!(rays.get(), 1, "first sight rays once");
+        let held = up.expect("seeded");
+        assert!((held - parked_slope).length() < 1e-6);
+
+        // Parked: no ray, state retained.
+        assert!(!update_up(&mut up, true, 0.5, || sample(wake_slope)));
+        assert_eq!(rays.get(), 1, "a parked rig does not ray");
+        assert_eq!(up, Some(held), "and keeps its slope");
+
+        // Wake: one ray, easing from `held`, not a re-seed at `wake_slope`.
+        assert!(update_up(&mut up, false, 0.5, || sample(wake_slope)));
+        assert_eq!(rays.get(), 2);
+        let woke = up.expect("still tracked");
+        assert!(
+            (woke - wake_slope).length() > 1e-3,
+            "a wake must not snap to the fresh slope: {woke:?}"
+        );
+        let between = wake_slope + (held - wake_slope) * 0.5;
+        assert!((woke - between).length() < 1e-6, "{woke:?} vs {between:?}");
+    }
+
+    /// A rig first seen while parked still rays once to seat itself, then holds.
+    #[test]
+    fn a_first_sight_while_parked_seeds_then_holds() {
+        let slope = Vec3::new(0.0, 0.9, 0.3).normalize();
+        let mut up = None;
+        let mut rays = 0;
+        assert!(update_up(&mut up, true, 0.5, || {
+            rays += 1;
+            Some(slope)
+        }));
+        assert_eq!(rays, 1, "the seed is appropriate here");
+        assert!((up.unwrap() - slope).length() < 1e-6);
+        assert!(!update_up(&mut up, true, 0.5, || {
+            rays += 1;
+            Some(Vec3::X)
+        }));
+        assert_eq!(rays, 1, "then the parked rig holds");
     }
 }
