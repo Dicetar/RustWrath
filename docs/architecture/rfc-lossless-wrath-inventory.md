@@ -132,16 +132,18 @@ typed view through `*_in_player` variants. Migrated callers: action-bar state (`
 (`count_of`), quest log (`count_of` at `QUEST_ITEMS`), tradeskill and craft recipe reagents/tools,
 auction bid's unique count, mail stationery, spell tooltip reagent/totem lines and
 `reagent_state`, shapeshift reagent stacks, lock openers, `GetItemCount`
-(`possession_count`), and death's `HasSoulstone` collect. `count_of`/`collect_inventory` at
-`QUEST_ITEMS` therefore reach bank slot 25, bank bag 7 and its contents, and all of them reach
-keyring slots 17..32. `find_item`, `action_count` and `stack_counts` keep the reference's mask 0:
-they reach the full 32-slot keyring but deliberately do not enter the bank, as before.
+(`possession_count`), death's `HasSoulstone` collect, and the pre-send cast gate
+(`ui_action::errors::reagent_totem_refusal_in_player` for totem/reagent checks and
+`spell::cast_send`'s `count_of_in_player` for ammo count, both mask 0).
+`count_of`/`collect_inventory` at `QUEST_ITEMS` therefore reach bank slot 25, bank bag 7 and its
+contents, and all of them reach keyring slots 17..32. `find_item`, `action_count`, `stack_counts`
+and the pre-send cast gate keep the reference's mask 0: they reach the full 32-slot keyring but
+deliberately do not enter the bank, as before.
 
-**Still on the donor projection:** the pre-send cast gate (`ui_action::errors`'s totem/reagent
-checks and `spell::cast_send`'s ammo count, both mask 0), the command producers
-`target/click.rs`, `target/lock.rs`, `ui_action/drain.rs` and `ui_petition/steps.rs` (positions and
-wire bytes must not change), `items::disarmed_equipment_slot` (the equipment band 0-18 is identical
-in both projections), the cursor sale/drop `slot_guid_donor` paths, and the dev capture probes.
+**Still on the donor projection:** the command producers `target/click.rs`, `target/lock.rs`,
+`ui_action/drain.rs` and `ui_petition/steps.rs` (positions and wire bytes must not change),
+`items::disarmed_equipment_slot` (the equipment band 0-18 is identical in both projections), the
+cursor sale/drop `slot_guid_donor` paths, and the dev capture probes.
 
 A follow-up should decide whether any command producer needs the typed view for its own read
 (cursor sale/drop and key-at-object ladder). It is not required for the bank window or the bank

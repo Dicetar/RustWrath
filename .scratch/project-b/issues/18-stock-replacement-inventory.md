@@ -133,8 +133,8 @@ absence.
 
 |Behavior|Producer / writer|Host locator|Test or missing test|Status|
 |---|---|---|---|---|
-|Action slots 1..144|`SMSG_ACTION_BUTTONS` parse `gameplay.rs` 2172, decode 3591–3609; tap cap `wrath.rs` 4742–4750|`spell/net.rs` 689–693 replaces the map|missing `wrath_action_buttons_144_cap`|PARTIAL|
-|Dual-spec state 0/1/2|12340 `Player_C.cpp` 4084–4124: state 2 = pending, no payload; state >2 ignored; only state 1 applies|decoder drops state; state 2 yields empty list and clears the bar|missing `wrath_action_buttons_state_two_keeps_the_bar`|**PARTIAL / risk**|
+|Action slots 1..144|`SMSG_ACTION_BUTTONS` parse `gameplay.rs` 2172, decode 3591–3609; tap cap `wrath.rs` 5384|`spell/net.rs` 717–748 replaces the map on state 1|covered by `spell/net.rs` action button state tests|PARTIAL|
+|Dual-spec state 0/1/2|12340 `Player_C.cpp` 4084–4124: state 0 snapshots into `ActionButtonsPending::held`, state 1 applies and clears `pending`, state 2 marks `pending` without clearing live slots|`spell/net.rs` 706–748 (`ActionButtonsPending`); `wrath.rs` 3717–3739|`spell/net.rs` state 0/1/2 unit tests|PARTIAL (source + unit-tested; no spec-switch live run)|
 |Page switching|`CURRENT_ACTIONBAR_PAGE` FrameXML-local; `ChangeActionBarPage` fires event (`action.rs` 554–584)|no server packet|stock action-bar tests `ui_script/action_bar_tests.rs`|source matches|
 |Bar visibility toggles|`SetActionBarToggles` sends `CMSG_SET_ACTIONBAR_TOGGLES`; getter reads server byte|`action_bar_toggles.rs` 44–86|`set_action_bar_toggles` tests|source matches|
 |Per-character keybindings|account diff then `<Realm>-<Char>.txt`; character file presence activates set 2|`bindings.rs` 245–276; `bindings/store.rs` 36–96|`bindings::store::tests::the_diff_round_trips_and_defaults_stay_silent`; `...resolve_steals_across_commands...`|PARTIAL (no relog run)|
@@ -146,19 +146,19 @@ absence.
 
 |Seam|Parse / decode|App translation|Real app/UI consumer|Donor projection or loss|No state owner|Test or missing test|
 |---|---|---|---|---|---|---|
-|Pet spells/mode/feedback/sounds|`gameplay.rs` 2233–2241; `pet_talent.rs`|`wrath.rs` 3700–3749|`ui_pet/net.rs` 53/80/91|stable list synthesizes slots and loyalty 0|`PetGuids`, `PetLearnedSpell`|`pet_talent.rs::tests::pet_spells_reads_family_bar_spells_and_32_bit_cooldown`; missing `pet_guids_reaches_the_pet_book`|
-|Talent info/reset|`gameplay.rs` 2252–2254; `pet_talent.rs`|`wrath.rs` 3757–3791|none|talent window builds ranks from known spells (`ui_talent.rs` 164–208)|player dual spec, pet talents, glyphs|`pet_talent.rs::tests::player_talents_info_reads_every_field`; missing `talents_info_updates_the_talent_window`, `pet_talent_tab`|
-|Stable|`gameplay.rs` 2248–2251|`wrath.rs` 3793–3827|`ui_stable/net.rs` 26/46|12340 list has no loyalty column, filled 0|none for list/result; stable swap and purchase display unverified|`pet_talent.rs::tests::stable_list_reads_current_and_stabled_rows`; `ui_stable/mod.rs::a_refused_stabled_pet_is_asked_at_the_next_list_never_by_a_frame`|
-|Trade/mail/auction|`gameplay.rs` 2266–2299; `economy.rs`|`wrath.rs` 3845–3895|`ui_trade/net.rs` 58; `ui_mail/net.rs` 54/110/131; `ui_auction/net.rs` 448|mail keeps attachment 0 and drops body; trade drops `trade_id`/socket words|multi-attachment UI, body UI, socket UI|`economy.rs::tests::mail_list_reads_rows_bodies_and_attachments`; `trade_extended_carries_sockets_creator_signed_fields_and_empty_slots`; missing receiver tests|
-|Party/social/guild|`gameplay.rs` 2300–2346; `social.rs`|`wrath.rs` 3930–3994, 4275–4441|`ui_party/net.rs` 110; `ui_social/mod.rs` 752–817; `ui_guild/mod.rs` 707–754; `ui_chat/net.rs` 90|HP/pet HP and aura ids clamp to u16; LFG roles/difficulty dropped|whois text|`social.rs::tests::group_list_full_preserves_lfg_loot_and_member`; `party_member_stats_full_reads_every_defined_bit`; missing `whois_text_reaches_a_console`|
-|LFG / battleground|`gameplay.rs` 2347–2365; `wrath_systems.rs` 182–602|`wrath.rs` 3999–4013 (discard)|none|none|join/queue/proposal/role-check, BG queue/score|`wrath_systems.rs::tests::lfg_join_result_ok_has_no_party_tail`; `battlefield_status_queued_arm`; missing `lfg_join_sends_from_the_lfd_frame`|
-|Calendar / rune / vehicle|`gameplay.rs` 2366–2374; `wrath_systems.rs` 860–1391|`wrath.rs` 3999–4013 (discard)|none|none|calendar events/invites, all rune state, vehicle seats|`calendar_send_calendar_round_trips`; `resync_runes_reads_progress_bytes`; `seat_and_exit_encoders_match_their_bodies`; missing native/state tests|
+|Pet spells/mode/feedback/sounds|`gameplay.rs` 2233–2241; `pet_talent.rs`|`wrath.rs` 4239–4295|`ui_pet/net.rs` 53/80/91/326–411 (`PetBar::pet_guids`, `pet_spell_learned`, `pet_spell_removed`)|stable list synthesizes slots and loyalty 0|none for `PetGuids`/`PetSpellLearned`/`PetSpellRemoved`|`pet_talent.rs::tests::pet_spells_reads_family_bar_spells_and_32_bit_cooldown`; `ui_pet/net.rs::tests::pet_guids_and_learned_removed_spells_reach_the_pet_bar`|
+|Talent info/reset|`gameplay.rs` 2252–2254; `pet_talent.rs`|`wrath.rs` 4296–4331|`ui_talent.rs` (`WrathTalentState`, `on_talent_info`, `on_talents_involuntarily_reset`, `build_pages_with_wrath`)|active player spec and unspent points feed `TalentUiState`; pet talent tab and glyph socket UI not yet projected to Lua|pet talent tab UI, glyph UI|`pet_talent.rs::tests::player_talents_info_reads_every_field`; `ui_talent.rs::tests::talents_info_updates_the_talent_window`; missing `pet_talent_tab`|
+|Stable|`gameplay.rs` 2248–2251|`wrath.rs` 4332–4367|`ui_stable/net.rs` 26/46|12340 list has no loyalty column, filled 0|none for list/result; stable swap and purchase display unverified|`pet_talent.rs::tests::stable_list_reads_current_and_stabled_rows`; `ui_stable/mod.rs::a_refused_stabled_pet_is_asked_at_the_next_list_never_by_a_frame`|
+|Trade/mail/auction|`gameplay.rs` 2266–2299; `economy.rs`|`wrath.rs` 4378–4458|`ui_trade/net.rs` 58; `ui_mail/net.rs` 54/110/131; `ui_auction/net.rs` 448|mail keeps attachment 0 and inline body; trade drops `trade_id`/socket words|multi-attachment UI, socket UI|`economy.rs::tests::mail_list_reads_rows_bodies_and_attachments`; `trade_extended_carries_sockets_creator_signed_fields_and_empty_slots`; missing receiver tests|
+|Party/social/guild|`gameplay.rs` 2300–2346; `social.rs`|`wrath.rs` 4459–4533|`ui_party/net.rs` 110; `ui_social/mod.rs` 728–831 (`on_whois`); `ui_guild/mod.rs` 707–754; `ui_chat/net.rs` 90|HP/pet HP and aura ids clamp to u16; LFG roles/difficulty dropped|none for `WhoisText` (`on_whois` writes to console)|`social.rs::tests::group_list_full_preserves_lfg_loot_and_member`; `party_member_stats_full_reads_every_defined_bit`|
+|LFG / battleground|`gameplay.rs` 2347–2365; `wrath_systems.rs` 182–602|`wrath.rs` 4540–4546 (discard)|none|none|join/queue/proposal/role-check, BG queue/score|`wrath_systems.rs::tests::lfg_join_result_ok_has_no_party_tail`; `battlefield_status_queued_arm`; missing `lfg_join_sends_from_the_lfd_frame`|
+|Calendar / rune / vehicle|`gameplay.rs` 2366–2374; `wrath_systems.rs` 860–1391|`wrath.rs` 624–665 (`WrathFeedEvent::RuneState`/`RuneConvert`/`RunePower`/`Calendar`/`CalendarCommandResult`)|`ui_script/wrath_rune_calendar_feed.rs`|vehicle has outbound encoders only|vehicle seats|`calendar_send_calendar_round_trips`; `resync_runes_reads_progress_bytes`; `seat_and_exit_encoders_match_their_bodies`|
 
 `SessionEvent` producer additions in this workstream: `PetSpellLearned`/`PetSpellRemoved`/
-`PetGuids`/`TalentInfo`/`TalentsInvoluntarilyReset` ([events.rs] 606–624), `WhoisText` (1149), and
+`PetGuids`/`TalentInfo`/`TalentsInvoluntarilyReset` ([events.rs] 627–645), `WhoisText` (1149), and
 the widened `AuctionHello { enabled }` (1225). `PetLearnedSpell` is a wrath-gameplay spelling mapped
-to `PetSpellLearned` at `wrath.rs` 3750. No new `SessionEvent` was added for LFG, calendar, rune or
-vehicle; those stay inside the wrath gameplay enum and are discarded by the app.
+to `PetSpellLearned` at `wrath.rs` 4290. Calendar and rune events travel `WrathFeedEvent` into
+`WrathWorldView` and `ui_script/wrath_rune_calendar_feed.rs`.
 
 ### E. Decoded records with no state owner
 
@@ -166,13 +166,10 @@ vehicle; those stay inside the wrath gameplay enum and are discarded by the app.
 |---|---|---|---|
 |LFG join result / queue status / player+party update / proposal|`wrath_systems.rs` 268–560|queue and proposal store, role-check owner, LFD frame consumer, `ClientCommand`/tap arm|`lfg_join_sends_from_the_lfd_frame`|
 |Battleground status / PvP log|`wrath_systems.rs` 620–859|queue slots, scoreboard state, battlefield frame consumer|`battleground_status_reaches_the_scoreboard`|
-|Calendar send calendar / command result|`wrath_systems.rs` 901–1175|event/invite stores, `CalendarGetDate`/`CalendarGetNumPendingInvites`, frame events|`calendar_get_calendar_refreshes_native_date_and_invites`|
-|Rune convert / resync / add power|`wrath_systems.rs` 1182–1253|six rune types, cooldown fractions and readiness; `GetRuneCooldown` is absent and `GetRuneType` is a fixed layout|`rune_frame_reads_resync_state`|
 |Vehicle seat/exit|`wrath_systems.rs` 1259–1391 (outbound only)|seat model, `CanExitVehicle`, seat/exit/next/prev natives and a control consumer|`vehicle_exit_uses_the_seat_transport`|
-|Whois text|`social.rs` `read_whois`; `wrath.rs` 3947|console/chat text consumer|`whois_text_reaches_a_console`|
-|Pet talents|`pet_talent.rs` `read_talents_info`; `wrath.rs` 3757|pet talent tab and `GetTalentInfo(..., isPet)` plumbing|`pet_talent_tab`|
-|Mail multi-attachment and inline body|`economy.rs` mail reader; `wrath.rs` 3858|shared `MailListEntry` attachments/body fields and inbox rows|`mail_two_attachments_and_inline_body`|
-|Trade socket enchant and 3.3.5 trade id|`economy.rs` trade reader; `wrath.rs` 3845|shared `TradeItem.socket_enchant` and `TradeStatusExtended.trade_id`, trade frame|`trade_socket_enchant_reaches_the_trade_frame`|
+|Pet talent tab UI & glyph sockets|`pet_talent.rs` `read_talents_info`; `ui_talent.rs` `WrathTalentState`|`GetTalentInfo(..., isPet)` Lua projection and glyph frame bindings|`pet_talent_tab`|
+|Mail multi-attachment|`economy.rs` mail reader; `wrath.rs` 4945|shared `MailListEntry` multi-attachment array (inline body is already mapped at `wrath.rs` 4974)|`mail_two_attachments_and_inline_body`|
+|Trade socket enchant and 3.3.5 trade id|`economy.rs` trade reader; `wrath.rs` 4916|shared `TradeItem.socket_enchant` and `TradeStatusExtended.trade_id`, trade frame|`trade_socket_enchant_reaches_the_trade_frame`|
 
 ### F. `wrath_natives.rs`: real state versus stubs
 

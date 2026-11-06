@@ -28,6 +28,9 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::PetBroken, on_refusal_line)
         .net_handler(K::PetActionSound, on_action_sound)
         .net_handler(K::PetDismissSound, on_dismiss_sound)
+        .net_handler(K::PetSpellLearned, on_pet_spell_learned)
+        .net_handler(K::PetSpellRemoved, on_pet_spell_removed)
+        .net_handler(K::PetGuids, on_pet_guids)
         .net_handler(K::Disconnected, on_session_end);
 }
 
@@ -320,6 +323,93 @@ fn pet_cast_failed(spell_id: u32, reason: Option<u8>, reports: &mut CastReports)
     }
 }
 
+fn on_pet_spell_learned(
+    In(ev): In<SessionEvent>,
+    mut bar: ResMut<PetBar>,
+    mut lane: ResMut<crate::field_watch::NoticeLane>,
+) {
+    if let SessionEvent::PetSpellLearned { spell_id } = ev {
+        if pet_spell_learned(spell_id, &mut bar) {
+            lane.write(crate::field_watch::FieldNotice::Global {
+                id: crate::field_watch::id::SPELLS_CHANGED,
+            });
+        }
+    }
+}
+
+fn on_pet_spell_removed(
+    In(ev): In<SessionEvent>,
+    mut bar: ResMut<PetBar>,
+    mut lane: ResMut<crate::field_watch::NoticeLane>,
+) {
+    if let SessionEvent::PetSpellRemoved { spell_id } = ev {
+        let (book_changed, bar_changed) = pet_spell_removed(spell_id, &mut bar);
+        if book_changed {
+            lane.write(crate::field_watch::FieldNotice::Global {
+                id: crate::field_watch::id::SPELLS_CHANGED,
+            });
+        }
+        if bar_changed {
+            lane.write(crate::field_watch::FieldNotice::Global {
+                id: crate::field_watch::id::PET_BAR_UPDATE,
+            });
+        }
+    }
+}
+
+fn on_pet_guids(In(ev): In<SessionEvent>, mut bar: ResMut<PetBar>) {
+    if let SessionEvent::PetGuids { guids } = ev {
+        pet_guids(guids, &mut bar);
+    }
+}
+
+/// `SMSG_PET_LEARNED_SPELL` (`PetInfo.cpp:363-378`): adds the learned spell to the pet book when
+/// not already present and advances the book sort counter so `SPELLS_CHANGED` repaints the tab.
+fn pet_spell_learned(spell_id: u32, bar: &mut PetBar) -> bool {
+    let action = spell_id & 0xFFFF;
+    if action == 0 || bar.spells.spells.iter().any(|e| e.action() == action) {
+        return false;
+    }
+    let packed = (u32::from(benilla_protocol::messages::PET_ACT_PASSIVE) << 24) | action;
+    bar.spells
+        .spells
+        .push(benilla_protocol::messages::PetActionEntry::from(packed));
+    bar.book_sorts = bar.book_sorts.wrapping_add(1);
+    true
+}
+
+/// `SMSG_PET_REMOVED_SPELL` (`PetInfo.cpp:380-405`): removes the unlearned spell from the pet
+/// book and clears any matching spell slot on the pet action bar.
+fn pet_spell_removed(spell_id: u32, bar: &mut PetBar) -> (bool, bool) {
+    let action = spell_id & 0xFFFF;
+    if action == 0 {
+        return (false, false);
+    }
+    let before = bar.spells.spells.len();
+    bar.spells.spells.retain(|e| e.action() != action);
+    let book_changed = bar.spells.spells.len() != before;
+    if book_changed {
+        bar.book_sorts = bar.book_sorts.wrapping_add(1);
+    }
+    let mut bar_changed = false;
+    for slot in &mut bar.spells.bar {
+        if slot.is_spell() && slot.action() == action {
+            *slot = benilla_protocol::messages::PetActionEntry::default();
+            bar_changed = true;
+        }
+    }
+    if bar_changed {
+        bar.bar_signals = bar.bar_signals.wrapping_add(1);
+    }
+    (book_changed, bar_changed)
+}
+
+/// `SMSG_PET_GUIDS` (`PetInfo.cpp:1071-1086`): replaces the controlled-pet guid list (`s_pets`).
+fn pet_guids(guids: Vec<u64>, bar: &mut PetBar) {
+    debug!("net: pet guids — {} controlled pet(s)", guids.len());
+    bar.pet_guids = guids;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,5 +573,39 @@ mod tests {
                 "{key} is the red line"
             );
         }
+    }
+
+    #[test]
+    fn pet_guids_and_learned_removed_spells_reach_the_pet_bar() {
+        let mut bar = PetBar::default();
+        pet_spells(
+            a_bar(0x2A),
+            None,
+            None,
+            crate::spell::CategoryPad::NoPlayer,
+            &mut bar,
+        );
+        pet_guids(vec![0x2A, 0x2B], &mut bar);
+        assert_eq!(bar.pet_guids, vec![0x2A, 0x2B]);
+
+        let sorts_before = bar.book_sorts;
+        assert!(pet_spell_learned(3010, &mut bar));
+        assert!(!pet_spell_learned(3010, &mut bar), "duplicate learn is ignored");
+        assert_eq!(bar.book_sorts, sorts_before.wrapping_add(1));
+        assert_eq!(bar.spells.spells.len(), 1);
+        assert_eq!(bar.spells.spells[0].action(), 3010);
+
+        bar.spells.bar[3] = PetActionEntry::from(
+            3010 | (u32::from(benilla_protocol::messages::PET_ACT_ENABLED) << 24),
+        );
+        let signals_before = bar.bar_signals;
+        let (book_changed, bar_changed) = pet_spell_removed(3010, &mut bar);
+        assert!(book_changed && bar_changed);
+        assert!(bar.spells.spells.is_empty());
+        assert!(bar.spells.bar[3].is_empty());
+        assert_eq!(bar.bar_signals, signals_before.wrapping_add(1));
+
+        bar.clear();
+        assert!(bar.pet_guids.is_empty(), "teardown clears controlled pet guids");
     }
 }
