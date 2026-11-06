@@ -28,7 +28,7 @@ use crate::query_cache::Ask;
 
 use super::inflight::Inflight;
 use super::{cast_target, validator, AutoRepeatActive, CastCore, Held};
-use crate::ui_action::{reagent_totem_refusal, CastFail, Spells};
+use crate::ui_action::{reagent_totem_refusal_in_player, CastFail, Spells};
 use crate::ui_cast::CastReports;
 
 mod unit_caster;
@@ -205,11 +205,26 @@ pub(crate) struct CastLadder<'w, 's> {
 }
 
 /// The known spells the validator's learn rungs read: the active player's book (`0xb710fc`), and
-/// the pet's book, records and family lines.
+/// the pet's book, records and family lines, plus the typed 3.3.5 inventory view for the
+/// pre-send reagent/totem/ammo gate.
 #[derive(SystemParam)]
 pub(crate) struct KnownReads<'w> {
     actions: Option<Res<'w, crate::ui_action::PlayerActions>>,
     pet: super::known::PetReads<'w>,
+    wrath_inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
+}
+
+impl KnownReads<'_> {
+    fn player_inventory<'a>(
+        &'a self,
+        store: &'a crate::net::ObjectStore,
+    ) -> crate::wrath_inventory::PlayerInventory<'a> {
+        crate::wrath_inventory::PlayerInventory::new(
+            &store.0,
+            self.wrath_inventory.as_deref(),
+            self.wrath_inventory.is_some() || crate::wrath::selected_from_env(),
+        )
+    }
 }
 
 /// Whether `ReportCastFailure 0x6e1a00` reaches its tail for `fail`
@@ -802,8 +817,10 @@ fn send_spell_cast(
     // `0x6e4f3b`): a missing tool or reagent refuses with 0x78/0x5c. Local because vmangos answers
     // a pickless cast with `ITEM_GONE`. It passes a caster that is not the active player
     // (`0x6e400e`), as the equipped-item check below does (`0x6e40e0`).
+    let player_inventory = ctx.rel.self_store.map(|store| known.player_inventory(store));
     if let Some(fail) =
-        reagent_totem_refusal(spell_id, def, ctx.rel.self_store, objects).filter(|_| player_caster)
+        reagent_totem_refusal_in_player(spell_id, def, player_inventory.as_ref(), objects)
+            .filter(|_| player_caster)
     {
         refuse!(fail);
     }
@@ -811,7 +828,7 @@ fn send_spell_cast(
     // use. It sits above the crowd-control rung, so a stunned caster without the weapon is told
     // about the weapon.
     if let Some(d) = def.filter(|_| player_caster) {
-        if let Some(store) = ctx.rel.self_store {
+        if let (Some(store), Some(inv)) = (ctx.rel.self_store, player_inventory.as_ref()) {
             if !super::usable::equipped_item_fits(d, store, objects, items, &mut super::Unrecorded)
             {
                 let reason = super::usable::equipped_item_reason(d);
@@ -821,8 +838,8 @@ fn send_spell_cast(
             // Its ammo leg, the request passing the ammo flag (`0x6e4dfd`).
             let flags = |class, subclass| sub_classes.map_or(0, |c| c.flags(class, subclass));
             let held = |entry| {
-                crate::ui_items::count_of(
-                    &store.0,
+                crate::ui_items::count_of_in_player(
+                    inv,
                     objects,
                     entry,
                     crate::ui_items::InventoryScope::DEFAULT,

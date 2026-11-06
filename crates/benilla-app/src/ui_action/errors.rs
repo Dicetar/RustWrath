@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use crate::net::ObjectStore;
 use crate::sound::MessageSounds;
 use crate::ui_chat::{ChatEvent, ChatEventKind, ChatLog};
-use crate::ui_items::{count_of, InventoryScope};
+use crate::ui_items::{count_of, count_of_in_player, InventoryScope};
 
 /// One cast failure, as `ReportCastFailure 0x6e1a00` gets it. `arg` fills the message's `%s` (the
 /// arm table `0x6e1d8e`); the reference raises its local refusals with none, except the missing
@@ -514,11 +514,25 @@ pub(crate) fn reagent_totem_refusal(
     self_store: Option<&ObjectStore>,
     objects: &crate::net::Objects,
 ) -> Option<CastFail> {
-    let (d, store) = def.zip(self_store)?;
+    let store = self_store?;
+    let inv = crate::wrath_inventory::PlayerInventory::new(&store.0, None, false);
+    reagent_totem_refusal_in_player(spell_id, def, Some(&inv), objects)
+}
+
+/// [`reagent_totem_refusal`] over the typed [`crate::wrath_inventory::PlayerInventory`] view so
+/// reagents and totems in the 3.3.5 32-slot keyring and typed Wrath inventory are counted during
+/// the pre-send cast gate.
+pub(crate) fn reagent_totem_refusal_in_player(
+    spell_id: u32,
+    def: Option<&benilla_formats::SpellDisplay>,
+    inv: Option<&crate::wrath_inventory::PlayerInventory<'_>>,
+    objects: &crate::net::Objects,
+) -> Option<CastFail> {
+    let (d, inv) = def.zip(inv)?;
     // Totems before reagents, the reference's order.
-    let (reason, entry) = match first_missing_totem(d, store, objects) {
+    let (reason, entry) = match first_missing_totem_in_player(d, inv, objects) {
         Some(totem) => (0x78, totem),
-        None => (0x5c, first_short_reagent(d, store, objects)?),
+        None => (0x5c, first_short_reagent_in_player(d, inv, objects)?),
     };
     debug!("cast {spell_id} refused locally — missing totem/reagent ({reason:#04x})");
     Some(CastFail::local_arg(spell_id, reason, entry))
@@ -530,11 +544,20 @@ pub(super) fn first_missing_totem(
     store: &ObjectStore,
     objects: &crate::net::Objects,
 ) -> Option<u32> {
+    let inv = crate::wrath_inventory::PlayerInventory::new(&store.0, None, false);
+    first_missing_totem_in_player(d, &inv, objects)
+}
+
+pub(super) fn first_missing_totem_in_player(
+    d: &benilla_formats::SpellDisplay,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
+    objects: &crate::net::Objects,
+) -> Option<u32> {
     d.totems
         .iter()
         .copied()
         .filter(|&t| t != 0)
-        .find(|&t| count_of(&store.0, objects, t, InventoryScope::DEFAULT) == 0)
+        .find(|&t| count_of_in_player(inv, objects, t, InventoryScope::DEFAULT) == 0)
 }
 
 /// The first reagent we hold too few of: `0x6e4000`'s failing slot.
@@ -543,11 +566,20 @@ pub(super) fn first_short_reagent(
     store: &ObjectStore,
     objects: &crate::net::Objects,
 ) -> Option<u32> {
+    let inv = crate::wrath_inventory::PlayerInventory::new(&store.0, None, false);
+    first_short_reagent_in_player(d, &inv, objects)
+}
+
+pub(super) fn first_short_reagent_in_player(
+    d: &benilla_formats::SpellDisplay,
+    inv: &crate::wrath_inventory::PlayerInventory<'_>,
+    objects: &crate::net::Objects,
+) -> Option<u32> {
     d.reagents
         .iter()
         .copied()
         .filter(|&(id, _)| id != 0)
-        .find(|&(id, n)| count_of(&store.0, objects, id, InventoryScope::DEFAULT) < n)
+        .find(|&(id, n)| count_of_in_player(inv, objects, id, InventoryScope::DEFAULT) < n)
         .map(|(id, _)| id)
 }
 
@@ -1024,6 +1056,50 @@ mod totem_reagent_tests {
         let none = spell([0, 0], [(0, 0); 8]);
         assert_eq!(first_missing_totem(&none, &st, &objs.get()), None);
         assert_eq!(first_short_reagent(&none, &st, &objs.get()), None);
+    }
+
+    /// A reagent in the 3.3.5 keyring tail (slot 32, `InventoryAddr::Keyring(31)`) is invisible to
+    /// the 16-slot donor walk, but `reagent_totem_refusal_in_player` counts it through the typed
+    /// [`crate::wrath_inventory::PlayerInventory`].
+    #[test]
+    fn a_wrath_keyring_tail_reagent_satisfies_the_cast_gate() {
+        use benilla_protocol::field::{FIELD_ITEM_STACK_COUNT, FIELD_OBJECT_ENTRY};
+        use crate::wrath_inventory::{PlayerInventory, WrathFieldWindow, WrathInventory};
+        use benilla_protocol_wrath::fields::PLAYER_FIELD_KEYRING_SLOT_1;
+
+        let mut objs = objects();
+        objs.spawn(
+            0xB1,
+            ObjectFields::from_pairs(&[
+                (FIELD_OBJECT_ENTRY, 17056),
+                (FIELD_ITEM_STACK_COUNT, 2),
+            ]),
+        );
+        let st = store();
+        let mut window = WrathFieldWindow::default();
+        let slot31 = PLAYER_FIELD_KEYRING_SLOT_1 + 31 * 2;
+        window.insert(slot31, 0xB1);
+        window.insert(slot31 + 1, 0);
+        let mut wrath = WrathInventory::default();
+        wrath.apply_window((1, 1), 1, &window);
+
+        let mut reagents = [(0, 0); 8];
+        reagents[0] = (17056, 2);
+        let d = spell([0, 0], reagents);
+
+        let donor = PlayerInventory::new(&st.0, Some(&wrath), false);
+        assert_eq!(
+            reagent_totem_refusal_in_player(130, Some(&d), Some(&donor), &objs.get()),
+            Some(CastFail::local_arg(130, 0x5c, 17056)),
+            "16-slot donor keyring capacity stops before slot 32"
+        );
+
+        let wrath_view = PlayerInventory::new(&st.0, Some(&wrath), true);
+        assert_eq!(
+            reagent_totem_refusal_in_player(130, Some(&d), Some(&wrath_view), &objs.get()),
+            None,
+            "32-slot Wrath keyring capacity satisfies the pre-send reagent check"
+        );
     }
 }
 

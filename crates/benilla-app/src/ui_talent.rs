@@ -13,12 +13,13 @@ use std::collections::BTreeSet;
 use bevy::prelude::*;
 
 use benilla_formats::{Talent, TalentCatalog};
+use benilla_protocol::{SessionEvent, SessionEventKind, TalentGroupInfo};
 use benilla_ui::script::{
     ScriptValue, TalentCall, TalentPrereqView, TalentReq, TalentTabView, TalentUiState, TalentView,
     UiScript,
 };
 
-use crate::net::{ClientCommand, NetCommands, ObjectStore, SelfPlayer};
+use crate::net::{ClientCommand, NetCommands, NetHandlerApp, ObjectStore, SelfPlayer};
 use crate::ui_action::{PlayerActions, Spells};
 use crate::ui_script::gate;
 use crate::ui_unit::UnitFeed;
@@ -30,11 +31,68 @@ pub(crate) struct Talents {
     pub(crate) catalog: TalentCatalog,
 }
 
+/// The 3.3.5a `SMSG_TALENTS_INFO` and `SMSG_TALENTS_INVOLUNTARILY_RESET` state owner
+/// (`TalentInfo.cpp:1153/1178`, `Player_C.cpp:3534`). Dual-spec player groups, glyph property ids
+/// and the pet talent group live here; when a player `TalentInfo` has been observed, its active
+/// spec's `(talent_id, max_rank_index)` pairs and `unspent_points` feed [`feed_talents`] alongside
+/// the known-spell set.
+#[derive(Resource, Default, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WrathTalentState {
+    pub player_unspent_points: Option<u32>,
+    pub active_spec: u8,
+    pub specs: Vec<TalentGroupInfo>,
+    pub pet_unspent_points: Option<u32>,
+    pub pet_talents: Vec<(u32, u8)>,
+    pub involuntary_reset_flag: Option<u8>,
+}
+
+impl WrathTalentState {
+    pub(crate) fn apply_talent_info(
+        &mut self,
+        pet: bool,
+        unspent_points: u32,
+        active_spec: Option<u8>,
+        specs: Vec<TalentGroupInfo>,
+        pet_talents: Vec<(u32, u8)>,
+    ) {
+        if pet {
+            self.pet_unspent_points = Some(unspent_points);
+            self.pet_talents = pet_talents;
+        } else {
+            self.player_unspent_points = Some(unspent_points);
+            self.active_spec = active_spec.unwrap_or(0);
+            self.specs = specs;
+        }
+    }
+
+    pub(crate) fn apply_involuntary_reset(&mut self, flag: u8) {
+        self.involuntary_reset_flag = Some(flag);
+        if let Some(spec) = self.specs.get_mut(usize::from(self.active_spec)) {
+            spec.talents.clear();
+        }
+        self.pet_talents.clear();
+    }
+
+    pub(crate) fn active_player_spec(&self) -> Option<&TalentGroupInfo> {
+        self.specs.get(usize::from(self.active_spec))
+    }
+
+    pub(crate) fn clear_session(&mut self) {
+        *self = Self::default();
+    }
+}
+
 pub(crate) struct UiTalentPlugin;
 
 impl Plugin for UiTalentPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, load_talents.after(AssetSet::Open))
+        use SessionEventKind as K;
+        app.init_resource::<WrathTalentState>()
+            .net_handler(K::TalentInfo, on_talent_info)
+            .net_handler(K::TalentsInvoluntarilyReset, on_talents_involuntarily_reset)
+            .net_handler(K::LoggedOut, on_talent_session_end)
+            .net_handler(K::Disconnected, on_talent_session_end)
+            .add_systems(Startup, load_talents.after(AssetSet::Open))
             .add_systems(
                 Update,
                 (
@@ -42,6 +100,31 @@ impl Plugin for UiTalentPlugin {
                     feed_talents.in_set(UnitFeed),
                 ),
             );
+    }
+}
+
+fn on_talent_info(In(ev): In<SessionEvent>, mut state: ResMut<WrathTalentState>) {
+    if let SessionEvent::TalentInfo {
+        pet,
+        unspent_points,
+        active_spec,
+        specs,
+        pet_talents,
+    } = ev
+    {
+        state.apply_talent_info(pet, unspent_points, active_spec, specs, pet_talents);
+    }
+}
+
+fn on_talents_involuntarily_reset(In(ev): In<SessionEvent>, mut state: ResMut<WrathTalentState>) {
+    if let SessionEvent::TalentsInvoluntarilyReset { flag } = ev {
+        state.apply_involuntary_reset(flag);
+    }
+}
+
+fn on_talent_session_end(In(ev): In<SessionEvent>, mut state: ResMut<WrathTalentState>) {
+    if matches!(ev, SessionEvent::LoggedOut | SessionEvent::Disconnected { .. }) {
+        state.clear_session();
     }
 }
 
@@ -72,6 +155,7 @@ fn feed_talents(
     mut hosted_vm: crate::script_calls::HostedVm,
     talents: Option<Res<Talents>>,
     actions: Res<PlayerActions>,
+    wrath_talents: Option<Res<WrathTalentState>>,
     spells: Option<Res<Spells>>,
     self_q: Query<&ObjectStore, With<SelfPlayer>>,
     changed_self: Query<(), (With<SelfPlayer>, Changed<ObjectStore>)>,
@@ -83,9 +167,10 @@ fn feed_talents(
         };
         let (memory, vm_reset) = memory.get_reset(script);
         // Reopened by every input the build reads: the known spells, both catalogs (their landing
-        // counts as a change) and the self descriptor.
+        // counts as a change), the 3.3.5 talent packet state and the self descriptor.
         let self_changed = !changed_self.is_empty();
         let actions_changed = actions.is_changed();
+        let wrath_changed = wrath_talents.as_ref().is_some_and(|r| r.is_changed());
         let talents_changed = talents.as_ref().is_some_and(|r| r.is_changed());
         let spells_changed = spells.as_ref().is_some_and(|r| r.is_changed());
         gate::trace(
@@ -94,12 +179,18 @@ fn feed_talents(
                 ("vm_reset", vm_reset),
                 ("self", self_changed),
                 ("actions", actions_changed),
+                ("wrath_talents", wrath_changed),
                 ("talents", talents_changed),
                 ("spells", spells_changed),
             ],
         );
         let gate = gate::Gate::new(
-            vm_reset || self_changed || actions_changed || talents_changed || spells_changed,
+            vm_reset
+                || self_changed
+                || actions_changed
+                || wrath_changed
+                || talents_changed
+                || spells_changed,
         );
         if gate.skip() {
             return;
@@ -112,14 +203,19 @@ fn feed_talents(
         };
         let race = store.0.unit_race().unwrap_or(0);
         let class = store.0.unit_class().unwrap_or(0);
+        let unspent_talents = wrath_talents
+            .as_deref()
+            .and_then(|w| w.player_unspent_points)
+            .unwrap_or_else(|| store.0.player_talent_points().unwrap_or(0));
         let points = (
-            store.0.player_talent_points().unwrap_or(0),
+            unspent_talents,
             store.0.player_free_professions().unwrap_or(0),
         );
         // Scoped: the `GlobalStrings.lua` lookup borrows the VM, which the push needs mutably.
-        let fresh = build_pages(
+        let fresh = build_pages_with_wrath(
             &talents.catalog,
             &actions.spells,
+            wrath_talents.as_deref(),
             &spells.catalog,
             race,
             class,
@@ -172,6 +268,19 @@ fn rank_of(t: &Talent, known: &BTreeSet<u32>) -> u32 {
         .unwrap_or(0)
 }
 
+fn rank_of_with_wrath(
+    t: &Talent,
+    known: &BTreeSet<u32>,
+    wrath: Option<&WrathTalentState>,
+) -> u32 {
+    let from_spells = rank_of(t, known);
+    let from_spec = wrath
+        .and_then(WrathTalentState::active_player_spec)
+        .and_then(|spec| spec.talents.iter().find(|&&(id, _)| id == t.id))
+        .map_or(0, |&(_, max_rank_idx)| (u32::from(max_rank_idx) + 1).min(t.max_rank()));
+    from_spells.max(from_spec)
+}
+
 /// Builds the pushed snapshot.
 pub(crate) fn build_pages(
     catalog: &TalentCatalog,
@@ -183,14 +292,29 @@ pub(crate) fn build_pages(
     class: u8,
     points: (u32, u32),
 ) -> TalentUiState {
+    build_pages_with_wrath(catalog, known, None, spells, race, class, points)
+}
+
+pub(crate) fn build_pages_with_wrath(
+    catalog: &TalentCatalog,
+    known: &BTreeSet<u32>,
+    wrath: Option<&WrathTalentState>,
+    spells: &benilla_formats::SpellCatalog,
+    race: u8,
+    class: u8,
+    points: (u32, u32),
+) -> TalentUiState {
     let mut tabs = Vec::new();
     let mut pages = Vec::new();
     for tab in catalog.tabs_for_class(race, class) {
         let list = catalog.talents_in_tab(tab.id);
-        let spent: u32 = list.iter().map(|t| rank_of(t, known)).sum();
+        let spent: u32 = list
+            .iter()
+            .map(|t| rank_of_with_wrath(t, known, wrath))
+            .sum();
         let mut views = Vec::with_capacity(list.len());
         for t in list {
-            let rank = rank_of(t, known);
+            let rank = rank_of_with_wrath(t, known, wrath);
             let max_rank = t.max_rank();
             let display_spell = t.ranks[rank.max(1) as usize - 1];
             let next_spell = if rank > 0 && rank < max_rank {
@@ -215,7 +339,7 @@ pub(crate) fn build_pages(
                     continue;
                 };
                 let need = need0 + 1;
-                let learnable = rank_of(p, known) >= need;
+                let learnable = rank_of_with_wrath(p, known, wrath) >= need;
                 prereqs.push(TalentPrereqView {
                     tier: p.row + 1,
                     column: p.col + 1,
@@ -597,6 +721,55 @@ mod tests {
                 "Interface\\Icons\\Spell_Nature_HealingWaveGreater",
             ]
         );
+    }
+
+    #[test]
+    fn talents_info_updates_the_talent_window() {
+        let (catalog, spells) = two_arrow_tree();
+        let mut wrath = WrathTalentState::default();
+        wrath.apply_talent_info(
+            false,
+            5,
+            Some(1),
+            vec![
+                TalentGroupInfo {
+                    talents: vec![(10, 0)],
+                    glyphs: vec![101, 0, 0, 0, 0, 0],
+                },
+                TalentGroupInfo {
+                    talents: vec![(10, 0), (11, 0), (12, 1)],
+                    glyphs: vec![201, 202, 0, 0, 0, 0],
+                },
+            ],
+            Vec::new(),
+        );
+        let state = build_pages_with_wrath(
+            &catalog,
+            &BTreeSet::new(),
+            Some(&wrath),
+            &spells,
+            1,
+            8,
+            (wrath.player_unspent_points.unwrap_or(0), 0),
+        );
+        assert_eq!(state.points.0, 5);
+        assert_eq!(state.tabs[0].points_spent, 4, "1 + 1 + 2 in active spec 1");
+        assert_eq!(state.talents[0][0].rank, 1);
+        assert_eq!(state.talents[0][1].rank, 1);
+        assert_eq!(state.talents[0][2].rank, 2);
+
+        wrath.apply_involuntary_reset(1);
+        assert_eq!(wrath.involuntary_reset_flag, Some(1));
+        let wiped = build_pages_with_wrath(
+            &catalog,
+            &BTreeSet::new(),
+            Some(&wrath),
+            &spells,
+            1,
+            8,
+            (wrath.player_unspent_points.unwrap_or(0), 0),
+        );
+        assert_eq!(wiped.tabs[0].points_spent, 0);
     }
 }
 

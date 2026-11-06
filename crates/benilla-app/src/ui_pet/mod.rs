@@ -74,6 +74,9 @@ pub(crate) struct PetBar {
     /// `[0xb714a8]`: the charm or possess expiry, the packet's duration past its arrival; `None`
     /// when the duration is 0, as for a hunter's or warlock's own pet.
     pub(crate) expires: Option<Instant>,
+    /// `SMSG_PET_GUIDS`: the hunter's controlled-pet list (`s_pets`, `PetInfo.cpp:1071-1086`), in
+    /// the server's order; emptied on teardown and session end.
+    pub(crate) pet_guids: Vec<u64>,
 }
 
 /// The client's `[0xb714b0]`, a local latch: all of `IsPetAttackActive`, and the only thing that
