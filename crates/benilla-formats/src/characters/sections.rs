@@ -20,7 +20,7 @@ const SECTION_UNDERWEAR: u8 = 4;
 const HAIR_SUBSTITUTE_VARIATION: u8 = 1;
 
 /// An atlas rect `(x, y, w, h)` in pixels.
-type Tile = (u32, u32, u32, u32);
+pub type Tile = (u32, u32, u32, u32);
 
 /// The head strip of the 256² partition `0x475c50` writes: g8 the upper band, g9 the lower.
 const TILE_G8: Tile = (0, 160, 128, 32);
@@ -180,7 +180,7 @@ impl CharSections {
             return Ok(None);
         };
         plan.run(|path| read_texture_mip_chain(chain, path))
-            .map(Some)
+            .map(|(atlas, _report)| Some(atlas))
     }
 
     /// What a body composite reads and where each file lands, from the tables alone: the 256²
@@ -277,30 +277,98 @@ pub struct CompositePlan {
     layers: Vec<(Vec<String>, Tile)>,
 }
 
+/// One overlay layer that could not be read from any of its candidate paths: its atlas tile, the
+/// candidate paths tried, and the read/decode error for each candidate that failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompositeMissingLayer {
+    tile: Tile,
+    candidates: Vec<String>,
+    errors: Vec<String>,
+}
+
+impl CompositeMissingLayer {
+    /// The atlas tile this layer would have painted.
+    pub fn tile(&self) -> Tile {
+        self.tile
+    }
+
+    /// The candidate paths tried, in order.
+    pub fn candidates(&self) -> &[String] {
+        &self.candidates
+    }
+
+    /// The read/decode error for each candidate that failed, in the same order as `candidates`.
+    pub fn errors(&self) -> &[String] {
+        &self.errors
+    }
+}
+
+/// The report returned by [`CompositePlan::run`]: which optional layers were lost while the body
+/// atlas stayed usable. An empty report means every layer that had a candidate path decoded.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct CompositeReport {
+    missing: Vec<CompositeMissingLayer>,
+}
+
+impl CompositeReport {
+    /// Whether every optional layer decoded.
+    pub fn is_empty(&self) -> bool {
+        self.missing.is_empty()
+    }
+
+    /// The layers that could not be read from any candidate path.
+    pub fn missing(&self) -> &[CompositeMissingLayer] {
+        &self.missing
+    }
+}
+
 impl CompositePlan {
     /// Read, decode and blit: each overlay at its tile per authored mip level (`0x475c50`,
-    /// `0x4770f0`). An overlay that reads nowhere is skipped; a base skin that does not read fails.
+    /// `0x4770f0`). An overlay that reads nowhere is skipped but reported; a base skin that does
+    /// not read fails. Returns the usable base atlas together with a [`CompositeReport`] of the
+    /// layers that could not be read.
     ///
     /// Deviation: blends in 8-bit RGBA, not the client's RGB565 with 2-bit coverage, because that
     /// format only saves texture memory and loses precision.
-    pub fn run(&self, mut read: impl FnMut(&str) -> Result<BlpMipChain>) -> Result<BlpMipChain> {
+    pub fn run(
+        &self,
+        mut read: impl FnMut(&str) -> Result<BlpMipChain>,
+    ) -> Result<(BlpMipChain, CompositeReport)> {
         let mut atlas =
             read(&self.base).with_context(|| format!("reading base skin '{}'", self.base))?;
         // The tile partition is defined on the 256² vanilla atlas; HD section art is its exact
         // upscale (the wm-hd base skin measures 512²), so the tiles scale with the base's size.
         let sx = (atlas.width / 256).max(1);
         let sy = (atlas.height / 256).max(1);
+        let mut missing = Vec::new();
         for (candidates, tile) in &self.layers {
-            if let Some(overlay) = candidates.iter().find_map(|path| read(path).ok()) {
+            let mut overlay: Option<BlpMipChain> = None;
+            let mut errors = Vec::new();
+            for path in candidates {
+                match read(path) {
+                    Ok(decoded) => {
+                        overlay = Some(decoded);
+                        break;
+                    }
+                    Err(e) => errors.push(format!("{e:#}")),
+                }
+            }
+            if let Some(overlay) = overlay {
                 let (x, y, w, h) = *tile;
                 blit_over(
                     &mut atlas,
                     &overlay,
                     (x * sx, y * sy, w * sx, h * sy),
                 );
+            } else {
+                missing.push(CompositeMissingLayer {
+                    tile: *tile,
+                    candidates: candidates.clone(),
+                    errors,
+                });
             }
         }
-        Ok(atlas)
+        Ok((atlas, CompositeReport { missing }))
     }
 }
 
@@ -1368,7 +1436,8 @@ mod tests {
                 "overlay" => Ok(overlay.clone()),
                 other => anyhow::bail!("unexpected {other}"),
             })
-            .expect("composite");
+            .expect("composite")
+            .0;
         let px = |x: usize, y: usize| &atlas.mips[0][(y * 512 + x) * 4..][..4];
         assert_eq!(px(0, 320), &[200, 100, 50, 255], "G8 at y 160×2");
         assert_eq!(px(255, 383), &[200, 100, 50, 255], "128×32 doubled");
@@ -1863,5 +1932,75 @@ mod tests {
             changed(&pants_only, &dressed, EQUIP_TILES[6]) > 1000,
             "boots stack over the pants' LegLower (g6)"
         );
+    }
+
+    /// A layer whose every candidate fails to read still yields the base atlas, and the report names
+    /// that layer's tile and both candidate paths.
+    #[test]
+    fn a_failing_armor_layer_is_reported_but_the_base_atlas_survives() {
+        let plan = CompositePlan {
+            base: "base".into(),
+            layers: vec![(vec!["first".into(), "second".into()], TILE_G8)],
+        };
+        let base = chain(4, 4, vec![7, 8, 9, 255].repeat(4));
+        let (atlas, report) = plan
+            .run(|p| match p {
+                "base" => Ok(base.clone()),
+                "first" | "second" => anyhow::bail!("cannot read {p}"),
+                other => panic!("unexpected path {other}"),
+            })
+            .expect("composite succeeds without the optional layer");
+        assert_eq!(atlas.mips[0], base.mips[0], "base atlas is returned unchanged");
+        assert_eq!(report.missing.len(), 1, "exactly one lost layer");
+        assert_eq!(report.missing[0].tile, TILE_G8);
+        assert_eq!(
+            report.missing[0].candidates,
+            vec!["first".to_string(), "second".to_string()]
+        );
+        assert_eq!(report.missing[0].errors.len(), 2);
+    }
+
+    /// A good layer blits; a missing layer is reported and does not affect the good one.
+    #[test]
+    fn a_good_layer_blits_while_only_the_missing_layer_is_reported() {
+        let plan = CompositePlan {
+            base: "base".into(),
+            layers: vec![
+                (vec!["good".into()], TILE_G8),
+                (vec!["gone".into()], TILE_G9),
+            ],
+        };
+        let base = chain(256, 256, vec![1, 2, 3, 255].repeat(256 * 256));
+        let good = chain(128, 32, vec![200, 100, 50, 255].repeat(128 * 32));
+        let (atlas, report) = plan
+            .run(|p| match p {
+                "base" => Ok(base.clone()),
+                "good" => Ok(good.clone()),
+                "gone" => anyhow::bail!("missing"),
+                other => panic!("unexpected path {other}"),
+            })
+            .expect("composite succeeds");
+        assert_eq!(report.missing.len(), 1);
+        assert_eq!(report.missing[0].tile, TILE_G9);
+        assert_eq!(report.missing[0].candidates, vec!["gone".to_string()]);
+        // The good layer's tile differs from the base where it blitted.
+        assert_ne!(atlas.mips[0], base.mips[0]);
+    }
+
+    /// A base-skin read failure is an error, with no report.
+    #[test]
+    fn a_base_skin_failure_remains_an_error() {
+        let plan = CompositePlan {
+            base: "base".into(),
+            layers: vec![(vec!["overlay".into()], TILE_G8)],
+        };
+        let err = plan
+            .run(|p| match p {
+                "base" => anyhow::bail!("base unreadable"),
+                "overlay" => Ok(chain(1, 1, vec![1, 2, 3, 255])),
+                other => panic!("unexpected path {other}"),
+            })
+            .expect_err("base failure must error");
+        let _ = err;
     }
 }

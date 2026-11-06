@@ -106,15 +106,23 @@ pub(in crate::entities) fn redress_player_looks(
         if net.kind != EntityKind::Player || !live.settled || *live == applied.0 {
             continue;
         }
-        // Stamp first: a model-less player has nothing to re-dress and must not retry every frame.
-        applied.0 = *live;
-        let Some(dm) = net
-            .display_id
-            .and_then(|disp| creatures.as_deref()?.models.get(&disp))
-        else {
+        // Readiness gate: do not stamp until the character model is actually dressable.
+        // - display_id absent or the model not in Creatures.models: not ready yet; leave the
+        //   applied stamp untouched so a later frame retries (one map lookup, no queued retry).
+        // - model present but parts absent: a static model-less display; record the refusal by
+        //   stamping applied = live once, so it does not retry every frame (bounded: one
+        //   attempt per equipment change). See the choice note below.
+        let Some(disp) = net.display_id else {
+            continue;
+        };
+        let Some(dm) = creatures.as_deref().and_then(|c| c.models.get(&disp)) else {
             continue;
         };
         let Some(parts) = dm.parts.as_deref() else {
+            // Static model-less display: nothing to dress now or ever for this model. Stamp the
+            // refusal so we do not loop; a future equipment change re-evaluates readiness.
+            debug!("redress: {entity} — model {disp} has no parts; refusal recorded");
+            applied.0 = *live;
             continue;
         };
 
@@ -295,6 +303,9 @@ pub(in crate::entities) fn redress_player_looks(
              atlas {:?}",
             char_mats.0.as_ref().map(|(single, _)| single.0.id()),
         );
+        // Stamp only now, after the re-dress reached the spawn/repoint path and completed, so a
+        // later failure in the dressing work cannot leave the set marked applied and skip retry.
+        applied.0 = *live;
     }
 }
 
@@ -466,6 +477,93 @@ mod tests {
             ))
             .id();
         // A bone anchor and the item hanging off it.
+        let joint = app
+            .world_mut()
+            .spawn((Transform::default(), Visibility::default(), ChildOf(player)))
+            .id();
+        let held = app
+            .world_mut()
+            .spawn((Transform::default(), Visibility::default(), ChildOf(joint)))
+            .id();
+        app.world_mut().entity_mut(player).insert(BoneAttach {
+            points: HashMap::new(),
+            markers: HashMap::new(),
+        });
+        for &i in showing {
+            app.world_mut().spawn((
+                Transform::default(),
+                Visibility::default(),
+                ChildOf(player),
+                MeshMaterial3d(Handle::<WowModelMaterial>::default()),
+                DressedPart {
+                    index: i as u32,
+                    card: None,
+                },
+            ));
+        }
+        app.add_systems(Update, redress_player_looks);
+        app.update();
+        Standing {
+            app,
+            player,
+            joint,
+            held,
+        }
+    }
+
+    /// Like `stand`, but with no creature model for display 42 present initially, so the first
+    /// re-dress pass is not ready and must retry. The caller can insert a model later.
+    fn stand_missing(geosets: &[u16], showing: &[usize], characters: Option<CharacterGeosets>) -> Standing {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<WowModelMaterial>()
+            .init_resource::<SkinComposites>()
+            .init_resource::<MergedFormsCache>()
+            .init_resource::<benilla_world::model_render::ModelMaterials>()
+            .init_resource::<benilla_world::doodad_anim::UvAnimMaterials>()
+            .init_resource::<benilla_world::doodad_anim::TintAnimMaterials>()
+            .init_resource::<benilla_world::mat_anim_table::MatAnimTable>();
+
+        app.insert_resource(Creatures {
+            catalog: Default::default(),
+            models: HashMap::new(),
+        });
+        app.insert_resource(ItemDisplays::icons_for_tests(
+            ItemDisplayCatalog::from_displays(HashMap::from([(
+                7u32,
+                ItemDisplay {
+                    geoset_groups: [1, 0, 0],
+                    ..Default::default()
+                },
+            )])),
+        ));
+        if let Some(cg) = characters {
+            app.insert_resource(Characters(cg));
+        }
+
+        let player = app
+            .world_mut()
+            .spawn((
+                NetEntity {
+                    kind: EntityKind::Player,
+                    display_id: Some(42),
+                    scale: 1.0,
+                },
+                Equipment {
+                    settled: true,
+                    ..Default::default()
+                },
+                AppliedEquipment(Equipment {
+                    settled: true,
+                    ..Default::default()
+                }),
+                VisualAttached,
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .id();
         let joint = app
             .world_mut()
             .spawn((Transform::default(), Visibility::default(), ChildOf(player)))
@@ -685,5 +783,85 @@ mod tests {
         s.wear(last);
         assert_eq!(s.applied(), last, "the latest gear is worn");
         assert!(s.composited(last));
+    }
+
+    /// A not-yet-ready creature model (display 42 absent from Creatures.models) must not be stamped:
+    /// AppliedEquipment stays behind live Equipment and nothing is dressed; once the model with
+    /// parts arrives, the re-dress runs and stamps.
+    #[test]
+    fn redress_waits_for_creature_model_before_stamping() {
+        let mut s = stand_missing(&[0], &[], None);
+        let gear = Equipment {
+            cloak: 9,
+            settled: true,
+            ..Default::default()
+        };
+        *s.app.world_mut().get_mut::<Equipment>(s.player).unwrap() = gear;
+        s.app.update();
+        assert_ne!(
+            s.app.world().get::<AppliedEquipment>(s.player).unwrap().0,
+            gear,
+            "not ready: stamp left unchanged"
+        );
+        assert!(s.showing().is_empty(), "nothing dressed while model missing");
+
+        // Now the model arrives with parts.
+        let mut dm = empty_display();
+        dm.parts = Some(vec![part(0)]);
+        dm.npc_appearance = Some(NpcAppearance {
+            race: 1,
+            sex: 0,
+            skin: 0,
+            face: 0,
+            hair_style: 0,
+            hair_color: 0,
+            facial_hair: 0,
+            equipment: [0; 10],
+            bake_name: None,
+        });
+        s.app.world_mut().resource_mut::<Creatures>().models.insert(42, dm);
+        s.app.update();
+        assert_eq!(
+            s.app.world().get::<AppliedEquipment>(s.player).unwrap().0,
+            gear,
+            "equipment applied once model is ready"
+        );
+        assert!(
+            s.showing().contains(&0),
+            "the expected batch appears after readiness"
+        );
+    }
+
+    /// A model present but without parts is a static model-less display: stamp the refusal once
+    /// (bounded, no retry loop) and dress nothing.
+    #[test]
+    fn redress_stamps_refusal_for_parts_less_model() {
+        let mut s = stand_missing(&[0], &[], None);
+        let gear = Equipment {
+            cloak: 9,
+            settled: true,
+            ..Default::default()
+        };
+        *s.app.world_mut().get_mut::<Equipment>(s.player).unwrap() = gear;
+
+        let mut dm = empty_display();
+        dm.parts = None;
+        s.app.world_mut().resource_mut::<Creatures>().models.insert(42, dm);
+
+        s.app.update();
+        assert_eq!(
+            s.app.world().get::<AppliedEquipment>(s.player).unwrap().0,
+            gear,
+            "refusal stamped on first pass"
+        );
+        assert!(s.showing().is_empty(), "nothing dressed for a parts-less model");
+
+        // A second pass must not retry (no unbounded loop): stamp stays and nothing changes.
+        s.app.update();
+        assert_eq!(
+            s.app.world().get::<AppliedEquipment>(s.player).unwrap().0,
+            gear
+        );
+        assert!(s.showing().is_empty());
     }
 }

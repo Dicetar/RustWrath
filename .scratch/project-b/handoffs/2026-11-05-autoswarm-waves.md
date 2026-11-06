@@ -349,3 +349,59 @@ Evidence:
 Remaining limits: no actual Bartender4 addon load was run; the state drivers, wrapped bodies and
 secure visibility/click behavior are stored only. Do not claim Bartender4 compatibility from this
 surface.
+
+## Wave 9 — Beam appearance fixes and pulled-merge repair (2026-11-06)
+
+`origin/main` was pulled to `31041480` (the wotlk merge), then rebased onto `a703d9c8` before
+publication. That merge did not compile: duplicate reply constants, `MoveModeKind` instead of
+`MoveMode`, old `SessionEvent` struct shapes against tuple variants, removed faction/world-state
+variant names, old `JumpInfo`/`TransportPose` field names, and a few encoder argument type
+changes. `9541f2f1` repairs the API mismatches and exposes the three descriptor constants the
+merged code imports. The mapping follows the new protocol types (`XpGain.base = total - rested`,
+`WorldStates.scope = Some((map, zone))`, no invented fields). The new `TransportPose` no longer
+carries a time, so the two ack writers pass 0; that is a remaining fidelity gap, not a measured
+value. `81ddb80b` clears the later main drift (`UiScript::with_target` in a test, `MAX_MAIL_ITEMS`
+re-export, the keyring test window's dense construction, and a party HP cast).
+
+### Compositor: missing armor layers are no longer silent
+
+- `CompositePlan::run` now returns the usable base atlas plus a `CompositeReport` of optional
+  layers that failed every candidate. Each `CompositeMissingLayer` keeps its tile, candidate
+  paths and per-candidate read/decode errors.
+- `skin_composite::work` logs one warning per finished composite when the report is non-empty, so
+  a cached body atlas that lost a garment is diagnosed instead of disappearing silently. The body
+  still renders; no placeholder art was invented.
+- Beam worker `call_cdeef0b92b584f0a91e97342a40e1f23` (`opencode-go/beam-free`). Commit
+  `544362a4`.
+
+### Re-dress: readiness is checked before the equipment is stamped
+
+- `redress_player_looks` no longer stamps `applied.0 = *live` before resolving the display model.
+  A missing display id or model leaves the set unstamped and retried on the next frame; a model
+  present with no `parts` is a static model-less display and stamps once with a debug refusal;
+  a successful dress stamps only after the spawn/repoint path completes.
+- Beam worker `call_ab617bb40ba54e1ca9da77b15dfc383a` (`opencode-go/beam-free`). Commit
+  `3290596b`.
+
+Evidence:
+- `cargo test -p benilla-formats --lib a_failing_armor_layer_is_reported` — 1 passed;
+  `a_good_layer_blits` — 1; `a_base_skin_failure_remains_an_error` — 1;
+  `hd_section_tiles_scale` — 1.
+- `cargo test -p benilla-app --lib redress_waits_for_creature_model` — 1 passed;
+  `redress_stamps_refusal_for_parts_less_model` — 1; `redress_` filter — 2 passed.
+- `cargo check -p benilla-app --lib` - exit 0.
+- `cargo check --workspace --all-targets` - exit 0 after the rebase, log
+  `.scratch/project-b/check-post-rebase3-2026-11-06.log` (earlier pre-rebase log
+  `.scratch/project-b/check-beam-fixes-2026-11-06.log`).
+- `cargo build -p benilla --features hotpatch` - exit 0 after the rebase, 6m12s, new
+  `target/debug/benilla.exe` (158,880,768 bytes, 2026-11-06 19:19), log
+  `.scratch/project-b/build-post-rebase-2026-11-06.log`.
+- sccache is mandatory in `.cargo/config.toml`, documented in AGENTS/launch guides, and installed
+  in CI; repeated `cargo check -p benilla-protocol-wrath` measured 100% cache hits. Commit
+  `b60362fb`.
+
+Remaining limits: no live client, addon, server or receiver run. A garment whose art is genuinely
+absent is still omitted, now with a warning. The merged wotlk event mapping should be reviewed by
+its owner, especially the transport time 0 and `XpGain.base`/`WorldStates.scope` conversions.
+`D:\Projects\project-b-client` remains on an older `main` with its own uncommitted `ui_loot`
+change and was not pulled or built.

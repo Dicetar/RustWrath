@@ -4545,8 +4545,8 @@ fn translate_gameplay(
         } => vec![SessionEvent::LevelUp(benilla_protocol::messages::LevelUpInfo {
             level: new_level,
             health: health_delta as i32,
-            powers: power_deltas.map(|value| value as i32),
-            stats: stat_deltas.map(|value| value as i32),
+            powers: power_deltas.map(|v| v as i32),
+            stats: stat_deltas.map(|v| v as i32),
         })],
         WrathGameplayEvent::SpellHealLog {
             target,
@@ -4554,34 +4554,44 @@ fn translate_gameplay(
             spell_id,
             amount,
             critical,
-        } => vec![SessionEvent::SpellHealLog(benilla_protocol::messages::SpellHealLog {
-            target,
-            healer: caster,
-            spell_id,
-            amount,
-            critical,
-        })],
+        } => vec![SessionEvent::SpellHealLog(
+            benilla_protocol::messages::SpellHealLog {
+                target,
+                healer: caster,
+                spell_id,
+                amount,
+                critical,
+            },
+        )],
         WrathGameplayEvent::SpellEnergizeLog {
             target,
             caster,
             spell_id,
             power_type,
             amount,
-        } => vec![SessionEvent::SpellEnergizeLog(benilla_protocol::messages::SpellEnergizeLog {
-            target,
-            caster,
-            spell_id,
-            power: power_type,
-            amount,
-        })],
+        } => vec![SessionEvent::SpellEnergizeLog(
+            benilla_protocol::messages::SpellEnergizeLog {
+                target,
+                caster,
+                spell_id,
+                power: power_type,
+                amount,
+            },
+        )],
         WrathGameplayEvent::InitializeFactions { entries } => {
             vec![SessionEvent::Reputations {
-                standings: entries.into_iter().map(|(flags, value)| (flags, value as i32)).collect(),
+                standings: entries
+                    .into_iter()
+                    .map(|(id, standing)| (id, standing as i32))
+                    .collect(),
             }]
         }
         WrathGameplayEvent::SetFactionStanding { updates } => {
             vec![SessionEvent::ReputationDelta {
-                standings: updates.into_iter().map(|(id, value)| (id, value as i32)).collect(),
+                standings: updates
+                    .into_iter()
+                    .map(|(id, standing)| (id, standing as i32))
+                    .collect(),
             }]
         }
         WrathGameplayEvent::PetCastFailed { spell_id, reason } => {
@@ -6487,18 +6497,21 @@ fn wrath_tap_commands(
                 answers,
                 comment,
             } => {
-                let answers: Vec<_> = answers.iter().map(|(question, rating, comment)| {
-                    benilla_protocol::messages::SurveyAnswer {
-                        question: *question,
-                        rating: *rating,
-                        comment: comment.as_str(),
-                    }
-                }).collect();
+                let answers: Vec<benilla_protocol::messages::SurveyAnswer<'_>> = answers
+                    .iter()
+                    .map(
+                        |(question, rating, comment)| benilla_protocol::messages::SurveyAnswer {
+                            question: *question,
+                            rating: *rating,
+                            comment: comment.as_str(),
+                        },
+                    )
+                    .collect();
                 Some((
                     benilla_protocol_wrath::opcode::CMSG_GMSURVEY_SUBMIT,
                     benilla_protocol::messages::gm_survey_submit(survey, &answers, &comment),
                 ))
-            },
+            }
             ClientCommand::ForceSpeedAck {
                 kind,
                 guid,
@@ -6546,7 +6559,6 @@ fn wrath_tap_commands(
                         pitch,
                         fall_time,
                         jump.map(|j| (j.zspeed, j.sin_angle, j.cos_angle, j.xy_speed)),
-                        // TransportPose currently carries no transport clock sample.
                         transport.map(|t| (t.guid, [t.pos.x, t.pos.y, t.pos.z], t.orientation, 0)),
                     ),
                 ))
@@ -12655,6 +12667,7 @@ mod scoped_delivery_tests {
         (
             WrathControl {
                 config: None,
+                multiclass: None,
                 trace: None,
                 worker: None,
                 retiring: None,
@@ -12945,9 +12958,9 @@ mod scoped_delivery_tests {
                 flags: 0x05,
                 level: 60,
                 charges: 3,
-                caster: None,
-                max_duration_ms: None,
-                duration_ms: None,
+                caster: 0,
+                max_duration_ms: 0,
+                duration_ms: 0,
             },
             benilla_protocol_wrath::reducer::AuraSlot {
                 slot: 3,
@@ -12955,9 +12968,9 @@ mod scoped_delivery_tests {
                 flags: 0x02,
                 level: 80,
                 charges: 1,
-                caster: None,
-                max_duration_ms: None,
-                duration_ms: None,
+                caster: 0,
+                max_duration_ms: 0,
+                duration_ms: 0,
             },
         ];
         let mut pairs = Vec::new();
@@ -12967,13 +12980,13 @@ mod scoped_delivery_tests {
         assert_eq!(a0.spell_id, 17);
         assert_eq!(a0.flags, 0x05);
         assert_eq!(a0.level, 60);
-        assert_eq!(a0.applications, 2); // charges(3) - 1 = 2 additional applications
+        assert_eq!(a0.stacks, 2); // charges(3) - 1 = 2 additional applications
 
         let a3 = fields.unit_aura(3).expect("slot 3 aura");
         assert_eq!(a3.spell_id, 139);
         assert_eq!(a3.flags, 0x02);
         assert_eq!(a3.level, 80);
-        assert_eq!(a3.applications, 0);
+        assert_eq!(a3.stacks, 0);
     }
 }
 
