@@ -10,6 +10,37 @@
 use super::{DecodeError, Reader};
 use anyhow::Result;
 
+/// `MailHandler.cpp::HandleSendMail`: one attachment is all the current compose UI owns.
+/// NUL in a string cannot be represented in the protocol's terminated fields.
+pub fn send_mail(
+    mailbox: u64, receiver: &str, subject: &str, body: &str, stationery: u32,
+    item_guid: u64, money: u32, cod: u32,
+) -> Option<Vec<u8>> {
+    if [receiver, subject, body].iter().any(|value| value.as_bytes().contains(&0))
+        || receiver.len().saturating_add(subject.len()).saturating_add(body.len()) > 10189
+    {
+        return None;
+    }
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&mailbox.to_le_bytes());
+    for value in [receiver, subject, body] {
+        packet.extend_from_slice(value.as_bytes());
+        packet.push(0);
+    }
+    packet.extend_from_slice(&stationery.to_le_bytes());
+    packet.extend_from_slice(&0u32.to_le_bytes());
+    packet.push(u8::from(item_guid != 0));
+    if item_guid != 0 {
+        packet.push(0);
+        packet.extend_from_slice(&item_guid.to_le_bytes());
+    }
+    packet.extend_from_slice(&money.to_le_bytes());
+    packet.extend_from_slice(&cod.to_le_bytes());
+    packet.extend_from_slice(&0u64.to_le_bytes());
+    packet.push(0);
+    Some(packet)
+}
+
 /// `TRADE_SLOT_COUNT` (`TradeHandler.cpp:79-80`) and the client's two seven-entry windows
 /// (`Trade_C.cpp:370-412`).
 pub const TRADE_SLOT_COUNT: usize = 7;

@@ -90,11 +90,13 @@ impl MailVerbs<'_> {
                 mail_id,
                 text_id,
             } => {
-                mail.bodies.lookup(text_id, || {
-                    let _ = commands
-                        .0
-                        .send(ClientCommand::ItemTextQuery { text_id, mail_id });
-                });
+                if text_id != 0 {
+                    mail.bodies.lookup(text_id, || {
+                        let _ = commands
+                            .0
+                            .send(ClientCommand::ItemTextQuery { text_id, mail_id });
+                    });
+                }
                 // The cached text, expanded, is masked on every read (`0x4af1f6`, `0x4af203` with
                 // `dl` 0), so each read moves the mask's phase; a template's body is not.
                 if let (Some(mut body), Some(filter)) =

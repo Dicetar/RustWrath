@@ -457,9 +457,9 @@ fn resolve_row(
         .map(str::to_string);
 
     // The raw body: the invoice parses it before any `$`-macro expansion.
-    let raw_body = (entry.item_text_id != 0)
+    let raw_body = entry.inline_body.as_ref().or_else(|| (entry.item_text_id != 0)
         .then(|| bodies.get(entry.item_text_id))
-        .flatten();
+        .flatten());
 
     // ── The auction house's mail (`0x4ace70`, `0x4af360`) ──
     // Every notice gets its displayed subject; only a won or sold one has an invoice, once its
@@ -527,6 +527,7 @@ fn resolve_row(
         can_reply,
         is_gm,
         body: letter_body(entry, raw_body, templates, macros),
+        inline_body: entry.inline_body.is_some(),
         stationery_texture,
         // Won and sold notices only, not every auction mail: the reference's `isInvoice` reads
         // the item entry its subject parser persists for those two alone.
@@ -552,7 +553,7 @@ fn letter_body(
     templates: Option<&MailTemplates>,
     macros: &crate::npc_text::MacroContext,
 ) -> Option<String> {
-    let text = if entry.item_text_id != 0 {
+    let text = if entry.inline_body.is_some() || entry.item_text_id != 0 {
         raw_body.filter(|_| entry.message_type != mail_message_type::AUCTION)
     } else if entry.mail_template_id != 0 {
         templates.and_then(|t| t.0.get(&entry.mail_template_id))
@@ -1131,6 +1132,7 @@ mod tests {
             sender_guid,
             sender_id: None,
             subject: "s".into(),
+            inline_body: None,
             item_text_id: 0,
             package: 0,
             stationery: 41,

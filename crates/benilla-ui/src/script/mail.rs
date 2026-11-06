@@ -59,6 +59,8 @@ pub struct MailInboxRow {
     /// `GetInboxText`'s body, its text or its template's, `$`-expanded; `None` (nil) until the
     /// text lands, for an auction mail and for a mail with neither.
     pub body: Option<String>,
+    /// The Wrath list carried the body itself rather than a separate text-id query.
+    pub inline_body: bool,
     /// The stationery's texture basename in the store (`[row+0x8]`), `None` (nil) for an id the
     /// store lacks (`0x4af27c`-`0x4af2a9`).
     pub stationery_texture: Option<String>,
@@ -404,7 +406,7 @@ impl MailRowVerb {
             // A body or a template to copy (`[rec+0x114]`, `[rec+0x25c]`, `0x4afae7`), not yet
             // copied (`& 4`, `0x4afafb`).
             MailRowVerb::TakeText => {
-                (row.item_text_id != 0 || row.mail_template_id != 0) && !row.text_created
+                (row.item_text_id != 0 || row.mail_template_id != 0 || row.body.is_some()) && !row.text_created
             }
             // A player's mail (type 0, `0x4afc27`) with an item or money (`0x4afc30`), neither
             // returned nor a COD payment (`& 0xa`, `0x4afc44`).
@@ -526,7 +528,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             // The body is read after the mark's event, whose handlers may read the letter
             // themselves (`0x4add9d` ahead of `0x4af1bf`), so nothing runs between this call's
             // answer and its take.
-            let answer = if r.item_text_id != 0 {
+            let answer = if r.item_text_id != 0 || r.inline_body {
                 let answer = |lua: &Lua| {
                     std::mem::take(
                         &mut lua
@@ -560,7 +562,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             };
             // A text or a template (`0x4af2ae`-`0x4af2c0`), not yet copied (`0x4af2c2`), off the
             // GM stationery 61 (`0x4af2cb`).
-            let takeable = (r.item_text_id != 0 || r.mail_template_id != 0)
+            let takeable = (r.item_text_id != 0 || r.mail_template_id != 0 || r.body.is_some())
                 && !r.text_created
                 && r.stationery != STATIONERY_GM;
             Ok(MultiValue::from_vec(vec![
@@ -799,6 +801,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     || target.is_empty()
                     || subject.is_empty()
                     || model.mail_stationery == 0
+                    || (model.target == super::UiTarget::Wrath335 && (
+                        [&target, &subject, &body].iter().any(|s| s.as_bytes().contains(&0))
+                        || target.len().saturating_add(subject.len()).saturating_add(body.len()) > 10189
+                    ))
                 {
                     return None;
                 }
@@ -1364,6 +1370,7 @@ mod tests {
             can_reply: true,
             is_gm: false,
             body: Some("Lok'tar.".into()),
+            inline_body: false,
             stationery_texture: Some("STATIONERYTEST".into()),
             is_invoice: false,
             invoice: None,
