@@ -1,0 +1,11 @@
+[package]
+name = "benilla-combat-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Offline, server-authoritative combat model and integration seam: ticks, dodge windows, stamina, telegraph, interruption, death, and reconciliation"
+
+[lints]
+workspace = true
+
+[dependencies]

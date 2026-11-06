@@ -95,20 +95,19 @@ impl Profile {
         let text = std::fs::read_to_string(manifest_path)
             .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
         let manifest = Manifest::parse(&text, profile)?;
-        let mut this = Self {
+        let archives = Self::open_archives(data_dir, &manifest)?;
+        Ok(Self {
             data_dir: data_dir.to_path_buf(),
             manifest_path: manifest_path.to_path_buf(),
             manifest,
-            archives: Vec::new(),
-        };
-        this.open_archives()?;
-        Ok(this)
+            archives,
+        })
     }
 
-    fn open_archives(&mut self) -> Result<()> {
+    fn open_archives(data_dir: &Path, manifest: &Manifest) -> Result<Vec<(Origin, Archive)>> {
         let mut archives = Vec::new();
-        for (origin, name) in &self.manifest.entries {
-            let path = self.data_dir.join(name);
+        for (origin, name) in &manifest.entries {
+            let path = data_dir.join(name);
             // An owner-toggled archive stays off: refuse rather than reach for a `.disabled`
             // twin or open it anyway. The message names both facts so the fix is obvious.
             if !path.is_file() {
@@ -117,25 +116,28 @@ impl Profile {
                         "archive {} of profile `{}` is disabled by the owner ({}); \
                          edit the manifest to honor the toggle",
                         name.display(),
-                        self.manifest.profile,
+                        manifest.profile,
                         path.with_extension("mpq.disabled").display()
                     );
                 }
-                bail!("archive {} of profile `{}` not found in {}", name.display(), self.manifest.profile, self.data_dir.display());
+                bail!("archive {} of profile `{}` not found in {}", name.display(), manifest.profile, data_dir.display());
             }
             archives.push((*origin, Archive::open(&path).with_context(|| format!("opening {}", path.display()))?));
         }
-        self.archives = archives;
-        Ok(())
+        Ok(archives)
     }
 
     /// Re-read the manifest and reopen every archive (the C1 hot-swap seam). Files already read
-    /// stay valid; only later resolutions see the new set.
+    /// stay valid; only later resolutions see the new set. A failure reading or parsing the
+    /// manifest, or opening any archive, leaves the active profile unchanged.
     pub fn reload(&mut self) -> Result<()> {
         let text = std::fs::read_to_string(&self.manifest_path)
             .with_context(|| format!("re-reading manifest {}", self.manifest_path.display()))?;
-        self.manifest = Manifest::parse(&text, &self.manifest.profile)?;
-        self.open_archives()
+        let manifest = Manifest::parse(&text, &self.manifest.profile)?;
+        let archives = Self::open_archives(&self.data_dir, &manifest)?;
+        self.manifest = manifest;
+        self.archives = archives;
+        Ok(())
     }
 
     /// The profile's declared locale tag (informational; string tables are the reader's concern).
