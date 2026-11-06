@@ -507,6 +507,24 @@ impl SessionState {
                 self.verify_position = Some((position, observed_at_unix_ms));
                 changed = true;
             }
+            op if is_relayed_movement_opcode(op) => {
+                // Relayed observer movement (`MovementHandler.cpp:320-370`): packed mover GUID
+                // followed by a 12340 `MovementInfo` block. Never overwrites the local player's
+                // active movement state.
+                if self.phase == Phase::InWorld {
+                    let mut r = Reader::new(payload);
+                    if let Ok(guid) = r.packed_guid() {
+                        if Some(guid) != self.player_guid {
+                            if let Ok(snapshot) = crate::updates::standalone_movement_block(&mut r) {
+                                if self.world.apply_movement(guid, snapshot) {
+                                    changed = true;
+                                    events.push(ChangeEvent::Moved { guid });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         self.input_seq += 1;
@@ -781,6 +799,18 @@ fn destroy_as_out_of_range(guid: u64) -> Vec<u8> {
     p.push(mask);
     p.extend_from_slice(&bytes);
     p
+}
+
+fn is_relayed_movement_opcode(op: u16) -> bool {
+    matches!(
+        op,
+        0x0B5..=0x0C3
+            | 0x0C9..=0x0CB
+            | 0x0DA..=0x0DB
+            | 0x0EC..=0x0EE
+            | 0x0F1
+            | 0x2CE..=0x2D0
+    )
 }
 
 impl std::fmt::Display for SkipReason {

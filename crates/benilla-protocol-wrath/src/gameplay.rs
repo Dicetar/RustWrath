@@ -7,6 +7,8 @@
 
 #![allow(dead_code)]
 
+use std::fmt;
+
 use anyhow::Result;
 
 use crate::cast_failure;
@@ -14,12 +16,204 @@ use crate::cast_failure;
 mod movement;
 pub use movement::{MonsterFacing, MonsterMove};
 
+/// The largest undecoded-byte count reported with a typed decode failure.
+///
+/// The count is a length only: no packet body, server text, path, credential or GUID is
+/// carried by [`DecodeError`] or by the diagnostic value the app records.
+const MAX_REPORTED_REMAINING: usize = 4096;
+
+/// Closed decoder families the Wrath gameplay parser can name for one rejected opcode.
+///
+/// The app records this value instead of a decoder function name or an error message, so a
+/// rejected packet can be attributed without exporting source or server text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum DecoderFamily {
+    QuestList,
+    QuestGreeting,
+    QuestDetails,
+    QuestProgress,
+    QuestRequestItems,
+    QuestOffer,
+    QuestOfferReward,
+    QuestInvalid,
+    QuestGiverInvalid,
+    QuestFailed,
+    QuestGiverFailed,
+    QuestLogFull,
+    QuestTemplate,
+    Gossip,
+    GossipMenu,
+    Loot,
+    LootResponse,
+    Vendor,
+    VendorList,
+    Inventory,
+    ItemPush,
+    InventoryPush,
+    Spell,
+    Other,
+}
+
+/// Closed coarse reason for a rejected gameplay decode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum DecodeFailure {
+    /// The packet ended before a required field.
+    Truncated,
+    /// A record parsed but bytes remained after its last field.
+    TrailingBytes,
+    /// A NUL-terminated string had no terminating NUL before the packet ended.
+    UnterminatedString,
+    /// A declared count is outside the layout's fixed bound.
+    InvalidCount,
+    /// A field value violates the packet's own contract.
+    InvalidValue,
+    /// The decoder failed but this source cannot classify why.
+    Other,
+}
+
+/// A typed gameplay decode failure. The variant is closed; `detail` stays a static local
+/// description and never carries packet bytes or server text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DecodeError {
+    reason: DecodeFailure,
+    /// Bounded count of bytes not consumed by the decoder, when it is meaningful.
+    remaining: Option<u32>,
+    detail: &'static str,
+    /// An optional numeric field value that made the packet invalid (never text).
+    value: Option<u32>,
+}
+
+impl DecodeError {
+    pub(crate) fn new(reason: DecodeFailure, remaining: Option<usize>, detail: &'static str) -> Self {
+        Self {
+            reason,
+            remaining: remaining
+                .map(|count| count.min(MAX_REPORTED_REMAINING) as u32),
+            detail,
+            value: None,
+        }
+    }
+
+    pub(crate) fn with_value(mut self, value: u32) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    pub(crate) fn truncated(remaining: usize) -> Self {
+        Self::new(DecodeFailure::Truncated, Some(remaining), "payload cut short")
+    }
+
+    pub(crate) fn unterminated(remaining: usize) -> Self {
+        Self::new(DecodeFailure::UnterminatedString, Some(remaining), "unterminated string")
+    }
+
+    pub(crate) fn trailing(remaining: usize) -> Self {
+        Self::new(DecodeFailure::TrailingBytes, Some(remaining), "trailing bytes after record")
+    }
+
+    pub(crate) fn invalid_count(detail: &'static str) -> Self {
+        Self::new(DecodeFailure::InvalidCount, None, detail)
+    }
+
+    pub(crate) fn invalid_value(detail: &'static str) -> Self {
+        Self::new(DecodeFailure::InvalidValue, None, detail)
+    }
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.value {
+            Some(value) => write!(f, "{}: {value}", self.detail),
+            None => f.write_str(self.detail),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+/// Classify one gameplay decode failure without exposing its free-form message.
+///
+/// A failure the reader did not type returns [`DecodeFailure::Other`] rather than a guess.
+pub fn classify_decode_failure(error: &anyhow::Error) -> DecodeFailure {
+    error
+        .downcast_ref::<DecodeError>()
+        .map(|failure| failure.reason)
+        .unwrap_or(DecodeFailure::Other)
+}
+
+/// Classify a reducer failure by walking its error chain for a typed [`DecodeError`].
+///
+/// This never inspects free-form error text: it only downcasts typed failures. A reducer
+/// error that is untyped or has no typed cause returns [`DecodeFailure::Other`].
+pub fn classify_reduce_failure(error: &anyhow::Error) -> DecodeFailure {
+    for cause in error.chain() {
+        if let Some(failure) = cause.downcast_ref::<DecodeError>() {
+            return failure.reason;
+        }
+    }
+    classify_decode_failure(error)
+}
+
+/// The bounded undecoded-byte count at the failure point, when the decoder reported one.
+///
+/// This is only a length. It never identifies or carries the bytes themselves.
+pub fn decode_remaining_bytes(error: &anyhow::Error) -> Option<u32> {
+    error
+        .downcast_ref::<DecodeError>()
+        .and_then(|failure| failure.remaining)
+}
+
+/// The closed decoder family that owns one opcode the gameplay parser translates.
+///
+/// An opcode outside the families below stays [`DecoderFamily::Other`]; this is a classification
+/// boundary, not a claim that the opcode has no decoder.
+pub fn decoder_family(opcode: u16) -> DecoderFamily {
+    use crate::opcode::*;
+    match opcode {
+        SMSG_QUESTGIVER_QUEST_LIST => DecoderFamily::QuestGreeting,
+        SMSG_QUESTGIVER_QUEST_DETAILS => DecoderFamily::QuestDetails,
+        SMSG_QUESTGIVER_REQUEST_ITEMS => DecoderFamily::QuestProgress,
+        SMSG_QUESTGIVER_OFFER_REWARD => DecoderFamily::QuestOffer,
+        SMSG_QUESTGIVER_QUEST_INVALID => DecoderFamily::QuestGiverInvalid,
+        SMSG_QUESTGIVER_QUEST_FAILED => DecoderFamily::QuestGiverFailed,
+        SMSG_QUESTLOG_FULL => DecoderFamily::QuestLogFull,
+        SMSG_QUEST_QUERY_RESPONSE => DecoderFamily::QuestTemplate,
+        SMSG_GOSSIP_MESSAGE | SMSG_GOSSIP_COMPLETE => DecoderFamily::Gossip,
+        SMSG_LOOT_RESPONSE
+        | SMSG_LOOT_RELEASE_RESPONSE
+        | SMSG_LOOT_REMOVED
+        | SMSG_LOOT_MONEY_NOTIFY
+        | SMSG_LOOT_CLEAR_MONEY
+        | SMSG_LOOT_START_ROLL
+        | SMSG_LOOT_ROLL
+        | SMSG_LOOT_ROLL_WON
+        | SMSG_LOOT_ALL_PASSED => DecoderFamily::Loot,
+        SMSG_LIST_INVENTORY | SMSG_BUY_ITEM | SMSG_BUY_FAILED | SMSG_SELL_ITEM => {
+            DecoderFamily::Vendor
+        }
+        SMSG_INVENTORY_CHANGE_FAILURE => DecoderFamily::Inventory,
+        SMSG_ITEM_PUSH_RESULT => DecoderFamily::ItemPush,
+        SMSG_CAST_FAILED
+        | SMSG_SPELL_START
+        | SMSG_SPELL_GO
+        | SMSG_SPELL_FAILED_OTHER
+        | SMSG_SPELL_FAILURE
+        | SMSG_SPELL_DELAYED
+        | SMSG_SPELL_COOLDOWN
+        | MSG_CHANNEL_START
+        | MSG_CHANNEL_UPDATE => DecoderFamily::Spell,
+        _ => DecoderFamily::Other,
+    }
+}
+
 /// AzerothCore MiscHandler.cpp HandleRealmSplitOpcode; 12340 CGlueMgr::OnRealmSplitMsg
 /// (0x004D8200) forwards these three fields as SERVER_SPLIT_NOTICE.
 pub fn parse_realm_split(payload: &[u8]) -> Result<(u32, u32, String)> {
     let mut r = Reader::new(payload);
     let reply = (r.u32()?, r.u32()?, r.cstring()?);
-    anyhow::ensure!(r.remaining() == 0, "trailing realm split bytes");
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
     Ok(reply)
 }
 
@@ -609,6 +803,755 @@ pub fn set_action_button(button: u8, packed: u32) -> Vec<u8> {
     p.push(button);
     p.extend_from_slice(&packed.to_le_bytes());
     p
+}
+
+/// `CMSG_LEARN_TALENT` (`TalentHandler.cpp:27`): `u32 talent_id, u32 requested_rank` (0-based).
+pub fn encode_learn_talent(talent_id: u32, rank: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(8);
+    p.extend_from_slice(&talent_id.to_le_bytes());
+    p.extend_from_slice(&rank.to_le_bytes());
+    p
+}
+
+/// `CMSG_PET_ACTION` (`PetHandler.cpp:95`): `u64 pet_guid, u32 data, u64 target_guid`.
+pub fn encode_pet_action(pet_guid: u64, packed: u32, target_guid: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(20);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.extend_from_slice(&packed.to_le_bytes());
+    p.extend_from_slice(&target_guid.to_le_bytes());
+    p
+}
+
+/// `CMSG_PET_SET_ACTION` (`PetHandler.cpp:365`): `u64 pet_guid` followed by 1 or 2 `(u32 position, u32 action)` pairs.
+pub fn encode_pet_set_action(pet_guid: u64, entries: &[(u32, u32)]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(8 + entries.len() * 8);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    for &(position, packed) in entries {
+        p.extend_from_slice(&position.to_le_bytes());
+        p.extend_from_slice(&packed.to_le_bytes());
+    }
+    p
+}
+
+/// `CMSG_PET_CAST_SPELL` (`PetHandler.cpp:544`): `u64 pet_guid, u8 cast_count, u32 spell_id, u8 cast_flags, SpellCastTargets`.
+pub fn encode_pet_cast_spell(
+    pet_guid: u64,
+    cast_count: u8,
+    spell_id: u32,
+    target: CastTarget,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(32);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.push(cast_count);
+    p.extend_from_slice(&spell_id.to_le_bytes());
+    p.push(0); // cast_flags
+    write_cast_target(&mut p, target);
+    p
+}
+
+/// `CMSG_PET_STOP_ATTACK` (`PetHandler.cpp:74`), `CMSG_PET_ABANDON` (`PetHandler.cpp:434`),
+/// `CMSG_PET_UNLEARN` (`PetHandler.cpp:695`), `MSG_LIST_STABLED_PETS` (`NPCHandler.cpp:477`),
+/// `CMSG_STABLE_PET` (`NPCHandler.cpp:518`), `CMSG_BUY_STABLE_SLOT` (`NPCHandler.cpp:667`): single `u64` guid.
+pub fn encode_guid_only(guid: u64) -> Vec<u8> {
+    guid.to_le_bytes().to_vec()
+}
+
+/// `CMSG_PET_CANCEL_AURA` (`PetHandler.cpp:651`): `u64 pet_guid, u32 spell_id`.
+pub fn encode_pet_cancel_aura(pet_guid: u64, spell_id: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.extend_from_slice(&spell_id.to_le_bytes());
+    p
+}
+
+/// `CMSG_PET_SPELL_AUTOCAST` (`PetHandler.cpp:616`): `u64 pet_guid, u32 spell_id, u8 state`.
+pub fn encode_pet_spell_autocast(pet_guid: u64, spell_id: u32, enabled: bool) -> Vec<u8> {
+    let mut p = Vec::with_capacity(13);
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.extend_from_slice(&spell_id.to_le_bytes());
+    p.push(u8::from(enabled));
+    p
+}
+
+/// `CMSG_PET_RENAME` (`PetHandler.cpp:462`): `u64 pet_guid, cstring name, u8 is_declined (0)`.
+pub fn encode_pet_rename(pet_guid: u64, name: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(10 + name.len());
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.push(0); // is_declined = 0
+    p
+}
+
+/// `CMSG_UNSTABLE_PET` (`NPCHandler.cpp:580`) and `CMSG_STABLE_SWAP_PET` (`NPCHandler.cpp:708`):
+/// `u64 npc_guid, u32 pet_number`.
+pub fn encode_stable_pet_slot(npc: u64, pet_number: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&npc.to_le_bytes());
+    p.extend_from_slice(&pet_number.to_le_bytes());
+    p
+}
+
+/// `CMSG_PET_NAME_QUERY` (`PetHandler.cpp:327`): `u32 pet_number, u64 pet_guid`.
+pub fn pet_name_query(pet_number: u32, pet_guid: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&pet_number.to_le_bytes());
+    p.extend_from_slice(&pet_guid.to_le_bytes());
+    p
+}
+
+/// `CMSG_ITEM_NAME_QUERY` (`ItemHandler.cpp:1449`): `u32 item_id, u64 item_guid(0)`.
+pub fn item_name_query(item_id: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&item_id.to_le_bytes());
+    p.extend_from_slice(&0u64.to_le_bytes());
+    p
+}
+
+/// `CMSG_TEXT_EMOTE` (`ChatHandler.cpp:544`): `u32 text_emote, u32 emote_num, u64 target`.
+pub fn text_emote(text_emote: u32, emote_num: u32, target: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(16);
+    p.extend_from_slice(&text_emote.to_le_bytes());
+    p.extend_from_slice(&emote_num.to_le_bytes());
+    p.extend_from_slice(&target.to_le_bytes());
+    p
+}
+
+/// `CMSG_SET_FACTION_ATWAR` (`CharacterHandler.cpp:1503`) and `CMSG_SET_FACTION_INACTIVE` (`CharacterHandler.cpp:1514`):
+/// `u32 rep_list_id, u8 flag`.
+pub fn set_faction_flag(rep_list_id: u32, flag: u8) -> Vec<u8> {
+    let mut p = Vec::with_capacity(5);
+    p.extend_from_slice(&rep_list_id.to_le_bytes());
+    p.push(flag);
+    p
+}
+
+/// `CMSG_CONTACT_LIST` (`SocialHandler.cpp:33`): `u32 social_mask` (`0x07` = friends | ignored | muted).
+pub fn contact_list(flags: u32) -> Vec<u8> {
+    flags.to_le_bytes().to_vec()
+}
+
+/// `CMSG_ADD_FRIEND` (`SocialHandler.cpp:69`): `cstring name, cstring note`.
+pub fn add_friend(name: &str, note: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(name.len() + note.len() + 2);
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.extend_from_slice(note.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_CHAT_IGNORED` (`ChatHandler.cpp:657`): `u64 sender_guid, u8 unk(0)`.
+pub fn chat_ignored(guid: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9);
+    p.extend_from_slice(&guid.to_le_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_GROUP_INVITE` (`GroupHandler.cpp:47`): `cstring name, u32 proposed_roles(0)`.
+pub fn group_invite(name: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(name.len() + 5);
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p
+}
+
+/// `CMSG_GROUP_ACCEPT` (`GroupHandler.cpp:193`): `u32 unk(0)`.
+pub fn group_accept() -> Vec<u8> {
+    0u32.to_le_bytes().to_vec()
+}
+
+/// `CMSG_GROUP_UNINVITE_GUID` (`GroupHandler.cpp:251`): `u64 guid, cstring reason("")`.
+pub fn group_uninvite_guid(guid: u64, reason: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9 + reason.len());
+    p.extend_from_slice(&guid.to_le_bytes());
+    p.extend_from_slice(reason.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_LOOT_METHOD` (`GroupHandler.cpp:458`): `u32 method, u64 master_guid, u32 threshold`.
+pub fn loot_method(method: u32, master: u64, threshold: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(16);
+    p.extend_from_slice(&method.to_le_bytes());
+    p.extend_from_slice(&master.to_le_bytes());
+    p.extend_from_slice(&threshold.to_le_bytes());
+    p
+}
+
+/// `CMSG_GROUP_CHANGE_SUB_GROUP` (`GroupHandler.cpp:427`): `cstring name, u8 group`.
+pub fn group_change_sub_group(name: &str, group: u8) -> Vec<u8> {
+    let mut p = Vec::with_capacity(name.len() + 2);
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.push(group);
+    p
+}
+
+/// `CMSG_GROUP_SWAP_SUB_GROUP` (`GroupHandler.cpp:443`): `cstring name1, cstring name2`.
+pub fn cstring_pair(first: &str, second: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(first.len() + second.len() + 2);
+    p.extend_from_slice(first.as_bytes());
+    p.push(0);
+    p.extend_from_slice(second.as_bytes());
+    p.push(0);
+    p
+}
+
+/// Single NUL-terminated string payload.
+pub fn cstring_single(s: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(s.len() + 1);
+    p.extend_from_slice(s.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `MSG_MINIMAP_PING` (`GroupHandler.cpp:691`): `f32 x, f32 y`.
+pub fn minimap_ping(x: f32, y: f32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(8);
+    p.extend_from_slice(&x.to_le_bytes());
+    p.extend_from_slice(&y.to_le_bytes());
+    p
+}
+
+/// `MSG_RAID_TARGET_UPDATE` (`GroupHandler.cpp:718`): `u8 icon_index, u64 target` (or `0xFF` to query).
+pub fn set_raid_target(icon: u8, target: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9);
+    p.push(icon);
+    p.extend_from_slice(&target.to_le_bytes());
+    p
+}
+
+/// `CMSG_LOOT_MASTER_GIVE` (`LootHandler.cpp:526`): `u64 loot_guid, u8 slot_id, u64 target_guid`.
+pub fn loot_master_give(loot_guid: u64, slot_id: u8, target_guid: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(17);
+    p.extend_from_slice(&loot_guid.to_le_bytes());
+    p.push(slot_id);
+    p.extend_from_slice(&target_guid.to_le_bytes());
+    p
+}
+
+/// `CMSG_ACTIVATETAXI` (`TaxiHandler.cpp:175`): `u64 npc_guid, u32 source_node, u32 dest_node`.
+pub fn activate_taxi(npc: u64, source: u32, dest: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(16);
+    p.extend_from_slice(&npc.to_le_bytes());
+    p.extend_from_slice(&source.to_le_bytes());
+    p.extend_from_slice(&dest.to_le_bytes());
+    p
+}
+
+/// `CMSG_ACTIVATETAXIEXPRESS` (`TaxiHandler.cpp:124`): `u64 npc_guid, u32 node_count, [u32 node]*`.
+pub fn activate_taxi_express(npc: u64, nodes: &[u32]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12 + nodes.len() * 4);
+    p.extend_from_slice(&npc.to_le_bytes());
+    p.extend_from_slice(&(nodes.len() as u32).to_le_bytes());
+    for &node in nodes {
+        p.extend_from_slice(&node.to_le_bytes());
+    }
+    p
+}
+
+/// `CMSG_JOIN_CHANNEL` (`ChannelHandler.cpp:27`): `u32 channel_id(0), u8 has_voice(0), u8 joined_by_zone(0), cstring name, cstring password`.
+pub fn join_channel(name: &str, password: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(8 + name.len() + password.len());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.push(0);
+    p.push(0);
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.extend_from_slice(password.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_LEAVE_CHANNEL` (`ChannelHandler.cpp:54`): `u32 channel_id(0), cstring name`.
+pub fn leave_channel(name: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(5 + name.len());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_WRAP_ITEM` (`ItemHandler.cpp:1145`): `[gift_bag, gift_slot, item_bag, item_slot]`.
+pub fn wrap_item(gift_bag: u8, gift_slot: u8, item_bag: u8, item_slot: u8) -> Vec<u8> {
+    vec![gift_bag, gift_slot, item_bag, item_slot]
+}
+
+/// `CMSG_FARSIGHT` (`MiscHandler.cpp:1428`): `u8 apply`.
+pub fn farsight(apply: bool) -> Vec<u8> {
+    vec![u8::from(apply)]
+}
+
+/// `CMSG_GROUP_ASSISTANT_LEADER` (`GroupHandler.cpp:412`): `u64 guid, u8 apply`.
+pub fn group_assistant_leader(guid: u64, grant: bool) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9);
+    p.extend_from_slice(&guid.to_le_bytes());
+    p.push(u8::from(grant));
+    p
+}
+
+/// `CMSG_GUILD_RANK` (`GuildHandler.cpp:323`): `u32 rank_id, u32 rights, cstring rank_name,
+/// u32 money_per_day(0), [u32 tab_flags(0), u32 tab_stacks_per_day(0)] * 6`.
+pub fn guild_rank(rank_id: u32, rights: u32, name: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(61 + name.len());
+    p.extend_from_slice(&rank_id.to_le_bytes());
+    p.extend_from_slice(&rights.to_le_bytes());
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.extend_from_slice(&0u32.to_le_bytes()); // withdraw gold limit
+    p.extend_from_slice(&[0u8; 48]); // 6 bank tabs * (u32 flags + u32 stacks)
+    p
+}
+
+/// `CMSG_PETITION_BUY` (`PetitionHandler.cpp:102`): 12340 guild/arena charter purchase layout.
+pub fn petition_buy(npc: u64, name: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(90 + name.len());
+    p.extend_from_slice(&npc.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(&0u64.to_le_bytes());
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p.push(0); // empty body cstring
+    for _ in 0..7 {
+        p.extend_from_slice(&0u32.to_le_bytes());
+    }
+    p.extend_from_slice(&0u16.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(&[0u8; 10]); // 10 empty cstrings
+    p.extend_from_slice(&0u32.to_le_bytes()); // index
+    p.extend_from_slice(&1u32.to_le_bytes());
+    p.extend_from_slice(&9u32.to_le_bytes()); // GUILD_CHARTER_TYPE (9 signatures)
+    p
+}
+
+/// `CMSG_PETITION_SIGN` (`PetitionHandler.cpp:259`): `u64 petition_guid, u8 unk`.
+pub fn petition_sign(item: u64, byte: u8) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9);
+    p.extend_from_slice(&item.to_le_bytes());
+    p.push(byte);
+    p
+}
+
+/// `CMSG_OFFER_PETITION` (`PetitionHandler.cpp:399`): `u32 junk(0), u64 item_guid, u64 player_guid`.
+pub fn offer_petition(item: u64, player: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(20);
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(&item.to_le_bytes());
+    p.extend_from_slice(&player.to_le_bytes());
+    p
+}
+
+/// `CMSG_PETITION_QUERY` (`PetitionHandler.cpp:365`): `u32 petition_guid_low, u64 item_guid`.
+pub fn petition_query(petition_id: u32, item: u64) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&petition_id.to_le_bytes());
+    p.extend_from_slice(&item.to_le_bytes());
+    p
+}
+
+/// `MSG_PETITION_RENAME` (`PetitionHandler.cpp:379`): `u64 item_guid, cstring new_name`.
+pub fn petition_rename(item: u64, name: &str) -> Vec<u8> {
+    let mut p = Vec::with_capacity(9 + name.len());
+    p.extend_from_slice(&item.to_le_bytes());
+    p.extend_from_slice(name.as_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_SEND_MAIL` (`MailHandler.cpp:47`): 12340 multi-attachment layout (`u8 item_count` +
+/// `[u8 slot, u64 item_guid]*`, followed by `u32 money, u32 cod, u64 unk, u8 unk`).
+#[allow(clippy::too_many_arguments)]
+pub fn send_mail(
+    mailbox: u64,
+    receiver: &str,
+    subject: &str,
+    body: &str,
+    stationery: u32,
+    package: u32,
+    item_guid: u64,
+    money: u32,
+    cod: u32,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(45 + receiver.len() + subject.len() + body.len());
+    p.extend_from_slice(&mailbox.to_le_bytes());
+    p.extend_from_slice(receiver.as_bytes());
+    p.push(0);
+    p.extend_from_slice(subject.as_bytes());
+    p.push(0);
+    p.extend_from_slice(body.as_bytes());
+    p.push(0);
+    p.extend_from_slice(&stationery.to_le_bytes());
+    p.extend_from_slice(&package.to_le_bytes());
+    if item_guid != 0 {
+        p.push(1);
+        p.push(0);
+        p.extend_from_slice(&item_guid.to_le_bytes());
+    } else {
+        p.push(0);
+    }
+    p.extend_from_slice(&money.to_le_bytes());
+    p.extend_from_slice(&cod.to_le_bytes());
+    p.extend_from_slice(&0u64.to_le_bytes());
+    p.push(0);
+    p
+}
+
+/// `CMSG_MAIL_TAKE_MONEY` (`MailHandler.cpp:253`), `CMSG_MAIL_MARK_AS_READ` (`MailHandler.cpp:395`),
+/// `CMSG_MAIL_CREATE_TEXT_ITEM` (`MailHandler.cpp:494`): `u64 mailbox, u32 mail_id`.
+pub fn mail_action(mailbox: u64, mail_id: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&mailbox.to_le_bytes());
+    p.extend_from_slice(&mail_id.to_le_bytes());
+    p
+}
+
+/// `CMSG_MAIL_TAKE_ITEM` (`MailHandler.cpp:301`) and `CMSG_MAIL_DELETE` (`MailHandler.cpp:427`):
+/// `u64 mailbox, u32 mail_id, u32 item_id_or_template(0)`.
+pub fn mail_action_with_u32(mailbox: u64, mail_id: u32, extra: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(16);
+    p.extend_from_slice(&mailbox.to_le_bytes());
+    p.extend_from_slice(&mail_id.to_le_bytes());
+    p.extend_from_slice(&extra.to_le_bytes());
+    p
+}
+
+/// `CMSG_MAIL_RETURN_TO_SENDER` (`MailHandler.cpp:451`): `u64 mailbox, u32 mail_id, u64 sender_guid(0)`.
+pub fn mail_return_to_sender(mailbox: u64, mail_id: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(20);
+    p.extend_from_slice(&mailbox.to_le_bytes());
+    p.extend_from_slice(&mail_id.to_le_bytes());
+    p.extend_from_slice(&0u64.to_le_bytes());
+    p
+}
+
+/// `CMSG_AUCTION_LIST_ITEMS` (`AuctionHouseHandler.cpp:494`): 12340 search query with trailing
+/// `getAll (0)` and `sort_count (0)` bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn auction_list_items(
+    auctioneer: u64,
+    list_from: u32,
+    searched_name: &str,
+    level_min: u8,
+    level_max: u8,
+    slot_id: u32,
+    main_category: u32,
+    sub_category: u32,
+    quality: u32,
+    usable: u8,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(34 + searched_name.len());
+    p.extend_from_slice(&auctioneer.to_le_bytes());
+    p.extend_from_slice(&list_from.to_le_bytes());
+    p.extend_from_slice(searched_name.as_bytes());
+    p.push(0);
+    p.push(level_min);
+    p.push(level_max);
+    p.extend_from_slice(&slot_id.to_le_bytes());
+    p.extend_from_slice(&main_category.to_le_bytes());
+    p.extend_from_slice(&sub_category.to_le_bytes());
+    p.extend_from_slice(&quality.to_le_bytes());
+    p.push(usable);
+    p.push(0); // isFull / getAll
+    p.push(0); // sort count
+    p
+}
+
+/// `CMSG_AUCTION_LIST_OWNER_ITEMS` (`AuctionHouseHandler.cpp:447`) and `CMSG_AUCTION_REMOVE_ITEM`
+/// (`AuctionHouseHandler.cpp:277`): `u64 auctioneer, u32 value`.
+pub fn auction_guid_and_u32(auctioneer: u64, value: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12);
+    p.extend_from_slice(&auctioneer.to_le_bytes());
+    p.extend_from_slice(&value.to_le_bytes());
+    p
+}
+
+/// `CMSG_AUCTION_LIST_BIDDER_ITEMS` (`AuctionHouseHandler.cpp:382`): `u64 auctioneer, u32 list_from,
+/// u32 outbidded_count, [u32 auction_id]*`.
+pub fn auction_list_bidder_items(auctioneer: u64, list_from: u32, auction_ids: &[u32]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(16 + auction_ids.len() * 4);
+    p.extend_from_slice(&auctioneer.to_le_bytes());
+    p.extend_from_slice(&list_from.to_le_bytes());
+    p.extend_from_slice(&(auction_ids.len() as u32).to_le_bytes());
+    for &id in auction_ids {
+        p.extend_from_slice(&id.to_le_bytes());
+    }
+    p
+}
+
+/// `CMSG_AUCTION_SELL_ITEM` (`AuctionHouseHandler.cpp:106`): 12340 batch sell header (`u32 items_count(1)`,
+/// `u64 item_guid`, `u32 stack_size(0)` = full stack, `u32 bid, u32 buyout, u32 etime_minutes`).
+pub fn auction_sell_item(
+    auctioneer: u64,
+    item_guid: u64,
+    bid: u32,
+    buyout: u32,
+    etime_minutes: u32,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(36);
+    p.extend_from_slice(&auctioneer.to_le_bytes());
+    p.extend_from_slice(&1u32.to_le_bytes());
+    p.extend_from_slice(&item_guid.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p.extend_from_slice(&bid.to_le_bytes());
+    p.extend_from_slice(&buyout.to_le_bytes());
+    p.extend_from_slice(&etime_minutes.to_le_bytes());
+    p
+}
+
+/// `CMSG_AUCTION_PLACE_BID` (`AuctionHouseHandler.cpp:316`): `u64 auctioneer, u32 auction_id, u32 price`.
+pub fn auction_place_bid(auctioneer: u64, auction_id: u32, price: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(16);
+    p.extend_from_slice(&auctioneer.to_le_bytes());
+    p.extend_from_slice(&auction_id.to_le_bytes());
+    p.extend_from_slice(&price.to_le_bytes());
+    p
+}
+
+/// Write a 3.3.5a (`MovementStructures.cpp`) client `MovementInfo` block into `out`.
+#[allow(clippy::too_many_arguments)]
+pub fn write_movement_info(
+    out: &mut Vec<u8>,
+    flags: u32,
+    time_ms: u32,
+    pos: [f32; 3],
+    orientation: f32,
+    pitch: f32,
+    fall_time: u32,
+    jump: Option<(f32, f32, f32, f32)>,
+    transport: Option<(u64, [f32; 3], f32, u32)>,
+) {
+    let mut wrath_flags = flags;
+    if transport.is_some() {
+        wrath_flags |= 0x0000_0200; // MOVEMENTFLAG_ONTRANSPORT
+    }
+    if jump.is_some() {
+        wrath_flags |= 0x0000_1000; // MOVEMENTFLAG_FALLING
+    }
+    out.extend_from_slice(&wrath_flags.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // flags2
+    out.extend_from_slice(&time_ms.to_le_bytes());
+    out.extend_from_slice(&pos[0].to_le_bytes());
+    out.extend_from_slice(&pos[1].to_le_bytes());
+    out.extend_from_slice(&pos[2].to_le_bytes());
+    out.extend_from_slice(&orientation.to_le_bytes());
+    if let Some((t_guid, t_pos, t_o, t_time)) = transport {
+        out.extend_from_slice(&pack_guid(t_guid));
+        out.extend_from_slice(&t_pos[0].to_le_bytes());
+        out.extend_from_slice(&t_pos[1].to_le_bytes());
+        out.extend_from_slice(&t_pos[2].to_le_bytes());
+        out.extend_from_slice(&t_o.to_le_bytes());
+        out.extend_from_slice(&t_time.to_le_bytes());
+        out.push(0); // transport seat
+    }
+    if wrath_flags & (0x0020_0000 | 0x0200_0000) != 0 {
+        out.extend_from_slice(&pitch.to_le_bytes());
+    }
+    out.extend_from_slice(&fall_time.to_le_bytes());
+    if let Some((zspeed, sin_angle, cos_angle, xyspeed)) = jump {
+        out.extend_from_slice(&zspeed.to_le_bytes());
+        out.extend_from_slice(&sin_angle.to_le_bytes());
+        out.extend_from_slice(&cos_angle.to_le_bytes());
+        out.extend_from_slice(&xyspeed.to_le_bytes());
+    }
+    if wrath_flags & 0x0400_0000 != 0 {
+        out.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+}
+
+/// `CMSG_FORCE_*_SPEED_CHANGE_ACK` (`MovementHandler.cpp:415`): `packed_guid, u32 counter, MovementInfo, f32 speed`.
+#[allow(clippy::too_many_arguments)]
+pub fn force_speed_ack(
+    guid: u64,
+    counter: u32,
+    speed: f32,
+    flags: u32,
+    time_ms: u32,
+    pos: [f32; 3],
+    orientation: f32,
+    pitch: f32,
+    fall_time: u32,
+    jump: Option<(f32, f32, f32, f32)>,
+    transport: Option<(u64, [f32; 3], f32, u32)>,
+) -> Vec<u8> {
+    let mut p = pack_guid(guid);
+    p.extend_from_slice(&counter.to_le_bytes());
+    write_movement_info(
+        &mut p,
+        flags,
+        time_ms,
+        pos,
+        orientation,
+        pitch,
+        fall_time,
+        jump,
+        transport,
+    );
+    p.extend_from_slice(&speed.to_le_bytes());
+    p
+}
+
+/// `CMSG_FORCE_MOVE_ROOT_ACK`, `CMSG_FORCE_MOVE_UNROOT_ACK`, `CMSG_MOVE_WATER_WALK_ACK`,
+/// `CMSG_MOVE_FEATHER_FALL_ACK`, `CMSG_MOVE_HOVER_ACK` (`MovementHandler.cpp:475-620`):
+/// `packed_guid, u32 counter, MovementInfo, u32 apply`.
+pub fn move_mode_ack(
+    guid: u64,
+    counter: u32,
+    apply: bool,
+    flags: u32,
+    time_ms: u32,
+    pos: [f32; 3],
+    orientation: f32,
+) -> Vec<u8> {
+    let mut p = pack_guid(guid);
+    p.extend_from_slice(&counter.to_le_bytes());
+    write_movement_info(&mut p, flags, time_ms, pos, orientation, 0.0, 0, None, None);
+    p.extend_from_slice(&u32::from(apply).to_le_bytes());
+    p
+}
+
+/// `CMSG_MOVE_KNOCK_BACK_ACK` (`MovementHandler.cpp:544`): `packed_guid, u32 counter, MovementInfo`.
+#[allow(clippy::too_many_arguments)]
+pub fn knock_back_ack(
+    guid: u64,
+    counter: u32,
+    flags: u32,
+    time_ms: u32,
+    pos: [f32; 3],
+    orientation: f32,
+    jump: (f32, f32, f32, f32),
+    transport: Option<(u64, [f32; 3], f32, u32)>,
+) -> Vec<u8> {
+    let mut p = pack_guid(guid);
+    p.extend_from_slice(&counter.to_le_bytes());
+    write_movement_info(
+        &mut p,
+        flags,
+        time_ms,
+        pos,
+        orientation,
+        0.0,
+        0,
+        Some(jump),
+        transport,
+    );
+    p
+}
+
+/// `CMSG_MOVE_SPLINE_DONE` (`MovementHandler.cpp:644`): `MovementInfo, u32 spline_id`.
+pub fn move_spline_done(
+    flags: u32,
+    time_ms: u32,
+    pos: [f32; 3],
+    orientation: f32,
+    spline_id: u32,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(36);
+    write_movement_info(&mut p, flags, time_ms, pos, orientation, 0.0, 0, None, None);
+    p.extend_from_slice(&spline_id.to_le_bytes());
+    p
+}
+
+/// `CMSG_MOVE_NOT_ACTIVE_MOVER` (`MovementHandler.cpp:748`): `u64 old_mover_guid, MovementInfo`.
+pub fn not_active_mover(
+    guid: u64,
+    flags: u32,
+    time_ms: u32,
+    pos: [f32; 3],
+    orientation: f32,
+    fall_time: u32,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(40);
+    p.extend_from_slice(&guid.to_le_bytes());
+    write_movement_info(
+        &mut p,
+        flags,
+        time_ms,
+        pos,
+        orientation,
+        0.0,
+        fall_time,
+        None,
+        None,
+    );
+    p
+}
+
+/// `CMSG_MOVE_TIME_SKIPPED` (`MovementHandler.cpp:781`): `packed_guid, u32 time_skipped_ms`.
+pub fn move_time_skipped(guid: u64, lag_ms: u32) -> Vec<u8> {
+    let mut p = pack_guid(guid);
+    p.extend_from_slice(&lag_ms.to_le_bytes());
+    p
+}
+
+/// WMC1 v3 (`MulticlassProtocol.h`): 4-byte magic `"WMC1"`, version `3`, 28-byte request on
+/// `0x51B`, and reply capped at 4096 bytes on `0x51A`.
+pub const MULTICLASS_MAGIC: [u8; 4] = *b"WMC1";
+pub const MULTICLASS_VERSION: u16 = 3;
+pub const MULTICLASS_REQUEST_LEN: usize = 28;
+pub const MULTICLASS_MAX_REPLY_LEN: usize = 4096;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MulticlassReply {
+    pub op: u16,
+    pub status: u16,
+    pub serial: u32,
+    pub body: Vec<u8>,
+}
+
+/// Encode a 28-byte WMC1 v3 request (`MulticlassProtocol.h`, `MulticlassTransport.cpp::CanPacketReceive`):
+/// `[magic: "WMC1", version: u16(3), op: u16, serial: u32, character_guid: u64, arg0: u32, arg1: u32]`.
+pub fn encode_multiclass_request(
+    op: u16,
+    serial: u32,
+    character_guid: u64,
+    arg0: u32,
+    arg1: u32,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(MULTICLASS_REQUEST_LEN);
+    p.extend_from_slice(&MULTICLASS_MAGIC);
+    p.extend_from_slice(&MULTICLASS_VERSION.to_le_bytes());
+    p.extend_from_slice(&op.to_le_bytes());
+    p.extend_from_slice(&serial.to_le_bytes());
+    p.extend_from_slice(&character_guid.to_le_bytes());
+    p.extend_from_slice(&arg0.to_le_bytes());
+    p.extend_from_slice(&arg1.to_le_bytes());
+    debug_assert_eq!(p.len(), MULTICLASS_REQUEST_LEN);
+    p
+}
+
+/// Validate and decode a WMC1 v3 reply on `0x51A` (`MulticlassTransport.cpp::CanPacketSend`):
+/// enforces the 4096-byte ceiling, `"WMC1"` magic, and version `3`.
+pub fn accept_multiclass_reply(payload: &[u8]) -> Result<MulticlassReply> {
+    if payload.len() > MULTICLASS_MAX_REPLY_LEN {
+        return Err(DecodeError::invalid_count("multiclass reply exceeds 4096-byte cap")
+            .with_value(payload.len() as u32)
+            .into());
+    }
+    let mut r = Reader::new(payload);
+    let magic = r.take(4)?;
+    if magic != MULTICLASS_MAGIC {
+        return Err(DecodeError::invalid_value("multiclass reply magic mismatch").into());
+    }
+    let version = r.u16()?;
+    if version != MULTICLASS_VERSION {
+        return Err(DecodeError::invalid_value("multiclass reply version mismatch")
+            .with_value(u32::from(version))
+            .into());
+    }
+    let op = r.u16()?;
+    let status = r.u16()?;
+    let serial = r.u32()?;
+    let body = r.take(r.remaining())?.to_vec();
+    Ok(MulticlassReply {
+        op,
+        status,
+        serial,
+        body,
+    })
 }
 
 fn guid_quest(npc: u64, quest: u32) -> Vec<u8> {
@@ -1341,6 +2284,70 @@ pub enum ServerEvent {
     BuyBankSlotResult {
         result: u32,
     },
+    SupercededSpell {
+        old_id: u32,
+        new_id: u32,
+    },
+    RemovedSpell {
+        spell_id: u32,
+    },
+    XpGain {
+        victim: u64,
+        total_xp: u32,
+        kill_xp: bool,
+        rested_bonus: u32,
+        group_rate: f32,
+    },
+    LevelUp {
+        new_level: u32,
+        health_delta: u32,
+        power_deltas: [u32; 5],
+        stat_deltas: [u32; 5],
+    },
+    SpellHealLog {
+        target: u64,
+        caster: u64,
+        spell_id: u32,
+        amount: u32,
+        critical: bool,
+    },
+    SpellEnergizeLog {
+        target: u64,
+        caster: u64,
+        spell_id: u32,
+        power_type: u32,
+        amount: u32,
+    },
+    InitializeFactions {
+        entries: Vec<(u8, u32)>,
+    },
+    SetFactionStanding {
+        updates: Vec<(u32, u32)>,
+    },
+    PetSpells {
+        pet_guid: u64,
+        time_limit: u32,
+        react: u8,
+        command: u8,
+        flags: u16,
+        action_bar: [u32; 10],
+        spells: Vec<u32>,
+        cooldowns: Vec<(u32, u16, u32, u32)>,
+    },
+    PetCastFailed {
+        spell_id: u32,
+        reason: u8,
+    },
+    InitWorldStates {
+        map_id: u32,
+        zone_id: u32,
+        states: Vec<(u32, u32)>,
+    },
+    ForceRunSpeedChange {
+        guid: u64,
+        counter: u32,
+        speed: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1456,7 +2463,11 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_NPC_TEXT_UPDATE => read_npc_text(body),
         SMSG_LOOT_RESPONSE => read_loot_response(body),
         SMSG_LOOT_RELEASE_RESPONSE => read_loot_release(body),
-        SMSG_LOOT_REMOVED => body.first().copied().ok_or_else(|| anyhow::anyhow!("payload cut short")).map(|slot| ServerEvent::LootRemoved { slot }),
+        SMSG_LOOT_REMOVED => body
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow::Error::from(DecodeError::truncated(0)))
+            .map(|slot| ServerEvent::LootRemoved { slot }),
         SMSG_LOOT_MONEY_NOTIFY => u32_body(body).map(|amount| ServerEvent::LootMoney { amount }),
         SMSG_LOOT_CLEAR_MONEY => Ok(ServerEvent::LootClearMoney),
         SMSG_LOOT_START_ROLL => read_loot_start_roll(body),
@@ -1491,7 +2502,231 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_BUY_BANK_SLOT_RESULT => u32_body(body).map(|result| ServerEvent::BuyBankSlotResult {
             result,
         }),
+        SMSG_SUPERCEDED_SPELL => read_superceded_spell(body),
+        SMSG_REMOVED_SPELL => read_removed_spell(body),
+        SMSG_LOG_XPGAIN => read_xp_gain(body),
+        SMSG_LEVELUP_INFO => read_levelup_info(body),
+        SMSG_SPELLHEALLOG => read_spell_heal_log(body),
+        SMSG_SPELLENERGIZELOG => read_spell_energize_log(body),
+        SMSG_INITIALIZE_FACTIONS => read_initialize_factions(body),
+        SMSG_SET_FACTION_STANDING => read_set_faction_standing(body),
+        SMSG_PET_SPELLS => read_pet_spells(body),
+        SMSG_PET_CAST_FAILED => read_pet_cast_failed(body),
+        SMSG_INIT_WORLD_STATES => read_init_world_states(body),
+        SMSG_FORCE_RUN_SPEED_CHANGE => read_force_run_speed_change(body),
         _ => return None,
+    })
+}
+
+fn read_superceded_spell(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::SupercededSpell {
+        old_id: r.u32()?,
+        new_id: r.u32()?,
+    })
+}
+
+fn read_removed_spell(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let spell_id = if r.remaining() >= 4 {
+        r.u32()?
+    } else {
+        u32::from(r.u16()?)
+    };
+    Ok(ServerEvent::RemovedSpell { spell_id })
+}
+
+fn read_xp_gain(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let victim = r.u64()?;
+    let total_xp = r.u32()?;
+    let xp_type = r.u8()?;
+    let (base_xp, group_rate) = if xp_type == 0 {
+        (r.u32()?, r.f32()?)
+    } else {
+        (total_xp, 1.0)
+    };
+    let _raf_bonus = if r.remaining() >= 1 { r.u8()? } else { 0 };
+    Ok(ServerEvent::XpGain {
+        victim,
+        total_xp,
+        kill_xp: xp_type == 0,
+        rested_bonus: total_xp.saturating_sub(base_xp),
+        group_rate,
+    })
+}
+
+fn read_levelup_info(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let new_level = r.u32()?;
+    let health_delta = r.u32()?;
+    let mut power_deltas = [0u32; 5];
+    for slot in &mut power_deltas {
+        *slot = r.u32()?;
+    }
+    // 3.3.5a (`Player::GiveLevel`) writes 7 powers (`MAX_POWERS = 7`, adding Rune & Runic Power)
+    // before the 5 stat deltas.
+    if r.remaining() >= 7 * 4 {
+        let _rune_delta = r.u32()?;
+        let _runic_power_delta = r.u32()?;
+    }
+    let mut stat_deltas = [0u32; 5];
+    for slot in &mut stat_deltas {
+        *slot = r.u32()?;
+    }
+    Ok(ServerEvent::LevelUp {
+        new_level,
+        health_delta,
+        power_deltas,
+        stat_deltas,
+    })
+}
+
+fn read_spell_heal_log(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let target = r.packed_guid()?;
+    let caster = r.packed_guid()?;
+    let spell_id = r.u32()?;
+    let amount = r.u32()?;
+    let _overheal = r.u32()?;
+    let _absorb = if r.remaining() >= 5 { r.u32()? } else { 0 };
+    let critical = r.u8()? != 0;
+    Ok(ServerEvent::SpellHealLog {
+        target,
+        caster,
+        spell_id,
+        amount,
+        critical,
+    })
+}
+
+fn read_spell_energize_log(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::SpellEnergizeLog {
+        target: r.packed_guid()?,
+        caster: r.packed_guid()?,
+        spell_id: r.u32()?,
+        power_type: r.u32()?,
+        amount: r.u32()?,
+    })
+}
+
+fn read_initialize_factions(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let count = r.u32()? as usize;
+    if count > 512 {
+        return Err(DecodeError::invalid_count("faction count exceeds 512")
+            .with_value(count as u32)
+            .into());
+    }
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        entries.push((r.u8()?, r.u32()?));
+    }
+    Ok(ServerEvent::InitializeFactions { entries })
+}
+
+fn read_set_faction_standing(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let _raf_bonus = r.f32()?;
+    let _show_visual = r.u8()?;
+    let count = r.u32()? as usize;
+    if count > 512 {
+        return Err(DecodeError::invalid_count("faction standing update count exceeds 512")
+            .with_value(count as u32)
+            .into());
+    }
+    let mut updates = Vec::with_capacity(count);
+    for _ in 0..count {
+        updates.push((r.u32()?, r.u32()?));
+    }
+    Ok(ServerEvent::SetFactionStanding { updates })
+}
+
+fn read_pet_spells(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let pet_guid = r.u64()?;
+    if pet_guid == 0 || r.remaining() == 0 {
+        return Ok(ServerEvent::PetSpells {
+            pet_guid: 0,
+            time_limit: 0,
+            react: 0,
+            command: 0,
+            flags: 0,
+            action_bar: [0; 10],
+            spells: Vec::new(),
+            cooldowns: Vec::new(),
+        });
+    }
+    let _creature_family = r.u16()?; // 3.3.5a family u16 before time_limit
+    let time_limit = r.u32()?;
+    let react = r.u8()?;
+    let command = r.u8()?;
+    let flags = r.u16()?;
+    let mut action_bar = [0u32; 10];
+    for slot in &mut action_bar {
+        *slot = r.u32()?;
+    }
+    let spell_count = r.u8()? as usize;
+    let mut spells = Vec::with_capacity(spell_count);
+    for _ in 0..spell_count {
+        spells.push(r.u32()?);
+    }
+    let cd_count = if r.remaining() >= 1 { r.u8()? as usize } else { 0 };
+    let mut cooldowns = Vec::with_capacity(cd_count);
+    for _ in 0..cd_count {
+        if r.remaining() < 14 {
+            break;
+        }
+        cooldowns.push((r.u32()?, r.u16()?, r.u32()?, r.u32()?));
+    }
+    Ok(ServerEvent::PetSpells {
+        pet_guid,
+        time_limit,
+        react,
+        command,
+        flags,
+        action_bar,
+        spells,
+        cooldowns,
+    })
+}
+
+fn read_pet_cast_failed(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let _cast_count = r.u8()?;
+    let spell_id = r.u32()?;
+    let reason = r.u8()?;
+    Ok(ServerEvent::PetCastFailed { spell_id, reason })
+}
+
+fn read_init_world_states(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let map_id = r.u32()?;
+    let zone_id = r.u32()?;
+    let _area_id = r.u32()?;
+    let count = r.u16()? as usize;
+    let mut states = Vec::with_capacity(count);
+    for _ in 0..count {
+        states.push((r.u32()?, r.u32()?));
+    }
+    Ok(ServerEvent::InitWorldStates {
+        map_id,
+        zone_id,
+        states,
+    })
+}
+
+fn read_force_run_speed_change(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let guid = r.packed_guid()?;
+    let counter = r.u32()?;
+    let _allow_air_control = r.u8()?;
+    let speed = r.f32()?;
+    Ok(ServerEvent::ForceRunSpeedChange {
+        guid,
+        counter,
+        speed,
     })
 }
 
@@ -1682,30 +2917,23 @@ fn read_area_trigger_message(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let length = r.u32()? as usize;
     if length == 0 {
-        return Err(anyhow::anyhow!("area trigger message length is zero"));
+        return Err(DecodeError::invalid_value("area trigger message length is zero").into());
     }
     if length > r.remaining() {
-        return Err(anyhow::anyhow!(
-            "area trigger message length {length} exceeds remaining {}",
-            r.remaining()
-        ));
+        return Err(DecodeError::truncated(r.remaining()).into());
     }
     let bytes = r.take(length)?;
     if bytes.last() != Some(&0) {
-        return Err(anyhow::anyhow!(
-            "area trigger message is not NUL-terminated"
-        ));
+        return Err(DecodeError::unterminated(length).into());
     }
     if bytes[..length - 1].contains(&0) {
-        return Err(anyhow::anyhow!(
-            "area trigger message contains an embedded NUL"
-        ));
+        return Err(DecodeError::invalid_value(
+            "area trigger message contains an embedded NUL",
+        )
+        .into());
     }
     if r.remaining() != 0 {
-        return Err(anyhow::anyhow!(
-            "area trigger message has {} trailing byte(s)",
-            r.remaining()
-        ));
+        return Err(DecodeError::trailing(r.remaining()).into());
     }
     Ok(ServerEvent::AreaTriggerMessage {
         text: String::from_utf8_lossy(&bytes[..length - 1]).into_owned(),
@@ -2030,7 +3258,13 @@ fn read_periodic_aura(b: &[u8]) -> Result<ServerEvent> {
                 amount: r.u32()?,
                 multiplier: r.f32()?,
             },
-            other => anyhow::bail!("SMSG_PERIODICAURALOG: unknown aura type {other}"),
+            other => {
+                return Err(DecodeError::invalid_value(
+                    "SMSG_PERIODICAURALOG: unknown aura type",
+                )
+                .with_value(other)
+                .into())
+            }
         };
         ticks.push(tick);
     }
@@ -2377,10 +3611,9 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     let stats_count = r.u32()?;
     // Build 12340 ItemStats_C has ten stat slots (AzerothCore MAX_ITEM_PROTO_STATS).
     // Clamping the count would reinterpret excess stat bytes as the following fields.
-    anyhow::ensure!(
-        stats_count <= 10,
-        "item stat count {stats_count} exceeds 12340 limit 10"
-    );
+    if stats_count > 10 {
+        return Err(DecodeError::invalid_count("item stat count exceeds 12340 limit 10").into());
+    }
     let mut stats = Vec::with_capacity(stats_count as usize);
     for _ in 0..stats_count {
         let stat_type = r.u32()?;
@@ -2698,10 +3931,7 @@ fn read_initial_spells(b: &[u8]) -> Result<ServerEvent> {
         });
     }
     if r.remaining() != 0 {
-        anyhow::bail!(
-            "{} bytes after the initial-spells cooldown tail are not a complete entry",
-            r.remaining()
-        );
+        return Err(DecodeError::trailing(r.remaining()).into());
     }
     Ok(ServerEvent::InitialSpells {
         spells,
@@ -2821,9 +4051,9 @@ fn read_reward_block(r: &mut Reader<'_>) -> Result<Vec<RewardItem>> {
 }
 
 fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
-    // 12340 (`SMSG_QUESTGIVER_QUEST_DETAILS`): the second GUID, the extra dword after
-    // `is_finished`, and the reputation/emote tail are Wrath-only; the 1.12 reader's
-    // money-first tail cuts the packet short.
+    // 12340 (`SMSG_QUESTGIVER_QUEST_DETAILS`): the second GUID, the unk dword after the arena
+    // points, and the reputation/emote tail are Wrath-only; the 1.12 reader's money-first tail
+    // cuts the packet short.
     let mut r = Reader::new(b);
     let npc = r.u64()?;
     let _guid2 = r.u64()?;
@@ -2836,7 +4066,6 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
         flags: r.u32()?, suggested_players: r.u32()?, ..Default::default()
     };
     let _finished = r.u8()?;
-    let _unknown = r.u32()?;
     let choices = read_reward_block(&mut r)?;
     let rewards = read_reward_block(&mut r)?;
     let money = r.u32()?;
@@ -2848,6 +4077,10 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
     extra.title_id = r.u32()?;
     extra.talents = r.u32()?;
     extra.arena_points = r.u32()?;
+    // 12340 emits one unk dword after the arena points, before the reputation arrays; the server's
+    // `SendQuestGiverQuestDetails` writes it there (`data << uint32(0)`). Reading it after
+    // `is_finished` instead shifted every reward/reputation field and made the packet Truncated.
+    let _unknown = r.u32()?;
     extra.reputation = read_quest_reputation(&mut r)?;
     let emotes = r.u32()?;
     for _ in 0..emotes {
@@ -2855,7 +4088,7 @@ fn read_quest_details(b: &[u8]) -> Result<ServerEvent> {
         let _delay = r.u32()?;
     }
     if r.at != b.len() {
-        anyhow::bail!("quest details left {} bytes", b.len() - r.at);
+        return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(ServerEvent::QuestDetails(QuestDetails {
         extra, npc, quest_id, title, details, objectives,
@@ -2915,7 +4148,7 @@ fn read_quest_offer(b: &[u8]) -> Result<ServerEvent> {
     let _unknown = r.u32()?;
     extra.reputation = read_quest_reputation(&mut r)?;
     if r.at != b.len() {
-        anyhow::bail!("quest offer left {} bytes", b.len() - r.at);
+        return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(ServerEvent::QuestOffer(QuestOfferReward {
         extra, npc, quest_id, title, offer_text, auto_finish: auto_finish as u32,
@@ -3017,7 +4250,7 @@ fn read_quest_template(b: &[u8]) -> Result<QuestTemplate> {
         text: std::mem::take(&mut texts[i]),
     });
     if r.at != b.len() {
-        anyhow::bail!("quest template left {} bytes (at {} of {})", b.len() - r.at, r.at, b.len());
+        return Err(DecodeError::trailing(b.len() - r.at).into());
     }
     Ok(QuestTemplate {
         quest_id, method, level, zone_or_sort, quest_type, suggested_players, xp_difficulty, rep_objective_faction,
@@ -3187,8 +4420,15 @@ impl<'a> Reader<'a> {
         self.p.len().saturating_sub(self.at)
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let s = self.p.get(self.at..self.at + n).ok_or_else(|| anyhow::anyhow!("payload cut short"))?;
-        self.at += n;
+        let end = self
+            .at
+            .checked_add(n)
+            .ok_or_else(|| DecodeError::truncated(self.remaining()))?;
+        let s = self
+            .p
+            .get(self.at..end)
+            .ok_or_else(|| DecodeError::truncated(self.remaining()))?;
+        self.at = end;
         Ok(s)
     }
     fn u8(&mut self) -> Result<u8> {
@@ -3211,7 +4451,10 @@ impl<'a> Reader<'a> {
     }
     fn cstring(&mut self) -> Result<String> {
         let rest = &self.p[self.at..];
-        let end = rest.iter().position(|&b| b == 0).ok_or_else(|| anyhow::anyhow!("unterminated string"))?;
+        let end = rest
+            .iter()
+            .position(|&b| b == 0)
+            .ok_or_else(|| DecodeError::unterminated(rest.len()))?;
         let s = String::from_utf8_lossy(&rest[..end]).into_owned();
         self.at += end + 1;
         Ok(s)
@@ -3617,8 +4860,8 @@ mod tests {
         );
     }
 
-    /// The 12340 details tail: second GUID, the dword after `is_finished`, reputation
-    /// arrays and the emote list, which the 1.12 reader did not know.
+    /// The 12340 details tail: second GUID, the reward blocks, the dword after the arena points,
+    /// reputation arrays and the emote list, which the 1.12 reader did not know.
     fn quest_details_bytes() -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(&0x0000_0002_0000_0011u64.to_le_bytes()); // npc
@@ -3631,7 +4874,6 @@ mod tests {
         b.extend_from_slice(&8u32.to_le_bytes()); // flags
         b.extend_from_slice(&0u32.to_le_bytes()); // suggested
         b.push(0); // is_finished
-        b.extend_from_slice(&0u32.to_le_bytes()); // 12340 dword
         b.extend_from_slice(&1u32.to_le_bytes()); // one choice
         b.extend_from_slice(&44u32.to_le_bytes());
         b.extend_from_slice(&2u32.to_le_bytes());
@@ -3646,6 +4888,7 @@ mod tests {
         b.extend_from_slice(&0u32.to_le_bytes()); // title
         b.extend_from_slice(&0u32.to_le_bytes()); // talent
         b.extend_from_slice(&0u32.to_le_bytes()); // arena
+        b.extend_from_slice(&0u32.to_le_bytes()); // 12340 dword after the arena points
         for _ in 0..15 {
             b.extend_from_slice(&0u32.to_le_bytes()); // reputations
         }
@@ -3778,5 +5021,200 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    fn build_item_info_payload(
+        entry: u32,
+        stats_count_header: u32,
+        stats: &[(u32, i32)],
+        bag_family: u32,
+    ) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&entry.to_le_bytes());
+        b.extend_from_slice(&2u32.to_le_bytes()); // class
+        b.extend_from_slice(&7u32.to_le_bytes()); // subclass
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // sound_override_subclass
+        b.extend_from_slice(b"Worn Shortsword\0\0\0\0"); // 4 cstrings
+        b.extend_from_slice(&1542u32.to_le_bytes()); // display_info_id
+        b.extend_from_slice(&1u32.to_le_bytes()); // quality
+        b.extend_from_slice(&0u32.to_le_bytes()); // flags
+        b.extend_from_slice(&0u32.to_le_bytes()); // flags2
+        b.extend_from_slice(&35u32.to_le_bytes()); // buy_price
+        b.extend_from_slice(&7u32.to_le_bytes()); // sell_price
+        b.extend_from_slice(&21u32.to_le_bytes()); // inventory_type
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // allowable_class
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // allowable_race
+        b.extend_from_slice(&2u32.to_le_bytes()); // item_level
+        b.extend_from_slice(&1u32.to_le_bytes()); // required_level
+        for _ in 0..7 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // required_skill..required_rep_rank
+        }
+        b.extend_from_slice(&0i32.to_le_bytes()); // max_count
+        b.extend_from_slice(&1i32.to_le_bytes()); // stackable
+        b.extend_from_slice(&0u32.to_le_bytes()); // container_slots
+        b.extend_from_slice(&stats_count_header.to_le_bytes());
+        for &(stat_type, stat_val) in stats {
+            b.extend_from_slice(&stat_type.to_le_bytes());
+            b.extend_from_slice(&stat_val.to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // scaling_distribution
+        b.extend_from_slice(&0u32.to_le_bytes()); // scaling_value
+        for i in 0..2 {
+            let (min, max) = if i == 0 { (1.0f32, 3.0f32) } else { (0.0, 0.0) };
+            b.extend_from_slice(&min.to_le_bytes());
+            b.extend_from_slice(&max.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // armor
+        for _ in 0..6 {
+            b.extend_from_slice(&0i32.to_le_bytes()); // resistances
+        }
+        b.extend_from_slice(&1900u32.to_le_bytes()); // delay_ms
+        b.extend_from_slice(&0u32.to_le_bytes()); // ammo_type
+        b.extend_from_slice(&0.0f32.to_le_bytes()); // ranged_mod_range
+        for _ in 0..5 {
+            for _ in 0..6 {
+                b.extend_from_slice(&0u32.to_le_bytes()); // 5 spell slots * 6 dwords
+            }
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // bonding
+        b.extend_from_slice(b"Starter blade\0"); // description
+        for _ in 0..14 {
+            b.extend_from_slice(&0u32.to_le_bytes()); // page_text..map (14 dwords)
+        }
+        b.extend_from_slice(&bag_family.to_le_bytes()); // trailing sentinel
+        b
+    }
+
+    #[test]
+    fn item_info_rejects_oversized_stat_count_without_cursor_desync() {
+        // 0 stats: trailing bag_family sentinel must align and parse accurately.
+        let zero_stats = build_item_info_payload(25, 0, &[], 0xCAFE_1234);
+        match read_item_info(&zero_stats).expect("0 stats should parse") {
+            ServerEvent::ItemInfo {
+                entry,
+                info: Some(info),
+            } => {
+                assert_eq!(entry, 25);
+                assert!(info.stats.is_empty());
+                assert_eq!(info.bag_family, 0xCAFE_1234);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // 10 stats (12340 MAX_ITEM_PROTO_STATS limit): all 10 stats and trailing bag_family align.
+        let ten_pairs: Vec<(u32, i32)> = (1..=10).map(|i| (i, i as i32 * 2)).collect();
+        let ten_stats = build_item_info_payload(49623, 10, &ten_pairs, 0xBEEF_5678);
+        match read_item_info(&ten_stats).expect("10 stats should parse") {
+            ServerEvent::ItemInfo {
+                entry,
+                info: Some(info),
+            } => {
+                assert_eq!(entry, 49623);
+                assert_eq!(info.stats, ten_pairs);
+                assert_eq!(info.bag_family, 0xBEEF_5678);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // 11 and 64 stats: must reject immediately rather than clamping and desyncing the cursor.
+        for bad_count in [11u32, 64u32] {
+            let pairs: Vec<(u32, i32)> = (0..bad_count).map(|i| (3, i as i32 + 1)).collect();
+            let oversized = build_item_info_payload(99999, bad_count, &pairs, 0x1111_2222);
+            let err = read_item_info(&oversized).expect_err("oversized stats_count must fail");
+            assert!(
+                err.to_string().contains("exceeds 12340 limit 10"),
+                "unexpected error for stats_count={bad_count}: {err:#}"
+            );
+        }
+
+        // Truncated stat block (header claims 4 stats, payload truncated mid-stats): must fail.
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(&25u32.to_le_bytes());
+        truncated.extend_from_slice(&2u32.to_le_bytes());
+        truncated.extend_from_slice(&7u32.to_le_bytes());
+        truncated.extend_from_slice(&(-1i32).to_le_bytes());
+        truncated.extend_from_slice(b"Truncated\0\0\0\0");
+        for _ in 0..17 {
+            truncated.extend_from_slice(&0u32.to_le_bytes());
+        }
+        truncated.extend_from_slice(&4u32.to_le_bytes()); // claims 4 stats, 0 follow
+        assert!(read_item_info(&truncated).is_err());
+    }
+
+    #[test]
+    fn learn_talent_and_pet_orders_match_12340_wire_layouts() {
+        let talent = encode_learn_talent(161, 3);
+        assert_eq!(talent.len(), 8);
+        assert_eq!(u32::from_le_bytes(le::<4>(&talent[0..4])), 161);
+        assert_eq!(u32::from_le_bytes(le::<4>(&talent[4..8])), 3);
+
+        let pet_act = encode_pet_action(0xF140_0000_0000_0010, 0x0700_0002, 0x0000_0000_0000_0099);
+        assert_eq!(pet_act.len(), 20);
+        assert_eq!(u64::from_le_bytes(le::<8>(&pet_act[0..8])), 0xF140_0000_0000_0010);
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_act[8..12])), 0x0700_0002);
+        assert_eq!(u64::from_le_bytes(le::<8>(&pet_act[12..20])), 0x0000_0000_0000_0099);
+
+        let pet_set = encode_pet_set_action(0xF140_0000_0000_0010, &[(2, 0x0100_0011)]);
+        assert_eq!(pet_set.len(), 16);
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_set[8..12])), 2);
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_set[12..16])), 0x0100_0011);
+
+        let pet_rename = encode_pet_rename(0xF140_0000_0000_0010, "Fang");
+        assert_eq!(&pet_rename[8..], b"Fang\0\0");
+    }
+
+    #[test]
+    fn multiclass_wmc1_v3_codec_enforces_header_and_size_bounds() {
+        let req = encode_multiclass_request(1, 42, 0x1234, 7, 9);
+        assert_eq!(req.len(), MULTICLASS_REQUEST_LEN);
+        assert_eq!(&req[0..4], b"WMC1");
+        assert_eq!(u16::from_le_bytes(le::<2>(&req[4..6])), 3);
+        assert_eq!(u16::from_le_bytes(le::<2>(&req[6..8])), 1);
+        assert_eq!(u32::from_le_bytes(le::<4>(&req[8..12])), 42);
+        assert_eq!(u64::from_le_bytes(le::<8>(&req[12..20])), 0x1234);
+
+        let mut reply = Vec::new();
+        reply.extend_from_slice(b"WMC1");
+        reply.extend_from_slice(&3u16.to_le_bytes());
+        reply.extend_from_slice(&2u16.to_le_bytes()); // op
+        reply.extend_from_slice(&0u16.to_le_bytes()); // status OK
+        reply.extend_from_slice(&42u32.to_le_bytes()); // serial
+        reply.extend_from_slice(b"payload");
+        let parsed = accept_multiclass_reply(&reply).expect("valid WMC1 v3 reply");
+        assert_eq!(parsed.op, 2);
+        assert_eq!(parsed.status, 0);
+        assert_eq!(parsed.serial, 42);
+        assert_eq!(parsed.body, b"payload");
+
+        let mut bad_ver = reply.clone();
+        bad_ver[4] = 2;
+        assert!(accept_multiclass_reply(&bad_ver).is_err());
+
+        let oversized = vec![0u8; MULTICLASS_MAX_REPLY_LEN + 1];
+        assert!(accept_multiclass_reply(&oversized).is_err());
+    }
+
+    #[test]
+    fn mail_auction_guild_and_petition_encoders_match_12340_wire_layouts() {
+        let mail = send_mail(0x4000_0000_0000_0001, "Thrall", "Loot", "Here", 41, 0, 0x1234, 500, 0);
+        // 8 (mailbox) + 7 ("Thrall\0") + 5 ("Loot\0") + 5 ("Here\0") + 8 (stationery+pkg)
+        // + 1 (count=1) + 1 (slot=0) + 8 (item_guid) + 8 (money+cod) + 9 (tail) = 60 bytes
+        assert_eq!(mail.len(), 60);
+
+        let sell = auction_sell_item(0xAA, 0xBB, 100, 200, 720);
+        assert_eq!(sell.len(), 36);
+        assert_eq!(u32::from_le_bytes(le::<4>(&sell[8..12])), 1);
+        assert_eq!(u64::from_le_bytes(le::<8>(&sell[12..20])), 0xBB);
+        assert_eq!(u32::from_le_bytes(le::<4>(&sell[24..28])), 100);
+        assert_eq!(u32::from_le_bytes(le::<4>(&sell[28..32])), 200);
+        assert_eq!(u32::from_le_bytes(le::<4>(&sell[32..36])), 720);
+
+        let rank = guild_rank(2, 0xDF, "Officer");
+        assert_eq!(rank.len(), 8 + 8 + 4 + 48);
+
+        let pet_buy = petition_buy(0x1122, "Vanguard");
+        assert_eq!(u64::from_le_bytes(le::<8>(&pet_buy[0..8])), 0x1122);
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_buy[pet_buy.len() - 4..])), 9);
     }
 }
