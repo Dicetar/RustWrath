@@ -354,7 +354,7 @@ pub use macros::{
     MAX_MACRO_BODY, MAX_MACRO_NAME,
 };
 pub use mail::{
-    MailCall, MailInboxRow, MailInvoice, MailRowVerb, MailSendRequest, MailState, PackageView,
+    MailCall, MailInboxAttachment, MailInboxRow, MailInvoice, MailRowVerb, MailSendRequest, MailState, PackageView,
     StationeryView,
 };
 pub use measure::TextMeasure;

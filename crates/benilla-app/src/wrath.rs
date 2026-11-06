@@ -133,30 +133,6 @@ pub const WRATH_DRAIN_BUDGET: Duration = Duration::from_millis(2);
 /// between complete packets, re-checks cancellation and never straddles a packet boundary.
 pub const WRATH_REPLY_BACKPRESSURE_SLICE: Duration = Duration::from_millis(50);
 
-// Session-reply delivery (package B, review finding R04). The numbers below are reviewed design
-// choices for bounded ownership, not measurements: no build or runtime profile established them.
-// They are deliberately generous so a stalled main loop rides out a burst without either
-// unbounded growth or a needless disconnect, while a genuinely dead consumer still ends in the
-// controlled terminal path rather than in memory exhaustion.
-
-/// Hard cap on the ordered session-reply FIFO (lifecycle edges plus gameplay replies). Reserved
-/// terminal slots are separate and never counted here.
-pub const WRATH_SESSION_REPLY_CAP: usize = 4096;
-/// Above this depth the producer stops reading between packets until the queue drains.
-pub const WRATH_SESSION_REPLY_HIGH_WATER: usize = 2048;
-/// Backpressure latches until the queue is at or below this depth, so it does not flap.
-pub const WRATH_SESSION_REPLY_LOW_WATER: usize = 1024;
-/// Reserved terminal slots: at most one per terminal kind, and a worker produces at most two
-/// (`LoggedOut` with its `Disconnected` teardown, or a single `LoginFailed`/`Disconnected`).
-pub const WRATH_SESSION_TERMINAL_CAP: usize = 2;
-/// Ceiling for one reply-drain pass when the queue is deep; the floor is [`WRATH_DRAIN_LIMIT`].
-pub const WRATH_DRAIN_CEILING: usize = 512;
-/// Wall-clock budget for one reply-drain pass. A design choice, not a measurement.
-pub const WRATH_DRAIN_BUDGET: Duration = Duration::from_millis(2);
-/// Longest single producer pause while the reply queue is above high water. The pause always ends
-/// between complete packets, re-checks cancellation and never straddles a packet boundary.
-pub const WRATH_REPLY_BACKPRESSURE_SLICE: Duration = Duration::from_millis(50);
-
 /// The longest silent world-server window treated as healthy. A live server answers the 10 s ping
 /// even when gameplay is quiet; socket read timeouts and empty frame ticks are not responses.
 pub const SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -4554,23 +4530,23 @@ fn translate_gameplay(
             kill_xp,
             rested_bonus,
             group_rate,
-        } => vec![SessionEvent::XpGain {
+        } => vec![SessionEvent::XpGain(benilla_protocol::messages::XpGain {
             victim,
-            total_xp,
-            kill_xp,
-            rested_bonus,
-            group_rate,
-        }],
+            total: total_xp,
+            base: total_xp.saturating_sub(rested_bonus),
+            kill: kill_xp,
+            group: group_rate,
+        })],
         WrathGameplayEvent::LevelUp {
             new_level,
             health_delta,
             power_deltas,
             stat_deltas,
         } => vec![SessionEvent::LevelUp(benilla_protocol::messages::LevelUpInfo {
-            new_level,
-            health_delta,
-            power_deltas,
-            stat_deltas,
+            level: new_level,
+            health: health_delta as i32,
+            powers: power_deltas.map(|value| value as i32),
+            stats: stat_deltas.map(|value| value as i32),
         })],
         WrathGameplayEvent::SpellHealLog {
             target,
@@ -4578,38 +4554,42 @@ fn translate_gameplay(
             spell_id,
             amount,
             critical,
-        } => vec![SessionEvent::SpellHealLog {
+        } => vec![SessionEvent::SpellHealLog(benilla_protocol::messages::SpellHealLog {
             target,
-            caster,
+            healer: caster,
             spell_id,
             amount,
             critical,
-        }],
+        })],
         WrathGameplayEvent::SpellEnergizeLog {
             target,
             caster,
             spell_id,
             power_type,
             amount,
-        } => vec![SessionEvent::SpellEnergizeLog {
+        } => vec![SessionEvent::SpellEnergizeLog(benilla_protocol::messages::SpellEnergizeLog {
             target,
             caster,
             spell_id,
-            power_type,
+            power: power_type,
             amount,
-        }],
+        })],
         WrathGameplayEvent::InitializeFactions { entries } => {
-            vec![SessionEvent::InitializeFactions { entries }]
+            vec![SessionEvent::Reputations {
+                standings: entries.into_iter().map(|(flags, value)| (flags, value as i32)).collect(),
+            }]
         }
         WrathGameplayEvent::SetFactionStanding { updates } => {
-            vec![SessionEvent::SetFactionStanding { updates }]
+            vec![SessionEvent::ReputationDelta {
+                standings: updates.into_iter().map(|(id, value)| (id, value as i32)).collect(),
+            }]
         }
         WrathGameplayEvent::PetCastFailed { spell_id, reason } => {
             vec![SessionEvent::PetCastFailed {
                 spell_id,
                 reason: match cast_failure::reason(reason) {
-                    cast_failure::Reason::Vanilla(r) => r,
-                    cast_failure::Reason::Unsupported(_) => 0x1c,
+                    cast_failure::Reason::Vanilla(r) => Some(r),
+                    cast_failure::Reason::Unsupported(_) => None,
                 },
             }]
         }
@@ -4617,9 +4597,8 @@ fn translate_gameplay(
             map_id,
             zone_id,
             states,
-        } => vec![SessionEvent::InitWorldStates {
-            map_id,
-            zone_id,
+        } => vec![SessionEvent::WorldStates {
+            scope: Some((map_id, zone_id)),
             states,
         }],
         WrathGameplayEvent::ForceRunSpeedChange {
@@ -4958,11 +4937,13 @@ pub(crate) fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_
                 .iter()
                 .take(benilla_protocol::messages::MAX_MAIL_ITEMS)
                 .map(|attachment| benilla_protocol::messages::MailAttachment {
+                    index: attachment.index,
+                    guid_low: attachment.item_guid_low,
                     entry: attachment.item_entry,
                     perm_enchant: attachment.enchants[0].id,
                     random_prop_id: attachment.random_prop_id as u32,
                     suffix_factor: attachment.suffix_factor,
-                    count: u8::try_from(attachment.count).unwrap_or(u8::MAX),
+                    count: attachment.count,
                     charges: attachment.charges,
                     durability_max: attachment.max_durability,
                     durability: attachment.durability,
@@ -6299,7 +6280,7 @@ fn wrath_tap_commands(
             )),
             ClientCommand::PetitionSign { item, byte } => Some((
                 benilla_protocol_wrath::opcode::CMSG_PETITION_SIGN,
-                gameplay::petition_sign(item, byte),
+                gameplay::petition_sign(item, byte as u8),
             )),
             ClientCommand::OfferPetition { item, player } => Some((
                 benilla_protocol_wrath::opcode::CMSG_OFFER_PETITION,
@@ -6326,9 +6307,9 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_MAIL_TAKE_MONEY,
                 gameplay::mail_action(mailbox, mail_id),
             )),
-            ClientCommand::MailTakeItem { mailbox, mail_id } => Some((
+            ClientCommand::MailTakeItem { mailbox, mail_id, item_guid_low } => Some((
                 benilla_protocol_wrath::opcode::CMSG_MAIL_TAKE_ITEM,
-                gameplay::mail_action_with_u32(mailbox, mail_id, 0),
+                gameplay::mail_action_with_u32(mailbox, mail_id, item_guid_low),
             )),
             ClientCommand::MailReturnToSender { mailbox, mail_id } => Some((
                 benilla_protocol_wrath::opcode::CMSG_MAIL_RETURN_TO_SENDER,
@@ -6505,10 +6486,19 @@ fn wrath_tap_commands(
                 survey,
                 answers,
                 comment,
-            } => Some((
-                benilla_protocol_wrath::opcode::CMSG_GMSURVEY_SUBMIT,
-                benilla_protocol::messages::gm_survey_submit(survey, &answers, &comment),
-            )),
+            } => {
+                let answers: Vec<_> = answers.iter().map(|(question, rating, comment)| {
+                    benilla_protocol::messages::SurveyAnswer {
+                        question: *question,
+                        rating: *rating,
+                        comment: comment.as_str(),
+                    }
+                }).collect();
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_GMSURVEY_SUBMIT,
+                    benilla_protocol::messages::gm_survey_submit(survey, &answers, &comment),
+                ))
+            },
             ClientCommand::ForceSpeedAck {
                 kind,
                 guid,
@@ -6555,8 +6545,9 @@ fn wrath_tap_commands(
                         orientation,
                         pitch,
                         fall_time,
-                        jump.map(|j| (j.velocity, j.sin_angle, j.cos_angle, j.xy_speed)),
-                        transport.map(|t| (t.guid, t.local_pos, t.local_o, t.time_ms)),
+                        jump.map(|j| (j.zspeed, j.sin_angle, j.cos_angle, j.xy_speed)),
+                        // TransportPose currently carries no transport clock sample.
+                        transport.map(|t| (t.guid, [t.pos.x, t.pos.y, t.pos.z], t.orientation, 0)),
                     ),
                 ))
             }
@@ -6569,21 +6560,21 @@ fn wrath_tap_commands(
                 pos,
                 orientation,
             } => {
-                use benilla_protocol::messages::MoveModeKind;
+                use benilla_protocol::messages::MoveMode;
                 let opcode = match (mode, apply) {
-                    (MoveModeKind::Root, true) => {
+                    (MoveMode::Root, true) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_MOVE_ROOT_ACK)
                     }
-                    (MoveModeKind::Root, false) => {
+                    (MoveMode::Root, false) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_MOVE_UNROOT_ACK)
                     }
-                    (MoveModeKind::WaterWalk, _) => {
+                    (MoveMode::WaterWalk, _) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_WATER_WALK_ACK)
                     }
-                    (MoveModeKind::FeatherFall, _) => {
+                    (MoveMode::FeatherFall, _) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_FEATHER_FALL_ACK)
                     }
-                    (MoveModeKind::Hover, _) => {
+                    (MoveMode::Hover, _) => {
                         u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_HOVER_ACK)
                     }
                 };
@@ -6617,8 +6608,8 @@ fn wrath_tap_commands(
                     0,
                     pos,
                     orientation,
-                    (launch.vspeed, launch.sin_angle, launch.cos_angle, launch.hspeed),
-                    transport.map(|t| (t.guid, t.local_pos, t.local_o, t.time_ms)),
+                    (launch.zspeed, launch.sin_angle, launch.cos_angle, launch.xy_speed),
+                    transport.map(|t| (t.guid, [t.pos.x, t.pos.y, t.pos.z], t.orientation, 0)),
                 ),
             )),
             ClientCommand::MoveSplineDone {
@@ -11285,20 +11276,6 @@ pub fn run_session_with_cancel(
                         for event in benilla_protocol::decode(pkt) {
                             push_session_event(&events_out, &session, event);
                         }
-                    }
-                }
-                if p.opcode == benilla_protocol_wrath::opcode::SMSG_MULTICLASS_REPLY {
-                    if let Ok(reply) =
-                        benilla_protocol_wrath::gameplay::accept_multiclass_reply(&p.payload)
-                    {
-                        feed.push_event(WrathFeedEvent::MulticlassReply {
-                            op: reply.op,
-                            status: reply.status,
-                            serial: reply.serial,
-                            payload: reply.body,
-                            session_epoch: session.epoch(),
-                            world_generation: session.world_generation(),
-                        });
                     }
                 }
                 if p.opcode == benilla_protocol_wrath::opcode::SMSG_MULTICLASS_REPLY {

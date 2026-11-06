@@ -68,6 +68,8 @@ fn load_ui(script: &UiScript) {
 fn row(sender: &str, subject: &str, was_read: bool, item_id: u32, cod: u32) -> MailInboxRow {
     MailInboxRow {
         mail_id: 7,
+        attachments: Vec::new(),
+        item_guid_low: 0,
         item_text_id: 1,
         stationery: 41,
         package_icon: (item_id != 0).then(|| "Interface\\Icons\\INV_Misc_Bag_08".to_string()),

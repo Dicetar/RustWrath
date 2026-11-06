@@ -45,6 +45,8 @@ fn entry(message_id: u32, text_id: u32) -> MailListEntry {
 
 fn linen() -> MailAttachment {
     MailAttachment {
+        index: 0,
+        guid_low: 0,
         entry: 2589,
         perm_enchant: 0,
         random_prop_id: 0,
@@ -59,6 +61,8 @@ fn linen() -> MailAttachment {
 /// The VM's row for `e`, as the feed resolves it.
 fn row_of(e: &MailListEntry) -> MailInboxRow {
     MailInboxRow {
+        attachments: Vec::new(),
+        item_guid_low: 0,
         mail_id: e.message_id,
         item_text_id: e.item_text_id,
         stationery: e.stationery,
@@ -170,7 +174,10 @@ fn each_mail_verb_is_on_the_wire_before_the_next_line() {
         format!("GetMailList {{ mailbox: {MAILBOX} }}")
     );
     assert_eq!(verb("TakeInboxMoney(1)", &mut h), take("MailTakeMoney", 1));
-    assert_eq!(verb("TakeInboxItem(1)", &mut h), take("MailTakeItem", 1));
+    assert_eq!(
+        verb("TakeInboxItem(1)", &mut h),
+        format!("MailTakeItem {{ mailbox: {MAILBOX}, mail_id: 1, item_guid_low: 0 }}")
+    );
     assert_eq!(
         verb("ReturnInboxItem(1)", &mut h),
         take("MailReturnToSender", 1)

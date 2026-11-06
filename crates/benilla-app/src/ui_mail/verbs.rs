@@ -128,9 +128,10 @@ impl MailVerbs<'_> {
                 verb,
                 mail_id,
                 template_id,
+                item_guid_low,
             } => match verb {
                 MailRowVerb::TakeMoney => ClientCommand::MailTakeMoney { mailbox, mail_id },
-                MailRowVerb::TakeItem => ClientCommand::MailTakeItem { mailbox, mail_id },
+                MailRowVerb::TakeItem => ClientCommand::MailTakeItem { mailbox, mail_id, item_guid_low },
                 MailRowVerb::Return => ClientCommand::MailReturnToSender { mailbox, mail_id },
                 MailRowVerb::Delete => ClientCommand::MailDelete { mailbox, mail_id },
                 MailRowVerb::TakeText => ClientCommand::MailCreateTextItem {

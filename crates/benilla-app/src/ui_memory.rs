@@ -110,6 +110,12 @@ pub(crate) fn watch_script_memory(
         let Some(script) = script else {
             return;
         };
+        // The 1.12 scriptMemory budget is not a Wrath addon memory contract.
+        // Applying it to the 3.3.5 VM terminates normal addon-heavy world entry.
+        if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+            watch.deadline = 0;
+            return;
+        }
         if !entered.is_armed() {
             return;
         }

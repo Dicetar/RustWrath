@@ -384,6 +384,30 @@ fn resolve_row(
     let player_mail = entry.message_type == mail_message_type::NORMAL;
     let can_reply = player_mail && !is_gm;
 
+    let attachments: Vec<_> = entry.attachments.iter().map(|att| {
+        let template = items.template(att.entry, 0, ask);
+        let name = template.map(|t| rolls.name(&t.name, att.random_prop_id));
+        let quality = template.map(|t| t.quality);
+        let texture = template
+            .and_then(|t| icons.and_then(|i| i.catalog.get(t.display_info_id)))
+            .and_then(|d| d.icon.clone());
+        let link = name.as_ref().zip(quality).map(|(name, quality)| {
+            crate::ui_items::item_link_full_in_target(
+                benilla_ui::script::UiTarget::Wrath335, att.entry, att.perm_enchant,
+                att.random_prop_id, att.suffix_factor, name, quality,
+            )
+        });
+        benilla_ui::script::MailInboxAttachment {
+            index: att.index,
+            guid_low: att.guid_low,
+            entry: att.entry,
+            count: u32::from(att.count),
+            random_property_id: att.random_prop_id,
+            charges: att.charges as i32,
+            durability: (att.durability, att.durability_max),
+            name, texture, quality, link,
+        }
+    }).collect();
     let primary_att = entry.item.as_ref().or_else(|| entry.attachments.first());
     let (item_id, item_roll, item_count, item_name, item_texture, item_quality) = match primary_att
     {
@@ -508,6 +532,8 @@ fn resolve_row(
     });
 
     MailInboxRow {
+        attachments,
+        item_guid_low: primary_att.map_or(0, |a| a.guid_low),
         mail_id: entry.message_id,
         item_text_id: entry.item_text_id,
         stationery: entry.stationery,
@@ -1469,6 +1495,8 @@ mod tests {
             (e.stationery, e.package) = (stationery, package);
             if item {
                 e.item = Some(MailAttachment {
+                    index: 0,
+                    guid_low: 0,
                     entry: 2589,
                     perm_enchant: 0,
                     random_prop_id: 0,
@@ -1794,6 +1822,8 @@ mod tests {
         let mut e = entry(1, Some(0xA), 0, 30.0);
         e.item_text_id = 99;
         e.item = Some(MailAttachment {
+            index: 0,
+            guid_low: 0,
             entry: 2589,
             perm_enchant: 0,
             random_prop_id: 0,
@@ -1936,6 +1966,8 @@ mod tests {
         let commands = NetCommands(crossbeam_channel::unbounded().0);
         let mut row = entry(1, Some(0x77), 0, 30.0);
         row.item = Some(benilla_protocol::messages::MailAttachment {
+            index: 0,
+            guid_low: 0,
             entry: 900,
             perm_enchant: 0,
             random_prop_id: 0,
@@ -2034,6 +2066,8 @@ mod tests {
         let commands = NetCommands(crossbeam_channel::unbounded().0);
         let mut row = entry(1, Some(0x77), 0, 30.0);
         row.item = Some(benilla_protocol::messages::MailAttachment {
+            index: 0,
+            guid_low: 0,
             entry: 900,
             perm_enchant: 0,
             random_prop_id: 0,

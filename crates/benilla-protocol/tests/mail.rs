@@ -171,6 +171,8 @@ fn mail_list_result_wire() {
             assert_eq!(
                 m.item,
                 Some(MailAttachment {
+                    index: 0,
+                    guid_low: 0,
                     entry: 6948,
                     perm_enchant: 0,
                     random_prop_id: 0,

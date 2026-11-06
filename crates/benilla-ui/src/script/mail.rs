@@ -14,10 +14,28 @@ const STATIONERY_GM: u32 = 61;
 /// `CheckInbox`'s throttle window, 60 000 ms (`0x4aeb06`).
 const CHECK_INBOX_WINDOW_SECS: f64 = 60.0;
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MailInboxAttachment {
+    /// Stable, zero-based server attachment slot; holes survive item collection.
+    pub index: u8,
+    pub guid_low: u32,
+    pub entry: u32,
+    pub count: u32,
+    pub random_property_id: u32,
+    pub charges: i32,
+    pub durability: (u32, u32),
+    pub name: Option<String>,
+    pub texture: Option<String>,
+    pub quality: Option<u32>,
+    pub link: Option<String>,
+}
+
 /// One inbox row, resolved by the app from a wire `MailListEntry`; its 1-based index is its
 /// position in [`MailState::inbox`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MailInboxRow {
+    pub attachments: Vec<MailInboxAttachment>,
+    pub item_guid_low: u32,
     /// The mail id (`[rec+0]`), which every request about the mail carries.
     pub mail_id: u32,
     /// The letter's item text id (`[rec+0x114]`), 0 for none: the key `GetInboxText` asks the
@@ -84,6 +102,36 @@ pub struct MailInboxRow {
     pub item_name: Option<String>,
     pub item_texture: Option<String>,
     pub item_quality: Option<u32>,
+}
+
+impl MailInboxRow {
+    pub(super) fn select_attachment(mut self, index: Option<usize>) -> Option<Self> {
+        if self.attachments.is_empty() {
+            return (index.is_none_or(|i| i == 1) && self.item_id != 0).then_some(self);
+        }
+        let item = match index {
+            Some(i) => self.attachments.iter().find(|a| usize::from(a.index) + 1 == i),
+            None => self.attachments.iter().min_by_key(|a| a.index),
+        }?;
+        self.item_guid_low = item.guid_low;
+        self.item_id = item.entry;
+        self.item_count = item.count;
+        self.item_random_property_id = item.random_property_id;
+        self.item_charges = item.charges;
+        self.item_durability = item.durability;
+        self.item_name = item.name.clone();
+        self.item_texture = item.texture.clone();
+        self.item_quality = item.quality;
+        Some(self)
+    }
+}
+
+pub(super) fn attachment_index(lua: &Lua, value: Value) -> mlua::Result<Option<usize>> {
+    if matches!(value, Value::Nil) {
+        Ok(None)
+    } else {
+        binding_abi::index_arg(lua, value, "Usage: mail attachment index").map(Some)
+    }
 }
 
 /// One auction invoice, `GetInboxInvoiceInfo`'s answer, parsed by the app from the mail's subject
@@ -185,6 +233,7 @@ pub enum MailCall {
         verb: MailRowVerb,
         mail_id: u32,
         template_id: u32,
+        item_guid_low: u32,
     },
     /// `SendMail` past its guards: `CMSG_SEND_MAIL` (`0x4aea6c`).
     Send(MailSendRequest),
@@ -490,8 +539,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Value::Integer(i64::from(r.money)),
                 Value::Integer(i64::from(r.cod)),
                 Value::Number(f64::from(r.days_left)),
-                // hasItem is the constant 1.0 for a nonzero item entry (`0x4aef38`), not the stack.
-                flag(r.item_id != 0),
+                // 12340 returns occupied attachment count, not the first stack's count.
+                if r.attachments.is_empty() {
+                    flag(r.item_id != 0)
+                } else {
+                    Value::Integer(r.attachments.len() as i64)
+                },
                 flag(r.was_read),
                 flag(r.was_returned),
                 flag(r.text_created),
@@ -614,16 +667,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetInboxItem(index): name, texture, count, quality, canUse (`MailFrame.lua:379`); canUse is
-    // the shared item-usable gate, true while the template is in flight.
+    // 12340 MailInfo_Scripts.cpp::Script_GetInboxItem (0x00570F10) selects a stable
+    // attachment slot, defaulting to the first occupied slot when omitted.
+    // canUse uses the shared item-usable gate, true while the template is in flight.
     g.set(
         "GetInboxItem",
-        lua.create_function(|lua, index: Value| {
+        lua.create_function(|lua, (index, attachment): (Value, Value)| {
             // `is-number` else `Usage: GetInboxItem(index)` (`0x846450`, `0x4af5fe`).
             let index = binding_abi::index_arg(lua, index, "Usage: GetInboxItem(index)")?;
+            let attachment = attachment_index(lua, attachment)?;
             let (row, usable) = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let row = row_at(&model, index);
+                let row = row_at(&model, index).and_then(|r| r.select_attachment(attachment));
                 let usable = row
                     .as_ref()
                     .is_none_or(|r| super::item_stats::item_usable_by_id(&model, r.item_id));
@@ -740,8 +795,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     ] {
         g.set(
             name,
-            lua.create_function(move |lua, index: Value| {
+            lua.create_function(move |lua, (index, attachment): (Value, Value)| {
                 let n = super::binding_abi::number_arg(lua, index, usage)?;
+                let attachment = if verb == MailRowVerb::TakeItem {
+                    attachment_index(lua, attachment)?
+                } else {
+                    None
+                };
                 let call = {
                     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
                     if !mail_ready(&model) {
@@ -752,6 +812,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     };
                     let Some(row) = row_at(&model, index as usize) else {
                         return Ok(());
+                    };
+                    let row = if verb == MailRowVerb::TakeItem {
+                        let Some(selected) = row.select_attachment(attachment) else {
+                            return Ok(());
+                        };
+                        selected
+                    } else {
+                        row
                     };
                     if let Err(refusal) = verb.sends(&model, &row) {
                         drop(model);
@@ -765,12 +833,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                         verb,
                         mail_id: row.mail_id,
                         template_id: row.mail_template_id,
+                        item_guid_low: row.item_guid_low,
                     }
                 };
                 submit(lua, call)
             })?,
         )?;
     }
+
+    g.set(
+        "GetInboxItemLink",
+        lua.create_function(|lua, (index, attachment): (Value, Value)| {
+            let index = binding_abi::index_arg(lua, index, "Usage: GetInboxItemLink(messageIndex, attachIndex)")?;
+            let attachment = attachment_index(lua, attachment)?;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(row) = row_at(&model, index) else { return Ok(None::<String>) };
+            let item = match attachment {
+                Some(i) => row.attachments.iter().find(|a| usize::from(a.index) + 1 == i),
+                None => row.attachments.iter().min_by_key(|a| a.index),
+            };
+            Ok(item.and_then(|a| a.link.clone()))
+        })?,
+    )?;
 
     // CloseMail() (`0x4aded0`): the close core's ordinary arm, `0x4acd50` with `cl = 0`, inside
     // the call; 1.12 has no close opcode.
@@ -1353,6 +1437,8 @@ mod tests {
 
     fn row(item_id: u32) -> MailInboxRow {
         MailInboxRow {
+            attachments: Vec::new(),
+            item_guid_low: 0,
             mail_id: 7,
             item_text_id: 1,
             stationery: 41,

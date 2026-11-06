@@ -42,15 +42,17 @@ pub mod mail_error {
     pub const TOO_MANY_ATTACHMENTS: u32 = 15;
 }
 
-/// A mail's one attachment (`MAX_MAIL_ITEMS` is 1 in 1.12): a fixed-width block present on every
-/// `SMSG_MAIL_LIST_RESULT` row, all zero when there is no item.
+/// An inbox attachment. The donor decoder supplies slot/GUID zero for its single item;
+/// Wrath preserves the server slot and item GUID for indexed collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MailAttachment {
+    pub index: u8,
+    pub guid_low: u32,
     pub entry: u32,
     pub perm_enchant: u32,
     pub random_prop_id: u32,
     pub suffix_factor: u32,
-    pub count: u8,
+    pub count: u32,
     pub charges: u32,
     pub durability_max: u32,
     pub durability: u32,
@@ -205,11 +207,13 @@ pub(super) fn read_mail_list_result(r: &mut &[u8]) -> io::Result<Vec<MailListEnt
         let durability_max = read_u32_le(r)?;
         let durability = read_u32_le(r)?;
         let item = (entry != 0).then_some(MailAttachment {
+            index: 0,
+            guid_low: 0,
             entry,
             perm_enchant,
             random_prop_id,
             suffix_factor,
-            count: count_stack,
+            count: u32::from(count_stack),
             charges,
             durability_max,
             durability,

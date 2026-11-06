@@ -1683,7 +1683,7 @@ pub(super) fn writer_loop(
                     ClientCommand::MailTakeMoney { mailbox, mail_id } => {
                         w.mail_take_money(mailbox, mail_id)
                     }
-                    ClientCommand::MailTakeItem { mailbox, mail_id } => {
+                    ClientCommand::MailTakeItem { mailbox, mail_id, .. } => {
                         w.mail_take_item(mailbox, mail_id)
                     }
                     ClientCommand::MailMarkAsRead { mailbox, mail_id } => {

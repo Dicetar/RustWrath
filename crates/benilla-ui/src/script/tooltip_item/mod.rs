@@ -1012,9 +1012,10 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
     // when there is one. The answer is the builder's return value, 1 or nil (`0x5356bb`).
     m.set(
         "SetInboxItem",
-        lua.create_function(|lua, (this, index): (Table, Value)| {
+        lua.create_function(|lua, (this, index, attachment): (Table, Value, Value)| {
             // `is-number` else `Usage: SetInboxItem(index)` (`0x855584`, `0x53559e`).
             let index = binding_abi::index_arg(lua, index, "Usage: SetInboxItem(index)")?;
+            let attachment = super::mail::attachment_index(lua, attachment)?;
             let h = frame_handle_of(lua, &this)?;
             let row = {
                 let model = lua.app_data_mut::<Model>().expect("model app_data");
@@ -1022,6 +1023,7 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     return Ok(Value::Nil);
                 };
                 mail.inbox.get(index.saturating_sub(1)).cloned()
+                    .and_then(|r| r.select_attachment(attachment))
             };
             let Some(row) = row.filter(|r| r.item_id != 0) else {
                 return Ok(Value::Nil);

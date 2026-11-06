@@ -249,7 +249,9 @@ fn take_empties(entry: &MailListEntry, action: u32) -> bool {
         mail_action::ITEM_TAKEN => {
             !has_item
                 && entry.money == 0
-                && (auction || (entry.item_text_id == 0 && entry.mail_template_id == 0))
+                && (auction || (entry.item_text_id == 0
+                    && entry.mail_template_id == 0
+                    && entry.inline_body.as_ref().is_none_or(|body| body.is_empty())))
         }
         _ => false,
     }
@@ -267,12 +269,12 @@ pub(super) fn send_mail_result(
     action: u32,
     error: u32,
     equip_error: Option<u32>,
-    _item: Option<(u32, u32)>,
+    item: Option<(u32, u32)>,
     mail: &mut MailOpen,
     commands: &NetCommands,
 ) {
-    // ITEM_TAKEN's `(entry, count)` tail is unused; vmangos sends no `SMSG_ITEM_PUSH_RESULT` for a
-    // mail take (`MailHandler.cpp:675`). Every result lifts the request lock at the handler's
+    // Wrath ITEM_TAKEN identifies the collected attachment by guid, not its list position.
+    // Every result lifts the request lock at the handler's
     // common tail (`0x4ad164`), whatever its action.
     mail.resolve_request();
     // Every result owes the feed its tail `MAIL_FAILED`, whatever its action (`0x4ad15f`).
@@ -303,10 +305,23 @@ pub(super) fn send_mail_result(
                         if action == mail_action::MONEY_TAKEN {
                             mail.mails[pos].money = 0;
                         } else {
-                            if !mail.mails[pos].attachments.is_empty() {
-                                mail.mails[pos].attachments.remove(0);
+                            let attachments = &mut mail.mails[pos].attachments;
+                            if attachments.iter().any(|a| a.guid_low != 0) {
+                                let before = attachments.len();
+                                if let Some((guid, _)) = item {
+                                    attachments.retain(|a| a.guid_low != guid);
+                                }
+                                if attachments.len() == before {
+                                    if let Some(mailbox) = mail.mailbox {
+                                        let _ = commands.0.send(ClientCommand::GetMailList { mailbox });
+                                    }
+                                }
+                            } else {
+                                // The donor protocol has only one attachment and no item GUID.
+                                attachments.clear();
                             }
                             mail.mails[pos].item = mail.mails[pos].attachments.first().copied();
+                            mail.mails[pos].cod = 0;
                         }
                         if take_empties(&mail.mails[pos], action) {
                             // Sent whether or not a mailbox is open (`0x4ad74d`); a closed one
@@ -462,6 +477,8 @@ mod tests {
 
     fn attachment() -> benilla_protocol::messages::MailAttachment {
         benilla_protocol::messages::MailAttachment {
+            index: 0,
+            guid_low: 0,
             entry: 2589,
             perm_enchant: 0,
             random_prop_id: 0,

@@ -40,6 +40,8 @@ do not authorize broad test runs, builds or live sessions.
   suppression are not completed APIs. Name unsupported branches and missing consumers.
 - Close visible bugs against their original symptom. Separate source, compilation,
   focused checks, receiver behavior and visible gameplay. No alpha claim from tests alone.
+- Before fixing a reported issue, assess whether it can recur. Fix the shared cause for
+  recurring failures; use a local correction only when the issue is isolated.
 - Preserve dirty source and untracked evidence. Stage explicit owned paths; no blanket
   staging, reset/clean, shared-branch switch or pull/rebase underneath dirty work.
 

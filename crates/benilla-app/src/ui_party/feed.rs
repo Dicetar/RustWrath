@@ -1583,7 +1583,7 @@ pub(crate) fn synthetic_raid(
                 cur_hp: Some(if dead {
                     0
                 } else {
-                    2100 + (i as u16 * 37) % 900
+                    2100 + (i as u32 * 37) % 900
                 }),
                 max_hp: Some(3000),
                 level: Some(58 + (i as u16 % 3)),

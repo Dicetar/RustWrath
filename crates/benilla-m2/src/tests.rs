@@ -104,21 +104,8 @@ fn a_wrath_track_flattens_per_sequence_arrays_behind_windows() {
     );
 }
 
-/// A v264 `M2TextureWeight` over per-sequence `(ms, fix16)` keys. A global-sequence track keeps a
-/// single flat timeline (`seqs[0]`), the exporters' shape.
+/// A v264 `M2TextureWeight` over nested `(ms, fix16)` arrays, including global-sequence tracks.
 fn wrath_fix16_track(b: &mut Vec<u8>, gseq: u16, seqs: &[&[(u32, u16)]]) -> Vec<u8> {
-    if gseq != 0xffff {
-        let flat: &[(u32, u16)] = seqs.first().copied().unwrap_or(&[]);
-        let ts = b.len() as u32;
-        for (ms, _) in flat {
-            b.extend(ms.to_le_bytes());
-        }
-        let vs = b.len() as u32;
-        for (_, v) in flat {
-            b.extend(v.to_le_bytes());
-        }
-        return m2track_wrath(1, gseq, (flat.len() as u32, ts), (flat.len() as u32, vs));
-    }
     let mut ts_desc: Vec<(u32, u32)> = Vec::new();
     let mut v_desc: Vec<(u32, u32)> = Vec::new();
     for seq in seqs {
@@ -145,7 +132,7 @@ fn wrath_fix16_track(b: &mut Vec<u8>, gseq: u16, seqs: &[&[(u32, u16)]]) -> Vec<
     }
     m2track_wrath(
         1,
-        0xffff,
+        gseq,
         (seqs.len() as u32, ts_ofs),
         (seqs.len() as u32, v_ofs),
     )
@@ -181,14 +168,15 @@ fn a_wrath_empty_sequence_holds_a_neighbour_without_overlapping_windows() {
     assert!(t.ranges.iter().all(|&(_, hi)| hi as usize <= t.keys.len() - 1));
 }
 
-/// A global-sequence track is one flat timeline: no `ranges`, its keys read straight from the
-/// record's pairs, and the global-sequence index kept.
+/// A global-sequence track reads its first nested timeline and retains its global clock,
+/// without per-animation windows. Later timelines must not leak into that clock.
 #[test]
-fn a_wrath_global_sequence_track_reads_flat() {
+fn a_wrath_global_sequence_track_reads_first_nested_timeline() {
     let mut b = header();
     b[4..8].copy_from_slice(&264u32.to_le_bytes());
     let flat: &[(u32, u16)] = &[(0, 0x7fff), (250, 0x8001)];
-    let track = wrath_fix16_track(&mut b, 3, &[flat]);
+    let other: &[(u32, u16)] = &[(999, 0)];
+    let track = wrath_fix16_track(&mut b, 3, &[flat, other]);
     let weight_ofs = b.len() as u32;
     b.extend(track);
     set_arr(&mut b, 0x58, 1, weight_ofs);
@@ -200,6 +188,8 @@ fn a_wrath_global_sequence_track_reads_flat() {
     assert_eq!(t.keys.len(), 2);
     assert_eq!(t.keys[0].0, 0);
     assert_eq!(t.keys[1].0, 250);
+    assert_eq!(t.keys[0].1, 1.0);
+    assert_eq!(t.keys[1].1, -1.0);
 }
 
 /// A forged two-level count is capped by the bytes present, as the Wrath bone reader already is:

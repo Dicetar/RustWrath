@@ -4438,8 +4438,15 @@ fn read_quest_request(b: &[u8]) -> Result<ServerEvent> {
     let _suggested = r.u32()?;
     let required_money = r.u32()?;
     let required_items = read_reward_block(&mut r)?;
-    let _flag0 = r.u32()?;
+    // SendQuestGiverRequestItems writes completion (0 or 3), then fixed 4, 8, 16.
+    // The second word is always nonzero and must never decide completion.
     let flag_complete = r.u32()?;
+    let _flag1 = r.u32()?;
+    let _flag2 = r.u32()?;
+    let _flag3 = r.u32()?;
+    if r.at != b.len() {
+        return Err(DecodeError::trailing(b.len() - r.at).into());
+    }
     Ok(ServerEvent::QuestProgress(QuestRequestItems {
         npc, quest_id, title, request_text, emote, close_on_cancel,
         required_money, required_items, is_complete: flag_complete != 0,

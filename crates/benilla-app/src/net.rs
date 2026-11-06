@@ -1785,6 +1785,7 @@ pub(crate) enum ClientCommand {
     MailTakeItem {
         mailbox: u64,
         mail_id: u32,
+        item_guid_low: u32,
     },
     /// `CMSG_MAIL_MARK_AS_READ`, when a letter opens. No response.
     MailMarkAsRead {

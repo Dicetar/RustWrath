@@ -102,9 +102,9 @@ fn track_read<V>(
 }
 
 /// A Wrath `M2Track` (`0x14` bytes): timestamps @`0x04` and values @`0x0c`, each two-level. A
-/// global-sequence track keeps one flat timeline (the exporters write it flat, as
-/// `benilla_formats`' `read_wrath_track` reads it); a sequence track's inner arrays are indexed by
-/// file slot, keyed from 0, and flatten into `keys` behind per-slot `(lo, hi)` windows.
+/// global-sequence track takes the first inner timeline: 12340 `M2TrackBase::m_sequenceTimes`
+/// and `M2Track::m_sequenceKeys` remain nested regardless of `m_loopIndex`. A sequence track's
+/// inner arrays are indexed by file slot and flatten into `keys` behind `(lo, hi)` windows.
 fn track_read_sequences<V>(
     b: &[u8],
     track_ofs: usize,
@@ -134,16 +134,29 @@ fn track_read_sequences<V>(
             .map_while(|i| b.u32_at(ts + i * 4).zip(read_val(b, vs + i * val_size)))
             .collect()
     };
+    let count = capped(tc.min(vc), 8, b.len().saturating_sub(to));
+    let count = capped(count, 8, b.len().saturating_sub(vo));
     if gseq != 0xffff {
+        let keys = if count > 0 {
+            match (
+                b.u32_at(to).zip(b.u32_at(to + 4)),
+                b.u32_at(vo).zip(b.u32_at(vo + 4)),
+            ) {
+                (Some((tn, ts)), Some((vn, vs))) => {
+                    read_keys(tn.min(vn) as usize, ts as usize, vs as usize)
+                }
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
         return M2Track {
             interp,
             gseq,
             ranges: Vec::new(),
-            keys: read_keys(tc.min(vc), to, vo),
+            keys,
         };
     }
-    let count = capped(tc.min(vc), 8, b.len().saturating_sub(to));
-    let count = capped(count, 8, b.len().saturating_sub(vo));
     let (seq_count, seq_ofs) = if b.len() >= 0x24 && b.get(0..4) == Some(b"MD20") {
         (
             b.u32_at(0x1c).unwrap_or(0) as usize,

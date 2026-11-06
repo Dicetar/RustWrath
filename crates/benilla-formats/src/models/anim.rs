@@ -758,6 +758,21 @@ struct WrathTrack<T> {
     global: Vec<(u32, T)>,
 }
 
+fn wrath_quaternion(b: &[u8], offset: usize) -> Option<[f32; 4]> {
+    let mut q = [0.0; 4];
+    for (i, component) in q.iter_mut().enumerate() {
+        let at = offset.checked_add(i * 2)?;
+        let value = i16::from_le_bytes([*b.get(at)?, *b.get(at + 1)?]);
+        *component = if value < 0 {
+            (f32::from(value) + 32768.0) / 32767.0
+        } else {
+            (f32::from(value) - 32767.0) / 32767.0
+        };
+    }
+    let length = q.iter().map(|v| v * v).sum::<f32>().sqrt();
+    (length > 1e-8).then(|| q.map(|v| v / length))
+}
+
 fn read_wrath_track<T: Clone>(
     b: &[u8],
     track: usize,
@@ -865,20 +880,7 @@ fn parse_m2_animations_wrath(
     // Wrath bone rotations are four signed 16-bit components with a biased zero: a non-negative
     // short stores `v = f·32767 + 32767`, a negative one `v = f·32767 − 32768`; identity is
     // `(32767, 32767, 32767, -1)`.
-    let comp = |b: &[u8], o: usize| -> Option<f32> {
-        let v = i16::from_le_bytes([*b.get(o)?, *b.get(o + 1)?]);
-        let f = if v < 0 {
-            f32::from(v) + 32768.0
-        } else {
-            f32::from(v) - 32767.0
-        };
-        Some(f / 32767.0)
-    };
-    let quat = |b: &[u8], o: usize| {
-        let q = [comp(b, o)?, comp(b, o + 2)?, comp(b, o + 4)?, comp(b, o + 6)?];
-        let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-        (len > 1e-8).then(|| [q[0] / len, q[1] / len, q[2] / len, q[3] / len])
-    };
+    let quat = wrath_quaternion;
     type WrathBone = (
         WrathTrack<[f32; 3]>,
         WrathTrack<[f32; 4]>,
@@ -1121,7 +1123,7 @@ pub fn parse_m2_global_sequence_bones(b: &[u8]) -> Vec<GlobalSeqBone> {
         return Vec::new();
     }
     if le_u32(b, 4) == 264 {
-        return Vec::new();
+        return parse_wrath_global_sequence_bones(b);
     }
     let (gseq_count, gseq_ofs) = (le_u32(b, 0x14) as usize, le_u32(b, 0x18) as usize);
     let period_of = |gseq: u16| -> Option<u32> {
@@ -1162,6 +1164,49 @@ pub fn parse_m2_global_sequence_bones(b: &[u8]) -> Vec<GlobalSeqBone> {
                 rotation,
                 scale,
             });
+        }
+    }
+    out
+}
+
+/// v264 global channels remain in the M2 and use their own period, independent of the
+/// selected animation and its external .anim payload. Preserve them for GlobalSeqDrive.
+fn parse_wrath_global_sequence_bones(b: &[u8]) -> Vec<GlobalSeqBone> {
+    fn channel<T: Clone>(
+        b: &[u8], track: usize, stride: usize,
+        read: impl Fn(&[u8], usize) -> Option<T>,
+    ) -> Option<GlobalSeqChannel<T>> {
+        if track.checked_add(20)? > b.len() {
+            return None;
+        }
+        let index = le_u16(b, track + 2) as usize;
+        if index >= le_u32(b, 0x14) as usize {
+            return None;
+        }
+        let period_at = (le_u32(b, 0x18) as usize).checked_add(index.checked_mul(4)?)?;
+        if period_at.checked_add(4)? > b.len() {
+            return None;
+        }
+        let period_ms = le_u32(b, period_at);
+        let keys = read_wrath_track(b, track, stride, read, &[]).global;
+        // Single keys are already seated as constants in every ordinary clip.
+        (period_ms > 0 && keys.len() > 1).then_some(GlobalSeqChannel { period_ms, keys })
+    }
+    let vec3 = |bytes: &[u8], offset: usize| {
+        (offset.checked_add(12)? <= bytes.len()).then(|| [
+            le_f32(bytes, offset), le_f32(bytes, offset + 4), le_f32(bytes, offset + 8),
+        ])
+    };
+    let offset = le_u32(b, 0x30) as usize;
+    let count = capped(le_u32(b, 0x2c) as usize, 88, b.len().saturating_sub(offset));
+    let mut out = Vec::new();
+    for bone in 0..count {
+        let record = offset + bone * 88;
+        let translation = channel(b, record + 16, 12, vec3);
+        let rotation = channel(b, record + 36, 8, wrath_quaternion);
+        let scale = channel(b, record + 56, 12, vec3);
+        if translation.is_some() || rotation.is_some() || scale.is_some() {
+            out.push(GlobalSeqBone { bone: bone as u16, translation, rotation, scale });
         }
     }
     out
