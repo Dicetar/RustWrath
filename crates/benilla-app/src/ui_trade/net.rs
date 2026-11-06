@@ -268,6 +268,7 @@ mod tests {
             wrapped: false,
             gift_creator: 0,
             perm_enchant: 0,
+            socket_enchant: [0; 3],
             creator: 0,
             charges: 0,
             suffix_factor: 0,

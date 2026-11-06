@@ -41,6 +41,12 @@ newer reservation or kill another owner's process to acquire the slot.
 
 ## Current evidence and continuation
 
+- Step 2 completed & pushed to `main` and `wotlk` at `1cc5e4fe` (merging `f222a1f8` and `b60362fb`):
+  Lossless 12340 keyring cast-gate readers (`reagent_totem_refusal_in_player`), pet spell/GUID
+  real UI consumers (`PetBar::pet_guids`, `SPELLS_CHANGED`, `PET_BAR_UPDATE`), and active-spec
+  talent state consumers (`WrathTalentState`, `feed_talents`). Next session steps 3–5 roadmap
+  prepared at [.scratch/project-b/handoffs/2026-11-06-steps-3-to-5-roadmap.md](../../.scratch/project-b/handoffs/2026-11-06-steps-3-to-5-roadmap.md).
+
 - Codex U4 (2026-11-05): native multiclass Request/Poll transport, scoped preview
   receipts, operations 6/7/8, Glue load and server-owned trainer grouping prepared
   on `feat/wrath-multiclass-host`, based on the P0 inventory/session integration at

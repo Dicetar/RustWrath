@@ -139,10 +139,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         } else {
             return Err(mlua::Error::runtime("Usage: GetItemCount(item [, includeBank [, includeUses]])"));
         };
-        let Some(id) = id else { return Ok(None) };
+        let Some(id) = id else { return Ok(0) };
         let bank = super::super::binding_abi::bool_or_default(args.get(1), false);
         let uses = super::super::binding_abi::bool_or_default(args.get(2), false);
-        Ok(super::super::host::with_host(lua, |host| host.item_count(id, bank, uses)).flatten())
+        Ok(super::super::host::with_host(lua, |host| host.item_count(id, bank, uses))
+            .flatten()
+            .unwrap_or(0))
     })?)?;
     lua.globals().set("GetItemInfo", lua.create_function(|lua, arg: Value| {
         let Some((link, view)) = query(lua, arg)? else { return Ok(MultiValue::new()) };

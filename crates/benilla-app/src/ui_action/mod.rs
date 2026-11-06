@@ -60,9 +60,9 @@ pub(crate) use cast_fail::report_reaches_pop;
 #[cfg(test)]
 pub(crate) use cast_fail::CAST_FAIL_KEYS;
 pub(crate) use errors::{
-    attack_actor_refusal, keyed_line, keyed_line_s, reagent_totem_refusal, show_messages, show_now,
-    ui_error_text, CastFail, Caster, FillArg, MessageSink, MountErrors, PetTameFailures, Shown,
-    UiError, UiErrorKeys, UiErrorTexts,
+    attack_actor_refusal, keyed_line, keyed_line_s, reagent_totem_refusal,
+    reagent_totem_refusal_in_player, show_messages, show_now, ui_error_text, CastFail, Caster,
+    FillArg, MessageSink, MountErrors, PetTameFailures, Shown, UiError, UiErrorKeys, UiErrorTexts,
 };
 pub(crate) use weapon_icon::{melee_auto_attack_icon, ranged_weapon_icon, substitutes_weapon_icon};
 

@@ -1100,6 +1100,17 @@ mod get_item_info_tests {
         assert_eq!(equip_loc_token(29), "", "the array's trailing \"\"");
         assert_eq!(equip_loc_token(9999), "", "past the array");
     }
+
+    #[test]
+    fn wrath_get_item_count_returns_zero_on_miss() {
+        let s = UiScript::new_for_target(crate::script::UiTarget::Wrath335).unwrap();
+        assert_eq!(s.eval::<i64>("return GetItemCount(0)").unwrap(), 0);
+        assert_eq!(s.eval::<i64>("return GetItemCount(99999)").unwrap(), 0);
+        assert_eq!(
+            s.eval::<i64>("return GetItemCount('Uncached Item')").unwrap(),
+            0
+        );
+    }
 }
 
 #[cfg(test)]

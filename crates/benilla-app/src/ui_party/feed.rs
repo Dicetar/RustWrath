@@ -1460,7 +1460,7 @@ pub(crate) fn synthetic_roster(
     // Blip offsets from us on WoW axes (+x north, +y west), truncated to `i16` as on the wire.
     let seat = |dx: f32, dy: f32| player_xy.map(|(px, py)| ((px + dx) as i16, (py + dy) as i16));
     for (guid, hp, max, level, power_type, pos) in [
-        (0xF001u64, 820u16, 1240u16, 32u16, 0u8, seat(30.0, 0.0)),
+        (0xF001u64, 820u32, 1240u32, 32u16, 0u8, seat(30.0, 0.0)),
         (0xF002, 455, 980, 30, 3, seat(0.0, 80.0)),
         (0xF003, 0, 1105, 31, 0, seat(-300.0, 0.0)),
         (0xF004, 0, 0, 0, 0, None),

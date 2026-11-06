@@ -90,8 +90,7 @@ use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, Session
 #[path = "ui_script/wrath_rune_calendar_feed.rs"]
 mod wrath_rune_calendar_feed;
 /// The UI feed that turns a decoded `SMSG_PARTYKILLLOG` into the stock combat-log event.
-#[path = "ui_script/wrath_combat_log_feed.rs"]
-mod wrath_combat_log_feed;
+use crate::ui_script::wrath_combat_log_feed;
 
 /// Bounded lifecycle queue depth: lifetimes of interest are short (one world transfer is one
 /// event); 16 gives many frames of headroom at one-event-per-transfer rates.
@@ -109,6 +108,30 @@ pub const PARTY_KILL_CAPACITY: usize = 32;
 /// How long an undelivered kill may wait for an endpoint name before it is discarded as
 /// unresolved. Names usually land from the create/name-query path within a frame or two.
 pub const PARTY_KILL_NAME_RETRY_SECONDS: f64 = 5.0;
+
+// Session-reply delivery (package B, review finding R04). The numbers below are reviewed design
+// choices for bounded ownership, not measurements: no build or runtime profile established them.
+// They are deliberately generous so a stalled main loop rides out a burst without either
+// unbounded growth or a needless disconnect, while a genuinely dead consumer still ends in the
+// controlled terminal path rather than in memory exhaustion.
+
+/// Hard cap on the ordered session-reply FIFO (lifecycle edges plus gameplay replies). Reserved
+/// terminal slots are separate and never counted here.
+pub const WRATH_SESSION_REPLY_CAP: usize = 4096;
+/// Above this depth the producer stops reading between packets until the queue drains.
+pub const WRATH_SESSION_REPLY_HIGH_WATER: usize = 2048;
+/// Backpressure latches until the queue is at or below this depth, so it does not flap.
+pub const WRATH_SESSION_REPLY_LOW_WATER: usize = 1024;
+/// Reserved terminal slots: at most one per terminal kind, and a worker produces at most two
+/// (`LoggedOut` with its `Disconnected` teardown, or a single `LoginFailed`/`Disconnected`).
+pub const WRATH_SESSION_TERMINAL_CAP: usize = 2;
+/// Ceiling for one reply-drain pass when the queue is deep; the floor is [`WRATH_DRAIN_LIMIT`].
+pub const WRATH_DRAIN_CEILING: usize = 512;
+/// Wall-clock budget for one reply-drain pass. A design choice, not a measurement.
+pub const WRATH_DRAIN_BUDGET: Duration = Duration::from_millis(2);
+/// Longest single producer pause while the reply queue is above high water. The pause always ends
+/// between complete packets, re-checks cancellation and never straddles a packet boundary.
+pub const WRATH_REPLY_BACKPRESSURE_SLICE: Duration = Duration::from_millis(50);
 
 // Session-reply delivery (package B, review finding R04). The numbers below are reviewed design
 // choices for bounded ownership, not measurements: no build or runtime profile established them.
@@ -4525,10 +4548,130 @@ fn translate_gameplay(
         | WrathGameplayEvent::RuneConvert(_)
         | WrathGameplayEvent::RuneState(_)
         | WrathGameplayEvent::RunePower(_) => Vec::new(),
+        WrathGameplayEvent::XpGain {
+            victim,
+            total_xp,
+            kill_xp,
+            rested_bonus,
+            group_rate,
+        } => vec![SessionEvent::XpGain {
+            victim,
+            total_xp,
+            kill_xp,
+            rested_bonus,
+            group_rate,
+        }],
+        WrathGameplayEvent::LevelUp {
+            new_level,
+            health_delta,
+            power_deltas,
+            stat_deltas,
+        } => vec![SessionEvent::LevelUp(benilla_protocol::messages::LevelUpInfo {
+            new_level,
+            health_delta,
+            power_deltas,
+            stat_deltas,
+        })],
+        WrathGameplayEvent::SpellHealLog {
+            target,
+            caster,
+            spell_id,
+            amount,
+            critical,
+        } => vec![SessionEvent::SpellHealLog {
+            target,
+            caster,
+            spell_id,
+            amount,
+            critical,
+        }],
+        WrathGameplayEvent::SpellEnergizeLog {
+            target,
+            caster,
+            spell_id,
+            power_type,
+            amount,
+        } => vec![SessionEvent::SpellEnergizeLog {
+            target,
+            caster,
+            spell_id,
+            power_type,
+            amount,
+        }],
+        WrathGameplayEvent::InitializeFactions { entries } => {
+            vec![SessionEvent::InitializeFactions { entries }]
+        }
+        WrathGameplayEvent::SetFactionStanding { updates } => {
+            vec![SessionEvent::SetFactionStanding { updates }]
+        }
+        WrathGameplayEvent::PetCastFailed { spell_id, reason } => {
+            vec![SessionEvent::PetCastFailed {
+                spell_id,
+                reason: match cast_failure::reason(reason) {
+                    cast_failure::Reason::Vanilla(r) => r,
+                    cast_failure::Reason::Unsupported(_) => 0x1c,
+                },
+            }]
+        }
+        WrathGameplayEvent::InitWorldStates {
+            map_id,
+            zone_id,
+            states,
+        } => vec![SessionEvent::InitWorldStates {
+            map_id,
+            zone_id,
+            states,
+        }],
+        WrathGameplayEvent::ForceRunSpeedChange {
+            guid,
+            counter,
+            speed,
+        } => vec![SessionEvent::ForceSpeedChange {
+            kind: benilla_protocol::messages::SpeedKind::Run,
+            guid,
+            counter,
+            speed,
+        }],
     }
 }
 
-fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEvent {
+fn wrath_group_member_flags(sub_group: u8, member_flags: u8) -> u8 {
+    // 12340 sends `sub_group` (`0..8`) and `flags` (`MEMBER_FLAG_ASSISTANT = 0x01`,
+    // `MEMBER_FLAG_MAINTANK = 0x02`, `MEMBER_FLAG_MAINASSIST = 0x04`) in separate bytes, whereas
+    // the group roster packs subgroup in bits 0..2 and assistant in bit 7 (`0x80`).
+    (sub_group & 0x7)
+        | if member_flags & 0x81 != 0 {
+            benilla_protocol::messages::GROUP_MEMBER_ASSISTANT
+        } else {
+            0
+        }
+}
+
+fn wrath_partition_party_auras(
+    auras: &[gameplay::social::PartyAura],
+) -> (Vec<(u8, u32)>, Vec<(u8, u32)>) {
+    // 3.3.5a `SMSG_PARTY_MEMBER_STATS` sends a 64-bit aura mask (`MAX_AURAS = 64`) with `u32`
+    // spell IDs and `u8` aura flags (`AFLAG_POSITIVE = 0x10`, `AFLAG_NEGATIVE = 0x20`). When the
+    // server sets `AFLAG_NEGATIVE` (or neither positive/negative bit is set and the slot is in the
+    // negative range `>= 32`), classify the slot into `auras_negative`.
+    let mut positive = Vec::new();
+    let mut negative = Vec::new();
+    for aura in auras.iter().filter(|aura| aura.slot < 64) {
+        let is_negative = if aura.flags & 0x30 != 0 {
+            aura.flags & 0x20 != 0
+        } else {
+            aura.slot >= 32
+        };
+        if is_negative {
+            negative.push((aura.slot, aura.spell_id));
+        } else {
+            positive.push((aura.slot, aura.spell_id));
+        }
+    }
+    (positive, negative)
+}
+
+pub(crate) fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEvent {
     let members = list
         .members
         .into_iter()
@@ -4536,9 +4679,7 @@ fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEvent {
             name: member.name,
             guid: member.guid,
             status: member.status,
-            // The donor row packs the subgroup and assistant bit into one byte; 12340 sends
-            // subgroup, member flags and LFG roles separately.
-            flags: (member.sub_group & 0x7) | (member.flags & 0x80),
+            flags: wrath_group_member_flags(member.sub_group, member.flags),
         })
         .collect();
     let loot = list.loot.map(|loot| benilla_protocol::messages::GroupLootInfo {
@@ -4548,70 +4689,45 @@ fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEvent {
     });
     SessionEvent::GroupList {
         group_type: list.group_type,
-        own_flags: list.flags,
+        own_flags: wrath_group_member_flags(list.sub_group, list.flags),
         members,
         leader: list.leader_guid,
         loot,
     }
 }
 
-fn wrath_party_stats(stats: gameplay::social::PartyMemberStats) -> SessionEvent {
+pub(crate) fn wrath_party_stats(stats: gameplay::social::PartyMemberStats) -> SessionEvent {
     let f = stats.fields;
     let mut info = benilla_protocol::messages::PartyMemberStatsInfo {
         status: f.status.map(|status| status as u8),
-        cur_hp: f.cur_hp.map(|value| value.min(u32::from(u16::MAX)) as u16),
-        max_hp: f.max_hp.map(|value| value.min(u32::from(u16::MAX)) as u16),
+        cur_hp: f.cur_hp,
+        max_hp: f.max_hp,
         power_type: f.power_type,
         cur_power: f.cur_power,
         max_power: f.max_power,
         level: f.level,
         zone: f.zone,
         position: f.position.map(|(x, y)| (x as i16, y as i16)),
+        vehicle_seat: f.vehicle_seat,
         ..Default::default()
     };
     if let Some(auras) = f.auras {
-        info.auras = Some(
-            auras
-                .auras
-                .iter()
-                .filter(|aura| aura.slot < 32)
-                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
-                .collect(),
-        );
-        info.auras_negative = Some(
-            auras
-                .auras
-                .iter()
-                .filter(|aura| (32..48).contains(&aura.slot))
-                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
-                .collect(),
-        );
+        let (pos, neg) = wrath_partition_party_auras(&auras.auras);
+        info.auras = Some(pos);
+        info.auras_negative = Some(neg);
     }
     info.pet_guid = f.pet_guid;
     info.pet_name = f.pet_name;
     info.pet_model_id = f.pet_model_id;
-    info.pet_cur_hp = f.pet_cur_hp.map(|value| value.min(u32::from(u16::MAX)) as u16);
-    info.pet_max_hp = f.pet_max_hp.map(|value| value.min(u32::from(u16::MAX)) as u16);
+    info.pet_cur_hp = f.pet_cur_hp;
+    info.pet_max_hp = f.pet_max_hp;
     info.pet_power_type = f.pet_power_type;
     info.pet_cur_power = f.pet_cur_power;
     info.pet_max_power = f.pet_max_power;
     if let Some(auras) = f.pet_auras {
-        info.pet_auras = Some(
-            auras
-                .auras
-                .iter()
-                .filter(|aura| aura.slot < 32)
-                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
-                .collect(),
-        );
-        info.pet_auras_negative = Some(
-            auras
-                .auras
-                .iter()
-                .filter(|aura| (32..48).contains(&aura.slot))
-                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
-                .collect(),
-        );
+        let (pos, neg) = wrath_partition_party_auras(&auras.auras);
+        info.pet_auras = Some(pos);
+        info.pet_auras_negative = Some(neg);
     }
     SessionEvent::PartyMemberStats {
         guid: stats.guid,
@@ -4801,11 +4917,8 @@ fn wrath_trade_status(status: gameplay::economy::TradeStatus) -> benilla_protoco
     }
 }
 
-/// Map a 12340 trade side onto the donor state. The 3.3.5 `stateIndex` is the stale-offer guard
-/// the donor calls `sequence`; its per-side state word is the donor's `flag`. Socket-enchant
-/// words are retained by the Wrath decoder but have no donor field, so they are not fabricated
-/// into an enchant.
-fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_protocol::messages::TradeStatusExtended {
+/// Map a 12340 trade side onto the trade state, preserving `trade_id` and `socket_enchant`.
+pub(crate) fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_protocol::messages::TradeStatusExtended {
     let mut slots = [None; gameplay::economy::TRADE_SLOT_COUNT];
     for (out, item) in slots.iter_mut().zip(state.slots) {
         *out = item.map(|item| benilla_protocol::messages::TradeItem {
@@ -4815,6 +4928,7 @@ fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_prot
             wrapped: item.wrapped,
             gift_creator: item.gift_creator,
             perm_enchant: item.perm_enchant,
+            socket_enchant: item.socket_enchant,
             creator: item.creator,
             charges: item.charges,
             suffix_factor: item.suffix_factor,
@@ -4826,6 +4940,7 @@ fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_prot
     }
     benilla_protocol::messages::TradeStatusExtended {
         their_window: state.their_window,
+        trade_id: state.trade_id,
         sequence: state.state_index,
         flag: state.sequence,
         gold: state.gold,
@@ -4834,12 +4949,15 @@ fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_prot
     }
 }
 
-fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::messages::MailListEntry> {
+pub(crate) fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::messages::MailListEntry> {
     list.mails
         .into_iter()
         .map(|mail| {
-            let item = mail.attachments.first().map(|attachment| {
-                benilla_protocol::messages::MailAttachment {
+            let attachments: Vec<benilla_protocol::messages::MailAttachment> = mail
+                .attachments
+                .iter()
+                .take(benilla_protocol::messages::MAX_MAIL_ITEMS)
+                .map(|attachment| benilla_protocol::messages::MailAttachment {
                     entry: attachment.item_entry,
                     perm_enchant: attachment.enchants[0].id,
                     random_prop_id: attachment.random_prop_id as u32,
@@ -4848,15 +4966,9 @@ fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::m
                     charges: attachment.charges,
                     durability_max: attachment.max_durability,
                     durability: attachment.durability,
-                }
-            });
-            if mail.attachments.len() > 1 {
-                debug!(
-                    "wrath: mail {} carries {} attachments; the donor inbox shows the first",
-                    mail.message_id,
-                    mail.attachments.len()
-                );
-            }
+                })
+                .collect();
+            let item = attachments.first().copied();
             benilla_protocol::messages::MailListEntry {
                 message_id: mail.message_id,
                 message_type: mail.message_type,
@@ -4868,6 +4980,7 @@ fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::m
                 package: mail.package,
                 stationery: mail.stationery,
                 item,
+                attachments,
                 money: mail.money,
                 cod: mail.cod,
                 checked: mail.flags,
@@ -6179,6 +6292,364 @@ fn wrath_tap_commands(
             ClientCommand::TurnInPetition { item } => Some((
                 benilla_protocol_wrath::opcode::CMSG_TURN_IN_PETITION,
                 gameplay::encode_guid_only(item),
+            )),
+            ClientCommand::PetitionBuy { npc, name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PETITION_BUY,
+                gameplay::petition_buy(npc, &name),
+            )),
+            ClientCommand::PetitionSign { item, byte } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PETITION_SIGN,
+                gameplay::petition_sign(item, byte),
+            )),
+            ClientCommand::OfferPetition { item, player } => Some((
+                benilla_protocol_wrath::opcode::CMSG_OFFER_PETITION,
+                gameplay::offer_petition(item, player),
+            )),
+            ClientCommand::PetitionQuery { petition_id, item } => Some((
+                benilla_protocol_wrath::opcode::CMSG_PETITION_QUERY,
+                gameplay::petition_query(petition_id, item),
+            )),
+            ClientCommand::PetitionRename { item, name } => Some((
+                benilla_protocol_wrath::opcode::MSG_PETITION_RENAME,
+                gameplay::petition_rename(item, &name),
+            )),
+            ClientCommand::WrapItem {
+                gift_bag,
+                gift_slot,
+                item_bag,
+                item_slot,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_WRAP_ITEM,
+                gameplay::wrap_item(gift_bag, gift_slot, item_bag, item_slot),
+            )),
+            ClientCommand::MailTakeMoney { mailbox, mail_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_MAIL_TAKE_MONEY,
+                gameplay::mail_action(mailbox, mail_id),
+            )),
+            ClientCommand::MailTakeItem { mailbox, mail_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_MAIL_TAKE_ITEM,
+                gameplay::mail_action_with_u32(mailbox, mail_id, 0),
+            )),
+            ClientCommand::MailReturnToSender { mailbox, mail_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_MAIL_RETURN_TO_SENDER,
+                gameplay::mail_return_to_sender(mailbox, mail_id),
+            )),
+            ClientCommand::MailDelete { mailbox, mail_id } => Some((
+                benilla_protocol_wrath::opcode::CMSG_MAIL_DELETE,
+                gameplay::mail_action_with_u32(mailbox, mail_id, 0),
+            )),
+            ClientCommand::AuctionHello { auctioneer } => Some((
+                benilla_protocol_wrath::opcode::MSG_AUCTION_HELLO,
+                gameplay::encode_guid_only(auctioneer),
+            )),
+            ClientCommand::AuctionListItems {
+                auctioneer,
+                list_from,
+                searched_name,
+                level_min,
+                level_max,
+                slot_id,
+                main_category,
+                sub_category,
+                quality,
+                usable,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUCTION_LIST_ITEMS,
+                gameplay::auction_list_items(
+                    auctioneer,
+                    list_from,
+                    &searched_name,
+                    level_min,
+                    level_max,
+                    slot_id,
+                    main_category,
+                    sub_category,
+                    quality,
+                    usable,
+                ),
+            )),
+            ClientCommand::AuctionListOwnerItems {
+                auctioneer,
+                list_from,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUCTION_LIST_OWNER_ITEMS,
+                gameplay::auction_guid_and_u32(auctioneer, list_from),
+            )),
+            ClientCommand::AuctionListBidderItems {
+                auctioneer,
+                list_from,
+                auction_ids,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUCTION_LIST_BIDDER_ITEMS,
+                gameplay::auction_list_bidder_items(auctioneer, list_from, &auction_ids),
+            )),
+            ClientCommand::AuctionSellItem {
+                auctioneer,
+                item_guid,
+                bid,
+                buyout,
+                etime_minutes,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUCTION_SELL_ITEM,
+                gameplay::auction_sell_item(auctioneer, item_guid, bid, buyout, etime_minutes),
+            )),
+            ClientCommand::AuctionPlaceBid {
+                auctioneer,
+                auction_id,
+                price,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUCTION_PLACE_BID,
+                gameplay::auction_place_bid(auctioneer, auction_id, price),
+            )),
+            ClientCommand::AuctionRemoveItem {
+                auctioneer,
+                auction_id,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AUCTION_REMOVE_ITEM,
+                gameplay::auction_guid_and_u32(auctioneer, auction_id),
+            )),
+            ClientCommand::GroupSetLeader { guid } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_SET_LEADER,
+                gameplay::encode_guid_only(guid),
+            )),
+            ClientCommand::GroupAssistantLeader { guid, grant } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GROUP_ASSISTANT_LEADER,
+                gameplay::group_assistant_leader(guid, grant),
+            )),
+            ClientCommand::Who { request } => Some((
+                benilla_protocol_wrath::opcode::CMSG_WHO,
+                benilla_protocol::messages::who(&request),
+            )),
+            ClientCommand::GuildCreate { name } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_CREATE,
+                gameplay::cstring_single(&name),
+            )),
+            ClientCommand::GuildRank {
+                rank_id,
+                rights,
+                name,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GUILD_RANK,
+                gameplay::guild_rank(rank_id, rights, &name),
+            )),
+            ClientCommand::SaveGuildEmblem { vendor, design } => Some((
+                benilla_protocol_wrath::opcode::CMSG_SAVE_GUILD_EMBLEM,
+                benilla_protocol::messages::save_guild_emblem(vendor, design),
+            )),
+            ClientCommand::TabardVendorActivate { npc } => Some((
+                benilla_protocol_wrath::opcode::MSG_TABARDVENDOR_ACTIVATE,
+                gameplay::encode_guid_only(npc),
+            )),
+            ClientCommand::OpeningCinematic => Some((
+                benilla_protocol_wrath::opcode::CMSG_OPENING_CINEMATIC,
+                Vec::new(),
+            )),
+            ClientCommand::ForceLogout => Some((
+                benilla_protocol_wrath::opcode::CMSG_PLAYER_LOGOUT,
+                Vec::new(),
+            )),
+            ClientCommand::FarSight { engage } => Some((
+                benilla_protocol_wrath::opcode::CMSG_FARSIGHT,
+                gameplay::farsight(engage),
+            )),
+            ClientCommand::AreaSpiritHealerQueue { healer } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AREA_SPIRIT_HEALER_QUEUE,
+                gameplay::encode_guid_only(healer),
+            )),
+            ClientCommand::AreaSpiritHealerQuery { healer } => Some((
+                benilla_protocol_wrath::opcode::CMSG_AREA_SPIRIT_HEALER_QUERY,
+                gameplay::encode_guid_only(healer),
+            )),
+            ClientCommand::BattlemasterHello { npc } => Some((
+                benilla_protocol_wrath::opcode::CMSG_BATTLEMASTER_HELLO,
+                gameplay::encode_guid_only(npc),
+            )),
+            ClientCommand::RequestBattlefieldScoreData => Some((
+                u32::from(benilla_protocol_wrath::opcode::MSG_PVP_LOG_DATA),
+                Vec::new(),
+            )),
+            ClientCommand::RequestBattlefieldPositions => Some((
+                benilla_protocol_wrath::opcode::MSG_BATTLEGROUND_PLAYER_POSITIONS,
+                Vec::new(),
+            )),
+            ClientCommand::BattlefieldStatusRequest => Some((
+                benilla_protocol_wrath::opcode::CMSG_BATTLEFIELD_STATUS,
+                Vec::new(),
+            )),
+            ClientCommand::GmTicketCreate {
+                category,
+                map,
+                pos,
+                text,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GMTICKET_CREATE,
+                benilla_protocol::messages::gm_ticket_create(category, map, pos, &text),
+            )),
+            ClientCommand::GmTicketUpdate { category, text } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GMTICKET_UPDATETEXT,
+                benilla_protocol::messages::gm_ticket_updatetext(category, &text),
+            )),
+            ClientCommand::GmTicketGet => Some((
+                benilla_protocol_wrath::opcode::CMSG_GMTICKET_GETTICKET,
+                Vec::new(),
+            )),
+            ClientCommand::GmTicketDelete => Some((
+                benilla_protocol_wrath::opcode::CMSG_GMTICKET_DELETETICKET,
+                Vec::new(),
+            )),
+            ClientCommand::GmTicketSystemStatus => Some((
+                benilla_protocol_wrath::opcode::CMSG_GMTICKET_SYSTEMSTATUS,
+                Vec::new(),
+            )),
+            ClientCommand::GmSurveySubmit {
+                survey,
+                answers,
+                comment,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_GMSURVEY_SUBMIT,
+                benilla_protocol::messages::gm_survey_submit(survey, &answers, &comment),
+            )),
+            ClientCommand::ForceSpeedAck {
+                kind,
+                guid,
+                counter,
+                speed,
+                flags,
+                pos,
+                orientation,
+                pitch,
+                fall_time,
+                jump,
+                transport,
+            } => {
+                use benilla_protocol::messages::SpeedKind;
+                let opcode = match kind {
+                    SpeedKind::Walk => {
+                        u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_WALK_SPEED_CHANGE_ACK)
+                    }
+                    SpeedKind::Run => {
+                        u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_RUN_SPEED_CHANGE_ACK)
+                    }
+                    SpeedKind::RunBack => u32::from(
+                        benilla_protocol_wrath::opcode::CMSG_FORCE_RUN_BACK_SPEED_CHANGE_ACK,
+                    ),
+                    SpeedKind::Swim => {
+                        u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_SWIM_SPEED_CHANGE_ACK)
+                    }
+                    SpeedKind::SwimBack => u32::from(
+                        benilla_protocol_wrath::opcode::CMSG_FORCE_SWIM_BACK_SPEED_CHANGE_ACK,
+                    ),
+                    SpeedKind::TurnRate => u32::from(
+                        benilla_protocol_wrath::opcode::CMSG_FORCE_TURN_RATE_CHANGE_ACK,
+                    ),
+                };
+                Some((
+                    opcode,
+                    gameplay::force_speed_ack(
+                        guid,
+                        counter,
+                        speed,
+                        wrath_move_flags(flags),
+                        0,
+                        pos,
+                        orientation,
+                        pitch,
+                        fall_time,
+                        jump.map(|j| (j.velocity, j.sin_angle, j.cos_angle, j.xy_speed)),
+                        transport.map(|t| (t.guid, t.local_pos, t.local_o, t.time_ms)),
+                    ),
+                ))
+            }
+            ClientCommand::MoveModeAck {
+                guid,
+                counter,
+                mode,
+                apply,
+                flags,
+                pos,
+                orientation,
+            } => {
+                use benilla_protocol::messages::MoveModeKind;
+                let opcode = match (mode, apply) {
+                    (MoveModeKind::Root, true) => {
+                        u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_MOVE_ROOT_ACK)
+                    }
+                    (MoveModeKind::Root, false) => {
+                        u32::from(benilla_protocol_wrath::opcode::CMSG_FORCE_MOVE_UNROOT_ACK)
+                    }
+                    (MoveModeKind::WaterWalk, _) => {
+                        u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_WATER_WALK_ACK)
+                    }
+                    (MoveModeKind::FeatherFall, _) => {
+                        u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_FEATHER_FALL_ACK)
+                    }
+                    (MoveModeKind::Hover, _) => {
+                        u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_HOVER_ACK)
+                    }
+                };
+                Some((
+                    opcode,
+                    gameplay::move_mode_ack(
+                        guid,
+                        counter,
+                        apply,
+                        wrath_move_flags(flags),
+                        0,
+                        pos,
+                        orientation,
+                    ),
+                ))
+            }
+            ClientCommand::KnockBackAck {
+                guid,
+                counter,
+                launch,
+                flags,
+                pos,
+                orientation,
+                transport,
+            } => Some((
+                u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_KNOCK_BACK_ACK),
+                gameplay::knock_back_ack(
+                    guid,
+                    counter,
+                    wrath_move_flags(flags),
+                    0,
+                    pos,
+                    orientation,
+                    (launch.vspeed, launch.sin_angle, launch.cos_angle, launch.hspeed),
+                    transport.map(|t| (t.guid, t.local_pos, t.local_o, t.time_ms)),
+                ),
+            )),
+            ClientCommand::MoveSplineDone {
+                flags,
+                pos,
+                orientation,
+                spline_id,
+            } => Some((
+                u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_SPLINE_DONE),
+                gameplay::move_spline_done(wrath_move_flags(flags), 0, pos, orientation, spline_id),
+            )),
+            ClientCommand::NotActiveMover {
+                guid,
+                flags,
+                pos,
+                orientation,
+                fall_time,
+            } => Some((
+                u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_NOT_ACTIVE_MOVER),
+                gameplay::not_active_mover(
+                    guid,
+                    wrath_move_flags(flags),
+                    0,
+                    pos,
+                    orientation,
+                    fall_time,
+                ),
+            )),
+            ClientCommand::MoveTimeSkipped { guid, lag_ms } => Some((
+                u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_TIME_SKIPPED),
+                gameplay::move_time_skipped(guid, lag_ms),
             )),
             _ => None,
         };
@@ -7799,9 +8270,10 @@ fn push_item_fields(
     }
 }
 
-/// The 1.12 unit-aura descriptor window (`UNIT_FIELD_AURA`, fields 47-94, plus the six
-/// `AURAFLAGS` nibble words at 95-100) from 12340's visible slots. Slots 48 and up have no 1.12
-/// field and drop; the flags' low three bits are the effect indices the nibble carries.
+/// The 1.12 unit-aura descriptor window (`UNIT_FIELD_AURA`, fields 47-94, the six `AURAFLAGS`
+/// nibble words at 95-100, the twelve `AURALEVELS` byte words at 101-112, and the twelve
+/// `AURAAPPLICATIONS` byte words at 113-124) from 12340's visible slots. Slots 48 and up have no
+/// 1.12 field and drop; the flags' low three bits are the effect indices the nibble carries.
 fn push_aura_fields(
     auras: &[benilla_protocol_wrath::reducer::AuraSlot],
     pairs: &mut Vec<(u16, u32)>,
@@ -7810,6 +8282,8 @@ fn push_aura_fields(
     let first = benilla_protocol::field::FIELD_UNIT_AURA;
     let mut ids = [0u32; SLOT_COUNT];
     let mut flags = [0u32; 6];
+    let mut levels = [0u32; 12];
+    let mut applications = [0u32; 12];
     for aura in auras {
         let slot = usize::from(aura.slot);
         if slot >= SLOT_COUNT {
@@ -7817,12 +8291,21 @@ fn push_aura_fields(
         }
         ids[slot] = aura.spell_id;
         flags[slot >> 3] |= u32::from(aura.flags & 0x7) << ((slot & 7) * 4);
+        let shift = (slot & 3) * 8;
+        levels[slot >> 2] |= u32::from(aura.level) << shift;
+        applications[slot >> 2] |= u32::from(aura.charges.saturating_sub(1)) << shift;
     }
     for (index, id) in ids.iter().enumerate() {
         pairs.push((first + index as u16, *id));
     }
     for (index, word) in flags.iter().enumerate() {
         pairs.push((first + SLOT_COUNT as u16 + index as u16, *word));
+    }
+    for (index, word) in levels.iter().enumerate() {
+        pairs.push((first + 54 + index as u16, *word));
+    }
+    for (index, word) in applications.iter().enumerate() {
+        pairs.push((first + 66 + index as u16, *word));
     }
 }
 
@@ -8188,6 +8671,19 @@ fn wrath_apply_world(world: &mut World) {
         } else if let Some(max_health) = remote.max_health {
             pairs.push((28, max_health));
         }
+        // Project all five 1.12 power slots (Mana, Rage, Focus, Energy, Happiness) for both
+        // Unit and Player entities so target/focus/pet power bars and rogue/cat/hunter energy
+        // and focus consumers see live values from `ObjectStore`.
+        if matches!(kind, EntityKind::Unit | EntityKind::Player) {
+            for i in 0..5usize {
+                if let Some(power) = remote.powers[i] {
+                    pairs.push((23 + i as u16, power));
+                }
+                if let Some(max_power) = remote.max_powers[i] {
+                    pairs.push((29 + i as u16, max_power));
+                }
+            }
+        }
         if let Some(level) = remote.level {
             pairs.push((34, level));
         }
@@ -8300,15 +8796,78 @@ fn wrath_apply_world(world: &mut World) {
                     .filter(|i| raw.word_or_zero(daily_start + i) != 0)
                     .count() as u32;
                 wrath_slots = Some(WrathQuestSlots(slots, max_level, daily));
-                for (src, dst) in [(25u16, 23u16), (26, 24), (27, 25), (33, 29), (34, 30), (35, 31)] {
+                // `PLAYER_FLAGS` (3.3.5 150 -> 1.12 190), guild/duel header (`148..=157` -> `188..=197`).
+                for (src, dst) in [
+                    (25u16, 23u16),
+                    (26, 24),
+                    (27, 25),
+                    (33, 29),
+                    (34, 30),
+                    (35, 31),
+                    (148u16, 188u16), // PLAYER_DUEL_ARBITER low
+                    (149, 189),       // PLAYER_DUEL_ARBITER high
+                    (150, benilla_protocol::field::FIELD_PLAYER_FLAGS),
+                    (151, 191),       // PLAYER_GUILDID
+                    (152, 192),       // PLAYER_GUILDRANK
+                    (155, 195),       // PLAYER_BYTES_3
+                    (156, 196),       // PLAYER_DUEL_TEAM
+                    (157, 197),       // PLAYER_GUILD_TIMESTAMP
+                ] {
                     if let Some(value) = raw.get(src) {
                         pairs.push((dst, value));
                     }
                 }
-                // `PLAYER_FLAGS` (3.3.5 150 -> 1.12 190): the ghost bit 0x10 is what the death
-                // owner reads off the self descriptor.
-                if let Some(value) = raw.get(150) {
-                    pairs.push((benilla_protocol::field::FIELD_PLAYER_FLAGS, value));
+                // Unit combat & stat block carried in the player's `0..148` unit prefix:
+                // channel object/spell (`20..=22` -> `20..=21`, `144`), cast speed (`80` -> `145`),
+                // attack times (`61..=63` -> `126..=128`), min/max/offhand damage (`69..=72` -> `134..=137`),
+                // base stats (`84..=88` -> `150..=154`), pos/neg stat buffs (`89..=98` -> `1177..=1186`),
+                // resistances (`99..=105` -> `155..=161`), resistance buffs (`106..=119` -> `1187..=1200`),
+                // base mana/health (`120..=121` -> `162..=163`), AP and ranged damage (`123..=130` -> `165..=172`).
+                for (src, dst) in [
+                    (20u16, 20u16),
+                    (21, 21),
+                    (22, 144),
+                    (61, 126),
+                    (62, 127),
+                    (63, 128),
+                    (69, 134),
+                    (70, 135),
+                    (71, 136),
+                    (72, 137),
+                    (80, 145),
+                    (120, 162),
+                    (121, 163),
+                ] {
+                    if let Some(value) = raw.get(src) {
+                        pairs.push((dst, value));
+                    }
+                }
+                for i in 0..5u16 {
+                    if let Some(v) = raw.get(84 + i) {
+                        pairs.push((150 + i, v));
+                    }
+                    if let Some(v) = raw.get(89 + i) {
+                        pairs.push((1177 + i, v));
+                    }
+                    if let Some(v) = raw.get(94 + i) {
+                        pairs.push((1182 + i, v));
+                    }
+                }
+                for i in 0..7u16 {
+                    if let Some(v) = raw.get(99 + i) {
+                        pairs.push((155 + i, v));
+                    }
+                    if let Some(v) = raw.get(106 + i) {
+                        pairs.push((1187 + i, v));
+                    }
+                    if let Some(v) = raw.get(113 + i) {
+                        pairs.push((1194 + i, v));
+                    }
+                }
+                for i in 0..8u16 {
+                    if let Some(v) = raw.get(123 + i) {
+                        pairs.push((165 + i, v));
+                    }
                 }
                 push_player_inventory_fields(raw, &mut pairs);
                 push_visible_item_fields(raw, &mut pairs);
@@ -8318,11 +8877,64 @@ fn wrath_apply_world(world: &mut World) {
                 if let Some(value) = raw.get(635) {
                     pairs.push((717, value));
                 }
+                // `PLAYER_SKILL_INFO_1_1` (`636..1020` -> `718..1102`, 128 * 3 dwords): identical
+                // 3-dword per skill line layout (`id | step`, `value | max`, `pos | neg`).
+                for i in 0..384u16 {
+                    if let Some(v) = raw.get(636 + i) {
+                        pairs.push((718 + i, v));
+                    }
+                }
+                // Character points (talent/profession), creature/resource tracking, and block/dodge/parry/crit.
+                for (src, dst) in [
+                    (1020u16, 1102u16), // PLAYER_CHARACTER_POINTS1 (talents)
+                    (1021, 1103),       // PLAYER_CHARACTER_POINTS2 (professions)
+                    (1022, 1104),       // PLAYER_TRACK_CREATURES
+                    (1023, 1105),       // PLAYER_TRACK_RESOURCES
+                    (1024, 1106),       // PLAYER_BLOCK_PERCENTAGE
+                    (1025, 1107),       // PLAYER_DODGE_PERCENTAGE
+                    (1026, 1108),       // PLAYER_PARRY_PERCENTAGE
+                    (1029, 1109),       // PLAYER_CRIT_PERCENTAGE
+                    (1030, 1110),       // PLAYER_RANGED_CRIT_PERCENTAGE
+                ] {
+                    if let Some(v) = raw.get(src) {
+                        pairs.push((dst, v));
+                    }
+                }
+                // First 64 words of `PLAYER_EXPLORED_ZONES_1` (`1041..1105` -> `1111..1175`).
+                for i in 0..64u16 {
+                    if let Some(v) = raw.get(1041 + i) {
+                        pairs.push((1111 + i, v));
+                    }
+                }
                 if let Some(value) = raw.get(benilla_protocol_wrath::fields::PLAYER_REST_STATE_EXPERIENCE) {
                     pairs.push((1175, value));
                 }
                 if let Some(value) = raw.get(1170) {
                     pairs.push((1176, value));
+                }
+                // `PLAYER_FIELD_MOD_DAMAGE_DONE_POS/NEG/PCT` (`1171..1192` -> `1201..1222`, 21 words).
+                for i in 0..21u16 {
+                    if let Some(v) = raw.get(1171 + i) {
+                        pairs.push((1201 + i, v));
+                    }
+                }
+                // `PLAYER_FIELD_BYTES` (combo points in byte 1), ammo, self-res, PvP medals,
+                // buyback prices/timestamps (`1201..1225` -> `1226..1250`), and watched faction (`1230` -> `1261`).
+                for (src, dst) in [
+                    (1197u16, 1222u16), // PLAYER_FIELD_BYTES
+                    (1198, 1223),       // PLAYER_AMMO_ID
+                    (1199, 1224),       // PLAYER_SELF_RES_SPELL
+                    (1200, 1225),       // PLAYER_FIELD_PVP_MEDALS
+                    (1230, 1261),       // PLAYER_FIELD_WATCHED_FACTION_INDEX
+                ] {
+                    if let Some(v) = raw.get(src) {
+                        pairs.push((dst, v));
+                    }
+                }
+                for i in 0..24u16 {
+                    if let Some(v) = raw.get(1201 + i) {
+                        pairs.push((1226 + i, v));
+                    }
                 }
             }
         }
@@ -9004,13 +9616,26 @@ fn wrath_apply_world(world: &mut World) {
             if matches!(kind, ObjectType::Unit | ObjectType::Player) {
                 for &(index, old, new) in moved {
                     use benilla_protocol::field::{
-                        FIELD_UNIT_DYNAMIC_FLAGS, FIELD_UNIT_HEALTH, FIELD_UNIT_MAXHEALTH,
+                        FIELD_UNIT_BYTES_0, FIELD_UNIT_DYNAMIC_FLAGS, FIELD_UNIT_FACTIONTEMPLATE,
+                        FIELD_UNIT_HEALTH, FIELD_UNIT_LEVEL, FIELD_UNIT_MAXHEALTH,
+                        FIELD_UNIT_MAXPOWER1, FIELD_UNIT_POWER1,
                     };
                     // The snapshot adapter bypasses the normal values-block watches. Feed
                     // the UI explicitly; FieldChanged alone only reaches ECS consumers.
                     let event = match index {
                         FIELD_UNIT_HEALTH => Some(crate::field_watch::id::UNIT_HEALTH),
                         FIELD_UNIT_MAXHEALTH => Some(crate::field_watch::id::UNIT_MAXHEALTH),
+                        i if (FIELD_UNIT_POWER1..FIELD_UNIT_POWER1 + 5).contains(&i) => {
+                            Some(crate::field_watch::id::POWER + (i - FIELD_UNIT_POWER1))
+                        }
+                        i if (FIELD_UNIT_MAXPOWER1..FIELD_UNIT_MAXPOWER1 + 5).contains(&i) => {
+                            Some(crate::field_watch::id::MAX_POWER + (i - FIELD_UNIT_MAXPOWER1))
+                        }
+                        FIELD_UNIT_LEVEL => Some(crate::field_watch::id::UNIT_LEVEL),
+                        FIELD_UNIT_FACTIONTEMPLATE => Some(crate::field_watch::id::UNIT_FACTION),
+                        FIELD_UNIT_BYTES_0 if (old >> 24) != (new >> 24) => {
+                            Some(crate::field_watch::id::UNIT_DISPLAYPOWER)
+                        }
                         _ => None,
                     };
                     if let Some(id) = event {
@@ -9042,15 +9667,38 @@ fn wrath_apply_world(world: &mut World) {
             }
             if *guid == player_guid && *kind == ObjectType::Player {
                 // Snapshot replacement bypasses the normal field watchers; notify after seating
-                // the values so the XP bar reads the updated XP and rested pool.
+                // the values so the XP bar, skill frame, reputation bar, and guild roster update.
                 let xp_changed = moved.iter().any(|&(index, _, _)| index == 716 || index == 717);
                 let rest_changed = moved.iter().any(|&(index, _, _)| index == 1175);
+                let skills_changed = moved
+                    .iter()
+                    .any(|&(index, _, _)| (718..1102).contains(&index));
+                let watched_faction_changed = moved.iter().any(|&(index, _, _)| index == 1261);
+                let stats_or_combat_changed = moved.iter().any(|&(index, _, _)| {
+                    (126..=172).contains(&index)
+                        || (1102..=1110).contains(&index)
+                        || (1177..=1225).contains(&index)
+                });
                 if let Some(mut notices) = world.get_resource_mut::<crate::field_watch::NoticeLane>() {
                     if xp_changed {
                         notices.write(crate::field_watch::FieldNotice::Player { id: 189 });
                     }
                     if rest_changed {
                         notices.write(crate::field_watch::FieldNotice::Player { id: 406 });
+                    }
+                    if skills_changed {
+                        notices.write(crate::field_watch::FieldNotice::SkillLines);
+                    }
+                    if watched_faction_changed {
+                        notices.write(crate::field_watch::FieldNotice::Player {
+                            id: crate::field_watch::id::UPDATE_FACTION,
+                        });
+                    }
+                    if stats_or_combat_changed {
+                        notices.write(crate::field_watch::FieldNotice::Signal {
+                            guid: player_guid,
+                            id: crate::field_watch::id::UNIT_LEVEL,
+                        });
                     }
                 }
                 let inv_changed = moved.iter().any(|&(idx, _, _)| {
@@ -9060,6 +9708,7 @@ fn wrath_apply_world(world: &mut World) {
                         || (benilla_protocol::field::FIELD_PLAYER_INV_SLOT_HEAD
                             ..benilla_protocol::field::FIELD_PLAYER_INV_SLOT_HEAD + 226)
                             .contains(&idx)
+                        || (1226..1250).contains(&idx)
                 });
                 let money_changed = moved
                     .iter()
@@ -10631,6 +11280,26 @@ pub fn run_session_with_cancel(
                             debug!("wrath: ignored malformed 0x{:X} gameplay reply: {e}", p.opcode);
                         }
                     }
+                } else if session.player_guid().is_some() && is_shared_12340_server_opcode(p.opcode) {
+                    if let Ok(pkt) = benilla_protocol::messages::parse_server(p.opcode, &p.payload) {
+                        for event in benilla_protocol::decode(pkt) {
+                            push_session_event(&events_out, &session, event);
+                        }
+                    }
+                }
+                if p.opcode == benilla_protocol_wrath::opcode::SMSG_MULTICLASS_REPLY {
+                    if let Ok(reply) =
+                        benilla_protocol_wrath::gameplay::accept_multiclass_reply(&p.payload)
+                    {
+                        feed.push_event(WrathFeedEvent::MulticlassReply {
+                            op: reply.op,
+                            status: reply.status,
+                            serial: reply.serial,
+                            payload: reply.body,
+                            session_epoch: session.epoch(),
+                            world_generation: session.world_generation(),
+                        });
+                    }
                 }
                 if p.opcode == benilla_protocol_wrath::opcode::SMSG_MULTICLASS_REPLY {
                     if let Ok(reply) =
@@ -10807,6 +11476,45 @@ fn enc_pack_guid(guid: u64) -> Vec<u8> {
     let mut out = vec![mask];
     out.extend_from_slice(&bytes);
     out
+}
+
+/// Server-to-client opcodes whose 3.3.5a (build 12340) wire layout is compatible with
+/// `benilla_protocol::messages::parse_server` and `benilla_protocol::decode`.
+fn is_shared_12340_server_opcode(opcode: u16) -> bool {
+    matches!(
+        opcode,
+        // World clock, bind & cinematic
+        0x042 | 0x043 | 0x044 | 0x047 | 0x0FA | 0x155 | 0x158 | 0x29D
+        // Pet & item name queries
+        | 0x053 | 0x2C5
+        // Guild query & events
+        | 0x055 | 0x083 | 0x086 | 0x088 | 0x092 | 0x093 | 0x1E6 | 0x1F1
+        // Channels, Who, Social, Server Message
+        | 0x061 | 0x063 | 0x065 | 0x068 | 0x09B | 0x19E | 0x1CD
+        // Group, Raid, Ready Check
+        | 0x06F | 0x074 | 0x077 | 0x079 | 0x07C | 0x07F | 0x0FE | 0x2CC | 0x2FA | 0x321
+        // Movement force speeds, modes, splines, knockback, control & mount results
+        | 0x0DE | 0x0DF | 0x0E4 | 0x0E8 | 0x0EA | 0x0EC | 0x0EF
+        | 0x13A | 0x13C | 0x159 | 0x16E | 0x16F | 0x172
+        | 0x2DA | 0x2F2 | 0x2F3 | 0x2F4 | 0x2F5
+        | 0x2FD..=0x302 | 0x304..=0x30D
+        // Tutorials, Emotes, Mirror Timers, Weather, Sounds, World States
+        | 0x0FD | 0x103 | 0x105 | 0x1D9 | 0x1DA | 0x1DB | 0x277 | 0x278 | 0x2C3 | 0x2D2 | 0x2F9
+        // Trade, Factions (visible/atwar/forced), Proficiencies, Spell Modifiers
+        | 0x120 | 0x121 | 0x123 | 0x127 | 0x266 | 0x267 | 0x2A5 | 0x313
+        // Combat logs & durability/exploration/party kill
+        | 0x14B | 0x1D6 | 0x1F5 | 0x1F8 | 0x21D | 0x24B | 0x2A6 | 0x2BD
+        // Duel
+        | 0x167..=0x16B | 0x2B7
+        // Pet mode, feedback, sounds, unlearn
+        | 0x173 | 0x178 | 0x17A | 0x1B1 | 0x2AF | 0x2C6 | 0x324 | 0x325
+        // Taxi
+        | 0x1A9 | 0x1AB | 0x1AE | 0x1AF
+        // GM Ticket
+        | 0x206 | 0x208 | 0x212 | 0x218 | 0x21B | 0x283
+        // Mail & Auction
+        | 0x239 | 0x255 | 0x25B | 0x25E | 0x25F | 0x284 | 0x285 | 0x28D
+    )
 }
 
 fn build_digest(session: &SessionState) -> WorldDigest {
@@ -12250,5 +12958,46 @@ mod scoped_delivery_tests {
             "a proposal that never reached a command owner was never dispatched"
         );
     }
+
+    #[test]
+    fn push_aura_fields_projects_spell_flags_levels_and_applications_into_object_fields() {
+        let auras = vec![
+            benilla_protocol_wrath::reducer::AuraSlot {
+                slot: 0,
+                spell_id: 17,
+                flags: 0x05,
+                level: 60,
+                charges: 3,
+                caster: None,
+                max_duration_ms: None,
+                duration_ms: None,
+            },
+            benilla_protocol_wrath::reducer::AuraSlot {
+                slot: 3,
+                spell_id: 139,
+                flags: 0x02,
+                level: 80,
+                charges: 1,
+                caster: None,
+                max_duration_ms: None,
+                duration_ms: None,
+            },
+        ];
+        let mut pairs = Vec::new();
+        push_aura_fields(&auras, &mut pairs);
+        let fields = ObjectFields::from_pairs(&pairs).into_created(ObjectType::Unit);
+        let a0 = fields.unit_aura(0).expect("slot 0 aura");
+        assert_eq!(a0.spell_id, 17);
+        assert_eq!(a0.flags, 0x05);
+        assert_eq!(a0.level, 60);
+        assert_eq!(a0.applications, 2); // charges(3) - 1 = 2 additional applications
+
+        let a3 = fields.unit_aura(3).expect("slot 3 aura");
+        assert_eq!(a3.spell_id, 139);
+        assert_eq!(a3.flags, 0x02);
+        assert_eq!(a3.level, 80);
+        assert_eq!(a3.applications, 0);
+    }
 }
+
 

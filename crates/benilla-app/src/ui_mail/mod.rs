@@ -384,7 +384,8 @@ fn resolve_row(
     let player_mail = entry.message_type == mail_message_type::NORMAL;
     let can_reply = player_mail && !is_gm;
 
-    let (item_id, item_roll, item_count, item_name, item_texture, item_quality) = match &entry.item
+    let primary_att = entry.item.as_ref().or_else(|| entry.attachments.first());
+    let (item_id, item_roll, item_count, item_name, item_texture, item_quality) = match primary_att
     {
         Some(att) => {
             let template = items.template(att.entry, 0, ask);
@@ -406,7 +407,7 @@ fn resolve_row(
         None => (0, 0, 0, None, None, None),
     };
     // The block's charges and `(current, max)` durability (`0x53566f`, `0x535699`, `0x53568d`).
-    let (item_charges, item_durability) = entry.item.as_ref().map_or((0, (0, 0)), |att| {
+    let (item_charges, item_durability) = primary_att.map_or((0, (0, 0)), |att| {
         (att.charges as i32, (att.durability, att.durability_max))
     });
 
@@ -1137,6 +1138,7 @@ mod tests {
             package: 0,
             stationery: 41,
             item: None,
+            attachments: Vec::new(),
             money: 0,
             cod: 0,
             checked,

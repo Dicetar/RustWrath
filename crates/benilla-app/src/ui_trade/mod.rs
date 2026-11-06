@@ -85,6 +85,8 @@ pub(crate) struct TradeSession {
     /// `OPEN_WINDOW` (`0x5d4834`), then the second header dword of each partner-side extended
     /// status (`0x5d49d5`); a fresh client's is 0.
     partner_flag: u32,
+    /// The 3.3.5a server-assigned `trade_id` from the last `SMSG_TRADE_STATUS_EXTENDED`.
+    pub(crate) trade_id: u32,
     /// Each side's money as `0x4bf2b0` last compared it (`0xb71740`, `0xb71744`): zero for a
     /// fresh window (`0x4bf5d8`), our offer once the open folds held coins in (`0x4bf62b`), and
     /// our 0 when a status bounces our coins (`0x4bfbe0`).
@@ -220,6 +222,9 @@ impl TradeSession {
         }
         if ext.their_window {
             self.partner_flag = ext.flag;
+        }
+        if ext.trade_id != 0 {
+            self.trade_id = ext.trade_id;
         }
         let side = if ext.their_window {
             &mut self.their
@@ -765,10 +770,11 @@ fn resolve_slot(
     });
     // Nil until the template answers: the link embeds the name and the quality colour.
     let link = match (name.as_deref(), quality) {
-        (Some(n), Some(q)) => Some(crate::ui_items::item_link_full_in_target(
+        (Some(n), Some(q)) => Some(crate::ui_items::item_link_full_with_gems_in_target(
             target,
             item.entry,
             item.perm_enchant,
+            item.socket_enchant,
             item.random_prop_id,
             item.suffix_factor,
             n,
@@ -813,7 +819,7 @@ fn resolve_slot(
 /// [`resolve_slot`] for a slot of our own, which `GetTradePlayerItemLink` links off the item
 /// object (`0x4c06bc` → `0x52ae00`) with its record cached or not: white (`0x52aec5`) and nameless
 /// (`0x5d8b40`) without one.
-fn resolve_own_slot(
+pub(crate) fn resolve_own_slot(
     item: &TradeItem,
     target: benilla_ui::script::UiTarget,
     items: &Items,
@@ -825,10 +831,11 @@ fn resolve_own_slot(
     let uncached = items.template(item.entry, 0, Ask::Read).is_none();
     TradeSlotItem {
         uncached_link: uncached.then(|| {
-            crate::ui_items::item_link_full_in_target(
+            crate::ui_items::item_link_full_with_gems_in_target(
                 target,
                 item.entry,
                 item.perm_enchant,
+                item.socket_enchant,
                 item.random_prop_id,
                 item.suffix_factor,
                 "",
@@ -861,6 +868,7 @@ fn own_item(guid: u64, count: u32, objects: &Objects, items: &Items) -> Option<T
         wrapped,
         gift_creator: fields.item_gift_creator().unwrap_or(0),
         perm_enchant,
+        socket_enchant: [0; 3],
         // The tooltip reads our object's maker (`0x52e247`).
         creator: fields.item_creator().unwrap_or(0),
         charges: 0,

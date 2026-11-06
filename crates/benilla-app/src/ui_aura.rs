@@ -341,13 +341,12 @@ fn other_unit_inputs<'a>(
 /// (`0x51980f`, `0x519c2d`), nothing is cancelable, and the level is 0, what `SetUnitBuff` passes
 /// for a record (`0x534da8`).
 fn record_inputs<'a>(
-    slots: impl Iterator<Item = (u8, u16)> + 'a,
+    slots: impl Iterator<Item = (u8, u32)> + 'a,
     catalog: Option<&'a SpellCatalog>,
     raid: &'a RaidFilter,
     vision: Option<u8>,
 ) -> impl Iterator<Item = AuraInput> + 'a {
     slots
-        .map(|(slot, spell)| (slot, u32::from(spell)))
         .filter(move |&(_, spell)| spell != 0 && shown_in_aura_ui(catalog, spell))
         .map(move |(slot, spell_id)| AuraInput {
             slot,

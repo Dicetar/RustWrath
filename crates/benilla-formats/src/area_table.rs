@@ -109,9 +109,9 @@ impl AreaTableCatalog {
     }
 }
 
-fn schema() -> Schema {
+fn schema(cols: usize) -> Schema {
     let mut s = Schema::new("AreaTable");
-    for i in 0..25 {
+    for i in 0..cols {
         match i {
             11 => s.add_field(SchemaField::new("AreaName", FieldType::String)),
             _ => s.add_field(SchemaField::new(format!("c{i}"), FieldType::UInt32)),
@@ -125,7 +125,9 @@ pub fn load_area_table_catalog(chain: &mut Chain) -> Result<AreaTableCatalog> {
     let bytes = chain
         .read_file(AREA_TABLE)
         .context("reading AreaTable.dbc")?;
-    let rs = parse_with_trailing_fields(&bytes, schema(), "AreaTable")?;
+    let is_wrath = crate::dbc::field_count(&bytes).is_some_and(|n| n >= 36);
+    let (cols, faction_col) = if is_wrath { (36, 28) } else { (25, 20) };
+    let rs = parse_with_trailing_fields(&bytes, schema(cols), "AreaTable")?;
     let locale = chain.locale();
     let mut by_id = HashMap::with_capacity(rs.records().len());
     let mut order = Vec::with_capacity(rs.records().len());
@@ -140,7 +142,7 @@ pub fn load_area_table_catalog(chain: &mut Chain) -> Result<AreaTableCatalog> {
         ) else {
             continue;
         };
-        let faction_group_mask = u32_at(r, 28).unwrap_or(0);
+        let faction_group_mask = u32_at(r, faction_col).unwrap_or(0);
         // Signed; an absent column reads as `-1`, no exploration gate.
         let exploration_level = u32_at(r, 10).map_or(-1, |v| v as i32);
         order.push(id);

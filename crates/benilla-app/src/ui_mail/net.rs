@@ -200,11 +200,13 @@ pub(super) fn mail_list(
                 && e.checked & (CHECKED_RETURNED | CHECKED_COD_PAYMENT) == 0;
             if answered {
                 let mail_id = e.message_id;
-                let _ = commands.0.send(if e.item.is_some() || e.money != 0 {
-                    ClientCommand::MailReturnToSender { mailbox, mail_id }
-                } else {
-                    ClientCommand::MailDelete { mailbox, mail_id }
-                });
+                let _ = commands.0.send(
+                    if e.item.is_some() || !e.attachments.is_empty() || e.money != 0 {
+                        ClientCommand::MailReturnToSender { mailbox, mail_id }
+                    } else {
+                        ClientCommand::MailDelete { mailbox, mail_id }
+                    },
+                );
             }
             !answered
         })
@@ -239,12 +241,14 @@ pub(super) fn mail_list(
 /// (`[rec+0x25c]`, `0x4ad809`), so a quest or event reward mail stays.
 fn take_empties(entry: &MailListEntry, action: u32) -> bool {
     let auction = entry.message_type == mail_message_type::AUCTION;
+    let has_item = entry.item.is_some() || !entry.attachments.is_empty();
     match action {
         mail_action::MONEY_TAKEN => {
-            entry.checked & CHECKED_COD_PAYMENT != 0 || (auction && entry.item.is_none())
+            entry.checked & CHECKED_COD_PAYMENT != 0 || (auction && !has_item)
         }
         mail_action::ITEM_TAKEN => {
-            entry.money == 0
+            !has_item
+                && entry.money == 0
                 && (auction || (entry.item_text_id == 0 && entry.mail_template_id == 0))
         }
         _ => false,
@@ -299,7 +303,10 @@ pub(super) fn send_mail_result(
                         if action == mail_action::MONEY_TAKEN {
                             mail.mails[pos].money = 0;
                         } else {
-                            mail.mails[pos].item = None;
+                            if !mail.mails[pos].attachments.is_empty() {
+                                mail.mails[pos].attachments.remove(0);
+                            }
+                            mail.mails[pos].item = mail.mails[pos].attachments.first().copied();
                         }
                         if take_empties(&mail.mails[pos], action) {
                             // Sent whether or not a mailbox is open (`0x4ad74d`); a closed one

@@ -111,6 +111,8 @@ pub struct TradeItem {
     pub wrapped: bool,
     pub gift_creator: u64,
     pub perm_enchant: u32,
+    /// 3.3.5a gem socket enchant IDs (`SOCK_ENCHANTMENT_SLOT` 0..3).
+    pub socket_enchant: [u32; 3],
     pub creator: u64,
     /// Signed: a negative count means N uses left on some items.
     pub charges: i32,
@@ -126,6 +128,8 @@ pub struct TradeItem {
 pub struct TradeStatusExtended {
     /// The partner's (right) column when the wire byte is 1, ours (left) when 0.
     pub their_window: bool,
+    /// 3.3.5a server-assigned trade session ID (`tradeId`, 0 on 1.12).
+    pub trade_id: u32,
     /// The first `u32` after the side byte (`0x5d4990`): the client drops a status for its own
     /// column whose sequence is below its own-edit counter. vmangos writes the slot count there,
     /// 7, whatever the sender's edits (`TradeHandler.cpp:60`).
@@ -249,6 +253,7 @@ pub(super) fn read_trade_status_extended(r: &mut &[u8]) -> io::Result<TradeStatu
                 wrapped,
                 gift_creator,
                 perm_enchant,
+                socket_enchant: [0; 3],
                 creator,
                 charges,
                 suffix_factor,
@@ -261,6 +266,7 @@ pub(super) fn read_trade_status_extended(r: &mut &[u8]) -> io::Result<TradeStatu
     }
     Ok(TradeStatusExtended {
         their_window: which == 1,
+        trade_id: 0,
         sequence,
         flag,
         gold,

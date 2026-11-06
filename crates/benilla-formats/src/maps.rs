@@ -163,6 +163,15 @@ const BRACKET_SPAN_FIELD: usize = 39;
 const GROUP_QUEUE_FIELD: usize = 40;
 const MINIMAP_ICON_SCALE_FIELD: usize = 41;
 
+const WRATH_FIELD_COUNT: usize = 66;
+const WRATH_MAP_NAME_FIELD: usize = 5;
+const WRATH_AREA_TABLE_FIELD: usize = 22;
+const WRATH_DESCRIPTION_0_FIELD: usize = 23;
+const WRATH_DESCRIPTION_1_FIELD: usize = 40;
+const WRATH_LOADING_SCREEN_FIELD: usize = 57;
+const WRATH_MINIMAP_ICON_SCALE_FIELD: usize = 58;
+const WRATH_MAX_PLAYERS_FIELD: usize = 65;
+
 /// The unread fields are `u32` placeholders: only the 42 × 4 = 168-byte record has to add up.
 fn map_schema() -> Schema {
     let mut s = Schema::new("Map");
@@ -191,12 +200,47 @@ fn map_schema() -> Schema {
     s
 }
 
+/// 3.3.5a (build 12340) 66-column `Map.dbc` (`DBCStructure.h::MapEntry`).
+fn wrath_map_schema() -> Schema {
+    let mut s = Schema::new("Map");
+    s.add_field(SchemaField::new("ID", FieldType::UInt32));
+    s.add_field(SchemaField::new("Directory", FieldType::String));
+    for i in 2..WRATH_FIELD_COUNT {
+        match i {
+            INSTANCE_TYPE_FIELD => s.add_field(SchemaField::new("InstanceType", FieldType::UInt32)),
+            WRATH_MAP_NAME_FIELD => s.add_field(SchemaField::new("MapName", FieldType::String)),
+            WRATH_AREA_TABLE_FIELD => {
+                s.add_field(SchemaField::new("AreaTableID", FieldType::UInt32))
+            }
+            WRATH_DESCRIPTION_0_FIELD => {
+                s.add_field(SchemaField::new("MapDescription0", FieldType::String))
+            }
+            WRATH_DESCRIPTION_1_FIELD => {
+                s.add_field(SchemaField::new("MapDescription1", FieldType::String))
+            }
+            WRATH_LOADING_SCREEN_FIELD => {
+                s.add_field(SchemaField::new("LoadingScreenID", FieldType::UInt32))
+            }
+            WRATH_MINIMAP_ICON_SCALE_FIELD | 60 | 61 => {
+                s.add_field(SchemaField::new(format!("_f{i}"), FieldType::Float32))
+            }
+            _ => s.add_field(SchemaField::new(format!("_pad{i}"), FieldType::UInt32)),
+        }
+    }
+    s
+}
+
 /// Read Map.dbc off the patch chain into a [`MapCatalog`].
 pub fn load_map_catalog(chain: &mut Chain) -> Result<MapCatalog> {
     let bytes = chain
         .read_file(MAP)
         .with_context(|| format!("reading {MAP}"))?;
-    let rs = parse_with_trailing_fields(&bytes, map_schema(), "Map")?;
+    let is_wrath = crate::dbc::field_count(&bytes) == Some(WRATH_FIELD_COUNT);
+    let rs = parse_with_trailing_fields(
+        &bytes,
+        if is_wrath { wrath_map_schema() } else { map_schema() },
+        "Map",
+    )?;
     let locale = chain.locale();
     let mut dirs = HashMap::with_capacity(rs.records().len());
     let mut names = HashMap::with_capacity(rs.records().len());
@@ -206,36 +250,99 @@ pub fn load_map_catalog(chain: &mut Chain) -> Result<MapCatalog> {
     let mut area_table_ids = HashMap::with_capacity(rs.records().len());
     for r in rs.records() {
         let Some(id) = u32_at(r, 0) else { continue };
+        let desc_0_field = if is_wrath {
+            WRATH_DESCRIPTION_0_FIELD
+        } else {
+            DESCRIPTION_0_FIELD
+        };
+        let desc_1_field = if is_wrath {
+            WRATH_DESCRIPTION_1_FIELD
+        } else {
+            DESCRIPTION_1_FIELD
+        };
+        let scale_field = if is_wrath {
+            WRATH_MINIMAP_ICON_SCALE_FIELD
+        } else {
+            MINIMAP_ICON_SCALE_FIELD
+        };
+        let max_players_field = if is_wrath {
+            WRATH_MAX_PLAYERS_FIELD
+        } else {
+            MAX_PLAYERS_FIELD
+        };
         battleground.insert(
             id,
             MapBattlegroundColumns {
-                min_level: u32_at(r, MIN_LEVEL_FIELD).unwrap_or(0),
-                max_level: u32_at(r, MAX_LEVEL_FIELD).unwrap_or(0),
-                max_players: u32_at(r, MAX_PLAYERS_FIELD).unwrap_or(0),
-                field_16: u32_at(r, FIELD_16).unwrap_or(0) as i32,
-                field_17: f32_at(r, FIELD_17).unwrap_or(0.0),
-                field_18: f32_at(r, FIELD_18).unwrap_or(0.0),
+                min_level: if is_wrath {
+                    0
+                } else {
+                    u32_at(r, MIN_LEVEL_FIELD).unwrap_or(0)
+                },
+                max_level: if is_wrath {
+                    0
+                } else {
+                    u32_at(r, MAX_LEVEL_FIELD).unwrap_or(0)
+                },
+                max_players: u32_at(r, max_players_field).unwrap_or(0),
+                field_16: if is_wrath {
+                    u32_at(r, 59).unwrap_or(0) as i32
+                } else {
+                    u32_at(r, FIELD_16).unwrap_or(0) as i32
+                },
+                field_17: if is_wrath {
+                    f32_at(r, 60).unwrap_or(0.0)
+                } else {
+                    f32_at(r, FIELD_17).unwrap_or(0.0)
+                },
+                field_18: if is_wrath {
+                    f32_at(r, 61).unwrap_or(0.0)
+                } else {
+                    f32_at(r, FIELD_18).unwrap_or(0.0)
+                },
                 descriptions: [
-                    loc_str(&rs, r, DESCRIPTION_0_FIELD, locale).unwrap_or_default(),
-                    loc_str(&rs, r, DESCRIPTION_1_FIELD, locale).unwrap_or_default(),
+                    loc_str(&rs, r, desc_0_field, locale).unwrap_or_default(),
+                    loc_str(&rs, r, desc_1_field, locale).unwrap_or_default(),
                 ],
-                bracket_span: u32_at(r, BRACKET_SPAN_FIELD).unwrap_or(0),
-                group_queue: u32_at(r, GROUP_QUEUE_FIELD).unwrap_or(0),
-                minimap_icon_scale: f32_at(r, MINIMAP_ICON_SCALE_FIELD).unwrap_or(1.0),
+                bracket_span: if is_wrath {
+                    0
+                } else {
+                    u32_at(r, BRACKET_SPAN_FIELD).unwrap_or(0)
+                },
+                group_queue: if is_wrath {
+                    0
+                } else {
+                    u32_at(r, GROUP_QUEUE_FIELD).unwrap_or(0)
+                },
+                minimap_icon_scale: f32_at(r, scale_field).unwrap_or(1.0),
             },
         );
-        area_table_ids.insert(id, u32_at(r, AREA_TABLE_FIELD).unwrap_or(0));
+        let area_field = if is_wrath {
+            WRATH_AREA_TABLE_FIELD
+        } else {
+            AREA_TABLE_FIELD
+        };
+        area_table_ids.insert(id, u32_at(r, area_field).unwrap_or(0));
         if let Some(dir) = str_at(&rs, r, 1) {
             dirs.insert(id, dir);
         }
-        if let Some(name) = loc_str(&rs, r, MAP_NAME_FIELD, locale).filter(|n| !n.is_empty()) {
+        let name_field = if is_wrath {
+            WRATH_MAP_NAME_FIELD
+        } else {
+            MAP_NAME_FIELD
+        };
+        if let Some(name) = loc_str(&rs, r, name_field, locale).filter(|n| !n.is_empty()) {
             names.insert(id, name);
         }
         // Type 0 is recorded too, so `None` means only that no such map exists.
         if let Some(ty) = u32_at(r, INSTANCE_TYPE_FIELD) {
             instance_types.insert(id, ty);
         }
-        if let Some(ls) = u32_at(r, LOADING_SCREEN_FIELD).filter(|&v| v != 0) {
+        let ls_field = if is_wrath {
+            WRATH_LOADING_SCREEN_FIELD
+        } else {
+            LOADING_SCREEN_FIELD
+        };
+        if let Some(ls) = u32_at(r, ls_field).filter(|&v| v != 0) {
             loading_screens.insert(id, ls);
         }
     }

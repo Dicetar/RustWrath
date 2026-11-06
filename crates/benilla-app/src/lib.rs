@@ -510,3 +510,277 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // (`capture::drive_capture`), which must not exit 0 with no PNG on disk.
     app.run()
 }
+
+#[cfg(test)]
+mod economy {
+    mod tests {
+        use benilla_protocol::messages::TRADE_SLOT_COUNT;
+        use benilla_protocol_wrath::gameplay::economy::{
+            MailAttachment, MailEnchant, MailEntry, MailList, TradeExtended, TradeItem,
+        };
+        use benilla_ui::script::UiTarget;
+
+        #[test]
+        fn mail_list_reads_rows_bodies_and_attachments() {
+            let empty_enchant = MailEnchant {
+                id: 0,
+                duration: 0,
+                charges: 0,
+            };
+            let attachments: Vec<MailAttachment> = (0..12u8)
+                .map(|idx| MailAttachment {
+                    index: idx,
+                    item_guid_low: 1000 + u32::from(idx),
+                    item_entry: 40000 + u32::from(idx),
+                    enchants: [
+                        MailEnchant {
+                            id: 3800 + u32::from(idx),
+                            duration: 0,
+                            charges: 0,
+                        },
+                        empty_enchant,
+                        empty_enchant,
+                        empty_enchant,
+                        empty_enchant,
+                        empty_enchant,
+                        empty_enchant,
+                    ],
+                    random_prop_id: -12,
+                    suffix_factor: 100,
+                    count: u32::from(idx) + 1,
+                    charges: 5,
+                    max_durability: 120,
+                    durability: 115,
+                    unknown: 0,
+                })
+                .collect();
+            let list = MailList {
+                real_count: 1,
+                mails: vec![MailEntry {
+                    size: 0,
+                    message_id: 77,
+                    message_type: 0,
+                    sender_guid: Some(0x1234),
+                    sender_entry: None,
+                    cod: 500,
+                    package: 0,
+                    stationery: 41,
+                    money: 2500,
+                    flags: 0x10,
+                    expire_days: 29.5,
+                    mail_template_id: 0,
+                    subject: "Northrend Supplies".to_string(),
+                    body: "Twelve attachments inside.".to_string(),
+                    attachments,
+                }],
+            };
+
+            let mapped = crate::wrath::wrath_mail_list(list);
+            assert_eq!(mapped.len(), 1);
+            let row = &mapped[0];
+            assert_eq!(row.inline_body.as_deref(), Some("Twelve attachments inside."));
+            assert_eq!(row.attachments.len(), 12);
+            assert_eq!(row.item.map(|a| a.entry), Some(40000));
+            assert_eq!(row.attachments[11].entry, 40011);
+            assert_eq!(row.attachments[11].perm_enchant, 3811);
+            assert_eq!(row.attachments[11].count, 12);
+        }
+
+        #[test]
+        fn wrath_trade_extended_preserves_trade_id_and_socket_enchants_in_item_links() {
+            let mut slots = [None; TRADE_SLOT_COUNT];
+            slots[0] = Some(TradeItem {
+                entry: 49623,
+                display_id: 65000,
+                count: 1,
+                wrapped: false,
+                gift_creator: 0,
+                perm_enchant: 3827,
+                socket_enchant: [3520, 3521, 3532],
+                creator: 0x99,
+                charges: 0,
+                suffix_factor: 0,
+                random_prop_id: 0,
+                lock_id: 0,
+                max_durability: 120,
+                durability: 120,
+            });
+            let ext = crate::wrath::wrath_trade_extended(TradeExtended {
+                their_window: true,
+                trade_id: 0xDEAD_BEEF,
+                state_index: 4,
+                sequence: 9,
+                gold: 10_000,
+                enchant_spell_id: 0,
+                slots,
+            });
+            assert_eq!(ext.trade_id, 0xDEAD_BEEF);
+            let slot0 = ext.slots[0].expect("slot 0 populated");
+            assert_eq!(slot0.socket_enchant, [3520, 3521, 3532]);
+
+            let mut session = crate::ui_trade::TradeSession::default();
+            session.set_offer(&ext);
+            assert_eq!(session.trade_id, 0xDEAD_BEEF);
+
+            let link = crate::ui_items::item_link_full_with_gems_in_target(
+                UiTarget::Wrath335,
+                slot0.entry,
+                slot0.perm_enchant,
+                slot0.socket_enchant,
+                slot0.random_prop_id,
+                slot0.suffix_factor,
+                "Shadowmourne",
+                5,
+            );
+            assert_eq!(
+                link,
+                "|cffff8000|Hitem:49623:3827:3520:3521:3532:0:0:0:0|h[Shadowmourne]|h|r"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod social {
+    mod tests {
+        use benilla_protocol::messages::GROUP_MEMBER_ASSISTANT;
+        use benilla_protocol::SessionEvent;
+        use benilla_protocol_wrath::gameplay::social::{
+            GroupList, GroupLoot, GroupMember, PartyAura, PartyAuras, PartyMemberFields,
+            PartyMemberStats,
+        };
+
+        #[test]
+        fn party_member_stats_full_reads_every_defined_bit() {
+            let stats = PartyMemberStats {
+                guid: 0x42,
+                full: true,
+                arena: Some(0),
+                fields: PartyMemberFields {
+                    mask: 0x000E_6607,
+                    status: Some(0x0001),
+                    cur_hp: Some(125_400),
+                    max_hp: Some(140_000),
+                    auras: Some(PartyAuras {
+                        mask: (1u64 << 0) | (1u64 << 5) | (1u64 << 55),
+                        auras: vec![
+                            PartyAura {
+                                slot: 0,
+                                spell_id: 72_968,
+                                flags: 0x10, // AFLAG_POSITIVE
+                            },
+                            PartyAura {
+                                slot: 5,
+                                spell_id: 70_842,
+                                flags: 0x20, // AFLAG_NEGATIVE in low slot
+                            },
+                            PartyAura {
+                                slot: 55,
+                                spell_id: 69_762,
+                                flags: 0x20, // AFLAG_NEGATIVE in high slot >= 48
+                            },
+                        ],
+                    }),
+                    pet_guid: Some(0xF140_0000_0000_0099),
+                    pet_cur_hp: Some(88_500),
+                    pet_max_hp: Some(95_000),
+                    pet_auras: Some(PartyAuras {
+                        mask: 1u64 << 40,
+                        auras: vec![PartyAura {
+                            slot: 40,
+                            spell_id: 63_848,
+                            flags: 0x10, // AFLAG_POSITIVE
+                        }],
+                    }),
+                    vehicle_seat: Some(3012),
+                    ..Default::default()
+                },
+            };
+
+            let SessionEvent::PartyMemberStats { guid, full, info } =
+                crate::wrath::wrath_party_stats(stats)
+            else {
+                panic!("expected PartyMemberStats event");
+            };
+            assert_eq!(guid, 0x42);
+            assert!(full);
+            assert_eq!(info.cur_hp, Some(125_400));
+            assert_eq!(info.max_hp, Some(140_000));
+            assert_eq!(info.pet_cur_hp, Some(88_500));
+            assert_eq!(info.pet_max_hp, Some(95_000));
+            assert_eq!(info.vehicle_seat, Some(3012));
+            assert_eq!(info.auras.as_deref(), Some(&[(0, 72_968)][..]));
+            assert_eq!(
+                info.auras_negative.as_deref(),
+                Some(&[(5, 70_842), (55, 69_762)][..])
+            );
+            assert_eq!(info.pet_auras.as_deref(), Some(&[(40, 63_848)][..]));
+
+            let mut group = crate::ui_party::GroupState::default();
+            group.apply_stats(guid, true, *info);
+            let stored = group.stats.get(&guid).expect("member record stored");
+            assert_eq!(stored.cur_hp, Some(125_400));
+            assert_eq!(stored.pet_max_hp, Some(95_000));
+            assert_eq!(stored.vehicle_seat, Some(3012));
+        }
+
+        #[test]
+        fn wrath_group_list_packs_subgroup_and_assistant_flags_for_self_and_members() {
+            let list = GroupList {
+                group_type: 0x02,
+                sub_group: 3,
+                flags: 0x01, // MEMBER_FLAG_ASSISTANT
+                roles: 0x02,
+                lfg: None,
+                group_guid: 0x1F50_0000_0000_0001,
+                counter: 7,
+                members: vec![
+                    GroupMember {
+                        name: "Tirion".to_string(),
+                        guid: 0x10,
+                        status: 0x01,
+                        sub_group: 2,
+                        flags: 0x01, // MEMBER_FLAG_ASSISTANT
+                        roles: 0x02,
+                    },
+                    GroupMember {
+                        name: "Darion".to_string(),
+                        guid: 0x11,
+                        status: 0x01,
+                        sub_group: 4,
+                        flags: 0x02, // MEMBER_FLAG_MAINTANK (not assistant)
+                        roles: 0x08,
+                    },
+                ],
+                leader_guid: 0x10,
+                loot: Some(GroupLoot {
+                    method: 2,
+                    master: 0x10,
+                    threshold: 4,
+                    dungeon_difficulty: 1,
+                    raid_difficulty: 2,
+                    dynamic_difficulty: 0,
+                }),
+            };
+
+            let SessionEvent::GroupList {
+                group_type,
+                own_flags,
+                members,
+                leader,
+                loot,
+            } = crate::wrath::wrath_group_list(list)
+            else {
+                panic!("expected GroupList event");
+            };
+            assert_eq!(group_type, 0x02);
+            assert_eq!(own_flags, 3 | GROUP_MEMBER_ASSISTANT);
+            assert_eq!(members.len(), 2);
+            assert_eq!(members[0].flags, 2 | GROUP_MEMBER_ASSISTANT);
+            assert_eq!(members[1].flags, 4);
+            assert_eq!(leader, 0x10);
+            assert_eq!(loot.map(|l| (l.method, l.threshold)), Some((2, 4)));
+        }
+    }
+}
+

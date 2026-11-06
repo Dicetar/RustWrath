@@ -490,6 +490,7 @@ fn partner_slot_7(t: &mut Trade, perm_enchant: u32) {
         wrapped: false,
         gift_creator: 0,
         perm_enchant,
+        socket_enchant: [0; 3],
         creator: 0,
         charges: 0,
         suffix_factor: 0,
@@ -503,6 +504,7 @@ fn partner_slot_7(t: &mut Trade, perm_enchant: u32) {
         vec![SessionEvent::TradeStatusExtended {
             state: Box::new(benilla_protocol::messages::TradeStatusExtended {
                 their_window: true,
+                trade_id: 0,
                 sequence: 7,
                 flag: 7,
                 gold: 0,
@@ -821,6 +823,7 @@ fn partner_gold(t: &mut Trade, gold: u32) {
         vec![SessionEvent::TradeStatusExtended {
             state: Box::new(benilla_protocol::messages::TradeStatusExtended {
                 their_window: true,
+                trade_id: 0,
                 sequence: 7,
                 flag: 7,
                 gold,
@@ -1113,6 +1116,7 @@ fn an_emptied_own_slot_signals_before_the_accept_drop() {
         vec![SessionEvent::TradeStatusExtended {
             state: Box::new(benilla_protocol::messages::TradeStatusExtended {
                 their_window: false,
+                trade_id: 0,
                 sequence: 7,
                 flag: 7,
                 gold: 0,

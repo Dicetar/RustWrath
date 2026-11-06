@@ -34,6 +34,7 @@ fn entry(message_id: u32, text_id: u32) -> MailListEntry {
         package: 0,
         stationery: 41,
         item: None,
+        attachments: Vec::new(),
         money: 0,
         cod: 0,
         checked: 0,

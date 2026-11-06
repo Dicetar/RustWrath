@@ -69,6 +69,13 @@ One coordinator owns Cargo and graphical-client slots. Record owner, task, comma
 state in active-ownership; release the slot on completion. PIDs and hashes are run evidence,
 not permanent instructions. Never terminate another job to acquire a slot.
 
+Every Cargo invocation goes through sccache. The checkout's `.cargo/config.toml` selects
+`build.rustc-wrapper = "sccache"`; CI installs it with the pinned sccache action. A missing
+wrapper is a build failure, not permission to bypass it. Verify with `sccache --show-stats`
+before claiming a cache hit; use `CARGO_INCREMENTAL=0` when a build should populate the cache.
+`cargo clippy` may bypass the wrapper (rust-lang/rust-clippy#3840), so clippy runs are not
+sccache-cached; build and test runs are.
+
 Use only authorized verification. The existing bounded client-repair grant permits essential
 targeted cases, a coherent integration build and coordinated runtime checks, with at most
 20 essential targeted test cases per task. It does not require filling that budget, repeated

@@ -11,6 +11,7 @@ fn wire_item(entry: u32) -> TradeItem {
         wrapped: false,
         gift_creator: 0,
         perm_enchant: 0,
+        socket_enchant: [0; 3],
         creator: 0,
         charges: 0,
         suffix_factor: 0,
@@ -372,6 +373,7 @@ fn extended_fills_the_right_side_and_resets_accepts() {
     slots[0] = Some(wire_item(2589));
     let ext = TradeStatusExtended {
         their_window: true,
+        trade_id: 0,
         sequence: 7,
         flag: 7,
         gold: 500,
@@ -386,6 +388,7 @@ fn extended_fills_the_right_side_and_resets_accepts() {
 
     let our_ext = TradeStatusExtended {
         their_window: false,
+        trade_id: 0,
         sequence: 7,
         flag: 7,
         gold: 999,
@@ -556,6 +559,7 @@ fn a_trade_slot_click_is_not_announced_again_by_the_feed() {
         wrapped: false,
         gift_creator: 0,
         perm_enchant: 0,
+        socket_enchant: [0; 3],
         creator: 0,
         charges: 0,
         suffix_factor: 0,
@@ -1028,6 +1032,7 @@ fn a_stale_own_side_status_is_dropped_whole() {
     let commands = NetCommands(tx);
     let ext = |their_window: bool, sequence: u32, gold: u32| TradeStatusExtended {
         their_window,
+        trade_id: 0,
         sequence,
         flag: 7,
         gold,
@@ -1205,6 +1210,7 @@ fn both_offers_answer_inside_trade_closed_and_until_the_next_open() {
             trade.set_own_gold(300);
             trade.set_offer(&TradeStatusExtended {
                 their_window: true,
+                trade_id: 0,
                 sequence: 7,
                 flag: 7,
                 gold: 500,
@@ -1312,6 +1318,7 @@ fn trade_update_comes_only_from_a_landed_record_a_getter_asked_for() {
             .resource_mut::<TradeSession>()
             .set_offer(&TradeStatusExtended {
                 their_window: true,
+                trade_id: 0,
                 sequence: 7,
                 flag: 7,
                 gold,
@@ -1409,6 +1416,7 @@ fn a_refused_slot_record_is_asked_by_the_next_getter_never_by_a_frame() {
         .resource_mut::<TradeSession>()
         .set_offer(&TradeStatusExtended {
             their_window: true,
+            trade_id: 0,
             sequence: 7,
             flag: 7,
             gold: 0,
@@ -1516,6 +1524,7 @@ fn a_bounced_offer_unlocks_its_item_and_signals_the_slot_once() {
         .resource_mut::<TradeSession>()
         .set_offer(&TradeStatusExtended {
             their_window: false,
+            trade_id: 0,
             sequence: 7,
             flag: 7,
             gold: 0,
@@ -1973,6 +1982,7 @@ fn the_enchant_slots_spell_signals_its_side_and_names_the_enchantment() {
     slots[ENCHANT_SLOT] = Some(wire_item(2589));
     let ext = |their_window: bool, spell: u32| TradeStatusExtended {
         their_window,
+        trade_id: 0,
         sequence: 7,
         flag: 7,
         gold: 0,

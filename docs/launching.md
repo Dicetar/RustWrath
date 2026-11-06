@@ -26,13 +26,30 @@ cd D:\Projects\project-b-client
 cargo build -p benilla --features hotpatch
 ```
 
-This workstation has an optional sccache wrapper. Set it in the build shell before Cargo:
+Every Cargo build in this checkout uses sccache. The repository `.cargo/config.toml` sets
+`build.rustc-wrapper = "sccache"`, so no shell setup is needed when `sccache` is on `PATH`:
 
 ```powershell
+sccache --show-stats
+cargo build -p benilla --features hotpatch
+```
+
+If a shell cannot find the wrapper, install it with the wrapper bypassed for that one command,
+or set its full path before Cargo:
+
+```powershell
+$env:RUSTC_WRAPPER = ''
+cargo install sccache --locked
 $env:RUSTC_WRAPPER = 'C:\Users\Qraag\.cargo\bin\sccache.exe'
 ```
 
-Use that path only if installed. Selecting the wrapper does not prove a cache hit or speedup.
+A missing wrapper fails the build; do not bypass it. Selecting the wrapper does not prove a
+cache hit or speedup: `sccache --show-stats` shows requests and hits. sccache does not cache
+incremental compilations, so set `$env:CARGO_INCREMENTAL = '0'` when a clean build should
+populate the cache. The first build only fills it; later clean builds benefit. CI installs
+sccache with `mozilla-actions/sccache-action` and uses the GitHub Actions cache backend.
+`cargo clippy` may bypass the wrapper (rust-lang/rust-clippy#3840), so clippy runs are not
+sccache-cached; build and test runs are.
 The launcher uses target/debug/benilla.exe; another build profile does not replace that
 executable automatically. Git publication alone does not activate code in a running process.
 

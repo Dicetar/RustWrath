@@ -3,3 +3,13 @@
 # `release`). Env vars still prefix it: `WOW_USER=<account> WOW_PASS=<password> cargo play`.
 [alias]
 play = "run --profile play -p benilla"
+
+# Every Cargo build, check and test goes through sccache. The wrapper is installed on the owner's
+# workstation; CI installs it with mozilla-actions/sccache-action. A missing sccache is a build
+# failure, not a silent fallback: install it with the wrapper bypassed for that one command
+# (`$env:RUSTC_WRAPPER=''; cargo install sccache --locked`) or set `RUSTC_WRAPPER` to its full
+# path. Selecting the wrapper is not proof of a cache hit; verify with `sccache --show-stats`.
+# sccache does not cache incremental compilations, so use `CARGO_INCREMENTAL=0` when measuring or
+# when a clean build should populate the cache.
+[build]
+rustc-wrapper = "sccache"

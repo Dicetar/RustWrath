@@ -29,6 +29,13 @@ do not authorize broad test runs, builds or live sessions.
   Handle routine coordination directly; do not make the owner relay messages.
 - One coordinator owns Cargo and client slots. Never start a competing build/client or
   terminate another session to acquire a slot. Revalidate stale notes and PIDs.
+- All Cargo build/check/test runs use sccache. The checkout's `.cargo/config.toml` sets
+  `build.rustc-wrapper = "sccache"` and CI installs it with `mozilla-actions/sccache-action`.
+  If `sccache` is missing, install it with the wrapper bypassed for that command
+  (`$env:RUSTC_WRAPPER=''; cargo install sccache --locked`) or set `RUSTC_WRAPPER` to its full
+  path before running Cargo; a missing wrapper is a build failure, not a reason to bypass it.
+  Selecting the wrapper does not prove a cache hit: check `sccache --show-stats` before claiming
+  one, and use `CARGO_INCREMENTAL=0` when a build should populate the cache.
 - Use existing owners and real native contracts. Nil/constant returns and broad error
   suppression are not completed APIs. Name unsupported branches and missing consumers.
 - Close visible bugs against their original symptom. Separate source, compilation,

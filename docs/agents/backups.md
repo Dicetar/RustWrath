@@ -24,7 +24,10 @@ Treat the schedule above as recorded workstation setup; inspect Task Scheduler b
 it is currently healthy. Three is the retention ceiling, not a reason to produce extra copies.
 
 For disk pressure, distinguish source backups, Cargo target/deps/incremental caches, sccache,
-launcher logs and linked game data before proposing cleanup. Linked archive sizes can
-overstate unique storage. Never delete active build outputs, state, evidence or source as
-routine documentation maintenance. For authorized cleanup, resolve targets, verify they
-stay inside the intended directory, use one native shell end to end, and respect denied actions.
+launcher logs and linked game data before proposing cleanup. sccache is disposable compiled-object
+cache (default limit 10 GiB under `%LOCALAPPDATA%\Mozilla\sccache\cache`); inspect
+`sccache --show-stats` before removing it, and never remove it while a build is running.
+Linked archive sizes can overstate unique storage. Never delete active build outputs, state,
+evidence or source as routine documentation maintenance. For authorized cleanup, resolve
+targets, verify they stay inside the intended directory, use one native shell end to end, and
+respect denied actions.
