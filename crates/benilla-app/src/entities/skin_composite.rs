@@ -190,9 +190,22 @@ impl SkinComposites {
 /// A plan's work over the shared chain, which each read locks for its archive lookup alone.
 fn work(plan: CompositePlan, chain: Arc<Mutex<Chain>>) -> Work {
     Box::new(move || {
-        plan.run(|path| read_texture(&chain, path))
-            .inspect_err(|e| warn!("body skin composite failed: {e:#}"))
-            .ok()
+        match plan.run(|path| read_texture(&chain, path)) {
+            Ok((atlas, report)) => {
+                if !report.is_empty() {
+                    warn!(
+                        "body skin composite finished without {} layer(s): {:?}",
+                        report.missing().len(),
+                        report
+                    );
+                }
+                Some(atlas)
+            }
+            Err(e) => {
+                warn!("body skin composite failed: {e:#}");
+                None
+            }
+        }
     })
 }
 
