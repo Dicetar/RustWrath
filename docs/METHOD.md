@@ -77,6 +77,10 @@ crate of its own or a fork, and benilla opens a piece of itself to such a crate 
   fails a row that drifts either way.
 - **Our code is MIT OR Apache-2.0**, which is a claim about provenance: no original client
   code, no bundled assets.
+- **Scope is the change's, not the imagined failure's.** Complexity that guards a speculative or
+  vanishingly unlikely race or security case is not free. Before adding it, state the concrete
+  failure mode, how likely it is and what the guard costs, and get the maintainer's buy-in. Never
+  silently expand scope for theoretical robustness.
 
 ## Where things live
 

@@ -580,6 +580,10 @@ name = "benilla-bytes"
 version = "0.2.0"
 
 [[package]]
+name = "benilla-combat-core"
+version = "0.2.0"
+
+[[package]]
 name = "benilla-dbc"
 version = "0.2.0"
 dependencies = [
