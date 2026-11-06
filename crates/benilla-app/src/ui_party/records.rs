@@ -13,7 +13,7 @@ fn record_changes(old: &PartyMemberStatsInfo, new: &PartyMemberStatsInfo) -> u32
     fn differ<T: PartialEq + Default + Copy>(a: Option<T>, b: Option<T>) -> bool {
         a.unwrap_or_default() != b.unwrap_or_default()
     }
-    fn auras(a: &Option<Vec<(u8, u16)>>, b: &Option<Vec<(u8, u16)>>) -> bool {
+    fn auras(a: &Option<Vec<(u8, u32)>>, b: &Option<Vec<(u8, u32)>>) -> bool {
         a.as_deref().unwrap_or_default() != b.as_deref().unwrap_or_default()
     }
     let arms: [(bool, u32); 21] = [
@@ -208,7 +208,7 @@ impl GroupState {
     /// (`0x519735`, `0x519b25`), ascending, buffs then debuffs: a member record's block (`+0x1a`)
     /// unless it reads offline, which answers nothing and never tries the pet records
     /// (`0x519741`); on a miss, the block of the pet record naming the guid (`+0xe4`, `0x519760`).
-    pub(crate) fn roster_aura_slots(&self, guid: u64) -> impl Iterator<Item = (u8, u16)> + '_ {
+    pub(crate) fn roster_aura_slots(&self, guid: u64) -> impl Iterator<Item = (u8, u32)> + '_ {
         let blocks = match self.member_record(guid) {
             Some(r) if !r.is_online() => None,
             Some(r) => Some((&r.auras, &r.auras_negative)),

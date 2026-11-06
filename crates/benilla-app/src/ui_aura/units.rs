@@ -970,7 +970,7 @@ mod tests {
             true,
             PartyMemberStatsInfo {
                 status: Some(member_status::ONLINE),
-                auras: Some(vec![(0, AMOROUS as u16), (1, 1243)]),
+                auras: Some(vec![(0, AMOROUS), (1, 1243)]),
                 ..Default::default()
             },
         );
@@ -1019,7 +1019,7 @@ mod tests {
         );
     }
 
-    fn online(auras_negative: Vec<(u8, u16)>) -> PartyMemberStatsInfo {
+    fn online(auras_negative: Vec<(u8, u32)>) -> PartyMemberStatsInfo {
         PartyMemberStatsInfo {
             status: Some(member_status::ONLINE),
             auras_negative: Some(auras_negative),

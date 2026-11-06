@@ -56,6 +56,9 @@ pub struct MailAttachment {
     pub durability: u32,
 }
 
+/// Maximum number of item attachments carried by a 3.3.5a mail message (`MAX_MAIL_ITEMS`).
+pub const MAX_MAIL_ITEMS: usize = 12;
+
 /// One `SMSG_MAIL_LIST_RESULT` row (vmangos `HandleGetMailList`, `Handlers/MailHandler.cpp`).
 /// `sender_guid` and `sender_id` are one wire field, whose form `message_type` picks.
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +76,8 @@ pub struct MailListEntry {
     pub package: u32,
     pub stationery: u32,
     pub item: Option<MailAttachment>,
+    /// All attachments on the mail message (up to [`MAX_MAIL_ITEMS`] in 3.3.5a).
+    pub attachments: Vec<MailAttachment>,
     pub money: u32,
     pub cod: u32,
     /// vmangos `Mail.h` flags: READ 0x1, RETURNED 0x2, COPIED 0x4, COD_PAYMENT 0x8, HAS_BODY 0x10.
@@ -214,6 +219,7 @@ pub(super) fn read_mail_list_result(r: &mut &[u8]) -> io::Result<Vec<MailListEnt
         let checked = read_u32_le(r)?;
         let expire_days = read_f32_le(r)?;
         let mail_template_id = read_u32_le(r)?;
+        let attachments = item.into_iter().collect();
         mails.push(MailListEntry {
             message_id,
             message_type,
@@ -225,6 +231,7 @@ pub(super) fn read_mail_list_result(r: &mut &[u8]) -> io::Result<Vec<MailListEnt
             package,
             stationery,
             item,
+            attachments,
             money,
             cod,
             checked,

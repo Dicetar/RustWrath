@@ -16,6 +16,7 @@ use benilla_world::schedule::WorldStage;
 pub(crate) mod addons;
 mod content;
 pub(crate) mod wrath_queries;
+pub(crate) mod wrath_combat_log_feed;
 mod wrath_cast;
 mod wrath_aura_feed;
 mod wrath_power_feed;

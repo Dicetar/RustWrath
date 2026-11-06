@@ -97,3 +97,11 @@ Migrate mail, trade, and social data models from 1.12 donor constraints to full 
 - **Budget Ceiling**: Keep total targeted test cases across all verification runs <= 20 cases (`cargo test` with specific filter paths only; do not run broad workspace test sweeps).
 - **Git Protocol**: Always stage explicit files (`git add <file1> <file2>`), never run `git add .` or `git add -A`. Keep `main` and `wotlk` branches in lockstep.
 - **Diagnostics**: Run `compile_applet` and `lint_applet` together before closing the session turn.
+
+---
+
+## Completion Status (Steps 3, 4, and 5)
+- **Step 3 Completed**: Mounted `ui_script::wrath_combat_log_feed` in `crates/benilla-app/src/ui_script/mod.rs` and wired `crates/benilla-app/src/wrath.rs` to use `crate::ui_script::wrath_combat_log_feed`, preserving distinct killer GUID/name attribution, ordered burst party kill queues across frames, and bounded `NameCache` retry windows.
+- **Step 4 Completed**: Updated `GetActionInfo` in `crates/benilla-ui/src/script/action.rs` to return the 3rd value (`subType`: `"spell"`, `"pet"`, or `""`), updated `GetItemCount` in `crates/benilla-ui/src/script/item_stats/wrath.rs` to return `0` on miss instead of `nil`, and verified `RegisterStateDriver`/`UnregisterStateDriver`/`WrapScript` (`script/secure.rs`) and `MulticlassRequest`/`MulticlassPoll` (`script/wrath_natives.rs`).
+- **Step 5 Completed**: Widened `MailListEntry` to retain up to 12 attachments (`MAX_MAIL_ITEMS = 12`) and inline body across `benilla-protocol`, `wrath.rs`, and `ui_mail`; widened `TradeItem` (`socket_enchant: [u32; 3]`) and `TradeStatusExtended` (`trade_id: u32`) with gem-socket link formatting in `ui_items` and `ui_trade`; and widened `PartyMemberStatsInfo` to 32-bit `cur_hp`/`max_hp`/`pet_cur_hp`/`pet_max_hp`, 32-bit aura spell IDs across all 64 slots (`AFLAG_NEGATIVE`), `vehicle_seat`, `lfg_roles`, and 3.3.5a assistant/subgroup flag packing in `wrath_group_list`.
+

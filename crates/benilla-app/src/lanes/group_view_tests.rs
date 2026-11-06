@@ -44,7 +44,7 @@ fn stats(full: bool, info: PartyMemberStatsInfo) -> SessionEvent {
 }
 
 /// [`MATE`]'s health in its record.
-fn hp(cur: u16) -> SessionEvent {
+fn hp(cur: u32) -> SessionEvent {
     stats(
         false,
         PartyMemberStatsInfo {

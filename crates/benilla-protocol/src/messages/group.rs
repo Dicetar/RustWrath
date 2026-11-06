@@ -165,8 +165,8 @@ pub mod party_member_mask {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PartyMemberStatsInfo {
     pub status: Option<u8>,
-    pub cur_hp: Option<u16>,
-    pub max_hp: Option<u16>,
+    pub cur_hp: Option<u32>,
+    pub max_hp: Option<u32>,
     pub power_type: Option<u8>,
     pub cur_power: Option<u16>,
     pub max_power: Option<u16>,
@@ -174,29 +174,32 @@ pub struct PartyMemberStatsInfo {
     pub zone: Option<u16>,
     /// Raw WoW x and y, truncated to `i16` by the server (`GroupHandler.cpp:625`).
     pub position: Option<(i16, i16)>,
-    /// Buff slots 0..31 as `(slot, spell id)`, one per set bit of the wire's `u32` slot mask, in
-    /// slot order. A delta's mask names the slots that changed, a 0 id clearing one
-    /// (`Player::GetAuraUpdateMask`), so the record is patched slot by slot ([`patch_auras`]).
-    pub auras: Option<Vec<(u8, u16)>>,
-    /// Debuff slots, likewise, from a `u16` mask; the slot is absolute, 32..47.
-    pub auras_negative: Option<Vec<(u8, u16)>>,
+    /// Buff slots as `(slot, spell id)`. A delta's mask names the slots that changed, a 0 id
+    /// clearing one (`Player::GetAuraUpdateMask`), so the record is patched slot by slot ([`patch_auras`]).
+    pub auras: Option<Vec<(u8, u32)>>,
+    /// Debuff slots, likewise; the slot is absolute (32..47 in 1.12, or negative-flagged in 3.3.5a).
+    pub auras_negative: Option<Vec<(u8, u32)>>,
     pub pet_guid: Option<u64>,
     pub pet_name: Option<String>,
     pub pet_model_id: Option<u16>,
-    pub pet_cur_hp: Option<u16>,
-    pub pet_max_hp: Option<u16>,
+    pub pet_cur_hp: Option<u32>,
+    pub pet_max_hp: Option<u32>,
     pub pet_power_type: Option<u8>,
     pub pet_cur_power: Option<u16>,
     pub pet_max_power: Option<u16>,
     /// The pet's buff and debuff slots, as [`Self::auras`] and [`Self::auras_negative`].
-    pub pet_auras: Option<Vec<(u8, u16)>>,
-    pub pet_auras_negative: Option<Vec<(u8, u16)>>,
+    pub pet_auras: Option<Vec<(u8, u32)>>,
+    pub pet_auras_negative: Option<Vec<(u8, u32)>>,
+    /// 3.3.5a `GROUP_UPDATE_FLAG_VEHICLE_SEAT` (`0x0020_0000`).
+    pub vehicle_seat: Option<u32>,
+    /// 3.3.5a LFG role flags (`LfgRoles`: leader 0x01, tank 0x02, healer 0x04, damage 0x08).
+    pub lfg_roles: Option<u8>,
 }
 
 /// Apply one aura-block field to a record's (`0x5e52d0`-`0x5e52f8`): each named slot takes its
 /// id, the other slots keep theirs, and a 0 empties the slot. The record keeps the occupied slots
 /// in ascending order, the order `UnitBuff`'s roster walk reads them in (`0x519780`).
-pub fn patch_auras(record: &mut Option<Vec<(u8, u16)>>, patch: &[(u8, u16)]) {
+pub fn patch_auras(record: &mut Option<Vec<(u8, u32)>>, patch: &[(u8, u32)]) {
     let slots = record.get_or_insert_with(Vec::new);
     for &(slot, spell) in patch {
         match slots.binary_search_by_key(&slot, |&(s, _)| s) {
@@ -282,8 +285,8 @@ impl PartyMemberStatsInfo {
         self.status = Some(status);
         // The record holds `u16`s; the 1.12 client keeps each dword's low word (`0x5f08ea`).
         let power_type = fields.unit_power_type();
-        self.cur_hp = Some(fields.unit_health().unwrap_or(0) as u16);
-        self.max_hp = Some(fields.unit_max_health().unwrap_or(0) as u16);
+        self.cur_hp = Some(fields.unit_health().unwrap_or(0));
+        self.max_hp = Some(fields.unit_max_health().unwrap_or(0));
         self.power_type = Some(power_type);
         self.cur_power = Some(fields.unit_power(power_type).unwrap_or(0) as u16);
         self.max_power = Some(fields.unit_max_power(power_type).unwrap_or(0) as u16);
@@ -299,8 +302,8 @@ impl PartyMemberStatsInfo {
                 self.pet_guid = Some(guid);
                 self.pet_name = Some(pet_name.to_string());
                 self.pet_model_id = Some(pet.unit_displayid().unwrap_or(0) as u16);
-                self.pet_cur_hp = Some(pet.unit_health().unwrap_or(0) as u16);
-                self.pet_max_hp = Some(pet.unit_max_health().unwrap_or(0) as u16);
+                self.pet_cur_hp = Some(pet.unit_health().unwrap_or(0));
+                self.pet_max_hp = Some(pet.unit_max_health().unwrap_or(0));
                 self.pet_power_type = Some(power_type);
                 self.pet_cur_power = Some(pet.unit_power(power_type).unwrap_or(0) as u16);
                 self.pet_max_power = Some(pet.unit_max_power(power_type).unwrap_or(0) as u16);
@@ -362,11 +365,11 @@ impl PartyMemberStatsInfo {
 }
 
 /// `(slot, spell id)` pairs of one aura block, as [`PartyMemberStatsInfo::auras`] holds them.
-type AuraSlots = Vec<(u8, u16)>;
+type AuraSlots = Vec<(u8, u32)>;
 
 /// A live descriptor's aura block as the snapshot copies it (`0x5f098d`-`0x5f09f2`): a slot is
 /// kept when its id is set and its `AURAFLAGS` nibble has an effect bit (`test al,0xe`), the test
-/// [`ObjectFields::unit_auras`] makes; the record holds each id's low word.
+/// [`ObjectFields::unit_auras`] makes.
 ///
 /// [`ObjectFields::unit_auras`]: crate::messages::update_object::ObjectFields::unit_auras
 fn snapshot_aura_block(
@@ -375,7 +378,7 @@ fn snapshot_aura_block(
     use crate::messages::update_object::UNIT_AURA_POSITIVE_SLOTS;
     fields
         .unit_auras()
-        .map(|a| (a.slot, a.spell_id as u16))
+        .map(|a| (a.slot, a.spell_id))
         .filter(|&(_, id)| id != 0)
         .partition(|&(slot, _)| slot < UNIT_AURA_POSITIVE_SLOTS)
 }
@@ -387,11 +390,11 @@ fn read_aura_slots(
     mask: u32,
     first: u8,
     bits: u8,
-) -> io::Result<Vec<(u8, u16)>> {
+) -> io::Result<Vec<(u8, u32)>> {
     let mut slots = Vec::new();
     for bit in 0..bits {
         if mask & (1 << bit) != 0 {
-            slots.push((first + bit, read_u16_le(r)?));
+            slots.push((first + bit, u32::from(read_u16_le(r)?)));
         }
     }
     Ok(slots)
@@ -409,10 +412,10 @@ pub(super) fn read_party_member_stats(
         info.status = Some(read_u8(r)?);
     }
     if mask & party_member_mask::CUR_HP != 0 {
-        info.cur_hp = Some(read_u16_le(r)?);
+        info.cur_hp = Some(u32::from(read_u16_le(r)?));
     }
     if mask & party_member_mask::MAX_HP != 0 {
-        info.max_hp = Some(read_u16_le(r)?);
+        info.max_hp = Some(u32::from(read_u16_le(r)?));
     }
     if mask & party_member_mask::POWER_TYPE != 0 {
         info.power_type = Some(read_u8(r)?);
@@ -452,10 +455,10 @@ pub(super) fn read_party_member_stats(
         info.pet_model_id = Some(read_u16_le(r)?);
     }
     if mask & party_member_mask::PET_CUR_HP != 0 {
-        info.pet_cur_hp = Some(read_u16_le(r)?);
+        info.pet_cur_hp = Some(u32::from(read_u16_le(r)?));
     }
     if mask & party_member_mask::PET_MAX_HP != 0 {
-        info.pet_max_hp = Some(read_u16_le(r)?);
+        info.pet_max_hp = Some(u32::from(read_u16_le(r)?));
     }
     if mask & party_member_mask::PET_POWER_TYPE != 0 {
         info.pet_power_type = Some(read_u8(r)?);

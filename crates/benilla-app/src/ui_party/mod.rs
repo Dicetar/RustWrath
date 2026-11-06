@@ -876,6 +876,8 @@ impl GroupState {
             pet_power_type,
             pet_cur_power,
             pet_max_power,
+            vehicle_seat,
+            lfg_roles,
         );
         if info.pet_name.is_some() {
             entry.pet_name = info.pet_name;

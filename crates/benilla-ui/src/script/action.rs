@@ -401,9 +401,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetActionInfo(slot): the standard action-bar type and id (`"spell"`, `"item"` or `"macro"`).
-    // The client's action slot carries no spellbook subtype, so only the two stock consumers that
-    // need it are served here; an empty slot returns nothing and a non-number raises.
+    // GetActionInfo(slot): the standard action-bar type, id and subType (`"spell"`, `"item"` or
+    // `"macro"`). For `"spell"` slots, `subType` is `"pet"` when the spell lives in the pet book
+    // and not the player's spellbook, else `"spell"`; `"item"` and `"macro"` slots push `""`.
+    // An empty slot returns nothing and a non-number raises.
     g.set(
         "GetActionInfo",
         lua.create_function(|lua, action: Value| {
@@ -411,13 +412,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let mut out = MultiValue::new();
             if let Some(slot) = model.actions.get(&action) {
-                let (kind, id) = match macro_slot_id(slot.kind, slot.action) {
-                    Some(id) => ("macro", id),
-                    None if slot.kind == ACTION_KIND_ITEM => ("item", slot.action),
-                    None => ("spell", slot.action),
+                let (kind, id, sub_type) = match macro_slot_id(slot.kind, slot.action) {
+                    Some(id) => ("macro", id, ""),
+                    None if slot.kind == ACTION_KIND_ITEM => ("item", slot.action, ""),
+                    None => {
+                        let in_player_book = model
+                            .spellbook
+                            .slots
+                            .iter()
+                            .any(|s| s.spell_id == slot.action);
+                        let in_pet_book = model
+                            .pet_book
+                            .slots
+                            .iter()
+                            .any(|s| s.spell_id == slot.action);
+                        let sub = if !in_player_book && in_pet_book {
+                            "pet"
+                        } else {
+                            "spell"
+                        };
+                        ("spell", slot.action, sub)
+                    }
                 };
                 out.push_back(Value::String(lua.create_string(kind)?));
                 out.push_back(Value::Integer(i64::from(id)));
+                out.push_back(Value::String(lua.create_string(sub_type)?));
             }
             Ok(out)
         })?,
@@ -808,6 +827,7 @@ mod tests {
 
     #[test]
     fn get_action_info_reads_the_slot_kind_and_id() {
+        use crate::script::{PetBookState, SpellSlotView};
         let mut s = UiScript::new().unwrap();
         s.keep_calls();
         let slot = |kind, action| ActionSlot {
@@ -815,20 +835,32 @@ mod tests {
             action,
             ..Default::default()
         };
+        s.set_pet_book(PetBookState {
+            token: Some("PET".into()),
+            slots: vec![SpellSlotView {
+                spell_id: 3009,
+                ..Default::default()
+            }],
+        });
         s.set_action(1, Some(slot(super::ACTION_KIND_SPELL, 133)));
         s.set_action(2, Some(slot(super::ACTION_KIND_ITEM, 117)));
         s.set_action(3, Some(slot(super::ACTION_KIND_MACRO, 5)));
+        s.set_action(4, Some(slot(super::ACTION_KIND_SPELL, 3009)));
         assert_eq!(
-            s.eval::<(String, i64)>("return GetActionInfo(1)").unwrap(),
-            ("spell".into(), 133)
+            s.eval::<(String, i64, String)>("return GetActionInfo(1)").unwrap(),
+            ("spell".into(), 133, "spell".into())
         );
         assert_eq!(
-            s.eval::<(String, i64)>("return GetActionInfo(2)").unwrap(),
-            ("item".into(), 117)
+            s.eval::<(String, i64, String)>("return GetActionInfo(2)").unwrap(),
+            ("item".into(), 117, "".into())
         );
         assert_eq!(
-            s.eval::<(String, i64)>("return GetActionInfo(3)").unwrap(),
-            ("macro".into(), 5)
+            s.eval::<(String, i64, String)>("return GetActionInfo(3)").unwrap(),
+            ("macro".into(), 5, "".into())
+        );
+        assert_eq!(
+            s.eval::<(String, i64, String)>("return GetActionInfo(4)").unwrap(),
+            ("spell".into(), 3009, "pet".into())
         );
         assert_eq!(
             s.eval::<i64>("return table.getn({GetActionInfo(9)})")

@@ -90,8 +90,7 @@ use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, Session
 #[path = "ui_script/wrath_rune_calendar_feed.rs"]
 mod wrath_rune_calendar_feed;
 /// The UI feed that turns a decoded `SMSG_PARTYKILLLOG` into the stock combat-log event.
-#[path = "ui_script/wrath_combat_log_feed.rs"]
-mod wrath_combat_log_feed;
+use crate::ui_script::wrath_combat_log_feed;
 
 /// Bounded lifecycle queue depth: lifetimes of interest are short (one world transfer is one
 /// event); 16 gives many frames of headroom at one-event-per-transfer rates.
@@ -4636,7 +4635,43 @@ fn translate_gameplay(
     }
 }
 
-fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEvent {
+fn wrath_group_member_flags(sub_group: u8, member_flags: u8) -> u8 {
+    // 12340 sends `sub_group` (`0..8`) and `flags` (`MEMBER_FLAG_ASSISTANT = 0x01`,
+    // `MEMBER_FLAG_MAINTANK = 0x02`, `MEMBER_FLAG_MAINASSIST = 0x04`) in separate bytes, whereas
+    // the group roster packs subgroup in bits 0..2 and assistant in bit 7 (`0x80`).
+    (sub_group & 0x7)
+        | if member_flags & 0x81 != 0 {
+            benilla_protocol::messages::GROUP_MEMBER_ASSISTANT
+        } else {
+            0
+        }
+}
+
+fn wrath_partition_party_auras(
+    auras: &[gameplay::social::PartyAura],
+) -> (Vec<(u8, u32)>, Vec<(u8, u32)>) {
+    // 3.3.5a `SMSG_PARTY_MEMBER_STATS` sends a 64-bit aura mask (`MAX_AURAS = 64`) with `u32`
+    // spell IDs and `u8` aura flags (`AFLAG_POSITIVE = 0x10`, `AFLAG_NEGATIVE = 0x20`). When the
+    // server sets `AFLAG_NEGATIVE` (or neither positive/negative bit is set and the slot is in the
+    // negative range `>= 32`), classify the slot into `auras_negative`.
+    let mut positive = Vec::new();
+    let mut negative = Vec::new();
+    for aura in auras.iter().filter(|aura| aura.slot < 64) {
+        let is_negative = if aura.flags & 0x30 != 0 {
+            aura.flags & 0x20 != 0
+        } else {
+            aura.slot >= 32
+        };
+        if is_negative {
+            negative.push((aura.slot, aura.spell_id));
+        } else {
+            positive.push((aura.slot, aura.spell_id));
+        }
+    }
+    (positive, negative)
+}
+
+pub(crate) fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEvent {
     let members = list
         .members
         .into_iter()
@@ -4644,9 +4679,7 @@ fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEvent {
             name: member.name,
             guid: member.guid,
             status: member.status,
-            // The donor row packs the subgroup and assistant bit into one byte; 12340 sends
-            // subgroup, member flags and LFG roles separately.
-            flags: (member.sub_group & 0x7) | (member.flags & 0x80),
+            flags: wrath_group_member_flags(member.sub_group, member.flags),
         })
         .collect();
     let loot = list.loot.map(|loot| benilla_protocol::messages::GroupLootInfo {
@@ -4656,70 +4689,45 @@ fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEvent {
     });
     SessionEvent::GroupList {
         group_type: list.group_type,
-        own_flags: list.flags,
+        own_flags: wrath_group_member_flags(list.sub_group, list.flags),
         members,
         leader: list.leader_guid,
         loot,
     }
 }
 
-fn wrath_party_stats(stats: gameplay::social::PartyMemberStats) -> SessionEvent {
+pub(crate) fn wrath_party_stats(stats: gameplay::social::PartyMemberStats) -> SessionEvent {
     let f = stats.fields;
     let mut info = benilla_protocol::messages::PartyMemberStatsInfo {
         status: f.status.map(|status| status as u8),
-        cur_hp: f.cur_hp.map(|value| value.min(u32::from(u16::MAX)) as u16),
-        max_hp: f.max_hp.map(|value| value.min(u32::from(u16::MAX)) as u16),
+        cur_hp: f.cur_hp,
+        max_hp: f.max_hp,
         power_type: f.power_type,
         cur_power: f.cur_power,
         max_power: f.max_power,
         level: f.level,
         zone: f.zone,
         position: f.position.map(|(x, y)| (x as i16, y as i16)),
+        vehicle_seat: f.vehicle_seat,
         ..Default::default()
     };
     if let Some(auras) = f.auras {
-        info.auras = Some(
-            auras
-                .auras
-                .iter()
-                .filter(|aura| aura.slot < 32)
-                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
-                .collect(),
-        );
-        info.auras_negative = Some(
-            auras
-                .auras
-                .iter()
-                .filter(|aura| (32..48).contains(&aura.slot))
-                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
-                .collect(),
-        );
+        let (pos, neg) = wrath_partition_party_auras(&auras.auras);
+        info.auras = Some(pos);
+        info.auras_negative = Some(neg);
     }
     info.pet_guid = f.pet_guid;
     info.pet_name = f.pet_name;
     info.pet_model_id = f.pet_model_id;
-    info.pet_cur_hp = f.pet_cur_hp.map(|value| value.min(u32::from(u16::MAX)) as u16);
-    info.pet_max_hp = f.pet_max_hp.map(|value| value.min(u32::from(u16::MAX)) as u16);
+    info.pet_cur_hp = f.pet_cur_hp;
+    info.pet_max_hp = f.pet_max_hp;
     info.pet_power_type = f.pet_power_type;
     info.pet_cur_power = f.pet_cur_power;
     info.pet_max_power = f.pet_max_power;
     if let Some(auras) = f.pet_auras {
-        info.pet_auras = Some(
-            auras
-                .auras
-                .iter()
-                .filter(|aura| aura.slot < 32)
-                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
-                .collect(),
-        );
-        info.pet_auras_negative = Some(
-            auras
-                .auras
-                .iter()
-                .filter(|aura| (32..48).contains(&aura.slot))
-                .map(|aura| (aura.slot, aura.spell_id.min(u32::from(u16::MAX)) as u16))
-                .collect(),
-        );
+        let (pos, neg) = wrath_partition_party_auras(&auras.auras);
+        info.pet_auras = Some(pos);
+        info.pet_auras_negative = Some(neg);
     }
     SessionEvent::PartyMemberStats {
         guid: stats.guid,
@@ -4909,11 +4917,8 @@ fn wrath_trade_status(status: gameplay::economy::TradeStatus) -> benilla_protoco
     }
 }
 
-/// Map a 12340 trade side onto the donor state. The 3.3.5 `stateIndex` is the stale-offer guard
-/// the donor calls `sequence`; its per-side state word is the donor's `flag`. Socket-enchant
-/// words are retained by the Wrath decoder but have no donor field, so they are not fabricated
-/// into an enchant.
-fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_protocol::messages::TradeStatusExtended {
+/// Map a 12340 trade side onto the trade state, preserving `trade_id` and `socket_enchant`.
+pub(crate) fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_protocol::messages::TradeStatusExtended {
     let mut slots = [None; gameplay::economy::TRADE_SLOT_COUNT];
     for (out, item) in slots.iter_mut().zip(state.slots) {
         *out = item.map(|item| benilla_protocol::messages::TradeItem {
@@ -4923,6 +4928,7 @@ fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_prot
             wrapped: item.wrapped,
             gift_creator: item.gift_creator,
             perm_enchant: item.perm_enchant,
+            socket_enchant: item.socket_enchant,
             creator: item.creator,
             charges: item.charges,
             suffix_factor: item.suffix_factor,
@@ -4934,6 +4940,7 @@ fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_prot
     }
     benilla_protocol::messages::TradeStatusExtended {
         their_window: state.their_window,
+        trade_id: state.trade_id,
         sequence: state.state_index,
         flag: state.sequence,
         gold: state.gold,
@@ -4942,12 +4949,15 @@ fn wrath_trade_extended(state: gameplay::economy::TradeExtended) -> benilla_prot
     }
 }
 
-fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::messages::MailListEntry> {
+pub(crate) fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::messages::MailListEntry> {
     list.mails
         .into_iter()
         .map(|mail| {
-            let item = mail.attachments.first().map(|attachment| {
-                benilla_protocol::messages::MailAttachment {
+            let attachments: Vec<benilla_protocol::messages::MailAttachment> = mail
+                .attachments
+                .iter()
+                .take(benilla_protocol::messages::MAX_MAIL_ITEMS)
+                .map(|attachment| benilla_protocol::messages::MailAttachment {
                     entry: attachment.item_entry,
                     perm_enchant: attachment.enchants[0].id,
                     random_prop_id: attachment.random_prop_id as u32,
@@ -4956,15 +4966,9 @@ fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::m
                     charges: attachment.charges,
                     durability_max: attachment.max_durability,
                     durability: attachment.durability,
-                }
-            });
-            if mail.attachments.len() > 1 {
-                debug!(
-                    "wrath: mail {} carries {} attachments; the donor inbox shows the first",
-                    mail.message_id,
-                    mail.attachments.len()
-                );
-            }
+                })
+                .collect();
+            let item = attachments.first().copied();
             benilla_protocol::messages::MailListEntry {
                 message_id: mail.message_id,
                 message_type: mail.message_type,
@@ -4976,6 +4980,7 @@ fn wrath_mail_list(list: gameplay::economy::MailList) -> Vec<benilla_protocol::m
                 package: mail.package,
                 stationery: mail.stationery,
                 item,
+                attachments,
                 money: mail.money,
                 cod: mail.cod,
                 checked: mail.flags,
