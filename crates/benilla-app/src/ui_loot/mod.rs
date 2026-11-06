@@ -1555,6 +1555,14 @@ fn show(script: &mut UiScript, fresh: Option<LootSnapshot>) {
                 let gone = was.is_some() && after.rows.get(i).is_none_or(Option::is_none);
                 if gone {
                     script.fire_event("LOOT_SLOT_CLEARED", vec![ScriptValue::Int(i as i64 + 1)]);
+                } else if script.target() == benilla_ui::script::UiTarget::Wrath335
+                    && was.as_ref().zip(after.rows.get(i).and_then(Option::as_ref))
+                        .is_some_and(|(old, new)| old != new)
+                {
+                    // 12340 LootButtonItemStatsCallback (0x00589460) repaints the row
+                    // after its item-cache response. Updating the VM model alone leaves
+                    // the stock frame's already-rendered label unchanged.
+                    script.fire_event("LOOT_SLOT_CHANGED", vec![ScriptValue::Int(i as i64 + 1)]);
                 }
             }
             if before.master_candidates != after.master_candidates {
