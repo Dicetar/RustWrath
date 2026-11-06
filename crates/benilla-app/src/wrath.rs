@@ -6306,6 +6306,9 @@ fn wrath_apply_world(world: &mut World) {
                 if let Some(value) = raw.get(635) {
                     pairs.push((717, value));
                 }
+                if let Some(value) = raw.get(benilla_protocol_wrath::fields::PLAYER_REST_STATE_EXPERIENCE) {
+                    pairs.push((1175, value));
+                }
                 if let Some(value) = raw.get(1170) {
                     pairs.push((1176, value));
                 }
@@ -6980,6 +6983,19 @@ fn wrath_apply_world(world: &mut World) {
                 }
             }
             if *guid == player_guid && *kind == ObjectType::Player {
+                // This adapter replaces the descriptor without running the normal values-block
+                // watchers. Publish the events after the new values have been seated, so the XP
+                // bar's handlers read the updated UnitXP/UnitXPMax and rested pool.
+                let xp_changed = moved.iter().any(|&(index, _, _)| index == 716 || index == 717);
+                let rest_changed = moved.iter().any(|&(index, _, _)| index == 1175);
+                if let Some(mut notices) = world.get_resource_mut::<crate::field_watch::NoticeLane>() {
+                    if xp_changed {
+                        notices.write(crate::field_watch::FieldNotice::Player { id: 189 });
+                    }
+                    if rest_changed {
+                        notices.write(crate::field_watch::FieldNotice::Player { id: 406 });
+                    }
+                }
                 let inv_changed = moved.iter().any(|&(idx, _, _)| {
                     (benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR
                         ..benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 228)
