@@ -1111,3 +1111,4 @@ fn the_demotion_drop_pairs_swings_and_ready_stances_with_stand_and_their_kin() {
     // Neither: a run, an emote, Stand over Stand's neighbours.
     assert!(!demotion_drops(5, 0) && !demotion_drops(68, 0) && !demotion_drops(0, 28));
 }
+

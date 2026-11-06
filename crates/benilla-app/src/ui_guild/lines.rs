@@ -316,3 +316,4 @@ mod tests {
         assert_eq!(decline_line("Kaplan").key, "ERR_GUILD_DECLINE_S");
     }
 }
+

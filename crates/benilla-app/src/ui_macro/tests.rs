@@ -940,3 +940,4 @@ fn a_load_and_an_arrival_in_one_pass_derive_once() {
         "the load's flag was taken with the arrival's"
     );
 }
+

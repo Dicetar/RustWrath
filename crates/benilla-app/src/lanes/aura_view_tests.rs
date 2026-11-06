@@ -181,3 +181,4 @@ fn the_aura_watcher_signals_at_its_place_in_its_packet() {
         ]
     );
 }
+

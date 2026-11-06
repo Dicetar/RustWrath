@@ -1170,3 +1170,4 @@ mod tests {
         approx(minimap_day_tint([0.0; 3], [0.0; 3]), [0.281; 3]);
     }
 }
+

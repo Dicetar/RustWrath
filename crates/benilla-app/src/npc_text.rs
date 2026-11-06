@@ -449,3 +449,4 @@ mod tests {
         assert_eq!(expand("Hail,$Bfriend $w", None), "Hail,\nfriend 0");
     }
 }
+

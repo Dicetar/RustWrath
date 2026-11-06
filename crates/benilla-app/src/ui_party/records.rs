@@ -508,3 +508,4 @@ mod tests {
         assert!(record_notices(MEMBER, &without, &petless).is_empty());
     }
 }
+

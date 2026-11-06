@@ -309,3 +309,4 @@ fn the_verb_dialogs_open_from_their_events_and_call_their_verbs() {
         .unwrap());
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

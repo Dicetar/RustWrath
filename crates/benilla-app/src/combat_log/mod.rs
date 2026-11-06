@@ -1081,3 +1081,4 @@ mod tests {
         assert!(kinds(&app).is_empty(), "{:?}", kinds(&app));
     }
 }
+

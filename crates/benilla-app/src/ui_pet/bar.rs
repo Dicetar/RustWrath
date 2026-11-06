@@ -410,3 +410,4 @@ pub(super) fn fire_pet_cooldown_events(
         }
     })
 }
+

@@ -336,3 +336,4 @@ mod tests {
         assert_eq!(dropped(&C::Logout), "Logout");
     }
 }
+

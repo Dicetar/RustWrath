@@ -232,3 +232,4 @@ fn event_arguments_are_typed_from_their_text() {
         );
     }
 }
+

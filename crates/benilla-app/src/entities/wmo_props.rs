@@ -418,3 +418,4 @@ pub(super) fn spawn_wmo_gameobject_props(
         }
     }
 }
+

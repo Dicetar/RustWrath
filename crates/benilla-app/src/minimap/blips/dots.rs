@@ -610,3 +610,4 @@ mod tests {
         assert!(tracked_creature(beasts, cat, 0, false));
     }
 }
+

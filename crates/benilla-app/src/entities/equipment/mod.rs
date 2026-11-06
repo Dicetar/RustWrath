@@ -282,3 +282,4 @@ pub(in crate::entities) fn ensure_item_model(
     };
     held.models.insert((display, kind), dm);
 }
+

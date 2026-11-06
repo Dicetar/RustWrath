@@ -68,3 +68,4 @@ impl SpellReads for Unrecorded {
     fn item_search(&mut self, _: u32) {}
     fn skill_line(&mut self, _: u32) {}
 }
+

@@ -159,3 +159,4 @@ mod tests {
         assert_eq!(s.fps(), 0.0);
     }
 }
+

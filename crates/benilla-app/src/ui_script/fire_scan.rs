@@ -1240,3 +1240,4 @@ fn a_forwarder_the_scan_cannot_trace_is_unaccounted() {
     names.sort();
     assert_eq!(names, ["H_ONE", "H_TWO"]);
 }
+

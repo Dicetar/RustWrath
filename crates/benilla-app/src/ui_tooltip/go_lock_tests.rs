@@ -184,3 +184,4 @@ fn a_meeting_stones_tooltip_adds_its_area_and_level_range() {
         "not a stone"
     );
 }
+

@@ -205,3 +205,4 @@ fn an_npc_that_loses_a_service_flag_closes_its_window() {
     assert!(seen_in(&app).is_empty());
     assert_eq!(latch(&app), Some(VENDOR));
 }
+

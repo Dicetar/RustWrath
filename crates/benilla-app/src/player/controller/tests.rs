@@ -370,3 +370,4 @@ fn a_login_seats_us_only_on_a_game_object_flagged_as_a_transport() {
     assert_eq!(seat(0x21, 0x20), None, "no transport bit");
     assert_eq!(seat(0x09, 0x8), None, "no game object");
 }
+

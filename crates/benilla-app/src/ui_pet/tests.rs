@@ -1310,3 +1310,4 @@ fn summoning(app: &mut bevy::prelude::App, me: u64, pet: u64) {
         .0
         .insert(me, e);
 }
+

@@ -72,3 +72,4 @@ impl PetUnit<'_, '_> {
         self.usable_pet(bar).is_some()
     }
 }
+

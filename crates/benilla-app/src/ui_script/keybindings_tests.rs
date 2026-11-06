@@ -1017,3 +1017,4 @@ fn toggleui_hides_uiparent_and_closes_the_windows() {
     assert!(s.eval::<bool>("return UIParent:IsVisible() == 1").unwrap());
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
+

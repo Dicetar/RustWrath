@@ -506,3 +506,4 @@ fn armor_template(name: &str, inventory_type: u32) -> ItemTemplateView {
         ..Default::default()
     }
 }
+

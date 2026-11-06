@@ -43,3 +43,4 @@ pub(crate) fn plugin(app: &mut App) {
         .add_systems(First, stamp_first)
         .add_systems(Last, stamp_last);
 }
+

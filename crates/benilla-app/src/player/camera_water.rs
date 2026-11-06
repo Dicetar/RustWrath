@@ -249,3 +249,4 @@ mod tests {
         assert!(h.is_finite(), "the pivot stays finite, got {h}");
     }
 }
+

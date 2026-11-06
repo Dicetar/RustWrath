@@ -117,3 +117,4 @@ fn the_pet_portrait_follows_our_charm_else_our_summon() {
     assert_eq!(pet_guid(Some(&me(&[]))), 0);
     assert_eq!(pet_guid(None), 0);
 }
+

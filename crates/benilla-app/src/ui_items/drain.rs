@@ -2515,3 +2515,4 @@ mod bind_confirm_tests {
         assert!(rx.try_iter().next().is_none());
     }
 }
+

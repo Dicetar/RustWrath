@@ -289,3 +289,4 @@ pub(super) fn category(state: u8) -> TrainerServiceCategory {
         _ => TrainerServiceCategory::Hidden,
     }
 }
+

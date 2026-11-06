@@ -500,3 +500,4 @@ fn a_close_owed_ahead_of_a_response_takes_only_the_window_before_it() {
     );
     assert_eq!(open(&app), Some(BOBBER));
 }
+

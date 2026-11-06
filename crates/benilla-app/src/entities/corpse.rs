@@ -229,3 +229,4 @@ mod tests {
         assert!(corpse_char_look(Some(&flesh)).is_some());
     }
 }
+

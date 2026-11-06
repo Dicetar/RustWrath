@@ -634,3 +634,4 @@ mod tests {
         assert!(!s.execute_binding("ITUNES_PLAYPAUSE", true).unwrap());
     }
 }
+

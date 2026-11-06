@@ -113,3 +113,4 @@ fn a_failed_capture_shows_the_failure_string() {
     assert!(shown(&s));
     assert_eq!(text(&s), "Screen Capture Failed");
 }
+

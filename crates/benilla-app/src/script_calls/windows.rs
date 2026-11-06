@@ -227,3 +227,4 @@ impl ScriptCallHost<'_, '_> {
         self.signalled(script, mark);
     }
 }
+

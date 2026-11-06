@@ -22,3 +22,4 @@ fn a_selection_with_no_object_dims_every_plate() {
         "nothing selected"
     );
 }
+

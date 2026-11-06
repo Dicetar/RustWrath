@@ -313,3 +313,4 @@ pub(super) const INERT: &[Registered] = &[
     ours("converted", "0", "12340 trial-to-retail conversion state"),
     ours("accounttype", "", "12340 account type"),
 ];
+

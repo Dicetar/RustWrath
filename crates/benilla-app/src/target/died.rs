@@ -1089,10 +1089,7 @@ mod tests {
         assert!(
             c.sent().iter().any(|s| matches!(
                 s,
-                ClientCommand::CastSpell {
-                    spell_id: FIREBALL,
-                    target: Some(MOB)
-                }
+                ClientCommand::CastSpell { spell_id: FIREBALL, target: Some(MOB), trace: None }
             )),
             "the cast goes out at the mob"
         );
@@ -1143,7 +1140,8 @@ mod tests {
                 s,
                 ClientCommand::CastSpell {
                     spell_id: MIND_VISION,
-                    target: None
+                    target: None,
+                    trace: None
                 }
             )),
             "the far cast goes out with no target"
@@ -1178,10 +1176,7 @@ mod tests {
             .expect("the commit runs on the built client");
         assert!(c.sent().iter().any(|s| matches!(
             s,
-            ClientCommand::CastSpell {
-                spell_id: FIREBALL,
-                target: Some(MOB)
-            }
+            ClientCommand::CastSpell { spell_id: FIREBALL, target: Some(MOB), trace: None }
         )));
         c.dies(mob, MOB, ObjectType::Unit);
         assert!(c
@@ -1465,3 +1460,5 @@ mod tests {
         assert_eq!(heard, ["PET_BAR_UPDATE", "PLAYER_TARGET_CHANGED"]);
     }
 }
+
+

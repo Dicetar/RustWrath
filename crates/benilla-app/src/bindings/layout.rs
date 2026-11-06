@@ -666,3 +666,4 @@ mod tests {
         assert!(!mods.bare(), "Shift held");
     }
 }
+

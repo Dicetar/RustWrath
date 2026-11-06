@@ -55,3 +55,4 @@ pub(crate) struct DressUpBake {
     pub(crate) grip: [bool; 2],
     pub(crate) revision: u64,
 }
+

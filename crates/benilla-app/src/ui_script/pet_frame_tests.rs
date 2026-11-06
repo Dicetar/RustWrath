@@ -548,3 +548,4 @@ fn the_pet_art_paints_over_the_bars() {
     assert_eq!(health, art - 1, "the health bar sits under the art");
     assert_eq!(mana, art - 1, "and so does the mana bar");
 }
+

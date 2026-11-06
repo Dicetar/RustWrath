@@ -298,3 +298,4 @@ fn stock_player_frame_host_smoke_test() {
         "the stock Alpha moved its owner's alpha: {callout_alpha}"
     );
 }
+

@@ -90,3 +90,4 @@ pub(super) fn write_pose(
 fn yaw_of(rotation: Quat) -> f32 {
     rotation.to_euler(EulerRot::YXZ).0
 }
+

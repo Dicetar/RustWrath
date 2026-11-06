@@ -255,3 +255,4 @@ fn a_party_leader_change_before_any_queue_push_updates_the_list_cleanly() {
     s.fire_event("PARTY_LEADER_CHANGED", vec![]);
     assert_eq!(s.take_errors(), Vec::<String>::new());
 }
+

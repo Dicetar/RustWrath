@@ -2807,3 +2807,4 @@ fn a_travelling_spell_without_a_missile_or_ammo_flies_nothing() {
         );
     }
 }
+

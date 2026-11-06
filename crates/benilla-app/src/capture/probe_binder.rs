@@ -545,3 +545,4 @@ fn assert_icon_and_select(
         events_baseline: events_len(script),
     };
 }
+

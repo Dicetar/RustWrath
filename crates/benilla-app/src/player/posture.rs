@@ -475,3 +475,4 @@ fn stop_attack_for_stand_state(
 
 #[cfg(test)]
 mod tests;
+

@@ -117,3 +117,4 @@ fn trainer_buy_failed(error: u32, errors: &mut TrainerErrors) {
     debug!("net: trainer buy failed (code {error})");
     errors.0.push(error);
 }
+

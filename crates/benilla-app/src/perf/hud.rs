@@ -371,3 +371,4 @@ mod tests {
         assert_eq!(hud.pill_top(), PILL_TOP);
     }
 }
+

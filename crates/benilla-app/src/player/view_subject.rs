@@ -405,3 +405,4 @@ mod tests {
         assert_eq!(publish(&mut app), Some(totem));
     }
 }
+

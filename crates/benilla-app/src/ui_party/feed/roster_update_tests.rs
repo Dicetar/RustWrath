@@ -770,3 +770,4 @@ fn the_stock_raid_ui_repaints_a_member_who_dies_out_of_view() {
     let errors = app.world().non_send_resource::<UiScript>().errors();
     assert!(errors.is_empty(), "script errors: {errors:?}");
 }
+

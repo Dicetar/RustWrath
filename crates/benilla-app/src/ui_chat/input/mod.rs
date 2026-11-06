@@ -1279,3 +1279,4 @@ pub(super) fn emote_gate(
         _ => EmoteGate::Suppressed,
     }
 }
+

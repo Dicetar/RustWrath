@@ -518,7 +518,7 @@ fn trade_casts(t: &mut Trade) -> (Vec<(u32, u8)>, bool) {
     let casts = sent(t)
         .into_iter()
         .filter_map(|c| match c {
-            ClientCommand::CastSpellTradeItem { spell_id, slot } => Some((spell_id, slot)),
+            ClientCommand::CastSpellTradeItem { spell_id, slot, .. } => Some((spell_id, slot)),
             _ => None,
         })
         .collect();
@@ -1149,3 +1149,4 @@ fn code_13_signals_the_purse_over_zeroed_offers() {
     status(&mut t, TradeStatus::Unknown13);
     assert_eq!(eval::<i64>(&mut t, "return READ"), 0);
 }
+

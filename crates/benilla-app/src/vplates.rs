@@ -1007,3 +1007,4 @@ mod tests {
         assert_eq!(gx_px(PLATE_W, plate_basis(Vec2::new(800.0, 600.0))), 100.0);
     }
 }
+

@@ -1039,3 +1039,4 @@ pub(crate) const REGISTERED: &[Registered] = &[
     ours("showRaidRange", "0", "GameUI_CVar.cpp:561"),
     ours("chatMouseScroll", "1", "GameUI_CVar.cpp:524"),
 ];
+

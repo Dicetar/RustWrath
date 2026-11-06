@@ -253,3 +253,4 @@ fn stuck_spell_is_the_last_registered_spell_with_the_stuck_effect() {
     );
     assert_eq!(actions.stuck_spell, None, "the reset zeroes it");
 }
+

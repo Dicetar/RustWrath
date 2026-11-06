@@ -318,3 +318,4 @@ pub(crate) fn build_slash_commands(world: &mut World) {
     }
     world.insert_resource(table);
 }
+

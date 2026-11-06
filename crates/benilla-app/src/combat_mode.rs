@@ -245,3 +245,4 @@ fn project_combat_mode(
         view.revision = view.revision.wrapping_add(1);
     }
 }
+

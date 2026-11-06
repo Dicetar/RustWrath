@@ -392,3 +392,4 @@ mod tests {
         assert_eq!(god_line(None), ".cheat god on");
     }
 }
+

@@ -1603,3 +1603,4 @@ mod tests {
         assert_eq!(usable(&c), (false, false));
     }
 }
+

@@ -298,3 +298,4 @@ fn a_standing_change_raises_faction() {
         [Some(LineWord::text_number("FACTION", &name, -40))]
     );
 }
+

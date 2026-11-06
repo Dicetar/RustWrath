@@ -562,3 +562,4 @@ fn a_refused_reagent_is_asked_by_the_next_build_of_its_view_only() {
         [crate::net::ClientCommand::ItemQuery { entry: 7_000, .. }]
     ));
 }
+

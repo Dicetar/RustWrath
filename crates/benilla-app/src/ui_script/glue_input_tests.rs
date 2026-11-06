@@ -167,3 +167,4 @@ fn the_widened_realmlist_box_has_a_border_between_its_caps() {
     );
     benilla_ui::assert_near!(s.take_errors(), Vec::<String>::new());
 }
+

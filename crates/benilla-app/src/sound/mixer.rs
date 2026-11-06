@@ -1762,3 +1762,4 @@ pub(super) mod tests {
         assert!(plays_out(&mut manager, &h), "{path} ends");
     }
 }
+

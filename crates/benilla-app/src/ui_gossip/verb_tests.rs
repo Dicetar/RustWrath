@@ -278,3 +278,4 @@ fn close_gossip_zeroes_the_cell_and_keeps_the_slots() {
         ["GossipSelectOption { guid: 0, option: 3, code: None }"]
     );
 }
+

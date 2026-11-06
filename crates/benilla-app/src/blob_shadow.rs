@@ -492,3 +492,4 @@ mod tests {
         assert_eq!(clamped * 2.0, Vec3::new(-10.0, 0.0, 6.0));
     }
 }
+

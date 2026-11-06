@@ -135,3 +135,4 @@ fn a_button_label_reports_the_font_object_its_button_set() {
         "the label must hand back a font OBJECT, which is what the corpus indexes immediately"
     );
 }
+

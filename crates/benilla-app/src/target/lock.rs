@@ -751,3 +751,4 @@ mod tests {
         assert_eq!(slots[0].key_type, LOCK_KEY_NONE);
     }
 }
+

@@ -429,3 +429,4 @@ fn both_charter_windows_are_registered_left_slot_panels() {
         "one left slot, both pushable 0"
     );
 }
+

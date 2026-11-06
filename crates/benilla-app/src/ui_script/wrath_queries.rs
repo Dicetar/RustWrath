@@ -200,3 +200,4 @@ impl SpellQueries<'_, '_> {
         })
     }
 }
+

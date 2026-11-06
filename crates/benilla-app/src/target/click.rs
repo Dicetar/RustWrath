@@ -2965,7 +2965,7 @@ mod tests {
             let casts: Vec<_> = rx
                 .try_iter()
                 .filter_map(|c| match c {
-                    ClientCommand::CastSpell { spell_id, target } => Some((spell_id, target)),
+                    ClientCommand::CastSpell { spell_id, target, .. } => Some((spell_id, target)),
                     _ => None,
                 })
                 .collect();
@@ -4434,3 +4434,5 @@ mod tests {
         }
     }
 }
+
+

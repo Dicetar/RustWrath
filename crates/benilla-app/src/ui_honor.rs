@@ -419,3 +419,4 @@ mod tests {
         assert_eq!(indexed(&world), 2 * first, "a rebuild's read asks it again");
     }
 }
+

@@ -105,3 +105,4 @@ fn a_periodic_heal_is_worded_up_to_thirty_seconds() {
     // ...capped at the maximum.
     assert!(periodic_heal_worded(Some(&row(10_000, 1_000, 20_000)), 25));
 }
+

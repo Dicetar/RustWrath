@@ -283,3 +283,4 @@ mod tests {
         assert!(at("::ui_items::feed::feed_item_stats") < replay);
     }
 }
+

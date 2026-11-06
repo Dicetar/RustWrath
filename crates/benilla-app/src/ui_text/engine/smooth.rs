@@ -93,3 +93,4 @@ fn commands(o: &Outline26) -> Option<Vec<Command>> {
     }
     Some(out)
 }
+

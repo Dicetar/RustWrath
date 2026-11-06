@@ -529,3 +529,4 @@ fn a_nested_get_inbox_text_leaves_the_outer_body_masked() {
     let bodies: (String, String) = h.eval("local outer = GetInboxText(1) return outer, INNER");
     assert_eq!(bodies, ("%^&* mail".to_string(), "!@#$ mail".to_string()));
 }
+

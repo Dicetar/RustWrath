@@ -405,3 +405,4 @@ fn the_room_binds_the_player() {
     assert!(pane.pending(), "the shown pane asks for its copy");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

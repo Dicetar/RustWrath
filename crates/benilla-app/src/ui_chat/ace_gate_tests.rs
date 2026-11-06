@@ -162,3 +162,4 @@ fn the_auto_join_walk_names_the_channels_the_server_resolves() {
         );
     }
 }
+

@@ -948,3 +948,4 @@ mod tests {
         assert_eq!(app.world().resource::<GameTips>().shown(), None);
     }
 }
+

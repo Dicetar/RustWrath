@@ -483,3 +483,4 @@ mod tests {
         assert_eq!(world.get::<super::super::Precast>(e), Some(&precast));
     }
 }
+

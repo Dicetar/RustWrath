@@ -1163,3 +1163,4 @@ return n";
          reported bug: the checkbox moved and the list underneath did not"
     );
 }
+

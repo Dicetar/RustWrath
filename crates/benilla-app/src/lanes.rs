@@ -575,3 +575,4 @@ mod unit_tests {
         assert_eq!(drain(&mut app), ["e", "f"]);
     }
 }
+

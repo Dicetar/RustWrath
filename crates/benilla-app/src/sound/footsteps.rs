@@ -220,3 +220,4 @@ pub(super) fn plugin(app: &mut App) {
     app.add_systems(Startup, load_footsteps.after(AssetSet::Open))
         .add_systems(Update, footstep_sounds.in_set(WorldStage::Present));
 }
+

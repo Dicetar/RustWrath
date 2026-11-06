@@ -715,3 +715,4 @@ fn a_tab_dropped_off_screen_lands_where_the_reference_rounds_it() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

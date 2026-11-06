@@ -866,3 +866,4 @@ mod tests {
         assert!(leg.run(on_trap).is_empty());
     }
 }
+

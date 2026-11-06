@@ -603,3 +603,4 @@ mod tests {
 #[cfg(test)]
 #[path = "ui_talent_call_tests.rs"]
 mod call_tests;
+

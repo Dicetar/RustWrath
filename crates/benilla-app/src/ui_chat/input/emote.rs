@@ -219,3 +219,4 @@ impl EmoteDoer<'_, '_> {
         }
     }
 }
+

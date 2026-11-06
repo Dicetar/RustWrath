@@ -99,3 +99,4 @@ fn a_charter_link_carries_no_enchant() {
     let link = bag_link(&[(ENCHANT_0, 77), (ROLL, 5), (SEED, 9)], 0x2000);
     assert_eq!(link, "|cff0070dd|Hitem:15268:0:5:9|h[Bloodrazor]|h|r");
 }
+

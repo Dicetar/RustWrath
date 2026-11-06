@@ -536,3 +536,4 @@ mod tests {
         assert!(!cache.answered_unknown(8));
     }
 }
+

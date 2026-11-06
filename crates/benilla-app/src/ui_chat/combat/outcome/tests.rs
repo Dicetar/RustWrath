@@ -185,3 +185,4 @@ fn a_happiness_gain_has_no_word() {
     assert_eq!(power_amount_word(3, 20), Some(LineWord::with("ENERGY", 20)));
     assert_eq!(power_amount_word(4, 1), None);
 }
+

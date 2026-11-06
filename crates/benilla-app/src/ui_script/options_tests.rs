@@ -4607,3 +4607,4 @@ fn the_guild_line_greys_with_player_names_and_the_follow_speed_with_the_style() 
     assert!(speed_thumb(&mut s));
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

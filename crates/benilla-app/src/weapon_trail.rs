@@ -392,3 +392,4 @@ impl Plugin for WeaponTrailPlugin {
 
 #[cfg(test)]
 mod tests;
+

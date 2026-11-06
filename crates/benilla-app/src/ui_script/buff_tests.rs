@@ -938,3 +938,4 @@ fn the_duration_line_reads_the_real_global_strings() {
 
     assert!(s.errors().is_empty(), "errors: {:?}", s.errors());
 }
+

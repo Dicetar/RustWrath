@@ -506,3 +506,4 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // (`capture::drive_capture`), which must not exit 0 with no PNG on disk.
     app.run()
 }
+

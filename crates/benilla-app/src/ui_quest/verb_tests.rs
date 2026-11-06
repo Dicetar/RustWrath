@@ -701,3 +701,4 @@ fn the_row_past_a_full_pool_sends_nothing_and_latches() {
         .unwrap();
     assert!(c.sent().is_empty());
 }
+

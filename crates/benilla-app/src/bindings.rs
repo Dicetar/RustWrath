@@ -2294,3 +2294,4 @@ mod tests {
         assert_eq!(found, ["x\\\"y", "ToggleBackpack();"]);
     }
 }
+

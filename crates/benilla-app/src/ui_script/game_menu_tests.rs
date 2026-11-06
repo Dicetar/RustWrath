@@ -773,3 +773,4 @@ fn the_menu_rides_the_shared_era_window_scale() {
     assert!((k - want).abs() < 1e-6, "menu scale {k} != knob {want}");
     assert!((want - 0.78).abs() < 1e-6, "the knob itself moved: {want}");
 }
+

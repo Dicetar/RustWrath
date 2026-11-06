@@ -153,3 +153,4 @@ impl MailVerbs<'_> {
         let _ = commands.0.send(command);
     }
 }
+

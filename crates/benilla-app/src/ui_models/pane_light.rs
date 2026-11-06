@@ -89,3 +89,4 @@ impl PaneLights<'_> {
         material_variant(&mut light.variants, &buffer, world, materials, scene.lane)
     }
 }
+

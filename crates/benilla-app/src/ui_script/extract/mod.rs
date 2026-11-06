@@ -2602,3 +2602,4 @@ mod sprite_wrap_tests {
         assert_eq!(calls.0, ["wrapped", "clamped"]);
     }
 }
+

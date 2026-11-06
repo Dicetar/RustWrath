@@ -677,3 +677,4 @@ mod tests {
         assert!(world.resource::<super::super::SpellTargeting>().active());
     }
 }
+

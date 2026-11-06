@@ -28,3 +28,4 @@ fn mount_result(mount: bool, code: u32, errors: &mut MountErrors) {
         errors.0.push((mount, code));
     }
 }
+

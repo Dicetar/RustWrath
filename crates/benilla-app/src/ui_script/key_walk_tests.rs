@@ -317,3 +317,4 @@ fn a_key_held_into_an_egui_field_still_comes_up() {
     let all: Vec<KeyboardInput> = past_egui(typed.iter(), false).cloned().collect();
     assert_eq!(all.len(), 3, "without egui's focus every event passes");
 }
+

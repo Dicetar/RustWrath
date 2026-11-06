@@ -399,3 +399,4 @@ fn a_micro_button_pushes_while_its_panel_is_open_and_the_talent_button_pulses_on
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

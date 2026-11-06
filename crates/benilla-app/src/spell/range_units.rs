@@ -490,3 +490,4 @@ mod tests {
         assert_eq!(refusal(Slot::Uncached), None, "a record not cached");
     }
 }
+

@@ -93,3 +93,4 @@ fn the_login_packet_sets_the_clock_and_its_rate() {
         (0, 1, 1.0, true)
     );
 }
+

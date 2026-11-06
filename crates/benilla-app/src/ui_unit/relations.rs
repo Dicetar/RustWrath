@@ -254,3 +254,4 @@ mod tests {
         assert_eq!(ask(&world, r#"UnitReaction("npc", "player")"#), None);
     }
 }
+

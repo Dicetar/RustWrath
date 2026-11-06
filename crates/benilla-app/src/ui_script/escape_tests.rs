@@ -563,3 +563,4 @@ fn an_addon_frame_registered_in_uispecialframes_closes_on_escape() {
         .unwrap();
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

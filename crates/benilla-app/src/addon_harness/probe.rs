@@ -226,3 +226,4 @@ fn raised_since(script: &UiScript, before: usize, lead: &str) -> String {
         format!("= {lead}RAISED: {}", raised.join(" | "))
     }
 }
+

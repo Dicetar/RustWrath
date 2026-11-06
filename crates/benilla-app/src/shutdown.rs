@@ -268,3 +268,4 @@ mod tests {
         assert!(run(true, KeyCode::F5).0.is_empty(), "Alt+F5 does nothing");
     }
 }
+

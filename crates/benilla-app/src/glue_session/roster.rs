@@ -429,3 +429,4 @@ mod tests {
         assert_eq!(roster.pending_entry().map(|e| e.1[0]), Some(8.0));
     }
 }
+

@@ -1073,3 +1073,4 @@ impl UnitViews {
         self.scratch.contains_key(&guid)
     }
 }
+

@@ -403,3 +403,4 @@ fn scrolling_edit_helpers_answer_bare_calls_from_a_handler() {
     s.run("ScrollingEdit_OnTextChanged(SeScroll)").unwrap();
     assert!(s.errors().is_empty(), "explicit form: {:?}", s.errors());
 }
+

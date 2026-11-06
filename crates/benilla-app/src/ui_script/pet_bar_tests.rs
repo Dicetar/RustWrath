@@ -708,3 +708,4 @@ fn ubertooltips_off_takes_the_spells_through_the_token_branch_and_moves_the_plat
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

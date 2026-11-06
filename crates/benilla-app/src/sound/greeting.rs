@@ -556,3 +556,4 @@ mod tests {
         assert_eq!(seq.seq, 0, "the sequence starts over");
     }
 }
+

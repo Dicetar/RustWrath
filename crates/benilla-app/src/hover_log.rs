@@ -454,3 +454,4 @@ fn report(rows: &[Row], path: &str) -> String {
     out.push_str("===================================================\n");
     out
 }
+

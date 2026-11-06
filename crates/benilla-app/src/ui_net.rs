@@ -37,3 +37,4 @@ fn feed_net_stats(mut hosted_vm: crate::script_calls::HostedVm, ping: Res<PingSh
         script.set_bandwidth_kbps(rates.0, rates.1);
     })
 }
+

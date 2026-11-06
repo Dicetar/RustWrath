@@ -1086,3 +1086,4 @@ mod emitters {
             .is_empty());
     }
 }
+

@@ -230,3 +230,4 @@ mod tests {
         assert_eq!(caption(MirrorTimerKind::Breath, None, &labels), "[BREATH]");
     }
 }
+

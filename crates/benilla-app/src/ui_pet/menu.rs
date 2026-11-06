@@ -45,3 +45,4 @@ pub(super) fn feed_pet_menu(
         script.set_pet_menu(can_be_abandoned, can_be_renamed);
     })
 }
+

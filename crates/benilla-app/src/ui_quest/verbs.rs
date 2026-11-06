@@ -492,3 +492,4 @@ impl QuestVerbs<'_, '_> {
         giver.acted = true;
     }
 }
+

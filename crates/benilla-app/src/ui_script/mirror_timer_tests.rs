@@ -363,3 +363,4 @@ fn the_border_and_caption_draw_over_the_fill() {
         fill.z
     );
 }
+

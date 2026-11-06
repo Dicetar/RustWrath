@@ -546,3 +546,4 @@ pub(super) fn slot_entry_mut(bar: &mut PetBar, slot: u32) -> Option<&mut PetActi
     let index = usize::try_from(slot.checked_sub(1)?).ok()?;
     bar.spells.bar.get_mut(index)
 }
+

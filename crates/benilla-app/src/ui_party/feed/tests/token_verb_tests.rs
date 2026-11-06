@@ -148,3 +148,4 @@ fn invite_to_party_invites_a_held_player_any_token_names() {
     lua(&mut app, r#"InviteToParty("party1")"#);
     assert_eq!(invites(&rx), Vec::<String>::new(), "no object, no invite");
 }
+

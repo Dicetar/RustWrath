@@ -331,3 +331,4 @@ mod tests {
         assert_eq!(chat_log.pending_events().len(), 1, "the list is freed");
     }
 }
+

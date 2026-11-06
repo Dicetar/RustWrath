@@ -204,3 +204,4 @@ mod tests {
         assert_eq!(rig.target_distance, CAM_DIST_MIN);
     }
 }
+

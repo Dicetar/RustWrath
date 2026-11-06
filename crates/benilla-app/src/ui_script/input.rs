@@ -728,3 +728,4 @@ mod tests {
         assert_eq!(calls(&s), (2, 0.0), "and the other way is a notch down");
     }
 }
+

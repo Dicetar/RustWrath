@@ -545,3 +545,4 @@ fn a_corner_seated_gameobject_plate_survives_an_addons_on_show_hook() {
         s.errors()
     );
 }
+

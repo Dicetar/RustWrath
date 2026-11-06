@@ -504,3 +504,4 @@ fn a_sticky_release_sets_the_cameras_bit_and_a_plain_one_clears_it() {
     frame(&mut w, 0.0);
     assert!(!sticky(&w));
 }
+

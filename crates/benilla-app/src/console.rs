@@ -560,3 +560,4 @@ mod tests {
         app.console_command("cvarlist", DEFAULT, None, nothing);
     }
 }
+

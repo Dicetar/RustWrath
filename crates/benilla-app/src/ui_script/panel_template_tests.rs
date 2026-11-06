@@ -488,3 +488,4 @@ fn the_stock_tab_fits_its_text_on_the_first_show() {
         "the probe label was meant to overflow: left {tl} + width {width} <= right {right}"
     );
 }
+

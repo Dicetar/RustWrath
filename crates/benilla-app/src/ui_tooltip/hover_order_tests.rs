@@ -198,3 +198,4 @@ fn a_retired_hovered_plate_is_not_published_again() {
     );
     assert!(script(&mut app).take_errors().is_empty());
 }
+

@@ -178,3 +178,4 @@ fn placed(place: u64, sent: bool) -> Option<CallTail> {
         script.finish_trade_placement(place, sent)
     }))
 }
+

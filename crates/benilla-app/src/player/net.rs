@@ -149,3 +149,4 @@ mod tests {
         assert_eq!(fired, 0);
     }
 }
+

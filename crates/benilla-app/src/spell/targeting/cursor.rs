@@ -1116,3 +1116,4 @@ mod tests {
         assert!(!verdict(0x0002, friend(), 10.0));
     }
 }
+

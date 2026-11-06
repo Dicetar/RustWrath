@@ -1362,3 +1362,4 @@ fn shift_click_takes_one_bundle_and_splits_a_single() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

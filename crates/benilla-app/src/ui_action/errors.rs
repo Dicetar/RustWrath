@@ -1145,3 +1145,4 @@ mod message_input_tests {
         );
     }
 }
+

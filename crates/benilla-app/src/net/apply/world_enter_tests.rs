@@ -156,3 +156,4 @@ fn the_client_schedules_the_sends_in_the_reference_order() {
         crate::ui_dialog_verbs::meeting_stone_enter_world
     ));
 }
+

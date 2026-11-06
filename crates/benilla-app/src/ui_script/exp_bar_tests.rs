@@ -339,3 +339,4 @@ fn the_rest_state_line_joins_the_held_open_tooltip() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

@@ -624,3 +624,4 @@ fn a_line_without_a_race_class_row_is_not_in_the_list_the_skill_up_verbs_index()
     };
     assert_eq!((temp(2), temp(3)), (1, 0));
 }
+

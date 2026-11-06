@@ -2058,3 +2058,4 @@ mod tests {
         assert_eq!(zone.ambience_kit, 0, "the selection reopens it");
     }
 }
+

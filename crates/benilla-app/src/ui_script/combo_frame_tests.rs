@@ -187,3 +187,4 @@ fn re_targeting_empties_the_dots_without_the_count_moving() {
     s.fire_event("PLAYER_TARGET_CHANGED", vec![]);
     assert!(!shown(&mut s), "no target ⇒ no dots");
 }
+

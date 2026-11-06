@@ -392,3 +392,4 @@ fn an_awaited_record_flushes_its_running_cooldown_once_it_lands() {
     cds.answer_awaited_records(&items, None, now);
     assert_eq!(edges(&cds), (before.0 + 1, before.1 + 1), "once");
 }
+

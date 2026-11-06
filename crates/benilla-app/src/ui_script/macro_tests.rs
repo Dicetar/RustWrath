@@ -560,3 +560,4 @@ fn the_icon_picker_opens_without_raising() {
         "the picker is up"
     );
 }
+

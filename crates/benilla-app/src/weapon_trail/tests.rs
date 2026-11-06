@@ -563,3 +563,4 @@ fn an_indoor_wearers_committed_ambient_wins_over_the_scenes() {
         "the room is warmer AND redder than the sky — the hue flip is the visible half: {lit:?}"
     );
 }
+

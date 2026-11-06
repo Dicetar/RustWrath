@@ -229,3 +229,4 @@ mod tests {
         assert!(m.on_map(1).is_none(), "Kalimdor sees no Stormwind flag");
     }
 }
+

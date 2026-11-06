@@ -326,3 +326,4 @@ fn the_damage_text_font_is_read_from_the_lua_global() {
         "the addon's face, not Friz"
     );
 }
+

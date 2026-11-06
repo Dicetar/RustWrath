@@ -906,3 +906,4 @@ fn a_teardowns_strike_cancel_reports_before_the_target_change() {
     run(&mut f, r#"ClearTarget() SEEN = table.concat(ORDER, ",")"#);
     assert_eq!(seen(&mut f), "SPELLCAST_STOP,PLAYER_TARGET_CHANGED");
 }
+

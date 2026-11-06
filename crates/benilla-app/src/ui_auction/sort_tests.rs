@@ -1107,3 +1107,4 @@ fn a_page_whose_item_answers_later_in_its_frame_sorts_at_the_answer() {
     super::net::fire_house_lane(h.app.world_mut());
     assert!(h.seen().is_empty(), "once");
 }
+

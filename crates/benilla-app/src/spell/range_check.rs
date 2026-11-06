@@ -118,3 +118,4 @@ pub(crate) fn action_in_range(
     (IN_RANGE_TARGETS.contains(&def.effect_implicit_target_a[0]) && ctx.selection_guid.is_some())
         .then_some(true)
 }
+

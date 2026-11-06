@@ -457,3 +457,4 @@ mod tests {
         assert_eq!(wmo_minimap_stem("not/a/model.txt"), None);
     }
 }
+

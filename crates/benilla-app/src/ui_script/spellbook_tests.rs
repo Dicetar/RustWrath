@@ -806,3 +806,4 @@ fn the_macro_editor_takes_a_shift_click_and_only_a_shift_click() {
     );
     assert!(s.take_spell_casts().is_empty());
 }
+

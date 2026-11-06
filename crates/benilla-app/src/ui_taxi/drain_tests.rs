@@ -317,3 +317,4 @@ fn an_open_drops_the_last_map_s_slots() {
     assert!(sent.is_empty(), "{sent:?}");
     assert!(shown.is_empty(), "{shown:?}");
 }
+

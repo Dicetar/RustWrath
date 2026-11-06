@@ -293,3 +293,4 @@ mod tests {
         assert_eq!(runs[0].unlocks, [crate::item_watch::Unlock::Item(ITEM)]);
     }
 }
+

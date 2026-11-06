@@ -2039,3 +2039,4 @@ fn the_enchant_slots_spell_signals_its_side_and_names_the_enchantment() {
     assert_eq!(seen(&mut app), ["TRADE_TARGET_ITEM_CHANGED 7"]);
     assert_eq!(enchantments(&mut app).1, None);
 }
+

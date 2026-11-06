@@ -175,3 +175,4 @@ fn do_ready_check_shows_its_start_line_inside_the_call() {
         .try_iter()
         .any(|c| matches!(c, ClientCommand::ReadyCheckStart)));
 }
+

@@ -357,3 +357,4 @@ pub(super) fn plugin(app: &mut App) {
                 .in_set(crate::ui_script::UiDrain),
         );
 }
+

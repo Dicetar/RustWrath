@@ -216,3 +216,4 @@ fn pet_stop_attack_sends_and_repaints_in_its_call() {
         "the handler ran in the verb and read the latch down"
     );
 }
+

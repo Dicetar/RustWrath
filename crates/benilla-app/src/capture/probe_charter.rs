@@ -1198,3 +1198,4 @@ fn assert_icon_and_select(
     probe.charter_row = Some(opt.index);
     probe.phase = Phase::Registrar { since: now };
 }
+

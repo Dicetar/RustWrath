@@ -1377,3 +1377,4 @@ mod tests {
         assert!(world.get_entity(plate).is_ok());
     }
 }
+

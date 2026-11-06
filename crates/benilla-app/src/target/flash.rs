@@ -180,3 +180,4 @@ mod tests {
         assert_eq!(flashing(world), None, "a queued end stops it");
     }
 }
+

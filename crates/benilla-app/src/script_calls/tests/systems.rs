@@ -202,3 +202,4 @@ fn close_tabard_creation_signals_inside_its_call() {
         None
     );
 }
+

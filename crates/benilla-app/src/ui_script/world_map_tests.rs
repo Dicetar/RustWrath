@@ -1037,3 +1037,4 @@ fn wrath_map_timer_globals_answer_quietly() {
     assert!(!s.eval::<bool>("return IsZoomOutAvailable()").unwrap());
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

@@ -1266,3 +1266,4 @@ fn compare_party_record(
     let notices = crate::ui_party::record_notices(guid, &old, &live);
     sc.field_notices.write_batch(notices);
 }
+

@@ -716,3 +716,4 @@ mod tests {
         assert_eq!(bark_kit(&voice, 255), 0);
     }
 }
+

@@ -578,3 +578,4 @@ mod go_lock_tests;
 mod hover_order_tests;
 #[cfg(test)]
 mod tests;
+

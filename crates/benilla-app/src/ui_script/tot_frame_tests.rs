@@ -524,3 +524,4 @@ fn unit_guids() -> benilla_ui::script::UnitGuids {
         ..Default::default()
     }
 }
+

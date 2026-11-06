@@ -63,3 +63,4 @@ fn the_charge_filter_rides_only_a_charged_use() {
         Some(IN_BAG)
     });
 }
+

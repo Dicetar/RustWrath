@@ -9,7 +9,7 @@ fn casts_and_cancels(f: &Frame) -> Vec<(&'static str, u32)> {
     f.rx.try_iter()
         .filter_map(|c| match c {
             ClientCommand::CastSpell { spell_id, .. } => Some(("cast", spell_id)),
-            ClientCommand::CancelCast { spell_id } => Some(("cancel", spell_id)),
+            ClientCommand::CancelCast { spell_id, .. } => Some(("cancel", spell_id)),
             _ => None,
         })
         .collect()
@@ -457,3 +457,4 @@ fn only_the_bars_press_toggles_a_running_repeat_off() {
         .any(|c| matches!(c, ClientCommand::CancelAutoRepeat)));
     assert_eq!(key(&f), None, "the bar's press stops it");
 }
+

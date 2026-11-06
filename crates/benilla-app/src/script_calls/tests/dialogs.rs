@@ -651,3 +651,4 @@ fn cancel_meeting_stone_refuses_a_follower_inside_its_call() {
     eval::<()>(&mut app, "CancelMeetingStoneRequest() RandomRoll(1, 2)");
     assert_eq!(sent(&rx), ["roll 9", "roll 1"]);
 }
+

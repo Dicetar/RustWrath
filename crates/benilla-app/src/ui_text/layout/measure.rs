@@ -643,3 +643,4 @@ mod row_start_tests {
         assert_eq!(raw_offsets("", &[0]), [0]);
     }
 }
+

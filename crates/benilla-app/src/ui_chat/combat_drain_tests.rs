@@ -265,3 +265,4 @@ fn a_kills_group_float_words_the_group_or_raid_form() {
         Some(format!("{dies} 52 experience. (+12 exp Rested bonus, -40 raid penalty)").as_str())
     );
 }
+

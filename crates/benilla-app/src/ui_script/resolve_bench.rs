@@ -887,3 +887,4 @@ fn structural_change_costs() {
         );
     }
 }
+

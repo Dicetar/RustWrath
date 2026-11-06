@@ -33,3 +33,4 @@ impl Plugin for AreaPoiPlugin {
         app.add_systems(Startup, load_area_poi.after(AssetSet::Open));
     }
 }
+

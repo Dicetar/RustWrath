@@ -155,3 +155,4 @@ fn do_trade_skill_casts_inside_its_call() {
     eval::<()>(&mut app, "DoTradeSkill(2, 1) RandomRoll(1, 2)");
     assert_eq!(sent(&rx), ["cast 2963", "roll 1"]);
 }
+

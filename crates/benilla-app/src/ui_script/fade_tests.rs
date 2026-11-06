@@ -113,3 +113,4 @@ fn a_flash_alternates_then_stops() {
         "showWhenDone was nil, so it ends hidden"
     );
 }
+

@@ -417,3 +417,4 @@ fn endless_chunked_trailers_are_refused() {
     });
     assert!(download(&fake.url("/"), FAST, &mut |_| true).is_ok());
 }
+

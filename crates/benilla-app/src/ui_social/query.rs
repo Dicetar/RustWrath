@@ -320,3 +320,4 @@ fn add_matches<'n>(mask: &mut u32, rows: impl Iterator<Item = (u32, &'n str)>, t
 
 #[cfg(test)]
 mod tests;
+

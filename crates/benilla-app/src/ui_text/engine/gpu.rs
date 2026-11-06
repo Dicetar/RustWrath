@@ -205,3 +205,4 @@ fn report_cache(atlas: &UiFontAtlas) {
         e.dpi,
     );
 }
+

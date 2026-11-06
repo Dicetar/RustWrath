@@ -691,3 +691,4 @@ fn each_answer_reaches_its_own_stores_file_through_the_live_handlers() {
     assert!(held_next_session::<PageTexts>(PAGE), "page text");
     assert!(held_next_session::<MailOpen>(ITEM_TEXT), "item text");
 }
+

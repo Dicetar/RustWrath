@@ -862,3 +862,4 @@ fn the_tame_rung_refuses_a_second_pet_after_its_line() {
     };
     assert_eq!(indoors.refuse(&outdoor_tame), Some(0x55));
 }
+

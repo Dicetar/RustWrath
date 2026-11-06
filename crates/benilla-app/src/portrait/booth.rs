@@ -1468,3 +1468,4 @@ mod instance_tests {
         assert!(ghost.fade_materials(&steady, &none).is_none());
     }
 }
+

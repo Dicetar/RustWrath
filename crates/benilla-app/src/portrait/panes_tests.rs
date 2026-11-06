@@ -1046,3 +1046,4 @@ fn the_dressing_room_on_the_player_wears_the_rooms_assembly() {
     h.frame();
     assert_eq!(h.meshes(room), Some(vec![again]));
 }
+

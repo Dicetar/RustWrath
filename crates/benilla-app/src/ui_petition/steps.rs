@@ -246,3 +246,4 @@ mod tests {
         assert_eq!(refusal, Some("ERR_EMBLEMERROR_NOTABARDGEOSET"));
     }
 }
+

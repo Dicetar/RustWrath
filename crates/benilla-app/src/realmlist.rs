@@ -285,3 +285,4 @@ mod tests {
         assert_eq!(r.address(), "logon.example.org");
     }
 }
+

@@ -19,3 +19,4 @@ pub(crate) fn feed_bubbles(
         script.sync_chat_bubbles(geometry, &feed.states);
     })
 }
+

@@ -865,3 +865,4 @@ fn a_refused_login_returns_to_character_select_on_the_same_link() {
     ));
     assert_eq!(world.authentications(), 1);
 }
+

@@ -970,3 +970,4 @@ fn the_dropdown_and_the_opacity_slider_drive_the_saved_options() {
     );
     quiet(&s);
 }
+

@@ -684,3 +684,4 @@ fn debug_panel_ui(
         });
     Ok(())
 }
+

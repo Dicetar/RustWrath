@@ -66,3 +66,4 @@ pub(crate) fn enter_world_on_self_create(
         cascades.write(WorldEnterCascadeMessage);
     }
 }
+

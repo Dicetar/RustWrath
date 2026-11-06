@@ -470,3 +470,4 @@ fn mirror_mover_collision_height(
         }
     }
 }
+

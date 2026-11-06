@@ -80,3 +80,4 @@ fn set_bit(root: Entity, on: bool, children: &Query<&Children>, tags: &mut Query
         }
     }
 }
+

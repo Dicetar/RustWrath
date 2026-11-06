@@ -129,3 +129,4 @@ fn fire_trail_census(
         info!("{line}");
     }
 }
+

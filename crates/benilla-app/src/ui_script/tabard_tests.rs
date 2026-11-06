@@ -177,3 +177,4 @@ fn the_designer_pane_binds_the_player() {
     assert!(pane.pending(), "the shown pane asks for its copy");
     assert!(s.errors().is_empty(), "errors: {:?}", s.errors());
 }
+

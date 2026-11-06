@@ -383,3 +383,4 @@ fn a_game_objects_go_plays_its_instant_impacts_and_nothing_of_a_caster() {
     assert!(events.is_empty(), "{events:?}");
     assert_eq!(targets, [(None, vec![mob], false)]);
 }
+

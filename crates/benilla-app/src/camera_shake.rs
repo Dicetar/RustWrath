@@ -684,3 +684,4 @@ mod tests {
         assert!(suspended(Some(&swimming), Some(&path(false))), "both");
     }
 }
+

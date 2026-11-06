@@ -326,3 +326,4 @@ mod mono_cell_tests {
         assert_eq!(px(&rgba, w, 1, 1), [0, 0, 0, 255]);
     }
 }
+

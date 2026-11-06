@@ -58,3 +58,4 @@ fn mark_player_rig(
         }
     }
 }
+

@@ -2242,3 +2242,4 @@ fn a_pet_rows_pet_is_the_summon_not_the_bar() {
         None
     );
 }
+

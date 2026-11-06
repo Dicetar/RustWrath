@@ -170,3 +170,4 @@ fn draw_population(
     }
     (n, mats.len())
 }
+

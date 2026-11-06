@@ -182,3 +182,4 @@ fn omnicc_and_bagnon_come_out_on_opposite_sides() {
         row("Bagnon").render.frames
     );
 }
+

@@ -304,3 +304,4 @@ mod tests {
         assert_eq!(q.0, vec![(7, Gesture::Talk)]);
     }
 }
+

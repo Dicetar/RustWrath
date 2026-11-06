@@ -2258,3 +2258,4 @@ fn the_backpack_buttons_ring_follows_its_own_window_through_real_clicks() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

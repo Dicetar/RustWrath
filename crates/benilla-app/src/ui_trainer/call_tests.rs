@@ -101,3 +101,4 @@ fn the_trainer_verbs_send_inside_their_calls() {
         "`TalkToTrainer` stores the guid it asks (`0x5df69f`)"
     );
 }
+

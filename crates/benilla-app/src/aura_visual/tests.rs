@@ -940,3 +940,4 @@ fn a_non_zero_rate_installs_a_node_and_holds_nothing() {
     assert!(!clip(&app, unit, 4).0);
     assert_eq!(clip(&app, unit, 4).1, 1.35);
 }
+

@@ -429,3 +429,4 @@ fn a_begin_during_the_end_fade_resets_the_line() {
     );
     assert!(s.errors().is_empty(), "errors: {:?}", s.errors());
 }
+

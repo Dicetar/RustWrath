@@ -121,3 +121,4 @@ fn gossip_complete(world: &mut World) {
     debug!("net: gossip complete — closing the menu");
     super::close_core(world);
 }
+

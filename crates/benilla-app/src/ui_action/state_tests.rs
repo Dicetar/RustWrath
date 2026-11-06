@@ -2325,3 +2325,4 @@ fn the_feed_signals_no_auto_repeat_edge_of_its_own() {
         .unwrap();
     assert!(seen.is_empty(), "{seen:?}");
 }
+

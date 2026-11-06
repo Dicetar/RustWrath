@@ -919,3 +919,4 @@ fn a_removal_whose_name_is_pending_leaves_a_hole() {
     assert_eq!(eval::<i64>(&mut s, "return GetNumFriends()"), 0);
     assert_eq!(names(&mut s, 2), ["nil", "Bbb"]);
 }
+

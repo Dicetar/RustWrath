@@ -102,3 +102,4 @@ fn an_initial_item_cooldown_alone_reaches_the_bags() {
     app.update();
     assert_eq!(duration(&mut app), 60.0, "the seeded record, read");
 }
+

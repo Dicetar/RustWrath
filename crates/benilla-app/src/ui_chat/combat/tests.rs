@@ -862,3 +862,4 @@ fn a_school_with_no_name_writes_no_line() {
         None
     );
 }
+

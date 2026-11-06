@@ -2150,3 +2150,4 @@ mod tests {
             .trade_skill_open());
     }
 }
+

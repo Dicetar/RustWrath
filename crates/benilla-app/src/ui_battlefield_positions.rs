@@ -390,3 +390,4 @@ mod tests {
         assert_eq!(flag_token(None), None);
     }
 }
+

@@ -293,3 +293,4 @@ mod tests {
         assert!(!occupies_emote_slot(None, Latch::EmoteVoice, a));
     }
 }
+

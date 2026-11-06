@@ -108,3 +108,4 @@ fn a_second_confirm_replaces_the_first() {
         "the confirm is exclusive — it reuses the one slot"
     );
 }
+

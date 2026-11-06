@@ -733,3 +733,4 @@ fn a_hunters_new_pet_signals_pet_ui_close_before_the_bar_update() {
         assert_eq!(seen, ["PET_BAR_UPDATE:1"], "the same pet: no change");
     }
 }
+

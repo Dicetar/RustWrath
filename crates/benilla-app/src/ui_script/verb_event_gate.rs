@@ -226,3 +226,4 @@ fn the_declared_rows_are_still_true() {
         wrong.join("\n  ")
     );
 }
+

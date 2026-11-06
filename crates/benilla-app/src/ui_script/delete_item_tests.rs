@@ -515,3 +515,4 @@ fn the_world_drop_survives_the_whole_shipped_interface() {
     assert!(s.cursor_item().is_none(), "the cursor is empty after Yes");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

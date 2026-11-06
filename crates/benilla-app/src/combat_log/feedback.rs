@@ -202,3 +202,4 @@ mod tests {
         assert_eq!(schools, [2]);
     }
 }
+

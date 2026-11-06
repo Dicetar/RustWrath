@@ -244,3 +244,4 @@ fn the_stock_video_window_opens_saves_restores_defaults_and_cancels_clean() {
         "…and the desktop gamma (`OptionsFrame.lua:261`)"
     );
 }
+

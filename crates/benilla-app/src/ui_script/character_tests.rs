@@ -1197,3 +1197,4 @@ fn an_addons_tab_click_selects_through_the_generic_entry_point() {
     );
     assert!(s.errors().is_empty(), "no handler errors: {:?}", s.errors());
 }
+

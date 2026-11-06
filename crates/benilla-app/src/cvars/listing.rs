@@ -80,3 +80,4 @@ mod tests {
         assert_eq!(reference_help("noSuchCvarAnywhere"), (9, None));
     }
 }
+

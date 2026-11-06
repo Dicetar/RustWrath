@@ -235,3 +235,4 @@ fn hangs_off_one_of_ours(script: &UiScript, baseline: &RenderBaseline, frame: Fr
     }
     false
 }
+

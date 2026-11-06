@@ -543,3 +543,4 @@ mod tests {
         assert_eq!((open.npc, open.num_stable_slots), (None, 0));
     }
 }
+

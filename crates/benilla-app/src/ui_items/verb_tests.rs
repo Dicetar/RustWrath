@@ -614,3 +614,4 @@ fn a_vendor_row_dropped_on_a_bag_buys_into_it() {
         );
     }
 }
+

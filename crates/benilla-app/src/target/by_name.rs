@@ -1506,3 +1506,4 @@ mod tests {
         assert_eq!(find(&mut world, "Bob"), Some(BOBBY));
     }
 }
+

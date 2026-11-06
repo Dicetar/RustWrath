@@ -199,3 +199,4 @@ mod tests {
         assert_eq!(icon(0, Some(2), 2), SWORD_ICON);
     }
 }
+

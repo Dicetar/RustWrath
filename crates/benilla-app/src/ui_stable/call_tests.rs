@@ -145,3 +145,4 @@ fn unstable_and_drops_send_with_no_master_stored() {
     };
     assert_eq!(sent(&s), lines(&[unstable.clone(), unstable]));
 }
+

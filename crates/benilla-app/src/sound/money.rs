@@ -63,3 +63,4 @@ fn play_coin_on_coinage_change(
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(Update, play_coin_on_coinage_change);
 }
+

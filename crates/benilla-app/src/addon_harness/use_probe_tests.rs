@@ -246,3 +246,4 @@ fn bagnon_is_reachable_and_omnicc_is_not_broken() {
         bagnon.used.frames
     );
 }
+

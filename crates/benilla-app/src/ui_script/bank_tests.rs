@@ -575,3 +575,4 @@ fn a_bank_bag_button_paints_the_drop_and_lets_go_of_the_lock() {
         "the bag is drawn on button 2, not the one it left ({drawn} vs {bag1_left}/{bag2_left})"
     );
 }
+

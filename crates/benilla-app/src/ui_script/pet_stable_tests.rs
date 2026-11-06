@@ -204,3 +204,4 @@ fn the_stable_pane_shows_the_selected_pets_display() {
     assert_eq!((pane(&s).guid, pane(&s).display), (0, 1008), "the row's");
     assert!(s.errors().is_empty(), "errors: {:?}", s.errors());
 }
+

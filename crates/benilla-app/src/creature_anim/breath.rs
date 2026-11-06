@@ -217,3 +217,4 @@ mod tests {
         assert_eq!(DRUNK_THRESHOLD, 50);
     }
 }
+

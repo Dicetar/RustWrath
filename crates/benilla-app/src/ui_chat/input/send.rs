@@ -454,3 +454,4 @@ pub(crate) fn run_chat(world: &mut World, lua: &str) -> benilla_ui::mlua::Result
     world.insert_non_send_resource(script);
     r
 }
+

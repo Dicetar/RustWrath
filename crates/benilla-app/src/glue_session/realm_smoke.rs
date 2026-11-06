@@ -434,3 +434,4 @@ mod tests {
         assert_eq!(walk.phase, 0, "the state says otherwise");
     }
 }
+

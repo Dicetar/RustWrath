@@ -177,3 +177,4 @@ pub(super) fn re_derive_all(
         wire.state = re_derive(wire, trainer_type, spells, skill_lines, player);
     }
 }
+

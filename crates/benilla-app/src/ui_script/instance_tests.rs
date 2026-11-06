@@ -216,3 +216,4 @@ fn the_self_menu_row_gates_on_the_binding_and_confirms_before_sending() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

@@ -405,3 +405,4 @@ mod tests {
         assert_eq!(seat(&mut b, below), below);
     }
 }
+

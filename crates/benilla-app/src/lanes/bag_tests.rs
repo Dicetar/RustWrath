@@ -478,3 +478,4 @@ fn a_restacks_events_and_a_chat_line_keep_their_packets_order() {
         ]
     );
 }
+

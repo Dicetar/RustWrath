@@ -189,3 +189,4 @@ mod tests {
         assert!(conform_rotation(2, uphill).angle_between(Quat::IDENTITY) < 1e-3);
     }
 }
+

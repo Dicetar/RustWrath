@@ -323,3 +323,4 @@ mod tests {
         assert!(board.last_request.is_none());
     }
 }
+

@@ -41,3 +41,4 @@ fn partner_probe(
             .send(crate::net::ClientCommand::DuelAccepted { arbiter });
     }
 }
+

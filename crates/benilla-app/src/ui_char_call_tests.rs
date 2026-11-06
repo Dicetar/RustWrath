@@ -71,3 +71,4 @@ fn abandon_skill_sends_inside_its_call() {
         ]
     );
 }
+

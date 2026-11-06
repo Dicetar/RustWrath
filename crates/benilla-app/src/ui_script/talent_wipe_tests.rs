@@ -129,3 +129,4 @@ fn leaving_the_trainers_range_hides_the_confirm() {
     );
     assert!(s.take_talent_calls().is_empty(), "and sends nothing");
 }
+

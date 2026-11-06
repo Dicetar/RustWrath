@@ -1612,3 +1612,4 @@ fn a_forms_state_change_leaves_the_shelf_down_over_the_raised_bar() {
     assert!(!shown(&s, "ShapeshiftBarMiddle"));
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

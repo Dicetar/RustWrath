@@ -235,3 +235,4 @@ mod tests {
         assert_eq!(facing.kind, benilla_ui::messages::MsgKind::Error);
     }
 }
+

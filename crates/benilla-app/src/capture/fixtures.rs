@@ -1959,3 +1959,4 @@ fn set_enemy_plates(script: Option<&benilla_ui::script::UiScript>, on: bool) {
         warn!("nameplates: {e}");
     }
 }
+

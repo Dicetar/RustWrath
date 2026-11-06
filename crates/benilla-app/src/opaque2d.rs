@@ -110,3 +110,4 @@ impl Plugin for SkipEmptyOpaque2dPlugin {
         );
     }
 }
+

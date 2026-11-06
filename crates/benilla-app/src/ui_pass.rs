@@ -1849,3 +1849,4 @@ mod tests {
         assert_eq!(colors, [quarter, quarter, bottom, bottom]);
     }
 }
+

@@ -240,3 +240,4 @@ mod tests {
         assert!(!app.world().non_send_resource::<UiScript>().item_locked(A));
     }
 }
+

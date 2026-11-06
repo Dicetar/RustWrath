@@ -558,3 +558,4 @@ mod tests {
         assert!(abilities.contains("PACIFIED") && !abilities.contains("STUNNED"));
     }
 }
+

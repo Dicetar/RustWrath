@@ -644,3 +644,4 @@ pub(crate) fn root_alpha(nodes: Option<&AuraNodes>) -> f32 {
 
 #[cfg(test)]
 mod tests;
+

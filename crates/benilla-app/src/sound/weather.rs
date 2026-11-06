@@ -30,3 +30,4 @@ pub(super) fn plugin(app: &mut App) {
     app.init_resource::<WeatherAmbience>()
         .add_systems(Update, track_weather_kit.in_set(WorldStage::Present));
 }
+

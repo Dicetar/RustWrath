@@ -294,3 +294,4 @@ fn clearing_the_list_or_the_target_hides_the_buttons() {
     assert!(!shown(&s, "TargetFrameDebuff1"), "no target, no buttons");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

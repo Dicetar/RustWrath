@@ -529,3 +529,4 @@ mod tests {
         assert!(fresh > select.max(login), "{fresh} after {login}, {select}");
     }
 }
+

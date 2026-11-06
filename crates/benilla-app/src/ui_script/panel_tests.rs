@@ -1166,3 +1166,4 @@ fn a_frame_arriving_at_center_puts_the_child_windows_away() {
         "a PUSHED frame does not run the child-window loop — the ref's exact trigger"
     );
 }
+

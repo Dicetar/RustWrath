@@ -1360,3 +1360,4 @@ pub(crate) fn trim_offer_to_purse(trade: &mut TradeSession, purse: u32, commands
 
 #[cfg(test)]
 mod tests;
+

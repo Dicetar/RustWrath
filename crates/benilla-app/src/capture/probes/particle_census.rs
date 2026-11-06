@@ -167,3 +167,4 @@ fn fire_particle_census(
         view.farclip,
     );
 }
+

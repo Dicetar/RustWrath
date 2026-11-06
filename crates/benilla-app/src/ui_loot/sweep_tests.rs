@@ -279,3 +279,4 @@ fn auto_loot_default_sweeps_a_pickpocket_and_a_disenchant_window() {
         }
     }
 }
+

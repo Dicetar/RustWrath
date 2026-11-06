@@ -1872,3 +1872,4 @@ mod tests {
         assert_eq!(h.guids(), [0xA]);
     }
 }
+

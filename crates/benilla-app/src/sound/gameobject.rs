@@ -163,3 +163,4 @@ mod tests {
         assert_eq!(go_event_slot(b"$FSD"), None);
     }
 }
+

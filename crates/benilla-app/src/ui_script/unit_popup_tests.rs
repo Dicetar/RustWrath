@@ -815,3 +815,4 @@ fn click_frame(s: &mut UiScript, name: &str) {
     s.mouse_button(x as f32, y as f32, "LeftButton", false);
     s.resolve();
 }
+

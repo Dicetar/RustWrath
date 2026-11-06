@@ -549,3 +549,4 @@ mod tests {
         assert!((second.0 - first.0 - 0.02).abs() < 1e-9, "20 ms apart");
     }
 }
+

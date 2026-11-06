@@ -312,3 +312,4 @@ mod tests {
         assert_eq!(seen(&mut app), Vec::<String>::new());
     }
 }
+

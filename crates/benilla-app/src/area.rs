@@ -714,3 +714,4 @@ mod tests {
         assert!(whole_wmo_name_takes_the_zone("Ironforge", ""));
     }
 }
+

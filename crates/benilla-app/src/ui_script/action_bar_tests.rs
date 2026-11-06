@@ -2164,3 +2164,4 @@ fn the_page_arrows_do_not_steal_each_other_s_clicks() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

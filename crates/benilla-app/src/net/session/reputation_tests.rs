@@ -642,3 +642,4 @@ fn a_standing_change_at_level_ten_triggers_the_reputation_tutorial() {
         );
     }
 }
+

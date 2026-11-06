@@ -119,3 +119,4 @@ fn a_hovered_live_unit_is_asked_by_each_probe_once_per_answer() {
         "the probe after the refusal asks again"
     );
 }
+

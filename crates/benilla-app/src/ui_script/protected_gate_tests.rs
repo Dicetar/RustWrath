@@ -277,3 +277,4 @@ fn a_stock_macro_buttons_script_line_casts() {
     );
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
+

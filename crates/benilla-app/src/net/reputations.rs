@@ -137,3 +137,4 @@ impl Reputations {
         self.set_slots(&[]);
     }
 }
+

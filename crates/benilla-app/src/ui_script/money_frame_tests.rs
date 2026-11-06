@@ -380,3 +380,4 @@ fn the_chains_money_input_frame_splits_an_amount_across_its_three_boxes() {
         0.0
     );
 }
+

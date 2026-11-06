@@ -275,3 +275,4 @@ pub(super) fn journal_ui(
         });
     Ok(())
 }
+

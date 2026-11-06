@@ -2320,3 +2320,4 @@ mod tests {
         assert_eq!(row_verbs(&mut script), [MailRowVerb::Delete]);
     }
 }
+

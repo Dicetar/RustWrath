@@ -54,3 +54,4 @@ fn a_dispel_line_gates_on_its_bearers_range_alone() {
         "a far dispeller of your aura"
     );
 }
+

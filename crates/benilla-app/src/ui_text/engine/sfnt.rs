@@ -398,3 +398,4 @@ mod tests {
         assert_eq!(div_fix(12 * 64, 1000), 50332);
     }
 }
+

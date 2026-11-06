@@ -307,3 +307,4 @@ impl Plugin for UiGammaPlugin {
             .add_render_graph_edge(Core2d, NodeUi::UiPass, UiGammaLabel);
     }
 }
+

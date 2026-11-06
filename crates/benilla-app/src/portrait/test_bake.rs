@@ -336,3 +336,4 @@ mod tests {
         assert!(encode_target_readback(&img).is_none());
     }
 }
+

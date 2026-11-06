@@ -96,3 +96,4 @@ mod tests {
         assert_eq!(out, src);
     }
 }
+

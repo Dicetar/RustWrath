@@ -164,3 +164,4 @@ fn drive_one(script: &mut UiScript, x: f32, y: f32) {
     script.mouse_button(x + DRAG_PX, y, "LeftButton", false);
     script.resolve();
 }
+

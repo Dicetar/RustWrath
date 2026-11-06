@@ -670,3 +670,4 @@ mod tests {
         assert!(unique_text(" edited").ends_with(" edited"));
     }
 }
+

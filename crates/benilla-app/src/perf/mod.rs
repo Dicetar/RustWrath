@@ -146,3 +146,4 @@ impl Plugin for PerfPlugin {
         blend_check::plugin(app);
     }
 }
+

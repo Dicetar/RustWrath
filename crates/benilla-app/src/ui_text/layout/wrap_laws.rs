@@ -214,3 +214,4 @@ fn an_editbox_text_ending_in_lf_ends_its_table_with_its_length() {
     let (rows, _) = line_rows(&mut e, "ab|n", 60.0, spec(true, 0));
     assert_eq!(rows, [0]);
 }
+

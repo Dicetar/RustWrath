@@ -256,3 +256,4 @@ pub(crate) fn plugin(app: &mut App) {
         .insert_resource(live)
         .add_systems(Render, check_blend_states.in_set(RenderSystems::Cleanup));
 }
+

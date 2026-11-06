@@ -19,3 +19,4 @@ pub(super) fn whois(world: &mut World, args: &str) -> Vec<String> {
     }
     Vec::new()
 }
+

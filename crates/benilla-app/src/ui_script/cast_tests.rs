@@ -512,3 +512,4 @@ fn the_casting_bar_publishes_its_status_bar_alias() {
         .unwrap();
     assert!((bar_value(&s) - 4.0).abs() < 1e-9);
 }
+

@@ -196,3 +196,4 @@ pub(super) fn route_anim_events(
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(Update, route_anim_events.in_set(WorldStage::Present));
 }
+

@@ -122,3 +122,4 @@ fn admin_command(
         C::Join { .. } | C::Leave { .. } | C::ListAll => return None,
     })
 }
+

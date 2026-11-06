@@ -623,3 +623,4 @@ fn a_sit_asked_ahead_of_the_attacks_stand_still_sends() {
     );
     assert_eq!(world.resource::<crate::player::StandPending>().0, Some(0));
 }
+

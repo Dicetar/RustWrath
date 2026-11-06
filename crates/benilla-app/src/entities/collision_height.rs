@@ -145,3 +145,4 @@ mod prism {
         assert!(prism_scale(0.0, None) > 0.0);
     }
 }
+

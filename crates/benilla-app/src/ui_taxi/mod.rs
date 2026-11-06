@@ -696,3 +696,4 @@ mod tests {
         assert!(!state.discovered);
     }
 }
+

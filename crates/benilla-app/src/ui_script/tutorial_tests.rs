@@ -133,3 +133,4 @@ fn cinematic_stop_opens_the_welcome_window() {
         "the Questgivers alert stays queued"
     );
 }
+

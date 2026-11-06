@@ -902,3 +902,4 @@ fn a_channel_lines_id_is_its_slots_row() {
     assert_eq!(stamped("WorldDefense2"), (1, 0));
     assert_eq!(stamped("General - Elwynn Forest"), (2, 1));
 }
+

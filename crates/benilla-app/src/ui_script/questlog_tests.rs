@@ -1825,3 +1825,4 @@ fn quest_rows_count_the_party_members_on_each_quest() {
     assert_eq!(mates(&mut s, 2), "[1]");
     assert_eq!(mates(&mut s, 4), "[1]");
 }
+

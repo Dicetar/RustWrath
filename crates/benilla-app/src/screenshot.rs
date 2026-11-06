@@ -330,3 +330,4 @@ mod tests {
         spawn_captures(&mut commands, std::mem::take(&mut state.pending));
     }
 }
+

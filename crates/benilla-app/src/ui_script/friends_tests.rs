@@ -797,3 +797,4 @@ fn the_who_list_reaches_its_last_row_at_the_bars_end() {
         "the last hit is on the last row"
     );
 }
+

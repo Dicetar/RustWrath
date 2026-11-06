@@ -135,3 +135,4 @@ fn confirm_talent_wipe_answers_inside_its_call() {
         .expect("the refusal was heard inside the call");
     assert_eq!(in_call, "You don't have enough money.");
 }
+

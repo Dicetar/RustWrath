@@ -2555,3 +2555,4 @@ fn the_target_leader_crown_follows_player_flags_changed() {
 
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

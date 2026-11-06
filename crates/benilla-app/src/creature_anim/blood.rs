@@ -140,3 +140,4 @@ fn swing_attacker<'a>(
 ) -> Option<&'a Transform> {
     transforms.get(swing.attacker).ok()
 }
+

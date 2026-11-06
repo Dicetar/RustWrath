@@ -1215,3 +1215,4 @@ mod tests {
         assert!(app.world().resource::<LoadingScreen>().route.is_none());
     }
 }
+

@@ -586,3 +586,4 @@ mod tests {
         assert_eq!(drain(&mut app, &mut cursor), vec![(0x2, 1, true, None)]);
     }
 }
+

@@ -32,3 +32,4 @@ fn crash_inject(inject: Res<CrashInject>, time: Res<Time<bevy::time::Real>>) {
         panic!("crash-inject: deliberate panic (WOW_CRASH_INJECT)");
     }
 }
+

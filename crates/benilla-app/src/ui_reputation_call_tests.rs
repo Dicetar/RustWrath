@@ -325,3 +325,4 @@ fn a_toggle_from_a_late_handler_wakes_the_feeds_gated_on_the_store() {
     assert!(read(&mut app), "the toggle's write");
     assert!(!read(&mut app), "and once");
 }
+

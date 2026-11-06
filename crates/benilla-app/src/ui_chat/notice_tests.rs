@@ -288,3 +288,4 @@ fn a_refused_chat_name_is_asked_by_the_next_packet_never_by_a_drain() {
     packets(&mut f);
     assert_eq!(asked(&f), 2, "the next packets ask again");
 }
+

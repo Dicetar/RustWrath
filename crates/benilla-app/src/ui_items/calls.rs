@@ -419,3 +419,4 @@ pub(crate) fn apply_kept_item_calls(world: &mut World) {
         })
         .unwrap();
 }
+

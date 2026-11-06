@@ -204,3 +204,4 @@ fn every_script_visible_reference_row_is_registered() {
          {undocumented:?}"
     );
 }
+

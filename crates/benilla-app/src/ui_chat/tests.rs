@@ -4367,3 +4367,4 @@ fn a_received_whisper_triggers_replying_to_tells() {
     super::frames::route(&mut s, &mut windows, &ev(K::Whisper, "hi", "Bob"));
     assert_eq!(s.take_tutorial_triggers(), [0x10]);
 }
+

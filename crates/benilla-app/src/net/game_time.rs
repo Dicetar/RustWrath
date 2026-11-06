@@ -1200,3 +1200,4 @@ mod tests {
         assert_eq!(hm(&clock), (16, 30), "two seconds at 60 is two hours");
     }
 }
+

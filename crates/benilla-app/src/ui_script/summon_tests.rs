@@ -245,3 +245,4 @@ fn the_time_left_getter_truncates_to_whole_seconds() {
         1.0
     );
 }
+

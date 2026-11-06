@@ -591,3 +591,4 @@ fn open_in_browser(url: &str) {
 #[cfg(test)]
 #[path = "server_alert_tests.rs"]
 mod tests;
+

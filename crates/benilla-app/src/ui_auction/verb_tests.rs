@@ -495,3 +495,4 @@ fn a_damaged_items_start_is_refused_inside_the_call() {
         "the slot stays"
     );
 }
+

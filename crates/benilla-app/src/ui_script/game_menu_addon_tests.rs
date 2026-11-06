@@ -388,3 +388,4 @@ fn the_stock_ui_menu_is_the_stock_menu_and_every_rung_opens_its_stock_window() {
     assert!(!s.eval::<bool>("return GameMenuFrame:IsVisible()").unwrap());
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

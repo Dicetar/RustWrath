@@ -1051,3 +1051,4 @@ fn escape_clears_the_detail_boxs_focus() {
     assert!(!s.has_keyboard_focus(), "Escape let go of the keyboard");
     assert_eq!(detail_text(&s), msg);
 }
+

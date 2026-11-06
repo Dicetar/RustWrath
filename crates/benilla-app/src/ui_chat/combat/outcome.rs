@@ -150,3 +150,4 @@ pub(crate) fn power_amount_word(power: u32, amount: i64) -> Option<LineWord> {
 
 #[cfg(test)]
 mod tests;
+

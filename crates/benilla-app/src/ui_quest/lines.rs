@@ -480,3 +480,4 @@ mod tests {
         assert!(triggers(&mut app).is_empty(), "type 81 is no elite quest");
     }
 }
+

@@ -722,3 +722,4 @@ fn stuck_casts_the_learned_spell_with_the_stuck_effect() {
         assert_eq!(sent(&rx), expected, "learned {learned}");
     }
 }
+

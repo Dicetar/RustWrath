@@ -104,3 +104,4 @@ mod tests {
         assert!(!none.active());
     }
 }
+

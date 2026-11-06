@@ -744,3 +744,4 @@ fn the_show_as_experience_bar_box_sends_the_watch_and_the_server_brings_the_bar_
         .unwrap());
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

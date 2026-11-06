@@ -1459,3 +1459,4 @@ mod tests {
         assert_eq!(seen(&mut app), [0x08, 0x09, 0x0a]);
     }
 }
+

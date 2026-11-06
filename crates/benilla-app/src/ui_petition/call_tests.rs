@@ -279,3 +279,4 @@ fn a_replaced_charter_closes_first_while_the_next_resolves() {
         "nothing sent for the next charter"
     );
 }
+

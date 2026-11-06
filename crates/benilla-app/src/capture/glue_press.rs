@@ -192,3 +192,4 @@ mod tests {
         assert_eq!(file_of(&CLASS_FILES, 6), None);
     }
 }
+

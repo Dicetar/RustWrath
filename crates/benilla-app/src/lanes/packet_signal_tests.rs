@@ -348,3 +348,4 @@ fn a_trainer_list_opens_only_the_trainer_asked_or_the_gossip_npc() {
     frame(&mut app, vec![list(0)]);
     assert_eq!(open(&app), Some(0), "a zero guid against no gossip");
 }
+

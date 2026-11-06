@@ -315,3 +315,4 @@ fn a_login_empties_the_roster_and_the_ranks_and_a_reload_keeps_them() {
         "the login's InitGuildRoster zeroed them"
     );
 }
+

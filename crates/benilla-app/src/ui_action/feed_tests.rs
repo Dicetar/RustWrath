@@ -1183,3 +1183,4 @@ fn the_feed_signals_no_macro_slot_of_its_own() {
         "the edit's two slots, once each, and not macro 2's"
     );
 }
+

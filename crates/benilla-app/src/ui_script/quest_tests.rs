@@ -864,3 +864,4 @@ fn reward_rows_preview_and_post_without_selecting_the_choice() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

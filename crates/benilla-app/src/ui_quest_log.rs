@@ -2393,3 +2393,4 @@ pub(crate) mod fixture {
         s.flush_quest_log_refires();
     }
 }
+

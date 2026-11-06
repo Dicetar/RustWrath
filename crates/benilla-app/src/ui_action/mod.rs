@@ -553,3 +553,4 @@ fn load_spells(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
         Err(e) => warn!("ui_action: Spell.dbc failed to load — bar icons disabled: {e:#}"),
     }
 }
+

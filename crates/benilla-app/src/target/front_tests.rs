@@ -195,7 +195,7 @@ impl Fix {
         let casts = sent
             .iter()
             .filter_map(|c| match c {
-                ClientCommand::CastSpell { spell_id, target } if *spell_id == HEAL => Some(*target),
+                ClientCommand::CastSpell { spell_id, target, .. } if *spell_id == HEAL => Some(*target),
                 _ => None,
             })
             .collect();
@@ -1019,3 +1019,5 @@ fn an_acquired_attacker_signals_its_select_in_place() {
     assert_eq!(f.selected(), Some(MOB));
     assert_eq!(wire_order(&f.rx), ["SetSelection 0x31", "RandomRoll"]);
 }
+
+

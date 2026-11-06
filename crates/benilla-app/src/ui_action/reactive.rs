@@ -98,3 +98,4 @@ fn parse_rank(d: &SpellDisplay) -> u32 {
         d.spell_level
     }
 }
+

@@ -182,3 +182,4 @@ fn the_open_raises_the_travel_tutorial_with_its_event() {
         .expect("the feed runs");
     assert_eq!(travel(&app, &mut cursor), 0);
 }
+

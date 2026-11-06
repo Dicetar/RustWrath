@@ -69,3 +69,4 @@ impl UnitRelations for RelationSnapshot {
         Some(self.rel().is_pvp(self.units.get(&guid)?))
     }
 }
+

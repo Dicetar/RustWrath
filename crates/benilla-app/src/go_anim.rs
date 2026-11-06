@@ -1586,3 +1586,4 @@ mod tests {
         assert!(go_animates(0));
     }
 }
+

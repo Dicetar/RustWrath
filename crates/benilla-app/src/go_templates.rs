@@ -522,3 +522,4 @@ mod tests {
         assert!(t.of(&ObjectFields::default()).is_none());
     }
 }
+

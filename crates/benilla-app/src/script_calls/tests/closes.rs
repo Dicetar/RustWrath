@@ -403,3 +403,4 @@ fn a_call_release_that_strands_a_window_fails_the_check() {
     eval::<()>(&mut app, "CloseMerchant()");
     app.world_mut().run_schedule(Last);
 }
+

@@ -87,3 +87,4 @@ fn the_auction_sell_button_paints_the_attached_item_in_place() {
     assert_eq!(name, None, "the button still names the sent item");
     assert_eq!(starts, 1);
 }
+

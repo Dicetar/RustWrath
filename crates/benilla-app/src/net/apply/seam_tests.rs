@@ -255,3 +255,4 @@ fn a_change_on_a_live_mover_keeps_its_other_slots() {
 fn a_change_with_no_speed_set_invents_none() {
     assert!(speeds_after(vec![create_with_speeds(None), force_run(7.0)]).is_none());
 }
+

@@ -399,3 +399,4 @@ mod tests {
         assert!(!vertically_degenerate(Vec3::ZERO));
     }
 }
+

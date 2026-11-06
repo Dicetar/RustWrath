@@ -1455,3 +1455,4 @@ mod tests {
         assert_eq!(app.world().resource::<CraftOpen>().line, None);
     }
 }
+

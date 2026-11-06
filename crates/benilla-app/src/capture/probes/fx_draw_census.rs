@@ -83,3 +83,4 @@ fn census(
     *frames = 0;
     states.clear();
 }
+

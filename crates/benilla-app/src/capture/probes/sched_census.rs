@@ -119,3 +119,4 @@ fn census_exit(mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
         exit.write(AppExit::Success);
     }
 }
+

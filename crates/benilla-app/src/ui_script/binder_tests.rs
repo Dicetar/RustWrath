@@ -90,3 +90,4 @@ fn leaving_the_innkeepers_range_hides_the_confirm() {
     );
     assert_eq!(s.take_binder_confirms(), 0, "and sends nothing");
 }
+

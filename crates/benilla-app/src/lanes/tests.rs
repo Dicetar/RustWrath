@@ -681,3 +681,4 @@ fn the_session_end_drops_the_cast_and_house_lanes() {
     fire_frame(world);
     assert!(heard(&mut app).is_empty(), "nothing left to fire");
 }
+

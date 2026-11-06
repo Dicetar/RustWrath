@@ -439,3 +439,4 @@ mod tests {
         assert_eq!(play_action("other.mp3", theme, true), PlayAction::Switch);
     }
 }
+

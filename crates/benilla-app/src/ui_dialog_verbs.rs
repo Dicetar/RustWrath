@@ -2041,3 +2041,4 @@ mod tests {
         assert!(!q.take_score_dirty());
     }
 }
+

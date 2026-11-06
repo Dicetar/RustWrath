@@ -162,3 +162,4 @@ fn an_error_toast_draws_over_an_open_panel_window() {
         "HIGH is stratum 4 — the ref's own for UIErrorsFrame"
     );
 }
+

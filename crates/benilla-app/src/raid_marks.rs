@@ -301,3 +301,4 @@ mod tests {
         assert_eq!(cell(7), [0.75, 0.25], "skull: col 3, row 1");
     }
 }
+

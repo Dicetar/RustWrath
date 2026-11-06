@@ -208,3 +208,4 @@ fn fire_entity_census(world: &mut World) {
         rows.len().min(ENTITY_CENSUS_ROWS),
     );
 }
+

@@ -589,3 +589,4 @@ mod tests {
         assert_eq!(mail.results[0].close_inbox, Some(1));
     }
 }
+

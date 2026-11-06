@@ -246,3 +246,4 @@ mod tests {
         assert_eq!(fade.alpha, 0.0, "a teardown leaves no black behind it");
     }
 }
+

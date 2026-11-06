@@ -180,3 +180,4 @@ fn a_missing_template_prints_nothing() {
         None
     );
 }
+

@@ -1229,3 +1229,4 @@ fn the_root_opcode_wins_over_a_word_that_disagrees_with_it() {
     let freed = apply_observed(rooted, &observed(0, [0.0; 3], RelayVerb::Root(false)));
     assert_eq!(freed.flags, 0, "cleared, and still not moving");
 }
+

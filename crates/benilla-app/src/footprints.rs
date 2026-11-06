@@ -323,3 +323,4 @@ mod tests {
         assert_eq!(fade(7.0), 0.0);
     }
 }
+

@@ -860,3 +860,4 @@ pub(crate) fn login(cycles: &Cycles, host: &str) {
         })
         .unwrap();
 }
+

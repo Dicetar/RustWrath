@@ -368,3 +368,4 @@ mod tests {
         assert_eq!(suffix_of("Probe"), "probe");
     }
 }
+

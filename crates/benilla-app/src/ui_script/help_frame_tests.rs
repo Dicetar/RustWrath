@@ -308,3 +308,4 @@ fn the_ticket_texts_caret_moves_by_rows_and_lines() {
     );
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
+

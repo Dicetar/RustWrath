@@ -674,3 +674,4 @@ fn the_stock_group_loot_frame_survives_an_in_flight_roll() {
         "the stock roll popup paints the miss tail's Common, got {painted:?} want {common:?}"
     );
 }
+

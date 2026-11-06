@@ -595,3 +595,4 @@ mod tests {
         assert_eq!(sheath_phase2(ARM_RIGHT, 1, 2, &g), Some(DRAW_BACK));
     }
 }
+

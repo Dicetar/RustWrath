@@ -1462,3 +1462,4 @@ mod tests {
         assert_eq!(by(&rows, "Trade").as_deref(), Some("Trade - Orgrimmar"));
     }
 }
+

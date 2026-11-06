@@ -1106,3 +1106,4 @@ impl PaneBooths {
 #[cfg(test)]
 #[path = "panes_tests.rs"]
 mod tests;
+

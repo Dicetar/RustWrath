@@ -198,3 +198,4 @@ mod tests {
         assert!((sound.frames[1].right - -0.25).abs() < 1e-6);
     }
 }
+

@@ -605,3 +605,4 @@ mod tests {
         assert!(app.world().resource::<TabardOpen>().open_event);
     }
 }
+

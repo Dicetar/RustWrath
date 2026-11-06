@@ -401,3 +401,4 @@ mod tests {
         sort.order(&mut rows, true);
     }
 }
+

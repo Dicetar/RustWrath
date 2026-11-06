@@ -423,3 +423,4 @@ fn report(probe: &ClamProbe, entry: u32) {
 
     info!("PROBE_CLAM: DONE entry={entry} item={clam:#x} fail={fails}");
 }
+

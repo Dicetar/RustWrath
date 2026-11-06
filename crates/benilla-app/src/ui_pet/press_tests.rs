@@ -1095,3 +1095,4 @@ fn a_packet_overwrites_a_latch_this_side_never_sent() {
     rig.frame();
     assert!(!lit(&mut rig), "the packet's state is the bar's");
 }
+

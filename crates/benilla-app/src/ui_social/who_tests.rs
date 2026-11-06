@@ -445,3 +445,4 @@ fn the_index_past_the_count_reads_the_next_slot() {
     );
     assert_eq!(name(&mut w, 1).as_deref(), Some("Zz"));
 }
+

@@ -713,3 +713,4 @@ fn print_vis_census(seen: &benilla_world::world_census::CensusReport) {
         println!("VIS_DUMP {g} {n} {label}");
     }
 }
+

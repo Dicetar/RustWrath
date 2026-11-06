@@ -354,3 +354,4 @@ mod tests {
         assert!(!feedable_pet(&pet(55, Some(1)), ME));
     }
 }
+

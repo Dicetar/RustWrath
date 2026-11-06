@@ -111,3 +111,4 @@ fn a_changed_pending_cast_dismisses_both() {
     assert!(!s.eval::<bool>("return StaticPopup1:IsVisible()").unwrap());
     assert_eq!(s.take_script_calls(), vec![]);
 }
+

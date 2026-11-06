@@ -140,3 +140,4 @@ fn report(mut churn: ResMut<Churn>, time: Res<Time<Real>>, images: Res<Assets<Im
     churn.images.clear();
     churn.image_bytes = 0;
 }
+

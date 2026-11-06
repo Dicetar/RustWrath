@@ -39,3 +39,4 @@ fn bank_buy_slot_result(result: u32, errors: &mut BankErrors) {
     debug!("net: bank slot purchase refused (code {result})");
     errors.0.push(result);
 }
+

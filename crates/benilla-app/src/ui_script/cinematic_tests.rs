@@ -230,3 +230,4 @@ fn the_screenshot_confirmation_shows_during_a_cinematic() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

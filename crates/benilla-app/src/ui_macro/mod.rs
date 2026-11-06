@@ -351,3 +351,4 @@ pub(crate) fn run_macro(script: &mut UiScript, id: u32) -> bool {
     }
     true
 }
+

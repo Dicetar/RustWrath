@@ -202,3 +202,4 @@ mod tests {
         assert_eq!(r.over, 0, "and a NaN is not over-scale, it is broken");
     }
 }
+

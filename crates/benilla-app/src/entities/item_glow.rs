@@ -310,3 +310,4 @@ mod tests {
         assert_eq!(effective_visual(&glows, None, 0, [1]), 0);
     }
 }
+

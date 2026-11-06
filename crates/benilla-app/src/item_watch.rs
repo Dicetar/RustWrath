@@ -1685,3 +1685,4 @@ mod tests {
         assert_eq!(kin(&me, &lookup, Walk::Stack, ARROWS_ID), stack);
     }
 }
+

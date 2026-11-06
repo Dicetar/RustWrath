@@ -552,3 +552,4 @@ mod tests {
         assert_eq!(registered(CVAR_ACTIVE_VIEW), Some(ACTIVE_VIEW_DEFAULT));
     }
 }
+

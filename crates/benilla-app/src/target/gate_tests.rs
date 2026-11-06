@@ -709,3 +709,4 @@ fn talking_to_an_npc_with_status_one_triggers_unavailable_quest_givers() {
         assert_eq!(tutorials.take_selects(), [(npc, NPC)], "the select it made");
     }
 }
+

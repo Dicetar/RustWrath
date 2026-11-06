@@ -448,3 +448,4 @@ pub(crate) fn clear_latch_on_session_end(
 ) {
     latch.guid = None;
 }
+

@@ -639,3 +639,4 @@ mod shipped {
         assert_eq!(scene.rel().reaction(&chicken, &me), 3);
     }
 }
+

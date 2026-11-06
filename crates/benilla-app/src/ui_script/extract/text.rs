@@ -810,3 +810,4 @@ mod link_span_tests {
         assert!(s.errors().is_empty(), "{:?}", s.errors());
     }
 }
+

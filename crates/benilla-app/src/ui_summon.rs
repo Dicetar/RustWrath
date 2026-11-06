@@ -398,3 +398,4 @@ mod tests {
         assert_eq!(summon.pending(), None);
     }
 }
+

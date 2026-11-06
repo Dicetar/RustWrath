@@ -1923,3 +1923,4 @@ mod disarm_tests {
         assert_eq!(disarmed_hand(Some(4), Some(4)), None);
     }
 }
+

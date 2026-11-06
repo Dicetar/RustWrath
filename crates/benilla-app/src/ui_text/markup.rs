@@ -404,3 +404,4 @@ mod markup_tests {
         assert!(lines[0][0].link.is_none());
     }
 }
+

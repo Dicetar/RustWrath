@@ -939,3 +939,4 @@ fn self_seat(
         deck: *q.2.get(entity).ok()?,
     })
 }
+

@@ -946,3 +946,4 @@ fn an_inventory_failure_reads_the_window_at_its_own_packet() {
     assert_eq!(seen(&mut l), "UI_ERROR_MESSAGE:ERR_INV_FULL");
     assert!(l.app.world().resource::<AutoLootByte>().0, "no sweep ran");
 }
+

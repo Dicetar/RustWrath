@@ -932,3 +932,4 @@ mod tests {
         assert_eq!(hit(0), 143, "no chest / unstreamed → flesh");
     }
 }
+

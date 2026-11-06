@@ -301,3 +301,4 @@ fn the_meter_adds_its_two_frames_to_the_bar() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

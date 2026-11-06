@@ -2052,3 +2052,4 @@ fn a_refused_hover_name_is_asked_again_by_the_next_hover_only() {
     }
     assert!(crate::query_cache::queries(&rx).is_empty());
 }
+

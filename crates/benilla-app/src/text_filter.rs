@@ -925,3 +925,4 @@ impl Plugin for TextFilterPlugin {
             );
     }
 }
+

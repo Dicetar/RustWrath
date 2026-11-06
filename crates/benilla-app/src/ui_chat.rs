@@ -284,3 +284,4 @@ pub(crate) fn end_chat_session(script: Option<&mut benilla_ui::script::UiScript>
         }
     }
 }
+

@@ -59,3 +59,4 @@ impl SelectFront<'_, '_> {
             .is_some_and(|me| me.0.unit_charmed_by().is_some())
     }
 }
+

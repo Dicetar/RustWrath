@@ -219,3 +219,4 @@ fn fire_live_shot(
         info!("live-shot: writing {path}");
     }
 }
+

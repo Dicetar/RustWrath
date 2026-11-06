@@ -558,3 +558,4 @@ fn decode(bytes: &[u8], tag: u32, realm: &str) -> Option<Vec<(u32, Vec<u8>)>> {
 
 #[cfg(test)]
 mod tests;
+

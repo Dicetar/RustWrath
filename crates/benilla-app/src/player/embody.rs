@@ -282,3 +282,4 @@ mod tests {
         assert_eq!(steered(&mut app), Some(boar));
     }
 }
+

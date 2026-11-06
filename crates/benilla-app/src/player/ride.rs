@@ -397,3 +397,4 @@ mod tests {
         assert!(!latched, "nor does it latch FALLINGFAR");
     }
 }
+

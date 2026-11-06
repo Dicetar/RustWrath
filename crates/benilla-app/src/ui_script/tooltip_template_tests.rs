@@ -441,3 +441,4 @@ fn the_tooltip_line_globals_exist_cold_and_do_not_count_as_lines() {
         "a filled line shows"
     );
 }
+

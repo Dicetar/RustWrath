@@ -1453,3 +1453,4 @@ fn the_recruitment_join_reaches_the_chat_frame_before_the_verb_returns() {
     assert!(listed, "ChatFrame1.channelList lacks GuildRecruitment");
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
+

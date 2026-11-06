@@ -597,3 +597,4 @@ mod tests {
         assert_eq!(view(&world), None, "a despawn");
     }
 }
+

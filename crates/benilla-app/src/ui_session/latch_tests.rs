@@ -545,3 +545,4 @@ fn a_second_holder_of_a_latched_guid_trips_the_walks_check() {
         .open_for_test(NPC);
     dispatch(world);
 }
+

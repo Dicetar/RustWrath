@@ -704,3 +704,4 @@ fn the_verbs_bar_writes_are_signalled_once() {
     assert_eq!(seen.last().map(String::as_str), Some("PET_BAR_UPDATE"));
     assert!(rig.frame().is_empty(), "the feed owes no second signal");
 }
+

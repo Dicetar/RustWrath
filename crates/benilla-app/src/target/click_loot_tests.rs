@@ -539,3 +539,4 @@ fn the_loot_cursor_lights_only_over_the_object_being_looted() {
     assert!(unable(&mut c, BODY_B), "another loot held");
     assert!(!unable(&mut c, BODY_A), "the one being looted");
 }
+

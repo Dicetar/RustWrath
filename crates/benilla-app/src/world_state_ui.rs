@@ -508,3 +508,4 @@ mod tests {
         assert_eq!(states.scope(), Some((0, 12)));
     }
 }
+

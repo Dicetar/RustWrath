@@ -245,3 +245,4 @@ pub(super) fn shown(
     crate::ui_action::ui_error_text(e, &|key| script.lua().globals().get::<String>(key).ok())
         .map(|text| crate::ui_action::Shown::keyed(e.key, text))
 }
+

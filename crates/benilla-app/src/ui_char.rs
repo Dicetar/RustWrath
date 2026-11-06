@@ -1658,3 +1658,4 @@ mod tests {
 #[cfg(test)]
 #[path = "ui_char_call_tests.rs"]
 mod call_tests;
+

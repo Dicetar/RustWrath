@@ -734,3 +734,4 @@ fn the_stock_minimaps_arrows_are_its_children_s_panes_above_its_own_draw() {
         }
     }
 }
+

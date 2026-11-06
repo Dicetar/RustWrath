@@ -115,3 +115,4 @@ fn a_menu_rows_label_reports_the_normal_fonts_justify_and_object() {
         "the label follows the button's normal font, which follows GameFontNormal"
     );
 }
+

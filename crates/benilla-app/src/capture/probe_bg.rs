@@ -1227,3 +1227,4 @@ fn report(arena: &Arena, net: &NetCommands, queue: &BattlefieldQueue, script: &m
     gm(net, format!(".go xyz {x} {y} {z} 0"));
     info!("PROBE bg: DONE");
 }
+

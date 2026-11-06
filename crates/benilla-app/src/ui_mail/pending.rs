@@ -241,3 +241,4 @@ mod tests {
         assert!(!p.has_new_mail());
     }
 }
+

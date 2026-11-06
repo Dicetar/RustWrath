@@ -71,3 +71,4 @@ fn on_item_name(In(ev): In<SessionEvent>, mut names: ResMut<ItemNames>) {
         names.file(entry, name);
     }
 }
+

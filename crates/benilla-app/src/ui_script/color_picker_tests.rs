@@ -640,3 +640,4 @@ fn the_generated_art_reaches_the_renderer_carrying_only_what_moves_a_pixel() {
         "a third of the brightness, the same strip: {strip:?} -> {after:?}"
     );
 }
+

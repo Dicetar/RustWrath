@@ -1808,3 +1808,4 @@ mod tests {
         assert!(tick(&mut app).is_empty(), "a landed name fires nothing");
     }
 }
+

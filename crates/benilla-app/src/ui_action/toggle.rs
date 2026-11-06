@@ -101,3 +101,4 @@ mod tests {
         assert_eq!(form_recast_disposition(&plain, 16, Some(&wolf_row)), None);
     }
 }
+

@@ -1020,3 +1020,4 @@ mod tests {
         assert_eq!(eb.cursor, 0, "the space, then 'a'");
     }
 }
+

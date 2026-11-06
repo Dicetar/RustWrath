@@ -504,3 +504,4 @@ fn money_line(script: &UiScript, copper: u32) -> String {
         &[benilla_ui::strings::Arg::S(&coins)],
     )
 }
+

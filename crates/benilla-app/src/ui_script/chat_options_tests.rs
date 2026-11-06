@@ -405,3 +405,4 @@ fn the_restore_event_repaints_the_window_from_the_store() {
     assert_eq!(s.take_chat_window_changes(), vec![0, 1]);
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+

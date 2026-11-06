@@ -318,3 +318,4 @@ fn a_mount_child_carries_its_riders_arrival() {
         "the mount fades on its rider's clock, not from its own spawn"
     );
 }
+

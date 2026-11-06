@@ -203,3 +203,4 @@ fn result_label(action: CharAction, code: u8) -> &'static str {
         _ => "other",
     }
 }
+

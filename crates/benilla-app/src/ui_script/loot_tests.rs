@@ -1257,3 +1257,4 @@ fn stock_loot_rows_wear_the_item_button_art_and_light_under_the_cursor() {
         "the highlight is not latched: it goes out when the cursor leaves"
     );
 }
+

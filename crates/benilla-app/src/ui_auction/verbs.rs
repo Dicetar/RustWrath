@@ -220,3 +220,4 @@ fn show_error(script: &mut UiScript, sink: &mut MessageSink, key: &'static str) 
     };
     show_messages(script, sink, "ui_auction", line);
 }
+

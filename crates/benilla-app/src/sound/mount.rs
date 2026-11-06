@@ -59,3 +59,4 @@ fn dismount_sounds(
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(Update, dismount_sounds.in_set(WorldStage::Present));
 }
+

@@ -582,3 +582,4 @@ mod tests {
         assert_ne!(before, bone(&app, behind_joint), "its joints stay live");
     }
 }
+

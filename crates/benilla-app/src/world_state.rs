@@ -99,3 +99,4 @@ mod tests {
         assert_eq!(table.get(0), 0);
     }
 }
+

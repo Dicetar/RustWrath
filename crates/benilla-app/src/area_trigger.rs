@@ -163,3 +163,4 @@ mod tests {
         assert_eq!(inside.step(&cat, 9999, [8799.41, 969.787, 30.2409]), None);
     }
 }
+

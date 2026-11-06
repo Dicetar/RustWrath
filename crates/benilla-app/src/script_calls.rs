@@ -1379,7 +1379,7 @@ mod tests {
     fn casts(f: &Frame) -> Vec<(u32, Option<u64>)> {
         f.rx.try_iter()
             .filter_map(|c| match c {
-                ClientCommand::CastSpell { spell_id, target } => Some((spell_id, target)),
+                ClientCommand::CastSpell { spell_id, target, .. } => Some((spell_id, target)),
                 _ => None,
             })
             .collect()
@@ -3564,7 +3564,7 @@ mod tests {
             let sent: Vec<_> = f.rx.try_iter().collect();
             assert!(
                 matches!(sent.iter().find_map(|c| match c {
-                    ClientCommand::CastSpell { spell_id, target } => Some((*spell_id, *target)),
+                    ClientCommand::CastSpell { spell_id, target, .. } => Some((*spell_id, *target)),
                     _ => None,
                 }), Some((HEAL, Some(g))) if g == bound),
                 "{lua}: casts at {bound:#x}: {sent:?}"
@@ -3608,7 +3608,7 @@ mod tests {
     fn casts_of(sent: &[ClientCommand]) -> Vec<(u32, Option<u64>)> {
         sent.iter()
             .filter_map(|c| match c {
-                ClientCommand::CastSpell { spell_id, target } => Some((*spell_id, *target)),
+                ClientCommand::CastSpell { spell_id, target, .. } => Some((*spell_id, *target)),
                 _ => None,
             })
             .collect()
@@ -4501,3 +4501,5 @@ mod tests {
         );
     }
 }
+
+

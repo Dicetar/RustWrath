@@ -494,3 +494,4 @@ impl ChannelStamp {
         event.channel = format!("{}. {}", self.number, event.channel_base);
     }
 }
+

@@ -67,3 +67,4 @@ fn route_missile_sounds(
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(Update, route_missile_sounds.in_set(WorldStage::Present));
 }
+

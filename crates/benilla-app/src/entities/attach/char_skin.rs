@@ -438,3 +438,4 @@ pub(super) fn build_char_skin_materials(
 
     (body, hair, object, skin_extra)
 }
+

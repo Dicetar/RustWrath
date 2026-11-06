@@ -1443,3 +1443,4 @@ fn anim_cost_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("WOW_ANIM_COST").as_deref() == Ok("1"))
 }
+

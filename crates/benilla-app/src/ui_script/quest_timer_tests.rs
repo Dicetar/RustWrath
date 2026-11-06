@@ -134,3 +134,4 @@ fn a_world_entry_paints_a_quest_already_running() {
     // One minute takes the singular `MINUTES_ABBR`, not its `_P1` plural; 90 s reads 89.
     assert_eq!(row_text(&s, 1), "1 Min 29 Secs ");
 }
+

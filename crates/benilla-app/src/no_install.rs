@@ -167,3 +167,4 @@ mod tests {
         assert_ne!(err.title, "benilla: no WoW install found");
     }
 }
+

@@ -260,3 +260,4 @@ mod tests {
         assert_eq!(c.yaw, 0.0);
     }
 }
+

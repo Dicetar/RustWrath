@@ -3530,3 +3530,4 @@ mod tests {
         assert_eq!(group.loot_stored, real, "`/partytest off`");
     }
 }
+

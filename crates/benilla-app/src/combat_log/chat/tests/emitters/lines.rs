@@ -170,3 +170,4 @@ fn opening_a_lock_needs_its_target_its_record_and_a_unit_caster() {
     );
     assert!(open(&bench, PICK_LOCK, ME, OPEN_LOCK_ITEM, JUNKBOX).is_empty());
 }
+

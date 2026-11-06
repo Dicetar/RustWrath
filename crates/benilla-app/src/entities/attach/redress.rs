@@ -687,3 +687,4 @@ mod tests {
         assert!(s.composited(last));
     }
 }
+

@@ -85,3 +85,4 @@ fn the_known_spells_keep_their_learn_order() {
     superceded_spell(A, B, &mut actions, Some(&spells), &errors, &mut tab);
     assert_eq!(actions.profession_order, [C, D, B]);
 }
+

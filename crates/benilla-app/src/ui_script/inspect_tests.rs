@@ -521,3 +521,4 @@ fn the_inspect_pane_binds_the_inspected_unit() {
     assert!(pane.pending(), "the shown pane asks for its copy");
     assert!(s.errors().is_empty(), "errors: {:?}", s.errors());
 }
+

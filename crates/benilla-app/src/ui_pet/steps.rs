@@ -150,3 +150,4 @@ impl PetSteps<'_, '_> {
 fn clamp_pet_name(name: &str) -> String {
     name.chars().take(PET_NAME_MAX).collect()
 }
+

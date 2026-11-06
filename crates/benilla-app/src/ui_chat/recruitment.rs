@@ -255,3 +255,4 @@ mod tests {
         assert!(c.observe_guild_id(42), "a new session sees it fresh");
     }
 }
+

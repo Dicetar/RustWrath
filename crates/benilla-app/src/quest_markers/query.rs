@@ -1247,3 +1247,4 @@ mod tests {
         assert_eq!(asked(&mut app), 0, "once");
     }
 }
+

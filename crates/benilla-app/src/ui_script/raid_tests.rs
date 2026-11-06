@@ -967,3 +967,4 @@ fn one_drag_does_not_cost_the_next_one() {
         push_raid(&mut s, raid.clone());
     }
 }
+

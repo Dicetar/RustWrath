@@ -2727,3 +2727,4 @@ fn a_reload_keeps_the_damage_text_font_the_login_read() {
     drop(world);
     let _ = std::fs::remove_dir_all(&tmp);
 }
+

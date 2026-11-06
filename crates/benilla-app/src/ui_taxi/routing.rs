@@ -428,3 +428,4 @@ pub(super) fn taxi_error_key(code: u32) -> Option<&'static str> {
 #[cfg(test)]
 #[path = "routing_tests.rs"]
 mod tests;
+

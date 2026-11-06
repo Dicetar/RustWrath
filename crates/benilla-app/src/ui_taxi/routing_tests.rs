@@ -710,3 +710,4 @@ fn shipped_maps_skip_the_other_faction_s_flight_points() {
     assert_eq!(ui[crossroads].cost, 110);
     assert!(resolved[crossroads].chain.is_empty());
 }
+

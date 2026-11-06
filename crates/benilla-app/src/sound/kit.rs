@@ -1404,3 +1404,4 @@ mod tests {
         assert_eq!(sound_kit_flags::NO_DUPLICATES, 0x20);
     }
 }
+

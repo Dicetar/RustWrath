@@ -663,3 +663,4 @@ fn report_level(level: meter::LevelReading, voices: usize, rate: Option<u32>) {
         20.0 * level.reduction.max(1e-6).log10(),
     );
 }
+

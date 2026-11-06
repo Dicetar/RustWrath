@@ -78,3 +78,4 @@ fn fire_doodad_anim_events(
 pub(crate) fn plugin(app: &mut App) {
     app.add_systems(Update, fire_doodad_anim_events.in_set(WorldStage::Present));
 }
+

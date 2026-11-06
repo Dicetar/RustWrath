@@ -4874,3 +4874,4 @@ fn a_stock_create_whose_name_fails_the_check_sends_nothing() {
     assert!(shown(&app, "CharacterCreate"));
     assert_eq!(vm(&app).errors(), Vec::<String>::new());
 }
+

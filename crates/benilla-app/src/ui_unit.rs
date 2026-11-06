@@ -4162,3 +4162,4 @@ mod tests {
         assert_eq!(left(&mut app), 2, "the next world's departure fires again");
     }
 }
+

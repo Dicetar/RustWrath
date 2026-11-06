@@ -279,3 +279,4 @@ fn load_chr_races(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
         ),
     }
 }
+

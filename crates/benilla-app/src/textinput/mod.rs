@@ -18,3 +18,4 @@ impl Plugin for TextInputPlugin {
         app.init_non_send_resource::<HostClipboard>();
     }
 }
+

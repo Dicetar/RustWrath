@@ -101,3 +101,4 @@ fn stable_result(
         _ => debug!("net: stable result {result} — no client-visible effect"),
     }
 }
+

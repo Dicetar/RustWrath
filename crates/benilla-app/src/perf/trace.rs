@@ -126,3 +126,4 @@ pub(super) fn trace_stream(
         let _ = f.write_all(line.as_bytes());
     }
 }
+

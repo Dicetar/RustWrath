@@ -61,3 +61,4 @@ fn play_object_sound(
         source: index.0.get(&guid).copied(),
     });
 }
+

@@ -1735,3 +1735,4 @@ mod tests {
         assert!(!t.wants(TargetingWants::Item));
     }
 }
+

@@ -326,3 +326,4 @@ fn three_high_bytes_pass_the_second_digit_test() {
     // Alone, the lead takes the appended space and the token is still open at the NUL.
     assert_eq!(bytes(b"a \xfd").terms, vec![b"a".to_vec()]);
 }
+

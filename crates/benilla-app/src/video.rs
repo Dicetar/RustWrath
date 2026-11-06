@@ -1318,3 +1318,4 @@ mod tests {
         assert_eq!(parse_resolution("fullscreen"), None);
     }
 }
+

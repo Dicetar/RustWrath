@@ -205,3 +205,4 @@ pub(crate) fn compose_notice(
     let line = fill(&template, &args);
     (!line.is_empty()).then_some(line)
 }
+

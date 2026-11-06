@@ -54,3 +54,4 @@ fn publish_world_live(
         *live = now;
     }
 }
+

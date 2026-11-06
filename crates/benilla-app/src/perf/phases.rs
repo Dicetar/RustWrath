@@ -150,3 +150,4 @@ fn report(p: &mut Phases) {
     line.push_str(&format!(" render+present={residue:.1}"));
     println!("{line}");
 }
+

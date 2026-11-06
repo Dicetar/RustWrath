@@ -405,3 +405,4 @@ pub(crate) fn spell_action_icon(
         })
         .or_else(|| d.icon.clone())
 }
+

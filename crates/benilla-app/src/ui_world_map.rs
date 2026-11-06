@@ -1426,3 +1426,4 @@ mod direct_area_tests {
         );
     }
 }
+

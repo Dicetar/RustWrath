@@ -463,3 +463,4 @@ fn the_score_tab_repaints_in_place_and_waits_on_pending_names() {
         "the completed board sorts by the stored Horde filter"
     );
 }
+

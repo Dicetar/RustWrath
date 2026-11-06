@@ -594,3 +594,4 @@ pub(super) fn set_realtime(period_ns: u64) -> Result<Realtime> {
     }
     Ok(Realtime)
 }
+

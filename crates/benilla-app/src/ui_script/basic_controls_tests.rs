@@ -150,3 +150,4 @@ fn a_dialog_box_from_the_template_names_and_closes_the_callers_frame() {
     );
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
+

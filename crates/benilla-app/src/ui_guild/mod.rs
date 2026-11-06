@@ -1536,3 +1536,4 @@ mod tests {
         (NetCommands(tx), rx)
     }
 }
+

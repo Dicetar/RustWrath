@@ -104,3 +104,4 @@ pub(super) fn plugin(app: &mut App) {
     app.add_systems(Startup, load_sheathe_sounds.after(AssetSet::Open))
         .add_systems(Update, sheathe_sounds.in_set(WorldStage::Present));
 }
+

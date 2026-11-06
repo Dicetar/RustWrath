@@ -486,3 +486,4 @@ fn window_complete(drv: &AnimDriver, player: &AnimationPlayer) -> bool {
             .is_none_or(|a| a.completions() >= budget)
     })
 }
+

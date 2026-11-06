@@ -2795,3 +2795,4 @@ mod tests {
             .all(|(_, u)| u.ends_with(".m2") && !u.contains("errorcube")));
     }
 }
+

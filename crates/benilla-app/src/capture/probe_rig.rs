@@ -865,3 +865,4 @@ mod tests {
         assert!(!is_rig_name("Taudruoneextra", "one"));
     }
 }
+

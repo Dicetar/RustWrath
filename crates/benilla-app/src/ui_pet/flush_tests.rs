@@ -780,3 +780,4 @@ fn the_world_entry_reset_clears_the_guid_and_keeps_the_book() {
         "no bar reads without its guid"
     );
 }
+

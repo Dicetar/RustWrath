@@ -71,3 +71,4 @@ pub(crate) fn feed_character_panes(
         panes.rows = script.character_panes();
     })
 }
+

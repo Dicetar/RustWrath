@@ -165,3 +165,4 @@ fn close_button_calls_the_close_and_hides() {
     assert_eq!(s.take_taxi_calls(), vec![TaxiCall::Close]);
     assert!(!s.eval::<bool>("return TaxiFrame:IsVisible()").unwrap());
 }
+

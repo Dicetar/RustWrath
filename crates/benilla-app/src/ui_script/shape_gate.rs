@@ -1108,3 +1108,4 @@ fn no_widget_method_answers_a_lua_boolean() {
         booleans.join("\n  ")
     );
 }
+

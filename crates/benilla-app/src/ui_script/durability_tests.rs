@@ -398,3 +398,4 @@ fn the_quest_tracker_stacks_below_the_durability_guy() {
     );
     assert!(s.errors().is_empty(), "errors: {:?}", s.errors());
 }
+
