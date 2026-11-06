@@ -36,6 +36,8 @@ use crate::ui_script::{SweepApp, SweepLeg, UiFeed};
 use crate::ui_session::{CoreCloses, LatchApp, LatchedWindow, NpcWindow};
 use crate::ui_spellbook::SkillLines;
 
+mod multiclass;
+
 /// `SMSG_TRAINER_LIST`'s `trainer_type` for a tradeskill trainer (0 class, 1 mount, 2 tradeskill,
 /// 3 pet), which picks the group key, the icon and the row order.
 const TRAINER_TYPE_TRADESKILL: u32 = 2;
@@ -235,6 +237,8 @@ pub(super) struct ReqBooks<'a> {
     /// The player's race and class, which index the taught spell's line (`0x60c920` →
     /// `0x6de040`).
     pub(super) race_class: (u8, u8),
+    /// Only a server-confirmed WM ownership snapshot enables the extension's fallback.
+    pub(super) multiclass: Option<(&'a multiclass::TrainerClasses, u16)>,
 }
 
 /// Resolve one wire [`TrainerSpell`] into the Lua [`TrainerService`]; `books` colour each
@@ -297,7 +301,7 @@ fn resolve_service(
     let (is_trade_skill, learn_spell) = service_kind(wire.spell, spells);
     // The wrapper is never in `SkillLineAbility`, so the skill-line arm keys on the taught spell;
     // a service it cannot place drops, as in the client's builder, and is logged.
-    let (group_key, group_name) = service_group(
+    let (mut group_key, mut group_name) = service_group(
         wire.spell,
         taught,
         trainer_type,
@@ -306,6 +310,15 @@ fn resolve_service(
         skill_lines.map(|c| (c, books.race_class)),
         get,
     );
+    if group_key == 0 {
+        if let Some((classes, owned)) = books.multiclass {
+            if let Some(line) = classes.skill(taught, owned, spells) {
+                group_key = line;
+                group_name = skill_lines.and_then(|catalog| catalog.line(line))
+                    .map(|line| line.name.clone()).unwrap_or_else(|| format!("Skill {line}"));
+            }
+        }
+    }
     if group_key == 0 && skill_lines.is_some() {
         debug!(
             "ui_trainer: trainer spell {} (teaches {taught}) has no skill line — dropped from the tree",
@@ -512,7 +525,12 @@ pub(crate) fn feed_trainer(
     mut tooltip_subjects: ResMut<TrainerTooltipSubjects>,
     mut last: crate::ui_script::WindowMemo<Option<TrainerState>>,
     mut closes: CoreCloses,
+    multiclass: Option<Res<crate::multiclass::MulticlassBridge>>,
+    mut trainer_classes: Local<Option<multiclass::TrainerClasses>>,
 ) {
+    if skill_lines.as_ref().is_some_and(|lines| lines.is_changed()) {
+        *trainer_classes = None;
+    }
     let mut extra_passes = 0;
     vm.feed(|script, (mut re_eval, mut open), fires| {
         let Some(script) = script else {
@@ -534,6 +552,10 @@ pub(crate) fn feed_trainer(
         let Some(skill_lines) = skill_lines.as_deref() else {
             return;
         };
+        let owned_classes = multiclass.as_deref().map_or(0, crate::multiclass::MulticlassBridge::owned_classes);
+        if owned_classes != 0 && trainer_classes.is_none() {
+            *trainer_classes = Some(multiclass::TrainerClasses::new(&skill_lines.catalog));
+        }
         // The getters' item callbacks, kept by their calls; a record that answered one is a trigger.
         open.item_waits.extend(script.take_trainer_item_waits());
         open.item_answers(&items);
@@ -756,6 +778,7 @@ pub(crate) fn feed_trainer(
                     player: &actions.spells,
                     pet: pet_book.as_ref(),
                     race_class: store.map_or((0, 0), |s| s.race_class()),
+                    multiclass: trainer_classes.as_ref().map(|classes| (classes, owned_classes)),
                 },
                 icons.as_deref(),
                 &items,

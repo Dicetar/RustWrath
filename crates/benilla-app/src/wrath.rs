@@ -667,6 +667,7 @@ impl WrathFeedEvent {
 /// Shared handles between the IO thread and the app.
 #[derive(Clone)]
 pub struct WrathFeed {
+    multiclass: Option<crate::multiclass::MulticlassBridge>,
     authenticated: Arc<AtomicBool>,
     trace: Option<crate::quest_trace::Source>,
     account_expansion: Arc<std::sync::atomic::AtomicU8>,
@@ -686,6 +687,7 @@ pub struct WrathFeed {
 impl WrathFeed {
     fn new() -> Self {
         Self {
+            multiclass: None,
             authenticated: Arc::new(AtomicBool::new(false)),
             trace: None,
             account_expansion: Arc::new(std::sync::atomic::AtomicU8::new(0)),
@@ -1345,6 +1347,7 @@ impl WrathWmActions {
 #[derive(Resource)]
 pub struct WrathControl {
     pub config: Option<WrathSessionConfig>,
+    multiclass: Option<crate::multiclass::MulticlassBridge>,
     trace: Option<crate::quest_trace::Source>,
     worker: Option<std::thread::JoinHandle<()>>,
     /// A worker already signalled to stop. No replacement is admitted until this joins.
@@ -1542,6 +1545,7 @@ impl WrathControl {
         };
         let mut feed = WrathFeed::new();
         feed.trace = self.trace.clone();
+        feed.multiclass = self.multiclass.clone();
         self.feed = Some(feed.clone());
         self.last_error = None;
         self.ended = false;
@@ -1661,6 +1665,9 @@ impl WrathControl {
             "the client is shutting down",
         );
         self.ended_retirement_done = true;
+        if let Some(multiclass) = &self.multiclass {
+            multiclass.suspend();
+        }
         // Close the reply queue before the join. A worker that pushes during teardown must not
         // fabricate an overflow terminal, and no consumer is left to drain what it sends.
         self.close_session_replies();
@@ -2263,8 +2270,16 @@ pub struct WrathNetPlugin {
 impl Plugin for WrathNetPlugin {
     fn build(&self, app: &mut App) {
         let commands: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
+        let multiclass = (self.config.is_some()
+            && std::env::var("WOW_WRATH_MULTICLASS").as_deref() == Ok("1"))
+            .then(crate::multiclass::MulticlassBridge::default);
+        if let Some(bridge) = &multiclass {
+            app.insert_resource(bridge.clone());
+            info!("multiclass: WMC1 v3 extension enabled");
+        }
         app.insert_resource(WrathControl {
             config: self.config.clone(),
+            multiclass,
             trace: None,
             worker: None,
             retiring: None,
@@ -9538,6 +9553,7 @@ pub fn run_session_with_cancel(
 ) -> anyhow::Result<()> {
     use benilla_wm_native::{pump_once, replace_publisher, PublisherConfig};
 
+    let multiclass = feed.multiclass.as_ref().map(crate::multiclass::MulticlassBridge::connect);
     let (parked, roster_asked) = match parked {
         Some(input) => (Some(input.commands), input.roster_asked),
         None => (None, false),
@@ -9991,7 +10007,15 @@ pub fn run_session_with_cancel(
             if entered.is_some() {
                 break;
             }
+            if let Some(multiclass) = &multiclass {
+                multiclass.selection(roster_mutation.is_none());
+                multiclass.dispatch(&mut world)?;
+            }
             match world.recv() {
+                Ok(p) if p.opcode == benilla_protocol_wrath::multiclass::SERVER_OPCODE
+                    && multiclass.is_some() => {
+                    multiclass.as_ref().expect("enabled multiclass").receive(&p.payload)?;
+                }
                 Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_REALM_SPLIT => {
                     let reply = benilla_protocol_wrath::gameplay::parse_realm_split(&p.payload)?;
                     info!("wrath: realm split choice={} state={} date={}", reply.0, reply.1, reply.2);
@@ -10046,6 +10070,9 @@ pub fn run_session_with_cancel(
             record.name, record.guid, record.race, record.class, record.map);
         record.guid
     };
+    if let Some(multiclass) = &multiclass {
+        multiclass.selection(false);
+    }
     session.start_session(guid); // re-begin with the real full GUID; phase resets to selection
     session.note_player_login();
     feed.last_session_epoch.store(session.epoch(), Ordering::SeqCst);
@@ -10075,6 +10102,10 @@ pub fn run_session_with_cancel(
             native.invalidate_scope();
             publisher.retire_all();
             return Ok(());
+        }
+        if let Some(multiclass) = &multiclass {
+            multiclass.world(session.phase(), session.world_generation());
+            multiclass.dispatch(&mut world)?;
         }
         // Bounded ownership (R04): once the reply queue overflowed, ordered replies have already
         // been lost. End the session through the one terminal path instead of continuing to read
@@ -10275,6 +10306,11 @@ pub fn run_session_with_cancel(
             return Ok(());
         }
         match world.recv() {
+            Ok(p) if p.opcode == benilla_protocol_wrath::multiclass::SERVER_OPCODE
+                && multiclass.is_some() => {
+                last_server_response = Instant::now();
+                multiclass.as_ref().expect("enabled multiclass").receive(&p.payload)?;
+            }
             Ok(p) => {
                 let received_at = Instant::now();
                 last_server_response = received_at;
@@ -11615,6 +11651,7 @@ mod command_tap_tests {
         (
             WrathControl {
                 config: None,
+                multiclass: None,
                 trace: None,
                 worker: None,
                 retiring: None,

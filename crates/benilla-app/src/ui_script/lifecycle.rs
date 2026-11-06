@@ -122,6 +122,7 @@ fn install_glue_vm(world: &mut World, screen: &str) -> bool {
     let Some(mut script) = new_vm(world, make_glue_vm) else {
         return false;
     };
+    attach_multiclass(world, &script);
     // The build's size and aspect, and its clear of a pending rebuild (`0x46a7e0`, `0x46a81c`).
     super::glue::glue_built(world);
     seat_raster_seam_for_load(world, &mut script);
@@ -141,6 +142,11 @@ fn install_glue_vm(world: &mut World, screen: &str) -> bool {
     crate::chr_classes::seat_localized_class_names(world, &mut script);
     let start = std::time::Instant::now();
     let failures = super::glue::load_glue(&mut script);
+    if script.target() == UiTarget::Wrath335
+        && world.contains_resource::<crate::multiclass::MulticlassBridge>()
+    {
+        crate::multiclass::load_glue(&script);
+    }
     super::glue::finish_glue_load_log(&mut script);
     start_server_alert(world, &script);
     // What the glue carries across its rebuild, in place before the screen's `OnShow` reads it.
@@ -268,6 +274,18 @@ fn build_vm<E: std::fmt::Display>(
         warn!("ui_script: Wrath host source integration is incomplete; addon/API and rendered acceptance remain unverified");
     }
     Some(script)
+}
+
+// Temporary strings VMs are also built through new_vm; only a seated UI gains authority.
+fn attach_multiclass(world: &World, script: &UiScript) {
+    if script.target() == UiTarget::Wrath335 {
+        if let Some(multiclass) = world.get_resource::<crate::multiclass::MulticlassBridge>() {
+            if let Err(error) = multiclass.attach(script) {
+                error!("multiclass: VM binding failed: {error}");
+                multiclass.suspend();
+            }
+        }
+    }
 }
 
 /// Start the new VM's `GetTime()` where the process already is and re-anchor [`UiClock`] to it,
@@ -404,6 +422,7 @@ pub(crate) fn arm_entry_ui_load(world: &mut World) {
 fn mint_entry_vm(world: &mut World) {
     crate::cvars::fold_dying_vm_cvars(world);
     if let Some(mut script) = new_vm(world, make_ingame_vm) {
+        attach_multiclass(world, &script);
         crate::ui_macro::install_icon_source(world, &mut script);
         world.insert_non_send_resource(script);
     }
@@ -1170,6 +1189,12 @@ fn close_ui_session(world: &mut World, root: ShutdownRoot) {
     }
     // And the signals the frame's deaths parked in it, for the deaths lane.
     crate::target::drop_parked_deaths(world);
+    if let (Some(multiclass), Some(script)) = (
+        world.get_resource::<crate::multiclass::MulticlassBridge>(),
+        world.get_non_send_resource::<UiScript>(),
+    ) {
+        multiclass.detach(script.session());
+    }
 }
 
 /// A `ReloadUI()` waiting to run: set when [`crate::ui_logout`] drains

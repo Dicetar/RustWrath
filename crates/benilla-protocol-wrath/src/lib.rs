@@ -25,6 +25,7 @@ mod header;
 pub mod auth;
 pub mod cast_failure;
 pub mod logon;
+pub mod multiclass;
 pub mod fields;
 pub mod gameplay;
 pub mod opcode;

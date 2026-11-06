@@ -79,6 +79,8 @@ pub use class_names::LocalizedClassName;
 mod newproxy;
 mod static_constants;
 mod wrath_natives;
+mod multiclass;
+pub use multiclass::MulticlassHost;
 mod wrath_security;
 mod wrath_world;
 pub use client::FrameTimeRing;

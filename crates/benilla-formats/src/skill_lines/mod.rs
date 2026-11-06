@@ -376,6 +376,38 @@ impl SkillLineCatalog {
         self.ability(spell_id, race, class).map(|a| a.skill_id)
     }
 
+    /// Presentation-only class-training candidates for WM's multiclass trainer extension.
+    /// Match Build-SpellClasses.py: class skills (category 7, except mounts 777) inherit a
+    /// missing class mask from their line; armor/weapon skills (6/8) require an explicit mask.
+    /// Race restrictions are intentionally absent from this extension's fallback.
+    pub fn class_training_lines(&self) -> HashMap<u32, Vec<(u16, u32)>> {
+        let class_line = |id| id != 777 && self.lines.get(&id).is_some_and(|line| line.category_id == 7);
+        let mut line_masks = HashMap::<u32, u16>::new();
+        for row in self.sla_rows.values().flatten() {
+            if class_line(row.info.skill_id) {
+                *line_masks.entry(row.info.skill_id).or_default() |= (row.class_mask & 1535) as u16;
+            }
+        }
+        let mut candidates = HashMap::<u32, Vec<(u16, u32)>>::new();
+        for (&spell, rows) in &self.sla_rows {
+            for row in rows {
+                let line = row.info.skill_id;
+                let mut mask = (row.class_mask & 1535) as u16;
+                if class_line(line) {
+                    if mask == 0 { mask = line_masks.get(&line).copied().unwrap_or(0); }
+                } else if !self.lines.get(&line).is_some_and(|line| matches!(line.category_id, 6 | 8)) {
+                    continue;
+                }
+                if mask != 0 { candidates.entry(spell).or_default().push((mask, line)); }
+            }
+        }
+        for rows in candidates.values_mut() {
+            rows.sort_unstable();
+            rows.dedup();
+        }
+        candidates
+    }
+
     /// The line of a spell's first `SkillLineAbility.dbc` row in file order, whatever race or
     /// class it admits: for the data tests that pin the file.
     pub fn first_line(&self, spell_id: u32) -> Option<u32> {
