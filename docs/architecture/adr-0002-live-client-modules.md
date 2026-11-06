@@ -78,6 +78,13 @@ cannot contain an access violation or arbitrary native memory corruption.
 7. Delete only retired regular `pose-<digest>.dll` children of the resolved local module folder.
    Never remove active code or scan/delete outside that folder.
 
+The pose host validates the frame time, rig spans, local transforms and parent bounds before
+invoking a module. A malformed input batch leaves the staged, active and retained revisions
+in place. On an active-module failure, predecessors are tried newest first on the same input.
+Only a predecessor that produces valid output becomes active. If none succeeds, composition
+uses the baseline pose. History holds up to three distinct predecessor digests, so switching
+back to a previously active DLL does not consume a rollback slot for the same code.
+
 SHA-1 here is a local content identity/incomplete-copy check, not an authentication protocol.
 Remote/WM distribution needs a separate authenticated publication contract and is not enabled.
 
