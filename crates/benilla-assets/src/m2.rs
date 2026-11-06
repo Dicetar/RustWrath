@@ -8,8 +8,8 @@ use benilla_formats::{
     hand_grip_finger_poses, parse_m2_animations, parse_m2_attachments, parse_m2_bounds,
     parse_m2_collision_hull, parse_m2_global_sequence_bones, parse_m2_lights,
     parse_m2_particle_emitters, parse_m2_playable_animation_lookup, parse_m2_portrait_camera,
-    parse_m2_render_submeshes, parse_m2_skeleton, CollisionMesh, M2Bounds, M2Light,
-    ParticleEmitterDef,
+    parse_m2_render_submeshes, parse_m2_render_submeshes_with_skin, parse_m2_skeleton,
+    CollisionMesh, M2Bounds, M2Light, ParticleEmitterDef,
 };
 use bevy::animation::graph::AnimationGraph;
 use bevy::asset::io::Reader;
@@ -227,8 +227,29 @@ impl AssetLoader for M2ModelLoader {
         reader.read_to_end(&mut bytes).await?;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
 
-        // Skins fill at the spawn site, so no skin directory or list is passed.
-        let subs = parse_m2_render_submeshes(&bytes, "", &[]).map_err(to_io)?;
+        // The textures open as the model did (`0x71da64` pushes the model's own flag).
+        let source = match ctx.path().source() {
+            bevy::asset::io::AssetSourceId::Name(name) if &**name == crate::MPQ_LOOSE_SOURCE => {
+                crate::MPQ_LOOSE_SOURCE
+            }
+            _ => crate::MPQ_SOURCE,
+        };
+        // Creature skins fill at the spawn site, so no skin directory or list is passed. Wrath
+        // models store geometry in a sibling `Foo00.skin`; the actor route uses LOD 0.
+        let subs = if bytes.get(4..8) == Some(&264u32.to_le_bytes()) {
+            let path = ctx.path().path();
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let skin_path = path.with_file_name(format!("{stem}00.skin"));
+            let skin_bytes = crate::profile_source::read_profile_sync(source, &skin_path)
+                .ok_or_else(|| {
+                    std::io::Error::other(format!("missing companion skin {}", skin_path.display()))
+                })?;
+            let skin = benilla_formats::parse_external_skin(&skin_bytes)
+                .map_err(|e| std::io::Error::other(format!("parsing skin: {e}")))?;
+            parse_m2_render_submeshes_with_skin(&bytes, "", &[], Some(&skin)).map_err(to_io)?
+        } else {
+            parse_m2_render_submeshes(&bytes, "", &[]).map_err(to_io)?
+        };
         let bounds = parse_m2_bounds(&bytes).ok();
         // One owner bound for every effect: the reference draws them all after the batches.
         let owner_reach = benilla_formats::m2_owner_reach(&subs);
@@ -248,13 +269,6 @@ impl AssetLoader for M2ModelLoader {
             .ok()
             .filter(|c| !c.is_empty());
 
-        // The textures open as the model did (`0x71da64` pushes the model's own flag).
-        let source = match ctx.path().source() {
-            bevy::asset::io::AssetSourceId::Name(name) if &**name == crate::MPQ_LOOSE_SOURCE => {
-                crate::MPQ_LOOSE_SOURCE
-            }
-            _ => crate::MPQ_SOURCE,
-        };
         let mut submeshes = Vec::with_capacity(subs.len());
         for sub in subs {
             // The URL is lowercased, since Bevy matches the `blp` extension case-sensitively, and

@@ -489,6 +489,9 @@ pub fn hand_grip_finger_poses(bytes: &[u8], bones: &[u16]) -> Vec<(u16, [f32; 4]
     if b.len() < 0x40 || &b[0..4] != b"MD20" {
         return Vec::new();
     }
+    if le_u32(b, 4) == 264 {
+        return Vec::new();
+    }
     let (seq_count, seq_ofs) = (le_u32(b, 0x1c) as usize, le_u32(b, 0x20) as usize);
     let (bone_count, bone_ofs) = (le_u32(b, 0x34) as usize, le_u32(b, 0x38) as usize);
     // HandsClosed's file slot, which indexes the key windows, and its start ms.
@@ -543,6 +546,9 @@ pub fn hand_grip_finger_poses(bytes: &[u8], bones: &[u16]) -> Vec<(u16, [f32; 4]
 pub fn parse_m2_animations(b: &[u8]) -> Vec<ModelAnimation> {
     if b.len() < 0x40 || &b[0..4] != b"MD20" {
         return Vec::new();
+    }
+    if le_u32(b, 4) == 264 {
+        return parse_m2_animations_wrath(b);
     }
     let (seq_count, seq_ofs) = (le_u32(b, 0x1c) as usize, le_u32(b, 0x20) as usize);
     let (bone_count, bone_ofs) = (le_u32(b, 0x34) as usize, le_u32(b, 0x38) as usize);
@@ -695,6 +701,247 @@ pub fn parse_m2_animations(b: &[u8]) -> Vec<ModelAnimation> {
     out
 }
 
+/// One v264 bone track. Wrath stores one key array per sequence, with timestamps relative to the
+/// sequence's own start, instead of vanilla's absolute timeline plus `(lo, hi)` windows.
+struct WrathTrack<T> {
+    sequences: Vec<Vec<(u32, T)>>,
+    global: Vec<(u32, T)>,
+}
+
+fn read_wrath_track<T: Clone>(
+    b: &[u8],
+    track: usize,
+    stride: usize,
+    read_value: impl Fn(&[u8], usize) -> Option<T>,
+) -> WrathTrack<T> {
+    let empty = || WrathTrack {
+        sequences: Vec::new(),
+        global: Vec::new(),
+    };
+    if track + 20 > b.len() {
+        return empty();
+    }
+    let gseq = le_u16(b, track + 2);
+    let (tc, to) = (le_u32(b, track + 4) as usize, le_u32(b, track + 8) as usize);
+    let (vc, vo) = (
+        le_u32(b, track + 12) as usize,
+        le_u32(b, track + 16) as usize,
+    );
+    let read_keys = |n: usize, ts: usize, vs: usize| -> Vec<(u32, T)> {
+        (0..n)
+            .map_while(|k| {
+                let t = le_u32(b, ts + k * 4);
+                read_value(b, vs + k * stride).map(|v| (t, v))
+            })
+            .collect()
+    };
+    if gseq != 0xffff {
+        let n = tc.min(vc);
+        return WrathTrack {
+            sequences: Vec::new(),
+            global: read_keys(n, to, vo),
+        };
+    }
+    let mut sequences = Vec::with_capacity(tc.min(vc));
+    for s in 0..tc.min(vc) {
+        let ent = to + s * 8;
+        let val = vo + s * 8;
+        let (n, ts) = (le_u32(b, ent) as usize, le_u32(b, ent + 4) as usize);
+        let (vn, vs) = (le_u32(b, val) as usize, le_u32(b, val + 4) as usize);
+        sequences.push(read_keys(n.min(vn), ts, vs));
+    }
+    WrathTrack {
+        sequences,
+        global: Vec::new(),
+    }
+}
+
+/// Parse a Wrath v264 model's sequences. The record is 0x40 bytes with `duration` replacing
+/// vanilla's start/end, and every bone/event track is per-sequence.
+fn parse_m2_animations_wrath(b: &[u8]) -> Vec<ModelAnimation> {
+    let (seq_count, seq_ofs) = (le_u32(b, 0x1c) as usize, le_u32(b, 0x20) as usize);
+    let (bone_count, bone_ofs) = (le_u32(b, 0x2c) as usize, le_u32(b, 0x30) as usize);
+    let vec3 = |b: &[u8], o: usize| {
+        (o + 12 <= b.len()).then(|| [le_f32(b, o), le_f32(b, o + 4), le_f32(b, o + 8)])
+    };
+    // Wrath bone rotations are four signed 16-bit components with a biased zero: a non-negative
+    // short stores `v = f·32767 + 32767`, a negative one `v = f·32767 − 32768`; identity is
+    // `(32767, 32767, 32767, -1)`.
+    let comp = |b: &[u8], o: usize| -> Option<f32> {
+        let v = i16::from_le_bytes([*b.get(o)?, *b.get(o + 1)?]);
+        let f = if v < 0 {
+            f32::from(v) + 32768.0
+        } else {
+            f32::from(v) - 32767.0
+        };
+        Some(f / 32767.0)
+    };
+    let quat = |b: &[u8], o: usize| {
+        let q = [comp(b, o)?, comp(b, o + 2)?, comp(b, o + 4)?, comp(b, o + 6)?];
+        let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        (len > 1e-8).then(|| [q[0] / len, q[1] / len, q[2] / len, q[3] / len])
+    };
+    type WrathBone = (
+        WrathTrack<[f32; 3]>,
+        WrathTrack<[f32; 4]>,
+        WrathTrack<[f32; 3]>,
+    );
+    let bone_tracks: Vec<WrathBone> = (0..bone_count)
+        .map(|i| {
+            let rec = bone_ofs + i * 88;
+            (
+                read_wrath_track(b, rec + 16, 12, vec3),
+                read_wrath_track(b, rec + 36, 8, quat),
+                read_wrath_track(b, rec + 56, 12, vec3),
+            )
+        })
+        .collect();
+
+    struct WrathEvent {
+        ident: [u8; 4],
+        data: u32,
+        bone: u16,
+        position: [f32; 3],
+        times: Vec<(usize, Vec<u32>)>,
+    }
+    let (ev_count, ev_ofs) = (le_u32(b, 0x100) as usize, le_u32(b, 0x104) as usize);
+    let mut model_events = Vec::with_capacity(capped(ev_count, 36, b.len().saturating_sub(ev_ofs)));
+    for e in 0..ev_count {
+        let rec = ev_ofs + e * 36;
+        if rec + 36 > b.len() {
+            break;
+        }
+        let ident: [u8; 4] = b[rec..rec + 4].try_into().unwrap_or(*b"????");
+        let (tc, to) = (le_u32(b, rec + 28) as usize, le_u32(b, rec + 32) as usize);
+        let mut times = Vec::with_capacity(tc);
+        for s in 0..tc {
+            let ent = to + s * 8;
+            if ent + 8 > b.len() {
+                break;
+            }
+            let (n, ts) = (le_u32(b, ent) as usize, le_u32(b, ent + 4) as usize);
+            let list = (0..n)
+                .map_while(|k| (ts + k * 4 + 4 <= b.len()).then(|| le_u32(b, ts + k * 4)))
+                .collect();
+            times.push((s, list));
+        }
+        model_events.push(WrathEvent {
+            ident,
+            data: le_u32(b, rec + 4),
+            bone: le_u32(b, rec + 8) as u16,
+            position: vec3(b, rec + 12).unwrap_or([0.0; 3]),
+            times,
+        });
+    }
+
+    let constant = |keys: &[(u32, [f32; 3])]| -> Vec<(f32, [f32; 3])> {
+        keys.len()
+            .eq(&1)
+            .then(|| vec![(0.0, keys[0].1)])
+            .unwrap_or_default()
+    };
+    let constant_q = |keys: &[(u32, [f32; 4])]| -> Vec<(f32, [f32; 4])> {
+        keys.len()
+            .eq(&1)
+            .then(|| vec![(0.0, keys[0].1)])
+            .unwrap_or_default()
+    };
+    let seq_keys = |keys: &[(u32, [f32; 3])]| -> Vec<(f32, [f32; 3])> {
+        keys.iter()
+            .map(|&(t, v)| (t as f32 / 1000.0, v))
+            .collect()
+    };
+    let seq_quats = |keys: &[(u32, [f32; 4])]| -> Vec<(f32, [f32; 4])> {
+        keys.iter()
+            .map(|&(t, v)| (t as f32 / 1000.0, v))
+            .collect()
+    };
+
+    let mut out = Vec::new();
+    for s in 0..seq_count {
+        let rec = seq_ofs + s * 0x40;
+        if rec + 0x40 > b.len() {
+            break;
+        }
+        let duration_ms = le_u32(b, rec + 4);
+        if duration_ms == 0 {
+            continue;
+        }
+        let flags = le_u32(b, rec + 0x0c);
+        let (bmin, bmax) = (
+            vec3(b, rec + 0x20).unwrap_or([0.0; 3]),
+            vec3(b, rec + 0x2c).unwrap_or([0.0; 3]),
+        );
+        let mut bones = Vec::new();
+        for (i, (tr, rot, sc)) in bone_tracks.iter().enumerate() {
+            let translation = tr
+                .sequences
+                .get(s)
+                .map_or_else(|| constant(&tr.global), |k| seq_keys(k));
+            let rotation = rot
+                .sequences
+                .get(s)
+                .map_or_else(|| constant_q(&rot.global), |k| seq_quats(k));
+            let scale = sc
+                .sequences
+                .get(s)
+                .map_or_else(|| constant(&sc.global), |k| seq_keys(k));
+            if !(translation.is_empty() && rotation.is_empty() && scale.is_empty()) {
+                bones.push(BoneKeys {
+                    bone: i as u16,
+                    translation,
+                    rotation,
+                    scale,
+                });
+            }
+        }
+        let mut events: Vec<AnimEvent> = model_events
+            .iter()
+            .flat_map(|r| {
+                r.times
+                    .iter()
+                    .find(|(slot, _)| *slot == s)
+                    .into_iter()
+                    .flat_map(|(_, times)| times.iter())
+                    .filter(|&&t| t <= duration_ms)
+                    .map(|&t| AnimEvent {
+                        time: t as f32 / 1000.0,
+                        ident: r.ident,
+                        data: r.data,
+                        bone: r.bone,
+                        position: r.position,
+                    })
+            })
+            .collect();
+        events.sort_by(|a, b| a.time.total_cmp(&b.time));
+        let center = [
+            (bmin[0] + bmax[0]) * 0.5,
+            (bmin[1] + bmax[1]) * 0.5,
+            (bmin[2] + bmax[2]) * 0.5,
+        ];
+        out.push(ModelAnimation {
+            anim_id: le_u16(b, rec),
+            seq_index: s,
+            start_ms: 0,
+            end_ms: duration_ms,
+            duration: duration_ms as f32 / 1000.0,
+            looping: flags & 1 == 0,
+            move_speed: le_f32(b, rec + 8),
+            blend_time: le_u32(b, rec + 0x1c) as f32 / 1000.0,
+            bounds_center: center,
+            bounds_radius: le_f32(b, rec + 0x38),
+            bounds_min: bmin,
+            bounds_max: bmax,
+            frequency: le_u16(b, rec + 0x10),
+            min_replay: le_u32(b, rec + 0x14),
+            max_replay: le_u32(b, rec + 0x18),
+            bones,
+            events,
+        });
+    }
+    out
+}
+
 /// One bone track as a global-sequence channel: `None` without a global sequence, a non-zero
 /// period and two keys (a lone key is a constant [`ChannelTrack::band`] folds into every clip).
 fn read_global_channel<T>(
@@ -734,6 +981,9 @@ fn read_global_channel<T>(
 /// (the eye blink's eyelid scale); global sequences at MD20 `0x14`/`0x18`.
 pub fn parse_m2_global_sequence_bones(b: &[u8]) -> Vec<GlobalSeqBone> {
     if b.len() < 0x40 || &b[0..4] != b"MD20" {
+        return Vec::new();
+    }
+    if le_u32(b, 4) == 264 {
         return Vec::new();
     }
     let (gseq_count, gseq_ofs) = (le_u32(b, 0x14) as usize, le_u32(b, 0x18) as usize);

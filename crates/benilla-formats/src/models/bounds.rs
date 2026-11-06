@@ -80,11 +80,16 @@ fn seq_index(bytes: &[u8], anim_id: usize) -> Option<usize> {
     }
 }
 
-/// A sequence record's offset: stride `0x44` from MD20 `0x20`, its `CAaBox` min at `+0x24` and
-/// max at `+0x30`.
+/// A sequence record's offset: stride `0x44` from MD20 `0x20` (Wrath `0x40`), its `CAaBox` min at
+/// `+0x24` (Wrath `+0x20`) and max at `+0x30` (Wrath `+0x2c`).
 fn seq_record(bytes: &[u8], idx: usize) -> Option<usize> {
     let anim_ofs = bytes.u32_at(0x20)? as usize;
-    anim_ofs.checked_add(idx * 0x44)
+    let stride = if bytes.u32_at(4)? == 264 { 0x40 } else { 0x44 };
+    anim_ofs.checked_add(idx * stride)
+}
+
+fn seq_box_min(bytes: &[u8], rec: usize) -> usize {
+    rec + if bytes.u32_at(4) == Some(264) { 0x20 } else { 0x24 }
 }
 
 /// The Stand record: animation id 0 through [`seq_index`], else record 0; `None` only when the
@@ -99,7 +104,7 @@ fn stand_record(bytes: &[u8]) -> Option<usize> {
 /// One sequence box's `max.z`, `rec+0x38`: the `out+0x20` that `0x711a20` returns.
 fn seq_max_z(bytes: &[u8], anim_id: usize) -> Option<f32> {
     let rec = seq_record(bytes, seq_index(bytes, anim_id)?)?;
-    bytes.f32_at(rec + 0x38)
+    bytes.f32_at(seq_box_min(bytes, rec) + 0x14)
 }
 
 /// The Stand box's `(dx, dy, dz)`, the input the reference's living-unit ring is sized from
@@ -107,10 +112,12 @@ fn seq_max_z(bytes: &[u8], anim_id: usize) -> Option<f32> {
 /// same box, so the ring and the bubble never read different animations.
 fn stand_box(bytes: &[u8]) -> Option<(f32, f32, f32)> {
     let rec = stand_record(bytes)?;
+    let min = seq_box_min(bytes, rec);
+    let max = min + 0x0c;
     // The ring squares dx and dy, so an unsorted box is harmless.
-    let dx = bytes.f32_at(rec + 0x30)? - bytes.f32_at(rec + 0x24)?;
-    let dy = bytes.f32_at(rec + 0x34)? - bytes.f32_at(rec + 0x28)?;
-    let dz = bytes.f32_at(rec + 0x38)? - bytes.f32_at(rec + 0x2c)?;
+    let dx = bytes.f32_at(max)? - bytes.f32_at(min)?;
+    let dy = bytes.f32_at(max + 4)? - bytes.f32_at(min + 4)?;
+    let dz = bytes.f32_at(max + 8)? - bytes.f32_at(min + 8)?;
     Some((dx, dy, dz))
 }
 
@@ -121,7 +128,9 @@ const SWIM_ANIM_ID: usize = 42;
 /// `0x2a` both present (`0x711960` at `0x50cc43`/`0x50cc4f`); here Stand resolves through
 /// [`stand_record`], the box the ring and the chat bubble read.
 fn swim_pivot_drop(bytes: &[u8]) -> f32 {
-    let Some(stand_z) = stand_record(bytes).and_then(|rec| bytes.f32_at(rec + 0x38)) else {
+    let Some(stand_z) =
+        stand_record(bytes).and_then(|rec| bytes.f32_at(seq_box_min(bytes, rec) + 0x14))
+    else {
         return 0.0;
     };
     let Some(swim_z) = seq_max_z(bytes, SWIM_ANIM_ID) else {

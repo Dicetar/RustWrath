@@ -293,12 +293,30 @@ pub fn parse_m2_render_submeshes(
     dir: &str,
     skins: &[Option<String>],
 ) -> Result<Vec<RenderSubmesh>> {
+    parse_m2_render_submeshes_with_skin(bytes, dir, skins, None)
+}
+
+/// As [`parse_m2_render_submeshes`], with a Wrath companion `.skin` for v264 models. Vanilla
+/// models keep their embedded skin and ignore `geometry_skin`.
+pub fn parse_m2_render_submeshes_with_skin(
+    bytes: &[u8],
+    dir: &str,
+    skins: &[Option<String>],
+    geometry_skin: Option<&benilla_m2::Skin>,
+) -> Result<Vec<RenderSubmesh>> {
     let format =
         parse_m2(&mut Cursor::new(bytes)).map_err(|e| anyhow::anyhow!("parsing M2: {e}"))?;
     let model = format.model();
-    let skin = model
-        .parse_embedded_skin(bytes, 0)
-        .map_err(|e| anyhow::anyhow!("embedded skin: {e}"))?;
+    let embedded;
+    let skin = match geometry_skin {
+        Some(s) => s,
+        None => {
+            embedded = model
+                .parse_embedded_skin(bytes, 0)
+                .map_err(|e| anyhow::anyhow!("embedded skin: {e}"))?;
+            &embedded
+        }
+    };
 
     let vertex = |g: u32| {
         let v = &model.vertices[g as usize];
@@ -332,15 +350,19 @@ pub fn parse_m2_render_submeshes(
     // (`KeyAnim::wrap`): a one-shot such as Death must not wrap back to its opening alpha.
     let seq_bands: Vec<(u16, (u32, u32), bool)> = {
         let (n, o) = (le_u32(bytes, 0x1c) as usize, le_u32(bytes, 0x20) as usize);
+        let wrath = le_u32(bytes, 4) == 264;
+        let (stride, flags_at) = if wrath { (0x40, 0x0c) } else { (0x44, 0x10) };
         (0..n)
             .map_while(|i| {
-                let e = o + i * 0x44;
-                (e + 0x44 <= bytes.len()).then(|| {
-                    (
-                        le_u16(bytes, e),
-                        (le_u32(bytes, e + 0x04), le_u32(bytes, e + 0x08)),
-                        le_u32(bytes, e + 0x10) & 1 == 0,
-                    )
+                let e = o + i * stride;
+                (e + stride <= bytes.len()).then(|| {
+                    let duration = le_u32(bytes, e + 0x04);
+                    let band = if wrath {
+                        (0, duration)
+                    } else {
+                        (duration, le_u32(bytes, e + 0x08))
+                    };
+                    (le_u16(bytes, e), band, le_u32(bytes, e + flags_at) & 1 == 0)
                 })
             })
             .collect()

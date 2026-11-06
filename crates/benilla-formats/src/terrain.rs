@@ -457,6 +457,26 @@ pub fn adt_to_tile_mesh(adt_bytes: &[u8]) -> Result<TileMesh> {
         });
     }
 
+    if let Some(mh2o) = &root.mh2o {
+        let mut positions = vec![[0.0f32; 3]; 256];
+        for mcnk in &root.mcnk_chunks {
+            let h = &mcnk.header;
+            let index = h.index_y as usize * 16 + h.index_x as usize;
+            if index < positions.len() {
+                positions[index] = h.position;
+            }
+        }
+        for (grid, liquid) in crate::liquid::build_mh2o_meshes(mh2o, &positions) {
+            let (x, y) = ((grid % 16) as u32, (grid / 16) as u32);
+            if let Some(chunk) = chunks
+                .iter_mut()
+                .find(|c| c.index_x == x && c.index_y == y)
+            {
+                chunk.liquids.push(liquid);
+            }
+        }
+    }
+
     if chunks.is_empty() {
         anyhow::bail!("ADT produced no terrain chunks (no MCVT height data?)");
     }

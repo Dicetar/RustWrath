@@ -134,8 +134,18 @@ impl Profile {
     pub fn reload(&mut self) -> Result<()> {
         let text = std::fs::read_to_string(&self.manifest_path)
             .with_context(|| format!("re-reading manifest {}", self.manifest_path.display()))?;
-        self.manifest = Manifest::parse(&text, &self.manifest.profile)?;
-        self.open_archives()
+        let manifest = Manifest::parse(&text, &self.manifest.profile)?;
+        // Candidate-first: open every new archive before replacing the live set. A failing
+        // archive, disabled toggle or parse leaves the previous profile fully usable.
+        let mut candidate = Self {
+            data_dir: self.data_dir.clone(),
+            manifest_path: self.manifest_path.clone(),
+            manifest,
+            archives: Vec::new(),
+        };
+        candidate.open_archives()?;
+        *self = candidate;
+        Ok(())
     }
 
     /// The profile's declared locale tag (informational; string tables are the reader's concern).

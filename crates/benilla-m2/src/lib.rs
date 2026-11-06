@@ -13,7 +13,7 @@ pub use model::{
     M2Format, M2Header, M2Material, M2Model, M2PlayableAnim, M2RawData, M2RenderFlags, M2Texture,
     M2TextureTransform, M2TextureType, M2Vertex, C2, C3,
 };
-pub use skin::{Skin, SkinBatch, SkinSection};
+pub use skin::{parse_external_skin, Skin, SkinBatch, SkinSection};
 pub use track::{
     CubicValue, M2QuatTrack, M2ScalarSplineTrack, M2ScalarTrack, M2SplineKey, M2Track,
     M2Vec3SplineTrack, M2Vec3Track,
@@ -43,9 +43,10 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
         return Err(Error::NotMd20);
     }
     let version = b.u32_at(4).ok_or(Error::Truncated)?;
-    if !(256..=263).contains(&version) {
+    if !(256..=264).contains(&version) {
         return Err(Error::UnsupportedVersion(version));
     }
+    let wrath = version >= 264;
 
     // Walk the header's `(count, offset)` M2Arrays, 8 bytes each, pre-Wrath layout.
     let arr = |p: usize| -> Result<(u32, u32)> {
@@ -65,8 +66,8 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
     // AnimationLookup (`+0x24`), which the reference's ownership test `0x711960` reads.
     let animation_lookup_arr = arr(p)?;
     p += 8;
-    // PlayableAnimationLookup (`+0x2c`): pre-Wrath only, as is every version admitted above.
-    let playable_animation_lookup_arr = if (256..=263).contains(&version) {
+    // PlayableAnimationLookup (`+0x2c`): pre-Wrath only.
+    let playable_animation_lookup_arr = if !wrath {
         let v = arr(p)?;
         p += 8;
         v
@@ -79,12 +80,12 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
     p += 8;
     let vertices = arr(p)?;
     p += 8;
-    let views = if version <= 263 {
+    let views = if !wrath {
         let v = arr(p)?;
         p += 8;
         v
     } else {
-        p += 4;
+        p += 4; // num_skin_profiles, companion `.skin` files are not embedded
         (0, 0)
     };
     let colors_arr = arr(p)?; // header 0x54: M2Color[] (colour + alpha tracks)
@@ -211,13 +212,15 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
         });
     }
 
-    // Bones: 108 bytes in v256: key bone i32, flags u32, parent i16, submesh u16 (no boneNameCRC in
-    // vanilla), three 28-byte tracks, pivot C3 @96. The reference zeroes a NaN pivot component.
+    // Bones: 108 bytes in v256, three 28-byte tracks, pivot C3 @96. Wrath's v264 record is 88
+    // bytes with 20-byte tracks and its pivot @76. The reference zeroes a NaN pivot component.
+    let bone_size = if wrath { 88 } else { 108 };
+    let bone_pivot = if wrath { 76 } else { 96 };
     let bones_avail = b.len().saturating_sub(bones.1 as usize);
-    let mut bone_list = Vec::with_capacity(capped(bones.0 as usize, 108, bones_avail));
+    let mut bone_list = Vec::with_capacity(capped(bones.0 as usize, bone_size, bones_avail));
     for i in 0..bones.0 as usize {
-        let bn = get(bones.1 as usize + i * 108, 108)?;
-        let mut pivot = rd_c3(bn, 96).ok_or(Error::Truncated)?;
+        let bn = get(bones.1 as usize + i * bone_size, bone_size)?;
+        let mut pivot = rd_c3(bn, bone_pivot).ok_or(Error::Truncated)?;
         if pivot.x.is_nan() {
             pivot.x = 0.0;
         }
@@ -235,19 +238,21 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
         });
     }
 
-    // Attachments: 48 bytes (id, bone, position C3 @8, a skipped track). A record whose id or bone
-    // overflows `u16`, or whose bone is out of range, is dropped; real ids stop at 36.
+    // Attachments: 48 bytes in vanilla, 40 in Wrath (id, bone, position C3 @8, a skipped track).
+    // A record whose id or bone overflows `u16`, or whose bone is out of range, is dropped; real
+    // ids stop at 36.
+    let att_size = if wrath { 40 } else { 48 };
     let att_count = attachments.0 as usize;
     let att_avail = b.len().saturating_sub(attachments.1 as usize);
     // The table must fit the file first: `emitted_at` below is sized from the raw count.
-    if capped(att_count, 48, att_avail) < att_count {
+    if capped(att_count, att_size, att_avail) < att_count {
         return Err(Error::Truncated);
     }
     let mut attachment_list = Vec::with_capacity(att_count);
     // AttachLookup indexes the file's records; a dropped one shifts ours, so map file to emitted.
     let mut emitted_at = vec![0xffffu16; att_count]; // proven to fit above
     for (i, emitted) in emitted_at.iter_mut().enumerate() {
-        let a = get(attachments.1 as usize + i * 48, 48)?;
+        let a = get(attachments.1 as usize + i * att_size, att_size)?;
         let id = a.u32_at(0).ok_or(Error::Truncated)?;
         let bone = a.u32_at(4).ok_or(Error::Truncated)?;
         let position = rd_c3(a, 8).ok_or(Error::Truncated)?;
@@ -277,12 +282,13 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
         attach_lookup_list.push(emitted_at.get(raw as usize).copied().unwrap_or(0xffff));
     }
 
-    // Event markers: 44 bytes (4CC, data u32, bone u32 @8, position C3 @12, a skipped 20-byte
-    // track), dropped like attachments, kept in file order.
+    // Event markers: 44 bytes in vanilla; Wrath's record is 36 (the timestamp track has no values
+    // array). Both keep the 4CC, data, bone @8 and position C3 @12.
+    let ev_size = if wrath { 36 } else { 44 };
     let ev_avail = b.len().saturating_sub(events.1 as usize);
-    let mut event_markers = Vec::with_capacity(capped(events.0 as usize, 44, ev_avail));
+    let mut event_markers = Vec::with_capacity(capped(events.0 as usize, ev_size, ev_avail));
     for i in 0..events.0 as usize {
-        let e = get(events.1 as usize + i * 44, 44)?;
+        let e = get(events.1 as usize + i * ev_size, ev_size)?;
         let ident = [e[0], e[1], e[2], e[3]];
         let bone = e.u32_at(8).ok_or(Error::Truncated)?;
         let position = rd_c3(e, 12).ok_or(Error::Truncated)?;
@@ -451,8 +457,13 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
             texture_transform_lookup,
             global_sequences,
             bones: bone_list,
-            cameras: parse_cameras(b),
-            camera_lookup: parse_camera_lookup(b),
+            // Wrath moved the camera arrays and changed their stride; actors do not read them.
+            cameras: if wrath { Vec::new() } else { parse_cameras(b) },
+            camera_lookup: if wrath {
+                Vec::new()
+            } else {
+                parse_camera_lookup(b)
+            },
             raw_data: M2RawData {
                 texture_lookup_table: tlt,
                 bounding_triangles: bt_bytes,
