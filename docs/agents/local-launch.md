@@ -70,6 +70,9 @@ cargo build -p benilla --features hotpatch
 ```
 
 The launcher uses `D:\Projects\project-b-client\target\debug\benilla.exe`.
+The normal `Launch RustWrath.cmd` passes `-BuildLatest` to the PowerShell launcher,
+which runs Cargo through sccache for the current local source before starting the developer executable.
+Build failure stops launch. Packaged releases keep their validated executable selection.
 For a build from a separate worktree, set `CARGO_TARGET_DIR` to
 `D:\Projects\project-b-client\target` in that build shell to update that
 executable. Inspect Git status and do not pull or switch the primary checkout

@@ -4,6 +4,7 @@ param(
     [string]$AuthServer = '127.0.0.1:3724',
     [string]$WorldServer = '127.0.0.1:8095',
     [bool]$WithAddons = $true,
+    [switch]$BuildLatest,
     [string]$StateHome,
     [string]$ReleaseRoot = '',
     [switch]$UseReleaseSet,
@@ -79,6 +80,26 @@ if ($releaseRequested) {
 $isRelease = Test-Path -LiteralPath (Join-Path $repo 'release-manifest.json') -PathType Leaf
 if ($isRelease -and $releaseRequested) { throw 'Choose an assembled release or a release set, not both' }
 if ($isRelease) { $binary = Join-Path $repo 'bin\benilla.exe' }
+if ($BuildLatest -and !$isRelease -and !$releaseRequested) {
+    if (Get-Process benilla,cargo,rustc -ErrorAction SilentlyContinue) {
+        throw 'Close the running client or wait for the active build before rebuilding.'
+    }
+    Write-Host 'Building the current RustWrath source before launch...'
+    $cache = Get-Command sccache -ErrorAction Stop
+    $previousWrapper = $env:RUSTC_WRAPPER
+    $previousIncremental = $env:CARGO_INCREMENTAL
+    try {
+        $env:RUSTC_WRAPPER = $cache.Source
+        $env:CARGO_INCREMENTAL = '0'
+        & cargo build --manifest-path (Join-Path $repo 'Cargo.toml') --target-dir (Join-Path $repo 'target') -p benilla --features hotpatch
+        if ($LASTEXITCODE -ne 0) {
+            throw 'RustWrath build failed. See the build output above.'
+        }
+    } finally {
+        $env:RUSTC_WRAPPER = $previousWrapper
+        $env:CARGO_INCREMENTAL = $previousIncremental
+    }
+}
 if (!(Test-Path -LiteralPath $binary)) {
     if ($releaseContext) {
         throw "Release executable is missing: $binary"
