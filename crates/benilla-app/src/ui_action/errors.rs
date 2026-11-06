@@ -1076,12 +1076,12 @@ mod totem_reagent_tests {
             ]),
         );
         let st = store();
-        let mut window = WrathFieldWindow::default();
         let slot31 = PLAYER_FIELD_KEYRING_SLOT_1 + 31 * 2;
-        window.insert(slot31, 0xB1);
-        window.insert(slot31 + 1, 0);
+        let mut values = vec![0u32; usize::from(slot31) + 2];
+        values[usize::from(slot31)] = 0xB1;
+        let window = WrathFieldWindow::from_dense(values);
         let mut wrath = WrathInventory::default();
-        wrath.apply_window((1, 1), 1, &window);
+        let _ = wrath.apply(&window, (1, 1));
 
         let mut reagents = [(0, 0); 8];
         reagents[0] = (17056, 2);
