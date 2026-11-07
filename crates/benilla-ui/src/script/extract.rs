@@ -478,48 +478,52 @@ impl UiScript {
                             scale,
                             rotation: 0.0,
                         });
-                    }
-                    // Screen clockwise from the top is `(sin, -cos)` y-down; the layout rect is
-                    // y-up, so its centre offset is `(sin, cos)` scaled by the rect's half sizes,
-                    // which puts the spark on the quad's rim at the sector angle.
-                    let (sx, sy) = (
-                        cx + angle.sin() * w * 0.5,
-                        cy + angle.cos() * h * 0.5,
-                    );
-                    out.push(ExtractedQuad {
-                        target,
-                        z,
-                        rect: Some(Rect::new(
-                            sy - h * 0.5,
-                            sx - w * 0.5,
-                            sy + h * 0.5,
-                            sx + w * 0.5,
-                        )),
-                        alpha,
-                        content: QuadContent::Texture {
-                            path: Some(COOLDOWN_SPARK.to_string()),
-                            color: None,
-                            gradient: None,
-                            blend: BlendMode::Add,
-                            tex_coords: None,
-                            wrap: false,
-                            circular: false,
-                            portrait_unit: None,
+                        // Screen clockwise from the top is `(sin, -cos)` y-down; the layout rect is
+                        // y-up, so its centre offset is `(sin, cos)` scaled by the rect's half sizes,
+                        // which puts the spark on the quad's rim at the sector angle.
+                        let (sx, sy) = (
+                            cx + angle.sin() * w * 0.5,
+                            cy + angle.cos() * h * 0.5,
+                        );
+                        let (sw, sh) = (w * 0.35, h * 0.35);
+                        out.push(ExtractedQuad {
+                            target,
+                            z,
+                            rect: Some(Rect::new(
+                                sy - sh * 0.5,
+                                sx - sw * 0.5,
+                                sy + sh * 0.5,
+                                sx + sw * 0.5,
+                            )),
+                            alpha: alpha * 0.5,
+                            content: QuadContent::Texture {
+                                path: Some(COOLDOWN_SPARK.to_string()),
+                                color: None,
+                                gradient: None,
+                                blend: BlendMode::Add,
+                                tex_coords: None,
+                                wrap: false,
+                                circular: false,
+                                portrait_unit: None,
+                                rotation: 0.0,
+                                desaturated: false,
+                            },
+                            clip,
+                            scale,
                             rotation: 0.0,
-                            desaturated: false,
-                        },
-                        clip,
-                        scale,
-                        rotation: 0.0,
-                    });
+                        });
+                    }
                 }
             }
         }
         // `<Rotation>` acts on every quad in the rotated frame's subtree: its regions, its text
         // and its child frames' quads all ride the same transform.
         apply_animation_rotations(&model, &mut out);
-        // Each layer batch's End sorts its quads by texture (`0x7731a0`).
-        layer_batch::sort_batches(&mut out, &batch_quads);
+        // Each layer batch's End sorts its quads by texture (`0x7731a0`) in 1.12; in 3.3.5a,
+        // re-sorting across different textures within a layer scrambles sublevel/child draw order.
+        if model.target != super::UiTarget::Wrath335 {
+            layer_batch::sort_batches(&mut out, &batch_quads);
+        }
         out
     }
 }

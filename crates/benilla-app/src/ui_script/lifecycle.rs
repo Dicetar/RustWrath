@@ -87,6 +87,8 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("UnitNameFriendlyPetName", "1"),
     ("showRaidRange", "0"),
     ("chatMouseScroll", "1"),
+    ("uberTooltips", "1"),
+    ("UberTooltips", "1"),
 ];
 
 pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {

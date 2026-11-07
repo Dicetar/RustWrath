@@ -139,6 +139,34 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         lua.create_function(|lua, this: Table| natural_w(lua, &this))?,
     )?;
 
+    fn natural_h(lua: &Lua, this: &Table) -> mlua::Result<f64> {
+        let rh = region_handle_of(lua, this)?;
+        crate::script::measure::ensure_measured(lua, rh);
+        let model = lua.app_data_ref::<Model>().expect("model");
+        let Some(d) = model.region_data.get(&rh) else {
+            return Ok(0.0);
+        };
+        let scale = model
+            .arena
+            .region(rh)
+            .and_then(|r| model.arena.frame(r.owner))
+            .map(|f| f.effective_scale)
+            .unwrap_or(1.0);
+        let units = model.layout_units();
+        Ok(units.load(
+            units.store(
+                d.measured
+                    .filter(|m| m.key == d.measure_key(scale, units))
+                    .map(|m| m.h)
+                    .unwrap_or(0.0),
+            ),
+        ))
+    }
+    m.set(
+        "GetStringHeight",
+        lua.create_function(|lua, this: Table| natural_h(lua, &this))?,
+    )?;
+
     // SetJustifyH (XML `justifyH`): the parse, the raise on a miss and the cross-axis clear are
     // `crate::justify`'s, shared with the `<Font>` object.
     m.set(

@@ -9210,12 +9210,6 @@ fn wrath_apply_world(world: &mut World) {
                         new: new_bytes_2.unwrap_or(0),
                     });
                 }
-                if kind == EntityKind::Player {
-                    world.entity_mut(entity).insert(Equipment {
-                        settled: true,
-                        ..default()
-                    });
-                }
                 if *guid == player_guid && world.get::<SelfPlayer>(entity).is_none() {
                     world.entity_mut(entity).insert(SelfPlayer);
                 }
@@ -9372,10 +9366,7 @@ fn wrath_apply_world(world: &mut World) {
                 if *guid == player_guid {
                     entity.insert((
                         SelfPlayer,
-                        Equipment {
-                            settled: true,
-                            ..default()
-                        },
+                        Equipment::default(),
                     ));
                 }
                 index.0.insert(*guid, entity.id());

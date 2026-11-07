@@ -520,7 +520,7 @@ pub(crate) fn open_panel(world: &mut World, npc: u64, view: QuestView) {
 /// are `DIALOG_STATUS_INCOMPLETE` and `_REWARD_REP` (`QuestDef.h:118-130`), and it marks an
 /// auto-complete quest, never in the log, `_REWARD_REP` (`Player.cpp:12577`).
 pub(crate) fn row_is_active(icon: u32) -> bool {
-    matches!(icon, 3 | 4)
+    matches!(icon, 3 | 4 | 5 | 6 | 9 | 10)
 }
 
 /// An available row with icon 0 is one-click: its select sends `COMPLETE_QUEST`, not
@@ -551,9 +551,17 @@ fn resolve_item(
             -1
         }
     });
-    let texture = icons
-        .and_then(|i| i.catalog.get(it.display_id))
-        .and_then(|d| d.icon.clone());
+    let texture = {
+        let display_id = if it.display_id != 0 {
+            it.display_id
+        } else {
+            template.map_or(0, |t| t.display_info_id)
+        };
+        icons
+            .and_then(|i| i.catalog.get(display_id))
+            .and_then(|d| d.icon.clone())
+            .or_else(|| Some("Interface\\Icons\\INV_Misc_QuestionMark".to_string()))
+    };
     // `GetQuestItemLink`'s payload; `None` until the template gives the name and quality.
     let link = template.map(|t| {
         crate::ui_items::item_link_full_in_target(target, it.item_id, 0, 0, 0, &t.name, t.quality)
@@ -645,7 +653,7 @@ fn snapshot_in_target(
                 if row_is_active(q.icon) {
                     active_titles.push(q.title.clone());
                     active_levels.push(q.level);
-                    active_complete.push(q.icon == 4);
+                    active_complete.push(matches!(q.icon, 3 | 4 | 6 | 9 | 10));
                 } else {
                     available_titles.push(q.title.clone());
                     available_levels.push(q.level);

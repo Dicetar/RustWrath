@@ -413,10 +413,14 @@ pub(crate) struct SpellRenderOpts {
 /// (`0x532627`-`0x532632`).
 fn compact_tooltips(lua: &Lua) -> bool {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
-    model
+    let cvar = model
         .cvars
         .get("ubertooltips")
-        .is_none_or(|s| binding_abi::s_str_to_int(&s.value) == 0)
+        .or_else(|| model.cvars.get("UberTooltips"));
+    match cvar {
+        Some(s) => binding_abi::s_str_to_int(&s.value) == 0,
+        None => model.target != super::UiTarget::Wrath335,
+    }
 }
 
 /// The live cooldown left in ms for the builder's `p3`, from a `(start, duration, enabled)`

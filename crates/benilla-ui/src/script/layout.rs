@@ -882,6 +882,7 @@ impl UiScript {
     /// [`UiScript::resolve`]'s body on a bare `Model`, so a Lua binding can force a fresh resolve,
     /// as a scroll frame's range recompute must reflect a same-tick `SetHeight`.
     pub(super) fn resolve_layout(model: &mut Model) {
+        crate::script::measure::fill_measures_model(model);
         // A tooltip sized before its lines were measured, in a VM with no font engine.
         super::tooltip::size_owed(model);
         let solves = model.layout_solves;
@@ -2041,6 +2042,10 @@ impl UiScript {
     /// [`UiScript::resolve`], answer with [`UiScript::set_measured_text`], and resolve again.
     pub fn fontstrings_needing_measure(&mut self) -> Vec<MeasureRequest> {
         let mut model = self.model_mut();
+        Self::fontstrings_needing_measure_model(&mut model)
+    }
+
+    pub(crate) fn fontstrings_needing_measure_model(model: &mut Model) -> Vec<MeasureRequest> {
         // Every FontString with text, sized or not: `GetStringWidth` answers the natural width.
         // The ledger (`Model::touch_measure`) re-arms empty, so a second ask this frame sees only
         // the writes since the first; `None` walks every region.
@@ -2050,7 +2055,7 @@ impl UiScript {
             Some(mut dirty) => {
                 dirty.sort_unstable_by_key(|rh| rh.fingerprint_bits());
                 dirty.dedup();
-                dirty.retain(|&rh| stale_measure_key(&model, rh).is_some());
+                dirty.retain(|&rh| stale_measure_key(model, rh).is_some());
                 // Under verify, the full walk runs beside the drain and panics on any stale region
                 // the ledger missed.
                 if layout_verify_enabled() {
@@ -2059,7 +2064,7 @@ impl UiScript {
                         .iter()
                         .filter(|(_, d)| d.text.as_deref().is_some_and(|t| !t.is_empty()))
                         .map(|(&rh, _)| rh)
-                        .filter(|&rh| stale_measure_key(&model, rh).is_some())
+                        .filter(|&rh| stale_measure_key(model, rh).is_some())
                         .collect();
                     for rh in &roster {
                         assert!(
@@ -2079,7 +2084,7 @@ impl UiScript {
                     .iter()
                     .filter(|(_, d)| d.text.as_deref().is_some_and(|t| !t.is_empty()))
                     .map(|(&rh, _)| rh)
-                    .filter(|&rh| stale_measure_key(&model, rh).is_some())
+                    .filter(|&rh| stale_measure_key(model, rh).is_some())
                     .collect();
                 // In handle order, not the map's: a request mints its region's id.
                 all.sort_unstable_by_key(|rh| rh.fingerprint_bits());
@@ -2092,7 +2097,7 @@ impl UiScript {
         }
         let mut out = Vec::with_capacity(needy.len());
         for rh in needy {
-            if let Some(req) = measure_request_for(&mut model, rh) {
+            if let Some(req) = measure_request_for(model, rh) {
                 out.push(req);
             }
         }

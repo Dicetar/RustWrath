@@ -689,9 +689,13 @@ fn setup_tiles(
             booth_view_shape(),
             Camera {
                 order: TILE_CAMERA_ORDER + 1 + slot as isize,
-                // Load, never clear: the orthographic camera clears the atlas first. Depth
-                // clears per camera, the reference's per-widget `GxClear(2)` (`0x76d5e1`).
-                clear_color: ClearColorConfig::None,
+                // Clear each camera's private HDR main_texture every frame so additive M2/particle
+                // passes don't accumulate across frames, while `output_mode` loads the shared atlas.
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                output_mode: bevy::camera::CameraOutputMode::Write {
+                    blend_state: None,
+                    clear_color: ClearColorConfig::None,
+                },
                 is_active: false,
                 ..default()
             },

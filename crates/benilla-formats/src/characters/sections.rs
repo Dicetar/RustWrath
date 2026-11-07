@@ -634,7 +634,7 @@ fn blit_over(dst: &mut BlpMipChain, src: &BlpMipChain, tile: Tile) {
             continue;
         }
         // The reference's whole texture is smaller than the section: resample it over the tile.
-        let scale = (src.width as usize) < cw && (src.height as usize) < ch;
+        let scale = (src.width as usize) < cw || (src.height as usize) < ch;
         let level = if scale { 0 } else { source_mip(src, cw) };
         let sw = (src.width >> level).max(1) as usize;
         let sh = (src.height >> level).max(1) as usize;

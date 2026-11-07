@@ -140,7 +140,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             angle = -angle;
         }
         let a = select(angle + 6.28318530718, angle, angle >= 0.0);
-        if a < clamp(in.color.z, 0.0, 1.0) * 6.28318530718 {
+        let threshold = clamp(in.color.z, 0.0, 1.0) * 6.28318530718;
+        if select(a < threshold, a >= threshold, in.color.w < 0.0) {
             discard;
         }
         return vec4<f32>(vec3<f32>(0.0), 0.8 * abs(in.color.w));

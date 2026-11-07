@@ -47,8 +47,15 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
                             template.quality,
                         )
                     })
+                })
+                .unwrap_or_else(|| {
+                    super::item_stats::item_link_for_target(
+                        model.target,
+                        item.item_id,
+                        "Item",
+                        1,
+                    )
                 });
-            let Some(link) = link else { return Ok(out) };
             push(Value::String(lua.create_string("item")?));
             push(Value::Number(f64::from(item.item_id)));
             push(Value::String(lua.create_string(&link)?));
@@ -84,9 +91,25 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
             push(Value::Number(f64::from(row.row + 1)));
         }
         Some(CursorPayload::Action(action)) => {
-            // 12340 0x00515200: an uncached virtual item returns no values.
-            let Some(template) = model.item_templates.get(&action.action) else { return Ok(out) };
-            let link = super::item_stats::item_link_for_target(model.target, action.action, &template.name, template.quality);
+            let link = model
+                .item_templates
+                .get(&action.action)
+                .map(|template| {
+                    super::item_stats::item_link_for_target(
+                        model.target,
+                        action.action,
+                        &template.name,
+                        template.quality,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    super::item_stats::item_link_for_target(
+                        model.target,
+                        action.action,
+                        "Item",
+                        1,
+                    )
+                });
             push(Value::String(lua.create_string("item")?));
             push(Value::Number(f64::from(action.action)));
             push(Value::String(lua.create_string(&link)?));

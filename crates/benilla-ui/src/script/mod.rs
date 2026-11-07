@@ -1426,6 +1426,10 @@ impl UiScript {
     /// declared width), while `natural_w` is its unwrapped width, which `GetStringWidth` reports.
     pub fn set_measured_text(&mut self, measures: &[(u32, f32, f32, f32, u64)]) {
         let mut model = self.model_mut();
+        Self::set_measured_text_model(&mut model, measures);
+    }
+
+    pub(crate) fn set_measured_text_model(model: &mut Model, measures: &[(u32, f32, f32, f32, u64)]) {
         for &(id, w, h, natural_w, key) in measures {
             let Some(&rh) = model.id_to_region.get(&id) else {
                 continue;

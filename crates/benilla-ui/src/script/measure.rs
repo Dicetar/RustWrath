@@ -129,27 +129,32 @@ impl super::UiScript {
     /// Answer every pending FontString measure inline, so a box is right in the frame its text
     /// was set; returns whether anything changed.
     pub(super) fn fill_measures(&mut self) -> bool {
-        if !self.has_text_measurer() {
-            return false;
-        }
-        let requests = self.fontstrings_needing_measure();
-        if requests.is_empty() {
-            return false;
-        }
-        let answers: Vec<(u32, f32, f32, f32, u64)> = {
-            let mut model = self.model_mut();
-            let mut engine = model.measurer.take().expect("checked above");
-            let answers = requests
-                .iter()
-                .map(|r| {
-                    let (w, h, natural_w) = engine.measure(r);
-                    (r.id, w, h, natural_w, r.key)
-                })
-                .collect();
-            model.measurer = Some(engine);
-            answers
-        };
-        self.set_measured_text(&answers);
-        true
+        let mut model = self.model_mut();
+        fill_measures_model(&mut model)
     }
+}
+
+/// Answer every pending FontString measure inline on a bare `Model`; returns whether anything changed.
+pub(crate) fn fill_measures_model(model: &mut Model) -> bool {
+    if model.measurer.is_none() {
+        return false;
+    }
+    let requests = super::UiScript::fontstrings_needing_measure_model(model);
+    if requests.is_empty() {
+        return false;
+    }
+    let answers: Vec<(u32, f32, f32, f32, u64)> = {
+        let mut engine = model.measurer.take().expect("checked above");
+        let answers = requests
+            .iter()
+            .map(|r| {
+                let (w, h, natural_w) = engine.measure(r);
+                (r.id, w, h, natural_w, r.key)
+            })
+            .collect();
+        model.measurer = Some(engine);
+        answers
+    };
+    super::UiScript::set_measured_text_model(model, &answers);
+    true
 }

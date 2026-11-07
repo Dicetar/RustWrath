@@ -722,6 +722,7 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
             if key == REG_FONTSTRING_METHODS {
                 // 3.3.5a's FontString carries `SetFormattedText`; the 1.12 leaf does not.
                 leaf.set("SetFormattedText", m.get::<Value>("SetFormattedText")?)?;
+                leaf.set("GetStringHeight", m.get::<Value>("GetStringHeight")?)?;
             }
         }
         lua.set_named_registry_value(key, leaf)?;

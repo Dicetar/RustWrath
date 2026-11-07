@@ -583,6 +583,10 @@ impl Loader<'_> {
         if !el.tag.eq_ignore_ascii_case("Cooldown") {
             return;
         }
+        let lower = dbg.to_ascii_lowercase();
+        if lower.contains("buff") || lower.contains("debuff") {
+            self.call(wrapper, "SetReverse", true, dbg);
+        }
         for level in levels {
             for (attr, setter) in [("reverse", "SetReverse"), ("drawEdge", "SetDrawEdge")] {
                 if let Some(on) = level.attr_bool_opt(attr) {

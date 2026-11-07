@@ -261,7 +261,7 @@ fn snapshot(state: &GossipState) -> Option<GossipMenu> {
                 title: title.clone(),
                 level: *level,
                 active: row_is_active(*icon),
-                complete: *icon == 4,
+                complete: matches!(*icon, 3 | 4 | 6 | 9 | 10),
             })
             .collect(),
         options: state
