@@ -6,12 +6,13 @@ acceptance is implied.
 
 ## Final integration — 2026-11-07
 
-Integrated in `D:\Projects\rustwrath-main-integration` on `integration/autoswarm-waves-2026-11-05`
-and published to `origin/main` as `2084c232` (fast-forward from `7e05392f`); the primary checkout
-`D:\Projects\project-b-client` fast-forwarded to the same commit. All 20 targeted cases pass;
-`cargo check --workspace --all-targets` passes; `cargo build -p benilla --features hotpatch`
-passes; the 25-test `characters::sections::tests` module passes against the installed 3.3.5a HD
-data. No live client, addon, visual or receiver acceptance has been performed.
+Integrated in `D:\Projects\rustwrath-main-integration` on `integration/autoswarm-waves-2026-11-05`.
+Source commit `2084c232`; published on `origin/main` with an integration merge commit based on
+`7e05392f`, and the primary checkout `D:\Projects\project-b-client` follows the merge tip. All 20
+targeted cases pass; `cargo check --workspace --all-targets` passes;
+`cargo build -p benilla --features hotpatch` passes; the 25-test
+`characters::sections::tests` module passes against the installed 3.3.5a HD data. No live client,
+addon, visual or receiver acceptance has been performed.
 
 | # | Priority | Final status | Evidence |
 |---|---|---|---|

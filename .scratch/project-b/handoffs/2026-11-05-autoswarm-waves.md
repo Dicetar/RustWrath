@@ -409,8 +409,8 @@ there.
 
 ## 2026-11-07 — confirmed findings integration (DeepSeek A/B/C)
 
-- Commit `2084c232` on `origin/main` (fast-forward from `7e05392f`); primary checkout
-  `D:\Projects\project-b-client` fast-forwarded to it.
+- Source commit `2084c232`; published on `origin/main` with an integration merge commit from
+  `7e05392f`; primary checkout `D:\Projects\project-b-client` follows the merge tip.
 - Scope: the 16 confirmed findings plus the world-map arrow/POI, cooldown clock, cinematic,
   loading-screen, chat-bubble, aura-ramp and death-screen handoffs.
 - Source changes only; no live client, addon, server or receiver acceptance.
