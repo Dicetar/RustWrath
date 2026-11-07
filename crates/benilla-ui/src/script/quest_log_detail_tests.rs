@@ -4,7 +4,208 @@
 
 use super::fixture::{collect, record, seat, slot};
 use super::QuestRecordView;
-use crate::script::{ItemTemplateView, PlayerReqState, UiScript, UnitState};
+use crate::script::{ItemTemplateView, PlayerReqState, QuestSlotView, UiScript, UnitState, QUEST_LOG_SLOTS};
+
+/// A Wrath quest with a long description and a short objective line, seated in row 2.
+fn detailed_wrath_quest() -> UiScript {
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    let mut q = record("Skirmish at Echo Ridge", 5, 9, "Northshire Valley");
+    q.description = "Your previous investigations are proof that the Echo Ridge Mine needs purging."
+        .into();
+    q.objectives_text = "Kill 12 Kobold Laborers, then return to Marshal McBride.".into();
+    q.objectives[0] = super::fixture::kill(80, 12);
+    seat(&mut s, &[(21, q, slot(21, 0, 0))]);
+    s.run("SelectQuestLogEntry(2)").unwrap();
+    s
+}
+
+/// The selected quest answers with its own non-empty description and objective text; a header
+/// selection answers two nils (the reference's `0x4dffdb`).
+#[test]
+fn a_selected_quest_answers_its_own_detail_text_not_a_placeholder_or_another_row() {
+    let s = detailed_wrath_quest();
+    assert!(s
+        .eval::<bool>(
+            "local d, o = GetQuestLogQuestText()\n\
+             return d == 'Your previous investigations are proof that the Echo Ridge Mine needs purging.'\n\
+                and o == 'Kill 12 Kobold Laborers, then return to Marshal McBride.'\n\
+                and strlen(d) > 0 and strlen(o) > 0"
+        )
+        .unwrap());
+    assert_eq!(
+        s.eval::<i64>("return GetNumQuestLeaderBoards()").unwrap(),
+        1,
+        "the creature objective is the selected quest's"
+    );
+    // The header row above the quest is not a quest: no detail, exactly as the reference's miss.
+    assert!(s
+        .eval::<bool>("SelectQuestLogEntry(1); local d = GetQuestLogQuestText(); return d == nil")
+        .unwrap());
+}
+
+/// A quest accepted before its template lands has no row yet; when the record arrives, the
+/// rebuild makes the row and the selected detail answers the real description, not a blank pane.
+#[test]
+fn a_pending_record_lands_with_its_detail_text() {
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.set_quest_log_player(true);
+    let mut slots = [QuestSlotView::default(); QUEST_LOG_SLOTS];
+    slots[0] = slot(77, 0, 0);
+    s.quest_log_changed(slots);
+    assert_eq!(s.eval::<i64>("return GetNumQuestLogEntries()").unwrap(), 0);
+
+    let mut q = record("The Lost Watch", 5, 9, "Westfall");
+    q.description = "Find Furlbrow's pocket watch in the field.".into();
+    q.objectives_text = "Recover the pocket watch.".into();
+    s.land_quest_records(vec![(77, q)]);
+    assert_eq!(s.eval::<i64>("return GetNumQuestLogEntries()").unwrap(), 2);
+    assert!(s
+        .eval::<bool>(
+            "SelectQuestLogEntry(2)\n\
+             local d, o = GetQuestLogQuestText()\n\
+             return d == \"Find Furlbrow's pocket watch in the field.\"\n\
+                and o == 'Recover the pocket watch.'"
+        )
+        .unwrap());
+}
+
+/// The stock 3.3.5 watch frame's helpers exist on the Wrath target: a quest without a starting
+/// item answers no special-item values (not an error), the completion line is the real objective
+/// text, and the row sorts under its header.
+#[test]
+fn the_wrath_watch_helpers_answer_real_records_or_nothing() {
+    let s = detailed_wrath_quest();
+    assert_eq!(s.arity("GetQuestLogSpecialItemInfo(2)").unwrap(), 0);
+    assert!(s
+        .eval::<bool>(
+            "return GetQuestLogCompletionText(2) == 'Kill 12 Kobold Laborers, then return to Marshal McBride.'"
+        )
+        .unwrap());
+    assert_eq!(s.eval::<i64>("return GetQuestSortIndex(2)").unwrap(), 1);
+    assert!(s.eval::<bool>("return SortQuestWatches() == false").unwrap());
+}
+
+/// `WatchFrame.lua:820` asks for the quest's special item: 12340's `m_startingItemId`
+/// (`0x5e52d0`) answers its link, icon and charges only while the player holds it, and no values
+/// when the quest has none. This is the global whose absence aborted the whole tracker draw.
+#[test]
+fn a_watch_special_item_answers_the_held_starting_item_only() {
+    use std::collections::HashMap;
+
+    const STARTING: u32 = 1990;
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.set_item_template(
+        STARTING,
+        ItemTemplateView {
+            name: "Furlbrow's Pocket Watch".into(),
+            quality: 1,
+            icon: Some("Interface\\Icons\\INV_Misc_PocketWatch_01".into()),
+            ..Default::default()
+        },
+    );
+    let mut q = record("The Lost Watch", 5, 9, "Westfall");
+    q.src_item_id = STARTING;
+    seat(&mut s, &[(64, q, slot(64, 0, 0))]);
+    s.set_quest_item_counts(HashMap::from([(STARTING, 0)]));
+    s.run("SelectQuestLogEntry(2)").unwrap();
+    assert_eq!(s.arity("GetQuestLogSpecialItemInfo(2)").unwrap(), 0);
+
+    s.set_quest_item_counts(HashMap::from([(STARTING, 1)]));
+    let (link, icon, charges) = s
+        .eval::<(String, String, i64)>("return GetQuestLogSpecialItemInfo(2)")
+        .unwrap();
+    assert!(link.contains("[Furlbrow's Pocket Watch]"), "{link}");
+    assert_eq!(icon, "Interface\\Icons\\INV_Misc_PocketWatch_01");
+    assert_eq!(charges, 0);
+}
+
+/// A log reward list answers every set reward and choice once, in order; the item getters read
+/// the same index (`GetQuestLogRewardInfo`, `GetQuestLogChoiceInfo`).
+#[test]
+fn a_reward_list_answers_each_reward_once_in_index_order() {
+    const CHOICES: [u32; 3] = [2186, 2691, 11192];
+    const REWARDS: [u32; 2] = [3000, 3001];
+    let mut s = UiScript::new().unwrap();
+    for (n, id) in CHOICES.into_iter().chain(REWARDS).enumerate() {
+        s.set_item_template(
+            id,
+            ItemTemplateView {
+                name: format!("Reward {n}"),
+                quality: 2,
+                inventory_type: 13,
+                ..Default::default()
+            },
+        );
+    }
+    let mut q = record("Skirmish at Echo Ridge", 5, 9, "Northshire Valley");
+    q.choices = CHOICES.into_iter().map(|id| (id, 1)).collect();
+    q.rewards = REWARDS.into_iter().map(|id| (id, 2)).collect();
+    seat(&mut s, &[(21, q, slot(21, 0, 0))]);
+    s.run("SelectQuestLogEntry(2)").unwrap();
+
+    assert_eq!(s.eval::<i64>("return GetNumQuestLogChoices()").unwrap(), 3);
+    assert_eq!(s.eval::<i64>("return GetNumQuestLogRewards()").unwrap(), 2);
+    for (index, _id) in CHOICES.into_iter().enumerate() {
+        let row = index as i64 + 1;
+        assert!(s
+            .eval::<bool>(&format!(
+                "local n, _, c = GetQuestLogChoiceInfo({row})\n\
+                 return n == 'Reward {index}' and c == 1"
+            ))
+            .unwrap());
+    }
+    for (index, _id) in REWARDS.into_iter().enumerate() {
+        let row = index as i64 + 1;
+        assert!(s
+            .eval::<bool>(&format!(
+                "local n, _, c = GetQuestLogRewardInfo({row})\n\
+                 return n == 'Reward {}' and c == 2",
+                index + CHOICES.len()
+            ))
+            .unwrap());
+    }
+    assert!(s
+        .eval::<bool>(
+            "local n = GetQuestLogChoiceInfo(4) return n == nil",
+        )
+        .unwrap(),
+        "there is no fourth choice");
+}
+
+/// 3.3.5's watch list holds up to 25 quests (`QuestLogFrame.lua:5`) where 1.12's holds five; add,
+/// remove and `IsQuestWatched`/`GetQuestWatchIndex` all read the same id list.
+#[test]
+fn the_wrath_watch_list_adds_removes_and_holds_twenty_five() {
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    let log: Vec<_> = (1..=26u32)
+        .map(|q| {
+            (
+                q,
+                record(&format!("Quest {q}"), 1, 12, "Elwynn Forest"),
+                slot(q, 0, 0),
+            )
+        })
+        .collect();
+    seat(&mut s, &log);
+    for row in 2..=27 {
+        s.run(&format!("AddQuestWatch({row})")).unwrap();
+    }
+    assert_eq!(s.eval::<i64>("return GetNumQuestWatches()").unwrap(), 25);
+    assert!(s.eval::<bool>("return IsQuestWatched(2)").unwrap());
+    assert_eq!(s.eval::<i64>("return GetQuestWatchIndex(2)").unwrap(), 1);
+    assert!(!s.eval::<bool>("return IsQuestWatched(27)").unwrap());
+
+    s.run("RemoveQuestWatch(2)").unwrap();
+    assert_eq!(s.eval::<i64>("return GetNumQuestWatches()").unwrap(), 24);
+    assert!(!s.eval::<bool>("return IsQuestWatched(2)").unwrap());
+    assert!(s
+        .eval::<bool>("return GetQuestWatchIndex(2) == nil")
+        .unwrap());
+    s.run("AddQuestWatch(2)").unwrap();
+    assert_eq!(s.eval::<i64>("return GetNumQuestWatches()").unwrap(), 25);
+    assert!(s.eval::<bool>("return IsQuestWatched(2)").unwrap());
+}
+
 
 /// The log's rows by title, top to bottom.
 fn titles(s: &UiScript) -> Vec<String> {

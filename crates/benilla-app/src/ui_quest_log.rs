@@ -755,6 +755,9 @@ pub(crate) struct FeedMemo {
     held: HashMap<u32, u32>,
     /// The place in the creature cache's landings the engine's names are current to.
     creatures_seen: usize,
+    /// Quests whose slot watcher saw them accepted, waiting for the field watcher's rebuild (which
+    /// runs after this feed) to give them a row, so `QUEST_ACCEPTED` carries the right index.
+    accept_events: Vec<u32>,
 }
 
 /// What the feed reads of the player and the caches.
@@ -914,6 +917,7 @@ pub(crate) fn feed_quest_log(
                 }
             }
             memo.prior = None;
+            memo.accept_events.clear();
             memo.subject = key;
         } else if (subject.is_some() && memo.subject != key)
             || (reads.states.is_changed()
@@ -1037,9 +1041,21 @@ pub(crate) fn feed_quest_log(
         if seat || slots_moved {
             let now: SlotStates =
                 std::array::from_fn(|slot| (current_slots[slot].quest_id, current_slots[slot].state));
-            if let Some(prior) = memo.prior.as_ref() {
-                for quest_id in accepted_quests(prior, &now) {
-                    quest_lines.push(crate::ui_quest::QuestLine::Accepted(quest_id));
+            let accepted = memo
+                .prior
+                .as_ref()
+                .map_or_else(Vec::new, |prior| accepted_quests(prior, &now));
+            for quest_id in accepted {
+                quest_lines.push(crate::ui_quest::QuestLine::Accepted(quest_id));
+                // 3.3.5's `OnUpdateQuest` (`0x6df370`) signals `QUEST_ACCEPTED` with
+                // `GetQuestIndex(quest)` after its rebuild, which the stock
+                // `QuestLogFrame.lua:260-264` turns into `AddQuestWatch` when
+                // `AUTO_QUEST_WATCH` is on. The field watcher's rebuild runs after this feed, so
+                // the signal waits below for the row to exist. The 1.12 capture path already
+                // auto-watches through `QUEST_WATCH_UPDATE`, and its event table has no
+                // `QUEST_ACCEPTED`, so none of this runs there.
+                if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+                    memo.accept_events.push(quest_id);
                 }
             }
             memo.prior = Some(now);
@@ -1079,7 +1095,14 @@ pub(crate) fn feed_quest_log(
             let held: HashMap<u32, u32> = current_slots
                 .iter()
                 .filter_map(|s| quest_log.templates.get(s.quest_id))
-                .flat_map(|t| t.objectives.iter().map(|o| o.item_id))
+                .flat_map(|t| {
+                    t.objectives
+                        .iter()
+                        .map(|o| o.item_id)
+                        // The watch frame's special item is the template's starting item, not an
+                        // objective item; its held count feeds `GetQuestLogSpecialItemInfo`.
+                        .chain(std::iter::once(t.src_item_id))
+                })
                 .filter(|&id| id != 0)
                 .collect::<HashSet<u32>>()
                 .into_iter()
@@ -1096,6 +1119,40 @@ pub(crate) fn feed_quest_log(
             if held != memo.held {
                 script.set_quest_item_counts(held.clone());
                 memo.held = held;
+            }
+        }
+
+        // The accepted quests whose record has now given them a row: the stock accept signal, one
+        // per quest, after the rebuild (never for the seat, which fills the whole log silently).
+        if !memo.accept_events.is_empty() {
+            let live: HashSet<u32> = current_slots.iter().map(|slot| slot.quest_id).collect();
+            let mut waiting = Vec::new();
+            let mut armed = false;
+            for quest_id in std::mem::take(&mut memo.accept_events) {
+                if !live.contains(&quest_id) {
+                    continue; // abandoned before its template arrived
+                }
+                let row = script.quest_log_index(quest_id);
+                if row == 0 {
+                    waiting.push(quest_id); // the template/rebuild has not landed yet
+                } else {
+                    script.fire_event(
+                        "QUEST_ACCEPTED",
+                        vec![ScriptValue::Int(i64::from(row))],
+                    );
+                    armed = true;
+                }
+            }
+            memo.accept_events = waiting;
+            // `OnUpdateQuest` (`0x6df370`) calls `CGQuestLog::Update(1)`, whose
+            // `Script_SendUniqueSignal` is deferred (`0x614760`), then signals
+            // `QUEST_ACCEPTED` immediately. The queued `QUEST_LOG_UPDATE` therefore lands
+            // after the stock handler's `AddQuestWatch` (`QuestLogFrame.lua:260-264`), and
+            // the WatchFrame draws the newly armed quest on the same edge. Our field
+            // watcher's signal is eager, so replay the deferred one here; without it the
+            // tracker waits for the next unrelated log update.
+            if armed {
+                script.fire_event("QUEST_LOG_UPDATE", Vec::new());
             }
         }
 
@@ -1431,10 +1488,26 @@ mod tests {
         rx: crossbeam_channel::Receiver<ClientCommand>,
         /// The player's descriptor, rewritten whole at each change.
         fields: BTreeMap<u16, u32>,
+        /// The script contract the VM is opened against; `reload` keeps it.
+        target: benilla_ui::script::UiTarget,
     }
 
     impl Rig {
         fn new(templates: Vec<QuestTemplate>, log: &[u32]) -> Self {
+            Self::with_target(templates, log, benilla_ui::script::UiTarget::Vanilla112)
+        }
+
+        /// The stock 3.3.5 contract: its event table admits the accept edge
+        /// (`QUEST_ACCEPTED`) the 1.12 table predates.
+        fn wrath(templates: Vec<QuestTemplate>, log: &[u32]) -> Self {
+            Self::with_target(templates, log, benilla_ui::script::UiTarget::Wrath335)
+        }
+
+        fn with_target(
+            templates: Vec<QuestTemplate>,
+            log: &[u32],
+            target: benilla_ui::script::UiTarget,
+        ) -> Self {
             let (tx, rx) = crossbeam_channel::unbounded();
             let mut app = App::new();
             app.insert_resource(NetCommands(tx))
@@ -1459,7 +1532,7 @@ mod tests {
                 .world_mut()
                 .spawn((ObjectStore(ObjectFields::default()), Guid(0x2A), SelfPlayer))
                 .id();
-            app.insert_non_send_resource(Self::vm());
+            app.insert_non_send_resource(Self::vm(target));
             app.add_systems(
                 Update,
                 (
@@ -1474,14 +1547,15 @@ mod tests {
                 player,
                 rx,
                 fields: BTreeMap::new(),
+                target,
             };
             rig.write_log(log);
             rig
         }
 
         /// A VM logging the quest events, with the format keys the lines fill.
-        fn vm() -> UiScript {
-            let script = UiScript::new().unwrap();
+        fn vm(target: benilla_ui::script::UiTarget) -> UiScript {
+            let script = UiScript::with_target(target).unwrap();
             script
                 .run(
                     r#"
@@ -1506,7 +1580,7 @@ mod tests {
 
         /// A `/reload`: a new VM over the same caches and descriptor.
         fn reload(&mut self) {
-            self.app.insert_non_send_resource(Self::vm());
+            self.app.insert_non_send_resource(Self::vm(self.target));
         }
 
         fn script(&mut self) -> Mut<'_, UiScript> {
@@ -2138,7 +2212,7 @@ mod tests {
     fn each_time_response_signals_the_log_once() {
         let mut app = App::new();
         app.init_resource::<crate::net::ServerWallClock>()
-            .insert_non_send_resource(Rig::vm())
+            .insert_non_send_resource(Rig::vm(benilla_ui::script::UiTarget::Vanilla112))
             .add_systems(Update, feed_server_clock);
         let seen = |app: &mut App| {
             let s = app.world_mut().non_send_resource_mut::<UiScript>();
@@ -2158,7 +2232,7 @@ mod tests {
         assert_eq!(seen(&mut app), [QLU]);
         app.update();
         assert_eq!(seen(&mut app), Vec::<String>::new());
-        app.insert_non_send_resource(Rig::vm());
+        app.insert_non_send_resource(Rig::vm(benilla_ui::script::UiTarget::Vanilla112));
         app.update();
         assert_eq!(seen(&mut app), Vec::<String>::new(), "the old response");
         sample(&mut app, 1_003_600);
@@ -2173,7 +2247,7 @@ mod tests {
     fn a_zero_offset_sync_reaches_the_vm() {
         let mut app = App::new();
         app.init_resource::<crate::net::ServerWallClock>()
-            .insert_non_send_resource(Rig::vm())
+            .insert_non_send_resource(Rig::vm(benilla_ui::script::UiTarget::Vanilla112))
             .add_systems(Update, feed_server_clock);
         let mut script = app.world_mut().non_send_resource_mut::<UiScript>();
         let mut q = fixture::quest(7, "Deliver the Message", 1);
@@ -2332,6 +2406,52 @@ mod tests {
             count: 1,
         });
         assert_eq!(rig.frame(), Vec::<String>::new());
+    }
+
+    /// The 3.3.5 accept edge the stock `QuestLogFrame.lua:260-264` watches: one
+    /// `QUEST_ACCEPTED` with the rebuilt row, then the deferred `QUEST_LOG_UPDATE` that
+    /// lets `WatchFrame_Update` draw the auto-armed watch.
+    #[test]
+    fn a_quest_entering_the_log_fires_quest_accepted_before_the_deferred_log_update() {
+        let mut rig = Rig::wrath(twenty_quests(), &[1]);
+        rig.frame();
+        rig.script()
+            .run(
+                r#"
+                ORDER = {}
+                local f = CreateFrame("Frame")
+                f:RegisterEvent("QUEST_ACCEPTED")
+                f:RegisterEvent("QUEST_LOG_UPDATE")
+                f:SetScript("OnEvent", function()
+                    table.insert(ORDER, event .. ":" .. tostring(arg1))
+                    if event == "QUEST_ACCEPTED" then AddQuestWatch(arg1) end
+                end)
+                "#,
+            )
+            .unwrap();
+        rig.set_log(&[1, 2]);
+        // The accept is detected in this feed; the field watcher rebuilds after it, and the next
+        // frame carries the row index the stock watch needs.
+        rig.frame();
+        rig.frame();
+        let order = rig
+            .script()
+            .eval::<Vec<String>>("return ORDER")
+            .unwrap();
+        let accepted = order
+            .iter()
+            .position(|line| line.starts_with("QUEST_ACCEPTED:") && line != "QUEST_ACCEPTED:0")
+            .unwrap_or_else(|| panic!("the stock watch's accept signal was not fired: {order:?}"));
+        assert_eq!(
+            order.get(accepted + 1).map(String::as_str),
+            Some("QUEST_LOG_UPDATE:nil"),
+            "the deferred log update must follow the accept so WatchFrame redraws: {order:?}"
+        );
+        assert_eq!(
+            rig.script().eval::<i64>("return GetNumQuestWatches()").unwrap(),
+            1,
+            "the stock accept handler armed the watch before the redraw"
+        );
     }
 
     /// The slot watcher runs on the log's slots, not its rows: an accepted quest is announced before

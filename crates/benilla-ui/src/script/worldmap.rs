@@ -89,6 +89,18 @@ impl WorldMapLevel {
     }
 }
 
+/// `GetMapLandmarkInfo`'s `textureIndex` for one real `AreaPOI.dbc` row (`0x4a8848`): the row's
+/// own `Icon`, except at zone level (and on an instance map, which the selection reads as zone
+/// level) where only a row with `Flags & 0x80` keeps it. Every other row answers cell 0, the
+/// transparent cell: the reference does not substitute a generic graveyard/tower cell for them.
+/// The guard's direction marker is the gossip record and bypasses this rule.
+pub fn poi_texture_index(icon: u32, flags: u32, level: WorldMapLevel) -> u32 {
+    match level {
+        WorldMapLevel::Zone if flags & 0x80 == 0 => 0,
+        _ => icon,
+    }
+}
+
 /// A sub-area's map art, drawn over the base tiles once any of its explore bits is set.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorldMapOverlayView {
@@ -241,9 +253,13 @@ pub struct WorldMapState {
     pub player_direct_area: Option<u32>,
     /// `GetPlayerMapPosition("player")` on the displayed map; `None` is off it.
     pub player_uv: Option<(f32, f32)>,
-    /// The arrow frames' wrapper ids, built once per session; `None` until created.
+    /// The arrow frames' wrapper ids, built once per session; `None` until created. Each pair is
+    /// the player marker and the facing-cone effect the reference creates beside it
+    /// (`CGWorldMap::m_playerArrowFrame` / `m_playerArrowEffectFrame`).
     pub arrow_world: Option<u32>,
+    pub arrow_world_effect: Option<u32>,
     pub arrow_mini: Option<u32>,
+    pub arrow_mini_effect: Option<u32>,
     /// `party1`..`party4` in `party_slots` order; `None` or missing answers `(0, 0)`.
     pub party_uv: Vec<Option<(f32, f32)>>,
     /// `raid1`..`raid40` in roster order, fed like [`Self::party_uv`].

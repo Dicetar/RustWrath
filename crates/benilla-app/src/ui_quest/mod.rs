@@ -1022,6 +1022,54 @@ mod tests {
         assert_eq!(snap.rewards[0].quality, 0);
     }
 
+    /// The reward window's snapshot is the offer packet's two blocks: every choice once in order,
+    /// then the mandatory rewards. The stock `QuestInfo_ShowRewards` reads these through
+    /// `GetNumQuestChoices`/`GetNumQuestRewards`, and `GetQuestItemInfo` indexes the same lists.
+    #[test]
+    fn reward_offer_snapshot_keeps_each_choice_and_reward_once() {
+        let mut giver = QuestGiver::default();
+        giver.open(
+            0x42,
+            QuestView::Reward(QuestOfferReward {
+                extra: Default::default(),
+                npc: 0x42,
+                quest_id: 21,
+                title: "Skirmish at Echo Ridge".into(),
+                offer_text: "Return to the mine.".into(),
+                auto_finish: 1,
+                choices: vec![triple(2186), triple(2691), triple(11192)],
+                rewards: vec![triple(3000)],
+                money: 40,
+                quest_flags: 0x80008,
+                reward_spell: 0,
+            }),
+        );
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let commands = NetCommands(tx);
+        let snap = snapshot(
+            &giver,
+            &Items::default(),
+            None,
+            Ask::New(&commands),
+            &crate::npc_text::MacroContext {
+                subject: None,
+                states: &crate::world_state::WorldStates::default(),
+            },
+            None,
+        )
+        .expect("open");
+        assert_eq!(snap.panel, QuestPanel::Reward);
+        assert_eq!(
+            snap.choices.iter().map(|i| i.item_id).collect::<Vec<_>>(),
+            [2186, 2691, 11192]
+        );
+        assert_eq!(
+            snap.rewards.iter().map(|i| i.item_id).collect::<Vec<_>>(),
+            [3000]
+        );
+        assert_eq!(snap.reward_money, 40);
+    }
+
     /// `GetQuestItemInfo`'s quality (`0x501700`): -1 for a template whose inventory type is 0
     /// (`0x5017fa`), its own quality otherwise, and the seeded 0 while the template is in flight
     /// (`0x501728`).

@@ -291,6 +291,23 @@ fn each_panel_verb_does_nothing_off_its_panel() {
     }
 }
 
+/// The reward window's list is the packet's choice block, each item once; the clicked row is the
+/// 1-based stock argument and the wire choice is its zero-based index (`0x501608`-`0x501638`).
+#[test]
+fn the_reward_window_offers_each_choice_once_and_sends_its_index() {
+    let mut c = Client::new(0);
+    c.open(reward(3));
+    assert_eq!(c.eval("return GetNumQuestChoices()"), "3");
+    assert_eq!(c.eval("return GetNumQuestRewards()"), "0");
+    c.run("GetQuestReward(3)").unwrap();
+    assert_eq!(
+        c.sent(),
+        [format!(
+            "QuestgiverChooseReward {{ npc: {NPC}, quest: 100, choice: 2 }}"
+        )]
+    );
+}
+
 /// `0x5015b0` tests the latch (`0x5015f5`) before the choice's range (`0x501608`), so a second
 /// call with a bad choice returns quietly; a first one raises
 /// `Invalid reward choice in GetQuestReward([choice])` and sends nothing.

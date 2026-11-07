@@ -206,6 +206,7 @@ pub(crate) struct TargetScan<'w, 's> {
             &'static Guid,
             &'static Transform,
             Option<&'static ObjectStore>,
+            Option<&'static InheritedVisibility>,
         ),
         Without<SelfPlayer>,
     >,
@@ -333,7 +334,7 @@ impl TargetScan<'_, '_> {
             );
         };
         let mut out = Vec::new();
-        for (entity, net, guid_c, tf, store) in &self.units {
+        for (entity, net, guid_c, tf, store, drawn) in &self.units {
             if !matches!(net.kind, EntityKind::Unit | EntityKind::Player) {
                 continue;
             }
@@ -365,8 +366,15 @@ impl TargetScan<'_, '_> {
                     }
                 }
             }
-            // Deviation: no scene-attach gate (the reference's `0x6704c0`), because the draw
-            // election hides every body outside the frustum, which would empty the off-screen tier.
+            // The reference's scene-node gate (`0x6704c0`, `node && [node+0x94] == 0`, read from
+            // `TargetUpdateProc`'s visible-object walk): a body the draw election did not attach
+            // to the scene is not a tab candidate. `InheritedVisibility` carries the root verdict
+            // the exterior cull and its owners wrote last frame; a harness without the visibility
+            // plugin leaves it absent and fails open.
+            if drawn.is_some_and(|v| !v.get()) {
+                trace_unit(guid_c.0, tf, "REJECT not-in-scene");
+                continue;
+            }
             let dist = (tf.translation - self_tf.translation).length();
             if dist > TAB_RANGE {
                 trace_unit(guid_c.0, tf, "REJECT range (41 yd)");
@@ -1687,10 +1695,11 @@ mod tests {
     }
 
     #[test]
-    fn a_body_the_draw_election_culled_is_still_a_candidate() {
+    fn a_scene_hidden_body_does_not_shift_the_draw_election() {
         use bevy::ecs::system::RunSystemOnce;
 
         const MOB: u64 = 0xBEEF;
+        const HIDDEN: u64 = 0xD00D;
         let mut world = World::new();
         world.init_resource::<Reputations>();
         world.init_resource::<NameCache>();
@@ -1705,27 +1714,48 @@ mod tests {
                 (F_MAXHEALTH, 100),
             ]),
         ));
-        world.spawn((
-            NetEntity {
-                kind: EntityKind::Unit,
-                display_id: None,
-                scale: 1.0,
-            },
-            Guid(MOB),
-            Transform::from_xyz(0.0, 0.0, 5.0),
-            store(&[(F_HEALTH, 100), (F_MAXHEALTH, 100)]),
-            // The election's out-of-view verdict.
-            Visibility::Hidden,
-        ));
-        let pool = world
-            .run_system_once(|scan: TargetScan| {
-                scan.build(ScanSide::Enemy)
-                    .iter()
-                    .map(|c| c.guid)
-                    .collect::<Vec<_>>()
-            })
-            .expect("the scan runs as a one-shot system");
-        assert_eq!(pool, [MOB]);
+        let mob = |guid: u64, z: f32, drawn: InheritedVisibility| {
+            (
+                NetEntity {
+                    kind: EntityKind::Unit,
+                    display_id: None,
+                    scale: 1.0,
+                },
+                Guid(guid),
+                Transform::from_xyz(0.0, 0.0, z),
+                store(&[(F_HEALTH, 100), (F_MAXHEALTH, 100)]),
+                drawn,
+            )
+        };
+        world.spawn(mob(MOB, 5.0, InheritedVisibility::VISIBLE));
+        // Nearer, but the reference's scene-node gate (`0x6704c0`) excluded it last frame.
+        world.spawn(mob(HIDDEN, 3.0, InheritedVisibility::HIDDEN));
+        let mob_e = world
+            .query::<(Entity, &Guid)>()
+            .iter(&world)
+            .find(|(_, g)| g.0 == MOB)
+            .map(|(e, _)| e)
+            .unwrap();
+        let pool = |world: &mut World| {
+            world
+                .run_system_once(|scan: TargetScan| {
+                    scan.build(ScanSide::Enemy)
+                        .iter()
+                        .map(|c| c.guid)
+                        .collect::<Vec<_>>()
+                })
+                .expect("the scan runs as a one-shot system")
+        };
+        assert_eq!(
+            pool(&mut world),
+            [MOB],
+            "the attached body wins; the hidden nearer one is not a candidate"
+        );
+
+        world
+            .entity_mut(mob_e)
+            .insert(InheritedVisibility::HIDDEN);
+        assert!(pool(&mut world).is_empty(), "a whole hidden scene is empty");
     }
 
     /// It follows a hostile switch and survives a friendly selection and a clear (`0x49377d`).

@@ -56,6 +56,11 @@ pub(crate) fn widescreen(cvars: Option<&crate::cvars::Cvars>) -> bool {
 /// `a = [0x832a4c]`, the display aspect relative to 4:3 (`0x41ad10`, read by `0x406a60` at
 /// `0x406ac4` and by the tip at `0x40668c` and `0x4066b9`). A window with no size reads as 4:3.
 ///
+/// `0x409ed0` chooses a `*Wide.blp` only when the map has one and the aspect is at least 4:3; the
+/// paint then divides the compensation by `1.6 / (4/3)` (`LoadingScreen.cpp:571-582`). The selected
+/// install ships only the 4:3 art, so [`fit_rect`] uses the `ratio = 1` path below; switching to a
+/// profile with wide art needs that ratio on this same law (the `Wide` branch of `0x409ed0`).
+///
 /// Both setters (the glue's `0x46ab40` through `0x46a828`, the interface's `0x4901e0` through
 /// `0x48fe2b`) pass `gxResolution`'s width over height only while `widescreen` is on, else 4/3,
 /// and `RN24(0.75 · f32(4/3))` is exactly 1.0: with it off the picture fills the window (the
@@ -841,6 +846,22 @@ mod tests {
             "widescreen",
             "0"
         ))));
+    }
+
+    /// `0x406a60` with the profile's ordinary 4:3 art (`s_usingWideScreen` false): the picture
+    /// fills the height and is pillarboxed above 4:3 (16:10 included), fills a 4:3 window, and is
+    /// letterboxed below it. `ratio` is 1 for this art; the wide-art `/1.2` path is not exercised
+    /// because the selected install ships no `*Wide.blp` (`0x409ed0`).
+    #[test]
+    fn the_picture_fit_is_the_reference_four_three_art_placement() {
+        // 16:10: 1/a of the width, full height, centred.
+        close(fit(1680.0, 1050.0), [140.0, 0.0, 1400.0, 1050.0]);
+        // 16:9: the same law, a quarter of the width black on both sides.
+        close(fit(1920.0, 1080.0), [240.0, 0.0, 1440.0, 1080.0]);
+        // 4:3: the whole window.
+        close(fit(1600.0, 1200.0), [0.0, 0.0, 1600.0, 1200.0]);
+        // 5:4: `a` of the height, centred.
+        close(fit(1280.0, 1024.0), [0.0, 32.0, 1280.0, 960.0]);
     }
 
     /// The system reads the CVar: a tall window, `widescreen` off, is not letterboxed.

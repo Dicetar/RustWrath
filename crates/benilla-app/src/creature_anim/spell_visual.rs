@@ -97,8 +97,16 @@ pub(crate) enum SpellKitSound {
 /// node), never cancelled.
 #[derive(Message, Clone, Copy, Debug)]
 pub(crate) enum SpellKitShake {
-    /// At the unit's position.
-    Play { entity: Entity, group: u32 },
+    /// Per play, at the first effect node's post-attachment point: the kit's effect slots in field
+    /// order, whose first node alone carries the shake flag (`PlayEffectName` clears it from
+    /// `0x10` after the first), or at the unit's root when the kit creates no node (`0x60f4e6`,
+    /// the play's `hasEffect == 0` arm). `attach` is that first slot's M2 tag; `None` means the
+    /// unit-root path.
+    Play {
+        entity: Entity,
+        group: u32,
+        attach: Option<u16>,
+    },
     /// At a world point, the kit play's `extra` override (`0x60f4c1`): a missile's ground arrival.
     PlayAt { pos: Vec3, group: u32 },
 }
@@ -559,6 +567,9 @@ fn play_kit(
     visuals: &SpellVisualCatalog,
     out: &mut KitOut,
 ) {
+    // The kit's effect slots in field order; the first one's tag anchors the shake even when this
+    // play hands the models to another owner (`play.effects == false`).
+    let effects = resolve_kit_effects(visuals, kit);
     if let Some(anim_id) = kit.anim_id {
         if play.stage_2 {
             // Stage 2 compares, never plays; the driver holds the armed id and compares. Any id of
@@ -585,9 +596,16 @@ fn play_kit(
             kit_sound,
         });
     }
-    // The camera shake plays at every stage, gated on nothing.
+    // The camera shake plays at every stage, gated on nothing. The reference hangs it on the
+    // first effect node (which `PlayEffectName` leaves the `0x10` flag on) and drops to the unit
+    // root only when the play created no node, so the tag of the first resolved slot selects the
+    // position in `crate::camera_shake`.
     if let Some(group) = kit.shake {
-        out.shakes.write(SpellKitShake::Play { entity, group });
+        out.shakes.write(SpellKitShake::Play {
+            entity,
+            group,
+            attach: effects.first().map(|s| s.tag),
+        });
     }
     // The beam case runs for every play at every stage (`0x60f35c`), ungated by `play.effects`.
     if let Some(proc) = kit.chain_proc() {
@@ -606,7 +624,6 @@ fn play_kit(
     if !play.effects {
         return;
     }
-    let effects = resolve_kit_effects(visuals, kit);
     if !effects.is_empty() {
         out.fx.write(SpellKitFx::Begin {
             entity,

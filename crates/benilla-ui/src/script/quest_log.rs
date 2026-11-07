@@ -29,7 +29,14 @@
 //!
 //! `IsUnitOnQuest` reads a unit's quest-log window off its snapshot ([`super::UnitState`]).
 //!
-//! Not built: a GameObject objective's name, which wears the placeholder.
+//! Not built: a GameObject objective's name, which wears the placeholder, and 12340's
+//! intermediate drop-item ids (the decoder maps the six required/collect items into the donor's
+//! four objective slots and has no slot for the drop item itself).
+//!
+//! The 3.3.5 watch frame's extra verbs (`GetQuestWatchIndex`, `GetQuestSortIndex`,
+//! `ShiftQuestWatches`, `SortQuestWatches`, `GetQuestLogCompletionText`,
+//! `GetQuestLogSpecialItemInfo`) are installed only on the Wrath target: its `WatchFrame.lua` calls
+//! them while drawing the tracker, where a missing global aborts the whole objective list.
 
 use std::collections::{HashMap, HashSet};
 
@@ -581,11 +588,19 @@ impl Model {
             .and_then(|n| self.quest_log.entries.get(n))
     }
 
-    /// A quest row's record and slot; `None` on a header.
+    /// A quest row's record and slot; `None` on a header. The slot is the one that still holds
+    /// the row's quest id: a row made before a slot update names the slot it had then, and the
+    /// reference's detail verbs read the quest's current counters. Only when no slot holds the id
+    /// (a stale row the next rebuild drops) does the row's recorded slot answer.
     fn quest_row_parts(&self, index: usize) -> Option<(&QuestRecordView, &QuestSlotView)> {
         let row = self.quest_row(index).filter(|r| !r.is_header)?;
         let store = &self.quest_store;
-        Some((store.records.get(&row.quest_id)?, store.slot(row.slot)?))
+        let slot = store
+            .slots
+            .iter()
+            .find(|slot| slot.quest_id == row.quest_id)
+            .or_else(|| store.slot(row.slot))?;
+        Some((store.records.get(&row.quest_id)?, slot))
     }
 
     /// The selected quest's record, read per call as the reference's detail verbs read the
@@ -632,9 +647,9 @@ impl Model {
 /// One leaderboard line of a record, in `GetQuestLogLeaderBoard`'s order (`0x4e0110`): the event
 /// line when the end text is not empty (`0x4e026c`-`0x4e0285`); a creature or GameObject pass over
 /// the ids that are set, the array index counting the empty ones (`0x4e02d7`); an item pass over
-/// the ids above 0 that are not the quest's own item (`0x4e04f4`-`0x4e04fd`), a quad carrying both
-/// giving two lines; then the reputation line for a non-zero `+0x14` (`0x4e0510`).
-/// `GetNumQuestLeaderBoards` counts the same lines (`0x4e009a`-`0x4e00e7`).
+/// the ids above 0 whose starting-item copy is held for more than one (`0x4e04f4`-`0x4e04fd`), a
+/// quad carrying both giving two lines; then the reputation line for a non-zero `+0x14`
+/// (`0x4e0510`). `GetNumQuestLeaderBoards` counts the same lines (`0x4e009a`-`0x4e00e7`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Line {
     Event,
@@ -655,7 +670,12 @@ fn lines(record: &QuestRecordView) -> impl Iterator<Item = Line> + '_ {
         .objectives
         .iter()
         .enumerate()
-        .filter(|(_, o)| (o.item_id as i32) > 0 && o.item_id != record.src_item_id)
+        .filter(|(_, o)| {
+            // `0x4e04fa`: a collect item is a line unless it is the quest's own starting item
+            // held for one; a stack of two or more is still a line.
+            (o.item_id as i32) > 0
+                && (o.item_id != record.src_item_id || o.item_count > 1)
+        })
         .map(|(i, _)| Line::Item(i));
     let reputation = (record.rep_min.0 != 0).then_some(Line::Reputation);
     event
@@ -1645,9 +1665,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             lua.create_function(|_, ()| Ok(()))?,
         )?;
     }
-    install_detail_count(lua, "GetQuestLogRequiredMoney", |r| {
-        i64::from(r.required_money)
-    })?;
+    // The stock watch frame passes the watched row (`WatchFrame.lua:804`); a non-number read the
+    // selection (`0x5e4400`).
+    g.set(
+        "GetQuestLogRequiredMoney",
+        lua.create_function(|lua, i: Value| {
+            let i = binding_abi::index_or(lua, i)?;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let index = i.unwrap_or(model.quest_log_selection) as usize;
+            Ok(model
+                .quest_row_parts(index)
+                .map_or(0, |(record, _)| i64::from(record.required_money)))
+        })?,
+    )?;
 
     // `name, texture, numItems, quality, isUsable`, the giver panels' shape, as one stock routine
     // lays out both (`QuestFrameItems_Update`, `QuestFrame.lua:311`): five values, `isUsable` 1 or
@@ -2049,26 +2079,40 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .map(|r| r.quest_id),
         }
     }
+    /// `MAX_WATCHABLE_QUESTS`: 3.3.5's stock `QuestLogFrame.lua:5` allows 25, while the 1.12
+    /// frame allows five (`QuestLogFrame.lua:8`). Both caps bind only inside `AddQuestWatch`.
+    fn watch_cap(model: &Model) -> usize {
+        if model.is_wrath() {
+            25
+        } else {
+            5
+        }
+    }
     // The share button enables on `GetQuestLogPushable() and GetNumPartyMembers() > 0`
     // (`QuestLogFrame.lua:301`) and clicks `QuestLogPushQuest()` (`QuestLogFrame.xml:512`), both
-    // about the selection. `GetQuestLogPushable` answers 1 or nil, never false (`0x4e12b0`).
+    // about the selection; the Wrath watch dropdown passes a row (`WatchFrame.lua:1089`, `:1010`).
+    // `GetQuestLogPushable` answers 1 or nil, never false (`0x4e12b0`).
     g.set(
         "GetQuestLogPushable",
-        lua.create_function(|lua, ()| {
+        lua.create_function(|lua, i: Value| {
+            let i = binding_abi::index_or(lua, i)?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let index = i.unwrap_or(model.quest_log_selection) as usize;
             Ok(flag(
-                model.selected_quest_record().is_some_and(|r| r.pushable),
+                model.quest_row_parts(index).is_some_and(|(r, _)| r.pushable),
             ))
         })?,
     )?;
     g.set(
         "QuestLogPushQuest",
-        lua.create_function(|lua, ()| {
+        lua.create_function(|lua, i: Value| {
             // The verb checks the party and the sharable bit itself (`0x4e13a6`), as a macro can
-            // call it solo; a header has no quest and sends nothing.
+            // call it solo; a header has no quest and sends nothing. A non-number argument reads
+            // the selection (`WatchFrame.lua` passes `GetQuestIndexForWatch`).
+            let i = binding_abi::index_or(lua, i)?;
             let id = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let index = model.quest_log_selection as usize;
+                let index = i.unwrap_or(model.quest_log_selection) as usize;
                 (!model.party.members.is_empty())
                     .then(|| {
                         model
@@ -2086,8 +2130,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     // The watch tracker's set (`QuestLogFrame.lua:469`, `:613`), keyed by quest id. At most
-    // `MAX_WATCHABLE_QUESTS`, 5 (`QuestLogFrame.lua:8`), which the stock Lua checks before adding
-    // (`:494`); an add past it is a no-op.
+    // `MAX_WATCHABLE_QUESTS`: five on 1.12 (`QuestLogFrame.lua:8`), twenty-five on 3.3.5
+    // (`QuestLogFrame.lua:5`). The stock Lua checks the same cap before adding; an add past it is a
+    // no-op here too.
     g.set(
         "GetNumQuestWatches",
         lua.create_function(|lua, ()| {
@@ -2110,10 +2155,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "AddQuestWatch",
         lua.create_function(|lua, i: Value| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            // `0x4dede0`: the id is appended while the list holds fewer than 5 (`0x4dede5`), with no
-            // test for it already being there; the stock Lua checks `IsQuestWatched` itself.
+            // `0x4dede0`: the id is appended while the list holds fewer than the target's cap
+            // (`0x4dede5`), with no test for it already being there; the stock Lua checks
+            // `IsQuestWatched` itself.
             if let Some(id) = watch_target(lua, &model, i) {
-                if model.quest_log_watched.len() < 5 {
+                // 12340's `CGQuestLog::AddQuestWatch` refreshes an existing watch instead of
+                // appending a duplicate; the 1.12 binding appends, which its stock Lua guards
+                // itself with `IsQuestWatched`.
+                if model.is_wrath() && model.quest_log_watched.contains(&id) {
+                    return Ok(());
+                }
+                if model.quest_log_watched.len() < watch_cap(&model) {
                     model.quest_log_watched.push(id);
                 }
             }
@@ -2157,6 +2209,178 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             })
         })?,
     )?;
+
+    // 3.3.5's watch frame calls the rest of the watch set (its `WatchFrame.lua`): the index a
+    // quest occupies in the watch list (`GetQuestWatchIndex`), the header its row sorts under
+    // (`GetQuestSortIndex`), and the manual reorder (`ShiftQuestWatches`). These names are absent
+    // from the 1.12 VM, so only the Wrath host installs them.
+    if lua
+        .app_data_ref::<Model>()
+        .is_some_and(|model| model.is_wrath())
+    {
+        g.set(
+            "GetQuestWatchIndex",
+            lua.create_function(|lua, i: Value| {
+                // `is-number` else `Usage: GetQuestWatchIndex(index)` (`0x84b764`-style guard).
+                let i = binding_abi::index_arg32(lua, i, "Usage: GetQuestWatchIndex(index)")?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                // The reference pushes a value only for a watched quest row; every other path
+                // returns no values.
+                let index = watch_id_at(&model, i)
+                    .and_then(|id| model.quest_log_watched.iter().position(|w| *w == id));
+                Ok(match index {
+                    Some(p) => MultiValue::from_vec(vec![Value::Integer(p as i64 + 1)]),
+                    None => MultiValue::new(),
+                })
+            })?,
+        )?;
+        // `0x4df880`-adjacent `GetQuestSortId` + 1: the row's group id is its place in the sorted
+        // header ids, 0 when the row or group is missing. A header row uses its own group id.
+        g.set(
+            "GetQuestSortIndex",
+            lua.create_function(|lua, i: Value| {
+                // `is-number` else `Usage: GetQuestSortIndex(questIndex)` (`0x84b7a8`).
+                let i = binding_abi::index_arg32(lua, i, "Usage: GetQuestSortIndex(questIndex)")?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let zone = model.quest_row(i as usize).and_then(|row| {
+                    if row.is_header {
+                        Some(row.zone_or_sort)
+                    } else {
+                        model
+                            .quest_store
+                            .records
+                            .get(&row.quest_id)
+                            .map(|r| r.zone_or_sort)
+                    }
+                });
+                let index = zone
+                    .and_then(|z| model.quest_log_headers.iter().position(|&(id, _)| id == z))
+                    .map_or(0, |p| p as i64 + 1);
+                Ok(index)
+            })?,
+        )?;
+        // `0x4dee00`'s companion `0x4def60`: a 1-based from/to pair moves one watch and shifts the
+        // rest, refusing a target outside the list.
+        g.set(
+            "ShiftQuestWatches",
+            lua.create_function(|lua, (from, to): (Value, Value)| {
+                let from = binding_abi::index_arg32(
+                    lua,
+                    from,
+                    "Usage: ShiftQuestWatches(indexFrom, indexTo)",
+                )?;
+                let to = binding_abi::index_arg32(
+                    lua,
+                    to,
+                    "Usage: ShiftQuestWatches(indexFrom, indexTo)",
+                )?;
+                let (Some(from), Some(to)) = (from.checked_sub(1), to.checked_sub(1)) else {
+                    return Ok(());
+                };
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                let len = model.quest_log_watched.len() as u32;
+                let step: i64 = if to > from && to < len {
+                    1
+                } else if to < from && from < len {
+                    -1
+                } else {
+                    return Ok(());
+                };
+                let moved = model.quest_log_watched[from as usize];
+                let mut at = from as i64;
+                while at != to as i64 {
+                    model.quest_log_watched[at as usize] =
+                        model.quest_log_watched[(at + step) as usize];
+                    at += step;
+                }
+                model.quest_log_watched[to as usize] = moved;
+                Ok(())
+            })?,
+        )?;
+        // `0x5e64b0`: the watch list's proximity sort. The POI distances it orders by are not
+        // modeled here, so this honestly reports that the order did not move; the manual order
+        // (`ShiftQuestWatches`) is fully wired.
+        g.set(
+            "SortQuestWatches",
+            lua.create_function(|_, ()| Ok(Value::Boolean(false)))?,
+        )?;
+        // `0x5e06d0`: the completion line the watch frame shows for a finished quest. 12340 sends
+        // the completion text in the query template's fifth string, which the shared 1.12-shaped
+        // `QuestTemplate` does not retain. This answers the reference's fallback path (the
+        // objective text, else the description) rather than inventing a line; the exact
+        // completion-log string remains unbacked.
+        g.set(
+            "GetQuestLogCompletionText",
+            lua.create_function(|lua, i: Value| {
+                // A non-number reads the selection, as `GetNumQuestLeaderBoards` does.
+                let i = binding_abi::index_or(lua, i)?;
+                let text = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    let index = i.unwrap_or(model.quest_log_selection) as usize;
+                    model.quest_row_parts(index).map(|(record, _)| {
+                        if record.objectives_text.is_empty() {
+                            record.description.clone()
+                        } else {
+                            record.objectives_text.clone()
+                        }
+                    })
+                };
+                // The reference returns no values at all for a row with no cached quest.
+                let Some(text) = text else {
+                    return Ok(MultiValue::new());
+                };
+                Ok(MultiValue::from_vec(vec![Value::String(
+                    lua.create_string(&text)?,
+                )]))
+            })?,
+        )?;
+        // `0x5e52d0`: an item the quest places in the player's bags. The reference returns the
+        // hyperlink, icon and charges for a held starting item (or, with `QUEST_FLAGS_...0x20000`,
+        // a held intermediate item). The donor model carries the starting item id; intermediate
+        // item ids are not retained by the four-slot objective view, so only the starting item is
+        // backed. No item, or one not held, answers no values, exactly as the reference's null.
+        g.set(
+            "GetQuestLogSpecialItemInfo",
+            lua.create_function(|lua, i: Value| {
+                let i = binding_abi::index_arg32(lua, i, "Usage: GetQuestLogSpecialItemInfo(index)")?;
+                let id = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    model
+                        .quest_row_parts(i as usize)
+                        .map(|(record, _)| record.src_item_id)
+                        .filter(|&id| id != 0)
+                };
+                let item = id.and_then(|id| {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    if model.quest_store.held.get(&id).copied().unwrap_or(0) == 0 {
+                        return None;
+                    }
+                    model.item_templates.get(&id).map(|t| {
+                        let link = super::item_stats::item_link_for_target(
+                            model.target,
+                            id,
+                            &t.name,
+                            t.quality,
+                        );
+                        (link, t.icon.clone())
+                    })
+                });
+                let Some((link, icon)) = item else {
+                    return Ok(MultiValue::new());
+                };
+                Ok(MultiValue::from_vec(vec![
+                    Value::String(lua.create_string(&link)?),
+                    match icon {
+                        Some(icon) => Value::String(lua.create_string(&icon)?),
+                        None => Value::Nil,
+                    },
+                    // The reference's `GetCurrentSpellCharges()`; the donor item template does
+                    // not carry charges, so an ordinary item answers the reference's zero.
+                    Value::Integer(0),
+                ]))
+            })?,
+        )?;
+    }
 
     Ok(())
 }
@@ -3195,7 +3419,7 @@ mod tests {
         );
         let mut r = record("Pelts", 1, 12, "Elwynn Forest");
         r.objectives[0] = collect(900, 5);
-        r.objectives[1] = collect(901, 2);
+        r.objectives[1] = collect(901, 1);
         r.src_item_id = 901;
         seat(&mut s, &[(50, r, slot(50, 0, 0))]);
         heard::listen(&s, &["QUEST_LOG_UPDATE"], None);
@@ -3215,9 +3439,37 @@ mod tests {
         assert_eq!(
             s.eval::<i64>("return GetNumQuestLeaderBoards(2)").unwrap(),
             1,
-            "the quest's own item is no line (`0x4e04fa`)"
+            "the quest's own item, held for one, is no line (`0x4e04fa`)"
         );
         assert!(heard::take(&s).is_empty());
+    }
+
+    /// `0x4e04fa`'s second half: the quest's own item is a line once its count is above one, so a
+    /// starting stack of two is still tracked.
+    #[test]
+    fn the_quests_own_item_is_a_line_when_more_than_one_is_needed() {
+        let mut s = UiScript::new().unwrap();
+        s.set_item_template(
+            901,
+            ItemTemplateView {
+                name: "Wolf Pelt".into(),
+                ..Default::default()
+            },
+        );
+        let mut r = record("Pelts", 1, 12, "Elwynn Forest");
+        r.objectives[0] = collect(901, 2);
+        r.src_item_id = 901;
+        seat(&mut s, &[(50, r, slot(50, 0, 0))]);
+        s.set_quest_item_counts([(901, 1)].into());
+        assert_eq!(
+            s.eval::<i64>("return GetNumQuestLeaderBoards(2)").unwrap(),
+            1
+        );
+        assert_eq!(
+            s.eval::<String>("return (GetQuestLogLeaderBoard(1, 2))")
+                .unwrap(),
+            "Wolf Pelt: 1/2"
+        );
     }
 
     /// A quest whose end text is not empty has an event line first (`0x4e00a4`, `0x4e0285`): the

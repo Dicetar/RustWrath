@@ -45,9 +45,11 @@ const BIND_CONFIRM_MIN_QUALITY: u32 = 2;
 const COIN_QUALITY: u32 = 0;
 /// Frames a push waits for its item template before it is dropped, about 2 s at 60 fps.
 const RECEIVE_MAX_TRIES: u16 = 120;
-/// The slots `OnItemPush` treats as the keyring (`0x491bc3`/`0x491bc8`, 0x51..=0x70): the
-/// descriptor's full 32 positions, wider than the 16 vmangos uses from `KEYRING_SLOT_START` 81.
-const PUSH_KEYRING_SLOTS: std::ops::RangeInclusive<u32> = 81..=112;
+/// The slots `OnItemPush` treats as the keyring: 3.3.5 `KEYRING_FIRST` 86 through
+/// `KEYRING_LAST` 117 (`Common/ComponentCore/Types.h:106`, the `slot - 86 > 31` test at
+/// `0x491bc3`/`0x491bc8`), the array `WRATH_KEYRING_SLOT_FIRST..+32` fills in `wrath_inventory`.
+/// Not vmangos's 1.12 start 81: 81–85 are 3.3.5 buyback slots.
+const PUSH_KEYRING_SLOTS: std::ops::RangeInclusive<u32> = 86..=117;
 
 /// A push, on the lane at its packet or waiting on its item template. `OnItemPush 0x491a60` defers
 /// both of its outputs the same way: on a cache miss (`0x491a93`) it re-enters from the cache
@@ -72,8 +74,10 @@ struct PendingReceive {
 }
 
 /// `ITEM_PUSH`'s `arg1`, the reference's selector at `0x491bb5`-`0x491bd6`: a wire bag other than
-/// 255 gives `bag + 1` (20..=23 for an equipped bag, the ids its bar buttons carry), a keyring slot
-/// gives [`KEYRING_CONTAINER`], and anything else 0, the backpack.
+/// 255 gives `bag + 1` (20..=23 for an equipped bag, 68..=74 for a 3.3.5 bank bag), a keyring slot
+/// gives [`KEYRING_CONTAINER`], and anything else 0, the backpack. The 3.3.5 selector treats the
+/// bank's generic slots (39..=66), the bank bags' inner slots (67..=73) and buyback (74..=85) as
+/// the backpack too, because it maps every non-keyring bag-255 position to 0.
 fn push_container(bag: u8, slot: u32) -> i64 {
     if bag != BAG_PLAYER_INVENTORY {
         return i64::from(bag) + 1;
@@ -3022,24 +3026,33 @@ mod tests {
         );
     }
 
-    /// [`push_container`] against the selector at `0x491bb5`-`0x491bd6`, arm by arm.
+    /// [`push_container`] against the 3.3.5 selector at `0x491bb5`-`0x491bd6`, arm by arm:
+    /// equipped bag, bank bag, backpack/bank/buyback (bag 255 outside the keyring), and keyring.
     #[test]
-    fn push_container_maps_the_wire_destination_onto_a_bag_bar_button() {
+    fn push_container_matrix_covers_backpack_equipped_bags_bank_and_keyring() {
         // An equipped bag: wire 19..22 give `bag + 1`, 20..23, the ids its buttons carry.
         assert_eq!(push_container(19, 0), 20);
         assert_eq!(push_container(22, 5), 23);
-        // `bag == 255` in the keyring window, 0x51..=0x70.
-        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 81), KEYRING_CONTAINER);
-        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 96), KEYRING_CONTAINER);
-        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 112), KEYRING_CONTAINER);
-        // Anywhere else is the backpack: its slots 23..38, and 80 and 113 just outside the keyring.
+        // A 3.3.5 bank bag: wire 67..73 give the bank-bag buttons' ids 68..74.
+        assert_eq!(push_container(67, 0), 68);
+        assert_eq!(push_container(73, 35), 74);
+        // `bag == 255` in the keyring window: KEYRING_FIRST 86 through KEYRING_LAST 117.
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 86), KEYRING_CONTAINER);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 101), KEYRING_CONTAINER);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 117), KEYRING_CONTAINER);
+        // Anywhere else in the bag-255 space is the backpack: backpack 23..38, bank 39..66,
+        // bank bags' inner slots 67..73 and buyback 74..85 all map to 0.
         assert_eq!(push_container(BAG_PLAYER_INVENTORY, 23), 0);
-        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 80), 0);
-        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 113), 0);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 38), 0);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 39), 0);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 66), 0);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 67), 0);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 73), 0);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 74), 0);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 85), 0);
+        assert_eq!(push_container(BAG_PLAYER_INVENTORY, 118), 0);
         // A stack merge reports no slot (`0xFFFF_FFFF`): the backpack.
         assert_eq!(push_container(BAG_PLAYER_INVENTORY, u32::MAX), 0);
-        // A bank bag (wire 63..68) lands on an id no bag-bar button carries.
-        assert!(!(20..=23).contains(&push_container(63, 0)));
     }
 
     /// The coin row's name is `GetLootRowName`'s (`0x4c2550`): gold, silver and copper in that

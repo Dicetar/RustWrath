@@ -176,11 +176,11 @@ impl GlueFfx {
     }
 
     /// `LightParams.glow` (`0xce9c70`) on a glue screen; the death combine packs it into its alpha
-    /// byte (`0x6cb9ec`: 0.15 → 38, 0.40 → 102). Deviation: kept a float where every reference
-    /// pack (`0x6cb0e2`/`0x6cb557`/`0x6cb9e1`) quantizes it to a byte, because the two differ by
-    /// under a thousandth (38/255 against 0.15).
+    /// byte (`0x6cb9ec`: 0.15 → 38, 0.40 → 102). Every reference pack (`0x6cb0e2`/`0x6cb557`/
+    /// `0x6cb9e1`) quantizes it to a byte, so the value handed to the combine is the packed byte
+    /// back as a float (76/255 for the 0.30 pin), never the unquantized pin.
     fn glow(self) -> f32 {
-        match self {
+        quantize_glow(match self {
             Self::Custom { glow_bits, .. } => f32::from_bits(glow_bits),
             // `*0x8380b4`, the widget's OnShow pin.
             Self::Shown => 0.30,
@@ -188,8 +188,15 @@ impl GlueFfx {
             Self::SelectLiving => 0.40,
             // `*0x838570`, the select build's ghost arm.
             Self::SelectGhost => 0.15,
-        }
+        })
     }
+}
+
+/// The reference's byte pack (`0x6cb9ec`: ×255, +512, `fstp`, `shr 14`), read back as the float
+/// the combine consumes. The truncation is the shipped one: 0.30 packs to 76, not 77.
+fn quantize_glow(glow: f32) -> f32 {
+    let packed = (glow.clamp(0.0, 1.0) * 255.0 + 512.0).to_bits() >> 14;
+    f32::from((packed & 0xff) as u8) / 255.0
 }
 
 /// The haze mix `z`, the combine's cross-fade toward the blur, packed per frame from the player
@@ -1607,13 +1614,20 @@ mod tests {
     #[test]
     fn the_glue_screens_pin_three_verified_glow_weights() {
         assert_eq!(GlueFfx::default(), GlueFfx::Shown);
-        assert_eq!(
-            GlueFfx::Shown.glow(),
-            0.30,
-            "*0x8380b4, the widget's OnShow"
+        // The pins are read through the reference's byte pack: 0.30 truncates to 76/255.
+        assert!(
+            (GlueFfx::Shown.glow() - 76.0 / 255.0).abs() < 1e-7,
+            "*0x8380b4, the widget's OnShow, packed to 76"
         );
-        assert_eq!(GlueFfx::SelectLiving.glow(), 0.40, "*0x838574");
-        assert_eq!(GlueFfx::SelectGhost.glow(), 0.15, "*0x838570");
+        assert_eq!(
+            GlueFfx::SelectLiving.glow(),
+            102.0 / 255.0,
+            "*0x838574, packed to 102"
+        );
+        assert!(
+            (GlueFfx::SelectGhost.glow() - 38.0 / 255.0).abs() < 1e-7,
+            "*0x838570, packed to 38"
+        );
         // Only the ghost arm installs the death pass.
         assert_eq!(GlueFfx::SelectGhost.death(), 1.0);
         assert_eq!(GlueFfx::Shown.death(), 0.0);
@@ -1623,5 +1637,6 @@ mod tests {
         let alpha_byte = |glow: f32| ((glow * 255.0 + 512.0).to_bits() >> 14) & 0xff;
         assert_eq!(alpha_byte(GlueFfx::SelectGhost.glow()), 38);
         assert_eq!(alpha_byte(GlueFfx::SelectLiving.glow()), 102);
+        assert_eq!(alpha_byte(GlueFfx::Shown.glow()), 76);
     }
 }

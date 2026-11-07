@@ -100,3 +100,29 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.set_named_registry_value(REG_COOLDOWN_METHODS, m)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::script::{UiScript, UiTarget};
+
+    #[test]
+    fn cooldown_reverse_and_draw_edge_reach_state() {
+        let s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.run(
+            r#"
+            cd = CreateFrame("Cooldown", "cd", UIParent)
+            cd:SetReverse(true)
+            cd:SetDrawEdge(1)
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.eval::<Option<i64>>("return cd:GetReverse()").unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            s.eval::<Option<i64>>("return cd:GetDrawEdge()").unwrap(),
+            Some(1)
+        );
+    }
+}

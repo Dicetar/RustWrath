@@ -147,29 +147,33 @@ fn re_arming_the_same_spell_replaces_its_node() {
     assert!((n.target() - 0.3).abs() < 1e-6);
 }
 
-/// `StartAlphaFade(target, 1000 ms)` eased `clamp01(t)³` both ways, retargeted from the live value.
+/// `StartAlphaFade(target, 1000 ms)`: the reference's `DoFade`/`ApplyAlpha` integer ramp, both
+/// ways, retargeted from the live byte.
 #[test]
-fn the_ramp_eases_over_one_second_both_ways() {
+fn the_ramp_is_linear_in_the_reference_alpha_byte() {
     let mut n = AuraNodes::new(1.0);
     install(&mut n, STEALTH, &[AuraNode::Alpha(0.3)], 0.0);
 
     assert!((n.tick(0.0) - 1.0).abs() < 1e-6, "t=0 is still opaque");
-    // t³ at the halfway mark is 0.125 of the way down.
+    // 255 → 76 over 1000 ms, at 500 ms: 255 + 500·(76−255)/1000 = 166, /255.
     let half = n.tick(0.5);
     assert!(
-        (half - (1.0 + (0.3 - 1.0) * 0.125)).abs() < 1e-6,
-        "cubic ease, not linear (got {half})"
+        (half - 166.0 / 255.0).abs() < 1e-6,
+        "linear integer ramp, not a cubic ease (got {half})"
     );
     assert!(
-        (n.tick(AURA_ALPHA_FADE_SECS) - 0.3).abs() < 1e-6,
+        (n.tick(AURA_ALPHA_FADE_SECS) - 76.0 / 255.0).abs() < 1e-6,
         "arrived at 1000 ms"
     );
-    assert!((n.tick(5.0) - 0.3).abs() < 1e-6, "and clamps past the end");
+    assert!(
+        (n.tick(5.0) - 76.0 / 255.0).abs() < 1e-6,
+        "and clamps past the end"
+    );
     assert!(n.translucent());
 
     n.alpha.clear();
     n.retarget(AURA_ALPHA_FADE_SECS);
-    assert!((n.from - 0.3).abs() < 1e-6, "ramps from the live value");
+    assert!((n.from - 76.0 / 255.0).abs() < 1e-6, "ramps from the live value");
     assert!((n.to - 1.0).abs() < 1e-6);
     assert!((n.tick(2.0 * AURA_ALPHA_FADE_SECS) - 1.0).abs() < 1e-6);
     assert!(!n.translucent(), "settled opaque again");

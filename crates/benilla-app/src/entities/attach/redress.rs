@@ -832,6 +832,44 @@ mod tests {
         );
     }
 
+    /// The 1 s attach fallback records a pending sentinel, not the unsettled snapshot it saw. Once
+    /// the real (settled) set arrives, it differs from the sentinel and the re-dress runs.
+    #[test]
+    fn a_pending_attach_stamp_does_not_suppress_the_settled_redress() {
+        let mut s = stand(&[0], &[0], None);
+        let pending = Equipment::default();
+        let unsettled = Equipment {
+            cloak: 9,
+            settled: false,
+            ..Default::default()
+        };
+        let settled = Equipment {
+            cloak: 9,
+            settled: true,
+            ..Default::default()
+        };
+        *s.app.world_mut().get_mut::<Equipment>(s.player).unwrap() = unsettled;
+        *s.app
+            .world_mut()
+            .get_mut::<AppliedEquipment>(s.player)
+            .unwrap() = AppliedEquipment(pending);
+        s.app.update();
+        assert_eq!(
+            s.applied(),
+            pending,
+            "an unsettled live set never re-dresses or stamps itself"
+        );
+
+        *s.app.world_mut().get_mut::<Equipment>(s.player).unwrap() = settled;
+        s.app.update();
+        assert_eq!(
+            s.applied(),
+            settled,
+            "the settled set differs from the sentinel and is stamped"
+        );
+        assert_eq!(s.showing(), vec![0], "the body is dressed from the settled set");
+    }
+
     /// A model present but without parts is a static model-less display: stamp the refusal once
     /// (bounded, no retry loop) and dress nothing.
     #[test]

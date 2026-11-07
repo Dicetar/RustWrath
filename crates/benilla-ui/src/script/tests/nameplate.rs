@@ -355,11 +355,11 @@ fn the_driver_does_not_overwrite_an_addons_takeover() {
 }
 
 /// The glow art has no alpha and is mostly black, so the reference blends it ADD (`0x7cb36a`); as
-/// BLEND it is an opaque box. Deviation: we paint no rim, which reads as hard edges in our
-/// pipeline, but the region stays shown, ADD and textured. The border check fails an empty extract.
+/// BLEND it is an opaque box. The extract must carry the shown glow as an ADD quad, not skip it:
+/// the additive pipeline (`ui_quad.wgsl`, EGxBlend 3) is what keeps the rim from becoming a box.
 #[test]
-fn a_hovered_plate_emits_no_glow_quad() {
-    use crate::script::QuadContent;
+fn a_hovered_plate_emits_its_additive_glow_quad() {
+    use crate::script::{BlendMode, QuadContent};
     let mut s = vm();
     let mut p = plate("Wolf", 30.0, 40.0);
     p.hovered = true;
@@ -376,21 +376,18 @@ fn a_hovered_plate_emits_no_glow_quad() {
         )
         .unwrap());
 
-    let paths: Vec<String> = s
-        .extract()
-        .iter()
-        .filter_map(|q| match &q.content {
-            QuadContent::Texture { path, .. } => path.clone(),
-            _ => None,
-        })
-        .collect();
-    assert!(
-        !paths.iter().any(|p| p.contains("Nameplate-Glow")),
-        "the hovered plate's glow must not be painted; quads were {paths:?}"
-    );
-    assert!(
-        paths.iter().any(|p| p.contains("Nameplate-Border")),
-        "the plate's border must still paint; quads were {paths:?}"
+    let glow = s.extract().into_iter().find_map(|q| match q.content {
+        QuadContent::Texture { path, blend, .. }
+            if path.as_deref() == Some(crate::script::nameplate::GLOW_TEXTURE) =>
+        {
+            Some(blend)
+        }
+        _ => None,
+    });
+    assert_eq!(
+        glow,
+        Some(BlendMode::Add),
+        "the hovered plate's glow must paint as an ADD quad"
     );
 }
 

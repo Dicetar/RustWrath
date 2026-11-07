@@ -220,6 +220,20 @@ struct RigBuild {
     slot: u16,
 }
 
+/// The stamp the attach path records for [`redress::redress_player_looks`]. A settled snapshot is
+/// what the visual was dressed with; an unsettled one (or none) is recorded as the pending
+/// sentinel `Equipment::default()`, whose `settled` is false. The redress gate only accepts a
+/// settled live snapshot, so no later settled set can compare equal to the sentinel and the
+/// re-dress always runs once the real gear has resolved.
+pub(super) fn applied_equipment(
+    equipment: Option<&super::Equipment>,
+) -> super::equipment::AppliedEquipment {
+    match equipment {
+        Some(e) if e.settled => super::equipment::AppliedEquipment(*e),
+        _ => super::equipment::AppliedEquipment(super::Equipment::default()),
+    }
+}
+
 /// Attach a visual to each net entity without one, our own avatar included. The net bridge or the
 /// player controller owns the entity's transform; only its scale is set here.
 #[allow(clippy::type_complexity)]
@@ -775,11 +789,12 @@ pub(super) fn attach_entity_visuals(
             } else {
                 Transform::default()
             };
-            // What the visual was dressed with, for `redress_player_looks` to diff.
-            if let (EntityKind::Player, Some(e)) = (net.kind, equipment) {
-                commands
-                    .entity(entity)
-                    .insert(super::equipment::AppliedEquipment(*e));
+            // What the visual was dressed with, for `redress_player_looks` to diff. An unsettled
+            // snapshot is not recorded as applied: the 1 s fallback may attach before the server
+            // has answered every worn item, and stamping that half-known set would make the
+            // redress gate (`live == applied`) skip the settled set that arrives later.
+            if net.kind == EntityKind::Player {
+                commands.entity(entity).insert(applied_equipment(equipment));
             }
             // The camera's framing pivot, model-local, before scale.
             commands.entity(entity).insert(CameraPivot {
@@ -1064,6 +1079,46 @@ mod tests {
             *app.world_mut() = world;
         }
     }
+
+    /// The attach fallback must leave the redress gate open: an unsettled snapshot becomes a
+    /// pending sentinel, never the stamp that would make `live == applied` skip the real gear.
+    #[test]
+    fn an_unsettled_attach_stamp_is_a_sentinel_a_settled_snapshot_never_equals() {
+        use super::super::Equipment;
+
+        let unsettled = Equipment {
+            bodyslots: [7; 8],
+            settled: false,
+            ..Default::default()
+        };
+        let pending = applied_equipment(Some(&unsettled)).0;
+        assert!(!pending.settled, "the fallback records a pending stamp");
+        assert_ne!(
+            pending, unsettled,
+            "the unsettled snapshot itself is never recorded as applied"
+        );
+
+        let settled = Equipment {
+            bodyslots: [7; 8],
+            settled: true,
+            ..Default::default()
+        };
+        assert_ne!(
+            pending, settled,
+            "a pending stamp can never equal a later settled snapshot"
+        );
+        assert_eq!(
+            applied_equipment(Some(&settled)).0,
+            settled,
+            "a settled snapshot is recorded verbatim"
+        );
+        assert_eq!(
+            applied_equipment(None).0,
+            Equipment::default(),
+            "no equipment yet is the same pending sentinel"
+        );
+    }
+
     /// A unit torn down before its visual built gets none: `0x464920` frees it at once, so the
     /// build would run commands on an entity `apply_despawn_fade` has despawned by the time they
     /// apply.

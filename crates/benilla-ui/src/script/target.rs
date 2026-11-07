@@ -123,6 +123,8 @@ const WRATH_INGAME_EVENTS: &[&str] = &[
     "PET_RENAMEABLE",
     "PLAYER_FOCUS_CHANGED",
     "PLAYER_ROLES_ASSIGNED",
+    // QuestLogFrame.lua:260-264 handles this accept edge; the 1.12 table predates the event.
+    "QUEST_ACCEPTED",
     "RAID_INSTANCE_WELCOME",
     "RAISED_AS_GHOUL",
     "READY_CHECK_CONFIRM",

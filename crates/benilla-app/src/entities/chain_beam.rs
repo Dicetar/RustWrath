@@ -51,9 +51,10 @@ const PERP_EPSILON: f32 = 0.001;
 /// (`0x7afc10`/`0x7afc38`), which makes the per-frame re-roll crawl rather than strobe.
 const ADVECT_KEEP: f32 = 0.75;
 
-/// Deviation: a cap on one hop's sub-segment count, which the reference lacks, so a vertex run is
-/// never sized off table data alone; shipped rows peak at 12 (30 yd at `avgSegLen` 2.78).
-const MAX_SUBDIVISIONS: usize = 256;
+/// The reference's own bound on one hop's point count (`CLightning::UpdateJointCount`, `0x9ab2e0`:
+/// `count > 1000 → 1000`), i.e. at most 999 sub-segments. The formula's `+2` is not a cap: a
+/// 30 yd hop at `avgSegLen` 2.78 is 12 segments because that is what the reference computes.
+const MAX_SUBDIVISIONS: usize = 999;
 
 /// The caster's chain-target hop array, the reference's growable `unit+0xd44`: guids in wire
 /// order, the caster's own dropped as it fills (`0x6057bf`/`0x6057c9`). `crate::spell::net` fills
@@ -595,6 +596,19 @@ mod tests {
         };
         subdivide(Vec3::ZERO, Vec3::X * 30.0, &degenerate, &mut rng, &mut out);
         assert_eq!(out.len(), 3);
+    }
+
+    /// The old 256-segment deviation truncated long hops; the reference only caps its point count
+    /// at 1000 (`CLightning::UpdateJointCount`, `0x9ab2e0`). 40 yd needs 16 segments.
+    #[test]
+    fn a_long_hop_is_not_truncated_at_twelve_or_256() {
+        let (e, mut rng, mut out) = (lightning(), 7u32, Vec::new());
+        subdivide(Vec3::ZERO, Vec3::X * 40.0, &e, &mut rng, &mut out);
+        assert_eq!(out.len(), 17, "16 segments + the exact endpoints");
+
+        // The reference's safety bound, in points: `count = 1000`.
+        subdivide(Vec3::ZERO, Vec3::X * 30_000.0, &e, &mut rng, &mut out);
+        assert_eq!(out.len(), 1000, "the reference's 1000-point ceiling");
     }
 
     /// Exact endpoints, and interior offsets bounded by `len × noiseScale` per axis (`0x7af748`).

@@ -403,5 +403,30 @@ Evidence:
 Remaining limits: no live client, addon, server or receiver run. A garment whose art is genuinely
 absent is still omitted, now with a warning. The merged wotlk event mapping should be reviewed by
 its owner, especially the transport time 0 and `XpGain.base`/`WorldStates.scope` conversions.
-`D:\Projects\project-b-client` remains on an older `main` with its own uncommitted `ui_loot`
-change and was not pulled or built.
+`D:\Projects\project-b-client` remained on an older `main` with its own uncommitted `ui_loot`
+change at this point; it was fast-forwarded in the 2026-11-07 entry below and was not rebuilt
+there.
+
+## 2026-11-07 — confirmed findings integration (DeepSeek A/B/C)
+
+- Source commit `2084c232`; published on `origin/main` with an integration merge commit from
+  `7e05392f`; primary checkout `D:\Projects\project-b-client` follows the merge tip.
+- Scope: the 16 confirmed findings plus the world-map arrow/POI, cooldown clock, cinematic,
+  loading-screen, chat-bubble, aura-ramp and death-screen handoffs.
+- Source changes only; no live client, addon, server or receiver acceptance.
+- Verification logs:
+  - 20-case targeted batch: `.scratch/project-b/test-final-1..20-2026-11-07.log`, all pass.
+  - Three fixes after the first pass: `.scratch/project-b/test-fix-1..3-2026-11-07.log`.
+  - Optional loading/death checks: `.scratch/project-b/test-optional-1..3-2026-11-07.log`.
+  - HD section compositor: `.scratch/project-b/test-sections-final4-2026-11-07.log`, 25/25.
+  - `cargo check --workspace --all-targets`:
+    `.scratch/project-b/check-final3-2026-11-07.log`, exit 0.
+  - `cargo build -p benilla --features hotpatch`:
+    `.scratch/project-b/build-final2-2026-11-07.log`, exit 0.
+- Boundaries: Big Pickle and Flint remained blocked on `provider.free-limit`; the Big Pickle
+  option is kept for a future trial. `AUTO_QUEST_WATCH` was not changed. No game data, credentials
+  or runtime state were committed.
+- Remaining gaps: the exact 3.3.5 completed-log string and intermediate drop-item ids are not
+  retained by the donor model; `SortQuestWatches` reports false because POI proximity is unmodeled;
+  the liquid sampled-position item remains a sound-path test gap; live visual/receiver behavior
+  is unverified.

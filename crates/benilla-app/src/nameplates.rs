@@ -286,15 +286,6 @@ impl Nameplates {
 #[derive(Component)]
 struct NamePlate;
 
-/// Deviation: a mounted plate keeps only this fraction of its seat's oscillation about a slow
-/// mean, because the raw seat, which the reference also rides, read more intense than the
-/// reference side by side. `1.0` is the raw seat; on-foot plates are untouched.
-const ROCK_KEEP: f32 = 0.7;
-/// The mean tracker's rate (1/s): slow against the ~1 Hz gallop, fast enough to follow a stance.
-const ROCK_MEAN_RATE: f32 = 1.5;
-/// A residual this large (yd) is a stance change (mount swap, teleport): snap the mean to it.
-const ROCK_SNAP: f32 = 1.0;
-
 /// The raster size (logical px) of the mesh bake, which only sets crispness. Deviation: larger
 /// than the reference's 32 px `UNIT_NAME_FONT` raster, which it magnifies (`0x6c749b`), because a
 /// larger source is crisper up close.
@@ -692,20 +683,19 @@ fn place_nameplates(
         Res<Time>,
         Query<(), With<crate::net::SelfPlayer>>,
     ),
-    // unit → the slow mean of (anchor - root) while mounted, the rock-damping state.
-    mut rock: Local<bevy::ecs::entity::EntityHashMap<Vec3>>,
 ) {
     let Ok(cam_tf) = camera.single() else {
         return;
     };
     let facing = cam_tf.rotation;
-    let blend = 1.0 - (-ROCK_MEAN_RATE * trace.1.delta_secs()).exp();
     for (&unit, live) in plates.live.iter() {
         let (Ok(tf), Ok((mut ptf, mut pglobal))) = (units.get(unit), plate_tfs.get_mut(live.plate))
         else {
             continue; // spawned this frame and not yet flushed, or the unit is despawning
         };
-        let raw = overhead_anchor(
+        // The full seat: the reference reads the posed attachment every frame, a mounted rider's
+        // gallop included (no damping, no slow mean).
+        let anchor = overhead_anchor(
             unit,
             tf,
             &anchor_q.0,
@@ -714,25 +704,12 @@ fn place_nameplates(
             &anchor_q.3,
             &anchor_q.4,
         );
-        // Mounted: mean + ROCK_KEEP * residual, root-relative so the plate never lags.
-        let anchor = if anchor_q.4.contains(unit) {
-            let off = raw - tf.translation;
-            let mean = rock.entry(unit).or_insert(off);
-            if (off - *mean).length_squared() > ROCK_SNAP * ROCK_SNAP {
-                *mean = off;
-            } else {
-                *mean += (off - *mean) * blend;
-            }
-            tf.translation + *mean + (off - *mean) * ROCK_KEEP
-        } else {
-            raw
-        };
         if trace.0 .0 && trace.2.contains(unit) {
-            // Root, seated (damped) anchor and camera per frame; `raw` is the undamped joint read.
+            // Root, seated anchor and camera per frame.
             let (r, a, c) = (tf.translation, anchor, cam_tf.translation);
             info!(
-                "NAME_TRACE t={:.4} root=({:.4},{:.4},{:.4}) anchor=({:.4},{:.4},{:.4}) cam=({:.3},{:.3},{:.3}) raw=({:.4},{:.4},{:.4})",
-                trace.1.elapsed_secs(), r.x, r.y, r.z, a.x, a.y, a.z, c.x, c.y, c.z, raw.x, raw.y, raw.z
+                "NAME_TRACE t={:.4} root=({:.4},{:.4},{:.4}) anchor=({:.4},{:.4},{:.4}) cam=({:.3},{:.3},{:.3})",
+                trace.1.elapsed_secs(), r.x, r.y, r.z, a.x, a.y, a.z, c.x, c.y, c.z
             );
         }
         let scale = height_scale(anchor.y - tf.translation.y);
@@ -751,8 +728,6 @@ fn place_nameplates(
             }
         }
     }
-    // Dismounted or despawned units drop their damping state (a re-mount starts fresh).
-    rock.retain(|e, _| anchor_q.4.contains(*e));
 }
 
 /// Registers the plate driver (Update) and the per-frame placer (PostUpdate, after propagation,
@@ -1280,6 +1255,58 @@ mod tests {
         );
         assert!(e.get_ref::<Transform>().unwrap().is_changed());
         assert!(e.get_ref::<GlobalTransform>().unwrap().is_changed());
+    }
+
+    /// A mounted plate rides the full seat oscillation: the guard's gallop reaches it unchanged,
+    /// as the reference re-reads the posed PlayerName attachment with no smoothing.
+    #[test]
+    fn a_mounted_plate_follows_the_full_seat() {
+        use bevy::ecs::system::RunSystemOnce;
+        use crate::entities::mount::MountChild;
+
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        world.insert_resource(NameAnchorTrace(false));
+        world.spawn((Transform::default(), WorldCamera));
+        let unit = world
+            .spawn((
+                Transform::from_xyz(3.0, -1.0, 5.0),
+                OverheadFallback(2.0),
+                MountChild(Entity::PLACEHOLDER),
+            ))
+            .id();
+        let plate = world
+            .spawn((Transform::default(), GlobalTransform::default(), NamePlate))
+            .id();
+        let mut plates = Nameplates::default();
+        plates.live.insert(
+            unit,
+            LiveName {
+                plate,
+                lines: vec!["Bob".to_string()],
+                paint: NamePaint::Flash,
+                flags: 0,
+                name: "Bob".into(),
+                bracketed: None,
+                key: None,
+            },
+        );
+        world.insert_resource(plates);
+
+        world.run_system_once(place_nameplates).unwrap();
+        assert_eq!(
+            world.get::<Transform>(plate).unwrap().translation.y,
+            -1.0 + 2.0 * 1.25,
+        );
+
+        // A 0.1 yd seat lift, below any snap threshold: the plate must take all of it this frame.
+        world.get_mut::<OverheadFallback>(unit).unwrap().0 = 2.1;
+        world.run_system_once(place_nameplates).unwrap();
+        assert_eq!(
+            world.get::<Transform>(plate).unwrap().translation.y,
+            -1.0 + 2.1 * 1.25,
+            "no residual damping: the mounted seat is followed in full"
+        );
     }
 
     /// A populated cache, as a re-bake finds it: one live plate, its mesh, its material.

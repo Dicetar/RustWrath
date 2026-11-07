@@ -25,8 +25,10 @@
 //! Not built: the landmark `WorldStateID` gate (`0x6d9b27`) and static blip slot 0,
 //! `SelectQuestLogEntry()`'s gold guide arrow at the quest's POI (`0x4def70`).
 //!
-//! Deviation: dots re-project every frame, where the reference draws coordinates about 1 s
-//! stale, because that staleness is a throttle quirk.
+//! Dynamic dots keep the projected coordinate they had at the last object-list rebuild for at most
+//! `BLIP_STALE` (about 1 s), the reference's `m_lastUpdateTime` throttle (`CGMinimapFrame::Render`,
+//! `0x581e80`); landmarks re-project every frame, as that loop does. The cache is bounded and keyed
+//! by source/guid, so a walking unit's dot steps once per second while the map itself still pans.
 //!
 //! The cross-interior grey (`0xffb0b0b0`) comes from an indoor-containment mismatch; the
 //! reference's compare (`0x670540`) is untraced. The tooltip sits at the cursor; its exact seat
@@ -39,6 +41,10 @@ pub(super) use dots::{emit_party_dots, emit_quest_dots, emit_tracking_dots, Self
 use bevy::math::Rect;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use benilla_assets::coords::bevy_to_wow;
 use benilla_formats::{AreaPoi, AreaPoiCatalog};
@@ -177,6 +183,106 @@ impl BlipCtx {
             (self.wy - w[1]) * self.px_per_yd,
             -(w[0] - self.wx) * self.px_per_yd,
         )
+    }
+}
+
+/// The reference rebuilds its object-blip list (unit, quest, GO, party and vehicle entries) only
+/// when `updated`, the rotation changes, or `now - lastUpdate >= 1000` (`0x581e80`). In between,
+/// the cached screen positions are drawn again; only the map tiles and the player arrow move.
+pub(super) const BLIP_STALE: Duration = Duration::from_millis(1000);
+/// A hard bound on the throttle's map. The reference clears one visible-object list each rebuild;
+/// this keeps its per-blip entries from growing without limit on a long session.
+const BLIP_STALE_CAP: usize = 4096;
+
+/// What a stale coordinate is keyed by. Quest and tracking dots share one unit guid, because the
+/// reference puts a unit in one object-list entry; GameObjects and party/pet slots get their own.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(super) enum DotSource {
+    Unit(u64),
+    GameObject(u64),
+    /// Slot 0..4 of the party placement (`0x6dad10`), slot 4 the pet.
+    Party(u8),
+}
+
+#[derive(Clone, Copy)]
+struct StaleDot {
+    at: Instant,
+    /// The projected offset, or `None` when the rebuild culled the dot; both are held so a dot
+    /// does not flicker across a rebuild boundary either.
+    offset: Option<Vec2>,
+    /// The zoom basis it was projected with; a zoom change is the reference's `updated` edge, so
+    /// the cached point is stale for at most the frame of the change.
+    px_per_yd: f32,
+}
+
+/// A bounded ~1 s coordinate cache for the dynamic dot pass.
+#[derive(Default)]
+struct StaleDots {
+    entries: HashMap<DotSource, StaleDot>,
+}
+
+impl StaleDots {
+    fn offset(
+        &mut self,
+        key: DotSource,
+        fresh: Option<Vec2>,
+        px_per_yd: f32,
+        now: Instant,
+    ) -> Option<Vec2> {
+        if let Some(e) = self.entries.get(&key) {
+            if now.duration_since(e.at) < BLIP_STALE && e.px_per_yd == px_per_yd {
+                return e.offset;
+            }
+        }
+        if self.entries.len() >= BLIP_STALE_CAP {
+            self.entries
+                .retain(|_, e| now.duration_since(e.at) < BLIP_STALE);
+            if self.entries.len() >= BLIP_STALE_CAP {
+                self.entries.clear();
+            }
+        }
+        self.entries.insert(
+            key,
+            StaleDot {
+                at: now,
+                offset: fresh,
+                px_per_yd,
+            },
+        );
+        fresh
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+fn stale_dots() -> &'static Mutex<StaleDots> {
+    static CACHE: OnceLock<Mutex<StaleDots>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(StaleDots::default()))
+}
+
+/// The coordinate a dynamic dot draws at this frame: `fresh` on a rebuild, else the throttled one.
+/// `fresh` is `None` for a dot the rebuild would omit (out of range, wrong floor); holding that too
+/// keeps the dot from reappearing until the next rebuild, as the reference's list does.
+pub(super) fn stale_offset(
+    key: DotSource,
+    fresh: Option<Vec2>,
+    px_per_yd: f32,
+) -> Option<Vec2> {
+    let Ok(mut cache) = stale_dots().lock() else {
+        return fresh;
+    };
+    cache.offset(key, fresh, px_per_yd, Instant::now())
+}
+
+/// Clear the throttle between test cases; the live cache is process-global like the reference's
+/// static list.
+#[cfg(test)]
+pub(super) fn reset_stale_dots() {
+    if let Ok(mut cache) = stale_dots().lock() {
+        cache.entries.clear();
     }
 }
 
@@ -669,5 +775,61 @@ mod tests {
             "not streamed: no arrow"
         );
         assert_eq!(records(&mut world, None)[4], None);
+    }
+
+    /// The reference re-draws the object-list coordinate until its 1 s window expires (`0x581e80`),
+    /// so a walked step lands once per second, not every frame.
+    #[test]
+    fn a_moved_blip_holds_its_projection_for_the_stale_window() {
+        let t0 = Instant::now();
+        let mut cache = StaleDots::default();
+        let key = DotSource::Unit(0xBEEF);
+        assert_eq!(
+            cache.offset(key, Some(Vec2::X), 1.0, t0),
+            Some(Vec2::X),
+            "a rebuild projects"
+        );
+        assert_eq!(
+            cache.offset(key, Some(Vec2::Y), 1.0, t0 + Duration::from_millis(999)),
+            Some(Vec2::X),
+            "…and the next frame inside the window draws the held coordinate"
+        );
+        assert_eq!(
+            cache.offset(key, Some(Vec2::Y), 1.0, t0 + BLIP_STALE),
+            Some(Vec2::Y),
+            "the window's edge rebuilds"
+        );
+        // A cull verdict is held the same way: the rebuild at `t0 + BLIP_STALE` re-seats the
+        // window, so the cull is only visible once that window has also expired.
+        let culled_at = t0 + BLIP_STALE + BLIP_STALE;
+        assert_eq!(cache.offset(key, None, 1.0, culled_at), None);
+        assert_eq!(
+            cache.offset(key, Some(Vec2::ZERO), 1.0, culled_at + Duration::from_millis(500)),
+            None,
+            "a culled dot does not flicker back before the next rebuild"
+        );
+    }
+
+    /// A zoom change is the reference's `updated` edge, and the cache is bounded.
+    #[test]
+    fn a_zoom_change_reprojects_and_the_cache_stays_bounded() {
+        let t0 = Instant::now();
+        let mut cache = StaleDots::default();
+        let key = DotSource::Party(4);
+        assert_eq!(cache.offset(key, Some(Vec2::X), 1.0, t0), Some(Vec2::X));
+        assert_eq!(
+            cache.offset(key, Some(Vec2::Y), 2.0, t0),
+            Some(Vec2::Y),
+            "a new px-per-yard basis rebuilds at once"
+        );
+
+        for i in 0..BLIP_STALE_CAP + 8 {
+            cache.offset(DotSource::Unit(i as u64), None, 1.0, t0);
+        }
+        assert!(
+            cache.len() <= BLIP_STALE_CAP,
+            "the throttle's map is bounded, got {}",
+            cache.len()
+        );
     }
 }

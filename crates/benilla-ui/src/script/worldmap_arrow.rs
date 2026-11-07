@@ -1,7 +1,9 @@
 //! The world map's arrow frames (`0x4a8bb0`), the seven bindings `WorldMapFrame.lua` and
 //! `Blizzard_BattlefieldMinimap.lua` call. The reference keeps two singletons per UI session, the
-//! world map's and the battlefield minimap's: stock `Model` frames made by the first `Create`,
-//! never freed, their rect the arrow file's bounding box and their facing the player's.
+//! world map's and the battlefield minimap's, each a pair of stock `Model` frames made by the first
+//! `Create`: the player marker and the facing-cone effect beside it (`CGWorldMap::CreateArrowFrame`
+//! and `CreateMiniArrowFrame`). Both draw `MinimapArrow.mdx`, are never freed, take their rect
+//! from the file's bounding box, and face with the player.
 
 use mlua::{Lua, MultiValue, ObjectLike, Table, Value};
 
@@ -28,21 +30,48 @@ enum Arrow {
     Mini,
 }
 
+/// The marker and the facing-cone effect drawn over it. The reference makes two model frames per
+/// singleton and drives them together: `m_playerArrowFrame` / `m_playerArrowEffectFrame` and the
+/// mini pair (`CreateArrowFrame`, `CreateMiniArrowFrame`).
+#[derive(Clone, Copy)]
+enum Part {
+    Marker,
+    Effect,
+}
+
+impl Part {
+    const BOTH: [Part; 2] = [Part::Marker, Part::Effect];
+}
+
 impl Arrow {
-    fn slot(self, model: &Model) -> Option<u32> {
-        match self {
-            Arrow::World => model.worldmap.arrow_world,
-            Arrow::Mini => model.worldmap.arrow_mini,
+    fn slot(self, part: Part, model: &Model) -> Option<u32> {
+        match (self, part) {
+            (Arrow::World, Part::Marker) => model.worldmap.arrow_world,
+            (Arrow::World, Part::Effect) => model.worldmap.arrow_world_effect,
+            (Arrow::Mini, Part::Marker) => model.worldmap.arrow_mini,
+            (Arrow::Mini, Part::Effect) => model.worldmap.arrow_mini_effect,
         }
     }
-    fn set_slot(self, model: &mut Model, id: u32) {
-        match self {
-            Arrow::World => model.worldmap.arrow_world = Some(id),
-            Arrow::Mini => model.worldmap.arrow_mini = Some(id),
+    fn set_slot(self, part: Part, model: &mut Model, id: u32) {
+        match (self, part) {
+            (Arrow::World, Part::Marker) => model.worldmap.arrow_world = Some(id),
+            (Arrow::World, Part::Effect) => model.worldmap.arrow_world_effect = Some(id),
+            (Arrow::Mini, Part::Marker) => model.worldmap.arrow_mini = Some(id),
+            (Arrow::Mini, Part::Effect) => model.worldmap.arrow_mini_effect = Some(id),
+        }
+    }
+    /// The global name the reference gives each model (`SetName`), so `WorldMapFrame.lua` can set
+    /// the effect's alpha and frame level by name.
+    fn frame_name(self, part: Part) -> &'static str {
+        match (self, part) {
+            (Arrow::World, Part::Marker) => "PlayerArrowFrame",
+            (Arrow::World, Part::Effect) => "PlayerArrowEffectFrame",
+            (Arrow::Mini, Part::Marker) => "PlayerMiniArrowFrame",
+            (Arrow::Mini, Part::Effect) => "PlayerMiniArrowEffectFrame",
         }
     }
     /// The model scale over `G48`: `5/3` for the world map, `10/9` for the mini, so the arrow keeps
-    /// its apparent size as the window's shape changes (`0x4a7ad8`).
+    /// its apparent size as the window's shape changes (`0x4a7ad8`). Both parts of a pair use it.
     fn scale_over_g48(self) -> f32 {
         match self {
             Arrow::World => 5.0 / 3.0,
@@ -85,22 +114,24 @@ fn arrow_scale(model: &Model, which: Arrow) -> f32 {
     model.layout_units().k2() * which.scale_over_g48()
 }
 
-/// Both arrows' model scale for new cells. The reference fixes it at creation, which a change of
+/// Both pairs' model scale for new cells. The reference fixes it at creation, which a change of
 /// cells repeats, as the rebuilt interface runs `CreateWorldMapArrowFrame` again
 /// (`WorldMapFrame.lua:15`); a live resize sets it here instead.
 pub(super) fn rescale(model: &mut Model) {
     for which in [Arrow::World, Arrow::Mini] {
-        let Some(id) = which.slot(model) else {
-            continue;
-        };
-        let scale = arrow_scale(model, which);
-        let Some(&h) = model.id_to_frame.get(&id) else {
-            continue;
-        };
-        if let Some(crate::widget::KindState::Model(m)) =
-            model.arena.frame_mut(h).map(|f| &mut f.kind_state)
-        {
-            m.scale = scale;
+        for part in Part::BOTH {
+            let Some(id) = which.slot(part, model) else {
+                continue;
+            };
+            let scale = arrow_scale(model, which);
+            let Some(&h) = model.id_to_frame.get(&id) else {
+                continue;
+            };
+            if let Some(crate::widget::KindState::Model(m)) =
+                model.arena.frame_mut(h).map(|f| &mut f.kind_state)
+            {
+                m.scale = scale;
+            }
         }
     }
 }
@@ -134,32 +165,42 @@ fn create(lua: &Lua, which: Arrow, parent: Value) -> mlua::Result<()> {
     if frame_handle_of(lua, &t).is_err() {
         return Err(mlua::Error::runtime(which.not_a_frame()));
     }
-    {
-        let model = lua.app_data_ref::<Model>().expect("model app_data");
-        if which.slot(&model).is_some() {
-            return Ok(()); // the singleton exists: the parent is not even read (`0x4a7a80`)
+    // The reference tests each pointer separately (`0x4a7a80`): a pair made by an earlier call is
+    // left alone, and only a missing part is created. In a fresh session both are built, the
+    // marker first as the reference does.
+    for part in Part::BOTH {
+        let exists = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            which.slot(part, &model).is_some()
+        };
+        if !exists {
+            create_one(lua, which, part, &t)?;
         }
     }
+    Ok(())
+}
+
+/// One model frame of a pair: the reference's `CSimpleModel(parent)`, `SetModel`, `SetName`, and
+/// the `CenterArrowModel` its loaded-file check runs (`CreateArrowFrame`).
+fn create_one(lua: &Lua, which: Arrow, part: Part, parent: &Table) -> mlua::Result<()> {
+    let name = which.frame_name(part);
     let wrapper = create_frame(
         lua,
         (
             Some(Value::String(lua.create_string("Model")?)),
-            None,
-            Some(Value::Table(t)),
+            Some(Value::String(lua.create_string(name)?)),
+            Some(Value::Table(parent.clone())),
             None,
         ),
     )?;
     let id = decode_id(&wrapper)?;
-    let scale = {
-        let model = lua.app_data_ref::<Model>().expect("model app_data");
-        arrow_scale(&model, which)
+    let (scale, facts) = {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        let scale = arrow_scale(&model, which);
+        (scale, model.model_facts_for(ARROW_MODEL))
     };
     // The reference's `SetModel` (`0x4a7a80` calls `0x76c8e0`) with no authored size: the rect is
     // the file's bounding box, and `0x4a7b20` centres the model on it.
-    let facts = lua
-        .app_data_mut::<Model>()
-        .expect("model app_data")
-        .model_facts_for(ARROW_MODEL);
     super::modelframe::with_model(lua, &wrapper, |m| {
         m.set_file(ARROW_MODEL.to_string(), facts.as_deref());
         m.scale = scale;
@@ -168,25 +209,34 @@ fn create(lua: &Lua, which: Arrow, parent: Value) -> mlua::Result<()> {
     let h = frame_handle_of(lua, &wrapper)?;
     let mut model = lua.app_data_mut::<Model>().expect("model app_data");
     model.apply_implicit_rect(h);
-    which.set_slot(&mut model, id);
+    which.set_slot(part, &mut model, id);
     Ok(())
 }
 
-fn arrow_wrapper(lua: &Lua, which: Arrow) -> mlua::Result<Option<Table>> {
+fn arrow_wrapper(lua: &Lua, which: Arrow, part: Part) -> mlua::Result<Option<Table>> {
     let id = {
         let model = lua.app_data_ref::<Model>().expect("model app_data");
-        which.slot(&model)
+        which.slot(part, &model)
     };
     id.map(|id| frame_wrapper(lua, id)).transpose()
 }
 
-/// `UpdateWorldMapArrowFrames()` (`0x4a8d10`, `0x4a7c20`): re-centre each arrow and copy the
-/// camera-tracked object's facing, the player's; with no player the facing stays.
+/// Both frames of a pair, or none: every driving verb is silent until both exist, as the
+/// reference's `if (!frame || !effect) return 0;` guards.
+fn arrow_pair(lua: &Lua, which: Arrow) -> mlua::Result<Option<(Table, Table)>> {
+    let marker = arrow_wrapper(lua, which, Part::Marker)?;
+    let effect = arrow_wrapper(lua, which, Part::Effect)?;
+    Ok(match (marker, effect) {
+        (Some(marker), Some(effect)) => Some((marker, effect)),
+        _ => None,
+    })
+}
+
+/// `UpdateWorldMapArrowFrames()` (`0x4a8d10`, `0x4a7c20`): re-centre every frame in both pairs
+/// and copy the camera-tracked object's facing, the player's, to all of them; with no player the
+/// facing stays.
 fn update(lua: &Lua) -> mlua::Result<()> {
     for which in [Arrow::World, Arrow::Mini] {
-        let Some(wrapper) = arrow_wrapper(lua, which)? else {
-            continue;
-        };
         let (facing, tracked, facts) = {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             (
@@ -195,21 +245,28 @@ fn update(lua: &Lua) -> mlua::Result<()> {
                 model.model_facts_for(ARROW_MODEL),
             )
         };
-        super::modelframe::with_model(lua, &wrapper, |m| {
-            m.position = centre_of(facts.as_deref());
-            if tracked {
-                m.facing = facing;
-            }
-        })?;
+        for part in Part::BOTH {
+            let Some(wrapper) = arrow_wrapper(lua, which, part)? else {
+                continue;
+            };
+            let facts = facts.clone();
+            super::modelframe::with_model(lua, &wrapper, |m| {
+                m.position = centre_of(facts.as_deref());
+                if tracked {
+                    m.facing = facing;
+                }
+            })?;
+        }
     }
     Ok(())
 }
 
 /// `Position...("point", "frame" [, relativePoint] [, offsetX, offsetY])` (`0x4a8d20`,
-/// `0x4a8f20`): `SetPoint` on the arrow, silent with no arrow. A non-string third argument means
-/// the same point and zero offsets, with no error; offsets apply only when both are numbers.
+/// `0x4a8f20`): `SetPoint` on the marker and the effect, silent until both exist. A non-string
+/// third argument means the same point and zero offsets, with no error; offsets apply only when
+/// both are numbers.
 fn position(lua: &Lua, which: Arrow, args: [Value; 5]) -> mlua::Result<()> {
-    let Some(arrow) = arrow_wrapper(lua, which)? else {
+    let Some((arrow, effect)) = arrow_pair(lua, which)? else {
         return Ok(());
     };
     let [point, frame, rel, x, y] = args;
@@ -246,6 +303,7 @@ fn position(lua: &Lua, which: Arrow, args: [Value; 5]) -> mlua::Result<()> {
             resolved.unwrap_or(frame_name)
         )));
     };
+    // The reference compares only the marker (`relative == frame`); the effect may be named.
     if decode_id(&target)? == decode_id(&arrow)? {
         return Err(mlua::Error::runtime(format!(
             "Error: {} is anchored to itself",
@@ -264,16 +322,26 @@ fn position(lua: &Lua, which: Arrow, args: [Value; 5]) -> mlua::Result<()> {
     } else {
         (point_name.clone(), 0.0, 0.0)
     };
-    arrow.call_method::<()>(
-        "SetPoint",
-        (point_name, Value::Table(target), rel_point, ox, oy),
-    )
+    // Both frames take the same point, as `frame->SetPoint(...)` then `effect->SetPoint(...)`.
+    for frame in [arrow, effect] {
+        frame.call_method::<()>(
+            "SetPoint",
+            (
+                point_name.clone(),
+                Value::Table(target.clone()),
+                rel_point.clone(),
+                ox,
+                oy,
+            ),
+        )?;
+    }
+    Ok(())
 }
 
-/// `Show...([shown])` (`0x4a9120`, `0x4a9170`): silent with no arrow; the never-raising boolean
-/// coercion, true by default.
+/// `Show...([shown])` (`0x4a9120`, `0x4a9170`): show or hide both frames of the pair, silent until
+/// both exist; the never-raising boolean coercion, true by default.
 fn show(lua: &Lua, which: Arrow, args: MultiValue) -> mlua::Result<()> {
-    let Some(arrow) = arrow_wrapper(lua, which)? else {
+    let Some((arrow, effect)) = arrow_pair(lua, which)? else {
         return Ok(());
     };
     // An absent argument is `LUA_TNONE`, which the binding's nil test does not match, so a bare
@@ -283,7 +351,9 @@ fn show(lua: &Lua, which: Arrow, args: MultiValue) -> mlua::Result<()> {
         Some(Value::Nil) => false,
         Some(v) => bool_or_default(Some(v), true),
     };
-    arrow.call_method::<()>(if on { "Show" } else { "Hide" }, ())
+    let method = if on { "Show" } else { "Hide" };
+    arrow.call_method::<()>(method, ())?;
+    effect.call_method::<()>(method, ())
 }
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
@@ -425,6 +495,133 @@ mod tests {
             s.arity("CreateWorldMapArrowFrame(WM)").unwrap(),
             0,
             "zero values"
+        );
+    }
+
+    /// The stock `WorldMapButton_OnUpdate` tail (`WorldMapFrame.lua:780-791`): turn and re-centre
+    /// both model frames, then seat the pair at the player's UV or hide it off the map.
+    const FOLLOW_FEED: &str = r#"
+        function TestArrowFollowsFeed()
+            UpdateWorldMapArrowFrames()
+            local x, y = GetPlayerMapPosition("player")
+            if x == 0 and y == 0 then
+                ShowWorldMapArrowFrame(nil)
+            else
+                x = x * WorldMapDetailFrame:GetWidth()
+                y = -y * WorldMapDetailFrame:GetHeight()
+                PositionWorldMapArrowFrame("CENTER", "WorldMapDetailFrame", "TOPLEFT", x, y)
+                ShowWorldMapArrowFrame(1)
+            end
+        end
+    "#;
+
+    /// `CreateArrowFrame` makes the marker and the facing-cone effect together, both on the same
+    /// parent, both named for Lua; the stock update then gives them one projected point and one
+    /// facing. `PlayerArrowEffectFrame:SetAlpha(0.65)` in OnLoad must find its global.
+    #[test]
+    fn the_arrow_and_its_effect_share_the_projected_point_and_facing() {
+        let mut s = vm();
+        arrow_facts(&mut s);
+        s.run("CreateWorldMapArrowFrame(WM)").unwrap();
+
+        let (marker, effect) = s
+            .eval::<(String, String)>(
+                "return PlayerArrowFrame:GetObjectType(), PlayerArrowEffectFrame:GetObjectType()",
+            )
+            .unwrap();
+        assert_eq!((marker.as_str(), effect.as_str()), ("Model", "Model"));
+        s.run("PlayerArrowEffectFrame:SetAlpha(0.65)").unwrap();
+
+        // The mini singleton is a pair too.
+        s.run("CreateMiniWorldMapArrowFrame(WM)").unwrap();
+        let mini = s
+            .eval::<(bool, bool)>(
+                "return PlayerMiniArrowFrame ~= nil, PlayerMiniArrowEffectFrame ~= nil",
+            )
+            .unwrap();
+        assert_eq!(mini, (true, true));
+
+        s.run(FOLLOW_FEED).unwrap();
+        s.set_world_map_feed(None, Some((0.25, 0.75)), 1.25, None, Vec::new(), Vec::new());
+        s.run("TestArrowFollowsFeed()").unwrap();
+        s.resolve();
+
+        let (ax, ay, ex, ey, af, ef) = s
+            .eval::<(f64, f64, f64, f64, f32, f32)>(
+                "local ax, ay = PlayerArrowFrame:GetCenter() \
+                 local ex, ey = PlayerArrowEffectFrame:GetCenter() \
+                 return ax, ay, ex, ey, PlayerArrowFrame:GetFacing(), PlayerArrowEffectFrame:GetFacing()",
+            )
+            .unwrap();
+        assert!(
+            (ax - ex).abs() < 0.01 && (ay - ey).abs() < 0.01,
+            "the effect is seated on the marker: ({ax}, {ay}) vs ({ex}, {ey})"
+        );
+        let (dl, dt, dw, dh) = s
+            .eval::<(f64, f64, f64, f64)>(
+                "return WorldMapDetailFrame:GetLeft(), WorldMapDetailFrame:GetTop(), \
+                 WorldMapDetailFrame:GetWidth(), WorldMapDetailFrame:GetHeight()",
+            )
+            .unwrap();
+        assert!(
+            (ax - (dl + 0.25 * dw)).abs() < 0.01 && (ay - (dt - 0.75 * dh)).abs() < 0.01,
+            "both follow the player UV: ({ax}, {ay}) on {dw}x{dh} at ({dl}, {dt})"
+        );
+        assert!(
+            (af - 1.25).abs() < 1e-6 && (ef - 1.25).abs() < 1e-6,
+            "one facing for the pair: {af}, {ef}"
+        );
+        assert_eq!(
+            s.eval::<f32>("return PlayerArrowEffectFrame:GetAlpha()").unwrap(),
+            0.65,
+            "the stock alpha reaches the effect frame by name"
+        );
+    }
+
+    /// Off the displayed map the stock update hides the pair; back on it, a new UV and facing move
+    /// and turn both frames together.
+    #[test]
+    fn the_effect_hides_off_the_map_and_follows_a_later_player_update() {
+        let mut s = vm();
+        arrow_facts(&mut s);
+        s.run("CreateWorldMapArrowFrame(WM)").unwrap();
+        s.run(FOLLOW_FEED).unwrap();
+
+        s.set_world_map_feed(None, Some((0.25, 0.75)), 1.25, None, Vec::new(), Vec::new());
+        s.run("TestArrowFollowsFeed()").unwrap();
+        s.resolve();
+
+        s.set_world_map_feed(None, None, 2.0, None, Vec::new(), Vec::new());
+        s.run("TestArrowFollowsFeed()").unwrap();
+        let (marker, effect) = s
+            .eval::<(bool, bool)>(
+                "return PlayerArrowFrame:IsShown(), PlayerArrowEffectFrame:IsShown()",
+            )
+            .unwrap();
+        assert!(
+            !marker && !effect,
+            "off-map hides the marker AND the effect: {marker} {effect}"
+        );
+
+        s.set_world_map_feed(None, Some((0.4, 0.6)), 0.5, None, Vec::new(), Vec::new());
+        s.run("TestArrowFollowsFeed()").unwrap();
+        s.resolve();
+        let (shown, ax, ay, ex, ey, af, ef) = s
+            .eval::<(bool, f64, f64, f64, f64, f32, f32)>(
+                "local ax, ay = PlayerArrowFrame:GetCenter() \
+                 local ex, ey = PlayerArrowEffectFrame:GetCenter() \
+                 return PlayerArrowFrame:IsShown() and PlayerArrowEffectFrame:IsShown(), \
+                        ax, ay, ex, ey, PlayerArrowFrame:GetFacing(), PlayerArrowEffectFrame:GetFacing()",
+            )
+            .unwrap();
+        assert!(shown, "a later on-map feed shows the pair again");
+        assert!(
+            (ax - ex).abs() < 0.01 && (ay - ey).abs() < 0.01,
+            "the updated pair still shares its centre: ({ax}, {ay}) vs ({ex}, {ey})"
+        );
+        assert!(
+            (af - 0.5).abs() < 1e-6 && (ef - 0.5).abs() < 1e-6,
+            "the updated facing reaches both frames: {af}, {ef}"
         );
     }
 
