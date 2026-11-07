@@ -401,9 +401,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetActionInfo(slot): the standard action-bar type, id and subType (`"spell"`, `"item"` or
-    // `"macro"`). For `"spell"` slots, `subType` is `"pet"` when the spell lives in the pet book
-    // and not the player's spellbook, else `"spell"`; `"item"` and `"macro"` slots push `""`.
+    // 12340 ActionBarFrame_Scripts.cpp::Script_GetActionInfo (0x005A8F10) returns
+    // ("spell", spellbook slot, book type, spell ID). The slot and ID are different namespaces;
+    // addons pass the slot/book pair to GetSpellInfo and GetSpellLink.
+    // Retain the donor tuple for the older UI target.
     // An empty slot returns nothing and a non-number raises.
     g.set(
         "GetActionInfo",
@@ -435,8 +436,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     }
                 };
                 out.push_back(Value::String(lua.create_string(kind)?));
-                out.push_back(Value::Integer(i64::from(id)));
+                let wrath_spell = model.target == super::UiTarget::Wrath335 && kind == "spell";
+                let slot_id = if wrath_spell {
+                    let slots = if sub_type == "pet" { &model.pet_book.slots } else { &model.spellbook.slots };
+                    slots.iter().position(|slot| slot.spell_id == id)
+                        .map_or(0, |index| index as u32 + 1)
+                } else {
+                    id
+                };
+                out.push_back(Value::Integer(i64::from(slot_id)));
                 out.push_back(Value::String(lua.create_string(sub_type)?));
+                if wrath_spell {
+                    out.push_back(Value::Integer(i64::from(id)));
+                }
             }
             Ok(out)
         })?,

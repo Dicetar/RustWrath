@@ -326,15 +326,17 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             if was_visible {
                 visibility::hide(lua, h);
             }
+            let wrath = lua.app_data_ref::<Model>().expect("model").target
+                == crate::script::UiTarget::Wrath335;
             {
                 let mut model = lua.app_data_mut::<Model>().expect("model");
-                model.arena.reparent_finish(h, new_parent);
+                model.arena.reparent_finish_with_levels(h, new_parent, wrath);
                 // A reparent moves the subtree's effective scale, a layout input and part of every
                 // descendant FontString's measure key.
                 model.touch_layout_subtree(h);
                 model.touch_measure_all();
             }
-            if was_visible {
+            if was_visible || wrath {
                 visibility::show(lua, h);
             }
             Ok(())

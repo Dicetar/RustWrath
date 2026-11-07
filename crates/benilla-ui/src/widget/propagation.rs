@@ -310,6 +310,13 @@ impl WidgetArena {
     /// visible (`0x76abe3`), so a hidden frame moved under a visible parent keeps a stale
     /// effective visibility until something shows it.
     pub fn reparent_finish(&mut self, h: FrameHandle, new_parent: Option<FrameHandle>) {
+        self.reparent_finish_with_levels(h, new_parent, false);
+    }
+
+    /// 12340 CSimpleFrame::SetParent shifts descendant levels with the parent.
+    pub fn reparent_finish_with_levels(
+        &mut self, h: FrameHandle, new_parent: Option<FrameHandle>, shift_children: bool,
+    ) {
         if self.frame(h).is_none() {
             return; // died inside an OnHide: nothing to move
         }
@@ -336,7 +343,7 @@ impl WidgetArena {
             None => (Strata::default(), 0),
         };
         self.set_frame_strata(h, pstrata);
-        self.set_frame_level(h, plevel, false);
+        self.set_frame_level(h, plevel, shift_children);
         let ps = self.parent_effective_scale(h);
         self.propagate_scale(h, ps);
         // The subtree takes the new parent's scroll membership, none for no parent; the scroll
