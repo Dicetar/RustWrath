@@ -34,10 +34,23 @@ pub struct UnitCastView {
 fn spell_reference(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<(u32, bool)>> {
     let input = args.front().cloned().unwrap_or(Value::Nil);
     if let Some(book) = args.get(1).filter(|value| !matches!(value, Value::Nil)) {
-        let (slot, book) = spellbook::spell_slot_args(input, book.clone(), "GetSpellInfo")?;
-        let model = lua.app_data_ref::<Model>().expect("model");
-        return Ok(spellbook::book_slot(&model, slot, &book)
-            .map(|slot| (slot.spell_id, spellbook::is_pet_book(&book))));
+        match spellbook::spell_slot_args(input.clone(), book.clone(), "GetSpellInfo") {
+            Ok((slot, book)) => {
+                let model = lua.app_data_ref::<Model>().expect("model");
+                return Ok(spellbook::book_slot(&model, slot, &book)
+                    .map(|slot| (slot.spell_id, spellbook::is_pet_book(&book))));
+            }
+            Err(err) => {
+                // `GetSlotFromLua` (`SpellBookFrame.cpp:1447-1487`) raises for a numeric value
+                // outside the book. The one exception is the ID `GetActionInfo`
+                // (`ActionBarFrame_Scripts.cpp:72-143`) answers for a spell with no displayed
+                // book slot: a Wrath addon passes that ID and the book type straight back here.
+                return match spellbook::action_bar_spell_reference(lua, input, book.clone())? {
+                    Some(reference) => Ok(Some(reference)),
+                    None => Err(err),
+                };
+            }
+        }
     }
     if let Some(number) = lua.coerce_number(input.clone())? {
         return Ok((number.is_finite() && number >= 1.0 && number <= f64::from(u32::MAX))
@@ -137,4 +150,207 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         string(lua, Some(&link))
     })?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{host, SpellInfoView};
+    use crate::script::action::ACTION_KIND_SPELL;
+    use crate::script::{
+        ActionSlot, CallHost, CallTail, ScriptCall, SpellSlotView, UiScript, UiTarget,
+    };
+
+    const BAR_SPELL: u32 = 3009;
+    const BOOK_SPELL: u32 = 133;
+
+    /// The host's spell catalog, answering only the IDs it knows and recording every query.
+    struct SpellHost {
+        known: Vec<u32>,
+        asked: Vec<u32>,
+    }
+
+    impl CallHost for SpellHost {
+        fn apply(&mut self, _script: &mut UiScript, _call: ScriptCall) -> Option<CallTail> {
+            None
+        }
+
+        fn spell_info(&mut self, id: u32) -> Option<SpellInfoView> {
+            self.asked.push(id);
+            self.known.contains(&id).then(|| SpellInfoView {
+                name: format!("Spell {id}"),
+                rank: Some("Rank 1".into()),
+                icon: Some(format!("Interface\\Icons\\Spell_{id}")),
+                cost: None,
+                channeled: false,
+                power_type: 0,
+                cast_time_ms: 0,
+                min_range: None,
+                max_range: None,
+            })
+        }
+    }
+
+    fn slot(kind: u8, action: u32) -> ActionSlot {
+        ActionSlot {
+            kind,
+            action,
+            ..Default::default()
+        }
+    }
+
+    fn wrath() -> UiScript {
+        UiScript::with_target(UiTarget::Wrath335).unwrap()
+    }
+
+    /// The addon's `nativeInfo(key, book)` fallback: a spell on the bar but not in the displayed
+    /// book answers its ID from `GetActionInfo`, and every Wrath spell query accepts that ID with
+    /// the book type instead of raising `Invalid spell slot`.
+    #[test]
+    fn an_action_bar_spell_id_with_a_book_answers_the_hosts_spell() {
+        let mut s = wrath();
+        s.set_action(1, Some(slot(ACTION_KIND_SPELL, BAR_SPELL)));
+        let mut host = SpellHost {
+            known: vec![BAR_SPELL],
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(
+                s.eval::<String>("return (GetSpellInfo(3009, BOOKTYPE_SPELL))")
+                    .unwrap(),
+                "Spell 3009"
+            );
+            let link = s
+                .eval::<String>("return GetSpellLink(3009, BOOKTYPE_SPELL)")
+                .unwrap();
+            assert!(
+                link.contains("spell:3009") && link.contains("Spell 3009"),
+                "{link}"
+            );
+            assert_eq!(
+                s.eval::<String>("return GetSpellTexture(3009, BOOKTYPE_SPELL)")
+                    .unwrap(),
+                "Interface\\Icons\\Spell_3009"
+            );
+            assert_eq!(
+                s.eval::<(String, String)>("return GetSpellName(3009, BOOKTYPE_SPELL)")
+                    .unwrap(),
+                ("Spell 3009".into(), "Rank 1".into())
+            );
+            assert_eq!(
+                s.eval::<(f64, f64, i64)>("return GetSpellCooldown(3009, BOOKTYPE_SPELL)")
+                    .unwrap(),
+                (0.0, 0.0, 1)
+            );
+        });
+        assert!(host.asked.contains(&BAR_SPELL), "{:?}", host.asked);
+    }
+
+    /// A bar spell the host catalog does not know answers nil/no values, never a slot error.
+    #[test]
+    fn an_unknown_action_bar_spell_answers_nil_not_a_slot_error() {
+        let mut s = wrath();
+        s.set_action(1, Some(slot(ACTION_KIND_SPELL, BAR_SPELL)));
+        let mut host = SpellHost {
+            known: Vec::new(),
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            assert!(s
+                .eval::<bool>("return GetSpellInfo(3009, BOOKTYPE_SPELL) == nil")
+                .unwrap());
+            assert!(s
+                .eval::<bool>("return GetSpellLink(3009, BOOKTYPE_SPELL) == nil")
+                .unwrap());
+            assert!(s
+                .eval::<bool>("return GetSpellTexture(3009, BOOKTYPE_SPELL) == nil")
+                .unwrap());
+            assert!(s
+                .eval::<bool>("return GetSpellName(3009, BOOKTYPE_SPELL) == nil")
+                .unwrap());
+            assert_eq!(
+                s.eval::<(f64, f64, i64)>("return GetSpellCooldown(3009, BOOKTYPE_SPELL)")
+                    .unwrap(),
+                (0.0, 0.0, 1)
+            );
+        });
+        assert_eq!(
+            host.asked,
+            vec![BAR_SPELL; 5],
+            "the host is asked for the ID, not a slot"
+        );
+    }
+
+    /// The same out-of-range number is still a genuine invalid slot when no action bar holds it.
+    #[test]
+    fn an_out_of_range_number_off_the_action_bar_still_raises() {
+        let mut s = wrath();
+        s.set_action(1, Some(slot(ACTION_KIND_SPELL, BOOK_SPELL)));
+        let mut host = SpellHost {
+            known: vec![BAR_SPELL],
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            for call in [
+                "GetSpellInfo(3009, BOOKTYPE_SPELL)",
+                "GetSpellLink(3009, BOOKTYPE_SPELL)",
+                "GetSpellTexture(3009, BOOKTYPE_SPELL)",
+                "GetSpellName(3009, BOOKTYPE_SPELL)",
+                "GetSpellCooldown(3009, BOOKTYPE_SPELL)",
+            ] {
+                let err = s.run(call).unwrap_err().to_string();
+                assert!(err.contains("Invalid spell slot"), "{call}: {err}");
+            }
+        });
+        assert!(host.asked.is_empty(), "{:?}", host.asked);
+    }
+
+    /// A value inside the slot range still resolves through the book, even when it is also a
+    /// spell ID the host knows.
+    #[test]
+    fn an_in_range_book_slot_still_reads_the_book_not_a_spell_id() {
+        let mut s = wrath();
+        s.set_spell_list(vec![SpellSlotView {
+            spell_id: BOOK_SPELL,
+            name: "Fireball".into(),
+            ..Default::default()
+        }]);
+        s.set_action(1, Some(slot(ACTION_KIND_SPELL, BOOK_SPELL)));
+        let mut host = SpellHost {
+            known: vec![BOOK_SPELL],
+            asked: Vec::new(),
+        };
+        host::lend(s.lua(), &mut host, || {
+            assert_eq!(
+                s.eval::<String>("return (GetSpellInfo(1, BOOKTYPE_SPELL))")
+                    .unwrap(),
+                "Spell 133"
+            );
+            assert_eq!(
+                s.eval::<String>("return GetSpellTexture(1, BOOKTYPE_SPELL)")
+                    .unwrap(),
+                "Interface\\Icons\\Spell_133"
+            );
+            assert_eq!(
+                s.eval::<String>("return (GetSpellName(1, BOOKTYPE_SPELL))")
+                    .unwrap(),
+                "Fireball",
+                "GetSpellName reads the book slot, not the host catalog"
+            );
+        });
+        assert_eq!(host.asked, vec![BOOK_SPELL, BOOK_SPELL]);
+    }
+
+    /// The fallback is a Wrath action-bar compatibility path, not a general slot relaxation.
+    #[test]
+    fn the_action_bar_spell_id_fallback_is_wrath_only() {
+        let mut s = UiScript::new().unwrap();
+        s.set_action(1, Some(slot(ACTION_KIND_SPELL, BAR_SPELL)));
+        for call in [
+            "GetSpellName(3009, BOOKTYPE_SPELL)",
+            "GetSpellCooldown(3009, BOOKTYPE_SPELL)",
+        ] {
+            let err = s.run(call).unwrap_err().to_string();
+            assert!(err.contains("Invalid spell slot"), "{call}: {err}");
+        }
+    }
 }

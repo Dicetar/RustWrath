@@ -12,6 +12,7 @@
 
 use mlua::{Lua, MultiValue, Value};
 
+use super::action::ACTION_KIND_SPELL;
 use super::binding_abi::{bool_or_default, flag};
 use super::cursor::{clear_cursor, set_cursor, CursorPayload, CursorSpell};
 use super::protected::{self, Tag};
@@ -291,6 +292,53 @@ pub(super) fn spell_slot_args(
     Ok((index as u32 + 1, book.to_string()))
 }
 
+/// Wrath-only compatibility for `GetActionInfo`'s spell fallback. 12340's `GetActionInfo`
+/// (`ActionBarFrame_Scripts.cpp::Script_GetActionInfo`, `0x005A8F10`, lines 72-143) answers
+/// `GetSpellSlot(spellId, petSpell) + 1` as the spell's key; when the spell has no displayed book
+/// slot Project B keeps the donor fallback and answers the spell ID instead (`action.rs`'s
+/// `map_or(id, ...)`). Addons then pass that ID and the book type straight back to the spell
+/// queries, where `GetSlotFromLua` (`SpellBookFrame.cpp:1447-1487`) would raise.
+///
+/// Accept exactly that pair: a numeric value outside the 1..=1024 book-slot range that is a spell
+/// currently placed in an action slot. `None` for the vanilla target, an in-range slot, a
+/// non-integral or out-of-`u32` value, and a value not on the action bar.
+pub(super) fn action_bar_spell_id(model: &Model, value: f64) -> Option<u32> {
+    if model.target != super::UiTarget::Wrath335 {
+        return None;
+    }
+    if !value.is_finite() || value.fract() != 0.0 {
+        return None;
+    }
+    if !(1.0..=f64::from(u32::MAX)).contains(&value) || value <= 1024.0 {
+        return None;
+    }
+    let spell_id = value as u32;
+    model
+        .actions
+        .values()
+        .any(|slot| slot.kind == ACTION_KIND_SPELL && slot.action == spell_id)
+        .then_some(spell_id)
+}
+
+/// The `(id, bookType)` form as a Wrath action-bar spell ID rather than a 1-based book slot.
+/// Answers the spell ID and whether the book type names the pet book. Only a numeric first
+/// argument and a string book type qualify; every other shape keeps the slot marshaller's error.
+pub(super) fn action_bar_spell_reference(
+    lua: &Lua,
+    id: Value,
+    book_type: Value,
+) -> mlua::Result<Option<(u32, bool)>> {
+    let Value::String(book) = book_type else {
+        return Ok(None);
+    };
+    let Some(value) = lua.coerce_number(id)? else {
+        return Ok(None);
+    };
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    Ok(action_bar_spell_id(&model, value)
+        .map(|spell_id| (spell_id, is_pet_book(&book.to_string_lossy()))))
+}
+
 /// The 1-based book id as a 0-based slot index.
 fn slot_index(id: u32) -> Option<usize> {
     usize::try_from(id.checked_sub(1)?).ok()
@@ -319,8 +367,27 @@ pub(super) fn book_cooldown(
     lua: &Lua,
     (id, book_type): (Value, Value),
 ) -> mlua::Result<(f64, f64, i32)> {
-    let (id, book_type) = spell_slot_args(id, book_type, "GetSpellCooldown")?;
     let now = crate::script::clock::now(lua);
+    let (id, book_type) = match spell_slot_args(id.clone(), book_type.clone(), "GetSpellCooldown") {
+        Ok(slot) => slot,
+        Err(err) => {
+            // The same Wrath action-bar spell-ID pair `GetSpellInfo` accepts (see
+            // `action_bar_spell_reference`); an unknown spell is the host's cold/no answer.
+            let Some((spell_id, pet)) = action_bar_spell_reference(lua, id, book_type)? else {
+                return Err(err);
+            };
+            // A spell the host's catalog does not know answers the no-cooldown triple, as an
+            // unknown slot does; do not invent a cooldown for it.
+            let known = super::host::with_host(lua, |host| host.spell_info(spell_id)).flatten();
+            if known.is_none() {
+                return Ok(cooldown_tuple(None, now));
+            }
+            return Ok(cooldown_tuple(
+                super::host::with_host(lua, |host| host.spell_cooldown(spell_id, pet)).flatten(),
+                now,
+            ));
+        }
+    };
     let model = lua.app_data_ref::<Model>().expect("model app_data");
     Ok(cooldown_tuple(
         book_slot(&model, id, &book_type).and_then(|s| s.cooldown),
@@ -531,7 +598,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetSpellName",
         lua.create_function(|lua, (id, book_type): (Value, Value)| {
-            let (id, book_type) = spell_slot_args(id, book_type, "GetSpellName")?;
+            let (id, book_type) = match spell_slot_args(id.clone(), book_type.clone(), "GetSpellName")
+            {
+                Ok(slot) => slot,
+                Err(err) => {
+                    // `GetSlotFromLua` (`SpellBookFrame.cpp:1447-1487`) raises for a numeric value
+                    // outside the book; the ID `GetActionInfo` answers for a bar spell with no
+                    // displayed slot is the one pair Wrath resolves through the host instead.
+                    let Some((spell_id, _)) = action_bar_spell_reference(lua, id, book_type)? else {
+                        return Err(err);
+                    };
+                    let view = super::host::with_host(lua, |host| host.spell_info(spell_id)).flatten();
+                    let Some(view) = view else {
+                        return Ok(MultiValue::from_vec(vec![Value::Nil, Value::Nil]));
+                    };
+                    return Ok(MultiValue::from_vec(vec![
+                        Value::String(lua.create_string(&view.name)?),
+                        Value::String(lua.create_string(view.rank.as_deref().unwrap_or(""))?),
+                    ]));
+                }
+            };
             // Out of `[0, 0x400)` already raised in `spell_slot_args`; the binding's own bound
             // check (`0x4b4018`) is never taken.
             let model = lua.app_data_ref::<Model>().expect("model app_data");
