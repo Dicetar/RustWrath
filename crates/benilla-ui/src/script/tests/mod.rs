@@ -521,3 +521,33 @@ fn the_stock_error_format_gets_a_string_from_debuglocals() {
         "the five-%s format must not fail: {errors:?}"
     );
 }
+
+/// The same stock five-`%s` shape reached the way the dialog itself is reached: a direct
+/// `geterrorhandler()(...)` call, not the host's dispatch. The wrapper sets the flag for that call
+/// too, so argument #6 is a string, never nil.
+#[test]
+fn the_stock_error_format_gets_a_string_when_the_handler_is_called_directly() {
+    let s = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.run(
+        r#"
+        Formatted = nil
+        LocalKind = nil
+        LocalCount = nil
+        seterrorhandler(function(m)
+            local locals = debuglocals(4)
+            LocalKind = type(locals)
+            LocalCount = select('#', debuglocals(4))
+            Formatted = string.format("%s|%s|%s|%s|%s", m, "12:34:56", 1, "stack", locals)
+        end)
+        geterrorhandler()("direct stock shape")
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(s.eval::<String>("return LocalKind").unwrap(), "string");
+    assert_eq!(s.eval::<i64>("return LocalCount").unwrap(), 1);
+    let formatted: String = s.eval("return Formatted").unwrap();
+    assert!(formatted.contains("direct stock shape"), "{formatted:?}");
+    assert!(formatted.ends_with("|stack|"), "{formatted:?}");
+    assert!(s.errors().is_empty(), "no handler failure: {:?}", s.errors());
+}

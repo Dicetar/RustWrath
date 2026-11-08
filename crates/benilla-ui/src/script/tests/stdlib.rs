@@ -90,8 +90,11 @@ fn stdlib_aliases_and_helpers() {
     .unwrap();
 }
 
-/// `debuglocals` (`0x819A60`) answers no values at all outside the engine's dispatch to the
-/// global error handler — not one nil, which is what made the stock five-`%s` format fail.
+/// `debuglocals` (`0x819A60`) answers no values at all outside a call of the installed
+/// error-handler wrapper — not one nil, which is what made the stock five-`%s` format fail. The
+/// function `seterrorhandler` installs is wrapped, so a script calling it through
+/// `geterrorhandler()` is still inside the handler and gets a string; an ordinary direct call
+/// remains outside.
 #[test]
 fn debuglocals_answers_no_values_outside_the_error_handler() {
     let s = wrath_script();
@@ -102,14 +105,77 @@ fn debuglocals_answers_no_values_outside_the_error_handler() {
         "outside the handler the reference returns 0 values"
     );
     assert!(s.eval::<bool>("return debuglocals() == nil").unwrap());
-    // A script calling the handler directly is outside the engine's dispatch, as in 3.3.5.
+    // `geterrorhandler()` answers the wrapper `seterrorhandler` installed, so this direct call
+    // runs with the flag set, as the stock `_ERRORMESSAGE` path does.
     s.run(
-        "Captured = 'unset' \
+        "Captured = nil \
          seterrorhandler(function(m) Captured = debuglocals(1) end) \
          geterrorhandler()('direct')",
     )
     .unwrap();
-    assert!(s.eval::<bool>("return Captured == nil").unwrap());
+    assert_eq!(
+        s.eval::<String>("return type(Captured)").unwrap(),
+        "string",
+        "inside the wrapper debuglocals answers a string, never nil or no value"
+    );
+    assert!(
+        s.eval::<String>("return Captured").unwrap().contains("m = \"direct\""),
+        "the dump names the handler's own local"
+    );
+}
+
+/// The guard restores the flag on the raise path: a handler that raises must not leave the next
+/// ordinary `debuglocals` call reading as inside the handler, and a later handler call must still
+/// see the flag set. The raised value itself passes through the wrapper unchanged.
+#[test]
+fn a_raising_error_handler_restores_the_flag_for_the_next_call() {
+    let s = wrath_script();
+    s.run(
+        "Raised = {} \
+         seterrorhandler(function() error(Raised) end) \
+         local ok, e = pcall(function() geterrorhandler()('boom') end) \
+         SameValue = not ok and e == Raised \
+         assert(SameValue)",
+    )
+    .unwrap();
+    assert!(s.eval::<bool>("return SameValue").unwrap());
+    assert_eq!(
+        s.eval::<i64>("return select('#', debuglocals(1))").unwrap(),
+        0,
+        "the raise path restores the flag; a stuck true would answer a string here"
+    );
+    s.run(
+        "Captured = nil \
+         seterrorhandler(function(m) Captured = debuglocals(1) end) \
+         geterrorhandler()('again')",
+    )
+    .unwrap();
+    assert_eq!(
+        s.eval::<String>("return type(Captured)").unwrap(),
+        "string",
+        "the next handler call sets the flag again"
+    );
+}
+
+/// `seterrorhandler(geterrorhandler())` re-stores the existing wrapper instead of nesting a second
+/// one, and the kept wrapper still calls the original handler.
+#[test]
+fn seterrorhandler_does_not_double_wrap_the_installed_handler() {
+    let s = wrath_script();
+    s.run(
+        "seterrorhandler(function(m) Captured = m end) \
+         Installed = geterrorhandler() \
+         seterrorhandler(Installed) \
+         Same = geterrorhandler() == Installed",
+    )
+    .unwrap();
+    assert!(
+        s.eval::<bool>("return Same").unwrap(),
+        "the second set kept the wrapper object instead of nesting another"
+    );
+    s.run("Captured = nil geterrorhandler()('still here')")
+        .unwrap();
+    assert_eq!(s.eval::<String>("return Captured").unwrap(), "still here");
 }
 
 // ── Sandbox holes ──

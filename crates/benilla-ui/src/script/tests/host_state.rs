@@ -289,18 +289,26 @@ fn the_zone_pvp_type_reads_the_realm_and_the_template_at_the_call() {
 /// The reference's handler slot starts empty (`[0x8722cc]` = -1 at `0x7039e0`), so
 /// `geterrorhandler()` (`0x702950`) answers one nil until FrameXML sets `_ERRORMESSAGE`.
 /// `seterrorhandler` (`0x702900`) takes a function alone, raising `Usage: seterrorhandler(errfunc)`
-/// (`0x872a30`) on anything else and keeping the slot, and returns nothing.
+/// (`0x872a30`) on anything else and keeping the slot, and returns nothing. The slot holds the
+/// wrapper that sets `ErrorHandlerFlag`, so `geterrorhandler()` is a function that calls the
+/// script's handler, not necessarily the same function object.
 #[test]
 fn the_error_handler_slot_starts_empty_and_takes_only_a_function() {
     let s = script();
     assert_eq!(s.arity("geterrorhandler()").unwrap(), 1);
     assert!(s.eval::<bool>("return geterrorhandler() == nil").unwrap());
 
-    s.run("Handler = function() end").unwrap();
+    s.run("Heard = nil Handler = function(m) Heard = m end")
+        .unwrap();
     assert_eq!(s.arity("seterrorhandler(Handler)").unwrap(), 0);
     assert!(s
-        .eval::<bool>("return geterrorhandler() == Handler")
+        .eval::<bool>("return type(geterrorhandler()) == 'function'")
         .unwrap());
+    assert!(
+        s.eval::<bool>("geterrorhandler()('slot probe') return Heard == 'slot probe'")
+            .unwrap(),
+        "the installed wrapper calls the script's handler"
+    );
     for bad in ["nil", "", "'Handler'", "{}"] {
         let e = s
             .run(&format!("seterrorhandler({bad})"))
@@ -308,11 +316,17 @@ fn the_error_handler_slot_starts_empty_and_takes_only_a_function() {
             .to_string();
         assert!(e.contains("Usage: seterrorhandler(errfunc)"), "{bad}: {e}");
         assert!(
-            s.eval::<bool>("return geterrorhandler() == Handler")
+            s.eval::<bool>("return type(geterrorhandler()) == 'function'")
                 .unwrap(),
             "seterrorhandler({bad}) keeps the slot"
         );
     }
+    s.run("Heard = nil").unwrap();
+    assert!(
+        s.eval::<bool>("geterrorhandler()('kept') return Heard == 'kept'")
+            .unwrap(),
+        "the kept slot still calls the original handler"
+    );
 }
 
 /// The engine calls the handler in its slot on a caught error (`0x703b40`), not whatever the
