@@ -520,7 +520,7 @@ pub(crate) fn open_panel(world: &mut World, npc: u64, view: QuestView) {
 /// are `DIALOG_STATUS_INCOMPLETE` and `_REWARD_REP` (`QuestDef.h:118-130`), and it marks an
 /// auto-complete quest, never in the log, `_REWARD_REP` (`Player.cpp:12577`).
 pub(crate) fn row_is_active(icon: u32) -> bool {
-    matches!(icon, 3 | 4 | 5 | 6 | 9 | 10)
+    matches!(icon, 3 | 4)
 }
 
 /// An available row with icon 0 is one-click: its select sends `COMPLETE_QUEST`, not

@@ -421,12 +421,12 @@ pub fn questgiver_hello(npc: u64) -> Vec<u8> {
     npc.to_le_bytes().to_vec()
 }
 
-/// `CMSG_QUESTGIVER_QUERY_QUEST` (`QuestHandler.cpp:204`): GUID, quest, `u8` (0).
+/// `CMSG_QUESTGIVER_QUERY_QUEST` (`QuestHandler.cpp:204`): GUID, quest, `u8` bActivateAccept (1).
 pub fn questgiver_query(npc: u64, quest: u32) -> Vec<u8> {
     let mut p = Vec::with_capacity(13);
     p.extend_from_slice(&npc.to_le_bytes());
     p.extend_from_slice(&quest.to_le_bytes());
-    p.push(0);
+    p.push(1);
     p
 }
 

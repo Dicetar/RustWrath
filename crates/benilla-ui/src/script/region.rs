@@ -614,8 +614,13 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
             let moved = model.arena.set_region_owner(rh, new_owner);
             if moved {
                 // The owner supplies the region's scale to layout; the re-link invalidates nothing
-                // (`0x77fd10`), so the region keeps its rect until the resolve reaches it.
-                model.unsettle_region(rh);
+                // in 1.12 (`0x77fd10`), so the region keeps its rect until the resolve reaches it.
+                // In Wrath, reparented regions to scroll children must invalidate so their rect recomputes.
+                if model.is_wrath() {
+                    model.invalidate_region(rh, true);
+                } else {
+                    model.unsettle_region(rh);
+                }
             }
             model.relink_region_layout(rh, drew, old_loading, moved, None);
             Ok(())

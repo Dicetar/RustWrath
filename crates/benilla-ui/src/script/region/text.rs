@@ -36,6 +36,9 @@ fn store_text(lua: &Lua, rh: crate::widget::RegionHandle, text: Option<String>) 
     // (`0x771df1`).
     if !same {
         model.clear_region_valid(rh);
+        if model.is_wrath() {
+            model.invalidate_region(rh, true);
+        }
     }
 }
 

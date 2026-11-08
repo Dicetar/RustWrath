@@ -9368,6 +9368,8 @@ fn wrath_apply_world(world: &mut World) {
                         SelfPlayer,
                         Equipment::default(),
                     ));
+                } else if kind == benilla_protocol::messages::EntityKind::Player {
+                    entity.insert(Equipment::default());
                 }
                 index.0.insert(*guid, entity.id());
             }

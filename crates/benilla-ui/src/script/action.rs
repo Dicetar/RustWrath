@@ -440,7 +440,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let slot_id = if wrath_spell {
                     let slots = if sub_type == "pet" { &model.pet_book.slots } else { &model.spellbook.slots };
                     slots.iter().position(|slot| slot.spell_id == id)
-                        .map_or(0, |index| index as u32 + 1)
+                        .map_or(id, |index| index as u32 + 1)
                 } else {
                     id
                 };
@@ -498,17 +498,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let may_cast = protected::gate(lua, Tag::CAST);
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let wrath = model.is_wrath();
-            let target_token = if wrath {
-                lua.coerce_string(rest.front().cloned().unwrap_or(Value::Nil))?
-                    .map(|value| value.to_string_lossy())
-            } else { None };
-            let target_guid = match target_token.as_deref() {
-                Some(token) => match model.unit(token).filter(|unit| unit.exists && unit.guid != 0) {
-                    Some(unit) => Some(unit.guid),
-                    None => return Ok(()),
-                },
-                None => None,
-            };
             let (check_cursor, on_self) = if wrath {
                 // 12340 `Script_UseAction` (`0x005AC000`) & `CGActionBar::UseAction` (`0x005ABBC0`):
                 // arg 2 is the optional unit token (`"player"`, `"target"`, ...) and arg 3 is the
@@ -534,20 +523,32 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             if check_cursor && model.cursor.is_some() {
                 drop(model);
                 super::cursor::place_action(lua, action)?;
-            } else {
-                let item_locks = model.item_locks.iter().copied().collect();
-                drop(model);
-                super::calls::submit(
-                    lua,
-                    super::ScriptCall::UseAction(ActionUse {
-                        action,
-                        on_self,
-                        target_guid,
-                        item_locks,
-                        may_cast,
-                    }),
-                )?;
+                return Ok(());
             }
+            let target_token = if wrath {
+                lua.coerce_string(rest.front().cloned().unwrap_or(Value::Nil))?
+                    .map(|value| value.to_string_lossy())
+                    .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"))
+            } else { None };
+            let target_guid = match target_token.as_deref() {
+                Some(token) => match model.unit(token).filter(|unit| unit.exists && unit.guid != 0) {
+                    Some(unit) => Some(unit.guid),
+                    None => return Ok(()),
+                },
+                None => None,
+            };
+            let item_locks = model.item_locks.iter().copied().collect();
+            drop(model);
+            super::calls::submit(
+                lua,
+                super::ScriptCall::UseAction(ActionUse {
+                    action,
+                    on_self,
+                    target_guid,
+                    item_locks,
+                    may_cast,
+                }),
+            )?;
             Ok(())
         })?,
     )?;

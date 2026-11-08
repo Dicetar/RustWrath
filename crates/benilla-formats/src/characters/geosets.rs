@@ -222,8 +222,14 @@ impl CharacterGeosets {
         }
         // B7 (`0x477799`): the shirt's doublet and the pants' legs (base 1102, not 1101); skipped
         // under a chest robe (`0x4777a4`, not a legs robe) or a tabard (`0x4777b8`).
+        // In 12340 Wrath, chest armor with geosetGroup[1] enables the 1001 + v doublet mesh.
         if g(1, 2).is_none() && g(7, 0).is_none() {
-            if let Some(v) = g(0, 1) {
+            let doublet = if wrath {
+                g(1, 1).or_else(|| g(0, 1))
+            } else {
+                g(0, 1)
+            };
+            if let Some(v) = doublet {
                 set.push(1001 + v as u16);
             }
             if let Some(v) = g(3, 0) {
