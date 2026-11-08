@@ -30,6 +30,9 @@ pub struct HonorState {
     pub session_hk: u16,
     /// `PLAYER_FIELD_SESSION_KILLS` high half.
     pub session_dk: u16,
+    /// `PLAYER_FIELD_TODAY_CONTRIBUTION` (Wrath field 1226): today's honor contribution. The
+    /// reference's `GetPVPSessionStats` returns it as the second value (`0x611a20`).
+    pub session_honor: u32,
     /// `PLAYER_FIELD_YESTERDAY_KILLS` halves.
     pub yesterday_hk: u16,
     pub yesterday_dk: u16,
@@ -386,25 +389,35 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // Full arity on every path: the panes destructure straight into `format()` arguments, so
     // before the first push they read as a zeroed snapshot, as a new character's would.
 
-    // GetPVPSessionStats() → hk, dk.
+    // GetPVPSessionStats(): Wrath 2 (hk, today's contribution); donor 2 (hk, dk).
     g.set(
         "GetPVPSessionStats",
         lua.create_function(|lua, ()| {
             let h = honor(lua).unwrap_or_default();
-            Ok((i64::from(h.session_hk), i64::from(h.session_dk)))
+            let target = lua.app_data_ref::<Model>().expect("model app_data").target;
+            if target == super::UiTarget::Wrath335 {
+                Ok((i64::from(h.session_hk), i64::from(h.session_honor)))
+            } else {
+                Ok((i64::from(h.session_hk), i64::from(h.session_dk)))
+            }
         })?,
     )?;
 
-    // GetPVPYesterdayStats() → hk, dk, contribution.
+    // GetPVPYesterdayStats(): Wrath 2 (hk, contribution); donor 3 (hk, dk, contribution).
     g.set(
         "GetPVPYesterdayStats",
         lua.create_function(|lua, ()| {
             let h = honor(lua).unwrap_or_default();
-            Ok((
-                i64::from(h.yesterday_hk),
-                i64::from(h.yesterday_dk),
-                i64::from(h.yesterday_honor),
-            ))
+            let target = lua.app_data_ref::<Model>().expect("model app_data").target;
+            if target == super::UiTarget::Wrath335 {
+                Ok((i64::from(h.yesterday_hk), i64::from(h.yesterday_honor)))
+            } else {
+                Ok((
+                    i64::from(h.yesterday_hk),
+                    i64::from(h.yesterday_dk),
+                    i64::from(h.yesterday_honor),
+                ))
+            }
         })?,
     )?;
 
@@ -432,7 +445,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetPVPLifetimeStats() → hk, dk, highestRank, the highest lifetime rank (internal). One
+    // GetPVPLifetimeStats() → hk, highestRank, the highest lifetime rank (internal). One
     // below 5 answers 0 (`0x51a843 cmp al,5; jb`, unsigned), so the pane shows NONE for a
     // dishonorable best; 0, not nil, so its `GetPVPRankInfo(highestRank)` still gets a number.
     g.set(
@@ -444,11 +457,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             } else {
                 0
             };
-            Ok((
-                i64::from(h.lifetime_hk),
-                i64::from(h.lifetime_dk),
-                i64::from(highest),
-            ))
+            let target = lua.app_data_ref::<Model>().expect("model app_data").target;
+            if target == super::UiTarget::Wrath335 {
+                Ok((i64::from(h.lifetime_hk), i64::from(highest)))
+            } else {
+                Ok((
+                    i64::from(h.lifetime_hk),
+                    i64::from(h.lifetime_dk),
+                    i64::from(highest),
+                ))
+            }
         })?,
     )?;
 

@@ -125,7 +125,10 @@ fn name_line_strings(script: &UiScript) -> HashMap<String, String> {
 /// Read the honor block off our own descriptor, `None` until it streams. That decides only when
 /// the first push and its events happen: the reference reads a field it was never sent as 0
 /// (`0x51a4b0`-`0x51a7c0`), and so do our bindings.
-fn honor_snapshot(store: &ObjectStore) -> Option<HonorState> {
+fn honor_snapshot(
+    store: &ObjectStore,
+    raw: Option<&crate::wrath::WrathPlayerRaw>,
+) -> Option<HonorState> {
     let f = &store.0;
     let session = f.player_session_kills();
     let yesterday = f.player_yesterday_kills();
@@ -133,9 +136,17 @@ fn honor_snapshot(store: &ObjectStore) -> Option<HonorState> {
     let this_week = f.player_this_week_kills();
     // Presence is tested on a private field: the public rank byte streams with the unit block.
     session?;
+    // Today's honor contribution rides the Wrath player field window, not the 1.12 descriptor;
+    // absent window or unsent field reads 0, the reference's unsent-field value.
+    let session_honor = raw
+        .and_then(|r| {
+            r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_TODAY_CONTRIBUTION)
+        })
+        .unwrap_or(0);
     Some(HonorState {
         session_hk: session.map_or(0, |(hk, _)| hk),
         session_dk: session.map_or(0, |(_, dk)| dk),
+        session_honor,
         yesterday_hk: yesterday.map_or(0, |(hk, _)| hk),
         yesterday_dk: yesterday.map_or(0, |(_, dk)| dk),
         yesterday_honor: f.player_yesterday_contribution().unwrap_or(0),
@@ -168,6 +179,7 @@ pub(crate) fn feed_honor(
         crate::script_calls::HostedVm<'static, 'static>,
     >,
     self_store: Query<&ObjectStore, With<SelfPlayer>>,
+    self_raw: Query<&crate::wrath::WrathPlayerRaw, With<SelfPlayer>>,
     group: Res<crate::ui_party::GroupState>,
     mut inspect_honor: ResMut<InspectHonor>,
     mut state: ResMut<HonorFeedState>,
@@ -186,8 +198,9 @@ pub(crate) fn feed_honor(
         let memo = state.vm.get(script);
 
         // --- the self snapshot -------------------------------------------------------------------
+        let raw = self_raw.iter().next();
         if let Ok(store) = self_store.single() {
-            if let Some(fresh) = honor_snapshot(store) {
+            if let Some(fresh) = honor_snapshot(store, raw) {
                 if memo.last.as_ref() != Some(&fresh) {
                     script.set_honor(Some(fresh));
                     memo.last = Some(fresh);

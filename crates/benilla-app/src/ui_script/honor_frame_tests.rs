@@ -11,6 +11,7 @@ fn state() -> HonorState {
     HonorState {
         session_hk: 17,
         session_dk: 2,
+        session_honor: 2,
         yesterday_hk: 41,
         yesterday_dk: 0,
         yesterday_honor: 640,
@@ -60,7 +61,7 @@ fn alliance_player() -> UnitState {
 
 /// The Honor tab open over [`state`], every section painted, as world entry leaves it.
 fn shown_honor_page() -> UiScript {
-    let mut s = UiScript::new().unwrap();
+    let mut s = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
     s.set_screen_size(1024.0, 768.0);
     load_page(&s);
     s.set_unit("player", Some(alliance_player()));

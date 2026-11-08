@@ -1,17 +1,22 @@
 //! `GetNumWorldStateUI` and `GetWorldStateUIInfo`, behind the always-up PvP readout, over rows the
-//! app resolves; the reference re-walks an array of DBC row ids (`0xb71e7c`) on demand. The info
-//! is ten values (`0x4c5a70`), with no `uiType` or `hidden`, which came later.
+//! app resolves; the reference re-walks an array of DBC row ids (`0xb71e7c`) on demand. Wrath
+//! 3.3.5 (`0x4c5a70`) returns eleven values with `uiType` first; the donor 1.12 registration
+//! returns ten without it. Both are kept target-specific here.
 
 use mlua::{Lua, MultiValue, Value};
 
 use super::Model;
 
-/// One row of the readout: the ten values `GetWorldStateUIInfo` returns, in order.
+/// One row of the readout: the values `GetWorldStateUIInfo` returns (eleven on Wrath335, ten on
+/// the donor 1.12 tuple).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorldStateUiView {
+    /// `m_type`: the row's `Type` (0 always-up, 1 world-PvP gated on the zone-defense channel, 2
+    /// battleground scoreboard column), the first value `GetWorldStateUIInfo` returns (`0x4c5a70`).
+    pub ui_type: u32,
     /// `uiState`: the row's `StateVariable` world state, or 1 (on) when it has none (`0x4c5ad8`).
     pub ui_state: i32,
-    /// The label, macro-expanded, the only expanded string of the ten.
+    /// The label, macro-expanded, the only expanded string of the tuple.
     pub text: String,
     /// The static icon's texture path, or `""`.
     pub icon: String,
@@ -84,19 +89,37 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let Some(r) = row else {
                 return Ok(MultiValue::from_vec(vec![Value::Integer(0)]));
             };
+            let target = lua.app_data_ref::<Model>().expect("model app_data").target;
             let s = |v: &str| -> mlua::Result<Value> { Ok(Value::String(lua.create_string(v)?)) };
-            Ok(MultiValue::from_vec(vec![
-                Value::Integer(i64::from(r.ui_state)),
-                s(&r.text)?,
-                s(&r.icon)?,
-                s(&r.dynamic_icon)?,
-                s(&r.tooltip)?,
-                s(&r.dynamic_tooltip)?,
-                s(&r.extended_ui)?,
-                Value::Integer(i64::from(r.extended_ui_state[0])),
-                Value::Integer(i64::from(r.extended_ui_state[1])),
-                Value::Integer(i64::from(r.extended_ui_state[2])),
-            ]))
+            if target == super::UiTarget::Wrath335 {
+                Ok(MultiValue::from_vec(vec![
+                    Value::Integer(i64::from(r.ui_type)),
+                    Value::Integer(i64::from(r.ui_state)),
+                    s(&r.text)?,
+                    s(&r.icon)?,
+                    s(&r.dynamic_icon)?,
+                    s(&r.tooltip)?,
+                    s(&r.dynamic_tooltip)?,
+                    s(&r.extended_ui)?,
+                    Value::Integer(i64::from(r.extended_ui_state[0])),
+                    Value::Integer(i64::from(r.extended_ui_state[1])),
+                    Value::Integer(i64::from(r.extended_ui_state[2])),
+                ]))
+            } else {
+                // Donor 1.12 tuple: `ui_state` first, no `ui_type`.
+                Ok(MultiValue::from_vec(vec![
+                    Value::Integer(i64::from(r.ui_state)),
+                    s(&r.text)?,
+                    s(&r.icon)?,
+                    s(&r.dynamic_icon)?,
+                    s(&r.tooltip)?,
+                    s(&r.dynamic_tooltip)?,
+                    s(&r.extended_ui)?,
+                    Value::Integer(i64::from(r.extended_ui_state[0])),
+                    Value::Integer(i64::from(r.extended_ui_state[1])),
+                    Value::Integer(i64::from(r.extended_ui_state[2])),
+                ]))
+            }
         })?,
     )?;
 

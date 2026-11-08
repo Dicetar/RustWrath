@@ -504,7 +504,7 @@ const READS_FRAME_FINAL: &[(&str, &[&str])] = &[
     ("::ui_inspect::feed_inspect", &["items::Items", "names::NameCache", "net::GuidIndex",
         "net::ObjectStore", "net::SelfGuid"]),
     ("::ui_honor::feed_honor", &["net::ObjectStore", "target::Selection", "ui_honor::InspectHonor",
-        "ui_inspect::InspectTarget", "ui_party::GroupState"]),
+        "ui_inspect::InspectTarget", "ui_party::GroupState", "wrath::WrathPlayerRaw"]),
     ("::ui_action::recount::recount_item_actions", &["items::Countdowns", "items::Items",
         "net::GuidIndex", "net::ObjectStore"]),
     ("::ui_action::feed::feed_actions", &["items::Countdowns", "items::Items", "net::GuidIndex",

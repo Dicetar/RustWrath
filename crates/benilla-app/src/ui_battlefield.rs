@@ -142,6 +142,8 @@ fn slot_view(
 ) -> BattlefieldQueueSlot {
     let ms = |d: std::time::Duration| d.as_millis().min(u128::from(u32::MAX)) as u32;
     let map_id = slot.map_or(0, |(s, _)| s.map_id);
+    // team_size/rated (slots 6/7) have no source on the 1.12-shaped BattlefieldStatus wire, so they
+    // stay at the empty shape (0, nil) here; do not invent arena-queue values.
     let mut view = BattlefieldQueueSlot {
         map_id,
         map_name: catalog.and_then(|c| c.name(map_id)).map(str::to_string),
