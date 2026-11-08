@@ -376,6 +376,65 @@ fn insert_ignores_a_non_string_and_converts_a_number() {
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
 
+/// `CSimpleEditBox_Scripts.cpp` `Script_SetText` (`0x00975E80:317-320`) resolves `this` first,
+/// then gates the raw tag with `lua_isstring`: a string or a number passes, and nil, a missing
+/// argument, a boolean, a table or a function raises `Usage: <name>:SetText("text")`. The donor
+/// `SetText` (`0x7984c0`) uses `is-number-or-string` (`0x6f3510`, tested at `0x79854c`) and
+/// raises its own usage line, so the gate is the 1.12 contract too.
+#[test]
+fn set_text_gates_on_lua_isstring_and_names_the_box() {
+    let s = script();
+    s.run(r#"E = CreateFrame("EditBox", "E"); E:SetText("keep")"#)
+        .unwrap();
+    let text = || s.eval::<String>("return E:GetText()").unwrap();
+
+    for bad in [
+        "E:SetText(nil)",
+        "E:SetText()",
+        "E:SetText(true)",
+        "E:SetText({})",
+        "E:SetText(function() return 'x' end)",
+    ] {
+        let err = s.run(bad).expect_err(bad).to_string();
+        assert!(
+            err.contains(r#"Usage: E:SetText("text")"#),
+            "{bad} raised {err}"
+        );
+        assert_eq!(text(), "keep", "{bad} must not mutate the box");
+    }
+
+    let err = s
+        .run(r#"local set = E.SetText; set({}, nil)"#)
+        .expect_err("a non-object receiver raises the member prologue")
+        .to_string();
+    assert!(
+        !err.contains("Usage:"),
+        "the receiver resolves before the argument gate: {err}"
+    );
+
+    let err = s
+        .run(r#"local u = CreateFrame("EditBox"); u:SetText(nil)"#)
+        .expect_err("an unnamed box raises its own usage line")
+        .to_string();
+    assert!(
+        err.contains(r#"Usage: <unnamed>:SetText("text")"#),
+        "{err}"
+    );
+
+    s.run("E:SetText(5)").unwrap();
+    assert_eq!(text(), "5", "a number passes the gate as its number text");
+
+    s.run("E:SetText(1e20)").unwrap();
+    assert_eq!(text(), "1e+020", "a number uses Lua's `%.14g` text");
+
+    s.run(r#"E:SetText("")"#).unwrap();
+    assert_eq!(
+        text(),
+        "",
+        "an empty string still clears; EditBox:GetText answers \"\", not nil"
+    );
+}
+
 // ── selection / highlight / keys ────────────────────────────────────────────────────────────
 
 #[test]

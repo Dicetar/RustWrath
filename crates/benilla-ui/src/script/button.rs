@@ -701,28 +701,37 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "SetText",
         lua.create_function(|lua, (this, text): (Table, Option<Value>)| {
             // `lua_tolstring` (`0x00977960`): a number is its `%.14g` text; a function, a table, a
-            // boolean or nil is NULL. A nil returns at once (`0x778dcc`, donor): no clear, no
-            // label created. The guard is the button's own; `FontString:SetText(nil)` clears
-            // (`0x771d80`), and the absent values take this same early return.
+            // boolean or nil is NULL. The absent or empty value's target decides what follows:
             //
-            // Named Wrath gap: 3.3.5 `CSimpleButton::SetText` (`0x0096F860:650`) returns only
-            // while the text is NULL/empty AND no label exists, so with a label a function or nil
-            // clears it through `CSimpleFontString::SetText(NULL, 1)` (`:659`, `0x00483910`).
-            // This batch keeps the donor guard, so a Wrath `Button:SetText(function/nil)` leaves
-            // an existing label stale instead of clearing it.
+            // 3.3.5 `CSimpleButton::SetText` (`0x0096F860:650`) returns only while the text is
+            // NULL/empty AND no label exists. With a label, the value reaches
+            // `CSimpleFontString::SetText` (`:659`, `0x00483910`): NULL clears, and an empty text
+            // clears too. A fresh button gets no label from either.
+            //
+            // On 1.12, Project B retains its donor-derived early return (`0x778dcc`): an absent
+            // value returns at once, leaving an existing label as it is and creating none. (Real
+            // 1.12's Lua `SetText` `0x780d20` raises a usage error on a non-string, so this early
+            // return is a retained Project B divergence, not 1.12 fidelity; benilla-re
+            // `button.md`.) An empty string there still creates and stores its label, as before.
             let text = super::binding_abi::tolstring_arg(lua, text);
+            let wrath = lua.app_data_ref::<Model>().expect("model").is_wrath();
+            if wrath && text.as_deref().unwrap_or("").is_empty() {
+                let Some(rh) = with_button(lua, &this, |bs| bs.text)? else {
+                    return Ok(());
+                };
+                let id = {
+                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                    model.region_id(rh)
+                };
+                return super::region::store_text_of(lua, &region_wrapper(lua, id)?, text);
+            }
             let Some(text) = text else { return Ok(()) };
             let id = ensure_slot(lua, &this, Slot::Text)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let rh = *model.id_to_region.get(&id).expect("text region id");
-            // The label's `SetText` (`0x778e10` into `0x771d80`) runs the separator pass.
-            let text = model.localized_text(text);
-            let data = model.region_data.entry(rh).or_default();
-            let was_shown = data.text.as_deref().is_some_and(|t| !t.is_empty());
-            data.text = Some(text);
-            model.touch_measure(rh);
-            model.touch_layout_text(rh, was_shown);
-            Ok(())
+            // The label's `SetText` (`0x778e10` into `0x771d80`) runs the separator pass, the
+            // measure/layout touches, the gradient reset and the valid-bit clear. This shared sink
+            // serves both targets, replacing the old manual button store on 1.12 too; that sink
+            // correction is intended, and the 1.12 absent-value branch above is unchanged.
+            super::region::store_text_of(lua, &region_wrapper(lua, id)?, Some(text))
         })?,
     )?;
     // 3.3.5a's Button carries the FontInstance verb as well (`GossipFrame.lua:96` sizes a quest

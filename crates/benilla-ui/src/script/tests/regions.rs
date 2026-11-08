@@ -1453,14 +1453,105 @@ fn an_empty_fontstring_reads_back_nil_and_an_edit_box_does_not() {
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
+/// 3.3.5 `CSimpleButton::SetText` (`0x0096F860:650,659`): the early return needs the text NULL or
+/// empty AND no label. With a label, a NULL reaches `CSimpleFontString::SetText(NULL, 1)` and
+/// clears it; a fresh button gets no label. The test above pins Project B's retained 1.12 early
+/// return (it keeps its label), not this one.
+#[test]
+fn a_wrath_button_clears_its_label_with_an_absent_text() {
+    let s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.run(
+        r#"
+        local named = CreateFrame("Button", "WrathButton")
+        named:SetText("Accept")
+        named:SetText(nil)
+        local functioned = CreateFrame("Button", "WrathFunctionButton")
+        functioned:SetText("Accept")
+        functioned:SetText(function() return "x" end)
+        local boolean = CreateFrame("Button", "WrathBooleanButton")
+        boolean:SetText("Accept")
+        boolean:SetText(true)
+        local tabled = CreateFrame("Button", "WrathTableButton")
+        tabled:SetText("Accept")
+        tabled:SetText({})
+        local emptied = CreateFrame("Button", "WrathEmptiedButton")
+        emptied:SetText("Accept")
+        emptied:SetText("")
+        local numbered = CreateFrame("Button", "WrathNumberButton")
+        numbered:SetText(5)
+        local spaced = CreateFrame("Button", "WrathSpaceButton")
+        spaced:SetText(" ")
+        local fresh = CreateFrame("Button")
+        fresh:SetText(nil)
+        WrathFreshButton = fresh
+        local empty = CreateFrame("Button")
+        empty:SetText("")
+        WrathEmptyButton = empty
+    "#,
+    )
+    .unwrap();
+    let text_of = |which: &str| {
+        s.eval::<Option<String>>(&format!("return {which}:GetText()"))
+            .unwrap()
+    };
+
+    assert_eq!(text_of("WrathButton"), None, "nil clears the existing label");
+    assert!(
+        s.eval::<bool>("return WrathButton:GetFontString() ~= nil")
+            .unwrap(),
+        "clearing keeps the label region, as `m_fontString` survives"
+    );
+    assert_eq!(
+        text_of("WrathFunctionButton"),
+        None,
+        "a function is NULL and clears through the same path"
+    );
+    assert_eq!(
+        text_of("WrathBooleanButton"),
+        None,
+        "a boolean is NULL and clears"
+    );
+    assert_eq!(text_of("WrathTableButton"), None, "a table is NULL and clears");
+    assert_eq!(
+        text_of("WrathEmptiedButton"),
+        None,
+        "an empty string clears a label that already holds text"
+    );
+    assert_eq!(
+        text_of("WrathNumberButton").as_deref(),
+        Some("5"),
+        "a number is its `%.14g` text"
+    );
+    assert_eq!(
+        text_of("WrathSpaceButton").as_deref(),
+        Some(" "),
+        "whitespace is non-empty and creates a label"
+    );
+    assert_eq!(text_of("WrathFreshButton"), None);
+    assert!(
+        s.eval::<bool>("return WrathFreshButton:GetFontString() == nil")
+            .unwrap(),
+        "an absent value on a fresh button creates no label"
+    );
+    assert_eq!(text_of("WrathEmptyButton"), None);
+    assert!(
+        s.eval::<bool>("return WrathEmptyButton:GetFontString() == nil")
+            .unwrap(),
+        "the reference's `!*text` guard also skips an empty string with no label"
+    );
+    assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
+}
+
 /// `FontString:SetText` (`0x48D780`; a NULL clears through `CSimpleRender.cpp:1283-1325`) and
 /// `Button:SetText` (`0x977960`) read their argument through `lua_tolstring`, which converts a
-/// string or a number and answers NULL for every other tag; a NULL text empties the string, so a
-/// function clears instead of raising. Stock `ChatConfigFrame.lua:752` passes the dynamic `text`
-/// functions of `COMBAT_CONFIG_MESSAGESOURCES_BY[1]` (`:258`) and `..._TO[1]` (`:310`) through
-/// this path on the first creation pass. This is the donor VM (`script()`): 3.3.5
-/// `CSimpleButton::SetText` (`0x0096F860:650,659`) would clear an existing label on a function or
-/// nil, while the retained donor guard (`0x778dcc`) keeps it, as `button.rs` names.
+/// string or a number and answers NULL for every other tag. A NULL FontString text empties the
+/// string, so a function clears instead of raising there. Stock `ChatConfigFrame.lua:752` passes
+/// the dynamic `text` functions of `COMBAT_CONFIG_MESSAGESOURCES_BY[1]` (`:258`) and `..._TO[1]`
+/// (`:310`) through this path on the first creation pass. This is the donor VM (`script()`):
+/// Project B retains its donor-derived early return (`0x778dcc`) on 1.12, although 1.12's own Lua
+/// `SetText` (`0x780d20`) raises a usage error on a non-string (benilla-re `button.md`). 3.3.5
+/// `CSimpleButton::SetText` (`0x0096F860:650,659`) clears an existing label on a function or nil;
+/// `a_wrath_button_clears_its_label_with_an_absent_text` pins that side.
 #[test]
 fn set_text_reads_a_non_string_as_an_absent_text_and_never_raises() {
     let s = script();
@@ -1502,8 +1593,8 @@ fn set_text_reads_a_non_string_as_an_absent_text_and_never_raises() {
         "a number is its `%.14g` text"
     );
 
-    // A Button's label takes the same `lua_tolstring` read; an absent value takes the 1.12 nil
-    // guard (`0x778dcc`, the named Wrath gap in `button.rs`) and leaves the label alone here.
+    // A Button's label takes the same `lua_tolstring` read; Project B's retained 1.12 path takes
+    // the donor guard (`0x778dcc`) and leaves the label alone here, while the Wrath test clears.
     s.run(
         r#"
         local b = CreateFrame("Button", "TolStringButton")

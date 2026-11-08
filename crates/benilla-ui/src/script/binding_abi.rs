@@ -122,11 +122,12 @@ pub(crate) fn optional_string(lua: &Lua, v: &Value) -> Option<String> {
     }
 }
 
-/// A checked free-text argument for `EditBox:SetText`: a string or a number converts; other non-nil
-/// types raise. Nil and a missing argument return `None`, which `SetText` treats as a clear — a
-/// pre-existing divergence from 3.3.5, whose `lua_isstring` gate raises its `Usage:` line on nil
-/// too (`CSimpleEditBox_Scripts.cpp` `Script_SetText`, `0x00975E80`). A string that is not valid
-/// UTF-8 becomes lossy text, as the reference takes bytes.
+/// A free-text argument for a caller that has already passed a `lua_isstring` gate: a string is
+/// kept (lossy when it is not valid UTF-8, as the reference takes bytes) and a number converts to
+/// its Lua number text. The nil arm answers `None` and other tags raise, but `EditBox:SetText`
+/// gates the raw tag itself (`CSimpleEditBox_Scripts.cpp` `Script_SetText`, `0x00975E80`; the
+/// donor's `0x7984c0` through `0x6f3510`), so neither arm is reachable from that caller: an
+/// absent or non-string value raises its `Usage:` line before this read.
 pub(crate) fn text_arg(lua: &Lua, v: Option<Value>) -> mlua::Result<Option<String>> {
     match v {
         None | Some(Value::Nil) => Ok(None),
