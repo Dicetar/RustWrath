@@ -1453,6 +1453,80 @@ fn an_empty_fontstring_reads_back_nil_and_an_edit_box_does_not() {
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 
+/// `FontString:SetText` (`0x48D780`; a NULL clears through `CSimpleRender.cpp:1283-1325`) and
+/// `Button:SetText` (`0x977960`) read their argument through `lua_tolstring`, which converts a
+/// string or a number and answers NULL for every other tag; a NULL text empties the string, so a
+/// function clears instead of raising. Stock `ChatConfigFrame.lua:752` passes the dynamic `text`
+/// functions of `COMBAT_CONFIG_MESSAGESOURCES_BY[1]` (`:258`) and `..._TO[1]` (`:310`) through
+/// this path on the first creation pass. This is the donor VM (`script()`): 3.3.5
+/// `CSimpleButton::SetText` (`0x0096F860:650,659`) would clear an existing label on a function or
+/// nil, while the retained donor guard (`0x778dcc`) keeps it, as `button.rs` names.
+#[test]
+fn set_text_reads_a_non_string_as_an_absent_text_and_never_raises() {
+    let s = script();
+    s.run(
+        r#"
+        local f = CreateFrame("Frame", "TolStringHost")
+        TolStringText = f:CreateFontString(nil, "OVERLAY")
+        TolStringText:SetFont("Fonts\\FRIZQT__.TTF", 12)
+    "#,
+    )
+    .unwrap();
+    let text_of = |s: &UiScript, which: &str| {
+        s.eval::<Option<String>>(&format!("return {which}:GetText()"))
+            .unwrap()
+    };
+
+    for write in [
+        r#"TolStringText:SetText(function() return "x" end)"#,
+        "TolStringText:SetText(true)",
+        "TolStringText:SetText({})",
+    ] {
+        s.run(r#"TolStringText:SetText("In Conflict")"#).unwrap();
+        assert_eq!(
+            text_of(&s, "TolStringText").as_deref(),
+            Some("In Conflict"),
+            "setup before `{write}`"
+        );
+        s.run(write).unwrap();
+        assert_eq!(
+            text_of(&s, "TolStringText"),
+            None,
+            "`{write}` is NULL, which clears the string"
+        );
+    }
+    s.run("TolStringText:SetText(5)").unwrap();
+    assert_eq!(
+        text_of(&s, "TolStringText").as_deref(),
+        Some("5"),
+        "a number is its `%.14g` text"
+    );
+
+    // A Button's label takes the same `lua_tolstring` read; an absent value takes the 1.12 nil
+    // guard (`0x778dcc`, the named Wrath gap in `button.rs`) and leaves the label alone here.
+    s.run(
+        r#"
+        local b = CreateFrame("Button", "TolStringButton")
+        b:SetText("Accept")
+    "#,
+    )
+    .unwrap();
+    s.run(r#"TolStringButton:SetText(function() return "x" end)"#)
+        .unwrap();
+    assert_eq!(
+        text_of(&s, "TolStringButton").as_deref(),
+        Some("Accept"),
+        "the absent argument never reaches the label (`0x778dcc`)"
+    );
+    s.run("TolStringButton:SetText(nil)").unwrap();
+    assert_eq!(
+        text_of(&s, "TolStringButton").as_deref(),
+        Some("Accept"),
+        "nil keeps the label, as pinned"
+    );
+    assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
+}
+
 /// A path that fails to load leaves the art alone (`0x770288` → `0x77028e`-`0x7702b2` returns 0
 /// without touching `+0xcc`); with no probe installed, every path is stored.
 #[test]

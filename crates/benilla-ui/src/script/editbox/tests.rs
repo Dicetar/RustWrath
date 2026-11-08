@@ -353,6 +353,29 @@ fn max_letters_trims_from_the_end() {
     assert_eq!(s.eval::<i64>("return E:GetNumLetters()").unwrap(), 3);
 }
 
+/// `Insert` (`0x975E10`) gates its argument with `lua_isstring` and then reads it through
+/// `lua_tolstring`: a number inserts its `%.14g` text, and every other non-string — a function,
+/// a table, a boolean, nil — is a silent no-op.
+#[test]
+fn insert_ignores_a_non_string_and_converts_a_number() {
+    let s = script();
+    s.run(
+        r#"
+        E = CreateFrame("EditBox", "E")
+        E:SetText("ab")
+    "#,
+    )
+    .unwrap();
+    let text = |s: &UiScript| s.eval::<String>("return E:GetText()").unwrap();
+    for arg in ["function() return 'x' end", "{}", "true", "nil"] {
+        s.run(&format!("E:Insert({arg})")).unwrap();
+        assert_eq!(text(&s), "ab", "Insert({arg}) is a no-op");
+    }
+    s.run("E:Insert(5)").unwrap();
+    assert_eq!(text(&s), "ab5", "a number lands as its text");
+    assert!(s.errors().is_empty(), "{:?}", s.errors());
+}
+
 // ── selection / highlight / keys ────────────────────────────────────────────────────────────
 
 #[test]

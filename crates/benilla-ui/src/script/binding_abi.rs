@@ -122,15 +122,39 @@ pub(crate) fn optional_string(lua: &Lua, v: &Value) -> Option<String> {
     }
 }
 
-/// A free-text argument for the text sinks (`SetText`, `SetFormattedText`, `EditBox:Insert`):
-/// `Option<String>`'s conversion, except that a string that is not valid UTF-8 becomes lossy text
-/// instead of raising, as the reference takes bytes.
+/// A checked free-text argument for `EditBox:SetText`: a string or a number converts; other non-nil
+/// types raise. Nil and a missing argument return `None`, which `SetText` treats as a clear — a
+/// pre-existing divergence from 3.3.5, whose `lua_isstring` gate raises its `Usage:` line on nil
+/// too (`CSimpleEditBox_Scripts.cpp` `Script_SetText`, `0x00975E80`). A string that is not valid
+/// UTF-8 becomes lossy text, as the reference takes bytes.
 pub(crate) fn text_arg(lua: &Lua, v: Option<Value>) -> mlua::Result<Option<String>> {
     match v {
         None | Some(Value::Nil) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.to_string_lossy())),
         Some(other) => mlua::FromLua::from_lua(other, lua).map(Some),
     }
+}
+
+/// `lua_tolstring` (3.3.5 `0x0084E0E0`, `lua-5.1/src/lapi.c:410-425`; the donor's `lua_tostring`
+/// is `0x6f3690`) as the text setters read their argument, with no error leg: a string keeps its
+/// bytes, a number becomes [`lua_number_text`] (`%.14g`, `luaV_tostring` `0x00856EA0` in 3.3.5 and
+/// `0x6f7c80` in the donor), and every other tag — nil, a boolean, a table, a function, a thread
+/// or userdata, and a missing argument — answers NULL and never raises. The gate is
+/// [`optional_string`]'s, named here for the binding the text sinks reproduce, so the crate keeps
+/// one string-or-number coercion. The two `SetText` bindings pass the NULL straight through:
+/// `CSimpleFontString_Scripts.cpp` `Script_SetText` (`0x0048D780`) calls
+/// `string->SetText(lua_tolstring(L, 2, nullptr), 1)` and `CSimpleButton_Scripts.cpp`
+/// `Script_SetText` (`0x00977960`) calls `button->SetText(lua_tolstring(L, 2, nullptr))`. A NULL
+/// text empties the string (`CSimpleRender.cpp:1283-1325`, `0x00483910`), so an absent value
+/// clears rather than raises; stock `ChatConfigFrame.lua:752` relies on it, handing over the
+/// dynamic `text` functions of `COMBAT_CONFIG_MESSAGESOURCES_BY[1]` (`:258`) and `..._TO[1]`
+/// (`:310`).
+///
+/// `EditBox:Insert` gates the same read with `lua_isstring` (`CSimpleEditBox_Scripts.cpp`
+/// `Script_Insert`, `0x00975E10`; `lua_isstring` `0x0084DF60`, `lapi.c:320-323`), where a
+/// non-string is a silent no-op and a number converts.
+pub(crate) fn tolstring_arg(lua: &Lua, v: Option<Value>) -> Option<String> {
+    v.as_ref().and_then(|v| optional_string(lua, v))
 }
 
 /// Lua's number-to-string as the 1.12 client compiles it: MSVC's `sprintf("%.14g")`
@@ -622,5 +646,46 @@ mod tests {
         assert_eq!(string_arg(&lua, Value::Integer(5), "u").unwrap(), "5");
         let err = string_arg(&lua, Value::Nil, "Usage: Thing(\"s\")").unwrap_err();
         assert!(format!("{err}").contains("Usage: Thing(\"s\")"));
+    }
+
+    /// `lua_tolstring` (3.3.5 `0x0084E0E0`; donor `lua_tostring` `0x6f3690`) through the text
+    /// setters: a string or a number converts and never raises; every other tag, and a missing
+    /// argument, is absent.
+    #[test]
+    fn tolstring_arg_converts_a_string_or_number_and_absents_the_rest() {
+        let lua = lua();
+        let st = |t: &[u8]| Some(Value::String(lua.create_string(t).unwrap()));
+        assert_eq!(tolstring_arg(&lua, st(b"hi")), Some("hi".to_string()));
+        assert_eq!(
+            tolstring_arg(&lua, Some(Value::Integer(5))),
+            Some("5".to_string())
+        );
+        assert_eq!(
+            tolstring_arg(&lua, Some(Value::Number(2.5))),
+            Some("2.5".to_string())
+        );
+        // A number reads as `luaV_tostring` prints it, `%.14g` exponent included.
+        assert_eq!(
+            tolstring_arg(&lua, Some(Value::Number(1e20))),
+            Some("1e+020".to_string())
+        );
+        assert_eq!(
+            tolstring_arg(&lua, Some(Value::Number(1.0 / 3.0))),
+            Some(lua_number_text(1.0 / 3.0))
+        );
+        // Invalid UTF-8 costs a glyph, never the argument.
+        assert_eq!(
+            tolstring_arg(&lua, st(b"a\xffb")),
+            Some("a\u{fffd}b".to_string())
+        );
+        for v in [
+            None,
+            Some(Value::Nil),
+            Some(Value::Boolean(true)),
+            Some(Value::Table(lua.create_table().unwrap())),
+            Some(Value::Function(lua.create_function(|_, ()| Ok(())).unwrap())),
+        ] {
+            assert_eq!(tolstring_arg(&lua, v), None);
+        }
     }
 }

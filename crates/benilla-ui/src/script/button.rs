@@ -700,9 +700,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     m.set(
         "SetText",
         lua.create_function(|lua, (this, text): (Table, Option<Value>)| {
-            let text = super::binding_abi::text_arg(lua, text)?;
-            // A nil returns at once (`0x778dcc`): no clear, no label created. The guard is the
-            // button's own; `FontString:SetText(nil)` clears (`0x771d80`).
+            // `lua_tolstring` (`0x00977960`): a number is its `%.14g` text; a function, a table, a
+            // boolean or nil is NULL. A nil returns at once (`0x778dcc`, donor): no clear, no
+            // label created. The guard is the button's own; `FontString:SetText(nil)` clears
+            // (`0x771d80`), and the absent values take this same early return.
+            //
+            // Named Wrath gap: 3.3.5 `CSimpleButton::SetText` (`0x0096F860:650`) returns only
+            // while the text is NULL/empty AND no label exists, so with a label a function or nil
+            // clears it through `CSimpleFontString::SetText(NULL, 1)` (`:659`, `0x00483910`).
+            // This batch keeps the donor guard, so a Wrath `Button:SetText(function/nil)` leaves
+            // an existing label stale instead of clearing it.
+            let text = super::binding_abi::tolstring_arg(lua, text);
             let Some(text) = text else { return Ok(()) };
             let id = ensure_slot(lua, &this, Slot::Text)?;
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
