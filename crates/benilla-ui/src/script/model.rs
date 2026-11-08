@@ -1185,6 +1185,9 @@ pub(crate) struct Model {
 
     /// The paper doll's combat stats, `None` until the first push.
     pub(crate) player_combat_stats: Option<char_stats::UnitCombatStats>,
+    /// Melee crit chance percentage from `PLAYER_CRIT_PERCENTAGE` (Wrath field 1029), pushed by
+    /// the honor feed; `GetCritChanceFromAgility("player")` reads it. 0 until streamed.
+    pub(crate) player_crit_percentage: f32,
     /// The ammunition entry each `GetInventoryItemTexture` or `GetInventoryItemQuality` call on
     /// the ammo slot looked up and missed, one callback `0x4c84f0` per call (`0x4c83bc`,
     /// `0x4c89cf`), for the host to register with the item cache.
@@ -1903,6 +1906,7 @@ impl Model {
             .into_iter()
             .collect(),
             player_combat_stats: None,
+            player_crit_percentage: 0.0,
             ammo_record_asks: Vec::new(),
             inventory_slots: Default::default(),
             bank_bag_slots: Default::default(),

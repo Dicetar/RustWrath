@@ -27,6 +27,8 @@ fn honor_state() -> HonorState {
         rank: 9,
         // 51/255 is exactly 0.2, which the engine's multiply does not produce.
         rank_bar: 51,
+        honor_currency: 0,
+        arena_currency: 0,
     }
 }
 

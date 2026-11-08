@@ -89,6 +89,22 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("chatMouseScroll", "1"),
     ("uberTooltips", "1"),
     ("UberTooltips", "1"),
+    // 12340 GameUI_CVar.cpp:562: arena enemy frames shown by default.
+    ("showArenaEnemyFrames", "1"),
+    // 12340 GameUI_CVar.cpp:476.
+    ("showVKeyCastbar", "1"),
+    // 12340 PlayerName_CVar.cpp:41.
+    ("UnitNameFriendlyGuardianName", "0"),
+    // 12340 GameUI_CVar.cpp:569.
+    ("consolidateBuffs", "0"),
+    // 12340 GameUI_CVar.cpp:521.
+    ("wholeChatWindowClickable", "1"),
+    // 12340 GameUI_CVar.cpp:537.
+    ("fctDodgeParryMiss", "0"),
+    // 12340 GameUI_CVar.cpp:487.
+    ("colorblindMode", "0"),
+    // 12340 GameUI_CVar.cpp:534.
+    ("enableCombatText", "1"),
 ];
 
 pub(super) fn register_wrath_cvars(cvars: &mut crate::cvars::Cvars) {

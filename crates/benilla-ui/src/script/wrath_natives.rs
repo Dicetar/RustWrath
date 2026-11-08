@@ -490,6 +490,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             })?,
         )?;
     }
+    // `UnitIsTalking(unit)` (`ComSatClient_Scripts.cpp` 0x007DF0B0): non-string -> no values;
+    // a string -> 1.0 if the unit is in the voice talking set, else nil. Voice chat is permanently
+    // absent, so every string answers nil; non-string preserves the zero-return arity.
+    lua.globals().set(
+        "UnitIsTalking",
+        lua.create_function(|lua, unit: Value| -> mlua::Result<MultiValue> {
+            if lua.coerce_string(unit)?.is_none() {
+                return Ok(MultiValue::new());
+            }
+            // Voice absent: a string answers nil (one value), not 1.0.
+            Ok(MultiValue::from_vec(vec![Value::Nil]))
+        })?,
+    )?;
     // `GetLFGQueuedList([table])` (`LFGInfo_Scripts.cpp:544`): the caller's table, cleared and
     // filled with the queued dungeon slots. benilla has no dungeon-finder queue, so the
     // reference's empty queue is an empty table (or the caller's table, cleared).
@@ -736,6 +749,20 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "UnitHasVehicleUI",
         lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
     )?;
+    // `InCombatLockdown` (`GameUI_Scripts.cpp`): 1.0 when protected actions are not allowed, nil
+    // otherwise. Project B has no secure/taint lockdown; the player's `in_combat` is the practical
+    // lockdown signal (approximation, documented).
+    lua.globals().set(
+        "InCombatLockdown",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(if model.unit("player").is_some_and(|u| u.in_combat) {
+                Value::Number(1.0)
+            } else {
+                Value::Nil
+            })
+        })?,
+    )?;
 
     // `CanHearthAndResurrectFromArea` (`BattlefieldFrame.lua:758`): world-PvP zones hold a player
     // from hearthing or resurrecting; benilla has none, so the answer is the unheld one.
@@ -812,6 +839,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetAttackPowerForStat",
         lua.create_function(|_, _: mlua::MultiValue| Ok((0i64, 0i64, 0i64)))?,
     )?;
+    // `GetCritChanceFromAgility("unit")` (`ScriptEvents_Scripts.cpp` 0x0060E130): non-string raises
+    // `Usage: GetCritChanceFromAgility("unit")`; active player or pet -> `unit->GetMeleeChanceToCrit()`,
+    // else 0. Project B only has the player's `PLAYER_CRIT_PERCENTAGE` scalar, so "player" returns it
+    // and every other unit (including "pet", a named gap) returns 0.
+    lua.globals().set(
+        "GetCritChanceFromAgility",
+        lua.create_function(|lua, unit: Value| {
+            let unit = crate::script::binding_abi::string_arg(
+                lua,
+                unit,
+                "Usage: GetCritChanceFromAgility(\"unit\")",
+            )?;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if unit.eq_ignore_ascii_case("player") {
+                Ok(model.player_crit_percentage as f64)
+            } else {
+                Ok(0.0f64)
+            }
+        })?,
+    )?;
 
     // `GetMirrorTimerInfo` (`MirrorTimer.lua:82`): breath/fatigue mirror timer info.
     lua.globals().set(
@@ -847,6 +894,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "BNGetNumBlocked",
         lua.create_function(|_, _: mlua::MultiValue| Ok(0i64))?,
     )?;
+    // `BNGetNumBlockedToons` (`FriendsFrame.lua:453`): blocked toons count. Battle.net is
+    // permanently absent, so 0, matching `BNGetNumBlocked`.
+    lua.globals().set(
+        "BNGetNumBlockedToons",
+        lua.create_function(|_, _: mlua::MultiValue| Ok(0i64))?,
+    )?;
 
     // `GetNumVoiceSessions` (`ChannelFrame.lua:972`) & `IsVoiceChatAllowedByServer` (`AudioOptionsFrame.lua:41`).
     lua.globals().set(
@@ -856,6 +909,41 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "IsVoiceChatAllowedByServer",
         lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
+    )?;
+    // `GetNumVoiceSessionMembersBySessionID(id)` (`ChannelFrame.lua:1020`): member count for a
+    // voice session. Voice chat is permanently absent, so no values for any valid id (and none
+    // for non-number or id > 31).
+    lua.globals().set(
+        "GetNumVoiceSessionMembersBySessionID",
+        lua.create_function(|lua, id: Value| -> mlua::Result<MultiValue> {
+            let Some(n) = lua.coerce_number(id)? else {
+                return Ok(MultiValue::new());
+            };
+            let id = n as i64;
+            if id < 0 || id > 31 {
+                return Ok(MultiValue::new());
+            }
+            // Voice absent: no matching session, so no values.
+            Ok(MultiValue::new())
+        })?,
+    )?;
+    // `GetVoiceSessionMemberInfoBySessionID(session, index)` (ComSatClient): five values, none when
+    // voice is absent or args are invalid/out of range.
+    lua.globals().set(
+        "GetVoiceSessionMemberInfoBySessionID",
+        lua.create_function(|lua, args: MultiValue| -> mlua::Result<MultiValue> {
+            // Non-number either arg (or wrong arity) -> no values, never a raise.
+            if args.len() < 2 {
+                return Ok(MultiValue::new());
+            }
+            let session = args.get(0).cloned().unwrap_or(Value::Nil);
+            let index = args.get(1).cloned().unwrap_or(Value::Nil);
+            if lua.coerce_number(session)?.is_none() || lua.coerce_number(index)?.is_none() {
+                return Ok(MultiValue::new());
+            }
+            // Voice absent: no matching session, so no values.
+            Ok(MultiValue::new())
+        })?,
     )?;
 
     // `GetTotemInfo` (`TotemFrame.lua:34`, `MultiCastActionBarFrame.lua:313`): haveTotem, name, startTime, duration, icon.
@@ -944,10 +1032,24 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // `GetHonorCurrency` (`PVPFrame.lua:515`): currency tab honor points.
+    // `GetHonorCurrency` / `GetArenaCurrency` (`ScriptEvents_Scripts.cpp` 0x0060FC40 / 0x0060FCC0):
+    // exactly two values, (currency, cap); honor cap 75000, arena cap 10000. Read from the pushed
+    // `HonorState`; absent reads 0.
     lua.globals().set(
         "GetHonorCurrency",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(0i64))?,
+        lua.create_function(|lua, _: mlua::MultiValue| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let currency = model.honor.map_or(0u32, |h| h.honor_currency);
+            Ok((i64::from(currency), 75000i64))
+        })?,
+    )?;
+    lua.globals().set(
+        "GetArenaCurrency",
+        lua.create_function(|lua, _: mlua::MultiValue| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let currency = model.honor.map_or(0u32, |h| h.arena_currency);
+            Ok((i64::from(currency), 10000i64))
+        })?,
     )?;
 
     // `GetLFGRoles` (`LFGFrame.lua:251`) & `UnitGroupRolesAssigned` (`PlayerFrame.lua:250`): LFG roles.

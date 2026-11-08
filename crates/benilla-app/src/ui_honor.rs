@@ -143,6 +143,14 @@ fn honor_snapshot(
             r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_TODAY_CONTRIBUTION)
         })
         .unwrap_or(0);
+    // Honor/arena currency ride the Wrath player field window (fields 1277/1278); absent or
+    // unsent reads 0, the reference's unsent value.
+    let honor_currency = raw
+        .and_then(|r| r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_HONOR_CURRENCY))
+        .unwrap_or(0);
+    let arena_currency = raw
+        .and_then(|r| r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_ARENA_CURRENCY))
+        .unwrap_or(0);
     Some(HonorState {
         session_hk: session.map_or(0, |(hk, _)| hk),
         session_dk: session.map_or(0, |(_, dk)| dk),
@@ -164,6 +172,8 @@ fn honor_snapshot(
         // until the player ranks down, so a swap would pass unnoticed.
         rank: f.player_pvp_rank().unwrap_or(0),
         rank_bar: f.player_honor_rank_bar().unwrap_or(0),
+        honor_currency,
+        arena_currency,
     })
 }
 
@@ -206,6 +216,10 @@ pub(crate) fn feed_honor(
                     memo.last = Some(fresh);
                 }
             }
+            // Melee crit chance from `PLAYER_CRIT_PERCENTAGE`; absent reads 0.
+            script.set_player_crit_percentage(store.0.player_crit_percentage().unwrap_or(0.0));
+        } else {
+            script.set_player_crit_percentage(0.0);
         }
 
         // --- the inspect reply -------------------------------------------------------------------

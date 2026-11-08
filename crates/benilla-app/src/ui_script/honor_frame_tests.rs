@@ -28,6 +28,8 @@ fn state() -> HonorState {
         highest_rank: 14,
         // 191/255, three quarters through the rank.
         rank_bar: 191,
+        honor_currency: 0,
+        arena_currency: 0,
     }
 }
 

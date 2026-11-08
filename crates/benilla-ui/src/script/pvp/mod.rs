@@ -60,6 +60,10 @@ pub struct HonorState {
     pub rank: u8,
     /// `PLAYER_FIELD_BYTES2` byte 0: progress through the current rank, the raw byte.
     pub rank_bar: u8,
+    /// `PLAYER_FIELD_HONOR_CURRENCY` (1277): the player's honor points currency. 0 when unsent.
+    pub honor_currency: u32,
+    /// `PLAYER_FIELD_ARENA_CURRENCY` (1278): the player's arena points currency. 0 when unsent.
+    pub arena_currency: u32,
 }
 
 /// One `MSG_INSPECT_HONOR_STATS` reply as the app decoded it. It has no dishonorable counts past
@@ -113,6 +117,11 @@ impl super::UiScript {
     /// no event: the app fires `PLAYER_PVP_KILLS_CHANGED`/`PLAYER_PVP_RANK_CHANGED` alongside.
     pub fn set_honor(&mut self, honor: Option<HonorState>) {
         self.model_mut().honor = honor;
+    }
+
+    /// Push the player's melee crit percentage from `PLAYER_CRIT_PERCENTAGE`; `GetCritChanceFromAgility("player")` reads it.
+    pub fn set_player_crit_percentage(&mut self, value: f32) {
+        self.model_mut().player_crit_percentage = value;
     }
 
     /// Push or clear the last `MSG_INSPECT_HONOR_STATS` reply, paired with the pane's
