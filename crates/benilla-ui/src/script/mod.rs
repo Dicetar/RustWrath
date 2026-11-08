@@ -45,6 +45,7 @@ mod chat_send;
 mod chat_types;
 mod chat_window;
 mod clip;
+mod combat_log;
 mod colorselect;
 mod console_exec;
 mod container;
@@ -865,6 +866,8 @@ fn install_in_game(lua: &Lua) -> mlua::Result<()> {
     worldstate::install(lua)?;
     net_stats::install(lua)?;
     if lua.app_data_ref::<Model>().expect("model").target == UiTarget::Wrath335 {
+        // `UnitCombatLog_C_Scripts.cpp`: the stock combat-log frame's filter and query surface.
+        combat_log::install(lua)?;
         wrath_spell::install(lua)?;
         wrath_unit::install(lua)?;
         wrath_aura::install(lua)?;
