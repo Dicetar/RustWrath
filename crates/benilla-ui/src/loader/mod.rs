@@ -17,6 +17,7 @@ use crate::justify;
 use crate::layout::Len;
 use crate::script::{Outline, UiScript};
 use crate::status;
+use crate::widget::RegionKind;
 
 mod animations;
 mod backdrop;
@@ -212,6 +213,119 @@ pub fn apply_template(lua: &mlua::Lua, wrapper: &Table, kind: &str, template: &s
 
     loader.decorate(&expanded, &levels, wrapper, &self_name, &parent_name, &dbg);
 
+    loader.report
+}
+
+/// Apply a template to an existing region, the region constructors' `inherits=` argument
+/// (`CreateFontString` donor `0x773c30` / 3.3.5a `0x004A2240`; `CreateTexture` donor `0x773a20` /
+/// 3.3.5a `0x004A2010`). The reference asks the font table first (`0x773d39` for a FontString),
+/// then the one template registry (`0x773d47`) and runs the region's XML `LoadXML` on the acquired
+/// node; `apply_region_inherits` in the binding keeps that order. The region itself is already
+/// built, so this only reads the template's region-shaped content: geometry, text, font attributes,
+/// children. A `<Frame>` template's `<Frames>`, `<Layers>` and `<Scripts>` are not instantiated,
+/// matching the region readers (donor `0x770f40` FontString, `0x76fe20` Texture; 3.3.5a
+/// `0x004873E0` / `0x00485F40`); a region template has no scripts in the levels read here.
+/// The region is never renamed or re-created, and `$parent` in a template name resolves against its
+/// nearest named ancestor, as in [`apply_template`].
+///
+/// After the levels this runs the constructor's post-load step (`PostLoadXML`, 3.3.5a `0x4836D0`
+/// FontString / `0x4830E0` Texture, called from `0x004A2240` / `0x004A2010`; donor implicit-anchor
+/// sites `0x771480` / `0x7701c0`): deferred template anchors are resolved now (there is no enclosing
+/// subtree to wait for), then a region still without points gets the implicit creation anchor.
+/// `parentKey` is not read here (only `build_region` publishes it for XML-declared regions), and a
+/// template level's `<Animations>` are not loaded on either path (pre-existing level gap).
+pub fn apply_region_template(lua: &mlua::Lua, wrapper: &Table, template: &str) -> LoadReport {
+    let template = template.trim();
+    if template.is_empty() {
+        return LoadReport::default();
+    }
+    // A region template never reads a file: `<Include>` and `<Script file=>` are top-level only.
+    let no_files = |_: &str| -> Option<Vec<u8>> { None };
+    let mut loader = Loader {
+        lua,
+        files: &no_files,
+        path: String::new(),
+        status_root: "",
+        report: LoadReport::default(),
+        warned: HashSet::new(),
+        deferred_anchors: Vec::new(),
+    };
+
+    // The binding already made the region; apply what the template adds to that same object.
+    let kind = crate::script::region::region_handle_of(lua, wrapper)
+        .ok()
+        .and_then(|rh| {
+            lua.app_data_ref::<crate::script::Model>()
+                .expect("model app_data")
+                .arena
+                .region(rh)
+                .map(|r| r.kind)
+        });
+    let Some(kind) = kind else {
+        let mut report = LoadReport::default();
+        report.fault(format!(
+            "CreateRegion(inherits=\"{template}\"): the wrapper names no live region"
+        ));
+        return report;
+    };
+
+    let method = match kind {
+        RegionKind::FontString => "CreateFontString",
+        RegionKind::Texture => "CreateTexture",
+        RegionKind::Title => "CreateTitleRegion",
+    };
+    let (own_name, parent_name) = loader.frame_names(wrapper);
+    let dbg = format!(
+        "{method}(\"{}\", inherits=\"{template}\")",
+        own_name.as_deref().unwrap_or("<unnamed>")
+    );
+
+    let first = loader.report.warnings.len();
+    match kind {
+        RegionKind::FontString => {
+            let node = framexml::inherits_node("FontString", template);
+            let levels = loader.fontstring_levels(&node);
+            for level in &levels {
+                loader.load_fontstring_level(
+                    level,
+                    wrapper,
+                    &parent_name,
+                    regions::FontAttrs::Own,
+                    true,
+                    &dbg,
+                );
+            }
+        }
+        RegionKind::Texture => {
+            let node = framexml::inherits_node("Texture", template);
+            let levels = loader.levels(&node);
+            for level in &levels {
+                loader.load_texture_level(level, wrapper, &parent_name, &dbg);
+            }
+        }
+        // No region constructor takes `inherits=` for a title region; there is no reader to run.
+        RegionKind::Title => {
+            loader.report.warnings.push(format!(
+                "{dbg}: a Title region reads no XML template content"
+            ));
+            return loader.report;
+        }
+    }
+    // `PostLoadXML` (`0x4836D0` / `0x4830E0`): a region template's anchors have no enclosing frame
+    // subtree to wait for, so resolve them now; a miss is logged rather than silently dropped.
+    // Authored points therefore stand before the implicit creation anchor, which only fills a
+    // region that still has none (`0x771480` FontString, `0x7701c0` Texture).
+    loader.drain_deferred_anchors(0);
+    if let Err(e) = crate::script::implicit_creation_anchor_lua(lua, wrapper) {
+        loader.report.fault(format!("{dbg}: implicit anchor: {e}"));
+    }
+    // `apply_template` prefixes the expansion's own warnings with the call that caused them. The
+    // level readers already stamp some lines (a failed `SetFontObject`), so keep those as they are.
+    for w in &mut loader.report.warnings[first..] {
+        if !w.starts_with(&dbg) {
+            *w = format!("{dbg}: {w}");
+        }
+    }
     loader.report
 }
 

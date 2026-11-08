@@ -308,7 +308,7 @@ impl Loader<'_> {
     /// loads with it off. A `<Color>` is a solid fill (`0x770360`), an 8×8 texture in the
     /// reference, so its alpha multiplies with `SetVertexColor` rather than being replaced by it;
     /// the level's `file=`, read after its children (`0x770102`), overwrites the same slot.
-    fn load_texture_level(
+    pub(super) fn load_texture_level(
         &mut self,
         node: &Element,
         wrapper: &Table,
