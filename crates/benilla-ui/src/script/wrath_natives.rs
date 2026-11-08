@@ -2,6 +2,9 @@
 //! has no verb for. Device queries describe supported local hardware. Some imported startup
 //! bindings below remain compatibility fallbacks rather than projections of live gameplay
 //! state; registering them does not establish support for those subsystems.
+//!
+//! The QuestPOI bindings are one such fallback: they answer the reference's empty branch because
+//! the quest-blob pipeline has no producer or renderer yet. See `install_quest_poi`.
 
 use mlua::{Lua, MultiValue, Value};
 
@@ -1192,7 +1195,96 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
     super::input_verbs::install_wrath(lua)?;
     install_multiclass(lua)?;
+    install_quest_poi(lua)?;
 
+    Ok(())
+}
+
+/// The five QuestPOI bindings the 3.3.5a quest-log script surface registers
+/// (`QuestLog_Scripts.cpp:1760-1764`):
+/// `QuestPOIUpdateIcons` (`QuestLog_Scripts.cpp`, OFFSET `0x005E5740`),
+/// `QuestPOIUpdateTexture` (`0x008E5250`), `QuestPOIGetQuestIDByIndex` (`0x005DFA80`),
+/// `QuestPOIGetQuestIDByVisibleIndex` (`0x005E5750`) and `QuestPOIGetIconInfo` (`0x005E0590`),
+/// in the preserved reference at pin `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`.
+///
+/// The visible-index and icon getters answer the reference's no-POI branches: a negative
+/// `GetPOIQuestIDByVisibleIndex` and a failed `GetQuestPOIIcon` both return zero values. Each
+/// `lua_isnumber` gate raises the reference's literal usage text, and numeric strings pass just
+/// as they do through `0x6f34d0`.
+///
+/// `QuestPOIGetQuestIDByIndex` is a documented deviation for the empty leg. The reference keeps
+/// a fixed POI array whose slots are zero-initialized (`CGQuestLog::InitializeGame`,
+/// `QuestLog.cpp:153-164`), so an in-bounds index answers one value, quest id `0`, and only an
+/// index outside that array or a negative quest id answers zero values. Project B has no POI
+/// store at all, so every index answers zero values rather than reporting an id for a slot this
+/// client never filled. No stock FrameXML calls this binding; it exists for addons. The preserved
+/// tree is a `HoT` fork whose 100-slot POI array is a fork widening, not a stock 12340 bound;
+/// Project B does not adopt it (its Wrath log model keeps the stock 25 slots).
+///
+/// `QuestPOIUpdateIcons`'s reference body calls `CGQuestLog::UpdatePOIIcons()` (`0x005E2EB0`),
+/// which computes per-POI icon positions from blob data. There are no POIs or blobs here, so this
+/// binding performs no work and returns 0. `QuestPOIUpdateTexture`'s reference body is plainly
+/// `return 0;`, which this binding matches.
+///
+/// These are truthful empty answers, not a completed quest-blob feature.
+/// `benilla_protocol_wrath::quest_poi` decodes `SMSG_QUEST_POI_QUERY_RESPONSE`, but no one sends
+/// `CMSG_QUEST_POI_QUERY`, no owner stores the decoded list, nothing selects visible POIs over
+/// the current map area, and `WorldMapBlobFrame:DrawQuestBlob` has no renderer. The next
+/// prerequisites are therefore the request/selection ring (send the query from the 25-slot quest
+/// log, keep the reply keyed by quest id, expose a visible-index view for the current map) and
+/// the blob renderer that consumes its geometry. Until those exist these bindings must never
+/// fabricate quest ids, log indices or coordinates.
+///
+/// Visible delta: before this binding existed the stock map aborted on a nil call at
+/// `WorldMapFrame.lua:1540`; now `WorldMapFrame_UpdateQuests` (stock `WorldMapFrame.lua:1525`)
+/// completes, sets `numQuests` to 0 and runs its hide loops. The map still lists no quests,
+/// because `QuestMapUpdateAllQuests` answers 0 (`worldmap.rs`) and no POI data exists. The
+/// separate `QuestPOIFrame` unknown-frame-type warning and the missing
+/// `WorldMapBlobFrame:DrawQuestBlob` renderer are not fixed by this.
+fn install_quest_poi(lua: &Lua) -> mlua::Result<()> {
+    lua.globals().set("QuestPOIUpdateIcons", lua.create_function(|_, ()| Ok(()))?)?;
+    lua.globals().set(
+        "QuestPOIUpdateTexture",
+        lua.create_function(|_, ()| Ok(()))?,
+    )?;
+    lua.globals().set(
+        "QuestPOIGetQuestIDByIndex",
+        lua.create_function(|lua, index: Value| -> mlua::Result<MultiValue> {
+            crate::script::binding_abi::number_arg(
+                lua,
+                index,
+                "Usage: QuestPOIGetQuestIDByIndex(index)",
+            )?;
+            // Documented deviation: the reference's zero-initialized POI array answers quest id
+            // 0 for an in-bounds index. Project B has no POI store at all, so every index answers
+            // no values rather than reporting a slot this client never filled. No stock caller.
+            Ok(MultiValue::new())
+        })?,
+    )?;
+    lua.globals().set(
+        "QuestPOIGetQuestIDByVisibleIndex",
+        lua.create_function(|lua, index: Value| -> mlua::Result<MultiValue> {
+            crate::script::binding_abi::number_arg(
+                lua,
+                index,
+                "Usage: Script_QuestPOIGetQuestIDByVisibleIndex(index)",
+            )?;
+            // `GetPOIQuestIDByVisibleIndex` has no ring to read, so its answer is negative and
+            // the reference returns no values instead of `(questId, GetQuestIndex(questId))`.
+            Ok(MultiValue::new())
+        })?,
+    )?;
+    lua.globals().set(
+        "QuestPOIGetIconInfo",
+        lua.create_function(|lua, quest_id: Value| -> mlua::Result<MultiValue> {
+            crate::script::binding_abi::number_arg(
+                lua,
+                quest_id,
+                "Usage: QuestPOIGetIconInfo(questID)",
+            )?;
+            Ok(MultiValue::new())
+        })?,
+    )?;
     Ok(())
 }
 
@@ -2570,5 +2662,76 @@ mod tests {
             s.take_calendar_fetches().is_empty(),
             "a transfer drops the old scope's fetch"
         );
+    }
+
+    /// The stock quest list (`WorldMapFrame.lua:1540`, `:1547`; `WatchFrame.lua:1308`) treats the
+    /// QuestPOI getters' zero values as "no POIs": the repaint calls return nothing and the
+    /// visible-index loop never sees an index to show. Fabricated ids would make the map try to
+    /// paint quests that no request/selection/renderer stage can supply.
+    #[test]
+    fn wrath_quest_poi_natives_answer_empty_without_a_poi_ring() {
+        let s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        assert_eq!(s.arity("QuestPOIUpdateIcons()").unwrap(), 0);
+        assert_eq!(s.arity("QuestPOIUpdateIcons(1, 'x')").unwrap(), 0);
+        assert_eq!(s.arity("QuestPOIUpdateTexture()").unwrap(), 0);
+        assert_eq!(s.arity("QuestPOIUpdateTexture(1, 'x')").unwrap(), 0);
+        // `ByIndex` is the documented deviation: the reference's zero-initialized POI array
+        // answers quest id 0 for an in-bounds slot, while Project B has no POI store at all and
+        // therefore answers no values. No stock FrameXML calls it.
+        assert_eq!(s.arity("QuestPOIGetQuestIDByIndex(1)").unwrap(), 0);
+        assert_eq!(s.arity("QuestPOIGetQuestIDByVisibleIndex(1)").unwrap(), 0);
+        assert_eq!(s.arity("QuestPOIGetIconInfo(1)").unwrap(), 0);
+
+        // `WorldMapFrame_UpdateQuests`'s guard (`WorldMapFrame.lua:1548`) must see nil, not a
+        // synthetic index or quest id.
+        s.run(
+            r#"
+            for i = 1, 3 do
+                local questId, questLogIndex = QuestPOIGetQuestIDByVisibleIndex(i)
+                if questLogIndex then error("no POI ring may report a quest-log index") end
+                if questId then error("no POI ring may report a quest id") end
+            end
+            "#,
+        )
+        .unwrap();
+    }
+
+    /// Each getter's `lua_isnumber` gate raises the reference's literal usage text for nil, a
+    /// missing argument, a table, a function and a non-numeric string; a numeric string passes
+    /// through `0x6f34d0` and then reaches the same empty no-POI answer.
+    #[test]
+    fn wrath_quest_poi_getters_gate_on_lua_isnumber() {
+        let s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        for (name, usage) in [
+            ("QuestPOIGetQuestIDByIndex", "Usage: QuestPOIGetQuestIDByIndex(index)"),
+            (
+                "QuestPOIGetQuestIDByVisibleIndex",
+                "Usage: Script_QuestPOIGetQuestIDByVisibleIndex(index)",
+            ),
+            ("QuestPOIGetIconInfo", "Usage: QuestPOIGetIconInfo(questID)"),
+        ] {
+            for call in [
+                format!("{name}()"),
+                format!("{name}(nil)"),
+                format!("{name}({{}})"),
+                format!("{name}(function() end)"),
+                format!("{name}('not a number')"),
+            ] {
+                let err = s.run(&call).expect_err(&call).to_string();
+                // The VM prefixes `luaL_error`'s position like the reference; the literal usage
+                // text must still be exactly what follows it.
+                assert!(
+                    err.ends_with(usage),
+                    "{call}: expected the exact {usage:?}, got {err}"
+                );
+            }
+            for call in [
+                format!("{name}(1)"),
+                format!("{name}('2')"),
+                format!("{name}(1.9)"),
+            ] {
+                assert_eq!(s.arity(&call).unwrap(), 0, "{call}");
+            }
+        }
     }
 }
