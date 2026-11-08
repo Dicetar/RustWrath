@@ -701,6 +701,9 @@ pub(crate) struct Model {
     pub(crate) ui_errors: Vec<(&'static str, super::InputEvents)>,
 
     pub(crate) spellbook: spellbook::SpellBookState,
+    /// The player's all-learned flat spell list (`s_spellList`), in reference slot order; used as
+    /// the player book's slot namespace instead of the displayed book's slots.
+    pub(crate) spell_list: Vec<spellbook::SpellSlotView>,
     /// The pet's spellbook, a second array as in the reference (`0xb700f0`, `0xb6f098`).
     pub(crate) pet_book: spellbook::PetBookState,
     /// The player's macros, owned here as 1.12 macros have no server side; the app persists them.
@@ -1686,6 +1689,7 @@ impl Model {
             bonus_bar_offset: 0,
             ui_errors: Vec::new(),
             spellbook: spellbook::SpellBookState::default(),
+            spell_list: Vec::new(),
             pet_book: spellbook::PetBookState::default(),
             macros: macros::MacroState::default(),
             macros_dirty: false,

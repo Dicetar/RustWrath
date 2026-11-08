@@ -95,6 +95,8 @@ fn load_skill_lines(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
 #[derive(Default)]
 struct FeedMemory {
     pushed: SpellBookState,
+    /// The player's all-learned flat list last pushed, for its own change detection.
+    pushed_spell_list: Vec<SpellSlotView>,
     /// Counter watches for stores whose lazy resolves defeat `is_changed` (template asks, the
     /// cooldown prune), and for the self store's presence: a despawn flips the weapon icons unseen.
     items_templates: gate::Watch,
@@ -196,6 +198,18 @@ fn feed_spellbook(
                 skill_lines.as_deref().map(|s| &s.catalog),
                 race,
                 class,
+                attack_icon.clone(),
+                ranged_icon.clone(),
+            );
+            // The reference's all-learned flat list (`s_spellList`): every known spell, including
+            // ones absent from the displayed book and from `SpellCatalog`, in `SortSpellsForDisplay`
+            // order. It is the player book's slot namespace.
+            let mut spell_list = build_spell_list(
+                &actions.spells,
+                &spells.catalog,
+                skill_lines.as_deref().map(|s| &s.catalog),
+                race,
+                class,
                 attack_icon,
                 ranged_icon,
             );
@@ -203,6 +217,25 @@ fn feed_spellbook(
             // not the book's: a drop writes it, so the slot's in-place event reads what the bar
             // feed would.
             for slot in &mut fresh.slots {
+                let Some(d) = spells.catalog.get(slot.spell_id).filter(|d| {
+                    crate::ui_action::substitutes_weapon_icon(d) || d.active_icon_id != 0
+                }) else {
+                    continue;
+                };
+                let face = crate::ui_action::spell_action_icon(
+                    slot.spell_id,
+                    d,
+                    spells,
+                    store,
+                    &inv.objects,
+                    &items,
+                    icons.as_deref(),
+                );
+                if face != slot.texture {
+                    slot.bar_texture = Some(face);
+                }
+            }
+            for slot in &mut spell_list {
                 let Some(d) = spells.catalog.get(slot.spell_id).filter(|d| {
                     crate::ui_action::substitutes_weapon_icon(d) || d.active_icon_id != 0
                 }) else {
@@ -243,8 +276,23 @@ fn feed_spellbook(
                     .info(slot.spell_id, 0, spells.catalog.get(slot.spell_id), anchor)
                     .ui_triple(anchor, ui_now);
             }
+            for slot in &mut spell_list {
+                slot.cooldown = cooldowns
+                    .info(slot.spell_id, 0, spells.catalog.get(slot.spell_id), anchor)
+                    .ui_triple(anchor, ui_now);
+            }
+            let displayed_changed = fresh != memory.pushed;
+            let spell_list_changed = spell_list != memory.pushed_spell_list;
+            let spell_list_structural_changed = spell_list.len() != memory.pushed_spell_list.len()
+                || spell_list
+                    .iter()
+                    .zip(&memory.pushed_spell_list)
+                    .any(|(a, b)| {
+                        (a.spell_id, &a.name, &a.rank, &a.texture, a.passive)
+                            != (b.spell_id, &b.name, &b.rank, &b.texture, b.passive)
+                    });
             let mut changed = false;
-            if fresh != memory.pushed {
+            if displayed_changed {
                 gate.audit("feed_spellbook", "the spellbook snapshot");
                 // A book change fires `SPELLS_CHANGED`. The checked ring follows the form byte,
                 // whose change signals `CURRENT_SPELL_CAST_CHANGED` (`0x5de016`,
@@ -263,6 +311,13 @@ fn feed_spellbook(
                 script.set_spellbook(fresh.clone());
                 memory.pushed = fresh;
                 changed = book_changed;
+            }
+            if spell_list_changed {
+                script.set_spell_list(spell_list.clone());
+                memory.pushed_spell_list = spell_list;
+                if spell_list_structural_changed {
+                    changed = true;
+                }
             }
             Some((changed, learned, tab_lines, race, class))
         })
@@ -434,6 +489,91 @@ fn build_book(
         });
     }
     (SpellBookState { tabs, slots }, tab_lines)
+}
+
+/// Build the reference's all-learned flat list (`s_spellList`): every known spell that
+/// `AddKnownSpell` admits (a `Spell.dbc` record, no DO_NOT_DISPLAY/trade-skill/ex4-0x8000/
+/// mounted-companion exclusion), including `castUI` spells outside the displayed book, in
+/// `SortSpellsForDisplay` order (skill-line group, then name, then rank). Catalog-missing IDs are
+/// not added, matching `g_spellDB.GetRecord`'s early return.
+fn build_spell_list(
+    known: &BTreeSet<u32>,
+    catalog: &SpellCatalog,
+    skill_lines: Option<&SkillLineCatalog>,
+    race: u8,
+    class: u8,
+    attack_icon: Option<String>,
+    ranged_icon: Option<String>,
+) -> Vec<SpellSlotView> {
+    let mut by_line: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for &spell_id in known {
+        // `AddKnownSpell` requires a `Spell.dbc` record (`g_spellDB.GetRecord` at 282); a missing
+        // catalog entry is not added to `s_spellList`. The remaining legs are `SpellDisplay::in_spell_list`.
+        let Some(d) = catalog.get(spell_id) else {
+            continue;
+        };
+        if !d.in_spell_list() {
+            continue;
+        }
+        let tab = skill_lines.map_or(NO_LINE, |c| c.spell_tab(spell_id, race, class));
+        by_line.entry(tab).or_default().push(spell_id);
+    }
+
+    // Same tab ordering as `build_book`: General first, then by resolved line name.
+    let mut lines: Vec<(u32, Vec<u32>)> = by_line.into_iter().collect();
+    // Re-sort with the same comparator as build_book, using a placeholder name for ordering.
+    // General (NO_LINE) first; other lines by their SkillLine.dbc name, falling back to "General".
+    let mut ordered: Vec<(u32, Vec<u32>)> = lines
+        .drain(..)
+        .collect();
+    // Sort by (is_not_general, name) like build_book.
+    ordered.sort_by(|a, b| {
+        let name_of = |line_id: u32| -> String {
+            if line_id == NO_LINE {
+                "General".to_string()
+            } else {
+                skill_lines
+                    .and_then(|c| c.line(line_id))
+                    .map(|info| info.name.clone())
+                    .unwrap_or_else(|| "General".to_string())
+            }
+        };
+        (a.0 != NO_LINE)
+            .cmp(&(b.0 != NO_LINE))
+            .then(name_of(a.0).cmp(&name_of(b.0)))
+    });
+
+    let mut slots = Vec::with_capacity(known.len());
+    for (_line_id, mut spell_ids) in ordered {
+        spell_ids.sort_by_key(|&a| spell_sort_key(catalog, a));
+        for spell_id in spell_ids {
+            let d = catalog.get(spell_id);
+            let texture = if d.is_some_and(|d| d.is_melee_auto_attack()) {
+                attack_icon
+                    .clone()
+                    .or_else(|| d.and_then(|d| d.icon.clone()))
+            } else if d.is_some_and(|d| d.ranged_icon_substitution()) {
+                ranged_icon
+                    .clone()
+                    .or_else(|| d.and_then(|d| d.icon.clone()))
+            } else {
+                d.and_then(|d| d.icon.clone())
+            };
+            slots.push(SpellSlotView {
+                spell_id,
+                name: d.map(|d| d.name.clone()).unwrap_or_default(),
+                rank: d.and_then(|d| d.rank.clone()),
+                texture,
+                passive: d.is_some_and(|d| d.passive),
+                current: false,
+                cooldown: None,
+                autocast: None,
+                packed: 0,
+                bar_texture: None,
+            });
+        }
+    }
+    slots
 }
 
 /// `0x4b30c0`'s tail: name, then the parsed rank number, then the rank string. The rank is the

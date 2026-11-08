@@ -71,7 +71,8 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
                     .position(|s| s.spell_id == spell.spell_id)
                     .map(|index| index + 1)
             };
-            let (slot, book) = match slot(&model.spellbook.slots) {
+            let player_slots = if model.spell_list.is_empty() { &model.spellbook.slots } else { &model.spell_list };
+            let (slot, book) = match slot(player_slots) {
                 Some(slot) => (slot, "spell"),
                 // `GetSpellSlot` falls through to the pet's book and flags the answer `"pet"`
                 // (0x00515200); a spell in neither book is slot 0 in the player's.

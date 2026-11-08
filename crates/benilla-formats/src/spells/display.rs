@@ -485,6 +485,22 @@ impl SpellDisplay {
         self.attributes & ATTR_DO_NOT_DISPLAY == 0
     }
 
+    /// The all-learned `s_spellList` add gate (`AddKnownSpell` `0x5e9c20`/`0x4b25b0` up to
+    /// `s_spellList[s_numSpells++]` at 660): requires a `Spell.dbc` record, excludes
+    /// `Attributes & 0x80` (DO_NOT_DISPLAY), `Attributes & 0x20` (trade skill) and
+    /// `AttributesEx4 & 0x8000`, and excludes companions whose aura is `SPELL_AURA_MOUNTED`
+    /// (78). Nonzero `castUI` is *not* excluded (unlike [`Self::in_spellbook`]).
+    /// The summon-with-`SummonProperties` slot-5 companion case is not modeled (no
+    /// `SummonProperties` data) and is left as an unsupported branch.
+    pub fn in_spell_list(&self) -> bool {
+        // Unsupported branch: a companion summoned through `SummonProperties` at slot 5
+        // (`SpellIsCallCompanion`, `Spell_C.cpp:9531-9541`) is not modeled because no
+        // `SummonProperties` data is available; do not guess its predicate.
+        self.attributes & (ATTR_DO_NOT_DISPLAY | SPELL_ATTR_IS_TRADESKILL) == 0
+            && self.attributes_ex4 & 0x8000 == 0
+            && self.effect_apply_aura.first().copied() != Some(78)
+    }
+
     /// `Effect[0] == SPELL_EFFECT_ATTACK` (78): the client's trigger for showing the main-hand
     /// weapon's icon instead (`0x4b3f8a`, `0x4e59de`). In 1.12 only 6603 "Attack" carries it.
     pub fn is_melee_auto_attack(&self) -> bool {

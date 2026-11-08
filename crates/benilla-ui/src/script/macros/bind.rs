@@ -11,7 +11,7 @@
 //! spell, which the action bar then reads through the pet's legs.
 
 use super::MacroBinding;
-use crate::script::{resolve_spell_in_books, PetBookState, SpellBookState};
+use crate::script::{PetBookState, SpellBookState};
 
 /// Arm B's literal (`0x84cab0`), searched case-sensitively anywhere in the line (`0x4efed5`).
 const CAST_BY_NAME_CALL: &str = "CastSpellByName(";
@@ -102,10 +102,22 @@ pub(crate) fn derive(
     pet: &PetBookState,
     was: MacroBinding,
 ) -> MacroBinding {
+    derive_with_slots(aliases, body, &player.slots, pet, was)
+}
+
+/// All-list-aware variant: resolve against an arbitrary player slot slice (the all-learned list
+/// when populated, else the displayed book) without forcing a `SpellBookState`.
+pub(crate) fn derive_with_slots(
+    aliases: &[String],
+    body: &str,
+    player: &[crate::script::SpellSlotView],
+    pet: &PetBookState,
+    was: MacroBinding,
+) -> MacroBinding {
     let Some((arm, name)) = cast_name(aliases, body) else {
         return MacroBinding { spell: 0, ..was };
     };
-    match (resolve_spell_in_books(player, pet, &name), arm) {
+    match (super::super::resolve_spell_in_list(player, pet, &name), arm) {
         (Some(s), _) => MacroBinding {
             spell: s.spell_id as i32,
             pet_book: s.pet,

@@ -824,7 +824,8 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 .ok_or_else(|| mlua::Error::runtime("Usage: GameTooltip:SetSpellByID(spellID)"))? as u32;
             let name = {
                 let model = lua.app_data_ref::<Model>().expect("model");
-                model.spellbook.slots.iter().chain(&model.pet_book.slots)
+                let player_slots = if model.spell_list.is_empty() { &model.spellbook.slots } else { &model.spell_list };
+                player_slots.iter().chain(&model.pet_book.slots)
                     .find(|slot| slot.spell_id == id).map(|slot| slot.name.clone())
             };
             set_spell_by_id(lua, &this, id, name, SpellRenderOpts::default())

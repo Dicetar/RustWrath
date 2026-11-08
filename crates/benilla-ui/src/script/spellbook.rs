@@ -19,7 +19,7 @@ use super::tick::verb;
 use super::{Model, ScriptCall};
 
 mod by_name;
-pub use by_name::{resolve_spell_in_books, NamedSpell};
+pub use by_name::{resolve_spell_in_books, resolve_spell_in_list, NamedSpell};
 
 const BOOKTYPE_SPELL: &str = "spell";
 const BOOKTYPE_PET: &str = "pet";
@@ -158,6 +158,16 @@ impl super::UiScript {
     /// Replace the book; the app fires `SPELLS_CHANGED` on its own diff.
     pub fn set_spellbook(&mut self, state: SpellBookState) {
         self.model_mut().spellbook = state;
+    }
+
+    /// Replace the player's all-learned flat spell list (`s_spellList`), in reference slot order.
+    pub fn set_spell_list(&mut self, state: Vec<SpellSlotView>) {
+        self.model_mut().spell_list = state;
+    }
+
+    /// The player's all-learned flat spell list as it stands.
+    pub fn spell_list(&self) -> Vec<SpellSlotView> {
+        self.model_ref().spell_list.clone()
     }
 
     /// Replace the pet's book; its `SPELLS_CHANGED` is the pet spell message's own sort
@@ -328,6 +338,8 @@ pub(super) fn book_slot<'a>(
 ) -> Option<&'a SpellSlotView> {
     let slots = if is_pet_book(book_type) {
         &model.pet_book.slots
+    } else if !model.spell_list.is_empty() {
+        &model.spell_list
     } else {
         &model.spellbook.slots
     };
@@ -616,7 +628,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                         name = format!("{name}({rank})");
                     }
                 }
-                let Some(spell) = resolve_spell_in_books(&model.spellbook, &model.pet_book, &name)
+                let player_slots = if model.spell_list.is_empty() {
+                    &model.spellbook.slots
+                } else {
+                    &model.spell_list
+                };
+                let Some(spell) = resolve_spell_in_list(player_slots, &model.pet_book, &name)
                 else {
                     return Ok(MultiValue::new());
                 };
@@ -767,7 +784,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let on_self = bool_or_default(on_self.as_ref(), false);
             let found = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                by_name::resolve_named(&model.spellbook, &model.pet_book, &name.as_bytes())
+                let player_slots = if model.spell_list.is_empty() {
+                    &model.spellbook.slots
+                } else {
+                    &model.spell_list
+                };
+                by_name::resolve_named_list(player_slots, &model.pet_book, &name.as_bytes())
             };
             let call = match found {
                 Some(found) if found.pet => ScriptCall::CastPetSpell {

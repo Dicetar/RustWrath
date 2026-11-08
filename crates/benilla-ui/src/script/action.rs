@@ -417,11 +417,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     Some(id) => ("macro", id, ""),
                     None if slot.kind == ACTION_KIND_ITEM => ("item", slot.action, ""),
                     None => {
-                        let in_player_book = model
-                            .spellbook
-                            .slots
-                            .iter()
-                            .any(|s| s.spell_id == slot.action);
+                        let player_slots = if model.spell_list.is_empty() {
+                            &model.spellbook.slots
+                        } else {
+                            &model.spell_list
+                        };
+                        let in_player_book = player_slots.iter().any(|s| s.spell_id == slot.action);
                         let in_pet_book = model
                             .pet_book
                             .slots
@@ -438,7 +439,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 out.push_back(Value::String(lua.create_string(kind)?));
                 let wrath_spell = model.target == super::UiTarget::Wrath335 && kind == "spell";
                 let slot_id = if wrath_spell {
-                    let slots = if sub_type == "pet" { &model.pet_book.slots } else { &model.spellbook.slots };
+                    let slots = if sub_type == "pet" {
+                        &model.pet_book.slots
+                    } else if model.spell_list.is_empty() {
+                        &model.spellbook.slots
+                    } else {
+                        &model.spell_list
+                    };
                     slots.iter().position(|slot| slot.spell_id == id)
                         .map_or(id, |index| index as u32 + 1)
                 } else {

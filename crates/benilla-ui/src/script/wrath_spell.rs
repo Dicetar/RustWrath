@@ -46,7 +46,12 @@ fn spell_reference(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<(u32, bo
     let Value::String(name) = input else { return Ok(None) };
     let name = name.to_str()?;
     let model = lua.app_data_ref::<Model>().expect("model");
-    Ok(spellbook::resolve_spell_in_books(&model.spellbook, &model.pet_book, &name)
+    let player_slots = if model.spell_list.is_empty() {
+        &model.spellbook.slots
+    } else {
+        &model.spell_list
+    };
+    Ok(spellbook::resolve_spell_in_list(player_slots, &model.pet_book, &name)
         .map(|spell| (spell.spell_id, spell.pet)))
 }
 
