@@ -87,9 +87,9 @@ fn open_ticket_args(
     ]
 }
 
-/// With a ticket the form is an editor (Save Changes, Exit); a bare `arg1 = 0` makes it a form.
+/// With a ticket the form is an editor (Save Changes, Exit); no argument at all turns it back.
 #[test]
-fn an_open_ticket_turns_the_form_into_an_editor_and_a_zero_turns_it_back() {
+fn an_open_ticket_turns_the_form_into_an_editor_and_no_argument_turns_it_back() {
     let _data = benilla_formats::wow_data_or_skip!();
     let mut s = setup();
     s.run("ShowUIPanel(HelpFrame) HelpFrame_ShowFrame(\"OpenTicket\")")
@@ -117,8 +117,9 @@ fn an_open_ticket_turns_the_form_into_an_editor_and_a_zero_turns_it_back() {
         1
     );
 
-    // No ticket: a bare 0.
-    s.fire_event("UPDATE_TICKET", vec![ScriptValue::Int(0)]);
+    // No ticket: 3.3.5 signals `UPDATE_TICKET` with no arguments (`GMTicketInfo.cpp:242`), so the
+    // form's `arg1 and arg1 ~= 0` test fails and it resets.
+    s.fire_event("UPDATE_TICKET", vec![]);
     assert_eq!(
         s.eval::<String>("return HelpFrameOpenTicketText:GetText()")
             .unwrap(),
@@ -129,6 +130,11 @@ fn an_open_ticket_turns_the_form_into_an_editor_and_a_zero_turns_it_back() {
         s.eval::<bool>("return HelpFrameOpenTicket.hasTicket == nil")
             .unwrap(),
         "and stops believing it has a ticket"
+    );
+    assert!(
+        s.errors().is_empty(),
+        "the no-ticket fire must not reach HelpFrame's ticket branch: {:?}",
+        s.errors()
     );
 }
 
@@ -145,7 +151,8 @@ fn the_ticket_toast_follows_the_ticket() {
             .unwrap(),
         "a ticket raises the toast"
     );
-    s.fire_event("UPDATE_TICKET", vec![ScriptValue::Int(0)]);
+    // The stock no-ticket fire carries no argument, so `TicketStatusFrame_OnEvent` hides.
+    s.fire_event("UPDATE_TICKET", vec![]);
     assert!(
         !s.eval::<bool>("return TicketStatusFrame:IsVisible()")
             .unwrap(),
