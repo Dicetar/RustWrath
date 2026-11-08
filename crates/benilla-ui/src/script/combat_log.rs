@@ -1,7 +1,7 @@
 //! The 3.3.5a raw combat-log query/filter globals, from
 //! `WoW/Source/Object/ObjectClient/UnitCombatLog_C_Scripts.cpp`.
 //!
-//! The filter list and retention value are real state. The reference's raw history is not:
+//! The filter list and the retention fallback are real state. The reference's raw history is not:
 //! `QueueCombatLogEntry` (`0x0074FF20`, `UnitCombatLog_C.cpp:914`) and `SendCombatLogEvents`
 //! (`0x0074F910`, `:866`) are the producer that links `CombatLogEntry` records into `s_entries`,
 //! and `CombatLogEntry::PushEvent` (`0x0074E290`, `:1241-1276`) builds the tuple the query verbs
@@ -24,22 +24,27 @@
 //! (`crates/benilla-app/src/ui_script/wrath_combat_log_feed.rs`). The API no longer aborts; this
 //! is not working filtered content.
 //!
-//! The retention value is Model state, not the reference's `combatLogRetentionTime` CVar: that row
-//! is absent from `crates/benilla-app/src/cvars/table.rs`, so `GetCVar("combatLogRetentionTime")`
-//! stays nil and `SetCVar` does not move the getter. The default 300 matches the reference CVar.
+//! The retention value is the reference's `combatLogRetentionTime` CVar when the host registers it
+//! (`crates/benilla-app/src/cvars/table.rs`): `Script_CombatLogGetRetentionTime` (`0x0074D9E0`)
+//! pushes the row's `m_intValue`, the Storm `SStrToInt` of its text, and
+//! `Script_CombatLogSetRetentionTime` (`0x0074D5B0`) writes the integer back. A bare test VM with
+//! no row falls back to `CombatLogState::retention_seconds`, whose default 300 matches the
+//! reference's registered `"300"`. That field is only the bare-VM fallback: while the row exists
+//! the setter writes the CVar alone, so a direct `SetCVar` and the native getter cannot disagree.
+//! A refused (read-only) CVar write leaves the getter on the old value, as the reference's getter
+//! reads the same record.
 //!
-//! Remaining sibling native in the same reference table: `CombatLog_Object_IsA` (`0x0074D600`),
-//! which `CombatLog_OnEvent` calls before formatting a named endpoint
-//! (`Blizzard_CombatLog.lua:2239`, `:2242`, `:2902-2916`). It is not installed by this batch,
-//! whose scope is the ApplyFilters/query surface; with only unfiltered `PARTY_KILL` producers the
-//! stock frame does not reach that path. Installing it is the next step before filtered event
-//! content.
+//! `CombatLog_Object_IsA` (`0x0074D600`), which `CombatLog_OnEvent` calls before formatting a
+//! named endpoint (`Blizzard_CombatLog.lua:2239`, `:2242`, `:2902-2916`), is installed by this
+//! module. With only unfiltered `PARTY_KILL` producers the stock frame does not reach that path
+//! yet; the remaining step before filtered event content is the entry ring and its matcher, not
+//! this native.
 //!
 //! The same table also registers `CombatTextSetActiveUnit` (`Script_CombatTextSetActiveUnit`,
 //! `0x0074D580`, `:153-158`; the registrar `UnitCombatLogRegisterScriptFunctions` is `0x0074D6B0`).
 //! Stock `Blizzard_CombatText.lua:114`, `:120` and `:537` call it, and `Blizzard_CombatText` is
 //! LoadOnDemand (`crates/benilla-app/assets/ui/OptionsFrame.xml:36-39`), so the Combat Text options
-//! path is an adjacent, separate symptom; it is not part of this ApplyFilters/query fix.
+//! path is an adjacent, separate symptom that remains uninstalled with no Project B consumer.
 //!
 //! Stock callers:
 //! - `Interface\AddOns\Blizzard_CombatLog\Blizzard_CombatLog.lua:633-695` calls
@@ -75,8 +80,9 @@ pub(crate) enum FilterSelector {
     Guid(String),
 }
 
-/// The filter list (`s_filters`) and `combatLogRetentionTime`'s value. The reference default is
-/// `"300"` seconds (`WoW/Source/Ui/GameUI_CVar.cpp:633`); no raw-entry ring exists beside it.
+/// The filter list (`s_filters`) and the fallback `combatLogRetentionTime` value used when no such
+/// CVar row is registered. The reference default is `"300"` seconds
+/// (`WoW/Source/Ui/GameUI_CVar.cpp:633`); no raw-entry ring exists beside it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CombatLogState {
     pub(crate) filters: Vec<CombatLogFilter>,
@@ -235,20 +241,24 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(()))?,
     )?;
 
-    // `0x0074D9E0`: the retention CVar's integer value.
+    // `0x0074D9E0`: `g_combatLogRetentionTimeCVar->m_intValue`, Storm's `SStrToInt` of the row's
+    // text. A bare test VM has no row, so the Model fallback answers instead.
     globals.set(
         "CombatLogGetRetentionTime",
         lua.create_function(|lua, ()| {
-            let seconds = lua
-                .app_data_ref::<Model>()
-                .expect("model app_data")
-                .combat_log
-                .retention_seconds;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let seconds = match model.cvars.get("combatlogretentiontime") {
+                Some(slot) => crate::script::binding_abi::s_str_to_int(&slot.value),
+                None => model.combat_log.retention_seconds,
+            };
             Ok(i64::from(seconds))
         })?,
     )?;
 
-    // `0x0074D5B0`: `CombatLogSetRetentionTime(seconds)`, a number stored as an integer.
+    // `0x0074D5B0`: `CombatLogSetRetentionTime(seconds)`, a number stored as an integer. The row
+    // write is the reference's `CVar::Set`; the Model copy is the bare-VM fallback and is not
+    // authoritative while the row exists, so a direct `SetCVar` leaves it behind. A read-only row
+    // refuses the CVar write, so the getter above keeps answering the old value there.
     globals.set(
         "CombatLogSetRetentionTime",
         lua.create_function(|lua, args: MultiValue| {
@@ -257,10 +267,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     "Usage: CombatLogSetRetentionTime(seconds)",
                 ));
             };
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .combat_log
-                .retention_seconds = seconds as i32;
+            let seconds = crate::script::binding_abi::ftol(seconds);
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            // The CVar is the source of truth once it exists; writing the fallback too would leave
+            // a stale copy that a later `SetCVar` never updates.
+            if !model.cvars.contains_key("combatlogretentiontime") {
+                model.combat_log.retention_seconds = seconds;
+            }
+            crate::script::cvars::set_from_engine(
+                &mut model,
+                "combatLogRetentionTime",
+                seconds.to_string(),
+            );
             Ok(())
         })?,
     )?;
@@ -533,6 +551,113 @@ mod tests {
         assert!(
             script.run("CombatLogSetRetentionTime()").is_err(),
             "the reference raises Usage for a non-number"
+        );
+    }
+
+    /// With the host's `combatLogRetentionTime` row registered, the native pair follows the CVar as
+    /// `Script_CombatLogGetRetentionTime`/`SetRetentionTime` do, and `GetCVar` no longer raises.
+    #[test]
+    fn retention_reads_and_writes_the_registered_cvar() {
+        let script = wrath();
+        script.register_cvars([("combatLogRetentionTime", "300")]);
+        assert_eq!(
+            script
+                .eval::<String>(r#"return GetCVar("combatLogRetentionTime")"#)
+                .unwrap(),
+            "300",
+            "the registered row resolves"
+        );
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetRetentionTime()")
+                .unwrap(),
+            300
+        );
+        script.run("CombatLogSetRetentionTime(120)").unwrap();
+        assert_eq!(
+            script
+                .eval::<String>(r#"return GetCVar("combatLogRetentionTime")"#)
+                .unwrap(),
+            "120",
+            "the setter writes the CVar as the reference's CVar::Set does"
+        );
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetRetentionTime()")
+                .unwrap(),
+            120
+        );
+        script
+            .run(r#"SetCVar("combatLogRetentionTime", "45")"#)
+            .unwrap();
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetRetentionTime()")
+                .unwrap(),
+            45,
+            "SetCVar moves the native getter once the row exists"
+        );
+    }
+
+    /// The getter is the row's `m_intValue`: Storm's `SStrToInt` of its text, so a non-numeric value
+    /// reads as 0 while `GetCVar` still answers the text that was stored.
+    #[test]
+    fn retention_cvar_text_is_parsed_as_the_reference_integer() {
+        let script = wrath();
+        script.register_cvars([("combatLogRetentionTime", "300")]);
+        script
+            .run(r#"SetCVar("combatLogRetentionTime", "12abc")"#)
+            .unwrap();
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetRetentionTime()")
+                .unwrap(),
+            12,
+            "SStrToInt stops at the first non-digit"
+        );
+        script
+            .run(r#"SetCVar("combatLogRetentionTime", "not a number")"#)
+            .unwrap();
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetRetentionTime()")
+                .unwrap(),
+            0,
+            "a non-numeric row text is m_intValue 0"
+        );
+        assert_eq!(
+            script
+                .eval::<String>(r#"return GetCVar("combatLogRetentionTime")"#)
+                .unwrap(),
+            "not a number",
+            "the row keeps its text; only the native view parses it"
+        );
+    }
+
+    /// A read-only row refuses the write as `CVar::Set` does: the native getter keeps the applied
+    /// value while the Model fallback records the requested integer for a later bare VM.
+    #[test]
+    fn read_only_retention_cvar_keeps_the_native_getter_on_the_old_value() {
+        let script = wrath();
+        script.register_cvars([("combatLogRetentionTime", "300")]);
+        script.set_cvar_read_only("combatLogRetentionTime", true);
+        script.run("CombatLogSetRetentionTime(120)").unwrap();
+        assert_eq!(
+            script
+                .eval::<i64>("return CombatLogGetRetentionTime()")
+                .unwrap(),
+            300,
+            "the refused write leaves the CVar at its applied value"
+        );
+        assert_eq!(
+            script
+                .lua()
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .combat_log
+                .retention_seconds,
+            120,
+            "the fallback still records the requested integer"
         );
     }
 }

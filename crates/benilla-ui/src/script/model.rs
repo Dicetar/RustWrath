@@ -580,9 +580,9 @@ pub(crate) struct Model {
     pub(crate) logging_chat: bool,
     pub(crate) logging_combat: bool,
     pub(crate) logging_changed: bool,
-    /// The 3.3.5a combat log's filter list and retention (`UnitCombatLog_C_Scripts.cpp`). The
-    /// raw-entry history is empty until a `CombatLogEntry` producer is wired; see
-    /// [`super::combat_log`].
+    /// The 3.3.5a combat log's filter list and retention fallback (`UnitCombatLog_C_Scripts.cpp`);
+    /// the registered `combatLogRetentionTime` CVar is authoritative when it exists. The raw-entry
+    /// history is empty until a `CombatLogEntry` producer is wired; see [`super::combat_log`].
     pub(crate) combat_log: super::combat_log::CombatLogState,
     /// A user-placed frame moved or resized, or `SetUserPlaced` ran: the layout cache's save cue.
     pub(crate) user_placed_changed: bool,
