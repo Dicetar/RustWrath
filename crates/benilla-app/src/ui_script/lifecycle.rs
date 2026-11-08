@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 use benilla_assets::{LockRecover, LooseOpen};
 use benilla_ui::mlua;
-use benilla_ui::script::{UiScript, UiTarget};
+use benilla_ui::script::{ScreenResolution, UiScript, UiTarget};
 use benilla_world::frame_pace::FrameStep;
 
 use super::manifest::silenced_ui_load;
@@ -756,6 +756,23 @@ fn load_ingame_ui_seated_with(world: &mut World, seat: LoadSeat, prepared: Optio
     } else {
         Default::default()
     };
+    // `UpdateMenuBarTop` (`UIParent.lua:1167-1174`) reads `GetScreenResolutions` and
+    // `GetCurrentResolution` during the stock load, before `publish_display_modes` has run in
+    // `UiFeed`; with an empty list it divides nil and aborts the menu-bar/action-bar layout. Seed
+    // the live window size before any file runs; the later feed replaces it with the full list.
+    let display = {
+        let mut q = world.query_filtered::<&Window, With<bevy::window::PrimaryWindow>>();
+        q.single(world).map_or((0, 0), |w| {
+            (w.width().round() as u32, w.height().round() as u32)
+        })
+    };
+    if display.0 > 0 && display.1 > 0 {
+        let current = ScreenResolution {
+            width: display.0,
+            height: display.1,
+        };
+        script.set_screen_resolutions(vec![current], Some(current));
+    }
     // No sound during the load edge, as in the reference's `UI_Init` (`0x48fbfa` → `0x49016d`).
     // Each phase runs with a call host lent, built off the world as a system's would be, so a call
     // a file or an `ADDON_LOADED` or `VARIABLES_LOADED` handler makes applies inside its verb, as
@@ -787,12 +804,6 @@ fn load_ingame_ui_seated_with(world: &mut World, seat: LoadSeat, prepared: Optio
         // done, after the chat reader (`0x4900d6`) and before the `PLAYER_LOGIN` arm (`0x49011d`),
         // through the display handler (`0x49010e` → `0x492e90`). So every `OnLoad` sees `UIParent`
         // at scale 1 and the root's size.
-        let display = {
-            let mut q = world.query_filtered::<&Window, With<bevy::window::PrimaryWindow>>();
-            q.single(world).map_or((0, 0), |w| {
-                (w.width().round() as u32, w.height().round() as u32)
-            })
-        };
         let cached = world.get_resource::<super::UiAutoScaleCache>().map(|c| c.0);
         let mut cache = cached.flatten();
         crate::script_calls::lent_by_world(world, script, |script| {
