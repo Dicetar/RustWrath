@@ -362,7 +362,9 @@ pub struct MovementProposal {
 }
 
 /// Which slot produced a validated proposal. A `Staged` candidate is not active yet: the
-/// controller must accept the same proposal and only then call [`Host::commit_movement_processor`].
+/// controller must accept the same proposal and only then call [`Host::commit_movement_processor`],
+/// which refuses while no proposal is armed. A controller rejection must call
+/// [`Host::withdraw_movement_proposal`] before the next commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovementProposalSource {
     Staged,
@@ -649,6 +651,12 @@ pub struct Host {
     movement_active: Option<MovementLoaded>,
     movement_refusal: Option<MovementRefusal>,
     movement_rejection: Option<String>,
+    /// Whether the most recent [`Self::movement_proposal`] call produced a validated proposal from
+    /// the currently staged candidate. [`Self::commit_movement_processor`] promotes only when this
+    /// is `true`, so a staged candidate cannot be activated without a host-validated proposal from
+    /// that same candidate. Cleared at the start of every proposal call, on every refusal, and
+    /// whenever the selected or staged state changes (a new stage, unload or seam toggle).
+    movement_proposal_ready: bool,
     /// Bounded in-memory quarantine of movement digests rejected after their bytes were verified:
     /// a terminal post-verification `MovementLoaded::open` failure, or a module-produced `Status`
     /// or output-validation failure in `movement_proposal`. A changed manifest that still names
@@ -681,6 +689,7 @@ impl Host {
             movement_active: None,
             movement_refusal: None,
             movement_rejection: None,
+            movement_proposal_ready: false,
             movement_quarantined_digests: VecDeque::new(),
             seams: ModularGameplayRegistry::new(),
         }
@@ -875,6 +884,7 @@ impl Host {
         if kind == ModuleKind::Movement {
             if enabled && !was_enabled {
                 // Let the next stage call publish the manifest that was refused while disabled.
+                self.movement_proposal_ready = false;
                 self.movement_observed = None;
                 self.movement_failure_stamp = None;
                 self.movement_refusal = None;
@@ -883,6 +893,7 @@ impl Host {
                 // A disabled seam must not keep running or promote a movement processor. Keep the
                 // manifest latch so garbage collection still pins the publication; enabling clears
                 // it and lets the next stage call publish the manifest again.
+                self.movement_proposal_ready = false;
                 self.unload_movement_processor();
                 self.movement_refusal = None;
                 self.movement_rejection = None;
@@ -1200,6 +1211,7 @@ impl Host {
             Ok(text) => text,
             Err(error) => {
                 self.movement_pending = None;
+                self.movement_proposal_ready = false;
                 self.movement_observed = None;
                 self.movement_failure_stamp = None;
                 return if error.kind() == std::io::ErrorKind::NotFound {
@@ -1224,6 +1236,7 @@ impl Host {
             self.movement_failure_stamp = None;
             self.movement_pending = None;
             self.movement_active = None;
+            self.movement_proposal_ready = false;
             return if already_refused {
                 Ok(false)
             } else {
@@ -1251,6 +1264,7 @@ impl Host {
         // Any changed movement manifest invalidates the previous observation and any superseded
         // candidate, exactly as the pose manifest does for its own slot.
         self.movement_pending = None;
+        self.movement_proposal_ready = false;
         self.movement_observed = None;
         self.movement_failure_stamp = None;
         let publication: Publication = match toml::from_str(&text) {
@@ -1299,6 +1313,9 @@ impl Host {
         match MovementLoaded::open(&self.root, publication) {
             Ok(pending) => {
                 self.movement_pending = Some(pending);
+                // A newly staged candidate has not proposed yet; only its own accepted proposal
+                // may arm the commit gate.
+                self.movement_proposal_ready = false;
                 self.movement_observed = Some(text);
                 self.movement_failure_stamp = None;
                 self.movement_refusal = None;
@@ -1375,6 +1392,9 @@ impl Host {
         frame: &MovementFrame,
         bounds: &MovementBounds,
     ) -> std::result::Result<(MovementProposal, MovementProposalSource), MovementRefusal> {
+        // Readiness is per-call: every proposal starts unarmed and only a successful staged
+        // proposal below may arm the commit gate. A previous tick cannot leak a promotion right.
+        self.movement_proposal_ready = false;
         // A seam disabled after staging must not keep proposing or accept a commit; the setter
         // normally evicts first, but this gate keeps a direct registry read authoritative.
         if !self.is_seam_enabled(ModuleKind::Movement) {
@@ -1427,14 +1447,19 @@ impl Host {
             ));
         }
         match validate_movement_output(frame, &output, bounds) {
-            Ok(()) => Ok((
-                movement_proposal_of(&output),
-                if staged {
-                    MovementProposalSource::Staged
-                } else {
-                    MovementProposalSource::Active
-                },
-            )),
+            Ok(()) => {
+                // Only a staged candidate can be promoted later; an active processor already owns
+                // the slot, so an active proposal never arms the commit gate.
+                self.movement_proposal_ready = staged;
+                Ok((
+                    movement_proposal_of(&output),
+                    if staged {
+                        MovementProposalSource::Staged
+                    } else {
+                        MovementProposalSource::Active
+                    },
+                ))
+            }
             Err(refusal) => {
                 self.quarantine_movement_digest(&digest);
                 Err(self.reject_movement_candidate(
@@ -1447,19 +1472,39 @@ impl Host {
         }
     }
 
-    /// Promote the staged processor after the controller accepted its proposal. Returns whether a
-    /// promotion happened; only this makes a candidate active.
+    /// Promote the staged processor after the controller accepts a host-validated staged proposal.
+    /// Returns whether a promotion happened; only this makes a candidate active.
+    ///
+    /// A promotion requires a successful [`Self::movement_proposal`] call from the currently staged
+    /// candidate. Staging alone never arms this gate. A `FrameInput` failure retains the candidate
+    /// but stays unarmed, so it cannot be promoted until a later valid staged proposal; `NoModule`
+    /// leaves the empty selection untouched, and a `Status` or output-validation failure drops the
+    /// failing candidate instead.
     pub fn commit_movement_processor(&mut self) -> bool {
         if !self.is_seam_enabled(ModuleKind::Movement) {
             self.unload_movement_processor();
             return false;
         }
+        if !self.movement_proposal_ready {
+            return false;
+        }
         let Some(candidate) = self.movement_pending.take() else {
+            self.movement_proposal_ready = false;
             return false;
         };
         self.movement_active = Some(candidate);
+        self.movement_proposal_ready = false;
         self.movement_refusal = None;
         true
+    }
+
+    /// Withdraw the current staged proposal after the controller refused the host-validated
+    /// intent. Clears the commit readiness but keeps the candidate staged for a later frame.
+    /// Returns whether a proposal was armed. The adapter must call this when its intent
+    /// evaluation rejects the host proposal; otherwise a later [`Self::commit_movement_processor`]
+    /// could promote a proposal the controller refused.
+    pub fn withdraw_movement_proposal(&mut self) -> bool {
+        std::mem::take(&mut self.movement_proposal_ready)
     }
 
     /// Drop the staged or active movement processor and hand prediction back to the baseline
@@ -1468,6 +1513,7 @@ impl Host {
     pub fn unload_movement_processor(&mut self) -> bool {
         let staged = self.movement_pending.take().is_some();
         let active = self.movement_active.take().is_some();
+        self.movement_proposal_ready = false;
         staged | active
     }
 
@@ -1489,6 +1535,8 @@ impl Host {
     }
 
     fn refuse_movement(&mut self, refusal: MovementRefusal, detail: String) -> MovementRefusal {
+        // Any typed refusal means no proposal from the current candidate was accepted.
+        self.movement_proposal_ready = false;
         self.movement_refusal = Some(refusal);
         self.movement_rejection = Some(detail);
         refusal
@@ -1507,6 +1555,7 @@ impl Host {
         refusal: MovementRefusal,
         detail: String,
     ) -> MovementRefusal {
+        self.movement_proposal_ready = false;
         if staged {
             self.movement_pending = None;
             if self
@@ -3226,6 +3275,273 @@ mod tests {
             "a valid commit and active proposal never quarantine"
         );
         assert!(!host.commit_movement_processor(), "nothing left to promote");
+    }
+
+    #[test]
+    fn movement_commit_requires_a_staged_proposal() {
+        let mut host = probe_host(propose_step);
+        assert!(
+            !host.commit_movement_processor(),
+            "staging a candidate alone must not promote it"
+        );
+        assert!(
+            host.movement_pending.is_some(),
+            "the refused commit keeps the candidate staged"
+        );
+        assert!(!host.movement_processor_active());
+
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged candidate proposes");
+        assert_eq!(source, MovementProposalSource::Staged);
+        assert!(
+            host.commit_movement_processor(),
+            "a host-validated staged proposal promotes the candidate"
+        );
+        assert!(host.movement_processor_active());
+        assert!(host.movement_pending.is_none());
+        assert!(
+            !host.commit_movement_processor(),
+            "a second commit has nothing to promote"
+        );
+    }
+
+    #[test]
+    fn movement_controller_rejection_withdraws_the_commit_gate() {
+        let mut host = probe_host(propose_step);
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged candidate proposes");
+        assert!(host.movement_proposal_ready);
+        assert!(
+            host.withdraw_movement_proposal(),
+            "the armed proposal is withdrawn"
+        );
+        assert!(!host.movement_proposal_ready);
+        assert!(
+            host.movement_pending.is_some(),
+            "the refused candidate stays staged for a later frame"
+        );
+        assert!(
+            !host.commit_movement_processor(),
+            "a withdrawn proposal cannot be committed"
+        );
+        assert!(
+            !host.withdraw_movement_proposal(),
+            "a second withdrawal is a no-op"
+        );
+
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the retained candidate proposes again");
+        assert!(host.commit_movement_processor());
+        assert!(host.movement_processor_active());
+    }
+
+    #[test]
+    fn movement_changed_manifest_clears_an_armed_commit_gate() {
+        let root = movement_test_root("commit-manifest-reset");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_pending = Some(MovementLoaded::probe("rev-m", propose_step));
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged candidate proposes");
+        assert!(host.movement_proposal_ready);
+
+        std::fs::write(root.join(MOVEMENT_MANIFEST), "revision = \"unterminated\n")
+            .expect("write malformed movement manifest");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert!(!host.movement_proposal_ready);
+        assert!(host.movement_pending.is_none());
+        assert!(!host.commit_movement_processor());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_changed_manifest_arming_the_active_shortcut_clears_the_commit_gate() {
+        let root = movement_test_root("commit-active-shortcut");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_active = Some(MovementLoaded::probe_with_digest(
+            "rev-active",
+            ACTIVE_DIGEST,
+            propose_step,
+        ));
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-pending",
+            NEWEST_DIGEST,
+            propose_step,
+        ));
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged candidate proposes");
+        assert!(host.movement_proposal_ready);
+
+        // A changed manifest that names the active digest takes the quiet active shortcut, which
+        // does not call `refuse_movement`; only the changed-manifest clear can disarm this gate.
+        let dll = format!("movement-{ACTIVE_DIGEST}.dll");
+        let manifest = movement_publication_text("rev-active", &dll, ACTIVE_DIGEST);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write active manifest");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Ok(false),
+            "the active shortcut is a quiet stage"
+        );
+        assert!(!host.movement_proposal_ready);
+        assert!(host.movement_pending.is_none());
+        assert!(host.movement_active.is_some());
+        assert!(!host.commit_movement_processor());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_failed_frame_after_a_staged_proposal_blocks_the_commit() {
+        let mut host = probe_host(propose_step);
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged candidate proposes");
+        assert!(host.movement_proposal_ready);
+
+        let mut frame = movement_frame();
+        frame.dt_seconds = 0.0;
+        assert_eq!(
+            host.movement_proposal(&frame, &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::FrameInput)
+        );
+        assert!(
+            host.movement_pending.is_some(),
+            "the handback policy retains the candidate"
+        );
+        assert!(
+            !host.commit_movement_processor(),
+            "a failed frame is not an accepted proposal"
+        );
+        assert!(host.movement_pending.is_some(), "the candidate is still staged");
+        assert!(!host.movement_processor_active(), "nothing was promoted");
+
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the retained candidate serves the next valid frame");
+        assert!(
+            host.commit_movement_processor(),
+            "a later valid staged proposal re-arms the gate"
+        );
+        assert!(host.movement_processor_active());
+    }
+
+    #[test]
+    fn movement_failed_staged_module_cannot_be_committed() {
+        for process in [reject_frame as ProcessMovement, propose_nan as ProcessMovement] {
+            let mut host = probe_host(process);
+            assert!(
+                host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+                    .is_err(),
+                "the staged module fails Status or output validation"
+            );
+            assert!(
+                !host.movement_proposal_ready,
+                "a Status/validation failure clears the commit gate"
+            );
+            assert!(
+                !host.commit_movement_processor(),
+                "a Status/validation failure never arms the commit gate"
+            );
+            assert!(
+                !host.has_movement_processor(),
+                "the failed candidate is dropped"
+            );
+            assert!(!host.movement_processor_active());
+        }
+    }
+
+    #[test]
+    fn movement_active_proposal_does_not_arm_the_commit_gate() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_active = Some(MovementLoaded::probe("rev-active", propose_step));
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the active processor proposes");
+        assert_eq!(source, MovementProposalSource::Active);
+        assert!(
+            !host.movement_proposal_ready,
+            "an active proposal never arms the commit gate"
+        );
+        assert!(
+            !host.commit_movement_processor(),
+            "an active proposal has nothing to promote"
+        );
+        assert!(host.movement_processor_active());
+        assert!(host.movement_pending.is_none());
+
+        // Even if a caller injects a candidate after an active proposal, readiness stays false:
+        // only a later successful staged proposal can arm the gate.
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-next",
+            &"e".repeat(40),
+            propose_step,
+        ));
+        assert!(
+            !host.commit_movement_processor(),
+            "the active proposal did not arm a later injected candidate"
+        );
+        assert!(host.movement_pending.is_some());
+    }
+
+    #[test]
+    fn movement_restaging_after_commit_requires_a_new_staged_proposal() {
+        let root = movement_test_root("commit-restage");
+        let active_digest = "0".repeat(40);
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_pending = Some(MovementLoaded::probe("rev-movement", propose_step));
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the first candidate proposes");
+        assert!(host.commit_movement_processor());
+        assert!(host.movement_processor_active());
+        assert!(
+            !host.movement_proposal_ready,
+            "a successful commit disarms the gate"
+        );
+
+        // The next candidate reaches the slot through a stage call that clears the previous
+        // selection (this root has no movement manifest, so the absent publication clears the
+        // slot) and is then placed directly because focused tests cannot build a native DLL.
+        assert_eq!(host.stage_movement_processor(), Ok(false));
+        assert!(!host.movement_proposal_ready);
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-next",
+            &"d".repeat(40),
+            propose_step,
+        ));
+        assert!(
+            !host.commit_movement_processor(),
+            "a re-staged candidate must propose before promotion"
+        );
+        assert!(host.movement_pending.is_some(), "the new candidate stays staged");
+        assert_eq!(
+            host.movement_digest(),
+            Some(active_digest.as_str()),
+            "the previously active processor is unchanged"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_stage_path_resets_an_armed_commit_gate() {
+        let root = movement_test_root("commit-restage-reset");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_pending = Some(MovementLoaded::probe("rev-movement", propose_step));
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged candidate proposes");
+        assert!(host.movement_proposal_ready);
+        assert_eq!(host.stage_movement_processor(), Ok(false));
+        assert!(
+            !host.movement_proposal_ready,
+            "a selected-state change disarms the gate"
+        );
+        assert!(host.movement_pending.is_none());
+        assert!(!host.commit_movement_processor());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
