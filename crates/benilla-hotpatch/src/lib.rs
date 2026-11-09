@@ -55,6 +55,38 @@ pub enum RestoreOutcome {
     Unavailable { failed_digest: Option<ModuleDigest> },
 }
 
+/// Read-only in-memory health of the currently active pose module.
+///
+/// The counters and timings describe the active module's steady-state evaluations; the activation
+/// probe that promoted it (candidate canary or predecessor restore) is untimed, so both timings are
+/// 0 until the first post-activation frame. `revision`/`digest` name the module active at snapshot
+/// time; after a demotion with no valid predecessor the slot is empty, so both are `None` while the
+/// last counters/timings remain visible until the next activation resets them (the failed identity
+/// is still available from `take_active_failure`/`take_restore_outcomes`). A restored predecessor
+/// is a new activation and starts a clean record. This is the in-memory H03 slice: it is neither
+/// persisted nor used to enforce rollback thresholds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PatchHealthSnapshot {
+    /// Revision of the module active at snapshot time, or `None` when the slot is empty.
+    pub revision: Option<String>,
+    /// Verified SHA-1 of the module active at snapshot time, or `None` when the slot is empty.
+    pub digest: Option<String>,
+    /// Active-module frame failures since its last success or activation.
+    pub consecutive_frame_failures: u32,
+    /// Active-module frame failures since its last activation. Per-activation in this in-memory
+    /// slice; per-revision cumulative accounting for `max_total_frame_failures` remains H03.
+    pub total_frame_failures: u32,
+    /// Duration of the most recent steady-state active-module evaluation, in microseconds. The
+    /// activation probe that promoted this module (candidate canary or predecessor restore) is not
+    /// timed, so this is 0 until the first post-activation frame.
+    pub last_eval_micros: u64,
+    /// High-water mark of steady-state active-module evaluation duration, in microseconds.
+    pub max_eval_micros: u64,
+    /// Number of pose digests currently held in the bounded in-memory quarantine.
+    pub quarantined_digests: usize,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Publication {
@@ -621,6 +653,45 @@ fn movement_proposal_of(output: &MovementOutput) -> MovementProposal {
     }
 }
 
+/// In-memory counters/timings for the active pose module.
+///
+/// Reset on every activation so the record always describes the module that is currently (or was
+/// most recently) active. H03 persistence and threshold enforcement remain out of scope.
+#[derive(Clone, Debug, Default)]
+struct PatchHealth {
+    consecutive_frame_failures: u32,
+    total_frame_failures: u32,
+    last_eval_micros: u64,
+    max_eval_micros: u64,
+}
+
+impl PatchHealth {
+    /// Record one active-module evaluation. The `u128` microsecond count saturates to `u64` rather
+    /// than panicking on an implausibly long call.
+    fn record_eval(&mut self, elapsed: std::time::Duration) {
+        let micros = elapsed.as_micros().min(u64::MAX as u128) as u64;
+        self.last_eval_micros = micros;
+        self.max_eval_micros = self.max_eval_micros.max(micros);
+    }
+
+    /// An active module produced a valid batch: the consecutive streak ends, but the cumulative
+    /// count survives until the next activation resets it.
+    fn record_success(&mut self) {
+        self.consecutive_frame_failures = 0;
+    }
+
+    fn record_failure(&mut self) {
+        self.consecutive_frame_failures = self.consecutive_frame_failures.saturating_add(1);
+        self.total_frame_failures = self.total_frame_failures.saturating_add(1);
+    }
+
+    /// A newly activated module starts with a clean record. Its first steady-state evaluation on a
+    /// later frame populates the timings; the candidate canary/restore probe is not timed.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 pub struct Host {
     root: PathBuf,
     observed: Option<String>,
@@ -631,6 +702,9 @@ pub struct Host {
     active: Option<Loaded>,
     pending: Option<Loaded>,
     previous: VecDeque<Loaded>,
+    /// In-memory counters/timings for the active pose module, exposed through
+    /// [`Host::health_snapshot`]. See [`PatchHealthSnapshot`].
+    health: PatchHealth,
     rejection: Option<String>,
     active_failure: Option<String>,
     restores: VecDeque<RestoreOutcome>,
@@ -679,6 +753,7 @@ impl Host {
             active: None,
             pending: None,
             previous: VecDeque::new(),
+            health: PatchHealth::default(),
             rejection: None,
             active_failure: None,
             restores: VecDeque::new(),
@@ -869,6 +944,26 @@ impl Host {
     /// Verified content identity of the currently active library.
     pub fn digest(&self) -> Option<&str> {
         self.active.as_ref().map(|m| m.digest.as_str())
+    }
+
+    /// Read-only in-memory health of the active pose module.
+    ///
+    /// `revision`/`digest` name the module active at snapshot time. After a demotion with no valid
+    /// predecessor the slot is empty, so both are `None` while the last counters/timings remain
+    /// visible until the next activation resets them; the failed identity is available from
+    /// `take_active_failure`/`take_restore_outcomes`. A restored predecessor starts a clean record.
+    /// `quarantined_digests` is the current pose quarantine length. `total_frame_failures` is
+    /// per-activation in this slice. This snapshot neither persists nor enforces the H03 thresholds.
+    pub fn health_snapshot(&self) -> PatchHealthSnapshot {
+        PatchHealthSnapshot {
+            revision: self.active.as_ref().map(|module| module.revision.clone()),
+            digest: self.active.as_ref().map(|module| module.digest.clone()),
+            consecutive_frame_failures: self.health.consecutive_frame_failures,
+            total_frame_failures: self.health.total_frame_failures,
+            last_eval_micros: self.health.last_eval_micros,
+            max_eval_micros: self.health.max_eval_micros,
+            quarantined_digests: self.quarantined_digests.len(),
+        }
     }
     pub fn take_rejection(&mut self) -> Option<String> {
         self.rejection.take()
@@ -1115,6 +1210,9 @@ impl Host {
                     while self.previous.len() > 3 {
                         self.previous.pop_front();
                     }
+                    // A newly promoted candidate starts a fresh health record; the canary call is
+                    // an activation probe, not a timed steady-state evaluation.
+                    self.health.reset();
                     return Ok(true);
                 }
                 Err(error) => {
@@ -1133,12 +1231,19 @@ impl Host {
             }
         }
         if let Some(module) = self.active.take() {
-            match module.evaluate(bones, rigs, seconds, output) {
+            // Only the active module is timed. The candidate canary above and the predecessor
+            // restore below are activation probes, not steady-state frame evaluations.
+            let started = std::time::Instant::now();
+            let result = module.evaluate(bones, rigs, seconds, output);
+            self.health.record_eval(started.elapsed());
+            match result {
                 Ok(()) => {
                     self.active = Some(module);
+                    self.health.record_success();
                     return Ok(true);
                 }
                 Err(error) => {
+                    self.health.record_failure();
                     let failed_digest = module.digest_bytes();
                     // The active module was already loaded and verified; under the single-strike
                     // H03 policy an evaluation failure is treated as an artifact failure.
@@ -1164,6 +1269,9 @@ impl Host {
                             Ok(()) => {
                                 let restored_digest = previous.digest_bytes();
                                 self.active = Some(previous);
+                                // The restored predecessor is newly active: its own record starts
+                                // clean, so the failed module's counters/timings are not carried.
+                                self.health.reset();
                                 self.push_restore(RestoreOutcome::Restored {
                                     failed_digest,
                                     restored_digest,
@@ -1183,6 +1291,9 @@ impl Host {
                         }
                     }
                     self.active = None;
+                    // No predecessor produced valid output. The failed module's counters and
+                    // timings stay visible; the snapshot's `revision`/`digest` are `None` until a
+                    // new activation resets the record.
                     self.push_restore(RestoreOutcome::Unavailable { failed_digest });
                 }
             }
@@ -2614,6 +2725,298 @@ mod tests {
             "a successful canary must not quarantine"
         );
         assert!(host.take_rejection().is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // In-memory H03 health snapshot. These cases exercise the counter/timing lifecycle through
+    // `Host::evaluate` with in-process probes; no native library is built or loaded.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn active_frame_failure_records_health_and_quarantine() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        // Seed a 60 s high-water mark. A probe cannot take 60 s, so a lower `last` after the call
+        // proves the failure path actually timed this evaluation; a missing `record_eval` would
+        // leave `last` at the seeded 60 s.
+        host.health
+            .record_eval(std::time::Duration::from_secs(60));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("an active evaluation failure is recovered in the host")
+        );
+        let snapshot = host.health_snapshot();
+        // No predecessor was available, so the active slot is empty. The failed module's counters
+        // and timings stay visible; `revision`/`digest` follow the empty active slot.
+        assert_eq!(snapshot.revision, None);
+        assert_eq!(snapshot.digest, None);
+        assert_eq!(snapshot.consecutive_frame_failures, 1);
+        assert_eq!(snapshot.total_frame_failures, 1);
+        assert!(
+            snapshot.last_eval_micros < 60_000_000,
+            "the failed active evaluation replaced the seeded last sample"
+        );
+        assert!(
+            snapshot.max_eval_micros >= 60_000_000,
+            "the seeded high-water mark is preserved"
+        );
+        assert!(snapshot.max_eval_micros >= snapshot.last_eval_micros);
+        assert_eq!(snapshot.quarantined_digests, host.quarantined_digests.len());
+        assert_eq!(
+            snapshot.quarantined_digests, 1,
+            "the failed digest is the only quarantined digest"
+        );
+        assert!(host.is_quarantined(ACTIVE_DIGEST));
+    }
+
+    #[test]
+    fn restored_predecessor_resets_health_counters() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        host.previous
+            .push_back(Loaded::probe("rev-restored", NEXT_DIGEST, allow_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a valid predecessor is restored in the same frame")
+        );
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.revision.as_deref(), Some("rev-restored"));
+        assert_eq!(snapshot.digest.as_deref(), Some(NEXT_DIGEST));
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(snapshot.total_frame_failures, 0);
+        assert_eq!(snapshot.last_eval_micros, 0);
+        assert_eq!(snapshot.max_eval_micros, 0);
+    }
+
+    #[test]
+    fn failing_restore_predecessor_does_not_increment_active_failures() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        host.previous
+            .push_back(Loaded::probe("rev-bad", BAD_PREDECESSOR_DIGEST, reject_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the host recovers a failed restore")
+        );
+        let snapshot = host.health_snapshot();
+        // Only the active module's Err increments the counters. The failing predecessor in the
+        // restore loop must not add a second failure.
+        assert_eq!(snapshot.consecutive_frame_failures, 1);
+        assert_eq!(snapshot.total_frame_failures, 1);
+        assert!(host.is_quarantined(ACTIVE_DIGEST));
+        assert!(host.is_quarantined(BAD_PREDECESSOR_DIGEST));
+        assert!(matches!(
+            host.take_restore_outcomes().as_slice(),
+            [RestoreOutcome::Unavailable { .. }]
+        ));
+    }
+
+    #[test]
+    fn active_success_after_failure_resets_consecutive_and_keeps_total() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, allow_pose));
+        // Seed a prior failure for this active module. The single-strike policy demotes a failed
+        // active module, so a same-module failure-then-success sequence is not reachable through
+        // `evaluate`; this drives the success branch that must end the consecutive streak.
+        host.health.record_failure();
+        // A 60 s high-water mark proves the success path re-times the evaluation: a probe cannot
+        // take 60 s, so `last` must drop below the seeded sample.
+        host.health
+            .record_eval(std::time::Duration::from_secs(60));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the active module still produces this frame")
+        );
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(
+            snapshot.total_frame_failures, 1,
+            "a success does not clear the cumulative failure count"
+        );
+        assert!(
+            snapshot.last_eval_micros < 60_000_000,
+            "the successful active evaluation replaced the seeded last sample"
+        );
+        assert!(
+            snapshot.max_eval_micros >= 60_000_000,
+            "the seeded high-water mark survives a faster success"
+        );
+        assert!(snapshot.max_eval_micros >= snapshot.last_eval_micros);
+    }
+
+    #[test]
+    fn candidate_canary_failure_does_not_change_active_health() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, allow_pose));
+        // Seed a cumulative count so an erroneous candidate-failure increment is observable after
+        // the retained active module succeeds in the same frame.
+        host.health.record_failure();
+        host.health.record_failure();
+        host.health.record_success();
+        host.pending = Some(Loaded::probe("rev-candidate", CANARY_DIGEST, reject_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the retained active module still produces this frame")
+        );
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.digest.as_deref(), Some(ACTIVE_DIGEST));
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(
+            snapshot.total_frame_failures, 2,
+            "a candidate canary rejection must not increment the active module's failures"
+        );
+        assert!(
+            snapshot.max_eval_micros >= snapshot.last_eval_micros,
+            "the retained active fallback keeps a sane timing high-water mark"
+        );
+        assert!(host.is_quarantined(CANARY_DIGEST));
+        assert!(
+            host.take_restore_outcomes().is_empty(),
+            "a candidate rejection is not an active-frame failure"
+        );
+    }
+
+    #[test]
+    fn candidate_promotion_resets_health_counters() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-old", ACTIVE_DIGEST, allow_pose));
+        host.health.record_failure();
+        host.health.record_eval(std::time::Duration::from_micros(77));
+        host.pending = Some(Loaded::probe("rev-new", CANARY_DIGEST, allow_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a valid canary batch promotes")
+        );
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.revision.as_deref(), Some("rev-new"));
+        assert_eq!(snapshot.digest.as_deref(), Some(CANARY_DIGEST));
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(snapshot.total_frame_failures, 0);
+        assert_eq!(snapshot.last_eval_micros, 0);
+        assert_eq!(snapshot.max_eval_micros, 0);
+    }
+
+    #[test]
+    fn health_snapshot_quarantine_count_matches_store() {
+        let mut host = Host::new(std::env::temp_dir());
+        let initial = host.health_snapshot();
+        assert_eq!(initial, PatchHealthSnapshot::default());
+        assert_eq!(initial.quarantined_digests, 0);
+
+        // A rejected canary with no active module quarantines one digest and leaves health at zero.
+        host.pending = Some(Loaded::probe("rev-canary", CANARY_DIGEST, reject_pose));
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a rejected canary with no active module is recovered")
+        );
+        let after_canary = host.health_snapshot();
+        assert_eq!(after_canary.quarantined_digests, 1);
+        assert_eq!(after_canary.consecutive_frame_failures, 0);
+        assert_eq!(after_canary.total_frame_failures, 0);
+
+        // A failing active module adds a second digest.
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("an active evaluation failure is recovered in the host")
+        );
+        assert_eq!(host.health_snapshot().quarantined_digests, 2);
+        assert_eq!(
+            host.health_snapshot().quarantined_digests,
+            host.quarantined_digests.len()
+        );
+
+        // The snapshot reports the bounded store, not an ever-growing count.
+        for index in 0..MAX_QUARANTINED_DIGESTS {
+            host.quarantine_digest(&format!("snapshot-digest-{index:02}"));
+        }
+        let bounded = host.health_snapshot();
+        assert_eq!(bounded.quarantined_digests, MAX_QUARANTINED_DIGESTS);
+        assert_eq!(bounded.quarantined_digests, host.quarantined_digests.len());
+
+        // Re-quarantining the same digest does not grow the store.
+        host.quarantine_digest(CANARY_DIGEST);
+        assert_eq!(host.health_snapshot().quarantined_digests, 2);
+    }
+
+    #[test]
+    fn health_unchanged_by_empty_batch_and_host_errors() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("an active evaluation failure is recovered in the host")
+        );
+        let after_failure = host.health_snapshot();
+        assert_eq!(after_failure.consecutive_frame_failures, 1);
+        assert_eq!(after_failure.total_frame_failures, 1);
+
+        assert!(
+            !host
+                .evaluate(&[], &[], 0.0, &mut output)
+                .expect("an empty batch is a quiet no-op")
+        );
+        assert_eq!(host.health_snapshot(), after_failure);
+
+        let bad_span = RigSpan {
+            entity: 0,
+            first: 0,
+            count: 2,
+        };
+        assert!(host
+            .evaluate(&[valid_pose_bone()], &[bad_span], 0.0, &mut output)
+            .is_err());
+        assert_eq!(host.health_snapshot(), after_failure);
+
+        assert!(host
+            .evaluate(
+                &[valid_pose_bone()],
+                &[valid_pose_span()],
+                f64::NAN,
+                &mut output,
+            )
+            .is_err());
+        assert_eq!(host.health_snapshot(), after_failure);
+    }
+
+    #[test]
+    fn health_counters_saturate_and_keep_high_water_mark() {
+        let mut health = PatchHealth::default();
+        health.record_eval(std::time::Duration::from_secs(u64::MAX));
+        assert_eq!(health.last_eval_micros, u64::MAX);
+        assert_eq!(health.max_eval_micros, u64::MAX);
+
+        health.record_eval(std::time::Duration::from_micros(5));
+        assert_eq!(health.last_eval_micros, 5);
+        assert_eq!(
+            health.max_eval_micros, u64::MAX,
+            "a faster call keeps the high-water mark"
+        );
+
+        health.consecutive_frame_failures = u32::MAX;
+        health.total_frame_failures = u32::MAX;
+        health.record_failure();
+        assert_eq!(health.consecutive_frame_failures, u32::MAX);
+        assert_eq!(health.total_frame_failures, u32::MAX);
     }
 
     #[test]
