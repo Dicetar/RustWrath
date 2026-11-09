@@ -28,12 +28,13 @@ const MOVEMENT_MANIFEST: &str = "movement.toml";
 /// three retained predecessors; the cap only bounds an unconsumed producer.
 const MAX_RESTORE_OUTCOMES: usize = 8;
 /// Bounded in-memory quarantine of publication digests that failed after their bytes were verified
-/// (a content/contract error or a single-strike evaluation failure, not transient I/O or a frame
-/// rejected by host validation). The digest is the quarantine key, so a changed manifest text that
-/// still names the same bad artifact is refused before any DLL read or `Library::new`. The same
-/// store covers a post-verification load failure and a loaded processor that is rejected by a canary
-/// batch or fails while active; retained copies are dropped or skipped. The pose and movement seams
-/// each own a store with this cap. This is not the H03 persistent/typed store.
+/// (a content/contract error or an evaluation failure that reached a [`PatchHealthPolicy`]
+/// threshold, not transient I/O or a frame rejected by host validation). The digest is the
+/// quarantine key, so a changed manifest text that still names the same bad artifact is refused
+/// before any DLL read or `Library::new`. The same store covers a post-verification load failure
+/// and a loaded processor that is rejected by a canary batch or fails while active; retained copies
+/// are dropped or skipped. The pose and movement seams each own a store with this cap. This is not
+/// the H03 persistent/typed store.
 const MAX_QUARANTINED_DIGESTS: usize = 32;
 
 /// Verified SHA-1 content identity of a loaded module, as raw bytes.
@@ -63,8 +64,10 @@ pub enum RestoreOutcome {
 /// time; after a demotion with no valid predecessor the slot is empty, so both are `None` while the
 /// last counters/timings remain visible until the next activation resets them (the failed identity
 /// is still available from `take_active_failure`/`take_restore_outcomes`). A restored predecessor
-/// is a new activation and starts a clean record. This is the in-memory H03 slice: it is neither
-/// persisted nor used to enforce rollback thresholds.
+/// is a new activation and starts a clean record. This is the in-memory H03 slice: counters and
+/// thresholds are per activation and this record is neither persisted nor exported outside the
+/// process; [`PatchHealthPolicy`] enforces the thresholds in memory, while persistence, typed
+/// reasons and per-revision cumulative accounting remain H03.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PatchHealthSnapshot {
@@ -74,8 +77,9 @@ pub struct PatchHealthSnapshot {
     pub digest: Option<String>,
     /// Active-module frame failures since its last success or activation.
     pub consecutive_frame_failures: u32,
-    /// Active-module frame failures since its last activation. Per-activation in this in-memory
-    /// slice; per-revision cumulative accounting for `max_total_frame_failures` remains H03.
+    /// Active-module frame failures since its last activation. This is the count
+    /// [`PatchHealthPolicy::max_total_frame_failures`] compares; per-revision cumulative accounting
+    /// across reactivations remains H03.
     pub total_frame_failures: u32,
     /// Duration of the most recent steady-state active-module evaluation, in microseconds. The
     /// activation probe that promoted this module (candidate canary or predecessor restore) is not
@@ -85,6 +89,43 @@ pub struct PatchHealthSnapshot {
     pub max_eval_micros: u64,
     /// Number of pose digests currently held in the bounded in-memory quarantine.
     pub quarantined_digests: usize,
+}
+
+/// In-memory demotion thresholds for the active pose module.
+///
+/// Both thresholds count the active module's failed frames, not candidate canary failures or
+/// predecessor restore probes, and both counters restart on every activation (candidate promotion
+/// or a successful predecessor restore). The thresholds are independent alternatives: a failure
+/// demotes as soon as *either* enabled threshold is reached.
+///
+/// A value of `0` disables that threshold, meaning "no limit" rather than "demote on the first
+/// failure": `max_consecutive_frame_failures = 0` ignores the consecutive streak and
+/// `max_total_frame_failures = 0` ignores the per-activation cumulative count. `0/0` therefore
+/// never demotes a module on health counters alone; only a caller can change the policy or the
+/// host can lose the module through another failure path.
+///
+/// The default [`PatchHealthPolicy::default`] is the original single-strike behavior: one
+/// consecutive failure demotes, with the cumulative cap (3) only reachable if the consecutive
+/// threshold were relaxed. These thresholds are in-memory only; persistence, typed
+/// `PatchRejectReason` values, per-revision cumulative accounting and `max_eval_micros`
+/// enforcement remain H03 work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PatchHealthPolicy {
+    /// Consecutive active-frame failures that demote the module. `0` disables this threshold.
+    pub max_consecutive_frame_failures: u32,
+    /// Active-frame failures since the current activation that demote the module. `0` disables
+    /// this threshold. Per-activation in this slice; cumulative accounting across reactivations
+    /// remains H03.
+    pub max_total_frame_failures: u32,
+}
+
+impl Default for PatchHealthPolicy {
+    fn default() -> Self {
+        Self {
+            max_consecutive_frame_failures: 1,
+            max_total_frame_failures: 3,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -656,7 +697,8 @@ fn movement_proposal_of(output: &MovementOutput) -> MovementProposal {
 /// In-memory counters/timings for the active pose module.
 ///
 /// Reset on every activation so the record always describes the module that is currently (or was
-/// most recently) active. H03 persistence and threshold enforcement remain out of scope.
+/// most recently) active. [`PatchHealthPolicy`] decides whether a recorded failure demotes;
+/// persistence, typed reasons and per-revision cumulative accounting remain out of scope.
 #[derive(Clone, Debug, Default)]
 struct PatchHealth {
     consecutive_frame_failures: u32,
@@ -685,6 +727,18 @@ impl PatchHealth {
         self.total_frame_failures = self.total_frame_failures.saturating_add(1);
     }
 
+    /// Whether the recorded failures reached either enabled threshold in `policy`.
+    ///
+    /// The two thresholds are alternatives, not a conjunction: a consecutive streak can demote
+    /// before the cumulative cap, and failures spread across recoveries can demote without a long
+    /// streak. A `0` value disables that threshold, so `0/0` never demotes on health counters.
+    fn threshold_reached(&self, policy: PatchHealthPolicy) -> bool {
+        (policy.max_consecutive_frame_failures != 0
+            && self.consecutive_frame_failures >= policy.max_consecutive_frame_failures)
+            || (policy.max_total_frame_failures != 0
+                && self.total_frame_failures >= policy.max_total_frame_failures)
+    }
+
     /// A newly activated module starts with a clean record. Its first steady-state evaluation on a
     /// later frame populates the timings; the candidate canary/restore probe is not timed.
     fn reset(&mut self) {
@@ -705,12 +759,16 @@ pub struct Host {
     /// In-memory counters/timings for the active pose module, exposed through
     /// [`Host::health_snapshot`]. See [`PatchHealthSnapshot`].
     health: PatchHealth,
+    /// In-memory demotion thresholds compared against [`Self::health`] after an active-module
+    /// failure. Defaults to the single-strike behavior; see [`PatchHealthPolicy`].
+    health_policy: PatchHealthPolicy,
     rejection: Option<String>,
     active_failure: Option<String>,
     restores: VecDeque<RestoreOutcome>,
     /// Bounded in-memory quarantine of pose digests rejected after their bytes were verified: a
-    /// terminal `Loaded::open` failure, a rejected canary batch, an active frame failure or a
-    /// failing restore predecessor. The key is `Publication.sha1`, so a later manifest text that
+    /// terminal `Loaded::open` failure, a rejected canary batch, an active frame failure that
+    /// reached a [`PatchHealthPolicy`] threshold, or a failing restore predecessor. The key is
+    /// `Publication.sha1`, so a later manifest text that
     /// names the same bad artifact (`B -> C -> B`) is refused before `Library::new` without
     /// re-reading the DLL. A frame rejected by host validation never reaches this store. Not
     /// persistent; H03 owns the typed/persistent store.
@@ -754,6 +812,7 @@ impl Host {
             pending: None,
             previous: VecDeque::new(),
             health: PatchHealth::default(),
+            health_policy: PatchHealthPolicy::default(),
             rejection: None,
             active_failure: None,
             restores: VecDeque::new(),
@@ -953,7 +1012,9 @@ impl Host {
     /// visible until the next activation resets them; the failed identity is available from
     /// `take_active_failure`/`take_restore_outcomes`. A restored predecessor starts a clean record.
     /// `quarantined_digests` is the current pose quarantine length. `total_frame_failures` is
-    /// per-activation in this slice. This snapshot neither persists nor enforces the H03 thresholds.
+    /// per-activation in this slice. This snapshot neither persists nor exports anything; the
+    /// in-memory [`PatchHealthPolicy`] thresholds compare these counters, while persistence and
+    /// per-revision cumulative accounting remain H03.
     pub fn health_snapshot(&self) -> PatchHealthSnapshot {
         PatchHealthSnapshot {
             revision: self.active.as_ref().map(|module| module.revision.clone()),
@@ -965,6 +1026,19 @@ impl Host {
             quarantined_digests: self.quarantined_digests.len(),
         }
     }
+
+    /// Replace the in-memory demotion thresholds. Affects only failures recorded after this call;
+    /// existing counters are kept, so relaxing a policy lets a module that already failed remain
+    /// active until the next failure. [`PatchHealthPolicy::default`] is single-strike (1/3).
+    pub fn set_health_policy(&mut self, policy: PatchHealthPolicy) {
+        self.health_policy = policy;
+    }
+
+    /// The in-memory demotion thresholds currently in force for active pose-module failures.
+    pub fn health_policy(&self) -> PatchHealthPolicy {
+        self.health_policy
+    }
+
     pub fn take_rejection(&mut self) -> Option<String> {
         self.rejection.take()
     }
@@ -1244,9 +1318,27 @@ impl Host {
                 }
                 Err(error) => {
                     self.health.record_failure();
+                    if !self.health.threshold_reached(self.health_policy) {
+                        // The policy tolerates this failure, so the module stays active for a later
+                        // frame: keep `active` and `previous` exactly as they were and leave the
+                        // digest out of the quarantine store. The failed call may have written
+                        // partial or invalid values into the caller's buffer, so clear it and
+                        // return `Ok(false)`; the caller renders the baseline pose for this frame
+                        // and the module is evaluated again on the next frame. The failure stays
+                        // observable through `take_active_failure`, but no `RestoreOutcome` is
+                        // pushed because nothing was demoted or restored.
+                        let failure = format!(
+                            "active module {} frame failed below the health threshold; module retained and baseline pose used for this frame: {error:#}",
+                            module.revision
+                        );
+                        self.active = Some(module);
+                        output.clear();
+                        self.active_failure = Some(failure);
+                        return Ok(false);
+                    }
                     let failed_digest = module.digest_bytes();
-                    // The active module was already loaded and verified; under the single-strike
-                    // H03 policy an evaluation failure is treated as an artifact failure.
+                    // The active module was already loaded and verified; a failure that reached a
+                    // [`PatchHealthPolicy`] threshold is treated as an artifact failure.
                     // Quarantine it and drop retained copies so neither this frame's restore nor a
                     // later manifest can invoke it again.
                     self.quarantine_digest(&module.digest);
@@ -3017,6 +3109,357 @@ mod tests {
         health.record_failure();
         assert_eq!(health.consecutive_frame_failures, u32::MAX);
         assert_eq!(health.total_frame_failures, u32::MAX);
+    }
+
+    // ------------------------------------------------------------------
+    // In-memory `PatchHealthPolicy` thresholds. Each sequence probe owns a dedicated counter so a
+    // parallel test cannot interleave its frames; no native library is built or loaded.
+    // ------------------------------------------------------------------
+
+    /// Fail, succeed, fail, fail. Owned by `consecutive_reset_by_success_then_third_failure_demotes`.
+    static CONSECUTIVE_POLICY_STEP: AtomicUsize = AtomicUsize::new(0);
+    /// Fail, succeed, fail. Owned by `total_threshold_demotes_with_consecutive_disabled`.
+    static TOTAL_POLICY_STEP: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn consecutive_policy_pose(
+        frame: *const PoseFrame,
+        out: *mut BoneLocal,
+        count: u32,
+    ) -> i32 {
+        let step = CONSECUTIVE_POLICY_STEP.fetch_add(1, Ordering::SeqCst);
+        unsafe { allow_pose(frame, out, count) };
+        if matches!(step, 0 | 2 | 3) {
+            7
+        } else {
+            0
+        }
+    }
+
+    unsafe extern "C" fn total_policy_pose(
+        frame: *const PoseFrame,
+        out: *mut BoneLocal,
+        count: u32,
+    ) -> i32 {
+        let step = TOTAL_POLICY_STEP.fetch_add(1, Ordering::SeqCst);
+        unsafe { allow_pose(frame, out, count) };
+        if matches!(step, 0 | 2) {
+            7
+        } else {
+            0
+        }
+    }
+
+    #[test]
+    fn default_health_policy_demotes_on_the_first_active_failure() {
+        let mut host = Host::new(std::env::temp_dir());
+        assert_eq!(
+            host.health_policy(),
+            PatchHealthPolicy {
+                max_consecutive_frame_failures: 1,
+                max_total_frame_failures: 3,
+            },
+            "the default policy preserves the original single-strike behavior"
+        );
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("an active evaluation failure is recovered in the host")
+        );
+        assert!(
+            host.active.is_none(),
+            "the first failure reaches the default consecutive threshold"
+        );
+        assert!(host.is_quarantined(ACTIVE_DIGEST));
+        assert_eq!(
+            host.take_restore_outcomes(),
+            vec![RestoreOutcome::Unavailable {
+                failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+            }]
+        );
+        assert!(host
+            .take_active_failure()
+            .expect("active failure detail")
+            .contains("rev-active"));
+    }
+
+    #[test]
+    fn consecutive_threshold_keeps_the_active_module_for_one_more_frame() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_health_policy(PatchHealthPolicy {
+            max_consecutive_frame_failures: 2,
+            max_total_frame_failures: 0,
+        });
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        // A failed call may leave invalid values in the caller's buffer; the non-demoting path
+        // must clear it so the caller renders the baseline pose for this frame.
+        let mut output = vec![valid_pose_bone()];
+
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a below-threshold active failure is not a host error")
+        );
+        assert!(
+            host.active.is_some(),
+            "the first failure is below the consecutive threshold"
+        );
+        assert_eq!(host.digest(), Some(ACTIVE_DIGEST));
+        assert!(
+            !host.is_quarantined(ACTIVE_DIGEST),
+            "a tolerated failure must not quarantine the module"
+        );
+        assert!(output.is_empty(), "the failed frame's output is cleared");
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.revision.as_deref(), Some("rev-active"));
+        assert_eq!(snapshot.digest.as_deref(), Some(ACTIVE_DIGEST));
+        assert_eq!(snapshot.consecutive_frame_failures, 1);
+        assert_eq!(snapshot.total_frame_failures, 1);
+        assert!(
+            host.take_active_failure()
+                .expect("the tolerated failure is still observable")
+                .contains("rev-active")
+        );
+        assert!(
+            host.take_restore_outcomes().is_empty(),
+            "no demotion happened, so no restore outcome is reported"
+        );
+
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the second failure demotes without a host error")
+        );
+        assert!(
+            host.active.is_none(),
+            "the second consecutive failure reaches the threshold"
+        );
+        assert!(host.is_quarantined(ACTIVE_DIGEST));
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.consecutive_frame_failures, 2);
+        assert_eq!(snapshot.total_frame_failures, 2);
+        assert_eq!(
+            host.take_restore_outcomes(),
+            vec![RestoreOutcome::Unavailable {
+                failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+            }]
+        );
+    }
+
+    #[test]
+    fn consecutive_reset_by_success_then_third_failure_demotes() {
+        CONSECUTIVE_POLICY_STEP.store(0, Ordering::SeqCst);
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_health_policy(PatchHealthPolicy {
+            max_consecutive_frame_failures: 2,
+            max_total_frame_failures: 0,
+        });
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, consecutive_policy_pose));
+        let mut output = Vec::new();
+
+        // Frame 1: fail 1/1. Frame 2: succeed, ending the consecutive streak but keeping total 1.
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the first failure is below the threshold")
+        );
+        assert!(host.active.is_some());
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the active module succeeds")
+        );
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(snapshot.total_frame_failures, 1);
+
+        // Frame 3: fail 1/2, still below the consecutive threshold. Frame 4: fail 2/2, demotes.
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the failure after a success is below the threshold")
+        );
+        assert!(host.active.is_some());
+        assert!(!host.is_quarantined(ACTIVE_DIGEST));
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the second consecutive failure demotes")
+        );
+        assert!(host.active.is_none());
+        assert!(host.is_quarantined(ACTIVE_DIGEST));
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.consecutive_frame_failures, 2);
+        assert_eq!(
+            snapshot.total_frame_failures, 3,
+            "the success did not clear the cumulative failure count"
+        );
+        assert_eq!(
+            host.take_restore_outcomes(),
+            vec![RestoreOutcome::Unavailable {
+                failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+            }]
+        );
+    }
+
+    #[test]
+    fn total_threshold_demotes_with_consecutive_disabled() {
+        TOTAL_POLICY_STEP.store(0, Ordering::SeqCst);
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_health_policy(PatchHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 2,
+        });
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, total_policy_pose));
+        let mut output = Vec::new();
+
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the first failure is below the total threshold")
+        );
+        assert!(host.active.is_some());
+        assert!(!host.is_quarantined(ACTIVE_DIGEST));
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the active module succeeds between failures")
+        );
+
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the second failure reaches the total threshold")
+        );
+        assert!(
+            host.active.is_none(),
+            "the cumulative threshold demotes even after a success reset the streak"
+        );
+        assert!(host.is_quarantined(ACTIVE_DIGEST));
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.total_frame_failures, 2);
+        assert_eq!(snapshot.consecutive_frame_failures, 1);
+    }
+
+    #[test]
+    fn zero_thresholds_disable_demotion() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_health_policy(PatchHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 0,
+        });
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a no-limit policy still reports a baseline frame")
+        );
+        assert!(
+            host.active.is_some(),
+            "0/0 is the explicit no-limit opt-in, not demote-on-first-failure"
+        );
+        assert_eq!(host.digest(), Some(ACTIVE_DIGEST));
+        assert!(
+            host.quarantined_digests.is_empty(),
+            "a retained module is never quarantined by a tolerated failure"
+        );
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.consecutive_frame_failures, 1);
+        assert_eq!(snapshot.total_frame_failures, 1);
+        assert!(host.take_active_failure().is_some());
+        assert!(host.take_restore_outcomes().is_empty());
+    }
+
+    #[test]
+    fn snapshot_reflects_policy_counters_and_active_identity() {
+        let mut host = Host::new(std::env::temp_dir());
+        let policy = PatchHealthPolicy {
+            max_consecutive_frame_failures: 2,
+            max_total_frame_failures: 4,
+        };
+        host.set_health_policy(policy);
+        assert_eq!(host.health_policy(), policy);
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the first failure is below both thresholds")
+        );
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.revision.as_deref(), Some("rev-active"));
+        assert_eq!(snapshot.digest.as_deref(), Some(ACTIVE_DIGEST));
+        assert_eq!(snapshot.consecutive_frame_failures, 1);
+        assert_eq!(snapshot.total_frame_failures, 1);
+        assert_eq!(
+            snapshot.quarantined_digests, 0,
+            "the tolerated failure did not touch the quarantine store"
+        );
+    }
+
+    #[test]
+    fn non_demoting_failure_preserves_retained_history_and_staged_candidate() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_health_policy(PatchHealthPolicy {
+            max_consecutive_frame_failures: 3,
+            max_total_frame_failures: 0,
+        });
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        host.previous
+            .push_back(Loaded::probe("rev-good", GOOD_PREDECESSOR_DIGEST, allow_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a below-threshold failure keeps the active module")
+        );
+        assert_eq!(host.digest(), Some(ACTIVE_DIGEST));
+        assert!(
+            host.previous
+                .iter()
+                .any(|module| module.digest == GOOD_PREDECESSOR_DIGEST),
+            "a tolerated failure must not consume retained rollback history"
+        );
+        assert!(
+            host.pending.is_none(),
+            "`evaluate` takes any staged candidate before the active slot, so no pending survives \
+             this call to be cleared by the failure path"
+        );
+
+        // A candidate staged after the tolerated failure stays staged across a host-invalid frame
+        // (which returns before dispatch) and only leaves `pending` when it is evaluated.
+        host.pending = Some(Loaded::probe("rev-next", CANARY_DIGEST, allow_pose));
+        assert!(host.has_pending());
+        assert!(host
+            .evaluate(
+                &[valid_pose_bone()],
+                &[valid_pose_span()],
+                f64::NAN,
+                &mut output,
+            )
+            .is_err());
+        assert!(host.has_pending(), "a failed frame did not clear the candidate");
+        assert!(
+            host.previous
+                .iter()
+                .any(|module| module.digest == GOOD_PREDECESSOR_DIGEST)
+        );
+
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the staged candidate promotes on the next valid frame")
+        );
+        assert_eq!(host.digest(), Some(CANARY_DIGEST));
+        assert!(
+            host.previous
+                .iter()
+                .any(|module| module.digest == GOOD_PREDECESSOR_DIGEST),
+            "promotion appends the displaced active and keeps the older retained predecessor"
+        );
     }
 
     #[test]
