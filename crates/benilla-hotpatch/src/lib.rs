@@ -2915,9 +2915,9 @@ mod tests {
     fn active_success_after_failure_resets_consecutive_and_keeps_total() {
         let mut host = Host::new(std::env::temp_dir());
         host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, allow_pose));
-        // Seed a prior failure for this active module. The single-strike policy demotes a failed
-        // active module, so a same-module failure-then-success sequence is not reachable through
-        // `evaluate`; this drives the success branch that must end the consecutive streak.
+        // Seed a prior failure for this active module. The default single-strike policy demotes on
+        // the first failure; this directly drives the success branch that must end the consecutive
+        // streak. A relaxed PatchHealthPolicy can reach the same sequence through `evaluate`.
         host.health.record_failure();
         // A 60 s high-water mark proves the success path re-times the evaluation: a probe cannot
         // take 60 s, so `last` must drop below the seeded sample.

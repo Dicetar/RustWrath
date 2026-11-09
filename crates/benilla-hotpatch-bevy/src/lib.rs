@@ -292,11 +292,17 @@ fn apply_pose(
     // Restore identity is per evaluation; never carry a stale restore into a later activation.
     runtime.restored_attempt = None;
     let restore_outcomes = runtime.host.take_restore_outcomes();
+    let active_failed = !restore_outcomes.is_empty();
     // Free-form host errors stay local; only the bounded outcomes below reach the recorder.
     if let Some(error) = runtime.host.take_active_failure() {
         report(runtime, error);
+        if !active_failed {
+            // A below-threshold failure kept the active module. Force the next frame to
+            // repack the rigs so the retained module is evaluated again instead of
+            // waiting for an unrelated animation/root change.
+            runtime.refresh = true;
+        }
     }
-    let active_failed = !restore_outcomes.is_empty();
     for outcome in restore_outcomes {
         match outcome {
             RestoreOutcome::Restored {
