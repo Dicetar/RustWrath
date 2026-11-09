@@ -80,8 +80,9 @@ fn digest_bytes(digest: &str) -> Option<ModuleDigest> {
 /// Verify a publication's artifact for one seam and return its pinned path and content digest.
 ///
 /// The order is load-bearing and shared by every seam: basename, non-empty revision, size cap,
-/// content digest, then the immutable `<prefix><digest>.dll` name. A digest mismatch must be
-/// reported before the filename test so a partial copy keeps its retryable diagnosis.
+/// content digest, then the immutable `<prefix><digest>.dll` name. A digest mismatch is reported
+/// before the filename test so the diagnostic names the bytes; `Host::poll` treats that
+/// deterministic mismatch as terminal, while an unreadable/incomplete artifact keeps its retry.
 fn verify_publication(
     root: &Path,
     publication: &Publication,
@@ -117,6 +118,36 @@ fn is_managed_artifact(name: &str, prefix: &str) -> bool {
     name.strip_prefix(prefix)
         .and_then(|rest| rest.strip_suffix(".dll"))
         .is_some_and(|digest| digest.len() == 40 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Whether a loader error is a transient filesystem failure that the next 1 Hz poll may retry.
+///
+/// This is deliberately an allowlist over the cause chain: a not-yet-visible copy (`NotFound`), a
+/// publisher sharing/lock violation (Windows raw OS error 32/33, which Rust reports as
+/// `Uncategorized`, or `PermissionDenied`), or an interrupted/blocked/timeout read can succeed
+/// unchanged. A plain string, TOML parse failure, digest mismatch or ABI error carries no transient
+/// `std::io::Error` in its chain and is therefore a terminal content/contract failure.
+fn transient_io(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::PermissionDenied
+                    | std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::TimedOut
+            ) || (cfg!(windows) && matches!(io.raw_os_error(), Some(32) | Some(33)))
+        })
+    })
+}
+
+/// Whether a publisher's exclusive `publish.lock` is present. A digest mismatch while the lock
+/// is held may be an incomplete copy the publisher is still finishing; it is retried, not
+/// latched. The supported publisher writes the artifact before swapping the manifest, so this
+/// guard covers manual/non-atomic copies rather than the normal path.
+fn publish_in_progress(root: &Path) -> bool {
+    root.join("publish.lock").exists()
 }
 
 impl Loaded {
@@ -470,7 +501,16 @@ impl Host {
         self.pending = None;
         self.observed = None;
         self.rejection = None;
-        let publication: Publication = toml::from_str(&text)?;
+        let publication: Publication = match toml::from_str(&text) {
+            Ok(publication) => publication,
+            Err(error) => {
+                // A malformed manifest is deterministic content. Latch it so the 1 Hz poll does
+                // not re-parse and re-report the same bytes; a changed manifest clears the latch
+                // above and is retried. H03 adds typed reasons and persistent quarantine.
+                self.observed = Some(text);
+                return Err(error.into());
+            }
+        };
         if self.active.as_ref().is_some_and(|m| {
             !publication.revision.is_empty()
                 && m.digest == publication.sha1
@@ -479,9 +519,24 @@ impl Host {
             self.observed = Some(text);
             return Ok(false);
         }
-        let pending = Loaded::open(&self.root, publication)?;
+        let pending = match Loaded::open(&self.root, publication) {
+            Ok(pending) => pending,
+            Err(error) => {
+                if transient_io(&error) || publish_in_progress(&self.root) {
+                    // Leave `observed` unlatched so an incomplete copy is retried unchanged.
+                    return Err(error);
+                }
+                // A deterministic content/contract failure must not be re-read and
+                // `LoadLibrary`-ed every second. Latch the manifest so the next poll is a quiet
+                // `Ok(false)`; report the error once. H03's typed reasons, digest quarantine store
+                // and `publish.lock`-aware incomplete-copy detection remain the gap; a changed
+                // manifest naming the same bad artifact is therefore retried once.
+                self.observed = Some(text);
+                return Err(error);
+            }
+        };
         self.pending = Some(pending);
-        // Failed reads/loads must remain retryable without republishing ready.toml.
+        // A successful open latches the manifest even though promotion happens on the next batch.
         self.observed = Some(text);
         Ok(true)
     }
@@ -1095,8 +1150,12 @@ mod tests {
         // First poll fails because the DLL is not yet present; observed must NOT be latched.
         let first_err = host.poll().expect_err("missing DLL should fail poll");
         assert!(
+            transient_io(&first_err),
+            "a missing DLL is a transient filesystem failure: {first_err:#}"
+        );
+        assert!(
             host.observed.is_none(),
-            "failed poll must not latch observed manifest text: {first_err:#}"
+            "transient failure must not latch observed manifest text: {first_err:#}"
         );
 
         // Second poll with identical ready.toml must retry (not return Ok(false)).
@@ -1111,9 +1170,157 @@ mod tests {
                 .contains("module digest differs from publication"),
             "second poll should retry and reach digest check, got: {second_err:#}"
         );
-        assert!(host.observed.is_none());
+
+        // A digest mismatch is deterministic content: the manifest is now latched and the error is
+        // reported once instead of re-reading and re-loading the same artifact at 1 Hz.
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        // The unchanged deterministic manifest is a quiet poll with no new error.
+        assert!(!host
+            .poll()
+            .expect("latched manifest is a quiet poll"));
+
+        // A changed manifest clears the latch and is evaluated again.
+        let new_digest = "fedcba9876543210fedcba9876543210fedcba98";
+        let new_dll = format!("pose-{new_digest}.dll");
+        let new_manifest = format!(
+            "revision = \"rev-b\"\nlibrary = \"{new_dll}\"\nsha1 = \"{new_digest}\"\n"
+        );
+        std::fs::write(root.join("ready.toml"), &new_manifest).expect("rewrite ready.toml");
+        std::fs::write(root.join(&new_dll), b"still-not-matching-sha1").expect("write new dll");
+        let retry_err = host
+            .poll()
+            .expect_err("changed manifest should retry and fail again");
+        assert!(
+            retry_err
+                .to_string()
+                .contains("module digest differs from publication"),
+            "changed manifest should be re-evaluated, got: {retry_err:#}"
+        );
+        assert_eq!(host.observed.as_deref(), Some(new_manifest.as_str()));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn malformed_manifest_latches_after_one_error_and_retries_when_rewritten() {
+        let unique = format!(
+            "rustwrath-hotpatch-malformed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let mut host = Host::new(root.clone());
+
+        let malformed = "revision = \"unterminated\n";
+        std::fs::write(root.join("ready.toml"), malformed).expect("write malformed ready.toml");
+        let error = host
+            .poll()
+            .expect_err("malformed TOML is a terminal publication error");
+        assert!(!transient_io(&error), "a TOML syntax error is terminal");
+        assert_eq!(host.observed.as_deref(), Some(malformed));
+
+        // The unchanged malformed bytes are not re-parsed and do not report again.
+        assert!(!host
+            .poll()
+            .expect("latched malformed manifest is quiet"));
+
+        // Rewriting a valid manifest clears the latch and retries. The referenced DLL is absent,
+        // so the retry is the transient, still-retryable `NotFound` path.
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let dll_name = format!("pose-{digest}.dll");
+        let manifest = format!(
+            "revision = \"rev-a\"\nlibrary = \"{dll_name}\"\nsha1 = \"{digest}\"\n"
+        );
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write valid ready.toml");
+        let retry_error = host
+            .poll()
+            .expect_err("a valid manifest reaches the missing DLL");
+        assert!(
+            transient_io(&retry_error),
+            "a missing DLL remains retryable: {retry_error:#}"
+        );
+        assert!(
+            host.observed.is_none(),
+            "a transient retry must not latch the manifest"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn publish_lock_keeps_a_digest_mismatch_retryable_until_the_publisher_finishes() {
+        let unique = format!(
+            "rustwrath-hotpatch-publish-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let dll = format!("pose-{digest}.dll");
+        let manifest =
+            format!("revision = \"rev-a\"\nlibrary = \"{dll}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        std::fs::write(root.join(&dll), b"not-matching-sha1").expect("write wrong bytes");
+        std::fs::write(root.join("publish.lock"), b"").expect("write lock");
+
+        let mut host = Host::new(root.clone());
+        let first = host.poll().expect_err("mismatch under the lock is retried");
+        assert!(transient_io(&first) || publish_in_progress(&root));
+        assert!(
+            host.observed.is_none(),
+            "a publisher-held incomplete copy must not latch"
+        );
+
+        std::fs::remove_file(root.join("publish.lock")).expect("remove lock");
+        let second = host
+            .poll()
+            .expect_err("the completed bad artifact reaches verification");
+        assert!(second.to_string().contains("module digest differs"));
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        assert!(!host.poll().expect("latched mismatch stays quiet"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn transient_io_classifies_only_filesystem_availability() {
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let error = anyhow::Error::new(std::io::Error::from(kind)).context("wrapped read");
+            assert!(transient_io(&error), "{kind:?} should remain retryable");
+        }
+
+        // Windows reports ERROR_SHARING_VIOLATION(32)/ERROR_LOCK_VIOLATION(33) as
+        // `Uncategorized`, so the raw code must keep a publisher-held artifact retryable.
+        #[cfg(windows)]
+        for code in [32, 33] {
+            let error = anyhow::Error::new(std::io::Error::from_raw_os_error(code));
+            assert!(
+                transient_io(&error),
+                "Windows sharing/lock violation {code} should remain retryable"
+            );
+        }
+
+        let plain = anyhow::anyhow!("module digest differs from publication");
+        assert!(!transient_io(&plain), "a plain content error is terminal");
+        let toml_error: anyhow::Error =
+            toml::from_str::<Publication>("revision = \"unterminated")
+                .err()
+                .expect("invalid TOML")
+                .into();
+        assert!(!transient_io(&toml_error), "a TOML error is terminal");
+        let other = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::InvalidData));
+        assert!(!transient_io(&other), "non-availability I/O is terminal");
     }
 
     #[test]
