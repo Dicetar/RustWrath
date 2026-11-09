@@ -27,6 +27,11 @@ const MOVEMENT_MANIFEST: &str = "movement.toml";
 /// Bounded restore-outcome ring. One `evaluate` can report at most the active module plus the
 /// three retained predecessors; the cap only bounds an unconsumed producer.
 const MAX_RESTORE_OUTCOMES: usize = 8;
+/// Bounded in-memory quarantine of pose publication digests that failed deterministically in
+/// `Loaded::open` (a content/contract error, not transient I/O). The digest is the quarantine key,
+/// so a changed manifest text that still names the same bad artifact is refused before any DLL
+/// read or `Library::new`. This is not the H03 persistent/typed store.
+const MAX_QUARANTINED_DIGESTS: usize = 32;
 
 /// Verified SHA-1 content identity of a loaded module, as raw bytes.
 pub type ModuleDigest = [u8; 20];
@@ -155,8 +160,10 @@ impl Loaded {
         digest_bytes(&self.digest)
     }
 
-    fn open(root: &Path, publication: Publication) -> Result<Self> {
-        let (path, digest) = verify_publication(root, &publication, ModuleKind::Pose)?;
+    /// Load an artifact whose content identity and immutable filename were already checked by
+    /// [`verify_publication`]. Keeping verification separate lets `Host::poll` quarantine only a
+    /// digest it actually proved against the bytes, never a declared digest from a failed check.
+    fn open(path: PathBuf, digest: String, publication: Publication) -> Result<Self> {
         // SAFETY: executable local modules are explicitly trusted. The caller publishes immutable
         // digest-named libraries. This owner pins code until every invocation has returned.
         let library = unsafe { Library::new(&path) }.context("loading presentation module")?;
@@ -446,6 +453,11 @@ pub struct Host {
     rejection: Option<String>,
     active_failure: Option<String>,
     restores: VecDeque<RestoreOutcome>,
+    /// Bounded in-memory quarantine of pose digests rejected for a deterministic content/contract
+    /// failure in `Loaded::open`. The key is `Publication.sha1`, so a later manifest text that
+    /// names the same bad artifact (`B -> C -> B`) is refused before `Library::new` without
+    /// re-reading the DLL. Not persistent; H03 owns the typed/persistent store.
+    quarantined_digests: VecDeque<String>,
     /// The movement seam's own manifest latch, independent of the pose publication.
     movement_observed: Option<String>,
     movement_pending: Option<MovementLoaded>,
@@ -468,6 +480,7 @@ impl Host {
             rejection: None,
             active_failure: None,
             restores: VecDeque::new(),
+            quarantined_digests: VecDeque::new(),
             movement_observed: None,
             movement_pending: None,
             movement_active: None,
@@ -475,6 +488,23 @@ impl Host {
             movement_rejection: None,
             seams: ModularGameplayRegistry::new(),
         }
+    }
+
+    /// Add a pose digest to the bounded in-memory quarantine. Deduplicates so a repeated failure
+    /// does not grow the store, and trims the oldest entry at the cap.
+    fn quarantine_digest(&mut self, digest: &str) {
+        if self.quarantined_digests.iter().any(|d| d == digest) {
+            return;
+        }
+        if self.quarantined_digests.len() == MAX_QUARANTINED_DIGESTS {
+            self.quarantined_digests.pop_front();
+        }
+        self.quarantined_digests.push_back(digest.to_owned());
+    }
+
+    /// Whether a pose digest was quarantined after a terminal `Loaded::open` failure.
+    fn is_quarantined(&self, digest: &str) -> bool {
+        self.quarantined_digests.iter().any(|d| d == digest)
     }
 
     /// Poll only a complete publication. A failed candidate never replaces the active module.
@@ -511,6 +541,15 @@ impl Host {
                 return Err(error.into());
             }
         };
+        if self.is_quarantined(&publication.sha1) {
+            // A digest rejected for a deterministic content/contract failure is refused before the
+            // active-module shortcut or any DLL read/`Library::new`, even when a changed manifest
+            // (`B -> C -> B`) names it again. Latch this text so the unchanged manifest is a quiet
+            // `Ok(false)`; a genuinely new digest is still evaluated.
+            let digest = publication.sha1.clone();
+            self.observed = Some(text);
+            bail!("pose module digest {digest} is quarantined after a terminal load failure");
+        }
         if self.active.as_ref().is_some_and(|m| {
             !publication.revision.is_empty()
                 && m.digest == publication.sha1
@@ -519,18 +558,31 @@ impl Host {
             self.observed = Some(text);
             return Ok(false);
         }
-        let pending = match Loaded::open(&self.root, publication) {
+        // Verify the declared digest against the bytes before loading. A verify failure latches the
+        // text but cannot quarantine `publication.sha1`: a digest mismatch or a pre-read size/name
+        // failure never proved that string is the artifact's identity, and quarantining it could
+        // poison the active module's digest or a legitimate same-digest repair.
+        let (path, digest) = match verify_publication(&self.root, &publication, ModuleKind::Pose) {
+            Ok(verified) => verified,
+            Err(error) => {
+                if transient_io(&error) || publish_in_progress(&self.root) {
+                    return Err(error);
+                }
+                self.observed = Some(text);
+                return Err(error);
+            }
+        };
+        // The digest is now verified against the bytes. A terminal post-verification failure is a
+        // deterministic artifact problem, so quarantine it before latching the manifest.
+        let quarantine_digest = digest.clone();
+        let pending = match Loaded::open(path, digest, publication) {
             Ok(pending) => pending,
             Err(error) => {
                 if transient_io(&error) || publish_in_progress(&self.root) {
                     // Leave `observed` unlatched so an incomplete copy is retried unchanged.
                     return Err(error);
                 }
-                // A deterministic content/contract failure must not be re-read and
-                // `LoadLibrary`-ed every second. Latch the manifest so the next poll is a quiet
-                // `Ok(false)`; report the error once. H03's typed reasons, digest quarantine store
-                // and `publish.lock`-aware incomplete-copy detection remain the gap; a changed
-                // manifest naming the same bad artifact is therefore retried once.
+                self.quarantine_digest(&quarantine_digest);
                 self.observed = Some(text);
                 return Err(error);
             }
@@ -1062,6 +1114,7 @@ impl ModularGameplayRegistry {
 mod tests {
     use super::*;
     use benilla_hotpatch_abi::{CombatOutput, ModuleKind, MovementOutput, ProceduralSpawn};
+    use sha1::{Digest, Sha1};
 
     #[test]
     fn modular_gameplay_seams_toggle_independently() {
@@ -1276,6 +1329,10 @@ mod tests {
             host.observed.is_none(),
             "a publisher-held incomplete copy must not latch"
         );
+        assert!(
+            !host.is_quarantined(digest),
+            "a publisher-held incomplete copy must not quarantine"
+        );
 
         std::fs::remove_file(root.join("publish.lock")).expect("remove lock");
         let second = host
@@ -1321,6 +1378,347 @@ mod tests {
         assert!(!transient_io(&toml_error), "a TOML error is terminal");
         let other = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::InvalidData));
         assert!(!transient_io(&other), "non-availability I/O is terminal");
+    }
+
+    #[test]
+    fn quarantined_digest_is_refused_before_loaded_open_across_manifest_rewrites() {
+        let unique = format!(
+            "rustwrath-hotpatch-quarantine-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let mut host = Host::new(root.clone());
+
+        // The bytes are not a valid PE, but their SHA-1 and the immutable filename match the
+        // manifest, so verification passes and `Library::new` is the terminal failure. This is the
+        // only case where the declared digest is proven and may be quarantined.
+        let bytes_b = b"not a pe image B";
+        let bytes_c = b"not a pe image C";
+        let digest_b = format!("{:x}", Sha1::digest(bytes_b));
+        let digest_c = format!("{:x}", Sha1::digest(bytes_c));
+        let dll_b = format!("pose-{digest_b}.dll");
+        let dll_c = format!("pose-{digest_c}.dll");
+        let manifest_b =
+            format!("revision = \"rev-b\"\nlibrary = \"{dll_b}\"\nsha1 = \"{digest_b}\"\n");
+        let manifest_c =
+            format!("revision = \"rev-c\"\nlibrary = \"{dll_c}\"\nsha1 = \"{digest_c}\"\n");
+
+        // B fails after verification (`Library::new` on non-PE bytes) and is quarantined.
+        std::fs::write(root.join("ready.toml"), &manifest_b).expect("write B manifest");
+        std::fs::write(root.join(&dll_b), bytes_b).expect("write B dll");
+        let error_b = host.poll().expect_err("B's post-verification load is terminal");
+        assert!(error_b.to_string().contains("loading presentation module"));
+        assert!(host.is_quarantined(&digest_b), "B is quarantined");
+        assert_eq!(host.observed.as_deref(), Some(manifest_b.as_str()));
+
+        // C, also a verified digest with an invalid image, is quarantined independently.
+        std::fs::write(root.join("ready.toml"), &manifest_c).expect("write C manifest");
+        std::fs::write(root.join(&dll_c), bytes_c).expect("write C dll");
+        let error_c = host.poll().expect_err("C's post-verification load is terminal");
+        assert!(error_c.to_string().contains("loading presentation module"));
+        assert!(host.is_quarantined(&digest_c), "C is quarantined");
+        assert_eq!(host.observed.as_deref(), Some(manifest_c.as_str()));
+
+        // Republish B with its DLL deleted. The quarantine gate must fire before `Loaded::open`,
+        // so this is not the transient `NotFound` path even though the file is absent.
+        std::fs::remove_file(root.join(&dll_b)).expect("delete B dll");
+        std::fs::write(root.join("ready.toml"), &manifest_b).expect("republish B manifest");
+        let quarantined = host
+            .poll()
+            .expect_err("a quarantined digest is refused before loading");
+        assert!(
+            quarantined.to_string().contains("quarantined"),
+            "expected a quarantine refusal, got: {quarantined:#}"
+        );
+        assert!(
+            quarantined.to_string().contains(digest_b.as_str()),
+            "the error should name the quarantined digest: {quarantined:#}"
+        );
+        assert!(
+            !transient_io(&quarantined),
+            "quarantine refusal must not look like a missing-file retry: {quarantined:#}"
+        );
+        assert!(
+            host.take_rejection().is_none(),
+            "the quarantine path must not write the shared candidate-rejection channel"
+        );
+        assert_eq!(host.observed.as_deref(), Some(manifest_b.as_str()));
+
+        // The unchanged republished text is a quiet poll; a new digest is still evaluated.
+        assert!(!host
+            .poll()
+            .expect("latched quarantine text is a quiet poll"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn digest_mismatch_latches_without_quarantining_the_declared_digest() {
+        let unique = format!(
+            "rustwrath-hotpatch-no-quarantine-mismatch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let mut host = Host::new(root.clone());
+
+        let declared = "1111111111111111111111111111111111111111";
+        let dll_name = format!("pose-{declared}.dll");
+        let manifest =
+            format!("revision = \"rev-b\"\nlibrary = \"{dll_name}\"\nsha1 = \"{declared}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        std::fs::write(root.join(&dll_name), b"bytes whose digest is not declared")
+            .expect("write wrong bytes");
+
+        let error = host.poll().expect_err("the digest mismatch is terminal");
+        assert!(error
+            .to_string()
+            .contains("module digest differs from publication"));
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        assert!(
+            !host.is_quarantined(declared),
+            "an unverified declared digest must not be quarantined"
+        );
+        assert!(host.quarantined_digests.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wrong_immutable_filename_latches_without_quarantining_the_verified_digest() {
+        let unique = format!(
+            "rustwrath-hotpatch-no-quarantine-filename-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let mut host = Host::new(root.clone());
+
+        // The bytes match the declared digest, but the manifest names a different immutable file.
+        // That is a manifest/name failure, not proof the content is bad, so it must latch without
+        // quarantining the digest.
+        let bytes = b"bytes that hash to the declared digest";
+        let digest = format!("{:x}", Sha1::digest(bytes));
+        let wrong_name = format!("pose-{}.dll", "f".repeat(40));
+        let manifest =
+            format!("revision = \"rev-f\"\nlibrary = \"{wrong_name}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        std::fs::write(root.join(&wrong_name), bytes).expect("write artifact");
+
+        let error = host
+            .poll()
+            .expect_err("the wrong immutable filename is terminal");
+        assert!(error
+            .to_string()
+            .contains("immutable digest filename"));
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        assert!(
+            !host.is_quarantined(&digest),
+            "a filename-only mismatch must not block a correctly named republish of the same bytes"
+        );
+        assert!(host.quarantined_digests.is_empty());
+
+        // Republishing those same bytes under the correct immutable name passes verification, so
+        // the next failure is the post-verification `Library::new` on non-PE bytes, not a
+        // quarantine refusal. That proves the earlier filename failure did not poison the digest.
+        let correct_name = format!("pose-{digest}.dll");
+        let republished =
+            format!("revision = \"rev-f2\"\nlibrary = \"{correct_name}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join(&correct_name), bytes).expect("write correctly named artifact");
+        std::fs::write(root.join("ready.toml"), &republished).expect("republish ready.toml");
+        let error = host
+            .poll()
+            .expect_err("the correctly named non-PE artifact reaches loading");
+        assert!(error.to_string().contains("loading presentation module"));
+        assert!(
+            !error.to_string().contains("quarantined"),
+            "the same digest must not be refused at the gate: {error:#}"
+        );
+        assert!(
+            host.is_quarantined(&digest),
+            "the post-verification load failure now quarantines the proved digest"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn publish_lock_keeps_a_post_verification_failure_retryable_until_the_publisher_finishes() {
+        let unique = format!(
+            "rustwrath-hotpatch-publish-lock-post-verify-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let bytes = b"not a pe image behind the lock";
+        let digest = format!("{:x}", Sha1::digest(bytes));
+        let dll = format!("pose-{digest}.dll");
+        let manifest = format!("revision = \"rev-a\"\nlibrary = \"{dll}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        std::fs::write(root.join(&dll), bytes).expect("write artifact");
+        std::fs::write(root.join("publish.lock"), b"").expect("write lock");
+
+        let mut host = Host::new(root.clone());
+        let first = host
+            .poll()
+            .expect_err("a load failure under the publisher lock is retried");
+        assert!(first.to_string().contains("loading presentation module"));
+        assert!(!transient_io(&first), "the load error itself is terminal");
+        assert!(
+            host.observed.is_none(),
+            "the publisher-held artifact must not latch"
+        );
+        assert!(
+            !host.is_quarantined(&digest),
+            "and it must not quarantine a possibly incomplete copy"
+        );
+
+        std::fs::remove_file(root.join("publish.lock")).expect("remove lock");
+        let second = host
+            .poll()
+            .expect_err("the completed bad artifact is terminal");
+        assert!(second.to_string().contains("loading presentation module"));
+        assert!(
+            host.is_quarantined(&digest),
+            "after the lock clears the proved digest is quarantined"
+        );
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        assert!(!host
+            .poll()
+            .expect("the latched post-verification failure stays quiet"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_dll_transient_failure_does_not_quarantine() {
+        let unique = format!(
+            "rustwrath-hotpatch-no-quarantine-transient-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let mut host = Host::new(root.clone());
+
+        let digest = "3333333333333333333333333333333333333333";
+        let dll_name = format!("pose-{digest}.dll");
+        let manifest =
+            format!("revision = \"rev-a\"\nlibrary = \"{dll_name}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+
+        let error = host.poll().expect_err("the absent DLL is a transient failure");
+        assert!(
+            transient_io(&error),
+            "a missing DLL must stay retryable: {error:#}"
+        );
+        assert!(
+            !host.is_quarantined(digest),
+            "a transient failure has no terminal digest to quarantine"
+        );
+        assert!(
+            host.quarantined_digests.is_empty(),
+            "no quarantine entry on the transient path"
+        );
+        assert!(
+            host.observed.is_none(),
+            "the transient path must not latch the manifest"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn malformed_manifest_does_not_quarantine_a_digest() {
+        let unique = format!(
+            "rustwrath-hotpatch-no-quarantine-malformed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let mut host = Host::new(root.clone());
+
+        let malformed = "revision = \"unterminated\n";
+        std::fs::write(root.join("ready.toml"), malformed).expect("write malformed ready.toml");
+        let error = host
+            .poll()
+            .expect_err("malformed TOML is a terminal publication error");
+        assert!(!transient_io(&error), "a TOML syntax error is terminal");
+        assert_eq!(host.observed.as_deref(), Some(malformed));
+        assert!(
+            host.quarantined_digests.is_empty(),
+            "a malformed manifest has no trustworthy digest to quarantine"
+        );
+
+        // A parseable manifest rejected by `deny_unknown_fields` is equally untrustworthy: the
+        // plausible-looking digest was never bound to a valid publication, so nothing is
+        // quarantined. The absent DLL is irrelevant because parsing fails first.
+        let digest = "4444444444444444444444444444444444444444";
+        let unknown_field = format!(
+            "revision = \"rev-x\"\nlibrary = \"pose-{digest}.dll\"\nsha1 = \"{digest}\"\nextra = true\n"
+        );
+        std::fs::write(root.join("ready.toml"), &unknown_field)
+            .expect("write unknown-field manifest");
+        let error = host
+            .poll()
+            .expect_err("an unknown manifest field is a terminal publication error");
+        assert!(!transient_io(&error));
+        assert_eq!(host.observed.as_deref(), Some(unknown_field.as_str()));
+        assert!(
+            host.quarantined_digests.is_empty(),
+            "an unknown-field manifest has no trustworthy digest to quarantine"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quarantine_store_dedupes_and_is_bounded() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.quarantine_digest("dup");
+        host.quarantine_digest("dup");
+        assert_eq!(
+            host.quarantined_digests.len(),
+            1,
+            "a repeated digest must not duplicate"
+        );
+        assert!(host.is_quarantined("dup"));
+
+        for index in 0..MAX_QUARANTINED_DIGESTS {
+            host.quarantine_digest(&format!("digest-{index:02}"));
+        }
+        assert_eq!(
+            host.quarantined_digests.len(),
+            MAX_QUARANTINED_DIGESTS,
+            "the store is capped"
+        );
+        assert!(
+            !host.is_quarantined("dup"),
+            "the oldest entry is evicted at the cap"
+        );
+        assert!(host.is_quarantined("digest-00"));
+        assert!(host.is_quarantined(&format!(
+            "digest-{:02}",
+            MAX_QUARANTINED_DIGESTS - 1
+        )));
     }
 
     #[test]
