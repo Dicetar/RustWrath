@@ -12,10 +12,11 @@ use benilla_hotpatch_abi::{
     MOVEMENT_MAGIC,
 };
 use libloading::Library;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
     collections::VecDeque,
+    io::Write,
     path::{Component, Path, PathBuf},
 };
 
@@ -27,15 +28,25 @@ const MOVEMENT_MANIFEST: &str = "movement.toml";
 /// Bounded restore-outcome ring. One `evaluate` can report at most the active module plus the
 /// three retained predecessors; the cap only bounds an unconsumed producer.
 const MAX_RESTORE_OUTCOMES: usize = 8;
-/// Bounded in-memory quarantine of publication digests that failed after their bytes were verified
+/// Bounded quarantine (in-memory plus `quarantine.toml`) of publication digests that failed after their bytes were verified
 /// (a content/contract error or an evaluation failure that reached a [`PatchHealthPolicy`]
 /// threshold, not transient I/O or a frame rejected by host validation). The digest is the
 /// quarantine key, so a changed manifest text that still names the same bad artifact is refused
 /// before any DLL read or `Library::new`. The same store covers a post-verification load failure
 /// and a loaded processor that is rejected by a canary batch or fails while active; retained copies
-/// are dropped or skipped. The pose and movement seams each own a store with this cap. This is not
-/// the H03 persistent/typed store.
+/// are dropped or skipped. The pose and movement seams each own a store with this cap. Both stores
+/// are persisted by `Host::persist_quarantine` and restored by `Host::load_persistent_quarantine`
+/// through `quarantine.toml`; typed reasons, per-revision totals and the crash sentinel remain H03.
 const MAX_QUARANTINED_DIGESTS: usize = 32;
+/// Digest-only quarantine store beside the publications. It records exactly the two bounded digest
+/// lists: no library path, revision, timestamp or OS error text is written, and no entry is ever
+/// joined to a path or opened as a file. It is not a manifest and never selects code to load.
+const QUARANTINE_FILE: &str = "quarantine.toml";
+/// Temp sibling used for the write-then-rename replacement of [`QUARANTINE_FILE`].
+const QUARANTINE_TEMP: &str = "quarantine.toml.tmp";
+/// Upper bound on the digest-only quarantine file. The file holds at most 64 digests, so this is
+/// generous; a larger file is rejected before it is read into memory.
+const MAX_QUARANTINE_FILE_BYTES: u64 = 64 * 1024;
 
 /// Verified SHA-1 content identity of a loaded module, as raw bytes.
 pub type ModuleDigest = [u8; 20];
@@ -66,8 +77,9 @@ pub enum RestoreOutcome {
 /// is still available from `take_active_failure`/`take_restore_outcomes`). A restored predecessor
 /// is a new activation and starts a clean record. This is the in-memory H03 slice: counters and
 /// thresholds are per activation and this record is neither persisted nor exported outside the
-/// process; [`PatchHealthPolicy`] enforces the thresholds in memory, while persistence, typed
-/// reasons and per-revision cumulative accounting remain H03.
+/// process; [`PatchHealthPolicy`] enforces the thresholds in memory, while persisted health/artifact
+/// stamps, typed reasons and per-revision cumulative accounting remain H03. (The separate digest
+/// quarantine behind `quarantined_digests` is persisted; this snapshot is not.)
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PatchHealthSnapshot {
@@ -87,7 +99,8 @@ pub struct PatchHealthSnapshot {
     pub last_eval_micros: u64,
     /// High-water mark of steady-state active-module evaluation duration, in microseconds.
     pub max_eval_micros: u64,
-    /// Number of pose digests currently held in the bounded in-memory quarantine.
+    /// Number of pose digests currently held in the bounded quarantine. The list is loaded from
+    /// and persisted to `quarantine.toml`; this count is a live in-memory length.
     pub quarantined_digests: usize,
 }
 
@@ -134,6 +147,73 @@ struct Publication {
     revision: String,
     library: String,
     sha1: String,
+}
+
+/// On-disk shape of `<root>/quarantine.toml`: the two bounded digest lists, oldest first.
+///
+/// This is a digest archive, not a manifest: `deny_unknown_fields` rejects a file carrying any
+/// other key, both lists default to empty, and every entry is re-validated on load by
+/// [`quarantine_entry_digest`]. Nothing here is trusted as a path, revision or identity; an entry
+/// only ever becomes a quarantine key.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QuarantineFile {
+    #[serde(default)]
+    pose: Vec<String>,
+    #[serde(default)]
+    movement: Vec<String>,
+}
+
+/// Accept exactly 40 ASCII hex digits, normalized to lowercase; everything else is skipped.
+///
+/// The rejection is deliberately broad: empty, short, over-long/overflowing, nested/path-like
+/// (`pose-<digest>.dll`, `../`, `a/b`), non-hex and non-ASCII entries all fail here and are never
+/// counted, joined to a path or used as a filename. A skipped entry is not an error: the file is a
+/// best-effort archive, and one corrupt line must not discard the digests beside it.
+fn quarantine_entry_digest(entry: &str) -> Option<String> {
+    if entry.len() == 40 && entry.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Some(entry.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+/// Validate one file's list into the digests this host would keep, newest-last.
+///
+/// Invalid entries are dropped and duplicates collapse to their first position. A list longer than
+/// [`MAX_QUARANTINED_DIGESTS`] keeps only its newest entries, the same suffix a fresh merge ends up
+/// holding, so re-reading an oversized file inserts nothing the second time instead of rotating the
+/// store with its already-evicted prefix. This is shape/cap hygiene, not a security boundary: an
+/// accepted entry is only ever a quarantine key compared against a verified digest.
+fn accepted_quarantine_digests(entries: &[String]) -> Vec<String> {
+    let mut digests: Vec<String> = Vec::new();
+    for entry in entries {
+        let Some(digest) = quarantine_entry_digest(entry) else {
+            continue;
+        };
+        if digests.contains(&digest) {
+            continue;
+        }
+        digests.push(digest);
+    }
+    if digests.len() > MAX_QUARANTINED_DIGESTS {
+        let keep_from = digests.len() - MAX_QUARANTINED_DIGESTS;
+        digests = digests.split_off(keep_from);
+    }
+    digests
+}
+
+/// Write the digest-only store to `temp` and flush it before the caller renames it over the target.
+///
+/// This mirrors `benilla_app::local_state::write_atomic_bytes`: create the folder, create/truncate
+/// the temp file, `write_all`, `sync_all`, then let the caller's `rename` replace the target. A
+/// failure at any step leaves the old target untouched, so the caller only has to remove the temp.
+fn write_quarantine_temp(root: &Path, temp: &Path, text: &str) -> Result<()> {
+    std::fs::create_dir_all(root).context("create publication folder")?;
+    let mut file = std::fs::File::create(temp).context("create quarantine temp file")?;
+    file.write_all(text.as_bytes())
+        .context("write quarantine temp file")?;
+    file.sync_all().context("flush quarantine temp file")
 }
 
 /// File identity of the artifact named by a manifest that latched a terminal failure.
@@ -765,13 +845,15 @@ pub struct Host {
     rejection: Option<String>,
     active_failure: Option<String>,
     restores: VecDeque<RestoreOutcome>,
-    /// Bounded in-memory quarantine of pose digests rejected after their bytes were verified: a
+    /// Bounded quarantine (in-memory plus `quarantine.toml`) of pose digests rejected after their bytes were verified: a
     /// terminal `Loaded::open` failure, a rejected canary batch, an active frame failure that
     /// reached a [`PatchHealthPolicy`] threshold, or a failing restore predecessor. The key is
     /// `Publication.sha1`, so a later manifest text that
     /// names the same bad artifact (`B -> C -> B`) is refused before `Library::new` without
-    /// re-reading the DLL. A frame rejected by host validation never reaches this store. Not
-    /// persistent; H03 owns the typed/persistent store.
+    /// re-reading the DLL. A frame rejected by host validation never reaches this store. The list
+    /// is persisted to `quarantine.toml` (see [`Host::persist_quarantine`]) and restored at startup
+    /// (see [`Host::load_persistent_quarantine`]); typed reasons, persistent health and the crash
+    /// sentinel remain H03.
     quarantined_digests: VecDeque<String>,
     /// The movement seam's own manifest latch, independent of the pose publication.
     movement_observed: Option<String>,
@@ -789,13 +871,14 @@ pub struct Host {
     /// that same candidate. Cleared at the start of every proposal call, on every refusal, and
     /// whenever the selected or staged state changes (a new stage, unload or seam toggle).
     movement_proposal_ready: bool,
-    /// Bounded in-memory quarantine of movement digests rejected after their bytes were verified:
+    /// Bounded quarantine (in-memory plus `quarantine.toml`) of movement digests rejected after their bytes were verified:
     /// a terminal post-verification `MovementLoaded::open` failure, or a module-produced `Status`
     /// or output-validation failure in `movement_proposal`. A changed manifest that still names
     /// the same bad artifact (`B -> C -> B`) is refused before any artifact read or `Library::new`.
     /// Deliberately separate from the pose store so the same bytes under a different ABI cannot
-    /// suppress the other seam; H03 may unify the stores under a `(ModuleKind, digest)` key. Not
-    /// persistent; H03 also owns the typed/persistent store and the frame counters.
+    /// suppress the other seam; H03 may unify the stores under a `(ModuleKind, digest)` key. Both
+    /// lists travel in the same `quarantine.toml` but stay separate in memory. Typed reasons,
+    /// persistent health, the crash sentinel and the frame counters remain H03.
     movement_quarantined_digests: VecDeque<String>,
     /// Which hot-pluggable gameplay seams are enabled. Pose is always enabled; the movement
     /// staging path consults this before it opens an artifact.
@@ -829,7 +912,7 @@ impl Host {
         }
     }
 
-    /// Add a pose digest to the bounded in-memory quarantine. Deduplicates so a repeated failure
+    /// Add a pose digest to the bounded quarantine (in-memory plus `quarantine.toml`). Deduplicates so a repeated failure
     /// does not grow the store, and trims the oldest entry at the cap. Callers add only a digest
     /// whose bytes were verified or that came from an already loaded module; a frame rejected by
     /// the host validation in `evaluate` does not reach this method.
@@ -848,7 +931,7 @@ impl Host {
         self.quarantined_digests.iter().any(|d| d == digest)
     }
 
-    /// Add a movement digest to the bounded in-memory quarantine. Same semantics as the pose
+    /// Add a movement digest to the bounded quarantine (in-memory plus `quarantine.toml`). Same semantics as the pose
     /// store: deduplicate a repeated failure and evict the oldest entry at the cap.
     fn quarantine_movement_digest(&mut self, digest: &str) {
         if self
@@ -869,6 +952,91 @@ impl Host {
     /// `MovementLoaded::open` failure or a module-produced proposal failure.
     fn is_movement_quarantined(&self, digest: &str) -> bool {
         self.movement_quarantined_digests.iter().any(|d| d == digest)
+    }
+
+    /// Merge the persisted digest quarantines from `<root>/quarantine.toml` into both stores.
+    ///
+    /// Returns the number of digests this call inserted (entries already held, invalid entries and
+    /// entries beyond the [`MAX_QUARANTINED_DIGESTS`] window are not counted). A missing file is
+    /// `Ok(0)`; any other read error or a malformed/unknown-field TOML document returns `Err` and
+    /// leaves both stores unchanged, because the whole document is parsed before the first entry is
+    /// merged. Valid entries are merged through
+    /// [`Self::quarantine_digest`]/[`Self::quarantine_movement_digest`], so the cap, dedupe and
+    /// oldest-first eviction are exactly the in-memory rules; loaded entries append after whatever
+    /// the running host already holds, so an existing digest stays older and is evicted first.
+    /// Invalid entries are skipped silently (see [`quarantine_entry_digest`]), and loading the same
+    /// file twice inserts nothing the second time, including a list longer than the cap.
+    ///
+    /// Loading is advisory state hygiene, not authorization: an entry only suppresses a digest at
+    /// the existing pre-load gates and is never treated as a publication, revision or filesystem
+    /// path. The host is the only writer of this file; a future field added by a newer binary makes
+    /// `deny_unknown_fields` reject the document here, which fails open (empty stores for this run)
+    /// rather than loading a partially understood store.
+    pub fn load_persistent_quarantine(&mut self) -> Result<usize> {
+        let path = self.root.join(QUARANTINE_FILE);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(
+            metadata.len() <= MAX_QUARANTINE_FILE_BYTES,
+            "quarantine store exceeds {MAX_QUARANTINE_FILE_BYTES} bytes"
+        );
+        let text = std::fs::read_to_string(&path).context("read quarantine store")?;
+        let file: QuarantineFile = toml::from_str(&text).context("parse quarantine store")?;
+        let mut added = 0;
+        for digest in accepted_quarantine_digests(&file.pose) {
+            if self.is_quarantined(&digest) {
+                continue;
+            }
+            self.quarantine_digest(&digest);
+            added += 1;
+        }
+        for digest in accepted_quarantine_digests(&file.movement) {
+            if self.is_movement_quarantined(&digest) {
+                continue;
+            }
+            self.quarantine_movement_digest(&digest);
+            added += 1;
+        }
+        Ok(added)
+    }
+
+    /// Write both bounded digest stores, oldest first, to `<root>/quarantine.toml`.
+    ///
+    /// The file contains only the two digest lists: no library path, revision or OS error text.
+    /// The document is written to `quarantine.toml.tmp`, flushed, and then renamed over the target,
+    /// which replaces it on both Unix and Windows (`std::fs::rename` uses `MOVEFILE_REPLACE_EXISTING`
+    /// on Windows, as the crate's `local_state::write_atomic_bytes` already relies on). No delete
+    /// window exists: a reader sees either the previous complete file or the new one, and a
+    /// failure before the rename leaves the previous file intact with only an inert temp behind,
+    /// which this function removes best-effort. The file contents are synced, but the directory
+    /// entry is not, so this is atomic replacement, not a power-loss durability guarantee.
+    ///
+    /// An empty store writes nothing: a fresh install never creates an empty file at 1 Hz, and an
+    /// unreadable store stays on disk for diagnosis until a digest is actually quarantined. Once
+    /// either list is non-empty the file is rewritten on every 1 Hz poll call (digest-only, capped
+    /// at 32 + 32 strings), which is the accepted write amplification of the unconditional poll
+    /// wiring; nothing is written per frame.
+    pub fn persist_quarantine(&self) -> Result<()> {
+        if self.quarantined_digests.is_empty() && self.movement_quarantined_digests.is_empty() {
+            return Ok(());
+        }
+        let file = QuarantineFile {
+            pose: self.quarantined_digests.iter().cloned().collect(),
+            movement: self.movement_quarantined_digests.iter().cloned().collect(),
+        };
+        let text = toml::to_string(&file).context("serialize quarantine store")?;
+        let target = self.root.join(QUARANTINE_FILE);
+        let temp = self.root.join(QUARANTINE_TEMP);
+        let written = write_quarantine_temp(&self.root, &temp, &text)
+            .and_then(|()| std::fs::rename(&temp, &target).context("replace quarantine store"));
+        if written.is_err() {
+            // Best effort: a leftover temp file is inert and is overwritten by the next save.
+            let _ = std::fs::remove_file(&temp);
+        }
+        written
     }
 
     /// Poll only a complete publication. A failed candidate never replaces the active module.
@@ -1012,9 +1180,10 @@ impl Host {
     /// visible until the next activation resets them; the failed identity is available from
     /// `take_active_failure`/`take_restore_outcomes`. A restored predecessor starts a clean record.
     /// `quarantined_digests` is the current pose quarantine length. `total_frame_failures` is
-    /// per-activation in this slice. This snapshot neither persists nor exports anything; the
-    /// in-memory [`PatchHealthPolicy`] thresholds compare these counters, while persistence and
-    /// per-revision cumulative accounting remain H03.
+    /// per-activation in this slice. This snapshot itself neither persists nor exports anything;
+    /// the digest lists behind the quarantine count are separately saved to `quarantine.toml`, and
+    /// the in-memory [`PatchHealthPolicy`] thresholds compare these counters, while persistent
+    /// health, typed reasons and per-revision cumulative accounting remain H03.
     pub fn health_snapshot(&self) -> PatchHealthSnapshot {
         PatchHealthSnapshot {
             revision: self.active.as_ref().map(|module| module.revision.clone()),
@@ -6433,6 +6602,452 @@ mod tests {
             "the repaired bytes reach the post-verification load: {detail}"
         );
         assert!(host.is_movement_quarantined(&digest));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ------------------------------------------------------------------
+    // Persistent digest quarantine (`<root>/quarantine.toml`). These cases exercise the file shape,
+    // entry validation, merge order, cap/eviction, best-effort replacement and health-facing counts
+    // with in-process hosts; no native library is built or loaded.
+    // ------------------------------------------------------------------
+
+    /// A distinct valid 40-hex digest for `index` (zero-padded, so ordering is readable).
+    fn persistent_digest(index: usize) -> String {
+        format!("{index:040x}")
+    }
+
+    fn quarantine_text(pose: &[String], movement: &[String]) -> String {
+        toml::to_string(&QuarantineFile {
+            pose: pose.to_vec(),
+            movement: movement.to_vec(),
+        })
+        .expect("serialize quarantine fixture")
+    }
+
+    #[test]
+    fn persistent_quarantine_rejects_an_oversized_file() {
+        let root = pose_test_root("quarantine-oversized");
+        std::fs::write(
+            root.join(QUARANTINE_FILE),
+            vec![b'a'; (MAX_QUARANTINE_FILE_BYTES + 1) as usize],
+        )
+        .expect("write oversized store");
+        let mut host = Host::new(root.clone());
+        let error = host
+            .load_persistent_quarantine()
+            .expect_err("an oversized store is rejected before reading");
+        assert!(error.to_string().contains("exceeds"), "{error:#}");
+        assert!(host.quarantined_digests.is_empty());
+        assert!(host.movement_quarantined_digests.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_quarantine_round_trips_pose_and_movement_digests() {
+        let root = pose_test_root("quarantine-round-trip");
+        let mut host = Host::new(root.clone());
+        let pose_a = persistent_digest(1);
+        let pose_b = persistent_digest(2);
+        let movement_a = persistent_digest(3);
+        host.quarantine_digest(&pose_a);
+        host.quarantine_digest(&pose_b);
+        host.quarantine_movement_digest(&movement_a);
+
+        host.persist_quarantine().expect("persist quarantine store");
+        assert!(root.join(QUARANTINE_FILE).exists());
+
+        let mut restored = Host::new(root.clone());
+        assert_eq!(
+            restored
+                .load_persistent_quarantine()
+                .expect("load quarantine store"),
+            3,
+            "all three digests are new to the fresh host"
+        );
+        assert_eq!(
+            restored
+                .quarantined_digests
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![pose_a.clone(), pose_b.clone()],
+            "the pose store keeps oldest-first order"
+        );
+        assert_eq!(
+            restored
+                .movement_quarantined_digests
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![movement_a.clone()]
+        );
+        assert!(restored.is_quarantined(&pose_b));
+        assert!(restored.is_movement_quarantined(&movement_a));
+        assert!(
+            !restored.is_quarantined(&movement_a),
+            "the pose and movement stores stay separate"
+        );
+        assert_eq!(
+            restored.health_snapshot().quarantined_digests,
+            restored.quarantined_digests.len(),
+            "the health snapshot counts the restored pose store"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_quarantine_missing_file_is_an_empty_success() {
+        let root = pose_test_root("quarantine-missing");
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_persistent_quarantine()
+                .expect("a missing store is not an error"),
+            0
+        );
+        assert!(host.quarantined_digests.is_empty());
+        assert!(host.movement_quarantined_digests.is_empty());
+        host.persist_quarantine()
+            .expect("an empty store persists as a no-op");
+        assert!(
+            !root.join(QUARANTINE_FILE).exists(),
+            "an empty store never creates the file"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_quarantine_malformed_file_is_an_error_and_keeps_both_stores() {
+        let root = pose_test_root("quarantine-malformed");
+        let mut host = Host::new(root.clone());
+        let existing_pose = persistent_digest(7);
+        let existing_movement = persistent_digest(8);
+        host.quarantine_digest(&existing_pose);
+        host.quarantine_movement_digest(&existing_movement);
+
+        std::fs::write(root.join(QUARANTINE_FILE), "pose = 1\n")
+            .expect("write malformed store");
+        assert!(
+            host.load_persistent_quarantine().is_err(),
+            "a document of the wrong shape must be reported, not silently ignored"
+        );
+        assert_eq!(host.quarantined_digests.len(), 1);
+        assert_eq!(host.movement_quarantined_digests.len(), 1);
+        assert!(host.is_quarantined(&existing_pose));
+        assert!(host.is_movement_quarantined(&existing_movement));
+
+        // The fixed shape rejects an otherwise well-formed document with an extra key.
+        std::fs::write(
+            root.join(QUARANTINE_FILE),
+            format!("pose = [\"{existing_pose}\"]\nrevision = \"rev-a\"\n"),
+        )
+        .expect("write unknown-field store");
+        assert!(host.load_persistent_quarantine().is_err());
+        assert_eq!(host.quarantined_digests.len(), 1);
+        assert_eq!(host.movement_quarantined_digests.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_quarantine_skips_invalid_and_duplicate_entries() {
+        let root = pose_test_root("quarantine-invalid");
+        let mut host = Host::new(root.clone());
+        let valid = persistent_digest(0xabc);
+        let upper = valid.to_ascii_uppercase();
+        let nested = format!("modules/pose-{valid}.dll");
+        let overflow = "a".repeat(48);
+        let non_hex = format!("{}z", "0".repeat(39));
+        let text = toml::to_string(&QuarantineFile {
+            pose: vec![
+                String::new(),
+                "abc123".to_owned(),
+                non_hex,
+                nested,
+                "../quarantine.toml".to_owned(),
+                valid.clone(),
+                valid.clone(),
+                upper,
+                overflow,
+            ],
+            movement: vec![valid.clone()],
+        })
+        .expect("serialize invalid-entry fixture");
+        std::fs::write(root.join(QUARANTINE_FILE), text).expect("write store");
+
+        assert_eq!(
+            host.load_persistent_quarantine()
+                .expect("invalid entries are skipped, not fatal"),
+            2,
+            "one unique pose digest plus one movement digest"
+        );
+        assert_eq!(host.quarantined_digests.len(), 1);
+        assert_eq!(
+            host.quarantined_digests.front().map(String::as_str),
+            Some(valid.as_str()),
+            "the accepted entry is normalized to lowercase"
+        );
+        assert_eq!(host.movement_quarantined_digests.len(), 1);
+        assert!(
+            host.is_quarantined(&valid),
+            "the loaded digest is addressable in its lowercase form"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_quarantine_load_respects_the_cap_and_oldest_eviction() {
+        let root = pose_test_root("quarantine-cap");
+        let digests: Vec<String> = (0..40).map(persistent_digest).collect();
+        std::fs::write(
+            root.join(QUARANTINE_FILE),
+            quarantine_text(&digests, &[]),
+        )
+        .expect("write store");
+
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_persistent_quarantine().expect("load store"),
+            MAX_QUARANTINED_DIGESTS,
+            "an oversized list keeps only its newest cap-sized window"
+        );
+        assert_eq!(host.quarantined_digests.len(), MAX_QUARANTINED_DIGESTS);
+        for (offset, digest) in digests[8..].iter().enumerate() {
+            assert_eq!(
+                host.quarantined_digests[offset], *digest,
+                "the store holds the newest 32 entries oldest-first"
+            );
+        }
+        assert!(
+            !host.is_quarantined(&digests[7]),
+            "the oldest entries were evicted at the cap"
+        );
+        assert!(host.is_quarantined(&digests[39]));
+        assert!(host.movement_quarantined_digests.is_empty());
+
+        // Reloading the same oversized file must not rotate the window with its evicted prefix.
+        let window: Vec<String> = host.quarantined_digests.iter().cloned().collect();
+        assert_eq!(
+            host.load_persistent_quarantine().expect("second load"),
+            0,
+            "the second load inserts nothing"
+        );
+        assert_eq!(
+            host.quarantined_digests.iter().cloned().collect::<Vec<_>>(),
+            window,
+            "the cap-sized window is unchanged by a reload"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persisted_quarantine_contains_only_digests_and_reloads_idempotently() {
+        let root = pose_test_root("quarantine-content");
+        let mut host = Host::new(root.clone());
+        let pose = persistent_digest(11);
+        let movement = persistent_digest(12);
+        host.quarantine_digest(&pose);
+        host.quarantine_movement_digest(&movement);
+        host.persist_quarantine().expect("persist store");
+
+        let text =
+            std::fs::read_to_string(root.join(QUARANTINE_FILE)).expect("the store is readable");
+        assert!(text.contains(&pose));
+        assert!(text.contains(&movement));
+        assert!(
+            !text.contains(".dll"),
+            "no immutable artifact names are written: {text}"
+        );
+        assert!(
+            !text.contains("rev"),
+            "no revision labels are written: {text}"
+        );
+        assert!(
+            !text.contains('\\') && !text.contains('/'),
+            "no paths are written: {text}"
+        );
+        assert!(
+            !root.join(QUARANTINE_TEMP).exists(),
+            "the temp file is renamed over the target, not left behind"
+        );
+
+        let file: QuarantineFile = toml::from_str(&text).expect("the store is valid TOML");
+        assert_eq!(file.pose, vec![pose.clone()]);
+        assert_eq!(file.movement, vec![movement.clone()]);
+        for entry in file.pose.iter().chain(file.movement.iter()) {
+            assert_eq!(entry.len(), 40, "only 40-hex digests are written: {entry}");
+            assert!(
+                entry
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+                "only lowercase hex is written: {entry}"
+            );
+        }
+
+        let mut restored = Host::new(root.clone());
+        assert_eq!(
+            restored.load_persistent_quarantine().expect("load store"),
+            2
+        );
+        assert_eq!(
+            restored
+                .load_persistent_quarantine()
+                .expect("a second load is a no-op"),
+            0,
+            "reloading the same file inserts nothing"
+        );
+        assert_eq!(
+            restored.quarantined_digests.iter().cloned().collect::<Vec<_>>(),
+            vec![pose]
+        );
+        assert_eq!(
+            restored
+                .movement_quarantined_digests
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![movement]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_quarantine_merges_into_existing_stores_without_clearing() {
+        let root = pose_test_root("quarantine-merge");
+        let mut host = Host::new(root.clone());
+        let live_pose = persistent_digest(21);
+        let live_movement = persistent_digest(22);
+        let stored_pose = persistent_digest(23);
+        let stored_movement = persistent_digest(24);
+        host.quarantine_digest(&live_pose);
+        host.quarantine_movement_digest(&live_movement);
+        std::fs::write(
+            root.join(QUARANTINE_FILE),
+            quarantine_text(&[stored_pose.clone()], &[stored_movement.clone()]),
+        )
+        .expect("write store");
+
+        assert_eq!(
+            host.load_persistent_quarantine().expect("load store"),
+            2,
+            "only the persisted digests are new"
+        );
+        assert_eq!(
+            host.quarantined_digests.iter().cloned().collect::<Vec<_>>(),
+            vec![live_pose.clone(), stored_pose],
+            "the live entry is kept and the persisted entry appended"
+        );
+        assert_eq!(
+            host.movement_quarantined_digests
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![live_movement.clone(), stored_movement]
+        );
+
+        // A persisted copy of an already-live digest is neither counted nor reordered.
+        std::fs::write(
+            root.join(QUARANTINE_FILE),
+            quarantine_text(&[live_pose.clone()], &[live_movement.clone()]),
+        )
+        .expect("rewrite store");
+        assert_eq!(
+            host.load_persistent_quarantine().expect("reload store"),
+            0
+        );
+        assert_eq!(
+            host.quarantined_digests.len(),
+            2,
+            "loading never removes a live entry"
+        );
+        assert_eq!(
+            host.quarantined_digests.front(),
+            Some(&live_pose),
+            "a duplicate does not reorder or duplicate the live entry"
+        );
+        assert_eq!(host.movement_quarantined_digests.len(), 2);
+        assert_eq!(
+            host.movement_quarantined_digests.front(),
+            Some(&live_movement)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persisted_quarantine_replaces_the_previous_file_and_a_stale_temp() {
+        let root = pose_test_root("quarantine-replace");
+        let mut host = Host::new(root.clone());
+        let first = persistent_digest(31);
+        let second = persistent_digest(32);
+        host.quarantine_digest(&first);
+        host.persist_quarantine().expect("persist first store");
+        assert_eq!(
+            toml::from_str::<QuarantineFile>(
+                &std::fs::read_to_string(root.join(QUARANTINE_FILE)).expect("first store")
+            )
+            .expect("first store parses")
+            .pose,
+            vec![first.clone()]
+        );
+
+        // An interrupted earlier save leaves a temp file behind; the next save must truncate it
+        // rather than fail, then replace the target in one rename.
+        std::fs::write(root.join(QUARANTINE_TEMP), b"stale partial store").expect("stale temp");
+        host.quarantine_digest(&second);
+        host.persist_quarantine().expect("replace store");
+
+        let file = toml::from_str::<QuarantineFile>(
+            &std::fs::read_to_string(root.join(QUARANTINE_FILE)).expect("replaced store"),
+        )
+        .expect("replaced store parses");
+        assert_eq!(file.pose, vec![first, second], "both digests, oldest first");
+        assert!(
+            !root.join(QUARANTINE_TEMP).exists(),
+            "the temp file is consumed by the rename"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_quarantine_replacement_keeps_the_previous_store_and_cleans_the_temp() {
+        let root = pose_test_root("quarantine-failure");
+        let mut host = Host::new(root.clone());
+        let first = persistent_digest(41);
+        let second = persistent_digest(42);
+        host.quarantine_digest(&first);
+        host.persist_quarantine().expect("persist first store");
+        let previous =
+            std::fs::read_to_string(root.join(QUARANTINE_FILE)).expect("first store readable");
+
+        // A temp path that cannot be created fails before the target is touched, so the previous
+        // store keeps its exact bytes.
+        std::fs::create_dir(root.join(QUARANTINE_TEMP)).expect("block the temp path");
+        host.quarantine_digest(&second);
+        assert!(
+            host.persist_quarantine().is_err(),
+            "a blocked temp path must fail the save"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(QUARANTINE_FILE)).expect("previous store readable"),
+            previous,
+            "the previous store is never truncated before the replacement is written"
+        );
+        std::fs::remove_dir(root.join(QUARANTINE_TEMP)).expect("unblock the temp path");
+
+        // A target that cannot be replaced fails after the temp is written; the temp is removed and
+        // the blocking target is left as it was.
+        std::fs::remove_file(root.join(QUARANTINE_FILE)).expect("remove store for failure case");
+        std::fs::create_dir(root.join(QUARANTINE_FILE)).expect("block the target path");
+        assert!(
+            host.persist_quarantine().is_err(),
+            "a directory target must fail the replacement"
+        );
+        assert!(
+            root.join(QUARANTINE_FILE).is_dir(),
+            "the failed replacement leaves the target alone"
+        );
+        assert!(
+            !root.join(QUARANTINE_TEMP).exists(),
+            "the written temp file is cleaned up after a failed rename"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

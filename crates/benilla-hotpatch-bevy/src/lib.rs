@@ -70,11 +70,24 @@ impl Plugin for HotpatchPlugin {
             "hotpatch: watching {} (pose ABI 1; trusted local modules)",
             self.root.display()
         );
+        let mut host = Host::new(self.root.clone());
+        // Restore the digest quarantines from the previous run so a `B -> C -> B` manifest rewrite
+        // cannot re-stage a digest that already failed deterministically. A malformed or unreadable
+        // store is logged once and must not fail plugin startup: the in-memory stores stay empty
+        // and a later quarantine rewrites the file from memory. The message seeds the quarantine
+        // dedupe slot, not the publication slot.
+        let mut last_quarantine_error = None;
+        if let Err(error) = host.load_persistent_quarantine() {
+            let message = format!("quarantine load: {error:#}");
+            warn!("hotpatch: {message}");
+            last_quarantine_error = Some(message);
+        }
         app.add_message::<HotpatchEvent>()
         .insert_resource(Runtime {
-            host: Host::new(self.root.clone()),
+            host,
             next_poll: 0.0,
             last_error: None,
+            last_quarantine_error,
             reported_revision: None,
             reported_digest: None,
             refresh: false,
@@ -103,6 +116,11 @@ struct Runtime {
     host: Host,
     next_poll: f64,
     last_error: Option<String>,
+    /// Last reported quarantine load/save error. Deliberately separate from `last_error`: the
+    /// publication/retention paths share and clear that slot, so reusing it here would let a
+    /// persistent save failure re-emit `PublicationRejected`/`RetentionFailed` (and the save
+    /// warning) every 1 Hz tick. Only a successful save clears this slot.
+    last_quarantine_error: Option<String>,
     reported_revision: Option<String>,
     reported_digest: Option<String>,
     refresh: bool,
@@ -128,6 +146,19 @@ fn report(runtime: &mut Runtime, error: String) {
         warn!("hotpatch: {error}");
     }
     runtime.last_error = Some(error);
+}
+
+/// Report a quarantine load/save error through its own dedupe slot.
+///
+/// The publication and retention paths share `Runtime.last_error`, which a successful staging poll
+/// intentionally clears. Reusing that slot for the quarantine would make a persistent save failure
+/// re-emit both events and both warnings on every tick, so this slot is independent and is cleared
+/// only when a save succeeds.
+fn report_quarantine(runtime: &mut Runtime, error: String) {
+    if runtime.last_quarantine_error.as_ref() != Some(&error) {
+        warn!("hotpatch: {error}");
+    }
+    runtime.last_quarantine_error = Some(error);
 }
 
 fn digest_from_hex(hex: &str) -> Option<[u8; 20]> {
@@ -211,6 +242,13 @@ fn poll(
             });
         }
         report(&mut runtime, message);
+    }
+    // Save the digest quarantines once per poll tick, after staging and retention have updated
+    // them. Writes are digest-only; a failure is deduplicated through the quarantine slot and never
+    // stops the poll or the seams.
+    match runtime.host.persist_quarantine() {
+        Ok(()) => runtime.last_quarantine_error = None,
+        Err(error) => report_quarantine(&mut runtime, format!("quarantine save: {error:#}")),
     }
 }
 
