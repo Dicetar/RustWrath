@@ -27,10 +27,11 @@ const MOVEMENT_MANIFEST: &str = "movement.toml";
 /// Bounded restore-outcome ring. One `evaluate` can report at most the active module plus the
 /// three retained predecessors; the cap only bounds an unconsumed producer.
 const MAX_RESTORE_OUTCOMES: usize = 8;
-/// Bounded in-memory quarantine of pose publication digests that failed deterministically in
-/// `Loaded::open` (a content/contract error, not transient I/O). The digest is the quarantine key,
-/// so a changed manifest text that still names the same bad artifact is refused before any DLL
-/// read or `Library::new`. This is not the H03 persistent/typed store.
+/// Bounded in-memory quarantine of publication digests that failed deterministically after their
+/// bytes were verified (a content/contract error, not transient I/O). The digest is the quarantine
+/// key, so a changed manifest text that still names the same bad artifact is refused before any DLL
+/// read or `Library::new`. The pose and movement seams each own a store with this cap. This is not
+/// the H03 persistent/typed store.
 const MAX_QUARANTINED_DIGESTS: usize = 32;
 
 /// Verified SHA-1 content identity of a loaded module, as raw bytes.
@@ -264,8 +265,11 @@ pub enum MovementProposalSource {
     Active,
 }
 
-/// Typed refusal from the movement seam. Every `Err` leaves no proposal written and drops the
-/// movement slot, so the caller hands prediction back to the baseline controller exactly once.
+/// Typed refusal from the movement seam. A [`Host::movement_proposal`] `Err` leaves no proposal
+/// written and drops the movement slot, so the caller hands prediction back to the baseline
+/// controller exactly once. A [`Host::stage_movement_processor`] `Err` drops only the staged
+/// candidate and latches as its variant describes; it does not evict an already-active processor
+/// except for [`MovementRefusal::SeamDisabled`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MovementRefusal {
     /// No movement module is staged or active.
@@ -278,6 +282,10 @@ pub enum MovementRefusal {
     /// Reading, parsing or verifying `movement.toml` failed. Free-form detail is kept in
     /// [`Host::take_movement_rejection`] for logs.
     Publication,
+    /// The manifest named a digest the host quarantined after a terminal post-verification
+    /// `MovementLoaded::open` failure. It is refused before any artifact read or `Library::new`,
+    /// even when a changed manifest (`B -> C -> B`) names the same bad artifact again.
+    Quarantined,
     /// The descriptor magic, artifact prefix or ABI version named another seam or version.
     Kind,
     /// The descriptor's frame/output layout differs from the running host ABI.
@@ -307,6 +315,14 @@ pub enum MovementRefusal {
 struct MovementLoadFailure {
     refusal: MovementRefusal,
     detail: String,
+    /// Whether the same manifest may succeed unchanged: a transient filesystem availability error
+    /// anywhere in the cause chain, or a publisher-held `publish.lock`. A transient failure is
+    /// retried without latching the manifest or quarantining a digest.
+    transient: bool,
+    /// `Some` only after [`verify_publication`] proved the bytes; `None` for every verification
+    /// failure. Only a proved digest may be quarantined, so a declared-but-unproved digest never
+    /// poisons a legitimate same-digest repair.
+    verified_digest: Option<String>,
 }
 
 /// A loaded `MovementModuleV1` candidate or active processor.
@@ -325,17 +341,41 @@ impl MovementLoaded {
         root: &Path,
         publication: Publication,
     ) -> std::result::Result<Self, MovementLoadFailure> {
-        let publication_detail = |error: &dyn std::fmt::Display| MovementLoadFailure {
-            refusal: MovementRefusal::Publication,
-            detail: format!("movement publication rejected: {error}"),
-        };
-        let (path, digest) = verify_publication(root, &publication, ModuleKind::Movement)
-            .map_err(|error| publication_detail(&error))?;
+        // A verification failure cannot prove the declared digest against the bytes, so it never
+        // supplies `verified_digest`; a transient read or a held publisher lock retries unchanged.
+        let (path, digest) = verify_publication(root, &publication, ModuleKind::Movement).map_err(
+            |error| MovementLoadFailure {
+                refusal: MovementRefusal::Publication,
+                detail: format!("movement publication rejected: {error:#}"),
+                transient: transient_io(&error) || publish_in_progress(root),
+                verified_digest: None,
+            },
+        )?;
         // SAFETY: executable local modules are explicitly trusted, exactly as for the pose seam.
-        let library = unsafe { Library::new(&path) }.map_err(|error| publication_detail(&error))?;
+        let library = unsafe { Library::new(&path) }.map_err(|error| {
+            // `libloading` exposes the underlying `std::io::Error` as `Error::source()` on Windows,
+            // so the anyhow chain still sees a publisher's sharing/lock failure (raw 32/33) while a
+            // bad image or missing dependency stays terminal. On Unix `DlOpen` carries no io source,
+            // so load-time errors are terminal and only `verify_publication`'s reads can be transient.
+            let error = anyhow::Error::new(error);
+            MovementLoadFailure {
+                refusal: MovementRefusal::Publication,
+                detail: format!("movement publication rejected: {error:#}"),
+                transient: transient_io(&error) || publish_in_progress(root),
+                verified_digest: Some(digest.clone()),
+            }
+        })?;
         let entry =
             unsafe { library.get::<benilla_hotpatch_abi::MovementEntryPoint>(MOVEMENT_ENTRY) }
-                .map_err(|error| publication_detail(&error))?;
+                .map_err(|error| {
+                    let error = anyhow::Error::new(error);
+                    MovementLoadFailure {
+                        refusal: MovementRefusal::Publication,
+                        detail: format!("movement publication rejected: {error:#}"),
+                        transient: transient_io(&error) || publish_in_progress(root),
+                        verified_digest: Some(digest.clone()),
+                    }
+                })?;
         let descriptor = unsafe { entry() };
         if descriptor.is_null() {
             return Err(MovementLoadFailure {
@@ -344,6 +384,8 @@ impl MovementLoaded {
                     "movement module {} returned a null descriptor",
                     publication.revision
                 ),
+                transient: publish_in_progress(root),
+                verified_digest: Some(digest),
             });
         }
         let descriptor = unsafe { std::ptr::read(descriptor) };
@@ -354,6 +396,8 @@ impl MovementLoaded {
                     "movement module {} descriptor refused ({refusal:?})",
                     publication.revision
                 ),
+                transient: publish_in_progress(root),
+                verified_digest: Some(digest.clone()),
             })?;
         Ok(Self {
             revision: publication.revision,
@@ -464,6 +508,14 @@ pub struct Host {
     movement_active: Option<MovementLoaded>,
     movement_refusal: Option<MovementRefusal>,
     movement_rejection: Option<String>,
+    /// Bounded in-memory quarantine of movement digests rejected by a terminal post-verification
+    /// `MovementLoaded::open` failure: the bytes matched `movement.toml` and the immutable
+    /// filename. A changed manifest that still names the same bad artifact (`B -> C -> B`) is
+    /// refused before any artifact read or `Library::new`. Deliberately separate from the pose
+    /// store so the same bytes under a different ABI cannot suppress the other seam; H03 may unify
+    /// the stores under a `(ModuleKind, digest)` key. Not persistent; H03 also owns the
+    /// typed/persistent store and the canary/frame quarantine.
+    movement_quarantined_digests: VecDeque<String>,
     /// Which hot-pluggable gameplay seams are enabled. Pose is always enabled; the movement
     /// staging path consults this before it opens an artifact.
     seams: ModularGameplayRegistry,
@@ -486,6 +538,7 @@ impl Host {
             movement_active: None,
             movement_refusal: None,
             movement_rejection: None,
+            movement_quarantined_digests: VecDeque::new(),
             seams: ModularGameplayRegistry::new(),
         }
     }
@@ -505,6 +558,29 @@ impl Host {
     /// Whether a pose digest was quarantined after a terminal `Loaded::open` failure.
     fn is_quarantined(&self, digest: &str) -> bool {
         self.quarantined_digests.iter().any(|d| d == digest)
+    }
+
+    /// Add a movement digest to the bounded in-memory quarantine. Same semantics as the pose
+    /// store: deduplicate a repeated failure and evict the oldest entry at the cap.
+    fn quarantine_movement_digest(&mut self, digest: &str) {
+        if self
+            .movement_quarantined_digests
+            .iter()
+            .any(|d| d == digest)
+        {
+            return;
+        }
+        if self.movement_quarantined_digests.len() == MAX_QUARANTINED_DIGESTS {
+            self.movement_quarantined_digests.pop_front();
+        }
+        self.movement_quarantined_digests
+            .push_back(digest.to_owned());
+    }
+
+    /// Whether a movement digest was quarantined after a terminal post-verification
+    /// `MovementLoaded::open` failure.
+    fn is_movement_quarantined(&self, digest: &str) -> bool {
+        self.movement_quarantined_digests.iter().any(|d| d == digest)
     }
 
     /// Poll only a complete publication. A failed candidate never replaces the active module.
@@ -852,8 +928,12 @@ impl Host {
     /// `Ok(true)` means a new candidate was staged; `Ok(false)` means the manifest is absent or
     /// unchanged (including one already active). A typed `Err` leaves the pose slots untouched and
     /// drops any staged movement candidate. A disabled movement seam refuses with
-    /// [`MovementRefusal::SeamDisabled`] before the artifact is read. The full loader text is in
-    /// [`Self::take_movement_rejection`].
+    /// [`MovementRefusal::SeamDisabled`] before the artifact is read. A deterministic parse,
+    /// verification or post-verification load failure latches the manifest text; a
+    /// bytes-verified post-verification failure also quarantines its digest, so a changed manifest
+    /// that still names the same artifact is refused as [`MovementRefusal::Quarantined`] before any
+    /// artifact read. Transient I/O and a held `publish.lock` retry unchanged. The full loader text
+    /// is in [`Self::take_movement_rejection`].
     pub fn stage_movement_processor(&mut self) -> std::result::Result<bool, MovementRefusal> {
         let text = match std::fs::read_to_string(self.root.join(MOVEMENT_MANIFEST)) {
             Ok(text) => text,
@@ -899,12 +979,30 @@ impl Host {
         let publication: Publication = match toml::from_str(&text) {
             Ok(publication) => publication,
             Err(error) => {
+                // A malformed movement manifest is deterministic content. Latch it so the 1 Hz
+                // stage call does not re-parse and re-report the same bytes; a changed manifest
+                // cleared the latch above and is retried. H03 adds typed reasons.
+                self.movement_observed = Some(text);
                 return Err(self.refuse_movement(
                     MovementRefusal::Publication,
                     format!("movement publication: {error}"),
-                ))
+                ));
             }
         };
+        if self.is_movement_quarantined(&publication.sha1) {
+            // A digest quarantined after a terminal post-verification failure is refused before
+            // the active-module shortcut or any artifact read/`Library::new`, even when a changed
+            // manifest (`B -> C -> B`) names it again. Latch this text so the unchanged manifest
+            // is a quiet `Ok(false)`; a genuinely new digest is still evaluated.
+            let digest = publication.sha1.clone();
+            self.movement_observed = Some(text);
+            return Err(self.refuse_movement(
+                MovementRefusal::Quarantined,
+                format!(
+                    "movement module digest {digest} is quarantined after a terminal load failure"
+                ),
+            ));
+        }
         if self.movement_active.as_ref().is_some_and(|module| {
             !publication.revision.is_empty()
                 && module.digest == publication.sha1
@@ -921,7 +1019,21 @@ impl Host {
                 self.movement_rejection = None;
                 Ok(true)
             }
-            Err(failure) => Err(self.refuse_movement(failure.refusal, failure.detail)),
+            Err(failure) => {
+                if failure.transient {
+                    // Leave `movement_observed` unlatched so an incomplete copy or a
+                    // publisher-held artifact is retried unchanged; never quarantine it.
+                    return Err(self.refuse_movement(failure.refusal, failure.detail));
+                }
+                // Only a bytes-verified post-verification failure may quarantine. A verification
+                // failure carries `verified_digest: None`, so a manifest error cannot poison a
+                // legitimate same-digest repair.
+                if let Some(digest) = failure.verified_digest.as_deref() {
+                    self.quarantine_movement_digest(digest);
+                }
+                self.movement_observed = Some(text);
+                Err(self.refuse_movement(failure.refusal, failure.detail))
+            }
         }
     }
 
@@ -2321,13 +2433,10 @@ mod tests {
 
         // A movement artifact whose bytes do not match its publication is a typed refusal.
         let digest = "0123456789abcdef0123456789abcdef01234567";
-        std::fs::write(
-            root.join("movement.toml"),
-            format!(
-                "revision = \"rev-m\"\nlibrary = \"movement-{digest}.dll\"\nsha1 = \"{digest}\"\n"
-            ),
-        )
-        .expect("write movement manifest");
+        let manifest = format!(
+            "revision = \"rev-m\"\nlibrary = \"movement-{digest}.dll\"\nsha1 = \"{digest}\"\n"
+        );
+        std::fs::write(root.join("movement.toml"), &manifest).expect("write movement manifest");
         std::fs::write(root.join(format!("movement-{digest}.dll")), b"wrong").expect("write dll");
         assert_eq!(
             host.stage_movement_processor(),
@@ -2341,6 +2450,11 @@ mod tests {
             host.observed.as_deref(),
             Some("pose-manifest"),
             "the pose publication latch is independent"
+        );
+        assert_eq!(
+            host.movement_observed.as_deref(),
+            Some(manifest.as_str()),
+            "the deterministic movement failure latches its own text"
         );
 
         // Retention recognises both seams this host owns and nothing else, so a combat/space/story
@@ -2359,6 +2473,443 @@ mod tests {
             "movement-not-a-digest.dll",
             "movement-"
         ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn movement_test_root(tag: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "rustwrath-hotpatch-movement-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        root
+    }
+
+    fn movement_publication_text(revision: &str, library: &str, sha1: &str) -> String {
+        format!("revision = \"{revision}\"\nlibrary = \"{library}\"\nsha1 = \"{sha1}\"\n")
+    }
+
+    #[test]
+    fn malformed_movement_manifest_latches_and_retries_when_rewritten() {
+        let root = movement_test_root("malformed");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+
+        let malformed = "revision = \"unterminated\n";
+        std::fs::write(root.join(MOVEMENT_MANIFEST), malformed).expect("write malformed manifest");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(malformed));
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::Publication)
+        );
+        let detail = host.take_movement_rejection().expect("loader detail");
+        assert!(
+            detail.contains("movement publication:"),
+            "detail names the publication: {detail}"
+        );
+        assert!(
+            detail.to_lowercase().contains("toml parse error"),
+            "detail names the parse error: {detail}"
+        );
+
+        // The unchanged malformed bytes are not re-parsed and do not report again.
+        assert_eq!(host.stage_movement_processor(), Ok(false));
+        assert_eq!(host.take_movement_refusal(), None);
+
+        // Rewriting a valid manifest clears the latch and retries. The absent DLL is the transient
+        // `NotFound` path, so the manifest is not latched and no digest is quarantined.
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let manifest =
+            movement_publication_text("rev-m", &format!("movement-{digest}.dll"), digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write valid manifest");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert!(
+            host.movement_observed.is_none(),
+            "a transient missing DLL must not latch the movement manifest"
+        );
+        assert!(
+            host.movement_quarantined_digests.is_empty(),
+            "a transient missing DLL must not quarantine"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_non_pe_movement_artifacts_are_quarantined_and_refused_before_reloading() {
+        let root = movement_test_root("quarantine");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+
+        let bytes_b = b"not a pe image B movement";
+        let bytes_c = b"not a pe image C movement";
+        let digest_b = format!("{:x}", Sha1::digest(bytes_b));
+        let digest_c = format!("{:x}", Sha1::digest(bytes_c));
+        let dll_b = format!("movement-{digest_b}.dll");
+        let dll_c = format!("movement-{digest_c}.dll");
+        let manifest_b = movement_publication_text("rev-b", &dll_b, &digest_b);
+        let manifest_c = movement_publication_text("rev-c", &dll_c, &digest_c);
+
+        // B fails after verification (`Library::new` on non-PE bytes) and is quarantined.
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest_b).expect("write B manifest");
+        std::fs::write(root.join(&dll_b), bytes_b).expect("write B dll");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest_b.as_str()));
+        assert!(
+            host.is_movement_quarantined(&digest_b),
+            "B's verified bytes are quarantined after the terminal load failure"
+        );
+
+        // C, also a verified digest with an invalid image, is quarantined independently.
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest_c).expect("write C manifest");
+        std::fs::write(root.join(&dll_c), bytes_c).expect("write C dll");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest_c.as_str()));
+        assert!(host.is_movement_quarantined(&digest_c), "C is quarantined");
+
+        // Republish B with its DLL deleted. The quarantine gate must fire before any artifact
+        // read, so this is not the transient missing-file path even though the file is absent.
+        std::fs::remove_file(root.join(&dll_b)).expect("delete B dll");
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest_b).expect("republish B manifest");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Quarantined)
+        );
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::Quarantined)
+        );
+        let detail = host.take_movement_rejection().expect("quarantine detail");
+        assert!(detail.contains("quarantined"), "detail: {detail}");
+        assert!(
+            detail.contains(digest_b.as_str()),
+            "detail names the quarantined digest: {detail}"
+        );
+        assert!(
+            !detail.contains("No such file") && !detail.contains("os error 2"),
+            "the quarantine refusal is not the missing-file path: {detail}"
+        );
+        assert!(
+            !host.has_movement_processor(),
+            "a quarantined digest stages nothing"
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest_b.as_str()));
+
+        // The unchanged republished text is a quiet poll.
+        assert_eq!(host.stage_movement_processor(), Ok(false));
+        assert_eq!(host.take_movement_refusal(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_digest_mismatch_latches_without_quarantining_the_declared_digest() {
+        let root = movement_test_root("mismatch");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+
+        let declared = "1111111111111111111111111111111111111111";
+        let dll = format!("movement-{declared}.dll");
+        let manifest = movement_publication_text("rev-b", &dll, declared);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write manifest");
+        std::fs::write(root.join(&dll), b"bytes whose digest is not declared")
+            .expect("write wrong bytes");
+
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+        assert!(
+            !host.is_movement_quarantined(declared),
+            "an unverified declared digest must not be quarantined"
+        );
+        assert!(host.movement_quarantined_digests.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_wrong_immutable_filename_latches_without_quarantining_the_verified_bytes() {
+        let root = movement_test_root("filename");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+
+        // The bytes match the declared digest, but the manifest names a different immutable file.
+        // That is a manifest/name failure, not proof the content is bad, so it must latch without
+        // quarantining the digest.
+        let bytes = b"movement bytes that hash to the declared digest";
+        let digest = format!("{:x}", Sha1::digest(bytes));
+        let wrong_name = format!("movement-{}.dll", "f".repeat(40));
+        let manifest = movement_publication_text("rev-f", &wrong_name, &digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write manifest");
+        std::fs::write(root.join(&wrong_name), bytes).expect("write artifact");
+
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+        assert!(
+            !host.is_movement_quarantined(&digest),
+            "a filename-only failure must not block a correctly named republish"
+        );
+        assert!(host.movement_quarantined_digests.is_empty());
+
+        // Republishing the same bytes under the correct immutable name passes verification, so
+        // the next failure is the post-verification `Library::new` on non-PE bytes. Only then is
+        // the proved digest quarantined.
+        let correct_name = format!("movement-{digest}.dll");
+        let republished = movement_publication_text("rev-f2", &correct_name, &digest);
+        std::fs::write(root.join(&correct_name), bytes).expect("write correctly named artifact");
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &republished).expect("republish manifest");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(republished.as_str()));
+        assert!(
+            host.is_movement_quarantined(&digest),
+            "the post-verification load failure now quarantines the proved digest"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_movement_dll_is_retried_without_latching_or_quarantining() {
+        let root = movement_test_root("missing");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+
+        let digest = "3333333333333333333333333333333333333333";
+        let dll = format!("movement-{digest}.dll");
+        let manifest = movement_publication_text("rev-a", &dll, digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write manifest");
+
+        for _ in 0..2 {
+            assert_eq!(
+                host.stage_movement_processor(),
+                Err(MovementRefusal::Publication)
+            );
+            assert!(
+                host.movement_observed.is_none(),
+                "a transient missing DLL must not latch the movement manifest"
+            );
+            assert!(
+                host.movement_quarantined_digests.is_empty(),
+                "a transient missing DLL has no proved digest to quarantine"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_publish_lock_keeps_a_post_verification_failure_retryable() {
+        let root = movement_test_root("publish-lock");
+        let bytes = b"not a pe movement image behind the lock";
+        let digest = format!("{:x}", Sha1::digest(bytes));
+        let dll = format!("movement-{digest}.dll");
+        let manifest = movement_publication_text("rev-a", &dll, &digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write manifest");
+        std::fs::write(root.join(&dll), bytes).expect("write artifact");
+        std::fs::write(root.join("publish.lock"), b"").expect("write lock");
+
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert!(
+            host.movement_observed.is_none(),
+            "the publisher-held artifact must not latch"
+        );
+        assert!(
+            !host.is_movement_quarantined(&digest),
+            "and it must not quarantine a possibly incomplete copy"
+        );
+
+        std::fs::remove_file(root.join("publish.lock")).expect("remove lock");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+        assert!(
+            host.is_movement_quarantined(&digest),
+            "after the lock clears the proved digest is quarantined"
+        );
+        assert_eq!(host.stage_movement_processor(), Ok(false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_quarantine_store_dedupes_and_is_bounded() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.quarantine_movement_digest("dup");
+        host.quarantine_movement_digest("dup");
+        assert_eq!(
+            host.movement_quarantined_digests.len(),
+            1,
+            "a repeated digest must not duplicate"
+        );
+        assert!(host.is_movement_quarantined("dup"));
+
+        for index in 0..MAX_QUARANTINED_DIGESTS {
+            host.quarantine_movement_digest(&format!("digest-{index:02}"));
+        }
+        assert_eq!(
+            host.movement_quarantined_digests.len(),
+            MAX_QUARANTINED_DIGESTS,
+            "the movement store is capped"
+        );
+        assert!(
+            !host.is_movement_quarantined("dup"),
+            "the oldest entry is evicted at the cap"
+        );
+        assert!(host.is_movement_quarantined("digest-00"));
+        assert!(host.is_movement_quarantined(&format!(
+            "digest-{:02}",
+            MAX_QUARANTINED_DIGESTS - 1
+        )));
+        assert!(
+            host.quarantined_digests.is_empty(),
+            "the pose quarantine store stays independent"
+        );
+    }
+
+    #[test]
+    fn terminal_movement_latch_pins_the_refused_artifact_and_still_collects_retired() {
+        let root = movement_test_root("retention");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+
+        let declared = "5555555555555555555555555555555555555555";
+        let declared_dll = format!("movement-{declared}.dll");
+        let manifest = movement_publication_text("rev-m", &declared_dll, declared);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write manifest");
+        std::fs::write(
+            root.join(&declared_dll),
+            b"bytes that do not match the declared digest",
+        )
+        .expect("write artifact");
+
+        let retired = format!("movement-{}.dll", "6".repeat(40));
+        let pose = format!("pose-{}.dll", "7".repeat(40));
+        for file in [&retired, &pose] {
+            std::fs::write(root.join(file), b"artifact").expect("write retired artifact");
+        }
+
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+        assert_eq!(
+            host.collect_retired().expect("collection succeeds"),
+            2,
+            "the latched movement manifest lets the sweep run"
+        );
+        assert!(
+            root.join(&declared_dll).exists(),
+            "the current publication stays pinned"
+        );
+        assert!(
+            !root.join(&retired).exists(),
+            "an unpinned movement artifact is collected"
+        );
+        assert!(!root.join(&pose).exists(), "pose collection still runs");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_quarantine_survives_disable_enable_and_re_arms_the_refusal() {
+        let root = movement_test_root("quarantine-toggle");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+
+        let digest = "8888888888888888888888888888888888888888";
+        let dll = format!("movement-{digest}.dll");
+        let manifest = movement_publication_text("rev-q", &dll, digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write manifest");
+
+        // Simulate a digest quarantined by a prior terminal post-verification failure. The gate
+        // must fire before verification, so the absent DLL is irrelevant.
+        host.quarantine_movement_digest(digest);
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Quarantined)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+
+        host.set_seam_enabled(ModuleKind::Movement, false);
+        assert!(
+            host.is_movement_quarantined(digest),
+            "disabling the seam must not clear the quarantine"
+        );
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        assert!(
+            host.is_movement_quarantined(digest),
+            "enabling the seam must not clear the quarantine"
+        );
+        assert!(
+            host.movement_observed.is_none(),
+            "enable clears the manifest latch so the same text is re-evaluated"
+        );
+
+        // Re-enabling re-arms exactly one refusal, then the unchanged text stays quiet.
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Quarantined)
+        );
+        assert_eq!(host.stage_movement_processor(), Ok(false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn terminal_movement_failure_retains_the_active_processor() {
+        let root = movement_test_root("active-retention");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_pending = Some(MovementLoaded::probe("rev-active", propose_step));
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged probe proposes");
+        assert!(host.commit_movement_processor());
+        assert!(host.movement_processor_active());
+
+        let digest = "9999999999999999999999999999999999999999";
+        let dll = format!("movement-{digest}.dll");
+        let manifest = movement_publication_text("rev-bad", &dll, digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write manifest");
+        std::fs::write(root.join(&dll), b"wrong bytes").expect("write artifact");
+
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert!(host.movement_pending.is_none());
+        assert!(
+            host.movement_processor_active(),
+            "a failed candidate must not evict the active processor"
+        );
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the retained active probe still proposes");
+        assert_eq!(source, MovementProposalSource::Active);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
