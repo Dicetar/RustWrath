@@ -63,6 +63,53 @@ struct Publication {
     sha1: String,
 }
 
+/// File identity of the artifact named by a manifest that latched a terminal failure.
+///
+/// The manifest text alone cannot distinguish "the same bytes are still bad" from "the file was
+/// repaired in place without rewriting the manifest". Recording the artifact's length and
+/// modification time lets an identical-text `poll`/`stage_movement_processor` clear its latch and
+/// retry once when the file changed. This is metadata only: the digest is not recomputed on every
+/// poll, so a same-length repair whose modification time is unavailable or unchanged can still be
+/// missed, and a `None` modified time compares by length only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArtifactStamp {
+    library: String,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+/// Snapshot the artifact's metadata. `None` means the library is not a plain basename inside the
+/// publication root, or the file cannot be stat'd (gone or unreadable). Callers treat a missing
+/// current stamp as "retry" rather than "unchanged".
+fn artifact_stamp(root: &Path, library: &str) -> Option<ArtifactStamp> {
+    // A parsed manifest can name a path; refuse to stat outside the publication root, exactly as
+    // `verify_publication` refuses the same name. Such a failure is repairable only by the text.
+    let library_path = Path::new(library);
+    if library_path.components().count() != 1
+        || !matches!(
+            library_path.components().next(),
+            Some(Component::Normal(_))
+        )
+    {
+        return None;
+    }
+    let metadata = std::fs::metadata(root.join(library_path)).ok()?;
+    Some(ArtifactStamp {
+        library: library.to_owned(),
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+impl ArtifactStamp {
+    /// Whether the named artifact still has the recorded length and modification time. A missing
+    /// or unreadable artifact returns `false` so the caller retries instead of masking a repair.
+    fn matches_current(&self, root: &Path) -> bool {
+        artifact_stamp(root, &self.library)
+            .is_some_and(|current| current.len == self.len && current.modified == self.modified)
+    }
+}
+
 struct Loaded {
     revision: String,
     digest: String,
@@ -414,19 +461,21 @@ impl MovementLoaded {
             },
         )?;
         // SAFETY: executable local modules are explicitly trusted, exactly as for the pose seam.
-        let library = unsafe { Library::new(&path) }.map_err(|error| {
-            // `libloading` exposes the underlying `std::io::Error` as `Error::source()` on Windows,
-            // so the anyhow chain still sees a publisher's sharing/lock failure (raw 32/33) while a
-            // bad image or missing dependency stays terminal. On Unix `DlOpen` carries no io source,
-            // so load-time errors are terminal and only `verify_publication`'s reads can be transient.
-            let error = anyhow::Error::new(error);
-            MovementLoadFailure {
-                refusal: MovementRefusal::Publication,
-                detail: format!("movement publication rejected: {error:#}"),
-                transient: transient_io(&error) || publish_in_progress(root),
-                verified_digest: Some(digest.clone()),
-            }
-        })?;
+        let library = unsafe { Library::new(&path) }
+            .context("loading presentation module")
+            .map_err(|error| {
+                // `libloading` exposes the underlying `std::io::Error` as `Error::source()` on
+                // Windows, so the anyhow chain still sees a publisher's sharing/lock failure (raw
+                // 32/33) while a bad image or missing dependency stays terminal. On Unix `DlOpen`
+                // carries no io source, so load-time errors are terminal and only
+                // `verify_publication`'s reads can be transient.
+                MovementLoadFailure {
+                    refusal: MovementRefusal::Publication,
+                    detail: format!("movement publication rejected: {error:#}"),
+                    transient: transient_io(&error) || publish_in_progress(root),
+                    verified_digest: Some(digest.clone()),
+                }
+            })?;
         let entry =
             unsafe { library.get::<benilla_hotpatch_abi::MovementEntryPoint>(MOVEMENT_ENTRY) }
                 .map_err(|error| {
@@ -563,6 +612,10 @@ fn movement_proposal_of(output: &MovementOutput) -> MovementProposal {
 pub struct Host {
     root: PathBuf,
     observed: Option<String>,
+    /// Artifact identity recorded when a terminal pose failure latched [`Self::observed`]. An
+    /// identical manifest text whose artifact length/mtime no longer matches clears the latch and
+    /// retries once; malformed TOML and the digest quarantine record no stamp.
+    pose_failure_stamp: Option<ArtifactStamp>,
     active: Option<Loaded>,
     pending: Option<Loaded>,
     previous: VecDeque<Loaded>,
@@ -578,6 +631,10 @@ pub struct Host {
     quarantined_digests: VecDeque<String>,
     /// The movement seam's own manifest latch, independent of the pose publication.
     movement_observed: Option<String>,
+    /// Artifact identity recorded when a terminal movement failure latched
+    /// [`Self::movement_observed`]. Enabling the seam clears it with the latch; disabling keeps
+    /// both so the retention sweep still pins the refused publication.
+    movement_failure_stamp: Option<ArtifactStamp>,
     movement_pending: Option<MovementLoaded>,
     movement_active: Option<MovementLoaded>,
     movement_refusal: Option<MovementRefusal>,
@@ -600,6 +657,7 @@ impl Host {
         Self {
             root,
             observed: None,
+            pose_failure_stamp: None,
             active: None,
             pending: None,
             previous: VecDeque::new(),
@@ -608,6 +666,7 @@ impl Host {
             restores: VecDeque::new(),
             quarantined_digests: VecDeque::new(),
             movement_observed: None,
+            movement_failure_stamp: None,
             movement_pending: None,
             movement_active: None,
             movement_refusal: None,
@@ -668,6 +727,7 @@ impl Host {
                 // Only keep it staged while its publication can still be observed.
                 self.pending = None;
                 self.observed = None;
+                self.pose_failure_stamp = None;
                 return if error.kind() == std::io::ErrorKind::NotFound {
                     Ok(false)
                 } else {
@@ -676,19 +736,36 @@ impl Host {
             }
         };
         if self.observed.as_ref() == Some(&text) {
-            return Ok(false);
+            // A terminal failure latches the manifest text. If the artifact it named changed on
+            // disk without the text changing (a manual repair or an in-place re-copy), the stamp
+            // no longer matches, so drop the latch and retry the publication once. A missing or
+            // unreadable artifact also mismatches. No stamp (malformed TOML or a digest refusal)
+            // keeps the old quiet `Ok(false)`.
+            if self
+                .pose_failure_stamp
+                .as_ref()
+                .is_some_and(|stamp| !stamp.matches_current(&self.root))
+            {
+                self.observed = None;
+                self.pose_failure_stamp = None;
+            } else {
+                return Ok(false);
+            }
         }
         // Any changed manifest invalidates the previous observation and any superseded staged
         // candidate so that reverting after a failed replacement re-processes the prior manifest.
         self.pending = None;
         self.observed = None;
         self.rejection = None;
+        self.pose_failure_stamp = None;
         let publication: Publication = match toml::from_str(&text) {
             Ok(publication) => publication,
             Err(error) => {
                 // A malformed manifest is deterministic content. Latch it so the 1 Hz poll does
                 // not re-parse and re-report the same bytes; a changed manifest clears the latch
-                // above and is retried. H03 adds typed reasons and persistent quarantine.
+                // above and is retried. There is no trustworthy publication, so no artifact stamp
+                // is recorded; H03 adds typed reasons and persistent quarantine.
+                self.pose_failure_stamp = None;
                 self.observed = Some(text);
                 return Err(error.into());
             }
@@ -697,8 +774,10 @@ impl Host {
             // A digest rejected for a deterministic content/contract failure is refused before the
             // active-module shortcut or any DLL read/`Library::new`, even when a changed manifest
             // (`B -> C -> B`) names it again. Latch this text so the unchanged manifest is a quiet
-            // `Ok(false)`; a genuinely new digest is still evaluated.
+            // `Ok(false)`; a genuinely new digest is still evaluated. The digest is the refusal key,
+            // so no artifact stamp is recorded: replacing the bytes must not spam the gate.
             let digest = publication.sha1.clone();
+            self.pose_failure_stamp = None;
             self.observed = Some(text);
             bail!(
                 "pose module digest {digest} is quarantined after a terminal load or evaluation failure"
@@ -716,12 +795,21 @@ impl Host {
         // text but cannot quarantine `publication.sha1`: a digest mismatch or a pre-read size/name
         // failure never proved that string is the artifact's identity, and quarantining it could
         // poison the active module's digest or a legitimate same-digest repair.
+        //
+        // Capture the attempted artifact's metadata *before* verification reads it. Capturing after
+        // a failed read could describe a publisher's just-completed repair and make the next
+        // identical-text poll look unchanged, masking the very repair this stamp detects. A change
+        // between this stat and the read can only cause one extra retry, never a masked repair.
+        let attempt_stamp = artifact_stamp(&self.root, &publication.library);
         let (path, digest) = match verify_publication(&self.root, &publication, ModuleKind::Pose) {
             Ok(verified) => verified,
             Err(error) => {
                 if transient_io(&error) || publish_in_progress(&self.root) {
                     return Err(error);
                 }
+                // Terminal verification failure: record the attempted artifact identity so a later
+                // same-text repair with new bytes is retried instead of being masked by the latch.
+                self.pose_failure_stamp = attempt_stamp.clone();
                 self.observed = Some(text);
                 return Err(error);
             }
@@ -737,12 +825,14 @@ impl Host {
                     return Err(error);
                 }
                 self.quarantine_digest(&quarantine_digest);
+                self.pose_failure_stamp = attempt_stamp;
                 self.observed = Some(text);
                 return Err(error);
             }
         };
         self.pending = Some(pending);
         // A successful open latches the manifest even though promotion happens on the next batch.
+        self.pose_failure_stamp = None;
         self.observed = Some(text);
         Ok(true)
     }
@@ -776,6 +866,7 @@ impl Host {
             if enabled && !was_enabled {
                 // Let the next stage call publish the manifest that was refused while disabled.
                 self.movement_observed = None;
+                self.movement_failure_stamp = None;
                 self.movement_refusal = None;
                 self.movement_rejection = None;
             } else if !enabled && was_enabled {
@@ -1065,6 +1156,7 @@ impl Host {
             Err(error) => {
                 self.movement_pending = None;
                 self.movement_observed = None;
+                self.movement_failure_stamp = None;
                 return if error.kind() == std::io::ErrorKind::NotFound {
                     Ok(false)
                 } else {
@@ -1080,9 +1172,11 @@ impl Host {
         // on a disabled seam drops whatever slot it still holds and latches the manifest text so
         // `collect_retired` still pins its artifact. The first call for a manifest is a typed
         // refusal; unchanged repeat polls are `Ok(false)` so a 1 Hz adapter does not spam errors.
+        // No artifact stamp is recorded: the seam state, not the file, is the refusal key.
         if !self.is_seam_enabled(ModuleKind::Movement) {
             let already_refused = self.movement_observed.as_deref() == Some(text.as_str());
             self.movement_observed = Some(text);
+            self.movement_failure_stamp = None;
             self.movement_pending = None;
             self.movement_active = None;
             return if already_refused {
@@ -1095,18 +1189,33 @@ impl Host {
             };
         }
         if self.movement_observed.as_ref() == Some(&text) {
-            return Ok(false);
+            // A terminal movement failure latches the manifest text. If the artifact changed on
+            // disk without the text changing, clear the latch and retry once; a missing artifact
+            // mismatches too. No stamp keeps the old quiet `Ok(false)`.
+            if self
+                .movement_failure_stamp
+                .as_ref()
+                .is_some_and(|stamp| !stamp.matches_current(&self.root))
+            {
+                self.movement_observed = None;
+                self.movement_failure_stamp = None;
+            } else {
+                return Ok(false);
+            }
         }
         // Any changed movement manifest invalidates the previous observation and any superseded
         // candidate, exactly as the pose manifest does for its own slot.
         self.movement_pending = None;
         self.movement_observed = None;
+        self.movement_failure_stamp = None;
         let publication: Publication = match toml::from_str(&text) {
             Ok(publication) => publication,
             Err(error) => {
                 // A malformed movement manifest is deterministic content. Latch it so the 1 Hz
                 // stage call does not re-parse and re-report the same bytes; a changed manifest
-                // cleared the latch above and is retried. H03 adds typed reasons.
+                // cleared the latch above and is retried. There is no trustworthy publication, so
+                // no artifact stamp is recorded; H03 adds typed reasons.
+                self.movement_failure_stamp = None;
                 self.movement_observed = Some(text);
                 return Err(self.refuse_movement(
                     MovementRefusal::Publication,
@@ -1118,8 +1227,10 @@ impl Host {
             // A digest quarantined after a verified load or proposal failure is refused before
             // the active-module shortcut or any artifact read/`Library::new`, even when a changed
             // manifest (`B -> C -> B`) names it again. Latch this text so the unchanged manifest
-            // is a quiet `Ok(false)`; a genuinely new digest is still evaluated.
+            // is a quiet `Ok(false)`; a genuinely new digest is still evaluated. The digest is the
+            // refusal key, so no artifact stamp is recorded.
             let digest = publication.sha1.clone();
+            self.movement_failure_stamp = None;
             self.movement_observed = Some(text);
             return Err(self.refuse_movement(
                 MovementRefusal::Quarantined,
@@ -1136,10 +1247,15 @@ impl Host {
             self.movement_observed = Some(text);
             return Ok(false);
         }
+        // Capture the attempted artifact before `MovementLoaded::open` reads it, for the same reason
+        // as the pose path: a post-read stat could describe a publisher's completed repair and mask
+        // the next identical-text retry.
+        let attempt_stamp = artifact_stamp(&self.root, &publication.library);
         match MovementLoaded::open(&self.root, publication) {
             Ok(pending) => {
                 self.movement_pending = Some(pending);
                 self.movement_observed = Some(text);
+                self.movement_failure_stamp = None;
                 self.movement_refusal = None;
                 self.movement_rejection = None;
                 Ok(true)
@@ -1148,6 +1264,7 @@ impl Host {
                 if failure.transient {
                     // Leave `movement_observed` unlatched so an incomplete copy or a
                     // publisher-held artifact is retried unchanged; never quarantine it.
+                    self.movement_failure_stamp = None;
                     return Err(self.refuse_movement(failure.refusal, failure.detail));
                 }
                 // Only a bytes-verified post-verification failure may quarantine. A verification
@@ -1156,6 +1273,7 @@ impl Host {
                 if let Some(digest) = failure.verified_digest.as_deref() {
                     self.quarantine_movement_digest(digest);
                 }
+                self.movement_failure_stamp = attempt_stamp;
                 self.movement_observed = Some(text);
                 Err(self.refuse_movement(failure.refusal, failure.detail))
             }
@@ -3856,11 +3974,25 @@ mod tests {
             Err(MovementRefusal::Quarantined)
         );
         assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+        assert!(
+            host.movement_failure_stamp.is_none(),
+            "the quarantine gate records no artifact stamp"
+        );
 
+        // Pin a synthetic stamp so the disable/enable retention rule is observable.
+        host.movement_failure_stamp = Some(ArtifactStamp {
+            library: dll.clone(),
+            len: 0,
+            modified: None,
+        });
         host.set_seam_enabled(ModuleKind::Movement, false);
         assert!(
             host.is_movement_quarantined(digest),
             "disabling the seam must not clear the quarantine"
+        );
+        assert!(
+            host.movement_failure_stamp.is_some(),
+            "disabling keeps the stamp with the manifest latch for retention"
         );
         host.set_seam_enabled(ModuleKind::Movement, true);
         assert!(
@@ -3870,6 +4002,10 @@ mod tests {
         assert!(
             host.movement_observed.is_none(),
             "enable clears the manifest latch so the same text is re-evaluated"
+        );
+        assert!(
+            host.movement_failure_stamp.is_none(),
+            "enable clears the artifact stamp with the latch"
         );
 
         // Re-enabling re-arms exactly one refusal, then the unchanged text stays quiet.
@@ -3911,6 +4047,652 @@ mod tests {
             .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
             .expect("the retained active probe still proposes");
         assert_eq!(source, MovementProposalSource::Active);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ------------------------------------------------------------------
+    // Same-text artifact repair. A terminal failure latches the manifest text; the artifact stamp
+    // lets an identical-text call retry once when the file behind that text changed. These cases
+    // use non-PE bytes and file metadata only, so no native library is built or loaded.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn pose_same_text_repair_retries_after_the_artifact_changes() {
+        let root = pose_test_root("same-text-repair");
+        let mut host = Host::new(root.clone());
+
+        let repaired_bytes = b"not a pe image after an in-place repair";
+        let digest = format!("{:x}", Sha1::digest(repaired_bytes));
+        let dll = format!("pose-{digest}.dll");
+        let manifest =
+            format!("revision = \"rev-repair\"\nlibrary = \"{dll}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+
+        // The first artifact is shorter and does not hash to the declared digest, so verification
+        // fails terminally and records the artifact stamp without quarantining the declared digest.
+        let wrong_bytes = b"short";
+        assert_ne!(wrong_bytes.len(), repaired_bytes.len());
+        std::fs::write(root.join(&dll), wrong_bytes).expect("write wrong bytes");
+        let first = host.poll().expect_err("the digest mismatch is terminal");
+        assert!(first
+            .to_string()
+            .contains("module digest differs from publication"));
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        let first_stamp = host.pose_failure_stamp.clone();
+        assert!(
+            first_stamp.is_some(),
+            "a terminal pose failure records the artifact stamp"
+        );
+        assert!(
+            !host.is_quarantined(&digest),
+            "a verification failure never quarantines the declared digest"
+        );
+
+        // A different still-bad artifact length clears the latch and re-latches with a fresh stamp;
+        // an unchanged repeat is then quiet, proving the retry is not a permanent Err loop.
+        let still_wrong_bytes = b"still the wrong artifact bytes";
+        assert_ne!(still_wrong_bytes.len(), wrong_bytes.len());
+        std::fs::write(root.join(&dll), still_wrong_bytes).expect("write different wrong bytes");
+        let still_bad = host
+            .poll()
+            .expect_err("the changed still-bad artifact is retried");
+        assert!(still_bad
+            .to_string()
+            .contains("module digest differs from publication"));
+        assert_ne!(
+            host.pose_failure_stamp, first_stamp,
+            "the re-latched failure records the new artifact stamp"
+        );
+        let second_stamp = host.pose_failure_stamp.clone();
+        assert!(!host.poll().expect("the unchanged still-bad artifact stays quiet"));
+        assert_eq!(
+            host.pose_failure_stamp, second_stamp,
+            "the fresh stamp survives an unchanged repeat"
+        );
+
+        // Repair in place without touching ready.toml. The artifact length changed, so the stamp
+        // mismatches and the identical manifest text is retried: verification passes and the
+        // non-PE bytes fail inside `Loaded::open`, which quarantines the now-proved digest.
+        std::fs::write(root.join(&dll), repaired_bytes).expect("replace with repaired bytes");
+        let second = host.poll();
+        assert!(
+            second.is_err(),
+            "a changed artifact must not be a quiet Ok(false): {second:?}"
+        );
+        let second = second.expect_err("the repaired artifact reaches loading");
+        assert!(
+            second.to_string().contains("loading presentation module"),
+            "the retry must reach the load failure, got: {second:#}"
+        );
+        assert!(
+            host.is_quarantined(&digest),
+            "the repaired bytes were verified before the load failure"
+        );
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        assert!(
+            host.pose_failure_stamp.is_some(),
+            "the load failure records the repaired artifact stamp again"
+        );
+        assert!(
+            !host
+                .poll()
+                .expect("the unchanged repaired artifact stays quiet"),
+            "the re-latched load failure must be quiet on the next unchanged poll"
+        );
+        assert!(
+            host.pose_failure_stamp.is_some(),
+            "the unchanged repeat keeps the load-failure stamp"
+        );
+
+        // A later byte change to a quarantined post-verification failure clears the latch and
+        // produces exactly one quarantine refusal before re-latching; the gate records no stamp.
+        let mut changed_after_quarantine = repaired_bytes.to_vec();
+        changed_after_quarantine.push(b'x');
+        std::fs::write(root.join(&dll), &changed_after_quarantine)
+            .expect("modify the quarantined artifact");
+        let quarantined = host
+            .poll()
+            .expect_err("the quarantined digest is refused before loading");
+        assert!(
+            quarantined.to_string().contains("quarantined"),
+            "expected a quarantine refusal, got: {quarantined:#}"
+        );
+        assert!(
+            host.pose_failure_stamp.is_none(),
+            "the quarantine gate records no artifact stamp"
+        );
+        assert!(!host
+            .poll()
+            .expect("the re-latched quarantine text is quiet"));
+        assert!(
+            host.pose_failure_stamp.is_none(),
+            "the gate latch stays text-only"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pose_unchanged_artifact_stays_latched_after_terminal_failure() {
+        let root = pose_test_root("unchanged-artifact");
+        let mut host = Host::new(root.clone());
+
+        let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let dll = format!("pose-{digest}.dll");
+        let manifest =
+            format!("revision = \"rev-static\"\nlibrary = \"{dll}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        std::fs::write(root.join(&dll), b"bytes that do not match the declared digest")
+            .expect("write wrong bytes");
+
+        let first = host.poll().expect_err("the digest mismatch is terminal");
+        assert!(first
+            .to_string()
+            .contains("module digest differs from publication"));
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        let stamp = host.pose_failure_stamp.clone();
+        assert!(stamp.is_some(), "the terminal failure records a stamp");
+
+        // No artifact change: the same text and the same file stay a quiet poll.
+        assert!(
+            !host.poll().expect("the unchanged artifact stays quiet"),
+            "an unchanged artifact must not re-report"
+        );
+        assert_eq!(
+            host.pose_failure_stamp, stamp,
+            "the stamp survives an unchanged repeat"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pose_malformed_manifest_leaves_no_artifact_stamp() {
+        let root = pose_test_root("malformed-no-stamp");
+        let mut host = Host::new(root.clone());
+
+        let malformed = "revision = \"unterminated\n";
+        std::fs::write(root.join("ready.toml"), malformed).expect("write malformed ready.toml");
+        let error = host
+            .poll()
+            .expect_err("malformed TOML is a terminal publication error");
+        assert!(!transient_io(&error));
+        assert_eq!(host.observed.as_deref(), Some(malformed));
+        assert!(
+            host.pose_failure_stamp.is_none(),
+            "malformed TOML has no trustworthy publication to name an artifact"
+        );
+        assert!(!host
+            .poll()
+            .expect("the latched malformed manifest stays quiet"));
+        assert!(host.pose_failure_stamp.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pose_same_length_repair_with_a_changed_mtime_retries() {
+        let root = pose_test_root("mtime-repair");
+        let declared = "7777777777777777777777777777777777777777";
+        let dll = format!("pose-{declared}.dll");
+        let manifest =
+            format!("revision = \"rev-m\"\nlibrary = \"{dll}\"\nsha1 = \"{declared}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        let path = root.join(&dll);
+        std::fs::write(&path, b"0123456789abcdef").expect("write first bad bytes");
+        let mut host = Host::new(root.clone());
+        let _ = host
+            .poll()
+            .expect_err("the first mismatched artifact is terminal");
+        let stamp = host.pose_failure_stamp.as_ref().expect("stamp recorded");
+        assert!(
+            stamp.modified.is_some(),
+            "the test filesystem must report a modification time"
+        );
+        let next_modified = stamp
+            .modified
+            .map(|modified| modified + std::time::Duration::from_secs(10))
+            .unwrap_or(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+            );
+
+        // Keep the same length so only the modification time can distinguish the repair.
+        std::fs::write(&path, b"fedcba9876543210").expect("write same-length bad bytes");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open artifact");
+        file.set_times(std::fs::FileTimes::new().set_modified(next_modified))
+            .expect("set artifact mtime");
+        drop(file);
+
+        let error = host
+            .poll()
+            .expect_err("the changed mtime clears the latch and retries");
+        assert!(
+            error.to_string().contains("module digest differs"),
+            "the same-length bad bytes are re-verified: {error:#}"
+        );
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        assert!(
+            host.pose_failure_stamp.is_some(),
+            "the retry re-latches with a fresh stamp"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pose_missing_artifact_retries_without_quarantine_and_skips_the_sweep() {
+        let root = pose_test_root("missing-repair");
+        let correct = b"recreated non-pe pose artifact";
+        let digest = format!("{:x}", Sha1::digest(correct));
+        let dll = format!("pose-{digest}.dll");
+        let manifest = format!("revision = \"rev-r\"\nlibrary = \"{dll}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        std::fs::write(root.join(&dll), b"wrong").expect("write wrong bytes");
+        let mut host = Host::new(root.clone());
+        let _ = host
+            .poll()
+            .expect_err("the mismatched artifact is terminal");
+        assert!(host.pose_failure_stamp.is_some());
+
+        let retired = format!("pose-{}.dll", "a".repeat(40));
+        std::fs::write(root.join(&retired), b"retired").expect("write retired artifact");
+        std::fs::remove_file(root.join(&dll)).expect("delete artifact");
+        let error = host
+            .poll()
+            .expect_err("the missing artifact clears the latch and retries");
+        assert!(
+            transient_io(&error),
+            "the missing artifact reaches the transient path: {error:#}"
+        );
+        assert!(host.observed.is_none());
+        assert!(host.pose_failure_stamp.is_none());
+        assert_eq!(
+            host.collect_retired().expect("collection succeeds"),
+            0,
+            "the sweep has no latch to anchor while the manifest is unlatched"
+        );
+        assert!(
+            root.join(&retired).exists(),
+            "the sweep is skipped, not run with an unlatched manifest"
+        );
+
+        std::fs::write(root.join(&dll), correct).expect("write repaired artifact");
+        let error = host
+            .poll()
+            .expect_err("the repaired artifact reaches Loaded::open");
+        assert!(error.to_string().contains("loading presentation module"));
+        assert!(host.is_quarantined(&digest));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pose_same_mtime_length_change_retries() {
+        let root = pose_test_root("length-repair");
+        let declared = "9999999999999999999999999999999999999999";
+        let dll = format!("pose-{declared}.dll");
+        let manifest =
+            format!("revision = \"rev-l\"\nlibrary = \"{dll}\"\nsha1 = \"{declared}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        let path = root.join(&dll);
+        std::fs::write(&path, b"short").expect("write first bad bytes");
+        let mut host = Host::new(root.clone());
+        let _ = host
+            .poll()
+            .expect_err("the first mismatched artifact is terminal");
+        let stamp = host.pose_failure_stamp.as_ref().expect("stamp recorded");
+        let modified = stamp
+            .modified
+            .expect("the test filesystem must report a modification time");
+
+        // Change only the length and force the original mtime back.
+        std::fs::write(&path, b"a longer still-bad artifact").expect("write longer bad bytes");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open artifact");
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("restore artifact mtime");
+        drop(file);
+
+        let error = host
+            .poll()
+            .expect_err("the changed length clears the latch and retries");
+        assert!(
+            error.to_string().contains("module digest differs"),
+            "the longer bad bytes are re-verified: {error:#}"
+        );
+        assert!(host.pose_failure_stamp.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pose_quarantined_missing_artifact_relatches_at_the_gate_and_allows_the_sweep() {
+        let root = pose_test_root("quarantined-missing");
+        let correct = b"quarantined non-pe pose artifact";
+        let digest = format!("{:x}", Sha1::digest(correct));
+        let dll = format!("pose-{digest}.dll");
+        let manifest = format!("revision = \"rev-q\"\nlibrary = \"{dll}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        std::fs::write(root.join(&dll), correct).expect("write non-pe artifact");
+        let mut host = Host::new(root.clone());
+        let error = host
+            .poll()
+            .expect_err("the non-pe artifact fails after verification");
+        assert!(error.to_string().contains("loading presentation module"));
+        assert!(host.is_quarantined(&digest));
+        assert!(host.pose_failure_stamp.is_some());
+
+        let retired = format!("pose-{}.dll", "e".repeat(40));
+        std::fs::write(root.join(&retired), b"retired").expect("write retired artifact");
+        std::fs::remove_file(root.join(&dll)).expect("delete artifact");
+        let error = host
+            .poll()
+            .expect_err("the missing quarantined artifact is refused at the gate");
+        assert!(
+            error.to_string().contains("quarantined"),
+            "the gate runs before the missing-file read: {error:#}"
+        );
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        assert!(host.pose_failure_stamp.is_none());
+        assert_eq!(
+            host.collect_retired().expect("collection succeeds"),
+            1,
+            "the gate latch lets the sweep run"
+        );
+        assert!(!root.join(&retired).exists());
+        assert!(!host
+            .poll()
+            .expect("the latched quarantine text stays quiet"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn artifact_stamp_requires_a_basename_inside_the_publication_root() {
+        let root = pose_test_root("stamp-basename");
+        assert!(
+            artifact_stamp(&root, "pose-missing.dll").is_none(),
+            "an absent artifact has no stamp"
+        );
+        std::fs::write(root.join("inside.dll"), b"artifact").expect("write inside artifact");
+        assert!(
+            artifact_stamp(&root, "inside.dll").is_some(),
+            "a plain basename inside the root is stamped"
+        );
+        assert!(
+            artifact_stamp(&root, "subdir/inside.dll").is_none(),
+            "a nested path is refused before it can stat outside the root"
+        );
+        assert!(
+            artifact_stamp(&root, "../inside.dll").is_none(),
+            "a parent-directory path is refused"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_same_text_repair_retries_after_the_artifact_changes() {
+        let root = movement_test_root("same-text-repair");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+
+        let repaired_bytes = b"not a pe movement image after an in-place repair";
+        let digest = format!("{:x}", Sha1::digest(repaired_bytes));
+        let dll = format!("movement-{digest}.dll");
+        let manifest = movement_publication_text("rev-repair", &dll, &digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write movement manifest");
+
+        let wrong_bytes = b"short";
+        assert_ne!(wrong_bytes.len(), repaired_bytes.len());
+        std::fs::write(root.join(&dll), wrong_bytes).expect("write wrong bytes");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+        let first_stamp = host.movement_failure_stamp.clone();
+        assert!(
+            first_stamp.is_some(),
+            "a terminal movement failure records the artifact stamp"
+        );
+        assert!(
+            !host.is_movement_quarantined(&digest),
+            "a verification failure never quarantines the declared digest"
+        );
+
+        // A different still-bad artifact length clears the latch and re-latches with a fresh stamp;
+        // an unchanged repeat is then quiet.
+        let still_wrong_bytes = b"still the wrong movement artifact bytes";
+        assert_ne!(still_wrong_bytes.len(), wrong_bytes.len());
+        std::fs::write(root.join(&dll), still_wrong_bytes).expect("write different wrong bytes");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_ne!(
+            host.movement_failure_stamp, first_stamp,
+            "the re-latched failure records the new artifact stamp"
+        );
+        let second_stamp = host.movement_failure_stamp.clone();
+        assert_eq!(
+            host.stage_movement_processor(),
+            Ok(false),
+            "the unchanged still-bad artifact stays quiet"
+        );
+        assert_eq!(
+            host.movement_failure_stamp, second_stamp,
+            "the fresh stamp survives an unchanged repeat"
+        );
+
+        // Repair in place without touching movement.toml. The changed length clears the latch, so
+        // the same text is retried: verification passes and the non-PE bytes fail in
+        // `MovementLoaded::open`, which quarantines the now-proved digest.
+        std::fs::write(root.join(&dll), repaired_bytes).expect("replace with repaired bytes");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication),
+            "a changed artifact must not be a quiet Ok(false)"
+        );
+        let detail = host.take_movement_rejection().expect("loader detail");
+        assert!(
+            detail.contains("loading presentation module"),
+            "the retry must reach the load failure, got: {detail}"
+        );
+        assert!(
+            host.is_movement_quarantined(&digest),
+            "the repaired bytes were verified before the load failure"
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+        assert!(host.movement_failure_stamp.is_some());
+        assert_eq!(
+            host.stage_movement_processor(),
+            Ok(false),
+            "the re-latched load failure must be quiet on the next unchanged poll"
+        );
+        assert!(host.movement_failure_stamp.is_some());
+
+        // A later byte change to a quarantined post-verification failure clears the latch and
+        // produces exactly one quarantine refusal before re-latching; the gate records no stamp.
+        let mut changed_after_quarantine = repaired_bytes.to_vec();
+        changed_after_quarantine.push(b'x');
+        std::fs::write(root.join(&dll), &changed_after_quarantine)
+            .expect("modify the quarantined artifact");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Quarantined)
+        );
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::Quarantined)
+        );
+        assert!(
+            host.movement_failure_stamp.is_none(),
+            "the quarantine gate records no artifact stamp"
+        );
+        assert_eq!(
+            host.stage_movement_processor(),
+            Ok(false),
+            "the re-latched quarantine text is quiet"
+        );
+        assert!(
+            host.movement_failure_stamp.is_none(),
+            "the gate latch stays text-only"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_unchanged_artifact_stays_latched_after_terminal_failure() {
+        let root = movement_test_root("unchanged-artifact");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+
+        let digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let dll = format!("movement-{digest}.dll");
+        let manifest = movement_publication_text("rev-static", &dll, digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write movement manifest");
+        std::fs::write(root.join(&dll), b"bytes that do not match the declared digest")
+            .expect("write wrong bytes");
+
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+        let stamp = host.movement_failure_stamp.clone();
+        assert!(stamp.is_some(), "the terminal failure records a stamp");
+
+        assert_eq!(
+            host.stage_movement_processor(),
+            Ok(false),
+            "an unchanged artifact must not re-report"
+        );
+        assert_eq!(
+            host.movement_failure_stamp, stamp,
+            "the stamp survives an unchanged repeat"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_same_length_repair_with_a_changed_mtime_retries() {
+        let root = movement_test_root("mtime-repair");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        let declared = "cccccccccccccccccccccccccccccccccccccccc";
+        let dll = format!("movement-{declared}.dll");
+        let manifest = movement_publication_text("rev-m", &dll, declared);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write movement manifest");
+        let path = root.join(&dll);
+        std::fs::write(&path, b"0123456789abcdef").expect("write first bad bytes");
+
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        let stamp = host
+            .movement_failure_stamp
+            .as_ref()
+            .expect("stamp recorded");
+        assert!(
+            stamp.modified.is_some(),
+            "the test filesystem must report a modification time"
+        );
+        let next_modified = stamp
+            .modified
+            .map(|modified| modified + std::time::Duration::from_secs(10))
+            .unwrap_or(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+            );
+
+        // Keep the same length so only the modification time can distinguish the repair.
+        std::fs::write(&path, b"fedcba9876543210").expect("write same-length bad bytes");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open artifact");
+        file.set_times(std::fs::FileTimes::new().set_modified(next_modified))
+            .expect("set artifact mtime");
+        drop(file);
+
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication),
+            "the changed mtime clears the latch and retries"
+        );
+        assert_eq!(
+            host.movement_observed.as_deref(),
+            Some(manifest.as_str()),
+            "the retry re-latches the same manifest text"
+        );
+        let detail = host
+            .take_movement_rejection()
+            .expect("the retried bytes are re-verified");
+        assert!(
+            detail.contains("module digest differs"),
+            "the same-length bad bytes are re-verified: {detail}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_missing_artifact_retries_without_quarantine_and_skips_the_sweep() {
+        let root = movement_test_root("missing-repair");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        let correct = b"recreated non-pe movement artifact";
+        let digest = format!("{:x}", Sha1::digest(correct));
+        let dll = format!("movement-{digest}.dll");
+        let manifest = movement_publication_text("rev-r", &dll, &digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write movement manifest");
+        std::fs::write(root.join(&dll), b"wrong").expect("write wrong bytes");
+
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert!(host.movement_failure_stamp.is_some());
+
+        let retired = format!("movement-{}.dll", "d".repeat(40));
+        std::fs::write(root.join(&retired), b"retired").expect("write retired artifact");
+        std::fs::remove_file(root.join(&dll)).expect("delete artifact");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication),
+            "the missing artifact clears the latch and retries"
+        );
+        assert!(
+            host.movement_observed.is_none(),
+            "the transient missing-file path leaves the latch unset"
+        );
+        assert!(host.movement_failure_stamp.is_none());
+        assert_eq!(
+            host.collect_retired().expect("collection succeeds"),
+            0,
+            "the sweep has no latch to anchor while the manifest is unlatched"
+        );
+        assert!(
+            root.join(&retired).exists(),
+            "the sweep is skipped, not run with an unlatched manifest"
+        );
+
+        std::fs::write(root.join(&dll), correct).expect("write repaired artifact");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication),
+            "the repaired artifact reaches MovementLoaded::open"
+        );
+        let detail = host
+            .take_movement_rejection()
+            .expect("the repaired bytes reach loading");
+        assert!(
+            detail.contains("loading presentation module"),
+            "the repaired bytes reach the post-verification load: {detail}"
+        );
+        assert!(host.is_movement_quarantined(&digest));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
