@@ -27,11 +27,13 @@ const MOVEMENT_MANIFEST: &str = "movement.toml";
 /// Bounded restore-outcome ring. One `evaluate` can report at most the active module plus the
 /// three retained predecessors; the cap only bounds an unconsumed producer.
 const MAX_RESTORE_OUTCOMES: usize = 8;
-/// Bounded in-memory quarantine of publication digests that failed deterministically after their
-/// bytes were verified (a content/contract error, not transient I/O). The digest is the quarantine
-/// key, so a changed manifest text that still names the same bad artifact is refused before any DLL
-/// read or `Library::new`. The pose and movement seams each own a store with this cap. This is not
-/// the H03 persistent/typed store.
+/// Bounded in-memory quarantine of publication digests that failed after their bytes were verified
+/// (a content/contract error or a single-strike evaluation failure, not transient I/O or a frame
+/// rejected by host validation). The digest is the quarantine key, so a changed manifest text that
+/// still names the same bad artifact is refused before any DLL read or `Library::new`. The same
+/// store covers a post-verification load failure and a loaded processor that is rejected by a canary
+/// batch or fails while active; retained copies are dropped or skipped. The pose and movement seams
+/// each own a store with this cap. This is not the H03 persistent/typed store.
 const MAX_QUARANTINED_DIGESTS: usize = 32;
 
 /// Verified SHA-1 content identity of a loaded module, as raw bytes.
@@ -67,7 +69,9 @@ struct Loaded {
     process: ProcessPose,
     filename: String,
     // This is deliberately owned beside the function pointer and never exposed to callers.
-    _library: Library,
+    // `None` exists only for the in-crate probes used by focused tests, which cannot build a
+    // native library; production `Loaded::open` always pins `Some(library)`.
+    _library: Option<Library>,
 }
 
 fn digest_bytes(digest: &str) -> Option<ModuleDigest> {
@@ -180,8 +184,23 @@ impl Loaded {
             digest,
             process,
             filename: publication.library,
-            _library: library,
+            _library: Some(library),
         })
+    }
+
+    /// A processor handle for the focused tests that cannot build a native library.
+    ///
+    /// Production code only reaches [`Self::open`], which pins `Some(library)`. The probe is
+    /// deliberately test-only so no non-pinned processor can be staged by a caller.
+    #[cfg(test)]
+    fn probe(revision: &str, digest: &str, process: ProcessPose) -> Self {
+        Self {
+            revision: revision.to_owned(),
+            digest: digest.to_owned(),
+            process,
+            filename: format!("{}{digest}.dll", ModuleKind::Pose.prefix()),
+            _library: None,
+        }
     }
 
     fn evaluate(
@@ -497,10 +516,12 @@ pub struct Host {
     rejection: Option<String>,
     active_failure: Option<String>,
     restores: VecDeque<RestoreOutcome>,
-    /// Bounded in-memory quarantine of pose digests rejected for a deterministic content/contract
-    /// failure in `Loaded::open`. The key is `Publication.sha1`, so a later manifest text that
+    /// Bounded in-memory quarantine of pose digests rejected after their bytes were verified: a
+    /// terminal `Loaded::open` failure, a rejected canary batch, an active frame failure or a
+    /// failing restore predecessor. The key is `Publication.sha1`, so a later manifest text that
     /// names the same bad artifact (`B -> C -> B`) is refused before `Library::new` without
-    /// re-reading the DLL. Not persistent; H03 owns the typed/persistent store.
+    /// re-reading the DLL. A frame rejected by host validation never reaches this store. Not
+    /// persistent; H03 owns the typed/persistent store.
     quarantined_digests: VecDeque<String>,
     /// The movement seam's own manifest latch, independent of the pose publication.
     movement_observed: Option<String>,
@@ -544,7 +565,9 @@ impl Host {
     }
 
     /// Add a pose digest to the bounded in-memory quarantine. Deduplicates so a repeated failure
-    /// does not grow the store, and trims the oldest entry at the cap.
+    /// does not grow the store, and trims the oldest entry at the cap. Callers add only a digest
+    /// whose bytes were verified or that came from an already loaded module; a frame rejected by
+    /// the host validation in `evaluate` does not reach this method.
     fn quarantine_digest(&mut self, digest: &str) {
         if self.quarantined_digests.iter().any(|d| d == digest) {
             return;
@@ -555,7 +578,7 @@ impl Host {
         self.quarantined_digests.push_back(digest.to_owned());
     }
 
-    /// Whether a pose digest was quarantined after a terminal `Loaded::open` failure.
+    /// Whether a pose digest was quarantined after a terminal load or evaluation failure.
     fn is_quarantined(&self, digest: &str) -> bool {
         self.quarantined_digests.iter().any(|d| d == digest)
     }
@@ -624,7 +647,9 @@ impl Host {
             // `Ok(false)`; a genuinely new digest is still evaluated.
             let digest = publication.sha1.clone();
             self.observed = Some(text);
-            bail!("pose module digest {digest} is quarantined after a terminal load failure");
+            bail!(
+                "pose module digest {digest} is quarantined after a terminal load or evaluation failure"
+            );
         }
         if self.active.as_ref().is_some_and(|m| {
             !publication.revision.is_empty()
@@ -838,10 +863,16 @@ impl Host {
         if bones.is_empty() {
             return Ok(false);
         }
-        // Validate the host frame before touching `pending`, `active`, or `previous` so a
-        // malformed caller span or non-finite input bone never drains rollback history.
+        // Validate the host frame before touching `pending`, `active`, or `previous` so a frame
+        // that fails these bounds checks never drains rollback history or reaches a module.
         if bones.len() > u32::MAX as usize || rigs.len() > u32::MAX as usize {
             bail!("pose batch exceeds u32 ABI counts");
+        }
+        if bones.len() > i32::MAX as usize {
+            bail!("pose batch exceeds i32 parent indices");
+        }
+        if !seconds.is_finite() {
+            bail!("pose frame time is not finite");
         }
         if !rigs.iter().all(|rig| {
             (rig.first as usize)
@@ -849,6 +880,27 @@ impl Host {
                 .is_some_and(|end| end <= bones.len())
         }) {
             bail!("host rig span out of bounds for {} bones", bones.len());
+        }
+        // A negative parent is the root marker; a non-negative parent must name an earlier bone in
+        // the same rig. The batch-wide check catches an index beyond every rig; the per-rig check
+        // catches a self/forward parent or an index outside the owning rig. Both keep an
+        // out-of-bounds caller frame from dispatching a module and then quarantining it for output
+        // the caller caused. Span coverage is not enforced.
+        if !bones.iter().all(|bone| bone.parent < bones.len() as i32) {
+            bail!(
+                "host input bone parent is out of bounds for {} bones",
+                bones.len()
+            );
+        }
+        if !rigs.iter().all(|rig| {
+            let first = rig.first as usize;
+            let count = rig.count as usize;
+            bones[first..first + count]
+                .iter()
+                .enumerate()
+                .all(|(index, bone)| bone.parent < index as i32)
+        }) {
+            bail!("host input bone parent must precede its child within the rig");
         }
         if !bones.iter().all(BoneLocal::valid) {
             bail!("host input bone contains non-finite or zero-norm transform");
@@ -866,6 +918,12 @@ impl Host {
                     return Ok(true);
                 }
                 Err(error) => {
+                    // The candidate loaded and was invoked; under the single-strike H03 policy an
+                    // evaluation failure is treated as an artifact failure. Quarantine it and drop
+                    // any retained copy that would simply reproduce the same output; a successful
+                    // canary never reaches this branch.
+                    self.quarantine_digest(&candidate.digest);
+                    self.previous.retain(|m| m.digest != candidate.digest);
                     self.rejection = Some(format!(
                         "candidate rejected; active module retained: {error:#}"
                     ));
@@ -882,14 +940,24 @@ impl Host {
                 }
                 Err(error) => {
                     let failed_digest = module.digest_bytes();
+                    // The active module was already loaded and verified; under the single-strike
+                    // H03 policy an evaluation failure is treated as an artifact failure.
+                    // Quarantine it and drop retained copies so neither this frame's restore nor a
+                    // later manifest can invoke it again.
+                    self.quarantine_digest(&module.digest);
+                    self.previous.retain(|m| m.digest != module.digest);
                     self.active_failure = Some(format!(
                         "active module {} failed; restoring a previous module: {error:#}",
                         module.revision
                     ));
                     while let Some(previous) = self.previous.pop_back() {
-                        // A retained copy of the failed binary would fail identically. Skip it
-                        // rather than spend this frame re-evaluating an already-known failure.
+                        // A retained copy of the failed binary would fail identically, and any
+                        // other digest already in the quarantine store was proved bad earlier.
+                        // Skip both without spending this frame re-evaluating them.
                         if failed_digest.is_some() && previous.digest_bytes() == failed_digest {
+                            continue;
+                        }
+                        if self.is_quarantined(&previous.digest) {
                             continue;
                         }
                         match previous.evaluate(bones, rigs, seconds, output) {
@@ -903,6 +971,10 @@ impl Host {
                                 return Ok(true);
                             }
                             Err(prev_error) => {
+                                // The predecessor also produced invalid output. Quarantine it and
+                                // drop any deeper retained copy, then keep walking newest-first.
+                                self.quarantine_digest(&previous.digest);
+                                self.previous.retain(|m| m.digest != previous.digest);
                                 self.active_failure = Some(format!(
                                     "active module {} failed ({error:#}); predecessor {} also failed: {prev_error:#}",
                                     module.revision, previous.revision
@@ -1227,6 +1299,7 @@ mod tests {
     use super::*;
     use benilla_hotpatch_abi::{CombatOutput, ModuleKind, MovementOutput, ProceduralSpawn};
     use sha1::{Digest, Sha1};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn modular_gameplay_seams_toggle_independently() {
@@ -1870,6 +1943,517 @@ mod tests {
         assert!(err
             .to_string()
             .contains("host input bone contains non-finite"));
+    }
+
+    // ------------------------------------------------------------------
+    // Pose evaluation quarantine. These focused cases exercise the canary and active-frame
+    // failure paths with in-process function pointers; no native library is built or loaded.
+    // ------------------------------------------------------------------
+
+    const CANARY_DIGEST: &str = "1111111111111111111111111111111111111111";
+    const ACTIVE_DIGEST: &str = "2222222222222222222222222222222222222222";
+    const NEXT_DIGEST: &str = "3333333333333333333333333333333333333333";
+    const NEWEST_DIGEST: &str = "4444444444444444444444444444444444444444";
+    const BAD_PREDECESSOR_DIGEST: &str = "5555555555555555555555555555555555555555";
+    const GOOD_PREDECESSOR_DIGEST: &str = "6666666666666666666666666666666666666666";
+
+    /// Counts calls through the test-only dispatch probe. Reset by the host-validation test that
+    /// uses it; no other test references the counter.
+    static POSE_DISPATCHES: AtomicUsize = AtomicUsize::new(0);
+
+    fn pose_test_root(tag: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "rustwrath-hotpatch-pose-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        root
+    }
+
+    fn valid_pose_bone() -> BoneLocal {
+        BoneLocal {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            parent: -1,
+        }
+    }
+
+    fn valid_pose_span() -> RigSpan {
+        RigSpan {
+            entity: 0,
+            first: 0,
+            count: 1,
+        }
+    }
+
+    fn pose_outcome_digest(digest: &str) -> ModuleDigest {
+        digest_bytes(digest).expect("pose test digests are 40 hex digits")
+    }
+
+    unsafe extern "C" fn allow_pose(
+        frame: *const PoseFrame,
+        out: *mut BoneLocal,
+        count: u32,
+    ) -> i32 {
+        // SAFETY: the host owns the frame and the output buffer for the duration of this call.
+        let frame = unsafe { &*frame };
+        let bones = unsafe { std::slice::from_raw_parts(frame.bones, frame.bone_count as usize) };
+        let output = unsafe { std::slice::from_raw_parts_mut(out, count as usize) };
+        for (slot, bone) in output.iter_mut().zip(bones) {
+            *slot = *bone;
+        }
+        0
+    }
+
+    unsafe extern "C" fn reject_pose(
+        _frame: *const PoseFrame,
+        _out: *mut BoneLocal,
+        _count: u32,
+    ) -> i32 {
+        7
+    }
+
+    unsafe extern "C" fn invalid_pose(
+        frame: *const PoseFrame,
+        out: *mut BoneLocal,
+        count: u32,
+    ) -> i32 {
+        let status = unsafe { allow_pose(frame, out, count) };
+        if !out.is_null() {
+            // SAFETY: `out` points at the host's first output slot for this call.
+            unsafe { (*out).translation[0] = f32::NAN };
+        }
+        status
+    }
+
+    unsafe extern "C" fn count_pose(
+        frame: *const PoseFrame,
+        out: *mut BoneLocal,
+        count: u32,
+    ) -> i32 {
+        POSE_DISPATCHES.fetch_add(1, Ordering::SeqCst);
+        unsafe { allow_pose(frame, out, count) }
+    }
+
+    #[test]
+    fn candidate_rejection_quarantines_digest_and_drops_retained_copy() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, allow_pose));
+        // A retained copy of the candidate would reproduce the same failure; it must be dropped.
+        host.previous
+            .push_back(Loaded::probe("rev-candidate-old", CANARY_DIGEST, allow_pose));
+        host.pending = Some(Loaded::probe("rev-candidate", CANARY_DIGEST, invalid_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("candidate rejection falls back to the active module"),
+            "the retained active module still produces this frame"
+        );
+        assert_eq!(host.digest(), Some(ACTIVE_DIGEST));
+        assert!(host.is_quarantined(CANARY_DIGEST));
+        assert!(
+            !host.is_quarantined(ACTIVE_DIGEST),
+            "the retained active module must not be quarantined"
+        );
+        assert!(
+            !host
+                .previous
+                .iter()
+                .any(|module| module.digest == CANARY_DIGEST),
+            "the retained copy of the rejected candidate is gone"
+        );
+        let rejection = host.take_rejection().expect("candidate rejection detail");
+        assert!(
+            rejection.contains("rev-candidate"),
+            "the rejection names the candidate: {rejection}"
+        );
+        assert!(
+            host.take_restore_outcomes().is_empty(),
+            "candidate rejection is not an active-frame failure"
+        );
+    }
+
+    #[test]
+    fn quarantined_canary_digest_is_refused_before_the_next_poll_reads_the_artifact() {
+        let root = pose_test_root("canary-quarantine");
+        let mut host = Host::new(root.clone());
+        host.pending = Some(Loaded::probe("rev-canary", CANARY_DIGEST, reject_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a rejected canary with no active module is not a host error")
+        );
+        assert!(host.is_quarantined(CANARY_DIGEST));
+        let rejection = host.take_rejection().expect("canary rejection detail");
+        assert!(rejection.contains("rev-canary"), "{rejection}");
+
+        // Promote a distinct module so the quarantine must survive a successful activation and a
+        // later B -> C -> B manifest rewrite.
+        host.pending = Some(Loaded::probe("rev-c", NEXT_DIGEST, allow_pose));
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the distinct C module promotes")
+        );
+        assert_eq!(host.digest(), Some(NEXT_DIGEST));
+
+        // Publish a manifest naming the rejected digest but deliberately leave the DLL absent. A
+        // gate that ran after `verify_publication` would report the transient missing-file path.
+        let manifest = format!(
+            "revision = \"rev-canary\"\nlibrary = \"pose-{CANARY_DIGEST}.dll\"\nsha1 = \"{CANARY_DIGEST}\"\n"
+        );
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        let error = host
+            .poll()
+            .expect_err("the rejected digest must be refused at the quarantine gate");
+        assert!(
+            error.to_string().contains("quarantined"),
+            "expected a quarantine refusal, got: {error:#}"
+        );
+        assert!(
+            error.to_string().contains(CANARY_DIGEST),
+            "the refusal names the rejected digest: {error:#}"
+        );
+        assert!(
+            !transient_io(&error),
+            "the quarantine gate must run before the missing-file path: {error:#}"
+        );
+        assert_eq!(host.observed.as_deref(), Some(manifest.as_str()));
+        assert_eq!(
+            host.digest(),
+            Some(NEXT_DIGEST),
+            "the refused manifest must not disturb the active C module"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn active_frame_failure_quarantines_digest_and_reports_unavailable() {
+        let root = pose_test_root("frame-quarantine");
+        let mut host = Host::new(root.clone());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("an active evaluation failure is recovered in the host")
+        );
+        assert!(host.active.is_none(), "the failed active module is demoted");
+        assert!(host.is_quarantined(ACTIVE_DIGEST));
+        assert_eq!(
+            host.take_restore_outcomes(),
+            vec![RestoreOutcome::Unavailable {
+                failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+            }]
+        );
+        let failure = host.take_active_failure().expect("active failure detail");
+        assert!(failure.contains("rev-active"), "{failure}");
+
+        // The frame-failure digest must also be refused before the artifact read on a later
+        // manifest, exactly as the canary path is.
+        let manifest = format!(
+            "revision = \"rev-active\"\nlibrary = \"pose-{ACTIVE_DIGEST}.dll\"\nsha1 = \"{ACTIVE_DIGEST}\"\n"
+        );
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write ready.toml");
+        let error = host
+            .poll()
+            .expect_err("the failed active digest must be refused at the quarantine gate");
+        assert!(
+            error.to_string().contains("quarantined"),
+            "expected a quarantine refusal, got: {error:#}"
+        );
+        assert!(
+            error.to_string().contains(ACTIVE_DIGEST),
+            "the refusal names the failed active digest: {error:#}"
+        );
+        assert!(
+            !transient_io(&error),
+            "the quarantine gate must run before the missing-file path: {error:#}"
+        );
+        assert!(host.active.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn restore_skips_a_quarantined_newest_predecessor_and_restores_the_next() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        host.previous
+            .push_back(Loaded::probe("rev-next", NEXT_DIGEST, allow_pose));
+        host.previous
+            .push_back(Loaded::probe("rev-newest", NEWEST_DIGEST, allow_pose));
+        host.quarantine_digest(NEWEST_DIGEST);
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a valid predecessor is restored in the same frame")
+        );
+        assert_eq!(host.digest(), Some(NEXT_DIGEST));
+        assert_eq!(
+            host.take_restore_outcomes(),
+            vec![RestoreOutcome::Restored {
+                failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+                restored_digest: Some(pose_outcome_digest(NEXT_DIGEST)),
+            }]
+        );
+        assert!(
+            !host
+                .previous
+                .iter()
+                .any(|module| module.digest == NEWEST_DIGEST),
+            "the skipped quarantined predecessor is dropped"
+        );
+    }
+
+    #[test]
+    fn failing_restore_predecessor_is_quarantined_and_the_next_valid_one_is_restored() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        // Oldest first: a deeper copy of the bad predecessor, then a good one, then the failing
+        // newest predecessor that the restore loop pops first.
+        host.previous.push_back(Loaded::probe(
+            "rev-bad-old",
+            BAD_PREDECESSOR_DIGEST,
+            reject_pose,
+        ));
+        host.previous.push_back(Loaded::probe(
+            "rev-good",
+            GOOD_PREDECESSOR_DIGEST,
+            allow_pose,
+        ));
+        host.previous.push_back(Loaded::probe(
+            "rev-bad",
+            BAD_PREDECESSOR_DIGEST,
+            reject_pose,
+        ));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the next valid predecessor is restored in the same frame")
+        );
+        assert_eq!(host.digest(), Some(GOOD_PREDECESSOR_DIGEST));
+        assert!(
+            host.is_quarantined(BAD_PREDECESSOR_DIGEST),
+            "a predecessor that fails during restore is quarantined"
+        );
+        assert!(
+            !host
+                .previous
+                .iter()
+                .any(|module| module.digest == BAD_PREDECESSOR_DIGEST),
+            "deeper retained copies of the failed predecessor are dropped"
+        );
+        assert_eq!(
+            host.take_restore_outcomes(),
+            vec![RestoreOutcome::Restored {
+                failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+                restored_digest: Some(pose_outcome_digest(GOOD_PREDECESSOR_DIGEST)),
+            }]
+        );
+    }
+
+    #[test]
+    fn successful_canary_promotes_without_quarantining() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.pending = Some(Loaded::probe("rev-candidate", CANARY_DIGEST, allow_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a valid canary batch promotes")
+        );
+        assert_eq!(host.digest(), Some(CANARY_DIGEST));
+        assert!(
+            host.quarantined_digests.is_empty(),
+            "a successful canary must not quarantine"
+        );
+        assert!(host.take_rejection().is_none());
+    }
+
+    #[test]
+    fn host_input_validation_errors_do_not_quarantine_or_dispatch() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.pending = Some(Loaded::probe("rev-pending", CANARY_DIGEST, count_pose));
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, count_pose));
+        POSE_DISPATCHES.store(0, Ordering::SeqCst);
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[], &[], 0.0, &mut output)
+                .expect("an empty batch is a quiet no-op")
+        );
+        assert!(host.has_pending(), "the empty batch keeps the candidate staged");
+        assert!(host.quarantined_digests.is_empty());
+
+        let bad_span = RigSpan {
+            entity: 0,
+            first: 0,
+            count: 2,
+        };
+        let error = host
+            .evaluate(&[valid_pose_bone()], &[bad_span], 0.0, &mut output)
+            .expect_err("an out-of-bounds rig span is a host error");
+        assert!(error.to_string().contains("host rig span out of bounds"));
+
+        let mut nan_bone = valid_pose_bone();
+        nan_bone.translation[0] = f32::NAN;
+        let error = host
+            .evaluate(&[nan_bone], &[valid_pose_span()], 0.0, &mut output)
+            .expect_err("a non-finite input bone is a host error");
+        assert!(error
+            .to_string()
+            .contains("host input bone contains non-finite"));
+
+        let error = host
+            .evaluate(
+                &[valid_pose_bone()],
+                &[valid_pose_span()],
+                f64::NAN,
+                &mut output,
+            )
+            .expect_err("a NaN frame time is a host error");
+        assert!(error.to_string().contains("pose frame time is not finite"));
+        let error = host
+            .evaluate(
+                &[valid_pose_bone()],
+                &[valid_pose_span()],
+                f64::INFINITY,
+                &mut output,
+            )
+            .expect_err("an infinite frame time is a host error");
+        assert!(error.to_string().contains("pose frame time is not finite"));
+
+        let mut bad_parent = valid_pose_bone();
+        bad_parent.parent = 1;
+        let error = host
+            .evaluate(&[bad_parent], &[valid_pose_span()], 0.0, &mut output)
+            .expect_err("an out-of-range positive parent is a host error");
+        assert!(error.to_string().contains("parent is out of bounds"));
+
+        // Two one-bone rigs: parent 1 is inside the batch but outside its one-bone rig.
+        let rig_root = valid_pose_bone();
+        let mut cross_rig_parent = valid_pose_bone();
+        cross_rig_parent.parent = 1;
+        let spans = [
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 1,
+            },
+            RigSpan {
+                entity: 1,
+                first: 1,
+                count: 1,
+            },
+        ];
+        let error = host
+            .evaluate(
+                &[rig_root, cross_rig_parent],
+                &spans,
+                0.0,
+                &mut output,
+            )
+            .expect_err("a parent outside its own rig span is a host error");
+        assert!(
+            error
+                .to_string()
+                .contains("parent must precede its child"),
+            "got: {error:#}"
+        );
+
+        let mut self_parent = valid_pose_bone();
+        self_parent.parent = 0;
+        let error = host
+            .evaluate(&[self_parent], &[valid_pose_span()], 0.0, &mut output)
+            .expect_err("a self-parent is a host error");
+        assert!(
+            error
+                .to_string()
+                .contains("parent must precede its child"),
+            "got: {error:#}"
+        );
+
+        let mut forward_parent = valid_pose_bone();
+        forward_parent.parent = 1;
+        let forward_child = valid_pose_bone();
+        // Within a two-bone rig, index 0's parent 1 is in-bounds but points forward.
+        let forward_spec = RigSpan {
+            entity: 0,
+            first: 0,
+            count: 2,
+        };
+        let error = host
+            .evaluate(
+                &[forward_parent, forward_child],
+                &[forward_spec],
+                0.0,
+                &mut output,
+            )
+            .expect_err("a forward parent is a host error");
+        assert!(
+            error
+                .to_string()
+                .contains("parent must precede its child"),
+            "got: {error:#}"
+        );
+
+        assert!(
+            host.quarantined_digests.is_empty(),
+            "host/caller errors are not artifact failures"
+        );
+        assert!(host.has_pending(), "the staged candidate is untouched");
+        assert_eq!(
+            host.digest(),
+            Some(ACTIVE_DIGEST),
+            "the active module was not dispatched or demoted"
+        );
+        assert_eq!(
+            POSE_DISPATCHES.load(Ordering::SeqCst),
+            0,
+            "no probe was invoked before host validation completed"
+        );
+    }
+
+    #[test]
+    fn valid_multi_bone_parent_chain_is_dispatched() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.pending = Some(Loaded::probe("rev-chain", CANARY_DIGEST, allow_pose));
+
+        let rig_root = valid_pose_bone();
+        let child_root = valid_pose_bone();
+        let mut child = valid_pose_bone();
+        child.parent = 0;
+        let spans = [
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 1,
+            },
+            RigSpan {
+                entity: 1,
+                first: 1,
+                count: 2,
+            },
+        ];
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[rig_root, child_root, child], &spans, 0.0, &mut output)
+                .expect("valid per-rig parent chains are dispatched"),
+            "the valid candidate promotes"
+        );
+        assert_eq!(host.digest(), Some(CANARY_DIGEST));
+        assert!(host.quarantined_digests.is_empty());
     }
 
     // ------------------------------------------------------------------
