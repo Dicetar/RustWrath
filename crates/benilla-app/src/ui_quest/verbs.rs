@@ -136,6 +136,13 @@ impl QuestVerbs<'_, '_> {
     /// DECLINE (`0x501159`-`0x5011e0`); then the cell is zeroed (`0x501201`). The source, whose
     /// latch release (`0x50120d`) and `QUEST_FINISHED` (`0x501217`) the host runs next.
     fn teardown(&mut self, report: bool) -> Option<u64> {
+        if self
+            .giver
+            .as_deref_mut()
+            .is_some_and(|g| std::mem::take(&mut g.firing_panel_event))
+        {
+            return None;
+        }
         let source = self.giver.as_deref().and_then(|g| g.npc)?;
         // The lookup resolves only a player (`0x50116a`, type mask `0x10`).
         let sharer = self

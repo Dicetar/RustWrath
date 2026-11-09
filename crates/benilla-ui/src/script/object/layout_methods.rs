@@ -383,7 +383,8 @@ fn set_point(lua: &Lua, this: &Table, args: &MultiValue) -> mlua::Result<()> {
     }
     let input = model.layout_inputs.entry(h).or_default();
     // An unchanged anchor stores nothing and queues no resolve (`0x767cde` → `0x767d5e`).
-    if input.anchors.set(anchor, units) {
+    let changed = input.anchors.set(anchor, units);
+    if changed || model.is_wrath() {
         model.invalidate_frame(h, true);
     }
     Ok(())

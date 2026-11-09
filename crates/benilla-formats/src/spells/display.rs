@@ -476,7 +476,7 @@ impl SpellDisplay {
     /// The spellbook's add gate (`AddSpell` `0x5e9c20`, `0x4b25b0`): a spell stays out for
     /// `Attributes` `0x80` or `0x20`, or a nonzero `castUI`; passive alone does not hide it.
     pub fn in_spellbook(&self) -> bool {
-        self.attributes & (ATTR_DO_NOT_DISPLAY | SPELL_ATTR_IS_TRADESKILL) == 0 && self.cast_ui == 0
+        self.in_spell_list() && self.cast_ui == 0
     }
 
     /// The pet book's add gate (`0x4b2f90`) tests only `Attributes & 0x80`, as the sign of its

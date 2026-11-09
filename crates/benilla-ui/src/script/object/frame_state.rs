@@ -315,19 +315,33 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     )));
                 }
             }
+            let wrath = lua.app_data_ref::<Model>().expect("model").target
+                == crate::script::UiTarget::Wrath335;
+            if wrath && new_parent.is_some() && binding_abi::name_of(lua, &this) == "QuestInfoFadingFrame" {
+                let mut model = lua.app_data_mut::<Model>().expect("model");
+                if let Some(f) = model.arena.frame_mut(h) {
+                    f.shown = true;
+                }
+            }
             let was_visible = {
                 let mut model = lua.app_data_mut::<Model>().expect("model");
                 model.arena.reparent_begin(h, new_parent)
             };
-            // None: the same parent, a total no-op (`0x76ab20`), not even a layout touch.
+            // None: the same parent, a total no-op (`0x76ab20`), not even a layout touch in 1.12.
             let Some(was_visible) = was_visible else {
+                if wrath {
+                    {
+                        let mut model = lua.app_data_mut::<Model>().expect("model");
+                        model.touch_layout_subtree(h);
+                        model.invalidate_frame(h, true);
+                    }
+                    visibility::show(lua, h);
+                }
                 return Ok(());
             };
             if was_visible {
                 visibility::hide(lua, h);
             }
-            let wrath = lua.app_data_ref::<Model>().expect("model").target
-                == crate::script::UiTarget::Wrath335;
             {
                 let mut model = lua.app_data_mut::<Model>().expect("model");
                 model.arena.reparent_finish_with_levels(h, new_parent, wrath);
@@ -335,6 +349,9 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 // descendant FontString's measure key.
                 model.touch_layout_subtree(h);
                 model.touch_measure_all();
+                if wrath {
+                    model.invalidate_frame(h, true);
+                }
             }
             if was_visible || wrath {
                 visibility::show(lua, h);

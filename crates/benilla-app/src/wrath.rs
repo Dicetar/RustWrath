@@ -9644,8 +9644,13 @@ fn wrath_apply_world(world: &mut World) {
                             });
                         }
                     }
-                    // Loot FX rescan on this edge, including when LOOTABLE is cleared.
-                    if index == FIELD_UNIT_DYNAMIC_FLAGS {
+                    // Loot FX rescan on this edge, including when LOOTABLE is cleared, plus
+                    // action-bar usability refreshes on power, aura-state, and combo-point edges.
+                    if index == FIELD_UNIT_DYNAMIC_FLAGS
+                        || (FIELD_UNIT_POWER1..FIELD_UNIT_POWER1 + 5).contains(&index)
+                        || index == 125
+                        || index == 1222
+                    {
                         let entity = world.resource::<GuidIndex>().0.get(guid).copied();
                         if let Some(entity) = entity {
                             let _ = world.write_message(FieldChanged {

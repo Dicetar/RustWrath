@@ -597,7 +597,9 @@ fn load_start_outfits(chain: &mut Chain) -> Result<HashMap<(u8, u8, u8), Vec<Sta
                 });
             }
         }
-        map.insert((race, class, sex), items);
+        if !items.is_empty() {
+            map.entry((race, class, sex)).or_insert(items);
+        }
     }
     Ok(map)
 }
