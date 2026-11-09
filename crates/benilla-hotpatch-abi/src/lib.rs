@@ -154,12 +154,16 @@ pub struct MovementFrame {
     pub camera_yaw: f32,
     /// Bitmask of directional/jump/dodge/sprint intents for this frame.
     pub input_buttons: u32,
+    /// The baseline's current move flags. Input may carry baseline/server-owned state (root,
+    /// falling, swimming, transport); a module must not echo non-delegated bits in
+    /// [`MovementOutput::move_flags`], which is checked against the host's `permitted_flags`.
     pub move_flags: u32,
     pub run_speed: f32,
     pub walk_speed: f32,
     pub swim_speed: f32,
     pub ground_height: f32,
     pub ground_normal: [f32; 3],
+    /// `NEG_INFINITY` means no liquid is present; every other value is a height.
     pub liquid_height: f32,
     pub stamina_norm: f32,
 }

@@ -160,6 +160,44 @@ fn publish_in_progress(root: &Path) -> bool {
     root.join("publish.lock").exists()
 }
 
+/// Whether the caller's movement frame and bounds carry usable scalar inputs. `dt_seconds` is
+/// checked separately for a positive step; `liquid_height` uses `f32::NEG_INFINITY` as the "no
+/// liquid" sentinel, so every other float must be finite. The caller's bounds must be non-negative
+/// (`+INFINITY` remains the unbounded sentinel), and its frame may not seed a facing or speed
+/// outside those bounds. Input `move_flags` may carry baseline/server-owned state; only the
+/// module's *output* flags are checked against `permitted_flags`. A frame failing this check is a
+/// caller error and never quarantines a processor.
+fn movement_frame_valid(frame: &MovementFrame, bounds: &MovementBounds) -> bool {
+    frame.position.iter().all(|value| value.is_finite())
+        && frame.velocity.iter().all(|value| value.is_finite())
+        && [
+            frame.facing,
+            frame.pitch,
+            frame.camera_yaw,
+            frame.run_speed,
+            frame.walk_speed,
+            frame.swim_speed,
+            frame.ground_height,
+            frame.stamina_norm,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+        && frame.ground_normal.iter().all(|value| value.is_finite())
+        && (frame.liquid_height.is_finite() || frame.liquid_height == f32::NEG_INFINITY)
+        && [
+            bounds.max_step,
+            bounds.max_horizontal_speed,
+            bounds.max_vertical_speed,
+            bounds.max_abs_facing,
+        ]
+        .iter()
+        .all(|value| (*value >= 0.0 && value.is_finite()) || *value == f32::INFINITY)
+        && frame.facing.abs() <= bounds.max_abs_facing
+        && (frame.velocity[0] * frame.velocity[0] + frame.velocity[2] * frame.velocity[2]).sqrt()
+            <= bounds.max_horizontal_speed
+        && frame.velocity[1].abs() <= bounds.max_vertical_speed
+}
+
 impl Loaded {
     fn digest_bytes(&self) -> Option<ModuleDigest> {
         digest_bytes(&self.digest)
@@ -286,7 +324,9 @@ pub enum MovementProposalSource {
 
 /// Typed refusal from the movement seam. A [`Host::movement_proposal`] `Err` leaves no proposal
 /// written and drops the movement slot, so the caller hands prediction back to the baseline
-/// controller exactly once. A [`Host::stage_movement_processor`] `Err` drops only the staged
+/// controller exactly once. A module-produced `Status` or output-validation refusal also
+/// quarantines the selected module's verified digest; `FrameInput`, `NoModule` and `SeamDisabled`
+/// never quarantine. A [`Host::stage_movement_processor`] `Err` drops only the staged
 /// candidate and latches as its variant describes; it does not evict an already-active processor
 /// except for [`MovementRefusal::SeamDisabled`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -302,8 +342,9 @@ pub enum MovementRefusal {
     /// [`Host::take_movement_rejection`] for logs.
     Publication,
     /// The manifest named a digest the host quarantined after a terminal post-verification
-    /// `MovementLoaded::open` failure. It is refused before any artifact read or `Library::new`,
-    /// even when a changed manifest (`B -> C -> B`) names the same bad artifact again.
+    /// `MovementLoaded::open` failure or a module-produced `Status`/output-validation failure. It
+    /// is refused before any artifact read or `Library::new`, even when a changed manifest
+    /// (`B -> C -> B`) names the same bad artifact again.
     Quarantined,
     /// The descriptor magic, artifact prefix or ABI version named another seam or version.
     Kind,
@@ -311,7 +352,9 @@ pub enum MovementRefusal {
     Layout,
     /// The descriptor published no callable processor (`null` descriptor or process pointer).
     MissingProcessor,
-    /// The frame handed in was not a usable clock step.
+    /// The frame or bounds handed in were not usable: a non-finite/non-positive clock step, a
+    /// non-finite scalar field (other than a documented sentinel), invalid bounds, or a
+    /// caller-seeded facing/speed outside them.
     FrameInput,
     /// The module returned a non-zero status.
     Status(i32),
@@ -441,6 +484,16 @@ impl MovementLoaded {
     }
 }
 
+/// The movement slot selected for one proposal. `digest` is the selected module's verified content
+/// identity, so a module-produced failure can quarantine exactly that artifact before the slot is
+/// dropped.
+struct MovementSelection {
+    process: ProcessMovement,
+    revision: String,
+    digest: String,
+    staged: bool,
+}
+
 /// Validate a movement module descriptor before any call into the candidate.
 pub fn validate_movement_descriptor(
     descriptor: &MovementModuleV1,
@@ -529,13 +582,13 @@ pub struct Host {
     movement_active: Option<MovementLoaded>,
     movement_refusal: Option<MovementRefusal>,
     movement_rejection: Option<String>,
-    /// Bounded in-memory quarantine of movement digests rejected by a terminal post-verification
-    /// `MovementLoaded::open` failure: the bytes matched `movement.toml` and the immutable
-    /// filename. A changed manifest that still names the same bad artifact (`B -> C -> B`) is
-    /// refused before any artifact read or `Library::new`. Deliberately separate from the pose
-    /// store so the same bytes under a different ABI cannot suppress the other seam; H03 may unify
-    /// the stores under a `(ModuleKind, digest)` key. Not persistent; H03 also owns the
-    /// typed/persistent store and the canary/frame quarantine.
+    /// Bounded in-memory quarantine of movement digests rejected after their bytes were verified:
+    /// a terminal post-verification `MovementLoaded::open` failure, or a module-produced `Status`
+    /// or output-validation failure in `movement_proposal`. A changed manifest that still names
+    /// the same bad artifact (`B -> C -> B`) is refused before any artifact read or `Library::new`.
+    /// Deliberately separate from the pose store so the same bytes under a different ABI cannot
+    /// suppress the other seam; H03 may unify the stores under a `(ModuleKind, digest)` key. Not
+    /// persistent; H03 also owns the typed/persistent store and the frame counters.
     movement_quarantined_digests: VecDeque<String>,
     /// Which hot-pluggable gameplay seams are enabled. Pose is always enabled; the movement
     /// staging path consults this before it opens an artifact.
@@ -601,7 +654,7 @@ impl Host {
     }
 
     /// Whether a movement digest was quarantined after a terminal post-verification
-    /// `MovementLoaded::open` failure.
+    /// `MovementLoaded::open` failure or a module-produced proposal failure.
     fn is_movement_quarantined(&self, digest: &str) -> bool {
         self.movement_quarantined_digests.iter().any(|d| d == digest)
     }
@@ -1062,7 +1115,7 @@ impl Host {
             }
         };
         if self.is_movement_quarantined(&publication.sha1) {
-            // A digest quarantined after a terminal post-verification failure is refused before
+            // A digest quarantined after a verified load or proposal failure is refused before
             // the active-module shortcut or any artifact read/`Library::new`, even when a changed
             // manifest (`B -> C -> B`) names it again. Latch this text so the unchanged manifest
             // is a quiet `Ok(false)`; a genuinely new digest is still evaluated.
@@ -1071,7 +1124,7 @@ impl Host {
             return Err(self.refuse_movement(
                 MovementRefusal::Quarantined,
                 format!(
-                    "movement module digest {digest} is quarantined after a terminal load failure"
+                    "movement module digest {digest} is quarantined after a load or proposal failure"
                 ),
             ));
         }
@@ -1148,7 +1201,10 @@ impl Host {
     ///
     /// On `Err` the movement slot is dropped entirely (no retained predecessor), so the caller
     /// hands prediction back to the baseline controller exactly once. Nothing is written to the
-    /// caller's pose when the proposal is refused.
+    /// caller's pose when the proposal is refused. A module-produced `Status` or output-validation
+    /// failure also quarantines the selected module's verified digest before the slot is dropped, so
+    /// a `B -> C -> B` manifest rewrite cannot restage it. `FrameInput`, `NoModule`, `SeamDisabled`
+    /// and host/caller errors never quarantine; neither does a valid proposal or commit.
     pub fn movement_proposal(
         &mut self,
         frame: &MovementFrame,
@@ -1163,13 +1219,25 @@ impl Host {
                 "movement seam is disabled".to_owned(),
             ));
         }
-        let Some((process, revision, staged)) = self.movement_process() else {
+        let Some(selection) = self.movement_process() else {
             return Err(MovementRefusal::NoModule);
         };
+        let MovementSelection {
+            process,
+            revision,
+            digest,
+            staged,
+        } = selection;
         if !frame.dt_seconds.is_finite() || frame.dt_seconds <= 0.0 {
             return Err(self.drop_movement(
                 MovementRefusal::FrameInput,
                 format!("movement module {revision}: non-finite or non-positive frame step"),
+            ));
+        }
+        if !movement_frame_valid(frame, bounds) {
+            return Err(self.drop_movement(
+                MovementRefusal::FrameInput,
+                format!("movement module {revision}: invalid frame input or bounds"),
             ));
         }
         let mut output = MovementOutput {
@@ -1183,6 +1251,7 @@ impl Host {
         };
         let status = unsafe { process(frame, &mut output) };
         if status != 0 {
+            self.quarantine_movement_digest(&digest);
             return Err(self.drop_movement(
                 MovementRefusal::Status(status),
                 format!("movement module {revision} rejected the frame (status {status})"),
@@ -1197,10 +1266,13 @@ impl Host {
                     MovementProposalSource::Active
                 },
             )),
-            Err(refusal) => Err(self.drop_movement(
-                refusal,
-                format!("movement module {revision} output refused ({refusal:?})"),
-            )),
+            Err(refusal) => {
+                self.quarantine_movement_digest(&digest);
+                Err(self.drop_movement(
+                    refusal,
+                    format!("movement module {revision} output refused ({refusal:?})"),
+                ))
+            }
         }
     }
 
@@ -1228,13 +1300,21 @@ impl Host {
         staged | active
     }
 
-    fn movement_process(&self) -> Option<(ProcessMovement, String, bool)> {
+    fn movement_process(&self) -> Option<MovementSelection> {
         if let Some(pending) = self.movement_pending.as_ref() {
-            return Some((pending.process, pending.revision.clone(), true));
+            return Some(MovementSelection {
+                process: pending.process,
+                revision: pending.revision.clone(),
+                digest: pending.digest.clone(),
+                staged: true,
+            });
         }
-        self.movement_active
-            .as_ref()
-            .map(|active| (active.process, active.revision.clone(), false))
+        self.movement_active.as_ref().map(|active| MovementSelection {
+            process: active.process,
+            revision: active.revision.clone(),
+            digest: active.digest.clone(),
+            staged: false,
+        })
     }
 
     fn refuse_movement(&mut self, refusal: MovementRefusal, detail: String) -> MovementRefusal {
@@ -2564,6 +2644,16 @@ mod tests {
         0
     }
 
+    unsafe extern "C" fn propose_clear_flags(
+        frame: *const MovementFrame,
+        out: *mut MovementOutput,
+    ) -> i32 {
+        let mut output = mirrored(frame);
+        output.move_flags = 0;
+        unsafe { *out = output };
+        0
+    }
+
     unsafe extern "C" fn propose_wire(
         frame: *const MovementFrame,
         out: *mut MovementOutput,
@@ -2603,6 +2693,10 @@ mod tests {
         assert!((proposal.position[0] - 1.1).abs() < 1e-5);
         assert_eq!(proposal.move_flags, 1);
         assert!(
+            host.movement_quarantined_digests.is_empty(),
+            "a valid proposal never quarantines"
+        );
+        assert!(
             !host.movement_processor_active(),
             "a proposal is not an activation"
         );
@@ -2612,6 +2706,10 @@ mod tests {
             .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
             .expect("the active processor proposes");
         assert_eq!(source, MovementProposalSource::Active);
+        assert!(
+            host.movement_quarantined_digests.is_empty(),
+            "a valid commit and active proposal never quarantine"
+        );
         assert!(!host.commit_movement_processor(), "nothing left to promote");
     }
 
@@ -2681,6 +2779,325 @@ mod tests {
                 "a refused proposal leaves no module behind: {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn movement_status_rejection_quarantines_the_selected_digest_and_refuses_a_rewrite() {
+        let root = movement_test_root("status-quarantine");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_pending = Some(MovementLoaded::probe("rev-movement", reject_frame));
+        let probe_digest = "0".repeat(40);
+
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Status(7))
+        );
+        assert!(
+            host.is_movement_quarantined(&probe_digest),
+            "a module-produced status failure quarantines the selected digest"
+        );
+        assert!(!host.has_movement_processor(), "the refused slot is dropped");
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::Status(7))
+        );
+
+        // Republishing the same artifact under changed manifest text must be refused before any
+        // artifact read, even though its DLL is absent. That distinguishes the quarantine gate
+        // from the transient missing-file path.
+        let dll = format!("movement-{probe_digest}.dll");
+        let manifest = movement_publication_text("rev-movement", &dll, &probe_digest);
+        std::fs::write(root.join(MOVEMENT_MANIFEST), &manifest).expect("write movement manifest");
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Quarantined)
+        );
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::Quarantined),
+            "the quarantine refusal is drained before the quiet poll"
+        );
+        let detail = host.take_movement_rejection().expect("quarantine detail");
+        assert!(detail.contains("quarantined"), "detail: {detail}");
+        assert!(
+            detail.contains(&probe_digest),
+            "detail names the quarantined digest: {detail}"
+        );
+        assert!(
+            !detail.contains("No such file") && !detail.contains("os error 2"),
+            "the quarantine gate fires before the missing-file path: {detail}"
+        );
+        assert!(
+            !host.has_movement_processor(),
+            "a quarantined digest stages nothing"
+        );
+        assert_eq!(host.movement_observed.as_deref(), Some(manifest.as_str()));
+
+        // The unchanged republished text is a quiet poll.
+        assert_eq!(host.stage_movement_processor(), Ok(false));
+        assert_eq!(host.take_movement_refusal(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_output_validation_rejection_quarantines_the_selected_digest() {
+        let probe_digest = "0".repeat(40);
+        for (process, expected) in [
+            (propose_nan as ProcessMovement, MovementRefusal::NonFinite),
+            (
+                propose_teleport as ProcessMovement,
+                MovementRefusal::Step(100.0),
+            ),
+            (
+                propose_speed as ProcessMovement,
+                MovementRefusal::Speed(400.0),
+            ),
+            (
+                propose_facing as ProcessMovement,
+                MovementRefusal::Facing(7.0),
+            ),
+            (
+                propose_flag as ProcessMovement,
+                MovementRefusal::Flags(0x1000),
+            ),
+            (propose_wire as ProcessMovement, MovementRefusal::WireWrite),
+        ] {
+            let mut host = probe_host(process);
+            let error = host
+                .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+                .expect_err("an out-of-contract proposal is refused");
+            assert_eq!(error, expected);
+            assert!(
+                host.is_movement_quarantined(&probe_digest),
+                "an output-validation failure quarantines the selected digest: {expected:?}"
+            );
+            assert!(
+                !host.has_movement_processor(),
+                "a refused proposal leaves no module behind: {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn movement_frame_input_errors_do_not_quarantine_the_selected_digest() {
+        let probe_digest = "0".repeat(40);
+        for dt_seconds in [0.0_f32, f32::NAN] {
+            let mut host = probe_host(propose_step);
+            let mut frame = movement_frame();
+            frame.dt_seconds = dt_seconds;
+            assert_eq!(
+                host.movement_proposal(&frame, &MOVEMENT_BOUNDS),
+                Err(MovementRefusal::FrameInput)
+            );
+            assert!(
+                !host.is_movement_quarantined(&probe_digest),
+                "a caller clock error never quarantines the module: dt {dt_seconds}"
+            );
+            assert!(
+                !host.has_movement_processor(),
+                "the slot is still dropped on a caller error"
+            );
+            assert_eq!(
+                host.take_movement_refusal(),
+                Some(MovementRefusal::FrameInput)
+            );
+            assert!(
+                host.take_movement_rejection().is_some(),
+                "the caller-error detail is kept"
+            );
+            assert_eq!(
+                host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+                Err(MovementRefusal::NoModule)
+            );
+        }
+
+        // Non-finite scalar frame inputs are caller errors too. The `liquid_height`
+        // NEG_INFINITY sentinel is the one allowed non-finite value.
+        let mut cases: Vec<(&str, MovementFrame)> = Vec::new();
+        let mut frame = movement_frame();
+        frame.position[0] = f32::NAN;
+        cases.push(("position", frame));
+        let mut frame = movement_frame();
+        frame.velocity[1] = f32::INFINITY;
+        cases.push(("velocity", frame));
+        let mut frame = movement_frame();
+        frame.facing = f32::NAN;
+        cases.push(("facing", frame));
+        let mut frame = movement_frame();
+        frame.pitch = f32::INFINITY;
+        cases.push(("pitch", frame));
+        let mut frame = movement_frame();
+        frame.camera_yaw = f32::NAN;
+        cases.push(("camera_yaw", frame));
+        let mut frame = movement_frame();
+        frame.run_speed = f32::INFINITY;
+        cases.push(("run_speed", frame));
+        let mut frame = movement_frame();
+        frame.walk_speed = f32::NAN;
+        cases.push(("walk_speed", frame));
+        let mut frame = movement_frame();
+        frame.swim_speed = f32::INFINITY;
+        cases.push(("swim_speed", frame));
+        let mut frame = movement_frame();
+        frame.ground_height = f32::NAN;
+        cases.push(("ground_height", frame));
+        let mut frame = movement_frame();
+        frame.ground_normal[2] = f32::INFINITY;
+        cases.push(("ground_normal", frame));
+        let mut frame = movement_frame();
+        frame.liquid_height = f32::NAN;
+        cases.push(("liquid_height", frame));
+        let mut frame = movement_frame();
+        frame.stamina_norm = f32::INFINITY;
+        cases.push(("stamina_norm", frame));
+        let mut frame = movement_frame();
+        frame.facing = 7.0;
+        cases.push(("facing outside max_abs_facing", frame));
+        let mut frame = movement_frame();
+        frame.velocity[0] = 9.0;
+        cases.push(("horizontal speed outside max_horizontal_speed", frame));
+        let mut frame = movement_frame();
+        frame.velocity[1] = 61.0;
+        cases.push(("vertical speed outside max_vertical_speed", frame));
+
+        for (field, frame) in cases {
+            let mut host = probe_host(propose_step);
+            assert_eq!(
+                host.movement_proposal(&frame, &MOVEMENT_BOUNDS),
+                Err(MovementRefusal::FrameInput),
+                "invalid {field} is a caller error"
+            );
+            assert!(
+                !host.is_movement_quarantined(&probe_digest),
+                "invalid {field} must not quarantine the processor"
+            );
+            assert!(!host.has_movement_processor());
+        }
+
+        for (label, bounds) in [
+            (
+                "negative max_step",
+                MovementBounds {
+                    max_step: -1.0,
+                    ..MOVEMENT_BOUNDS
+                },
+            ),
+            (
+                "NaN max_horizontal_speed",
+                MovementBounds {
+                    max_horizontal_speed: f32::NAN,
+                    ..MOVEMENT_BOUNDS
+                },
+            ),
+            (
+                "negative max_vertical_speed",
+                MovementBounds {
+                    max_vertical_speed: -1.0,
+                    ..MOVEMENT_BOUNDS
+                },
+            ),
+            (
+                "NaN max_abs_facing",
+                MovementBounds {
+                    max_abs_facing: f32::NAN,
+                    ..MOVEMENT_BOUNDS
+                },
+            ),
+        ] {
+            let mut host = probe_host(propose_step);
+            assert_eq!(
+                host.movement_proposal(&movement_frame(), &bounds),
+                Err(MovementRefusal::FrameInput),
+                "{label} is a caller error"
+            );
+            assert!(
+                !host.is_movement_quarantined(&probe_digest),
+                "{label} must not quarantine the processor"
+            );
+            assert!(
+                !host.has_movement_processor(),
+                "{label} still drops the movement slots"
+            );
+        }
+
+        // Input move_flags may carry root/falling/swimming state that the host does not delegate
+        // for output. The module must clear it; the caller is not rejected for carrying it.
+        let mut flags_host = probe_host(propose_clear_flags);
+        let mut flags_frame = movement_frame();
+        flags_frame.move_flags = 0x1000;
+        let (proposal, _) = flags_host
+            .movement_proposal(&flags_frame, &MOVEMENT_BOUNDS)
+            .expect("non-delegated input flags are accepted when the module does not echo them");
+        assert_eq!(proposal.move_flags, 0);
+        assert!(!flags_host.is_movement_quarantined(&probe_digest));
+
+        // +INFINITY remains the unbounded sentinel for the scalar caps.
+        let unbounded = MovementBounds {
+            max_step: f32::INFINITY,
+            max_horizontal_speed: f32::INFINITY,
+            max_vertical_speed: f32::INFINITY,
+            max_abs_facing: f32::INFINITY,
+            permitted_flags: MOVEMENT_BOUNDS.permitted_flags,
+        };
+        let mut unbounded_host = probe_host(propose_step);
+        assert!(
+            unbounded_host
+                .movement_proposal(&movement_frame(), &unbounded)
+                .is_ok(),
+            "the +INFINITY bounds sentinel is accepted"
+        );
+
+        let mut sentinel_host = probe_host(propose_step);
+        assert!(
+            sentinel_host
+                .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+                .is_ok(),
+            "the NEG_INFINITY liquid sentinel is a valid frame input"
+        );
+        assert!(!sentinel_host.is_movement_quarantined(&probe_digest));
+    }
+
+    #[test]
+    fn active_movement_proposal_failure_quarantines_the_selected_digest() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_active = Some(MovementLoaded::probe("rev-active", reject_frame));
+        let probe_digest = "0".repeat(40);
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Status(7))
+        );
+        assert!(
+            host.is_movement_quarantined(&probe_digest),
+            "an active proposal failure quarantines the selected digest"
+        );
+        assert!(!host.has_movement_processor());
+    }
+
+    #[test]
+    fn movement_no_module_and_disabled_seam_do_not_quarantine() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::NoModule)
+        );
+        assert!(
+            host.movement_quarantined_digests.is_empty(),
+            "NoModule never quarantines"
+        );
+
+        let mut host = probe_host(propose_step);
+        host.set_seam_enabled(ModuleKind::Movement, false);
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::SeamDisabled)
+        );
+        assert!(
+            host.movement_quarantined_digests.is_empty(),
+            "SeamDisabled never quarantines"
+        );
     }
 
     #[test]
