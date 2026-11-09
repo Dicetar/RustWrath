@@ -288,6 +288,17 @@ pub(in crate::entities) fn resolve_equipment(
         // choice shows here; a hidden piece is display id 0, so its model and `0x4799a0` masks go.
         let (hide_helm, hide_cloak) = (s.player_hides_helm(), s.player_hides_cloak());
         let prev = looked_up.copied().unwrap_or_default();
+        let visible_or_inv_entry = |slot: u8| -> Option<u32> {
+            s.player_visible_item_entry(slot)
+                .filter(|&e| e != 0)
+                .or_else(|| {
+                    s.player_inv_slot(slot)
+                        .filter(|&g| g != 0)
+                        .and_then(|g| objects.object(g))
+                        .and_then(|o| o.object_entry())
+                        .filter(|&e| e != 0)
+                })
+        };
         let mut reads = SlotReads {
             templates: &templates,
             net: &net,
@@ -297,9 +308,9 @@ pub(in crate::entities) fn resolve_equipment(
             now: LookedUp {
                 visible: std::array::from_fn(|i| {
                     let slot = i as u8;
-                    match s.player_visible_item_entry(slot) {
-                        Some(e) if e != 0 => prev.visible[i],
-                        _ => 0,
+                    match visible_or_inv_entry(slot) {
+                        Some(_) => prev.visible[i],
+                        None => 0,
                     }
                 }),
                 ..prev
@@ -311,7 +322,7 @@ pub(in crate::entities) fn resolve_equipment(
                 ..default()
             };
             for (slot, idx) in COMPOSITE_SLOTS {
-                let Some(entry) = s.player_visible_item_entry(slot).filter(|e| *e != 0) else {
+                let Some(entry) = visible_or_inv_entry(slot) else {
                     continue;
                 };
                 match reads.worn(slot, entry) {
@@ -321,13 +332,13 @@ pub(in crate::entities) fn resolve_equipment(
             }
             // The cloak (slot 14) and helm (slot 0). A hidden piece is still looked up and zeroed
             // after, so `settled` keeps its meaning and showing it again needs no round trip.
-            if let Some(entry) = s.player_visible_item_entry(14).filter(|e| *e != 0) {
+            if let Some(entry) = visible_or_inv_entry(14) {
                 match reads.worn(14, entry) {
                     Some(display) => eq.cloak = display,
                     None => eq.settled = false,
                 }
             }
-            if let Some(entry) = s.player_visible_item_entry(0).filter(|e| *e != 0) {
+            if let Some(entry) = visible_or_inv_entry(0) {
                 match reads.worn(0, entry) {
                     Some(display) => eq.helm = display,
                     None => eq.settled = false,
@@ -400,9 +411,7 @@ pub(in crate::entities) fn resolve_equipment(
                         (d, inv as u32, sheath, class, subclass, material)
                     })
                 }
-                EntityKind::Player => s
-                    .player_visible_item_entry(PLAYER_HELD_SLOTS[slot])
-                    .filter(|e| *e != 0)
+                EntityKind::Player => visible_or_inv_entry(PLAYER_HELD_SLOTS[slot])
                     .and_then(|entry| reads.visible(PLAYER_HELD_SLOTS[slot], entry))
                     .filter(|t| t.display_info_id != 0)
                     .map(|t| {
@@ -613,8 +622,7 @@ pub(in crate::entities) fn resolve_equipment(
                 let race = s.unit_race().unwrap_or(1);
                 let sex = s.unit_gender().unwrap_or(0).min(1);
                 let mut resolve = |slot: u8| {
-                    s.player_visible_item_entry(slot)
-                        .filter(|e| *e != 0)
+                    visible_or_inv_entry(slot)
                         .and_then(|entry| reads.visible(slot, entry))
                         .map(|t| t.display_info_id)
                         .filter(|d| *d != 0)
