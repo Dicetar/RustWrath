@@ -184,6 +184,12 @@ impl Loaded {
 
 // ============================================================================
 // Seam 2: movement processor staging (`MovementModuleV1`)
+//
+// `Host::stage_movement_processor` consults the host-owned [`ModularGameplayRegistry`] before it
+// opens any artifact: a disabled movement seam is a typed refusal, not a publication error, and
+// no DLL artifact bytes are read or mapped. (`movement.toml` itself is read first only to tell an
+// absent publication from a disabled seam.) The registry is therefore a live capability gate
+// rather than a bookkeeping-only record.
 // ============================================================================
 
 /// Host-owned bounds for one movement proposal. The caller derives them from the baseline
@@ -226,6 +232,11 @@ pub enum MovementProposalSource {
 pub enum MovementRefusal {
     /// No movement module is staged or active.
     NoModule,
+    /// The movement seam was disabled in the host's [`ModularGameplayRegistry`]. The host refused
+    /// before reading or loading the DLL artifact, dropped any staged/active movement slot and
+    /// latched the manifest text so garbage collection keeps its artifact. Enabling the seam
+    /// clears that latch so the same manifest is staged again.
+    SeamDisabled,
     /// Reading, parsing or verifying `movement.toml` failed. Free-form detail is kept in
     /// [`Host::take_movement_rejection`] for logs.
     Publication,
@@ -410,6 +421,9 @@ pub struct Host {
     movement_active: Option<MovementLoaded>,
     movement_refusal: Option<MovementRefusal>,
     movement_rejection: Option<String>,
+    /// Which hot-pluggable gameplay seams are enabled. Pose is always enabled; the movement
+    /// staging path consults this before it opens an artifact.
+    seams: ModularGameplayRegistry,
 }
 
 impl Host {
@@ -428,6 +442,7 @@ impl Host {
             movement_active: None,
             movement_refusal: None,
             movement_rejection: None,
+            seams: ModularGameplayRegistry::new(),
         }
     }
 
@@ -487,6 +502,35 @@ impl Host {
     }
     pub fn take_rejection(&mut self) -> Option<String> {
         self.rejection.take()
+    }
+
+    /// Enable or disable a hot-pluggable gameplay seam. `Pose` is always enabled and unaffected.
+    /// Disabling the movement seam evicts its staged/active processor immediately but keeps the
+    /// manifest latch so retention still pins the publication; enabling it clears the latch so a
+    /// publication made while disabled can be staged.
+    pub fn set_seam_enabled(&mut self, kind: ModuleKind, enabled: bool) {
+        let was_enabled = self.is_seam_enabled(kind);
+        self.seams.set_seam_enabled(kind, enabled);
+        if kind == ModuleKind::Movement {
+            if enabled && !was_enabled {
+                // Let the next stage call publish the manifest that was refused while disabled.
+                self.movement_observed = None;
+                self.movement_refusal = None;
+                self.movement_rejection = None;
+            } else if !enabled && was_enabled {
+                // A disabled seam must not keep running or promote a movement processor. Keep the
+                // manifest latch so garbage collection still pins the publication; enabling clears
+                // it and lets the next stage call publish the manifest again.
+                self.unload_movement_processor();
+                self.movement_refusal = None;
+                self.movement_rejection = None;
+            }
+        }
+    }
+
+    /// Whether `kind`'s seam is currently enabled. The pose seam is always enabled.
+    pub fn is_seam_enabled(&self, kind: ModuleKind) -> bool {
+        self.seams.is_seam_enabled(kind)
     }
 
     pub fn take_active_failure(&mut self) -> Option<String> {
@@ -700,7 +744,8 @@ impl Host {
     ///
     /// `Ok(true)` means a new candidate was staged; `Ok(false)` means the manifest is absent or
     /// unchanged (including one already active). A typed `Err` leaves the pose slots untouched and
-    /// drops any staged movement candidate. The full loader text is in
+    /// drops any staged movement candidate. A disabled movement seam refuses with
+    /// [`MovementRefusal::SeamDisabled`] before the artifact is read. The full loader text is in
     /// [`Self::take_movement_rejection`].
     pub fn stage_movement_processor(&mut self) -> std::result::Result<bool, MovementRefusal> {
         let text = match std::fs::read_to_string(self.root.join(MOVEMENT_MANIFEST)) {
@@ -718,6 +763,25 @@ impl Host {
                 };
             }
         };
+        // ADR-0002 §4.3.5: the capability gate runs on the presence of a complete manifest and
+        // before any DLL artifact bytes are read or `Library::new` maps the module. A stage call
+        // on a disabled seam drops whatever slot it still holds and latches the manifest text so
+        // `collect_retired` still pins its artifact. The first call for a manifest is a typed
+        // refusal; unchanged repeat polls are `Ok(false)` so a 1 Hz adapter does not spam errors.
+        if !self.is_seam_enabled(ModuleKind::Movement) {
+            let already_refused = self.movement_observed.as_deref() == Some(text.as_str());
+            self.movement_observed = Some(text);
+            self.movement_pending = None;
+            self.movement_active = None;
+            return if already_refused {
+                Ok(false)
+            } else {
+                Err(self.refuse_movement(
+                    MovementRefusal::SeamDisabled,
+                    "movement seam is disabled".to_owned(),
+                ))
+            };
+        }
         if self.movement_observed.as_ref() == Some(&text) {
             return Ok(false);
         }
@@ -746,6 +810,8 @@ impl Host {
             Ok(pending) => {
                 self.movement_pending = Some(pending);
                 self.movement_observed = Some(text);
+                self.movement_refusal = None;
+                self.movement_rejection = None;
                 Ok(true)
             }
             Err(failure) => Err(self.refuse_movement(failure.refusal, failure.detail)),
@@ -797,6 +863,15 @@ impl Host {
         frame: &MovementFrame,
         bounds: &MovementBounds,
     ) -> std::result::Result<(MovementProposal, MovementProposalSource), MovementRefusal> {
+        // A seam disabled after staging must not keep proposing or accept a commit; the setter
+        // normally evicts first, but this gate keeps a direct registry read authoritative.
+        if !self.is_seam_enabled(ModuleKind::Movement) {
+            self.unload_movement_processor();
+            return Err(self.refuse_movement(
+                MovementRefusal::SeamDisabled,
+                "movement seam is disabled".to_owned(),
+            ));
+        }
         let Some((process, revision, staged)) = self.movement_process() else {
             return Err(MovementRefusal::NoModule);
         };
@@ -841,6 +916,10 @@ impl Host {
     /// Promote the staged processor after the controller accepted its proposal. Returns whether a
     /// promotion happened; only this makes a candidate active.
     pub fn commit_movement_processor(&mut self) -> bool {
+        if !self.is_seam_enabled(ModuleKind::Movement) {
+            self.unload_movement_processor();
+            return false;
+        }
         let Some(candidate) = self.movement_pending.take() else {
             return false;
         };
@@ -1203,6 +1282,7 @@ mod tests {
 
     fn probe_host(process: ProcessMovement) -> Host {
         let mut host = Host::new(std::env::temp_dir());
+        host.set_seam_enabled(ModuleKind::Movement, true);
         host.movement_pending = Some(MovementLoaded::probe("rev-movement", process));
         host
     }
@@ -1359,6 +1439,261 @@ mod tests {
     }
 
     #[test]
+    fn host_movement_seam_is_disabled_by_default() {
+        let mut host = Host::new(std::env::temp_dir());
+        assert!(
+            !host.is_seam_enabled(ModuleKind::Movement),
+            "gameplay seams default to disabled"
+        );
+        assert!(
+            host.is_seam_enabled(ModuleKind::Pose),
+            "the pose seam is always enabled"
+        );
+        // Disabling the pose seam is a no-op; it is not gated.
+        host.set_seam_enabled(ModuleKind::Pose, false);
+        assert!(host.is_seam_enabled(ModuleKind::Pose));
+    }
+
+    #[test]
+    fn absent_movement_manifest_is_ok_false_while_the_seam_is_disabled() {
+        let unique = format!(
+            "rustwrath-hotpatch-absent-movement-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let mut host = Host::new(root.clone());
+        assert!(!host.is_seam_enabled(ModuleKind::Movement));
+
+        // A missing publication stays a non-failure even while the seam is disabled.
+        assert_eq!(host.stage_movement_processor(), Ok(false));
+        assert_eq!(host.take_movement_refusal(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disabled_movement_seam_refuses_a_present_manifest_before_reading_the_artifact() {
+        let unique = format!(
+            "rustwrath-hotpatch-disabled-movement-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let mut host = Host::new(root.clone());
+        host.observed = Some("pose-manifest".to_owned());
+        // Leave a pending and an active candidate behind so the gate proves it drops both slots.
+        host.movement_pending = Some(MovementLoaded::probe("rev-pending", propose_step));
+        host.movement_active = Some(MovementLoaded::probe("rev-active", propose_step));
+        assert!(host.has_movement_processor());
+        assert!(host.movement_processor_active());
+
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let dll_name = format!("movement-{digest}.dll");
+        std::fs::write(
+            root.join("movement.toml"),
+            format!("revision = \"rev-m\"\nlibrary = \"{dll_name}\"\nsha1 = \"{digest}\"\n"),
+        )
+        .expect("write movement manifest");
+        // The referenced DLL is deliberately absent: a gate placed after `MovementLoaded::open`
+        // would report a publication error instead of `SeamDisabled`.
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::SeamDisabled)
+        );
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::SeamDisabled)
+        );
+        assert_eq!(
+            host.take_movement_rejection().as_deref(),
+            Some("movement seam is disabled")
+        );
+        assert!(!host.has_movement_processor(), "the gate drops both slots");
+        assert!(!host.movement_processor_active());
+        assert!(host.movement_pending.is_none());
+        assert!(host.movement_active.is_none());
+        assert!(
+            host.movement_observed.is_some(),
+            "the refused manifest text stays latched so garbage collection pins its artifact"
+        );
+        assert_eq!(
+            host.observed.as_deref(),
+            Some("pose-manifest"),
+            "the pose latch is independent of the movement gate"
+        );
+
+        // An unchanged repeat poll is a quiet `Ok(false)`; only the first call is a refusal. The
+        // next poll after that still sees the same latch and stays quiet.
+        assert_eq!(host.stage_movement_processor(), Ok(false));
+        assert_eq!(host.take_movement_refusal(), None);
+        assert!(!host.has_movement_processor());
+        assert!(host.movement_observed.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disabled_movement_manifest_still_pins_its_artifact_and_pose_collection_runs() {
+        let unique = format!(
+            "rustwrath-hotpatch-movement-gc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let other = "89abcdef0123456789abcdef0123456789abcdef";
+        let pinned = format!("movement-{digest}.dll");
+        let retired = format!("movement-{other}.dll");
+        let pose = format!("pose-{}.dll", "a".repeat(40));
+        std::fs::write(
+            root.join("movement.toml"),
+            format!("revision = \"rev-m\"\nlibrary = \"{pinned}\"\nsha1 = \"{digest}\"\n"),
+        )
+        .expect("write movement manifest");
+        for file in [&pinned, &retired, &pose] {
+            std::fs::write(root.join(file), b"artifact").expect("write artifact");
+        }
+
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::SeamDisabled)
+        );
+        assert!(
+            root.join(&pinned).exists(),
+            "the refused publication is still on disk before collection"
+        );
+        assert_eq!(host.collect_retired().expect("collection succeeds"), 2);
+        assert!(
+            root.join(&pinned).exists(),
+            "the latched movement publication stays pinned while the seam is disabled"
+        );
+        assert!(!root.join(&retired).exists(), "unpinned movement is collected");
+        assert!(!root.join(&pose).exists(), "pose collection still runs");
+        assert!(!root.join("publish.lock").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disabling_the_movement_seam_keeps_the_manifest_latched_for_collection() {
+        let unique = format!(
+            "rustwrath-hotpatch-movement-disable-gc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let dll_name = format!("movement-{digest}.dll");
+        let manifest = format!("revision = \"rev-m\"\nlibrary = \"{dll_name}\"\nsha1 = \"{digest}\"\n");
+        std::fs::write(root.join("movement.toml"), &manifest).expect("write movement manifest");
+        std::fs::write(root.join(&dll_name), b"artifact").expect("write movement artifact");
+        let pose = format!("pose-{}.dll", "a".repeat(40));
+        std::fs::write(root.join(&pose), b"artifact").expect("write pose artifact");
+
+        let mut host = Host::new(root.clone());
+        // Simulate a prior successful stage without building a native DLL.
+        host.seams.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_observed = Some(manifest);
+        host.movement_active = Some(MovementLoaded::probe("rev-m", propose_step));
+        assert!(host.movement_processor_active());
+
+        host.set_seam_enabled(ModuleKind::Movement, false);
+        assert!(!host.has_movement_processor(), "disable evicts the processor");
+        assert!(
+            host.movement_observed.is_some(),
+            "disable keeps the manifest latched for retention"
+        );
+        assert_eq!(host.collect_retired().expect("collection succeeds"), 1);
+        assert!(
+            root.join(&dll_name).exists(),
+            "the disabled publication stays pinned"
+        );
+        assert!(!root.join(&pose).exists(), "pose collection still runs");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enabling_the_movement_seam_releases_the_same_present_manifest() {
+        let unique = format!(
+            "rustwrath-hotpatch-enabled-movement-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        std::fs::write(
+            root.join("movement.toml"),
+            format!(
+                "revision = \"rev-m\"\nlibrary = \"movement-{digest}.dll\"\nsha1 = \"{digest}\"\n"
+            ),
+        )
+        .expect("write movement manifest");
+        std::fs::write(root.join(format!("movement-{digest}.dll")), b"wrong").expect("write dll");
+
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::SeamDisabled)
+        );
+        // The same manifest text now proceeds past the gate to publication verification.
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        assert!(host.is_seam_enabled(ModuleKind::Movement));
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::Publication)
+        );
+        assert!(!host.has_movement_processor());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disabling_the_movement_seam_evicts_an_active_or_staged_processor() {
+        let mut host = probe_host(propose_step);
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged probe proposes");
+        assert!(host.commit_movement_processor());
+        assert!(host.movement_processor_active());
+
+        host.set_seam_enabled(ModuleKind::Movement, false);
+        assert!(!host.has_movement_processor(), "disable evicts the active processor");
+        assert!(!host.movement_processor_active());
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::SeamDisabled)
+        );
+        assert!(!host.commit_movement_processor(), "nothing can be promoted");
+        assert!(!host.has_movement_processor());
+    }
+
+    #[test]
+    fn disabling_between_proposal_and_commit_refuses_the_promotion() {
+        let mut host = probe_host(propose_step);
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        let _ = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged probe proposes");
+        host.set_seam_enabled(ModuleKind::Movement, false);
+        assert!(!host.commit_movement_processor());
+        assert!(!host.movement_processor_active());
+        assert!(!host.has_movement_processor());
+    }
+
+    #[test]
     fn movement_manifest_failure_leaves_the_pose_publication_untouched() {
         let unique = format!(
             "rustwrath-hotpatch-movement-{}-{}",
@@ -1375,6 +1710,9 @@ mod tests {
         // An absent movement manifest is not a failure and must not disturb the pose latch.
         assert_eq!(host.stage_movement_processor(), Ok(false));
         assert_eq!(host.observed.as_deref(), Some("pose-manifest"));
+
+        // A present manifest only reaches publication verification once its seam is enabled.
+        host.set_seam_enabled(ModuleKind::Movement, true);
 
         // A movement artifact whose bytes do not match its publication is a typed refusal.
         let digest = "0123456789abcdef0123456789abcdef01234567";
