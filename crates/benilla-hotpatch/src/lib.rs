@@ -370,12 +370,15 @@ pub enum MovementProposalSource {
 }
 
 /// Typed refusal from the movement seam. A [`Host::movement_proposal`] `Err` leaves no proposal
-/// written and drops the movement slot, so the caller hands prediction back to the baseline
-/// controller exactly once. A module-produced `Status` or output-validation refusal also
-/// quarantines the selected module's verified digest; `FrameInput`, `NoModule` and `SeamDisabled`
-/// never quarantine. A [`Host::stage_movement_processor`] `Err` drops only the staged
-/// candidate and latches as its variant describes; it does not evict an already-active processor
-/// except for [`MovementRefusal::SeamDisabled`].
+/// written, but it does not always drop the movement slot: `FrameInput` (an unusable caller frame)
+/// and `NoModule` leave the staged/active selection intact, so the caller hands prediction back for
+/// this frame and can use the same processor on the next valid frame. A module-produced `Status` or
+/// output-validation refusal drops the failing candidate and quarantines its verified digest: a
+/// failing staged candidate retains a healthy active processor with a different digest, while a
+/// failing active processor clears both slots. [`MovementRefusal::SeamDisabled`] evicts both. A
+/// [`Host::stage_movement_processor`] `Err` drops only the staged candidate and latches as its
+/// variant describes; it does not evict an already-active processor except for
+/// [`MovementRefusal::SeamDisabled`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MovementRefusal {
     /// No movement module is staged or active.
@@ -519,17 +522,24 @@ impl MovementLoaded {
         })
     }
 
-    /// A processor handle for the focused tests that cannot build a native library.
+    /// A processor handle for the focused tests that cannot build a native library, with a
+    /// caller-chosen content identity so a staged candidate and an active processor can be
+    /// distinguished by digest.
     #[cfg(test)]
-    fn probe(revision: &str, process: ProcessMovement) -> Self {
-        let digest = "0".repeat(40);
+    fn probe_with_digest(revision: &str, digest: &str, process: ProcessMovement) -> Self {
         Self {
             revision: revision.to_owned(),
             filename: format!("{}{digest}.dll", ModuleKind::Movement.prefix()),
-            digest,
+            digest: digest.to_owned(),
             process,
             _library: None,
         }
+    }
+
+    /// A probe with a fixed all-zero digest for the tests that do not need distinct identities.
+    #[cfg(test)]
+    fn probe(revision: &str, process: ProcessMovement) -> Self {
+        Self::probe_with_digest(revision, &"0".repeat(40), process)
     }
 }
 
@@ -1317,12 +1327,14 @@ impl Host {
     /// `bounds`. This never promotes: the controller evaluates the same proposal and only then
     /// calls [`Self::commit_movement_processor`].
     ///
-    /// On `Err` the movement slot is dropped entirely (no retained predecessor), so the caller
-    /// hands prediction back to the baseline controller exactly once. Nothing is written to the
-    /// caller's pose when the proposal is refused. A module-produced `Status` or output-validation
-    /// failure also quarantines the selected module's verified digest before the slot is dropped, so
-    /// a `B -> C -> B` manifest rewrite cannot restage it. `FrameInput`, `NoModule`, `SeamDisabled`
-    /// and host/caller errors never quarantine; neither does a valid proposal or commit.
+    /// Nothing is written to the caller's proposal when a proposal is refused. A `FrameInput`
+    /// refusal hands prediction back for this frame but leaves `movement_pending`/`movement_active`
+    /// untouched, so the same processor can serve the next valid frame; `NoModule` is likewise
+    /// non-destructive. A module-produced `Status` or output-validation failure quarantines the
+    /// selected module's verified digest and drops the failing candidate: a staged candidate clears
+    /// `movement_pending` and retains a healthy active processor unless it has the same digest,
+    /// while an active failure clears both slots (this seam keeps no retained predecessor).
+    /// `SeamDisabled` evicts both. A valid proposal or commit never quarantines.
     pub fn movement_proposal(
         &mut self,
         frame: &MovementFrame,
@@ -1347,13 +1359,15 @@ impl Host {
             staged,
         } = selection;
         if !frame.dt_seconds.is_finite() || frame.dt_seconds <= 0.0 {
-            return Err(self.drop_movement(
+            // A caller clock error is a per-frame handback, not a module failure: leave both slots
+            // untouched so the same staged/active processor can serve the next valid frame.
+            return Err(self.refuse_movement(
                 MovementRefusal::FrameInput,
                 format!("movement module {revision}: non-finite or non-positive frame step"),
             ));
         }
         if !movement_frame_valid(frame, bounds) {
-            return Err(self.drop_movement(
+            return Err(self.refuse_movement(
                 MovementRefusal::FrameInput,
                 format!("movement module {revision}: invalid frame input or bounds"),
             ));
@@ -1370,7 +1384,9 @@ impl Host {
         let status = unsafe { process(frame, &mut output) };
         if status != 0 {
             self.quarantine_movement_digest(&digest);
-            return Err(self.drop_movement(
+            return Err(self.reject_movement_candidate(
+                staged,
+                &digest,
                 MovementRefusal::Status(status),
                 format!("movement module {revision} rejected the frame (status {status})"),
             ));
@@ -1386,7 +1402,9 @@ impl Host {
             )),
             Err(refusal) => {
                 self.quarantine_movement_digest(&digest);
-                Err(self.drop_movement(
+                Err(self.reject_movement_candidate(
+                    staged,
+                    &digest,
                     refusal,
                     format!("movement module {revision} output refused ({refusal:?})"),
                 ))
@@ -1441,9 +1459,32 @@ impl Host {
         refusal
     }
 
-    fn drop_movement(&mut self, refusal: MovementRefusal, detail: String) -> MovementRefusal {
-        self.movement_pending = None;
-        self.movement_active = None;
+    /// Record a module-produced movement failure after its digest was quarantined, and dispose of
+    /// the failing candidate. A staged candidate is dropped while a healthy active processor is
+    /// retained, unless it carries the same digest: identical content would fail identically. An
+    /// active processor failure clears both slots because this seam keeps no retained predecessor.
+    /// Caller [`MovementRefusal::FrameInput`] errors never reach this helper; they leave both slots
+    /// untouched so the same processor can serve the next valid frame.
+    fn reject_movement_candidate(
+        &mut self,
+        staged: bool,
+        digest: &str,
+        refusal: MovementRefusal,
+        detail: String,
+    ) -> MovementRefusal {
+        if staged {
+            self.movement_pending = None;
+            if self
+                .movement_active
+                .as_ref()
+                .is_some_and(|module| module.digest.as_str() == digest)
+            {
+                self.movement_active = None;
+            }
+        } else {
+            self.movement_pending = None;
+            self.movement_active = None;
+        }
         self.refuse_movement(refusal, detail)
     }
 }
@@ -3013,8 +3054,12 @@ mod tests {
                 "a caller clock error never quarantines the module: dt {dt_seconds}"
             );
             assert!(
-                !host.has_movement_processor(),
-                "the slot is still dropped on a caller error"
+                host.has_movement_processor(),
+                "a caller clock error retains the staged processor: dt {dt_seconds}"
+            );
+            assert!(
+                host.movement_pending.is_some(),
+                "the staged candidate stays selected: dt {dt_seconds}"
             );
             assert_eq!(
                 host.take_movement_refusal(),
@@ -3024,10 +3069,10 @@ mod tests {
                 host.take_movement_rejection().is_some(),
                 "the caller-error detail is kept"
             );
-            assert_eq!(
-                host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
-                Err(MovementRefusal::NoModule)
-            );
+            let (_, source) = host
+                .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+                .expect("the retained staged processor serves the next valid frame");
+            assert_eq!(source, MovementProposalSource::Staged);
         }
 
         // Non-finite scalar frame inputs are caller errors too. The `liquid_height`
@@ -3090,7 +3135,10 @@ mod tests {
                 !host.is_movement_quarantined(&probe_digest),
                 "invalid {field} must not quarantine the processor"
             );
-            assert!(!host.has_movement_processor());
+            assert!(
+                host.has_movement_processor(),
+                "invalid {field} retains the staged processor"
+            );
         }
 
         for (label, bounds) in [
@@ -3134,8 +3182,8 @@ mod tests {
                 "{label} must not quarantine the processor"
             );
             assert!(
-                !host.has_movement_processor(),
-                "{label} still drops the movement slots"
+                host.has_movement_processor(),
+                "{label} retains the movement slots"
             );
         }
 
@@ -3177,6 +3225,173 @@ mod tests {
     }
 
     #[test]
+    fn movement_frame_input_retains_a_staged_probe_for_the_next_valid_frame() {
+        let mut host = probe_host(propose_step);
+        let active_digest = "a".repeat(40);
+        host.movement_active = Some(MovementLoaded::probe_with_digest(
+            "rev-active",
+            &active_digest,
+            propose_step,
+        ));
+        let mut frame = movement_frame();
+        frame.dt_seconds = 0.0;
+        assert_eq!(
+            host.movement_proposal(&frame, &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::FrameInput)
+        );
+        assert!(
+            host.movement_quarantined_digests.is_empty(),
+            "a caller frame error never quarantines either selected digest"
+        );
+        assert!(host.has_movement_processor());
+        assert!(host.movement_pending.is_some());
+        assert!(
+            host.movement_active.is_some(),
+            "the active processor is retained too"
+        );
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::FrameInput)
+        );
+        assert!(
+            host.take_movement_rejection().is_some(),
+            "the caller-error detail is kept"
+        );
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the retained staged processor serves the next valid frame");
+        assert_eq!(source, MovementProposalSource::Staged);
+        assert!(host.movement_pending.is_some());
+        assert!(host.movement_active.is_some());
+    }
+
+    #[test]
+    fn movement_frame_input_retains_an_active_probe_for_the_next_valid_frame() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_active = Some(MovementLoaded::probe("rev-active", propose_step));
+        let mut frame = movement_frame();
+        frame.position[0] = f32::NAN;
+        assert_eq!(
+            host.movement_proposal(&frame, &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::FrameInput)
+        );
+        assert!(
+            host.movement_quarantined_digests.is_empty(),
+            "a caller frame error never quarantines the active digest"
+        );
+        assert!(host.movement_active.is_some());
+        assert!(host.movement_pending.is_none());
+        assert!(host.movement_processor_active());
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::FrameInput)
+        );
+        assert!(host.take_movement_rejection().is_some());
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the retained active processor serves the next valid frame");
+        assert_eq!(source, MovementProposalSource::Active);
+    }
+
+    #[test]
+    fn staged_movement_failure_retains_a_healthy_active_with_a_different_digest() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        let failed_digest = "b".repeat(40);
+        let active_digest = "a".repeat(40);
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-staged",
+            &failed_digest,
+            reject_frame,
+        ));
+        host.movement_active = Some(MovementLoaded::probe_with_digest(
+            "rev-active",
+            &active_digest,
+            propose_step,
+        ));
+
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Status(7))
+        );
+        assert!(
+            host.is_movement_quarantined(&failed_digest),
+            "the failed staged digest is quarantined"
+        );
+        assert!(
+            !host.is_movement_quarantined(&active_digest),
+            "the healthy active digest is not quarantined"
+        );
+        assert!(
+            host.movement_pending.is_none(),
+            "the failed staged candidate is dropped"
+        );
+        assert!(
+            host.movement_active.is_some(),
+            "the healthy active processor is retained"
+        );
+        assert!(host.movement_processor_active());
+        assert_eq!(host.movement_revision(), Some("rev-active"));
+        assert_eq!(host.movement_digest(), Some(active_digest.as_str()));
+        assert!(
+            !host.commit_movement_processor(),
+            "a failed staged candidate leaves nothing to promote"
+        );
+        assert_eq!(
+            host.movement_digest(),
+            Some(active_digest.as_str()),
+            "the failed commit leaves the retained active unchanged"
+        );
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the retained active processor still proposes");
+        assert_eq!(source, MovementProposalSource::Active);
+    }
+
+    #[test]
+    fn staged_movement_failure_without_an_active_leaves_no_processor() {
+        let mut host = probe_host(reject_frame);
+        let digest = "0".repeat(40);
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Status(7))
+        );
+        assert!(
+            host.is_movement_quarantined(&digest),
+            "the failed staged digest is quarantined"
+        );
+        assert!(host.movement_pending.is_none(), "the failed candidate is dropped");
+        assert!(host.movement_active.is_none(), "there was no active to retain");
+        assert!(!host.has_movement_processor());
+    }
+
+    #[test]
+    fn staged_movement_failure_with_the_same_active_digest_clears_both_slots() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        let digest = "c".repeat(40);
+        host.movement_pending =
+            Some(MovementLoaded::probe_with_digest("rev-staged", &digest, reject_frame));
+        host.movement_active =
+            Some(MovementLoaded::probe_with_digest("rev-active", &digest, propose_step));
+
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Status(7))
+        );
+        assert!(host.is_movement_quarantined(&digest));
+        assert!(host.movement_pending.is_none());
+        assert!(
+            host.movement_active.is_none(),
+            "identical content would fail identically"
+        );
+        assert!(host.movement_revision().is_none());
+        assert!(host.movement_digest().is_none());
+        assert!(!host.has_movement_processor());
+    }
+
+    #[test]
     fn active_movement_proposal_failure_quarantines_the_selected_digest() {
         let mut host = Host::new(std::env::temp_dir());
         host.set_seam_enabled(ModuleKind::Movement, true);
@@ -3190,6 +3405,13 @@ mod tests {
             host.is_movement_quarantined(&probe_digest),
             "an active proposal failure quarantines the selected digest"
         );
+        assert!(
+            host.movement_active.is_none(),
+            "the failed active processor is cleared"
+        );
+        assert!(host.movement_pending.is_none());
+        assert!(host.movement_revision().is_none());
+        assert!(host.movement_digest().is_none());
         assert!(!host.has_movement_processor());
     }
 
