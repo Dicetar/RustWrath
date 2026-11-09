@@ -1006,7 +1006,9 @@ impl Host {
     }
 
     /// Stage the complete rig batch before the caller changes any live pose. Promotion happens
-    /// only after all output validates. All calls are synchronous; no DLL worker may escape.
+    /// only after all output validates. The caller's rig spans must tile the bone batch in order:
+    /// a gap, overlap, reordered span or empty rig list with bones is a host/caller error and never
+    /// reaches a module or quarantines a digest. All calls are synchronous; no DLL worker may escape.
     pub fn evaluate(
         &mut self,
         bones: &[BoneLocal],
@@ -1035,11 +1037,44 @@ impl Host {
         }) {
             bail!("host rig span out of bounds for {} bones", bones.len());
         }
+        // The spans must tile the whole batch in order. `apply_pose` appends one span per selected
+        // rig, so a gap, overlap, reordered span or missing rig would hand a module a batch the
+        // host never validated as a complete rig frame. This runs after the bounds check (so the
+        // slice accesses below stay safe) and before any module dispatch. A zero-count span is
+        // allowed when it starts at the current coverage; it advances nothing.
+        let mut covered = 0usize;
+        for rig in rigs {
+            let first = rig.first as usize;
+            ensure!(
+                first == covered,
+                "host rig spans must tile the batch in order: span starts at {first}, expected {covered} of {} bones",
+                bones.len()
+            );
+            let Some(end) = first.checked_add(rig.count as usize) else {
+                bail!(
+                    "host rig spans must tile the batch in order: coverage overflows at {first}+{} of {} bones",
+                    rig.count,
+                    bones.len()
+                );
+            };
+            ensure!(
+                end <= bones.len(),
+                "host rig spans must tile the batch in order: coverage {end} exceeds {} bones",
+                bones.len()
+            );
+            covered = end;
+        }
+        ensure!(
+            covered == bones.len(),
+            "host rig spans must tile the batch in order: coverage {covered} of {} bones",
+            bones.len()
+        );
         // A negative parent is the root marker; a non-negative parent must name an earlier bone in
         // the same rig. The batch-wide check catches an index beyond every rig; the per-rig check
         // catches a self/forward parent or an index outside the owning rig. Both keep an
         // out-of-bounds caller frame from dispatching a module and then quarantining it for output
-        // the caller caused. Span coverage is not enforced.
+        // the caller caused. The spans above already tile the batch, so every bone is checked
+        // inside exactly one rig.
         if !bones.iter().all(|bone| bone.parent < bones.len() as i32) {
             bail!(
                 "host input bone parent is out of bounds for {} bones",
@@ -2200,6 +2235,10 @@ mod tests {
     /// uses it; no other test references the counter.
     static POSE_DISPATCHES: AtomicUsize = AtomicUsize::new(0);
 
+    /// Counts calls through the span-tiling probe. Only the tiling test references this counter, so
+    /// it cannot race the host-validation probe above.
+    static TILING_DISPATCHES: AtomicUsize = AtomicUsize::new(0);
+
     fn pose_test_root(tag: &str) -> std::path::PathBuf {
         let unique = format!(
             "rustwrath-hotpatch-pose-{tag}-{}-{}",
@@ -2276,6 +2315,15 @@ mod tests {
         count: u32,
     ) -> i32 {
         POSE_DISPATCHES.fetch_add(1, Ordering::SeqCst);
+        unsafe { allow_pose(frame, out, count) }
+    }
+
+    unsafe extern "C" fn count_tiling_pose(
+        frame: *const PoseFrame,
+        out: *mut BoneLocal,
+        count: u32,
+    ) -> i32 {
+        TILING_DISPATCHES.fetch_add(1, Ordering::SeqCst);
         unsafe { allow_pose(frame, out, count) }
     }
 
@@ -2545,6 +2593,29 @@ mod tests {
             .expect_err("an out-of-bounds rig span is a host error");
         assert!(error.to_string().contains("host rig span out of bounds"));
 
+        // Two bones but only the first is covered: the spans no longer tile the batch.
+        let gap_span = RigSpan {
+            entity: 0,
+            first: 0,
+            count: 1,
+        };
+        let error = host
+            .evaluate(
+                &[valid_pose_bone(), valid_pose_bone()],
+                &[gap_span],
+                0.0,
+                &mut output,
+            )
+            .expect_err("a rig span gap is a host error");
+        assert!(
+            error.to_string().contains("tile the batch in order"),
+            "the gap refusal names the tiling requirement: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("coverage"),
+            "the gap refusal names the uncovered remainder: {error:#}"
+        );
+
         let mut nan_bone = valid_pose_bone();
         nan_bone.translation[0] = f32::NAN;
         let error = host
@@ -2693,6 +2764,291 @@ mod tests {
         );
         assert_eq!(host.digest(), Some(CANARY_DIGEST));
         assert!(host.quarantined_digests.is_empty());
+    }
+
+    #[test]
+    fn host_rig_span_gap_overlap_reordering_and_empty_rigs_are_rejected_before_dispatch() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.pending = Some(Loaded::probe("rev-pending", CANARY_DIGEST, count_tiling_pose));
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, count_tiling_pose));
+        TILING_DISPATCHES.store(0, Ordering::SeqCst);
+        let mut output = Vec::new();
+
+        // Gap: two bones, but the single span covers only the first.
+        let gap = RigSpan {
+            entity: 0,
+            first: 0,
+            count: 1,
+        };
+        let error = host
+            .evaluate(
+                &[valid_pose_bone(), valid_pose_bone()],
+                &[gap],
+                0.0,
+                &mut output,
+            )
+            .expect_err("a rig span gap is a host error");
+        assert!(
+            error.to_string().contains("tile the batch in order"),
+            "the gap refusal names the tiling requirement: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("coverage"),
+            "the gap refusal names the uncovered remainder: {error:#}"
+        );
+
+        // Mid-batch gap: a check that only compared the last span's end to the batch length would
+        // accept this; the per-span `first == covered` check catches the hole.
+        let mid_gap = [
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 1,
+            },
+            RigSpan {
+                entity: 1,
+                first: 2,
+                count: 1,
+            },
+        ];
+        let error = host
+            .evaluate(
+                &[valid_pose_bone(), valid_pose_bone(), valid_pose_bone()],
+                &mid_gap,
+                0.0,
+                &mut output,
+            )
+            .expect_err("a mid-batch rig span gap is a host error");
+        assert!(
+            error.to_string().contains("tile the batch in order"),
+            "the mid-gap refusal names the tiling requirement: {error:#}"
+        );
+
+        // Misplaced zero-count: a sum-only check would accept these three spans because the counts
+        // total two, but the zero-count span starts before the current coverage.
+        let misplaced_zero = [
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 1,
+            },
+            RigSpan {
+                entity: 1,
+                first: 0,
+                count: 0,
+            },
+            RigSpan {
+                entity: 2,
+                first: 1,
+                count: 1,
+            },
+        ];
+        let error = host
+            .evaluate(
+                &[valid_pose_bone(), valid_pose_bone()],
+                &misplaced_zero,
+                0.0,
+                &mut output,
+            )
+            .expect_err("a misplaced zero-count rig span is a host error");
+        assert!(
+            error.to_string().contains("tile the batch in order"),
+            "the misplaced zero-count refusal names the tiling requirement: {error:#}"
+        );
+
+        // Overlap: two spans that both start at bone 0.
+        let overlap = [
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 1,
+            },
+            RigSpan {
+                entity: 1,
+                first: 0,
+                count: 1,
+            },
+        ];
+        let error = host
+            .evaluate(
+                &[valid_pose_bone(), valid_pose_bone()],
+                &overlap,
+                0.0,
+                &mut output,
+            )
+            .expect_err("overlapping rig spans are a host error");
+        assert!(
+            error.to_string().contains("tile the batch in order"),
+            "the overlap refusal names the tiling requirement: {error:#}"
+        );
+
+        // Overlap with a wider first span: 0..2 then 1..1 would double-cover bone 1.
+        let overlap_wide = [
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 2,
+            },
+            RigSpan {
+                entity: 1,
+                first: 1,
+                count: 1,
+            },
+        ];
+        let error = host
+            .evaluate(
+                &[valid_pose_bone(), valid_pose_bone()],
+                &overlap_wide,
+                0.0,
+                &mut output,
+            )
+            .expect_err("a later span starting inside its predecessor is a host error");
+        assert!(
+            error.to_string().contains("tile the batch in order"),
+            "the wide-overlap refusal names the tiling requirement: {error:#}"
+        );
+
+        // Reordered spans: bone 1 precedes bone 0.
+        let reordered = [
+            RigSpan {
+                entity: 1,
+                first: 1,
+                count: 1,
+            },
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 1,
+            },
+        ];
+        let error = host
+            .evaluate(
+                &[valid_pose_bone(), valid_pose_bone()],
+                &reordered,
+                0.0,
+                &mut output,
+            )
+            .expect_err("reordered rig spans are a host error");
+        assert!(
+            error.to_string().contains("tile the batch in order"),
+            "the reorder refusal names the tiling requirement: {error:#}"
+        );
+
+        // Empty rigs with a non-empty bone batch cover nothing.
+        let error = host
+            .evaluate(&[valid_pose_bone()], &[], 0.0, &mut output)
+            .expect_err("empty rigs with bones are a host error");
+        assert!(
+            error.to_string().contains("tile the batch in order"),
+            "the empty-rig refusal names the tiling requirement: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("coverage"),
+            "the empty-rig refusal names the uncovered batch: {error:#}"
+        );
+
+        assert!(
+            host.quarantined_digests.is_empty(),
+            "tiling is host/caller validation and never quarantines a digest"
+        );
+        assert!(host.has_pending(), "the staged candidate is untouched");
+        assert_eq!(
+            host.digest(),
+            Some(ACTIVE_DIGEST),
+            "the active module was not dispatched or demoted"
+        );
+        assert_eq!(
+            TILING_DISPATCHES.load(Ordering::SeqCst),
+            0,
+            "no probe was invoked before span tiling completed"
+        );
+    }
+
+    #[test]
+    fn zero_count_tail_span_is_accepted_and_promotes() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.pending = Some(Loaded::probe("rev-tail", CANARY_DIGEST, allow_pose));
+
+        // A zero-count span at the current coverage advances nothing; the batch is still tiled.
+        let spans = [
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 1,
+            },
+            RigSpan {
+                entity: 1,
+                first: 1,
+                count: 0,
+            },
+        ];
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &spans, 0.0, &mut output)
+                .expect("a zero-count tail span still tiles the batch"),
+            "the valid candidate promotes"
+        );
+        assert_eq!(host.digest(), Some(CANARY_DIGEST));
+        assert!(
+            host.quarantined_digests.is_empty(),
+            "a valid tiling batch never quarantines"
+        );
+    }
+
+    #[test]
+    fn zero_count_spans_are_accepted_at_leading_and_middle_positions() {
+        let bones = [valid_pose_bone(), valid_pose_bone()];
+        let leading_spans = [
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 0,
+            },
+            RigSpan {
+                entity: 1,
+                first: 0,
+                count: 2,
+            },
+        ];
+        let middle_spans = [
+            RigSpan {
+                entity: 0,
+                first: 0,
+                count: 1,
+            },
+            RigSpan {
+                entity: 1,
+                first: 1,
+                count: 0,
+            },
+            RigSpan {
+                entity: 2,
+                first: 1,
+                count: 1,
+            },
+        ];
+        let cases: [(&str, &[BoneLocal], &[RigSpan]); 2] = [
+            ("leading", &bones, &leading_spans),
+            ("middle", &bones, &middle_spans),
+        ];
+
+        for (label, bones, spans) in cases {
+            let mut host = Host::new(std::env::temp_dir());
+            host.pending = Some(Loaded::probe("rev-zero", CANARY_DIGEST, allow_pose));
+            let mut output = Vec::new();
+            assert!(
+                host.evaluate(bones, spans, 0.0, &mut output)
+                    .unwrap_or_else(|error| panic!(
+                        "{label} zero-count span must start at the current coverage: {error:#}"
+                    )),
+                "{label} zero-count span still promotes"
+            );
+            assert_eq!(host.digest(), Some(CANARY_DIGEST), "{label}");
+            assert!(
+                host.quarantined_digests.is_empty(),
+                "{label} zero-count span never quarantines"
+            );
+        }
     }
 
     // ------------------------------------------------------------------
