@@ -199,7 +199,7 @@ enum SentinelStage {
 /// On-disk shape of `<root>/active-sentinel.toml`: the digest-only marker of the pose or movement
 /// module that was being loaded or canary-evaluated when the process died. It carries no library
 /// path and no OS error text, so it can never be joined to a path or mistaken for a diagnosis.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ActiveSentinelFile {
     revision: String,
@@ -931,11 +931,15 @@ pub struct Host {
     /// `quarantine.toml`. While set, the marker is retained and a new pose or movement load/canary
     /// must commit the recovered quarantine before writing a replacement marker.
     sentinel_recovery_pending: Option<String>,
-    /// Whether the current `active-sentinel.toml` was written by this host or accepted by
-    /// [`Host::load_active_sentinel`]. A marker present before either event (an unvalidated
+    /// The exact `active-sentinel.toml` identity this host last wrote or accepted: the
+    /// [`ActiveSentinelFile`] contents. `Some` after [`Host::write_active_sentinel`] published a
+    /// marker or [`Host::load_active_sentinel`] validated one; `None` otherwise. Ownership is bound
+    /// to the marker *content* (revision, sha1, kind, stage), not to the file path: a later writer
+    /// that replaces the file with different content is no longer owned and is retained by the
+    /// clean-shutdown safety net, and a marker present before either event (an unvalidated
     /// previous-run marker, a malformed file, or a marker owned by another process) is never
-    /// removed by the clean-shutdown safety net.
-    sentinel_marker_owned: bool,
+    /// removed either.
+    sentinel_marker_owned: Option<ActiveSentinelFile>,
     /// The movement seam's own manifest latch, independent of the pose publication.
     movement_observed: Option<String>,
     /// Artifact identity recorded when a terminal movement failure latched
@@ -988,7 +992,7 @@ impl Host {
             quarantined_digests: VecDeque::new(),
             sentinel_error: None,
             sentinel_recovery_pending: None,
-            sentinel_marker_owned: false,
+            sentinel_marker_owned: None,
             movement_observed: None,
             movement_failure_stamp: None,
             movement_pending: None,
@@ -1126,11 +1130,12 @@ impl Host {
             // Best effort: a leftover temp file is inert and is overwritten by the next save.
             let _ = std::fs::remove_file(&temp);
         } else if self.sentinel_recovery_pending.is_some() {
-            // The recovered digest is now durable. The marker is redundant even if removing it
-            // fails; keep the failure in the sentinel slot so it is not misreported as a
-            // quarantine-save failure, and let a later marker write replace it.
+            // The recovered digest is now durable. Remove the marker only when it is still the
+            // exact identity this host accepted; a foreign replacement or malformed file is
+            // retained for the next launch/diagnosis. Keep the failure in the sentinel slot so it
+            // is not misreported as a quarantine-save failure.
             self.sentinel_recovery_pending = None;
-            if let Err(error) = self.clear_active_sentinel() {
+            if let Err(error) = self.clear_owned_active_sentinel_if_matching() {
                 self.sentinel_error = Some(format!(
                     "active sentinel clear after recovery: {error:#}"
                 ));
@@ -1198,30 +1203,74 @@ impl Host {
             // Best effort: a leftover temp file is inert and is overwritten by the next write.
             let _ = std::fs::remove_file(&temp);
         } else {
-            self.sentinel_marker_owned = true;
+            // Own exactly the bytes that were published. A later writer that replaces the file
+            // with a different identity no longer matches this value.
+            self.sentinel_marker_owned = Some(file);
         }
         written
     }
 
     /// Clear the pose/movement crash sentinel. `NotFound` is the success case (nothing to
     /// clear), any other removal error is returned so the caller can surface it through
-    /// [`Self::sentinel_error`]. [`Self::persist_quarantine`] calls this after committing a
-    /// recovered digest; `Host::poll`, `Host::evaluate`, `Host::stage_movement_processor` and
-    /// `Host::movement_proposal` call it after a marker the current operation actually wrote.
-    /// Startup recovery does not call it directly.
+    /// [`Self::sentinel_error`]. Call-scoped operations call this after writing a marker they own;
+    /// the recovery-commit and clean-exit paths use the identity-checked
+    /// [`Self::clear_owned_active_sentinel_if_matching`] instead. Startup recovery does not call
+    /// either path directly.
     pub fn clear_active_sentinel(&mut self) -> Result<()> {
         let path = self.root.join(ACTIVE_SENTINEL_FILE);
         match std::fs::remove_file(&path) {
             Ok(()) => {
-                self.sentinel_marker_owned = false;
+                self.sentinel_marker_owned = None;
                 Ok(())
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.sentinel_marker_owned = false;
+                self.sentinel_marker_owned = None;
                 Ok(())
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Remove `active-sentinel.toml` only when it still matches the exact identity this host last
+    /// wrote or accepted. Used by the recovery commit and clean-shutdown paths so a foreign
+    /// replacement is never deleted. Returns `Ok(true)` only when ownership is `Some` and the
+    /// marker is absent or was removed; `Ok(false)` when ownership is `None` or the file is
+    /// oversized/malformed or differs from the owned identity. A missing owned file drops the
+    /// ownership record.
+    fn clear_owned_active_sentinel_if_matching(&mut self) -> Result<bool> {
+        let Some(owned) = self.sentinel_marker_owned.clone() else {
+            return Ok(false);
+        };
+        let path = self.root.join(ACTIVE_SENTINEL_FILE);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.sentinel_marker_owned = None;
+                return Ok(true);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.len() > MAX_ACTIVE_SENTINEL_BYTES {
+            // Do not read an oversized replacement; retain it for the next launch/diagnosis.
+            return Ok(false);
+        }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.sentinel_marker_owned = None;
+                return Ok(true);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let Ok(file) = toml::from_str::<ActiveSentinelFile>(&text) else {
+            // A malformed replacement is not ours to delete.
+            return Ok(false);
+        };
+        if file != owned {
+            return Ok(false);
+        }
+        self.clear_active_sentinel()?;
+        Ok(true)
     }
 
     /// Clean-exit safety net for a stale `active-sentinel.toml`.
@@ -1235,12 +1284,13 @@ impl Host {
     /// If [`Self::sentinel_recovery_pending`] is `Some`, the marker is the only durable record of a
     /// digest recovered at startup whose `quarantine.toml` commit has not succeeded. In that case
     /// this method returns `Ok(false)` immediately and leaves the marker untouched; only
-    /// [`Self::persist_quarantine`] may clear it. If the marker was neither written by this host
-    /// nor accepted by [`Self::load_active_sentinel`], it may be an unvalidated previous-run
-    /// marker, a malformed file, or another process's marker; it is also retained (`Ok(false)` when
-    /// present) for the next launch/diagnosis. Otherwise it calls
-    /// [`Self::clear_active_sentinel`] (a missing marker is a successful clean state) and returns
-    /// `Ok(true)`.
+    /// [`Self::persist_quarantine`] may clear it. Otherwise ownership is decided by content
+    /// identity: [`Self::sentinel_marker_owned`] holds the exact [`ActiveSentinelFile`] this host
+    /// last wrote or accepted. When it is `Some`, the marker on disk is read and parsed and the
+    /// file is removed only when it still matches that identity. A marker replaced by another
+    /// writer (different revision/sha1/kind/stage), an unparseable file, or a marker this host never
+    /// wrote or accepted is retained (`Ok(false)`) for the next launch/diagnosis. A missing file is
+    /// a successful clean state (`Ok(true)`), and read errors are returned to the caller.
     ///
     /// Errors are returned to the caller and are never recorded in [`Self::sentinel_error`]; the
     /// method does not populate the poll slot.
@@ -1248,7 +1298,7 @@ impl Host {
         if self.sentinel_recovery_pending.is_some() {
             return Ok(false);
         }
-        if !self.sentinel_marker_owned {
+        if self.sentinel_marker_owned.is_none() {
             // The marker was not written by this host and was not accepted by
             // `load_active_sentinel`; it may be an unvalidated previous-run marker, a malformed
             // file, or another process's marker. Leave it for the next launch/diagnosis. A missing
@@ -1260,8 +1310,10 @@ impl Host {
                 Err(error) => Err(error.into()),
             };
         }
-        self.clear_active_sentinel()?;
-        Ok(true)
+        // Ownership is content-bound: a later writer may have replaced this host's marker. Only the
+        // exact identity this host published or accepted may be deleted here; a foreign or
+        // unparseable file must survive for the next launch/diagnosis.
+        self.clear_owned_active_sentinel_if_matching()
     }
 
     /// Load a pose/movement crash sentinel written by a previous launch that died during a pose
@@ -1278,9 +1330,10 @@ impl Host {
     /// `Pose` marker with stage `loading` or `canary` is recovered by adding its normalized digest
     /// to the bounded pose quarantine; a `Movement` marker with stage `loading` or `canary` is
     /// recovered into the bounded movement quarantine (both through the existing dedupe/cap
-    /// helpers), **without removing the marker**; the caller must persist the quarantine first and
-    /// then call [`Self::clear_active_sentinel`], so a crash or persist failure between recovery and
-    /// commit leaves the marker for the next launch. Returns `Some(digest)`.
+    /// helpers), **without removing the marker**; the caller must persist the quarantine first, and
+    /// [`Self::persist_quarantine`] clears the marker only when it still matches the accepted
+    /// identity, so a crash or persist failure between recovery and commit leaves the marker for
+    /// the next launch. Returns `Some(digest)`.
     /// Unknown stage strings remain TOML parse errors.
     ///
     /// The crash window itself (the fault inside `Library::new` before the clear runs, or inside
@@ -1292,7 +1345,7 @@ impl Host {
         // Any load attempt drops this host's ownership first: a failed re-read must not inherit
         // ownership from an earlier accepted marker, or clean shutdown could delete bytes that were
         // never validated. A valid marker re-arms ownership at the end of this call.
-        self.sentinel_marker_owned = false;
+        self.sentinel_marker_owned = None;
         let path = self.root.join(ACTIVE_SENTINEL_FILE);
         let metadata = match std::fs::metadata(&path) {
             Ok(metadata) => metadata,
@@ -1330,7 +1383,7 @@ impl Host {
             }
         }
         self.sentinel_recovery_pending = Some(digest.clone());
-        self.sentinel_marker_owned = true;
+        self.sentinel_marker_owned = Some(file);
         Ok(Some(digest))
     }
 
@@ -8840,6 +8893,239 @@ mod tests {
     }
 
     #[test]
+    fn clean_shutdown_clears_only_the_matching_owned_marker() {
+        let root = pose_test_root("sentinel-clean-shutdown-matching");
+        let mut host = Host::new(root.clone());
+        let digest = persistent_digest(305);
+        host.write_active_sentinel(
+            SentinelKind::Pose,
+            "rev-owned",
+            &digest,
+            SentinelStage::Loading,
+        )
+        .expect("write a marker this host owns");
+        // Rewrite the exact owned identity by hand: content equality, not path ownership, is what
+        // authorizes the delete.
+        std::fs::write(
+            root.join(ACTIVE_SENTINEL_FILE),
+            format!(
+                "revision = \"rev-owned\"\nsha1 = \"{digest}\"\nkind = \"pose\"\nstage = \"loading\"\n"
+            ),
+        )
+        .expect("rewrite an identical marker identity");
+
+        assert!(
+            host.clear_active_sentinel_on_clean_shutdown()
+                .expect("clearing the matching owned marker is a clean state"),
+            "the marker whose content still matches this host's identity is cleared"
+        );
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "the matching owned marker is removed"
+        );
+        assert!(
+            host.sentinel_marker_owned.is_none(),
+            "a successful clear drops marker ownership"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn clean_shutdown_keeps_a_foreign_replacement_marker() {
+        let root = pose_test_root("sentinel-clean-shutdown-foreign");
+        let mut host = Host::new(root.clone());
+        let owned = persistent_digest(306);
+        host.write_active_sentinel(
+            SentinelKind::Pose,
+            "rev-owned",
+            &owned,
+            SentinelStage::Loading,
+        )
+        .expect("write a marker this host owns");
+        // First replace only the revision and keep the digest: the identity includes the revision,
+        // so this is already foreign and must be retained.
+        let same_digest_text = format!(
+            "revision = \"rev-other\"\nsha1 = \"{owned}\"\nkind = \"pose\"\nstage = \"loading\"\n"
+        );
+        std::fs::write(root.join(ACTIVE_SENTINEL_FILE), &same_digest_text)
+            .expect("replace the owned revision with a foreign one");
+        assert!(
+            !host
+                .clear_active_sentinel_on_clean_shutdown()
+                .expect("retaining a same-digest foreign revision is not an error"),
+            "a marker with the same digest but a different revision is retained"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(ACTIVE_SENTINEL_FILE))
+                .expect("the same-digest foreign marker survives"),
+            same_digest_text,
+            "a revision-only replacement is not deleted"
+        );
+        assert!(
+            host.sentinel_marker_owned.is_some(),
+            "a retained foreign marker keeps ownership so a later matching retry can still clear"
+        );
+
+        // Then replace the digest too. Ownership is bound to content, so this is no longer owned.
+        let foreign = persistent_digest(307);
+        let foreign_text = format!(
+            "revision = \"rev-foreign\"\nsha1 = \"{foreign}\"\nkind = \"pose\"\nstage = \"loading\"\n"
+        );
+        std::fs::write(root.join(ACTIVE_SENTINEL_FILE), &foreign_text)
+            .expect("replace the owned marker with a foreign identity");
+
+        assert!(
+            !host
+                .clear_active_sentinel_on_clean_shutdown()
+                .expect("retaining a foreign replacement is not an error"),
+            "a foreign replacement with a different identity is retained"
+        );
+        let after = std::fs::read_to_string(root.join(ACTIVE_SENTINEL_FILE))
+            .expect("the foreign marker survives the clean-shutdown path");
+        assert_eq!(after, foreign_text, "the foreign bytes are untouched");
+        assert!(
+            after.contains(&foreign),
+            "the foreign digest is still on disk"
+        );
+        assert!(
+            !after.contains(&owned),
+            "the replaced owned digest was not written back"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn clean_shutdown_keeps_an_unparseable_replacement_of_an_owned_marker() {
+        let root = pose_test_root("sentinel-clean-shutdown-unparseable-owned");
+        let mut host = Host::new(root.clone());
+        host.write_active_sentinel(
+            SentinelKind::Pose,
+            "rev-owned",
+            &persistent_digest(311),
+            SentinelStage::Loading,
+        )
+        .expect("write a marker this host owns");
+        let malformed = "this is not valid TOML";
+        std::fs::write(root.join(ACTIVE_SENTINEL_FILE), malformed)
+            .expect("replace the owned marker with unparseable bytes");
+        assert!(
+            !host
+                .clear_active_sentinel_on_clean_shutdown()
+                .expect("retaining an unparseable replacement is not an error"),
+            "an unparseable replacement of an owned marker is retained"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(ACTIVE_SENTINEL_FILE))
+                .expect("the unparseable replacement survives"),
+            malformed,
+            "the malformed replacement bytes are untouched"
+        );
+        assert!(
+            host.sentinel_marker_owned.is_some(),
+            "a malformed replacement does not change this host's ownership record"
+        );
+
+        // An oversized replacement is never read; it is retained the same way.
+        std::fs::write(
+            root.join(ACTIVE_SENTINEL_FILE),
+            "x".repeat((MAX_ACTIVE_SENTINEL_BYTES + 1) as usize),
+        )
+        .expect("replace the owned marker with an oversized file");
+        assert!(
+            !host
+                .clear_active_sentinel_on_clean_shutdown()
+                .expect("retaining an oversized replacement is not an error"),
+            "an oversized replacement of an owned marker is retained without being read"
+        );
+        assert!(
+            root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "the oversized replacement remains for the next launch/diagnosis"
+        );
+        assert!(
+            host.sentinel_marker_owned.is_some(),
+            "an oversized replacement does not change this host's ownership record"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persist_quarantine_keeps_a_foreign_replacement_marker() {
+        let root = pose_test_root("sentinel-persist-foreign");
+        let digest = persistent_digest(309);
+        std::fs::write(
+            root.join(ACTIVE_SENTINEL_FILE),
+            format!(
+                "revision = \"rev-crashed\"\nsha1 = \"{digest}\"\nkind = \"pose\"\nstage = \"loading\"\n"
+            ),
+        )
+        .expect("write the recovered marker");
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_active_sentinel().expect("recover the marker"),
+            Some(digest.clone())
+        );
+        assert!(host.sentinel_recovery_pending.is_some());
+        assert!(host.sentinel_marker_owned.is_some());
+
+        let foreign = persistent_digest(310);
+        let foreign_text = format!(
+            "revision = \"rev-foreign\"\nsha1 = \"{foreign}\"\nkind = \"pose\"\nstage = \"loading\"\n"
+        );
+        std::fs::write(root.join(ACTIVE_SENTINEL_FILE), &foreign_text)
+            .expect("replace the recovered marker with a foreign identity");
+
+        host.persist_quarantine()
+            .expect("the recovered digest is durable");
+        assert!(
+            host.is_quarantined(&digest),
+            "the recovered digest is committed to the store"
+        );
+        assert!(
+            host.sentinel_recovery_pending.is_none(),
+            "the recovery is committed even when the marker is foreign"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(ACTIVE_SENTINEL_FILE))
+                .expect("the foreign marker survives the recovery commit"),
+            foreign_text,
+            "the foreign bytes are untouched"
+        );
+        assert!(
+            host.sentinel_marker_owned.is_some(),
+            "the foreign replacement does not change this host's ownership record"
+        );
+        assert!(host.take_sentinel_error().is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn clean_shutdown_treats_a_missing_owned_file_as_clean() {
+        let root = pose_test_root("sentinel-clean-shutdown-missing-owned");
+        let mut host = Host::new(root.clone());
+        host.write_active_sentinel(
+            SentinelKind::Pose,
+            "rev-owned",
+            &persistent_digest(308),
+            SentinelStage::Loading,
+        )
+        .expect("write a marker this host owns");
+        std::fs::remove_file(root.join(ACTIVE_SENTINEL_FILE))
+            .expect("remove the owned marker before the clean-exit path");
+
+        assert!(
+            host.clear_active_sentinel_on_clean_shutdown()
+                .expect("a missing owned marker is a clean state"),
+            "a previously owned marker that is already gone reports a clean shutdown"
+        );
+        assert!(!root.join(ACTIVE_SENTINEL_FILE).exists());
+        assert!(
+            host.sentinel_marker_owned.is_none(),
+            "a missing owned marker drops the stale ownership record"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn clean_shutdown_keeps_a_pending_recovery_marker() {
         let root = pose_test_root("sentinel-clean-shutdown-pending");
         let digest = persistent_digest(302);
@@ -8918,7 +9204,7 @@ mod tests {
             root.join(ACTIVE_SENTINEL_FILE).exists(),
             "the unvalidated marker remains for the next launch/diagnosis"
         );
-        assert!(!host.sentinel_marker_owned);
+        assert!(host.sentinel_marker_owned.is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -8944,7 +9230,7 @@ mod tests {
             root.join(ACTIVE_SENTINEL_FILE).exists(),
             "the unloaded previous-run marker remains for recovery"
         );
-        assert!(!host.sentinel_marker_owned);
+        assert!(host.sentinel_marker_owned.is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -8960,7 +9246,7 @@ mod tests {
             SentinelStage::Loading,
         )
         .expect("write a marker this host owns");
-        assert!(host.sentinel_marker_owned);
+        assert!(host.sentinel_marker_owned.is_some());
 
         // Replace the owned marker with unvalidated bytes, then fail to re-read it. Ownership must
         // not survive the failed attempt, so the clean-shutdown path retains the bytes.
@@ -8971,7 +9257,7 @@ mod tests {
             "the malformed marker is rejected"
         );
         assert!(
-            !host.sentinel_marker_owned,
+            host.sentinel_marker_owned.is_none(),
             "a failed load must not inherit ownership from an earlier marker"
         );
         assert!(
