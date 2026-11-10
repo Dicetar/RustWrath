@@ -3176,7 +3176,7 @@ mod tests {
     #[test]
     fn wrath_dual_spec_talents_and_glyph_sockets_read_groups() {
         use crate::script::talent::{
-            TalentSlotView, TalentTabView, WrathTalentGroupView, WrathTalentUiState,
+            TalentTabView, TalentView, WrathTalentGroupView, WrathTalentUiState,
         };
 
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
@@ -3186,24 +3186,25 @@ mod tests {
                 WrathTalentGroupView {
                     tabs: vec![TalentTabView {
                         name: "Arms".into(),
-                        icon: "Ability_Warrior_SavageBlow".into(),
+                        texture: Some("Ability_Warrior_SavageBlow".into()),
                         points_spent: 5,
                         background: "WarriorArms".into(),
                     }],
-                    talents: vec![vec![TalentSlotView {
+                    talents: vec![vec![TalentView {
                         talent_id: 101,
                         name: "Heroic Strike".into(),
-                        icon: "Ability_Rogue_Ambush".into(),
+                        texture: Some("Ability_Rogue_Ambush".into()),
                         tier: 1,
                         column: 1,
                         rank: 2,
                         max_rank: 3,
-                        prereq_tier: None,
-                        prereq_column: None,
+                        exceptional: false,
                         meets_prereq: true,
-                        rank_spells: vec![78, 284, 285],
-                        description: "Next melee attack.".into(),
-                        next_rank_description: None,
+                        prereqs: Vec::new(),
+                        display_spell: 284,
+                        next_spell: 285,
+                        reqs: Vec::new(),
+                        learnable: true,
                     }]],
                     unspent_points: 4,
                     glyphs: [21, 22, 0, 24, 0, 0],
@@ -3211,24 +3212,25 @@ mod tests {
                 WrathTalentGroupView {
                     tabs: vec![TalentTabView {
                         name: "Protection".into(),
-                        icon: "Ability_Warrior_DefensiveStance".into(),
+                        texture: Some("Ability_Warrior_DefensiveStance".into()),
                         points_spent: 11,
                         background: "WarriorProtection".into(),
                     }],
-                    talents: vec![vec![TalentSlotView {
+                    talents: vec![vec![TalentView {
                         talent_id: 202,
                         name: "Shield Specialization".into(),
-                        icon: "INV_Shield_06".into(),
+                        texture: Some("INV_Shield_06".into()),
                         tier: 1,
                         column: 2,
                         rank: 5,
                         max_rank: 5,
-                        prereq_tier: None,
-                        prereq_column: None,
+                        exceptional: false,
                         meets_prereq: true,
-                        rank_spells: vec![12298],
-                        description: "Block chance.".into(),
-                        next_rank_description: None,
+                        prereqs: Vec::new(),
+                        display_spell: 12298,
+                        next_spell: 0,
+                        reqs: Vec::new(),
+                        learnable: false,
                     }]],
                     unspent_points: 9,
                     glyphs: [31, 0, 33, 0, 35, 36],
@@ -3236,6 +3238,8 @@ mod tests {
             ],
             pet_unspent_points: 3,
             pet_talents: Vec::new(),
+            pet_tabs: Vec::new(),
+            pet_talent_views: Vec::new(),
         });
 
         assert_eq!(s.eval::<i64>("return GetNumTalentGroups()").unwrap(), 2);
@@ -3422,5 +3426,249 @@ mod tests {
         s.clear_wrath_scoped_ui();
         assert!(!s.eval::<bool>("return CanExitVehicle()").unwrap());
         assert!(!s.eval::<bool>("return IsPartyLFG()").unwrap());
+    }
+
+    #[test]
+    fn wrath_multiclass_request_matches_installed_addon_contract() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        // Op 1 (list), Op 2 (preview), Op 3 (commit with token), Op 4 (active), Op 5 (learn rank).
+        assert_eq!(s.eval::<i64>("return MulticlassRequest(1, 10, 0, 0, 0, 0)").unwrap(), 1);
+        assert_eq!(s.eval::<i64>("return MulticlassRequest(2, 11, 42, 8, 0, 0)").unwrap(), 1);
+        assert_eq!(
+            s.eval::<i64>("return MulticlassRequest(3, 12, 42, 8, 0x11223344, 0x55667788)")
+                .unwrap(),
+            1
+        );
+        assert_eq!(s.eval::<i64>("return MulticlassRequest(5, 13, 301, 2, 3, 0)").unwrap(), 1);
+
+        let reqs = s.take_multiclass_requests();
+        assert_eq!(
+            reqs,
+            vec![
+                (1, 10, 0, 0, 0),
+                (2, 11, 42 | (8 << 32), 0, 0),
+                (3, 12, 42 | (8 << 32), 0x1122_3344, 0x5566_7788),
+                (5, 13, 301 | (2 << 32), 3, 0),
+            ]
+        );
+
+        s.push_multiclass_reply(1, 0, 10, vec![0x01, 0x00, 0x08]);
+        let hex: String = s.eval("return MulticlassPoll(10)").unwrap();
+        assert!(hex.starts_with("574d4331030001000a0000000000010008"));
+        assert!(s.eval::<Option<String>>("return MulticlassPoll(10)").unwrap().is_none());
+    }
+
+    #[test]
+    fn wm_questie_compat_suppresses_only_900000_plus_errors() {
+        use crate::script::quest_log::{QuestRecordView, QuestSlotView, QUEST_LOG_SLOTS};
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_quest_log_player(true);
+        s.seed_quest_record(
+            783,
+            QuestRecordView {
+                title: "A Threat Within".into(),
+                level: 1,
+                suggested_players: 0,
+                daily: false,
+                zone_or_sort: 12,
+                header: "Northshire Valley".into(),
+                ..Default::default()
+            },
+        );
+        s.seed_quest_record(
+            900001,
+            QuestRecordView {
+                title: "WM Custom Directive".into(),
+                level: 1,
+                suggested_players: 2,
+                daily: true,
+                zone_or_sort: 12,
+                header: "Northshire Valley".into(),
+                ..Default::default()
+            },
+        );
+        let mut slots = [QuestSlotView::default(); QUEST_LOG_SLOTS];
+        slots[0] = QuestSlotView {
+            quest_id: 783,
+            ..Default::default()
+        };
+        slots[1] = QuestSlotView {
+            quest_id: 900001,
+            ..Default::default()
+        };
+        s.quest_log_changed(slots);
+
+        // `GetQuestLogTitle` returns `(title, level, questTag, suggestedGroup, isHeader, isCollapsed, isComplete, isDaily, questID)`
+        // at indices 1..9 in Wrath335, allowing `WMQuestieCompat.lua` to suppress only `questID >= 900000`.
+        let (stock_id, custom_id, suppressed_custom, kept_stock): (i64, i64, bool, bool) = s
+            .eval(
+                r#"
+                local _, _, _, _, _, _, _, _, q1 = GetQuestLogTitle(2)
+                local _, _, _, _, _, _, _, _, q2 = GetQuestLogTitle(3)
+                local function isSuppressed(msg)
+                    local id = tonumber(string.match(msg, "quest (%d+)"))
+                    return id ~= nil and id >= 900000
+                end
+                return q1, q2, isSuppressed("Questie error on quest " .. q2), not isSuppressed("Questie error on quest " .. q1)
+                "#,
+            )
+            .unwrap();
+        assert_eq!(stock_id, 783);
+        assert_eq!(custom_id, 900001);
+        assert!(suppressed_custom);
+        assert!(kept_stock);
+    }
+
+    #[test]
+    fn bagnon_item_slot_info_reads_wrath_seven_tuple() {
+        use crate::script::container::{ContainerSlot, ContainerState};
+        use crate::script::item_stats::ItemTemplateView;
+        use std::collections::HashMap;
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_item_template(
+            6948,
+            ItemTemplateView {
+                name: "Hearthstone".into(),
+                quality: 1,
+                inventory_type: 0,
+                flags: 0x04, // ITEM_FLAG_HAS_LOOT
+                ..Default::default()
+            },
+        );
+        let mut slots = HashMap::new();
+        slots.insert(
+            1,
+            ContainerSlot {
+                item_id: 6948,
+                guid: 0x4000_0000_0000_0001,
+                texture: Some("Interface\\Icons\\INV_Misc_Rune_01".into()),
+                count: 1,
+                quality: Some(1),
+                inventory_type: 1,
+                readable: true,
+                link: Some("|cffffffff|Hitem:6948:0:0:0:0:0:0:0:1|h[Hearthstone]|h|r".into()),
+                ..Default::default()
+            },
+        );
+        s.set_container(
+            0,
+            Some(ContainerState {
+                name: None,
+                num_slots: 16,
+                slots,
+            }),
+        );
+
+        let (tex, count, locked, quality, readable, lootable, link): (
+            String,
+            i64,
+            Option<i64>,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            String,
+        ) = s.eval("return GetContainerItemInfo(0, 1)").unwrap();
+        assert_eq!(tex, "Interface\\Icons\\INV_Misc_Rune_01");
+        assert_eq!(count, 1);
+        assert_eq!(locked, None);
+        assert_eq!(quality, 1);
+        assert_eq!(readable, Some(1));
+        assert_eq!(lootable, Some(1));
+        assert_eq!(link, "|cffffffff|Hitem:6948:0:0:0:0:0:0:0:1|h[Hearthstone]|h|r");
+    }
+
+    #[test]
+    fn lfg_join_sends_from_the_lfd_frame() {
+        use crate::script::model::WrathScopedCommand;
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_wrath_scope(11, 22);
+        s.run(
+            r#"
+            SetLFGRoles(true, true, false, true)
+            SetLFGComment("Random heroic")
+            ClearAllLFGDungeons()
+            SetLFGDungeon(1, 262)
+            JoinLFG()
+            "#,
+        )
+        .unwrap();
+        let cmds = s.take_wrath_scoped_commands();
+        assert!(cmds.iter().any(|c| matches!(
+            c,
+            WrathScopedCommand::LfgJoin {
+                roles: 0x0B,
+                slots,
+                comment,
+                session_epoch: 11,
+                world_generation: 22,
+            } if slots == &[0x0100_0106] && comment == "Random heroic"
+        )));
+    }
+
+    #[test]
+    fn calendar_get_calendar_refreshes_native_date_and_invites() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_wrath_scope(4, 8);
+        s.run("OpenCalendar()").unwrap();
+        assert_eq!(s.take_calendar_fetches(), vec![(4, 8)]);
+        s.set_calendar(1_700_000_000, 0x1AA1_6B9E, 3, 1);
+        assert_eq!(
+            s.eval::<(i64, i64, i64, i64)>("return CalendarGetDate()")
+                .unwrap(),
+            (6, 11, 6, 2026)
+        );
+        assert_eq!(
+            s.eval::<i64>("return CalendarGetNumPendingInvites()").unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn rune_frame_reads_resync_state() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_now(50.0);
+        s.apply_rune_resync([
+            (0, 0, 50.0),
+            (0, 255, 50.0),
+            (1, 128, 50.0),
+            (1, 255, 50.0),
+            (2, 0, 50.0),
+            (3, 255, 50.0),
+        ]);
+        assert_eq!(s.eval::<f64>("return GetRuneType(1)").unwrap(), 1.0);
+        assert_eq!(s.eval::<f64>("return GetRuneType(6)").unwrap(), 4.0);
+        let (_, _, ready1): (f64, f64, bool) = s.eval("return GetRuneCooldown(1)").unwrap();
+        let (_, _, ready2): (f64, f64, bool) = s.eval("return GetRuneCooldown(2)").unwrap();
+        assert!(!ready1);
+        assert!(ready2);
+    }
+
+    #[test]
+    fn vehicle_exit_uses_the_seat_transport() {
+        use crate::script::model::WrathScopedCommand;
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_wrath_scope(9, 12);
+        s.set_wrath_vehicle_guid(Some(0xF130_0002_0000_0099));
+        assert!(s.eval::<bool>("return UnitInVehicle('player')").unwrap());
+        s.run("VehicleExit()").unwrap();
+        assert_eq!(
+            s.take_wrath_scoped_commands(),
+            vec![WrathScopedCommand::VehicleExit {
+                vehicle: 0xF130_0002_0000_0099,
+                session_epoch: 9,
+                world_generation: 12,
+            }]
+        );
+    }
+
+    #[test]
+    fn wrath_rune_calendar_vehicle_natives_read_decoded_state() {
+        rune_frame_reads_resync_state();
+        calendar_get_calendar_refreshes_native_date_and_invites();
+        vehicle_exit_uses_the_seat_transport();
     }
 }
