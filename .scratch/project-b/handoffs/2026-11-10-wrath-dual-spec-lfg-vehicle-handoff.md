@@ -63,4 +63,9 @@ All 5 follow-up slices toward the **Northshire Alpha Gate** are now wired, unit-
    - `crates/benilla-ui/src/script/secure.rs`: Bounded non-executing `SecureHandlerStateTemplate`, `RegisterStateDriver`, `UnregisterStateDriver`, `WrapScript`, and 3-return `GetActionInfo` verified by `bartender4_secure_state_driver_surface`.
 5. **Slice 5: D07 — Action Button Dual-Spec State Rejuvenation**:
    - `crates/benilla-app/src/spell/net.rs`: `SMSG_ACTION_BUTTONS` state 0/1/2 handling and 144-slot preservation verified by `wrath_action_buttons_state_two_keeps_the_bar` and `wrath_action_buttons_144_cap`.
+6. **Slice 6: D10 / F06 — Pet Talent Tab & Pet Action Wire**:
+   - `crates/benilla-formats/src/talents.rs`, `crates/benilla-ui/src/script/talent.rs`, `crates/benilla-app/src/ui_talent.rs`: Extended `WrathTalentUiState` with `pet_tabs` and `pet_talent_views`, wired `isPet` across `GetNumTalentTabs`, `GetTalentTabInfo`, `GetNumTalents`, `GetTalentInfo`, `GetTalentPrereqs`, `GetTalentLink`, and `LearnTalent`, and added `pet_talent_tab` + `wrath_pet_order_reaches_handle_pet_action`.
+7. **Slice 7: D02, D03, D04, D05, D13–D15 — Spellwright Whisper Chunking & Matrix Regression Suite**:
+   - `crates/benilla-ui/src/script/addon_message.rs`: Chunked oversized `WM_FORGE3` whispers into `<=150`-byte `DATA|` frames within the 255-byte server cap (`wm_spellmaking_self_whisper_round_trip`).
+   - `crates/benilla-ui/src/script/wrath_natives.rs`: Added `wrath_multiclass_request_matches_installed_addon_contract`, `wm_questie_compat_suppresses_only_900000_plus_errors`, `bagnon_item_slot_info_reads_wrath_seven_tuple`, `lfg_join_sends_from_the_lfd_frame`, `calendar_get_calendar_refreshes_native_date_and_invites`, `rune_frame_reads_resync_state`, `vehicle_exit_uses_the_seat_transport`, and `wrath_rune_calendar_vehicle_natives_read_decoded_state`.
 
