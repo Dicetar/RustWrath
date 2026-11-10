@@ -1,5 +1,5 @@
 //! Sample after pose edits, compose the patched frame, then restore the next frame's input.
-use benilla_hotpatch::{Host, RestoreOutcome};
+use benilla_hotpatch::{Host, PatchRejectReason, RestoreOutcome};
 use benilla_hotpatch_abi::{BoneLocal, RigSpan};
 use benilla_world::rig_anim::{AnimParked, PoseModulePass, RigPose};
 use bevy::prelude::*;
@@ -30,7 +30,11 @@ pub enum HotpatchReason {
 pub enum HotpatchEvent {
     CandidateStaged { attempt: PatchAttemptId },
     CandidateWithdrawn { attempt: PatchAttemptId },
-    PublicationRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
+    PublicationRejected {
+        attempt: Option<PatchAttemptId>,
+        reason: HotpatchReason,
+        detail: PatchRejectReason,
+    },
     CandidateRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
     Activated { attempt: Option<PatchAttemptId>, digest: Option<[u8; 20]> },
     FrameFailed { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
@@ -127,6 +131,7 @@ impl Plugin for HotpatchPlugin {
             host,
             next_poll: 0.0,
             last_error: None,
+            last_publication_detail: None,
             last_quarantine_error,
             last_sentinel_error,
             reported_revision: None,
@@ -162,6 +167,10 @@ struct Runtime {
     host: Host,
     next_poll: f64,
     last_error: Option<String>,
+    /// Last typed publication reason emitted or observed. The coarse `last_error` message is the
+    /// dedupe key for free-form text; this separate slot lets a transient -> terminal transition
+    /// with identical error text still emit the new typed detail.
+    last_publication_detail: Option<PatchRejectReason>,
     /// Last reported quarantine load/save error. Deliberately separate from `last_error`: the
     /// publication/retention paths share and clear that slot, so reusing it here would let a
     /// persistent save failure re-emit `PublicationRejected`/`RetentionFailed` (and the save
@@ -311,6 +320,7 @@ fn poll(
         Ok(true) => {
             runtime.refresh = true;
             runtime.last_error = None;
+            runtime.last_publication_detail = None;
             let attempt = runtime.next_attempt;
             runtime.next_attempt = runtime.next_attempt.saturating_add(1);
             runtime.candidate_attempt = Some(attempt);
@@ -319,12 +329,20 @@ fn poll(
         Ok(false) => {}
         Err(error) => {
             let message = format!("{error:#}");
-            if runtime.last_error.as_ref() != Some(&message) {
+            let detail = runtime
+                .host
+                .take_publication_reason()
+                .unwrap_or(PatchRejectReason::Unknown);
+            let message_changed = runtime.last_error.as_ref() != Some(&message);
+            let detail_changed = runtime.last_publication_detail != Some(detail);
+            if message_changed || detail_changed {
                 events.write(HotpatchEvent::PublicationRejected {
                     attempt: None,
                     reason: HotpatchReason::Publication,
+                    detail,
                 });
             }
+            runtime.last_publication_detail = Some(detail);
             report(&mut runtime, message);
         }
     }

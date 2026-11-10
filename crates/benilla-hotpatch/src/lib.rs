@@ -130,9 +130,9 @@ pub struct PatchHealthSnapshot {
 ///
 /// The default [`PatchHealthPolicy::default`] is the original single-strike behavior: one
 /// consecutive failure demotes, with the cumulative cap (3) only reachable if the consecutive
-/// threshold were relaxed. These thresholds are in-memory only; persistence, typed
-/// `PatchRejectReason` values, per-revision cumulative accounting and `max_eval_micros`
-/// enforcement remain H03 work.
+/// threshold were relaxed. These thresholds are in-memory only; persistence, remaining typed
+/// canary/active/movement/rollback `PatchRejectReason` values, per-revision cumulative accounting and
+/// `max_eval_micros` enforcement remain H03 work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PatchHealthPolicy {
     /// Consecutive active-frame failures that demote the module. `0` disables this threshold.
@@ -893,6 +893,30 @@ impl PatchHealth {
     }
 }
 
+/// Typed reason for a pose publication poll rejection.
+///
+/// The free-form loader/verification detail remains in the returned error and local log; this is
+/// the stable code carried by `HotpatchEvent::PublicationRejected`. Canary, active-frame,
+/// movement and rollback reasons remain H03.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PatchRejectReason {
+    /// A transient filesystem/publisher condition (`NotFound`, sharing/lock, interrupted read).
+    TransientIoPending,
+    /// `ready.toml` could not be decoded (for example, non-UTF-8 content).
+    ManifestUnreadable,
+    /// `ready.toml` parsed as TOML but not as a publication.
+    ManifestMalformed,
+    /// The artifact bytes/name/size/revision failed pre-load verification.
+    ArtifactRejected,
+    /// The declared digest is in the bounded quarantine store.
+    Quarantined,
+    /// `Library::new`/entry/header/processor validation failed.
+    LoadFailed,
+    /// No typed reason was recorded (adapter fallback).
+    Unknown,
+}
+
 pub struct Host {
     root: PathBuf,
     observed: Option<String>,
@@ -910,6 +934,9 @@ pub struct Host {
     /// failure. Defaults to the single-strike behavior; see [`PatchHealthPolicy`].
     health_policy: PatchHealthPolicy,
     rejection: Option<String>,
+    /// Typed reason for the most recent pose publication poll rejection. Cleared at the start of
+    /// every poll and consumed through [`Host::take_publication_reason`].
+    publication_reason: Option<PatchRejectReason>,
     active_failure: Option<String>,
     restores: VecDeque<RestoreOutcome>,
     /// Bounded quarantine (in-memory plus `quarantine.toml`) of pose digests rejected after their bytes were verified: a
@@ -987,6 +1014,7 @@ impl Host {
             health: PatchHealth::default(),
             health_policy: PatchHealthPolicy::default(),
             rejection: None,
+            publication_reason: None,
             active_failure: None,
             restores: VecDeque::new(),
             quarantined_digests: VecDeque::new(),
@@ -1402,6 +1430,7 @@ impl Host {
     /// next launch while a regular failure leaves none. Sentinel write/clear failures are best
     /// effort and surface through [`Self::sentinel_error`].
     pub fn poll(&mut self) -> Result<bool> {
+        self.publication_reason = None;
         let text = match std::fs::read_to_string(self.root.join("ready.toml")) {
             Ok(text) => text,
             Err(error) => {
@@ -1413,6 +1442,12 @@ impl Host {
                 return if error.kind() == std::io::ErrorKind::NotFound {
                     Ok(false)
                 } else {
+                    let reason = if error.kind() == std::io::ErrorKind::InvalidData {
+                        PatchRejectReason::ManifestUnreadable
+                    } else {
+                        PatchRejectReason::TransientIoPending
+                    };
+                    self.publication_reason = Some(reason);
                     Err(error.into())
                 };
             }
@@ -1446,9 +1481,10 @@ impl Host {
                 // A malformed manifest is deterministic content. Latch it so the 1 Hz poll does
                 // not re-parse and re-report the same bytes; a changed manifest clears the latch
                 // above and is retried. There is no trustworthy publication, so no artifact stamp
-                // is recorded; H03 adds typed reasons and persistent quarantine.
+                // is recorded; the typed rejection reason is recorded below.
                 self.pose_failure_stamp = None;
                 self.observed = Some(text);
+                self.publication_reason = Some(PatchRejectReason::ManifestMalformed);
                 return Err(error.into());
             }
         };
@@ -1461,6 +1497,7 @@ impl Host {
             let digest = publication.sha1.clone();
             self.pose_failure_stamp = None;
             self.observed = Some(text);
+            self.publication_reason = Some(PatchRejectReason::Quarantined);
             bail!(
                 "pose module digest {digest} is quarantined after a terminal load or evaluation failure"
             );
@@ -1487,10 +1524,12 @@ impl Host {
             Ok(verified) => verified,
             Err(error) => {
                 if transient_io(&error) || publish_in_progress(&self.root) {
+                    self.publication_reason = Some(PatchRejectReason::TransientIoPending);
                     return Err(error);
                 }
                 // Terminal verification failure: record the attempted artifact identity so a later
                 // same-text repair with new bytes is retried instead of being masked by the latch.
+                self.publication_reason = Some(PatchRejectReason::ArtifactRejected);
                 self.pose_failure_stamp = attempt_stamp.clone();
                 self.observed = Some(text);
                 return Err(error);
@@ -1532,8 +1571,10 @@ impl Host {
             Err(error) => {
                 if transient_io(&error) || publish_in_progress(&self.root) {
                     // Leave `observed` unlatched so an incomplete copy is retried unchanged.
+                    self.publication_reason = Some(PatchRejectReason::TransientIoPending);
                     return Err(error);
                 }
+                self.publication_reason = Some(PatchRejectReason::LoadFailed);
                 self.quarantine_digest(&quarantine_digest);
                 self.pose_failure_stamp = attempt_stamp;
                 self.observed = Some(text);
@@ -1599,6 +1640,14 @@ impl Host {
 
     pub fn take_rejection(&mut self) -> Option<String> {
         self.rejection.take()
+    }
+
+    /// Drain the typed reason for the most recent pose publication poll rejection.
+    ///
+    /// Set by [`Self::poll`] on every error path and cleared at the start of each poll. A quiet
+    /// `Ok(false)` (unchanged latch, active shortcut or no manifest) leaves it `None`.
+    pub fn take_publication_reason(&mut self) -> Option<PatchRejectReason> {
+        self.publication_reason.take()
     }
 
     /// Enable or disable a hot-pluggable gameplay seam. `Pose` is always enabled and unaffected.
@@ -8861,6 +8910,124 @@ mod tests {
     // marker is a clean state, a stale marker is removed, and an uncommitted startup recovery is
     // retained because it is the only durable record until `persist_quarantine` commits it.
     // ------------------------------------------------------------------
+
+    #[test]
+    fn pose_poll_reports_typed_publication_reasons() {
+        // Malformed TOML is deterministic manifest content.
+        let root = pose_test_root("reason-malformed");
+        std::fs::write(root.join("ready.toml"), "revision = \"unterminated\n")
+            .expect("write malformed manifest");
+        let mut host = Host::new(root.clone());
+        assert!(host.poll().is_err());
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::ManifestMalformed)
+        );
+        assert_eq!(
+            host.take_publication_reason(),
+            None,
+            "taking the typed reason clears it"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // A non-UTF-8 manifest is unreadable content, not transient I/O.
+        let root = pose_test_root("reason-unreadable");
+        std::fs::write(root.join("ready.toml"), [0xff, 0xfe])
+            .expect("write non-UTF-8 manifest");
+        let mut host = Host::new(root.clone());
+        assert!(host.poll().is_err());
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::ManifestUnreadable)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // A not-yet-visible artifact is transient I/O.
+        let root = pose_test_root("reason-transient");
+        let digest = persistent_digest(401);
+        std::fs::write(
+            root.join("ready.toml"),
+            format!(
+                "revision = \"rev-a\"\nlibrary = \"pose-{digest}.dll\"\nsha1 = \"{digest}\"\n"
+            ),
+        )
+        .expect("write missing-artifact manifest");
+        let mut host = Host::new(root.clone());
+        assert!(host.poll().is_err());
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::TransientIoPending)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // A digest already in the bounded quarantine is refused at the gate.
+        let root = pose_test_root("reason-quarantined");
+        let digest = persistent_digest(402);
+        std::fs::write(
+            root.join("ready.toml"),
+            format!(
+                "revision = \"rev-a\"\nlibrary = \"pose-{digest}.dll\"\nsha1 = \"{digest}\"\n"
+            ),
+        )
+        .expect("write quarantined manifest");
+        let mut host = Host::new(root.clone());
+        host.quarantine_digest(&digest);
+        assert!(host.poll().is_err());
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::Quarantined)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // A digest/filename mismatch is a terminal artifact rejection.
+        let root = pose_test_root("reason-artifact");
+        let bytes = b"artifact bytes";
+        let digest = format!("{:x}", Sha1::digest(bytes));
+        let dll = format!("pose-{digest}.dll");
+        std::fs::write(root.join(&dll), bytes).expect("write artifact");
+        std::fs::write(
+            root.join("ready.toml"),
+            format!(
+                "revision = \"rev-a\"\nlibrary = \"{dll}\"\nsha1 = \"{}\"\n",
+                "0".repeat(40)
+            ),
+        )
+        .expect("write mismatched manifest");
+        let mut host = Host::new(root.clone());
+        assert!(host.poll().is_err());
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::ArtifactRejected)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // The bytes verify, but the native load fails.
+        let root = pose_test_root("reason-load-failed");
+        let bytes = b"definitely not a portable executable";
+        let digest = format!("{:x}", Sha1::digest(bytes));
+        let dll = format!("pose-{digest}.dll");
+        std::fs::write(root.join(&dll), bytes).expect("write non-PE artifact");
+        std::fs::write(
+            root.join("ready.toml"),
+            format!("revision = \"rev-a\"\nlibrary = \"{dll}\"\nsha1 = \"{digest}\"\n"),
+        )
+        .expect("write load-failing manifest");
+        let mut host = Host::new(root.clone());
+        assert!(host.poll().is_err());
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::LoadFailed)
+        );
+        assert!(host.is_quarantined(&digest));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // No manifest is a quiet non-rejection.
+        let root = pose_test_root("reason-none");
+        let mut host = Host::new(root.clone());
+        assert!(!host.poll().expect("no manifest is not an error"));
+        assert_eq!(host.take_publication_reason(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn clean_shutdown_clears_a_stale_marker() {
