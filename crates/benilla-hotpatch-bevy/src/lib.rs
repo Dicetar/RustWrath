@@ -148,7 +148,12 @@ impl Plugin for HotpatchPlugin {
         })
         .add_systems(Update, poll)
         .add_systems(PostUpdate, apply_pose.in_set(PoseModulePass))
-        .add_systems(Last, (capture_pose, restore_pose).chain());
+        .add_systems(Last, (capture_pose, restore_pose).chain())
+        // Declared ahead of the pose chain: all three systems take `ResMut<Runtime>` and this
+        // edge's clear must not be skipped because a pose system panicked on the exit frame. An
+        // explicit `AppExit` is the clean-exit signal; `Runtime::drop` stays the fallback for a
+        // bare `App` drop.
+        .add_systems(Last, clear_active_sentinel_on_app_exit.before(capture_pose));
     }
 }
 
@@ -599,6 +604,29 @@ fn capture_pose(time: Res<Time>, mut runtime: ResMut<Runtime>, rigs: Query<&RigP
             input.translation, output.translation, model.translation
         );
     }
+}
+
+/// Clean-exit safety net on Bevy's explicit exit edge.
+///
+/// A window close and console `/quit` raise `WindowCloseRequested`, which
+/// `bevy_window::exit_on_all_closed` turns into `AppExit` in `PostUpdate`; the Exit Game/logout path
+/// writes `AppExit` directly in `Update`. Both precede `Last`, so a `Last` system observes the exit
+/// a player causes. This calls the same host method as [`Runtime`]'s destructor, which remains the
+/// fallback for a bare `App` drop.
+fn clear_active_sentinel_on_app_exit(
+    mut exits: MessageReader<AppExit>,
+    mut runtime: ResMut<Runtime>,
+) {
+    if exits.read().next().is_none() {
+        return;
+    }
+    // A pending recovery or an unowned/unvalidated marker is retained by the host method;
+    // the Drop fallback warns about those. This edge only reports real clear errors.
+    if let Err(error) = runtime.host.clear_active_sentinel_on_clean_shutdown() {
+        warn!("hotpatch: AppExit active sentinel clear failed: {error:#}");
+    }
+    // `impl Drop for Runtime` keeps its `std::thread::panicking()` guard: a system never runs
+    // during an unwind, so the destructor still owns the panic case.
 }
 
 #[cfg(all(test, target_os = "windows"))]
