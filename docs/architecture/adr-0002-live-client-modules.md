@@ -462,11 +462,17 @@ sections specifying the target contract for `H03` onward are explicitly labeled 
   `detail: PatchRejectReason` alongside the existing coarse `HotpatchReason`; the adapter's
   `Unknown` fallback is used only when the host recorded no reason. The event is emitted when
   either the free-form message or the typed detail changes, so a transient -> terminal transition
-  with identical error text is not swallowed. `benilla-app` keeps its existing coarse
-  `quest_trace` mapping through `..`. The typed code is source-reviewed only; free-form loader
-  detail remains in the returned error/log and is never exported. The first slice uses the coarse
+  with identical error text is not swallowed. `benilla-app` maps `detail` into
+  `quest_trace::HotpatchReason`, so the publication trace/incident output carries the detailed code
+  and falls back to the coarse reason only for `Unknown`/future variants (a future
+  `PatchRejectReason` variant silently degrades to the coarse reason until the local enum is
+  extended). Publication rejections are emitted with `attempt: None`, so they appear in the recent
+  trace and incident output, not the attempt-correlated Hotpatch Attempts summary. The serialized
+  `reason` value for publication rejections therefore changes from `"Publication"` to the detailed
+  variant. The typed code is source-reviewed only; free-form loader detail remains in the returned
+  error/log and is never exported. The first slice uses the coarse
   `ArtifactRejected`/`LoadFailed`; the finer ADR target codes (`DigestMismatch`, `AbiMismatch`,
-  `MissingDependency`, etc.), canary/active-frame/movement/rollback typed reasons,
+  `MissingDependency`, etc.), canary/active-frame/movement/rollback typed reasons, non-publication
   `IncidentOutcome` detail, persistent state and build/test evidence remain H03.
 
 ## Decision

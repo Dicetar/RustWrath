@@ -1,5 +1,6 @@
 //! Sample after pose edits, compose the patched frame, then restore the next frame's input.
-use benilla_hotpatch::{Host, PatchRejectReason, RestoreOutcome};
+use benilla_hotpatch::{Host, RestoreOutcome};
+pub use benilla_hotpatch::PatchRejectReason;
 use benilla_hotpatch_abi::{BoneLocal, RigSpan};
 use benilla_world::rig_anim::{AnimParked, PoseModulePass, RigPose};
 use bevy::prelude::*;

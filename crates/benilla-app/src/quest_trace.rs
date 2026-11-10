@@ -841,6 +841,13 @@ pub(crate) enum HotpatchReason {
     Retention,
     Frame,
     Unknown,
+    /// Typed pose publication rejection details carried from `HotpatchEvent`.
+    TransientIoPending,
+    ManifestUnreadable,
+    ManifestMalformed,
+    ArtifactRejected,
+    Quarantined,
+    LoadFailed,
 }
 
 #[cfg(feature = "hotpatch")]

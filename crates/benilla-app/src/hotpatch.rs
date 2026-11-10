@@ -20,7 +20,7 @@ fn capture_hotpatch_events(
     trace: Option<Res<crate::quest_trace::Source>>,
     view: Option<Res<crate::wrath::WrathWorldView>>,
 ) {
-    use benilla_hotpatch_bevy::HotpatchEvent;
+    use benilla_hotpatch_bevy::{HotpatchEvent, PatchRejectReason};
     use crate::quest_trace::{HotpatchReason, PatchEvent, Stage};
     use benilla_hotpatch_bevy::HotpatchReason as BevyReason;
     for event in events.read() {
@@ -32,15 +32,35 @@ fn capture_hotpatch_events(
                 HotpatchEvent::CandidateWithdrawn { attempt } => {
                     PatchEvent::CandidateWithdrawn { attempt }
                 }
-                HotpatchEvent::PublicationRejected { attempt, reason, .. } => {
+                HotpatchEvent::PublicationRejected {
+                    attempt,
+                    reason,
+                    detail,
+                } => {
                     PatchEvent::PublicationRejected {
                         attempt,
-                        reason: match reason {
-                            BevyReason::Publication => HotpatchReason::Publication,
-                            BevyReason::Evaluation => HotpatchReason::Evaluation,
-                            BevyReason::Retention => HotpatchReason::Retention,
-                            BevyReason::Frame => HotpatchReason::Frame,
-                            BevyReason::Unknown => HotpatchReason::Unknown,
+                        reason: match detail {
+                            PatchRejectReason::TransientIoPending => {
+                                HotpatchReason::TransientIoPending
+                            }
+                            PatchRejectReason::ManifestUnreadable => {
+                                HotpatchReason::ManifestUnreadable
+                            }
+                            PatchRejectReason::ManifestMalformed => {
+                                HotpatchReason::ManifestMalformed
+                            }
+                            PatchRejectReason::ArtifactRejected => {
+                                HotpatchReason::ArtifactRejected
+                            }
+                            PatchRejectReason::Quarantined => HotpatchReason::Quarantined,
+                            PatchRejectReason::LoadFailed => HotpatchReason::LoadFailed,
+                            _ => match reason {
+                                BevyReason::Publication => HotpatchReason::Publication,
+                                BevyReason::Evaluation => HotpatchReason::Evaluation,
+                                BevyReason::Retention => HotpatchReason::Retention,
+                                BevyReason::Frame => HotpatchReason::Frame,
+                                BevyReason::Unknown => HotpatchReason::Unknown,
+                            },
                         },
                     }
                 }
