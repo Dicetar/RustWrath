@@ -372,7 +372,8 @@ pub use minimap::{
 pub(crate) use model::Model;
 pub use model::{
     FontProbe, MacroIconSource, TextureProbe, TextureSizeFn, TextureSizeProbe, WorldLocFn,
-    WorldLocProjector,
+    WorldLocProjector, WrathLfgProposalMemberState, WrathLfgProposalState,
+    WrathLfgQueueStatusState, WrathLfgState, WrathScopedCommand,
 };
 pub use party::{
     PartyMemberInfo, PartyRequest, PartyState, RaidMemberInfo, ReadyCheckState, SavedInstanceInfo,
@@ -408,6 +409,7 @@ pub use stable::{StableCall, StableIntent, StablePetSlot, StableState, NUM_STABL
 pub use summon::{SummonCall, SummonConfirmUiState};
 pub use talent::{
     TalentCall, TalentPrereqView, TalentReq, TalentTabView, TalentUiState, TalentView,
+    WrathTalentGroupView, WrathTalentUiState,
 };
 pub use taxi::{TaxiCall, TaxiNodeType, TaxiUiNode, TaxiUiState};
 pub use tooltip_aura::{AuraKey, AuraTooltipView};

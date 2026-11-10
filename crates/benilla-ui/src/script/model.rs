@@ -128,6 +128,114 @@ pub(crate) struct CalendarState {
     pub(crate) revision: u64,
 }
 
+/// The decoded `SMSG_LFG_QUEUE_STATUS` facts exposed to 3.3.5a Dungeon Finder natives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WrathLfgQueueStatusState {
+    pub dungeon_id: u32,
+    pub wait_time_avg: i32,
+    pub wait_time: i32,
+    pub wait_time_tank: i32,
+    pub wait_time_healer: i32,
+    pub wait_time_dps: i32,
+    pub tanks_needed: u8,
+    pub healers_needed: u8,
+    pub dps_needed: u8,
+    pub queued_time: u32,
+}
+
+/// One member row of `SMSG_LFG_PROPOSAL_UPDATE`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WrathLfgProposalMemberState {
+    pub role: u32,
+    pub is_local: bool,
+    pub in_dungeon: bool,
+    pub in_same_group: bool,
+    pub responded: bool,
+    pub accepted: bool,
+}
+
+/// The decoded `SMSG_LFG_PROPOSAL_UPDATE` snapshot exposed to `GetLFGProposal`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WrathLfgProposalState {
+    pub proposal_id: u32,
+    pub dungeon_id: u32,
+    pub state: u8,
+    pub completed_mask: u32,
+    pub silent: bool,
+    pub players: Vec<WrathLfgProposalMemberState>,
+}
+
+/// The 3.3.5a Dungeon Finder state held on [`Model`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WrathLfgState {
+    /// `PLAYER_ROLE_*` bitmask (`0x01` leader, `0x02` tank, `0x04` healer, `0x08` damage).
+    pub roles: u8,
+    pub comment: String,
+    pub selected_slots: Vec<u32>,
+    pub joined: bool,
+    pub queued: bool,
+    pub lfg_joined: bool,
+    pub no_partial_clear: bool,
+    pub achievements: bool,
+    pub queued_dungeons: Vec<u32>,
+    pub last_join_result: Option<(u32, u32)>,
+    pub queue_status: Option<WrathLfgQueueStatusState>,
+    pub proposal: Option<WrathLfgProposalState>,
+}
+
+/// Outbound 12340 LFG and vehicle commands queued from Lua and drained by `wrath_rune_calendar_feed`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WrathScopedCommand {
+    LfgJoin {
+        slots: Vec<u32>,
+        comment: String,
+        roles: u8,
+        no_partial_clear: bool,
+        achievements: bool,
+        needs: [u8; 3],
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    LfgLeave {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    LfgProposalResult {
+        proposal_id: u32,
+        accept: bool,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    SetLfgComment {
+        comment: String,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    LfgSetRoles {
+        roles: u8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    VehicleExit {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    VehiclePrevSeat {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    VehicleNextSeat {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    VehicleSwitchSeat {
+        vehicle: u64,
+        seat: i8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+}
+
 /// One stored `WrapScript` body. The host keeps it for a future secure boundary but never runs it
 /// from Lua: the execution sandbox is not implemented (`secure::install` documents the refusal).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -609,6 +717,11 @@ pub(crate) struct Model {
     pub(crate) wrath_scope: Option<(u64, u64)>,
     /// `OpenCalendar()` fetch requests, carrying the scope they were written under.
     pub(crate) calendar_fetches: std::collections::VecDeque<(u64, u64)>,
+    /// 3.3.5a Dungeon Finder state and outbound scoped LFG/vehicle command queue.
+    pub(crate) wrath_lfg: WrathLfgState,
+    pub(crate) wrath_scoped_commands: std::collections::VecDeque<WrathScopedCommand>,
+    /// Replicated vehicle transport GUID for the local player when riding a vehicle.
+    pub(crate) vehicle_guid: Option<u64>,
     /// Frames created with a native secure-handler template, keyed by
     /// [`crate::widget::FrameHandle::fingerprint_bits`]. `WrapScript` refuses an owner outside it.
     pub(crate) secure_frames: HashSet<u64>,
@@ -742,6 +855,7 @@ pub(crate) struct Model {
     pub(crate) spell_targetable_units: HashSet<u64>,
 
     pub(crate) talents: super::talent::TalentUiState,
+    pub(crate) wrath_talents: super::talent::WrathTalentUiState,
     /// `CheckTalentMasterDist()`: the respec question is live and in range; false hides its dialog.
     pub(crate) talent_master_pending: bool,
     // ── The dialog engine's verbs (`0x48dca0` is the first below) ──
@@ -1659,6 +1773,9 @@ impl Model {
             calendar: None,
             wrath_scope: None,
             calendar_fetches: std::collections::VecDeque::new(),
+            wrath_lfg: WrathLfgState::default(),
+            wrath_scoped_commands: std::collections::VecDeque::new(),
+            vehicle_guid: None,
             secure_frames: HashSet::new(),
             secure_drivers: HashMap::new(),
             secure_wraps: HashMap::new(),
@@ -1708,6 +1825,7 @@ impl Model {
             spell_targeting: false,
             spell_targetable_units: HashSet::new(),
             talents: super::talent::TalentUiState::default(),
+            wrath_talents: super::talent::WrathTalentUiState::default(),
             talent_master_pending: false,
             pet_untrainer_pending: false,
             instance_boot_secs: 0,

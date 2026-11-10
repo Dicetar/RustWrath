@@ -117,10 +117,35 @@ pub struct TalentUiState {
     pub points: (u32, u32),
 }
 
+/// One 3.3.5a player talent group (`SMSG_TALENTS_INFO` spec slot 0 or 1), with its computed
+/// tab/talent views, unspent points, and 6 `GlyphProperties.dbc` socket IDs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WrathTalentGroupView {
+    pub tabs: Vec<TalentTabView>,
+    pub talents: Vec<Vec<TalentView>>,
+    pub unspent_points: u32,
+    pub glyphs: [u16; 6],
+}
+
+/// The 3.3.5a dual-spec, pet-talent, and glyph snapshot pushed alongside [`TalentUiState`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WrathTalentUiState {
+    /// 1-based active talent group (`1` or `2`).
+    pub active_group: u8,
+    pub groups: Vec<WrathTalentGroupView>,
+    pub pet_unspent_points: u32,
+    pub pet_talents: Vec<(u32, u8)>,
+}
+
 impl super::UiScript {
     /// Push the whole talent snapshot.
     pub fn set_talents(&mut self, state: TalentUiState) {
         self.model_mut().talents = state;
+    }
+
+    /// Push the 3.3.5a dual-spec talent groups, pet unspent points, and glyph socket IDs.
+    pub fn set_wrath_talents(&mut self, state: WrathTalentUiState) {
+        self.model_mut().wrath_talents = state;
     }
 
     /// The talent verbs a harness's VM kept ([`Self::keep_calls`]), in call order.
@@ -151,6 +176,33 @@ pub enum TalentCall {
     /// `ConfirmTalentWipe()` (`0x48dc40`): the respec dialog `0x5df980` with a zero guid, which
     /// answers the trainer it latched.
     ConfirmWipe,
+}
+
+fn wrath_group_index(model: &Model, arg: Option<&Value>) -> usize {
+    let requested = match arg {
+        Some(Value::Integer(n)) if *n >= 1 => *n as usize,
+        Some(Value::Number(n)) if *n >= 1.0 => *n as usize,
+        _ => usize::from(model.wrath_talents.active_group.max(1)),
+    };
+    requested.saturating_sub(1)
+}
+
+fn talent_at_group<'a>(
+    model: &'a Model,
+    tab: usize,
+    index: usize,
+    group_arg: Option<&Value>,
+) -> Option<&'a TalentView> {
+    if model.target == super::UiTarget::Wrath335 {
+        let group_idx = wrath_group_index(model, group_arg);
+        if let Some(group) = model.wrath_talents.groups.get(group_idx) {
+            return group
+                .talents
+                .get(tab.checked_sub(1)?)
+                .and_then(|t| t.get(index.checked_sub(1)?));
+        }
+    }
+    talent_at(model, tab, index)
 }
 
 /// One talent by its 1-based (tab, index).
@@ -191,7 +243,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let i = binding_abi::index_arg(lua, i, "Usage: GetTalentTabInfo(index)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let wrath = model.target == super::UiTarget::Wrath335;
-            let Some(tab) = i.checked_sub(1).and_then(|n| model.talents.tabs.get(n)) else {
+            let tabs = if wrath {
+                let group_idx = wrath_group_index(&model, args.get(3));
+                model
+                    .wrath_talents
+                    .groups
+                    .get(group_idx)
+                    .map_or(&model.talents.tabs, |g| &g.tabs)
+            } else {
+                &model.talents.tabs
+            };
+            let Some(tab) = i.checked_sub(1).and_then(|n| tabs.get(n)) else {
                 if wrath {
                     return Ok(super::binding_abi::tuple(&[None, None, Some(0), None, Some(0)]));
                 }
@@ -240,7 +302,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let i = binding_abi::index_arg(lua, i, "Usage: GetTalentInfo(tabIndex, talentIndex)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let wrath = model.target == super::UiTarget::Wrath335;
-            let Some(t) = talent_at(&model, tab, i) else {
+            let Some(t) = talent_at_group(&model, tab, i, args.get(4)) else {
                 // `0x4f3454`: nil, nil, 1, 1, 0, 0, nil, nil.
                 if wrath {
                     return Ok(super::binding_abi::tuple(&[
@@ -303,7 +365,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 binding_abi::index_arg(lua, i, "Usage: GetTalentPrereqs(tabIndex, talentIndex)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let mut out = Vec::new();
-            if let Some(t) = talent_at(&model, tab, i) {
+            if let Some(t) = talent_at_group(&model, tab, i, args.get(4)) {
                 for p in &t.prereqs {
                     out.push(Value::Integer(i64::from(p.tier)));
                     out.push(Value::Integer(i64::from(p.column)));
@@ -386,11 +448,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
     g.set(
         "GetNumTalentGroups",
-        lua.create_function(|_, _: MultiValue| Ok(1i64))?,
+        lua.create_function(|lua, args: MultiValue| {
+            let is_pet =
+                matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+            if is_pet {
+                return Ok(1i64);
+            }
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.wrath_talents.groups.len().max(1) as i64)
+        })?,
     )?;
     g.set(
         "GetActiveTalentGroup",
-        lua.create_function(|_, _: MultiValue| Ok(1i64))?,
+        lua.create_function(|lua, args: MultiValue| {
+            let is_pet =
+                matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+            if is_pet {
+                return Ok(1i64);
+            }
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(i64::from(model.wrath_talents.active_group.max(1)))
+        })?,
     )?;
     g.set(
         "SetActiveTalentGroup",
@@ -399,12 +477,21 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
     g.set(
         "GetUnspentTalentPoints",
         lua.create_function(|lua, args: MultiValue| {
-            let is_inspect = matches!(args.front(), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
-            let is_pet = matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
-            if is_inspect || is_pet {
+            let is_inspect =
+                matches!(args.front(), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+            let is_pet =
+                matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
+            if is_inspect {
                 return Ok(0i64);
             }
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if is_pet {
+                return Ok(i64::from(model.wrath_talents.pet_unspent_points));
+            }
+            let group_idx = wrath_group_index(&model, args.get(2));
+            if let Some(group) = model.wrath_talents.groups.get(group_idx) {
+                return Ok(i64::from(group.unspent_points));
+            }
             Ok(i64::from(model.talents.points.0))
         })?,
     )?;
@@ -444,7 +531,7 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
                 return Ok(Value::Nil);
             };
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(t) = talent_at(&model, tab, i) else {
+            let Some(t) = talent_at_group(&model, tab, i, args.get(4)) else {
                 return Ok(Value::Nil);
             };
             let rank = i64::from(t.rank).saturating_sub(1);
@@ -460,7 +547,7 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
     )?;
     g.set(
         "GetGlyphSocketInfo",
-        lua.create_function(|_, args: MultiValue| {
+        lua.create_function(|lua, args: MultiValue| {
             let socket = match args.front() {
                 Some(Value::Integer(n)) => *n,
                 Some(Value::Number(n)) => *n as i64,
@@ -471,6 +558,24 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
                 2 | 3 | 5 => 2i64,
                 _ => 1i64,
             };
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let group_idx = wrath_group_index(&model, args.get(1));
+            if let Some(group) = model.wrath_talents.groups.get(group_idx) {
+                if (1..=6).contains(&socket) {
+                    let glyph_id = group.glyphs[(socket - 1) as usize];
+                    let spell = if glyph_id != 0 {
+                        Value::Integer(i64::from(glyph_id))
+                    } else {
+                        Value::Nil
+                    };
+                    return Ok(MultiValue::from_vec(vec![
+                        Value::Integer(1),
+                        Value::Integer(glyph_type),
+                        spell,
+                        Value::Nil,
+                    ]));
+                }
+            }
             Ok(MultiValue::from_vec(vec![
                 Value::Nil,
                 Value::Integer(glyph_type),

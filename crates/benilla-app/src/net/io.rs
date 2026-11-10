@@ -1928,9 +1928,18 @@ pub(super) fn writer_loop(
                         total_cost,
                         nodes,
                     } => w.activate_taxi_express(guid, total_cost, &nodes),
-                    // Wrath-only fetch, consumed by `wrath_tap_commands` before this stock
-                    // writer can see it. Kept exhaustive so a donor session cannot fall through.
-                    ClientCommand::OpenCalendar { .. } => Ok(()),
+                    // Wrath-only verbs, consumed by `wrath_tap_commands` before this stock
+                    // writer can see them. Kept exhaustive so a donor session cannot fall through.
+                    ClientCommand::OpenCalendar { .. }
+                    | ClientCommand::LfgJoin { .. }
+                    | ClientCommand::LfgLeave { .. }
+                    | ClientCommand::LfgProposalResult { .. }
+                    | ClientCommand::SetLfgComment { .. }
+                    | ClientCommand::LfgSetRoles { .. }
+                    | ClientCommand::VehicleExit { .. }
+                    | ClientCommand::VehiclePrevSeat { .. }
+                    | ClientCommand::VehicleNextSeat { .. }
+                    | ClientCommand::VehicleSwitchSeat { .. } => Ok(()),
                 };
                 // Send failures (tag `wire`): the controller's `snd` line records a decision, not a
                 // transmission, so a silent `wire` log beside a busy `snd` log means all went out.
