@@ -647,6 +647,36 @@ pub enum WrathFeedEvent {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `SMSG_LFG_JOIN_RESULT`: the server's answer to a Dungeon Finder join request.
+    LfgJoinResult {
+        result: gameplay::wrath_systems::LfgJoinResult,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_LFG_QUEUE_STATUS`: the player's current Dungeon Finder wait/needed snapshot.
+    LfgQueueStatus {
+        status: gameplay::wrath_systems::LfgQueueStatus,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_LFG_UPDATE_PLAYER`: the player's solo Dungeon Finder queue/joined update.
+    LfgUpdatePlayer {
+        update: gameplay::wrath_systems::LfgUpdatePlayer,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_LFG_UPDATE_PARTY`: the party's Dungeon Finder queue/joined update.
+    LfgUpdateParty {
+        update: gameplay::wrath_systems::LfgUpdateParty,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `SMSG_LFG_PROPOSAL_UPDATE`: an active Dungeon Finder proposal.
+    LfgProposalUpdate {
+        proposal: gameplay::wrath_systems::LfgProposalUpdate,
+        session_epoch: u64,
+        world_generation: u64,
+    },
 }
 
 impl WrathFeedEvent {
@@ -1991,6 +2021,16 @@ pub struct WrathWorldView {
     pub last_inventory_failure: Option<crate::wrath_native::WrathInventoryFailure>,
     /// Bounded WMC1 v3 (`SMSG_MULTICLASS_REPLY`, `0x51A`) replies awaiting `MulticlassPoll`.
     pub multiclass_replies: VecDeque<(u16, u16, u32, Vec<u8>)>,
+    /// The last decoded `SMSG_LFG_JOIN_RESULT` in this scope.
+    pub lfg_join_result: Option<gameplay::wrath_systems::LfgJoinResult>,
+    /// The last decoded `SMSG_LFG_QUEUE_STATUS` in this scope.
+    pub lfg_queue_status: Option<gameplay::wrath_systems::LfgQueueStatus>,
+    /// The last decoded `SMSG_LFG_UPDATE_PLAYER` in this scope.
+    pub lfg_update_player: Option<gameplay::wrath_systems::LfgUpdatePlayer>,
+    /// The last decoded `SMSG_LFG_UPDATE_PARTY` in this scope.
+    pub lfg_update_party: Option<gameplay::wrath_systems::LfgUpdateParty>,
+    /// The last decoded `SMSG_LFG_PROPOSAL_UPDATE` in this scope.
+    pub lfg_proposal: Option<gameplay::wrath_systems::LfgProposalUpdate>,
     /// Monotonic cast count for `CMSG_CAST_SPELL`.
     pub next_cast_count: u8,
 }
@@ -2026,6 +2066,11 @@ impl Default for WrathWorldView {
             last_cast_end: None,
             last_inventory_failure: None,
             multiclass_replies: VecDeque::new(),
+            lfg_join_result: None,
+            lfg_queue_status: None,
+            lfg_update_player: None,
+            lfg_update_party: None,
+            lfg_proposal: None,
             next_cast_count: 1,
             empty: (),
         }
@@ -2178,7 +2223,7 @@ impl WrathWorldView {
         });
     }
 
-    /// Clear every scoped rune/calendar/party-kill fact on a session end or world transfer.
+    /// Clear every scoped rune/calendar/party-kill/LFG fact on a session end or world transfer.
     fn clear_rune_calendar(&mut self) {
         self.runes.clear();
         self.calendar = None;
@@ -2188,6 +2233,11 @@ impl WrathWorldView {
         self.party_kills.clear();
         self.party_kill_dropped = 0;
         self.party_kill_unresolved = 0;
+        self.lfg_join_result = None;
+        self.lfg_queue_status = None;
+        self.lfg_update_player = None;
+        self.lfg_update_party = None;
+        self.lfg_proposal = None;
     }
 }
 
@@ -4506,19 +4556,15 @@ fn translate_gameplay(
                 SessionEvent::ReadyCheckAnswer { guid, ready }
             }
         }],
-        // The 12340 systems below decode exactly and are ready for their app state owners, but
-        // the current 1.12 UI has no LFG or battlefield view to receive them. Keep the decoded
-        // records in the worker's trace path rather than projecting them into an unrelated
-        // SessionEvent (a notification or chat line would misreport the wire). Calendar and rune
-        // records are consumed by `WrathWorldView` through `WrathFeedEvent`, so they only return
-        // empty here.
+        WrathGameplayEvent::BattlefieldStatus(status) => vec![wrath_battlefield_status(status)],
+        WrathGameplayEvent::PvpLogData(log) => vec![wrath_pvp_log_data(*log)],
+        // Calendar, rune, and LFG records are consumed by `WrathWorldView` through `WrathFeedEvent`,
+        // so they return empty here.
         WrathGameplayEvent::LfgJoinResult(_)
         | WrathGameplayEvent::LfgQueueStatus(_)
         | WrathGameplayEvent::LfgUpdatePlayer(_)
         | WrathGameplayEvent::LfgUpdateParty(_)
         | WrathGameplayEvent::LfgProposalUpdate(_)
-        | WrathGameplayEvent::BattlefieldStatus(_)
-        | WrathGameplayEvent::PvpLogData(_)
         | WrathGameplayEvent::CalendarSendCalendar(_)
         | WrathGameplayEvent::CalendarCommandResult(_)
         | WrathGameplayEvent::RuneConvert(_)
@@ -4771,6 +4817,126 @@ fn wrath_contacts(list: gameplay::social::ContactList) -> Vec<SessionEvent> {
         SessionEvent::FriendList { friends },
         SessionEvent::IgnoreList { guids: ignores },
     ]
+}
+
+/// Map a 12340 `BattlegroundTypeId` (`SharedDefines.h:3400-3416`) to its canonical `Map.dbc` ID
+/// when the `SMSG_BATTLEFIELD_STATUS` arm (`STATUS_WAIT_QUEUE`) does not carry an explicit map word.
+pub(crate) fn wrath_bg_type_default_map_id(bg_type_id: u32) -> u32 {
+    match bg_type_id {
+        1 => 30,  // BATTLEGROUND_AV -> Alterac Valley
+        2 => 489, // BATTLEGROUND_WS -> Warsong Gulch
+        3 => 529, // BATTLEGROUND_AB -> Arathi Basin
+        4 => 559, // BATTLEGROUND_NA -> Nagrand Arena
+        5 => 562, // BATTLEGROUND_BE -> Blade's Edge Arena
+        6 => 559, // BATTLEGROUND_AA -> All Arenas (fallback map)
+        7 => 566, // BATTLEGROUND_EY -> Eye of the Storm
+        8 => 572, // BATTLEGROUND_RL -> Ruins of Lordaeron
+        9 => 607, // BATTLEGROUND_SA -> Strand of the Ancients
+        10 => 617, // BATTLEGROUND_DS -> Dalaran Sewers
+        11 => 618, // BATTLEGROUND_RV -> Ring of Valor
+        30 => 628, // BATTLEGROUND_IC -> Isle of Conquest
+        32 => 489, // BATTLEGROUND_RB -> Random Battleground
+        other => other,
+    }
+}
+
+/// Map a `Map.dbc` ID or `BattlemasterList.dbc` ID to its 12340 `BattlegroundTypeId` for outbound
+/// `CMSG_BATTLEMASTER_JOIN`, `CMSG_BATTLEFIELD_PORT`, and `CMSG_BATTLEFIELD_LIST`.
+pub(crate) fn wrath_map_to_bg_type_id(map_or_bg_id: u32) -> u32 {
+    match map_or_bg_id {
+        30 => 1,   // Alterac Valley
+        489 => 2,  // Warsong Gulch
+        529 => 3,  // Arathi Basin
+        559 => 4,  // Nagrand Arena
+        562 => 5,  // Blade's Edge Arena
+        566 => 7,  // Eye of the Storm
+        572 => 8,  // Ruins of Lordaeron
+        607 => 9,  // Strand of the Ancients
+        617 => 10, // Dalaran Sewers
+        618 => 11, // Ring of Valor
+        628 => 30, // Isle of Conquest
+        other => other,
+    }
+}
+
+pub(crate) fn wrath_battlefield_status(
+    status: gameplay::wrath_systems::BattlefieldStatus,
+) -> SessionEvent {
+    let Some(slot) = status.slot else {
+        return SessionEvent::BattlefieldStatus(benilla_protocol::messages::BattlefieldStatus {
+            queue_slot: status.queue_slot,
+            map_id: 0,
+            bracket_id: 0,
+            instance_id: 0,
+            status_id: 0,
+            avg_wait_ms: 0,
+            elapsed_ms: 0,
+            invite_timeout_ms: 0,
+            close_timeout_ms: 0,
+        });
+    };
+    let fallback_map = wrath_bg_type_default_map_id(slot.bg_type);
+    let (map_id, avg_wait_ms, elapsed_ms, invite_timeout_ms, close_timeout_ms) = match slot.arm {
+        gameplay::wrath_systems::BattlefieldStatusArm::Queued {
+            average_wait_ms,
+            queued_ms,
+        } => (fallback_map, average_wait_ms, queued_ms, 0, 0),
+        gameplay::wrath_systems::BattlefieldStatusArm::Confirm {
+            map_id,
+            port_expiration_ms,
+            ..
+        } => (
+            if map_id != 0 { map_id } else { fallback_map },
+            0,
+            0,
+            port_expiration_ms,
+            0,
+        ),
+        gameplay::wrath_systems::BattlefieldStatusArm::Active {
+            map_id,
+            auto_leave_ms,
+            started_ms,
+            ..
+        } => (
+            if map_id != 0 { map_id } else { fallback_map },
+            0,
+            started_ms,
+            0,
+            auto_leave_ms,
+        ),
+        gameplay::wrath_systems::BattlefieldStatusArm::Inactive => (fallback_map, 0, 0, 0, 0),
+    };
+    SessionEvent::BattlefieldStatus(benilla_protocol::messages::BattlefieldStatus {
+        queue_slot: status.queue_slot,
+        map_id,
+        bracket_id: slot.min_level,
+        instance_id: slot.instance_id,
+        status_id: slot.status,
+        avg_wait_ms,
+        elapsed_ms,
+        invite_timeout_ms,
+        close_timeout_ms,
+    })
+}
+
+pub(crate) fn wrath_pvp_log_data(log: gameplay::wrath_systems::PvpLogData) -> SessionEvent {
+    let rows = log
+        .scores
+        .into_iter()
+        .map(|row| benilla_protocol::messages::PvpLogRow {
+            guid: row.guid,
+            rank: u32::from(row.team.unwrap_or(0)),
+            killing_blows: row.killing_blows,
+            honorable_kills: row.honorable_kills.unwrap_or(0),
+            deaths: row.deaths.unwrap_or(0),
+            bonus_honor: row.bonus_honor.unwrap_or(0),
+            stats: row.objectives,
+        })
+        .collect();
+    SessionEvent::PvpLogData {
+        winner: log.winner,
+        rows,
+    }
 }
 
 fn wrath_friend_status(
@@ -5545,6 +5711,174 @@ fn wrath_tap_commands(
                     Some((
                         benilla_protocol_wrath::opcode::CMSG_CALENDAR_GET_CALENDAR,
                         gameplay::wrath_systems::encode_calendar_get_calendar(),
+                    ))
+                }
+            }
+            ClientCommand::LfgJoin {
+                slots,
+                comment,
+                roles,
+                no_partial_clear,
+                achievements,
+                needs,
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    debug!(
+                        "wrath: refusing LfgJoin from stale scope ({session_epoch}, {world_generation})"
+                    );
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_LFG_JOIN,
+                        gameplay::wrath_systems::encode_lfg_join_request(
+                            &gameplay::wrath_systems::LfgJoinRequest {
+                                slots,
+                                comment,
+                                roles,
+                                no_partial_clear,
+                                achievements,
+                                needs,
+                            },
+                        ),
+                    ))
+                }
+            }
+            ClientCommand::LfgLeave {
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_LFG_LEAVE,
+                        gameplay::wrath_systems::encode_lfg_leave(),
+                    ))
+                }
+            }
+            ClientCommand::LfgProposalResult {
+                proposal_id,
+                accept,
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_LFG_PROPOSAL_RESULT,
+                        gameplay::wrath_systems::encode_lfg_proposal_result(proposal_id, accept),
+                    ))
+                }
+            }
+            ClientCommand::SetLfgComment {
+                comment,
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_SET_LFG_COMMENT,
+                        gameplay::wrath_systems::encode_set_lfg_comment(&comment),
+                    ))
+                }
+            }
+            ClientCommand::LfgSetRoles {
+                roles,
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_LFG_SET_ROLES,
+                        gameplay::wrath_systems::encode_lfg_set_roles(roles),
+                    ))
+                }
+            }
+            ClientCommand::VehicleExit {
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_REQUEST_VEHICLE_EXIT,
+                        gameplay::wrath_systems::encode_request_vehicle_exit(),
+                    ))
+                }
+            }
+            ClientCommand::VehiclePrevSeat {
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_REQUEST_VEHICLE_PREV_SEAT,
+                        gameplay::wrath_systems::encode_request_vehicle_prev_seat(),
+                    ))
+                }
+            }
+            ClientCommand::VehicleNextSeat {
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_REQUEST_VEHICLE_NEXT_SEAT,
+                        gameplay::wrath_systems::encode_request_vehicle_next_seat(),
+                    ))
+                }
+            }
+            ClientCommand::VehicleSwitchSeat {
+                vehicle,
+                seat,
+                session_epoch,
+                world_generation,
+            } => {
+                if !view.entered_world
+                    || view.session_epoch != session_epoch
+                    || view.world_generation != world_generation
+                {
+                    None
+                } else {
+                    Some((
+                        benilla_protocol_wrath::opcode::CMSG_REQUEST_VEHICLE_SWITCH_SEAT,
+                        gameplay::wrath_systems::encode_request_vehicle_switch_seat(vehicle, seat),
                     ))
                 }
             }
@@ -6467,6 +6801,65 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_BATTLEFIELD_STATUS,
                 Vec::new(),
             )),
+            ClientCommand::BattlefieldList { map_id } => {
+                let bg_type = wrath_map_to_bg_type_id(map_id);
+                let mut body = Vec::with_capacity(6);
+                body.extend_from_slice(&bg_type.to_le_bytes());
+                body.push(0); // from_where: UI / non-battlemaster
+                body.push(0); // xp_gain
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_BATTLEFIELD_LIST,
+                    body,
+                ))
+            }
+            ClientCommand::BattlemasterJoin {
+                battlemaster,
+                map_id,
+                instance_id,
+                as_group,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_BATTLEMASTER_JOIN,
+                gameplay::wrath_systems::encode_battlemaster_join(
+                    battlemaster,
+                    wrath_map_to_bg_type_id(map_id),
+                    instance_id,
+                    as_group,
+                ),
+            )),
+            ClientCommand::BattlefieldJoin {
+                map_id,
+                instance_id,
+                as_group,
+            } => Some((
+                benilla_protocol_wrath::opcode::CMSG_BATTLEMASTER_JOIN,
+                gameplay::wrath_systems::encode_battlemaster_join(
+                    view.player_guid,
+                    wrath_map_to_bg_type_id(map_id),
+                    instance_id,
+                    as_group,
+                ),
+            )),
+            ClientCommand::BattlefieldPort { map_id, accept } => Some((
+                benilla_protocol_wrath::opcode::CMSG_BATTLEFIELD_PORT,
+                gameplay::wrath_systems::encode_battlefield_port(
+                    0,
+                    0,
+                    wrath_map_to_bg_type_id(map_id),
+                    u8::from(accept),
+                ),
+            )),
+            ClientCommand::LeaveBattlefield { map_id } => {
+                let bg_type = wrath_map_to_bg_type_id(map_id);
+                let mut body = Vec::with_capacity(8);
+                body.push(0);
+                body.push(0);
+                body.extend_from_slice(&bg_type.to_le_bytes());
+                body.extend_from_slice(&0x1F90u16.to_le_bytes());
+                Some((
+                    benilla_protocol_wrath::opcode::CMSG_LEAVE_BATTLEFIELD,
+                    body,
+                ))
+            }
             ClientCommand::GmTicketCreate {
                 category,
                 map,
@@ -7709,6 +8102,84 @@ fn wrath_net_drain(
                     }
                     view.multiclass_replies
                         .push_back((op, status, serial, payload));
+                }
+            }
+            WrathFeedEvent::LfgJoinResult {
+                result,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.lfg_join_result = Some(result);
+                }
+            }
+            WrathFeedEvent::LfgQueueStatus {
+                status,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.lfg_queue_status = Some(status);
+                }
+            }
+            WrathFeedEvent::LfgUpdatePlayer {
+                update,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    if !update.joined {
+                        view.lfg_queue_status = None;
+                        view.lfg_proposal = None;
+                    }
+                    view.lfg_update_player = Some(update);
+                }
+            }
+            WrathFeedEvent::LfgUpdateParty {
+                update,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    if !update.joined {
+                        view.lfg_queue_status = None;
+                        view.lfg_proposal = None;
+                    }
+                    view.lfg_update_party = Some(update);
+                }
+            }
+            WrathFeedEvent::LfgProposalUpdate {
+                proposal,
+                session_epoch,
+                world_generation,
+            } => {
+                if !scope_is_older(
+                    view.session_epoch,
+                    view.world_generation,
+                    session_epoch,
+                    world_generation,
+                ) {
+                    view.lfg_proposal = Some(proposal);
                 }
             }
             WrathFeedEvent::ExportSkipped(reason) => {
@@ -11173,6 +11644,41 @@ pub fn run_session_with_cancel(
                                     push_session_event(&events_out, &session, event);
                                 }
                             }
+                        }
+                        Ok(WrathGameplayEvent::LfgJoinResult(result)) => {
+                            feed.push_event(WrathFeedEvent::LfgJoinResult {
+                                result,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                        }
+                        Ok(WrathGameplayEvent::LfgQueueStatus(status)) => {
+                            feed.push_event(WrathFeedEvent::LfgQueueStatus {
+                                status,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                        }
+                        Ok(WrathGameplayEvent::LfgUpdatePlayer(update)) => {
+                            feed.push_event(WrathFeedEvent::LfgUpdatePlayer {
+                                update,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                        }
+                        Ok(WrathGameplayEvent::LfgUpdateParty(update)) => {
+                            feed.push_event(WrathFeedEvent::LfgUpdateParty {
+                                update,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
+                        }
+                        Ok(WrathGameplayEvent::LfgProposalUpdate(proposal)) => {
+                            feed.push_event(WrathFeedEvent::LfgProposalUpdate {
+                                proposal,
+                                session_epoch: session.epoch(),
+                                world_generation: session.world_generation(),
+                            });
                         }
                         Ok(event @ WrathGameplayEvent::InventoryFailure {
                             reason,

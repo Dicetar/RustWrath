@@ -80,8 +80,92 @@ pub(crate) fn feed(
             None => script.clear_calendar(),
         }
 
+        let (
+            joined,
+            queued,
+            lfg_joined,
+            no_partial_clear,
+            achievements,
+            queued_dungeons,
+            comment,
+        ) = if let Some(party) = &world.lfg_update_party {
+            (
+                party.joined,
+                party.queued.unwrap_or(false),
+                party.lfg_joined.unwrap_or(party.joined),
+                party.no_partial_clear.unwrap_or(false),
+                party.achievements.unwrap_or(false),
+                party.dungeon_ids.clone(),
+                party.comment.as_deref(),
+            )
+        } else if let Some(player) = &world.lfg_update_player {
+            (
+                player.joined,
+                player.queued.unwrap_or(false),
+                false,
+                player.no_partial_clear.unwrap_or(false),
+                player.achievements.unwrap_or(false),
+                player.dungeon_ids.clone(),
+                player.comment.as_deref(),
+            )
+        } else {
+            (false, false, false, false, false, Vec::new(), None)
+        };
+        let last_join_result = world
+            .lfg_join_result
+            .as_ref()
+            .map(|r| (r.result, r.state));
+        let queue_status = world.lfg_queue_status.map(|s| {
+            benilla_ui::script::WrathLfgQueueStatusState {
+                dungeon_id: s.dungeon_id,
+                wait_time_avg: s.wait_time_avg,
+                wait_time: s.wait_time,
+                wait_time_tank: s.wait_time_tank,
+                wait_time_healer: s.wait_time_healer,
+                wait_time_dps: s.wait_time_dps,
+                tanks_needed: s.tanks_needed,
+                healers_needed: s.healers_needed,
+                dps_needed: s.dps_needed,
+                queued_time: s.queued_time,
+            }
+        });
+        let proposal = world.lfg_proposal.as_ref().map(|p| {
+            benilla_ui::script::WrathLfgProposalState {
+                proposal_id: p.proposal_id,
+                dungeon_id: p.dungeon_id,
+                state: p.state,
+                completed_mask: p.completed_mask,
+                silent: p.silent,
+                players: p
+                    .players
+                    .iter()
+                    .map(|m| benilla_ui::script::WrathLfgProposalMemberState {
+                        role: m.role,
+                        is_local: m.is_local,
+                        in_dungeon: m.in_dungeon,
+                        in_same_group: m.in_same_group,
+                        responded: m.responded,
+                        accepted: m.accepted,
+                    })
+                    .collect(),
+            }
+        });
+        script.set_wrath_lfg_server_state(
+            joined,
+            queued,
+            lfg_joined,
+            no_partial_clear,
+            achievements,
+            queued_dungeons,
+            comment,
+            last_join_result,
+            queue_status,
+            proposal,
+        );
+
         let fetches = script.take_calendar_fetches();
-        if fetches.is_empty() {
+        let scoped_commands = script.take_wrath_scoped_commands();
+        if fetches.is_empty() && scoped_commands.is_empty() {
             return;
         }
         let Some(net) = net.as_deref() else {
@@ -97,6 +181,135 @@ pub(crate) fn feed(
                 session_epoch,
                 world_generation,
             });
+        }
+        for cmd in scoped_commands {
+            use benilla_ui::script::WrathScopedCommand as C;
+            match cmd {
+                C::LfgJoin {
+                    slots,
+                    comment,
+                    roles,
+                    no_partial_clear,
+                    achievements,
+                    needs,
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::LfgJoin {
+                        slots,
+                        comment,
+                        roles,
+                        no_partial_clear,
+                        achievements,
+                        needs,
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                C::LfgLeave {
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::LfgLeave {
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                C::LfgProposalResult {
+                    proposal_id,
+                    accept,
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::LfgProposalResult {
+                        proposal_id,
+                        accept,
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                C::SetLfgComment {
+                    comment,
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::SetLfgComment {
+                        comment,
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                C::LfgSetRoles {
+                    roles,
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::LfgSetRoles {
+                        roles,
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                C::VehicleExit {
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::VehicleExit {
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                C::VehiclePrevSeat {
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::VehiclePrevSeat {
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                C::VehicleNextSeat {
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::VehicleNextSeat {
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                C::VehicleSwitchSeat {
+                    vehicle,
+                    seat,
+                    session_epoch,
+                    world_generation,
+                } if session_epoch == world.session_epoch
+                    && world_generation == world.world_generation =>
+                {
+                    let _ = net.0.send(ClientCommand::VehicleSwitchSeat {
+                        vehicle,
+                        seat,
+                        session_epoch,
+                        world_generation,
+                    });
+                }
+                _ => {}
+            }
         }
     });
 }

@@ -16,7 +16,7 @@ use benilla_formats::{Talent, TalentCatalog};
 use benilla_protocol::{SessionEvent, SessionEventKind, TalentGroupInfo};
 use benilla_ui::script::{
     ScriptValue, TalentCall, TalentPrereqView, TalentReq, TalentTabView, TalentUiState, TalentView,
-    UiScript,
+    UiScript, WrathTalentGroupView, WrathTalentUiState,
 };
 
 use crate::net::{ClientCommand, NetCommands, NetHandlerApp, ObjectStore, SelfPlayer};
@@ -147,6 +147,7 @@ fn load_talents(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
 #[derive(Default)]
 struct FeedMemory {
     pushed: TalentUiState,
+    pushed_wrath: WrathTalentUiState,
     /// `None` until the first read, which gives zero deltas.
     points: Option<(u32, u32)>,
 }
@@ -221,6 +222,20 @@ fn feed_talents(
             class,
             points,
         );
+        let fresh_wrath = build_wrath_talent_groups(
+            &talents.catalog,
+            &actions.spells,
+            wrath_talents.as_deref(),
+            &spells.catalog,
+            race,
+            class,
+            points,
+            &fresh,
+        );
+        if fresh_wrath != memory.pushed_wrath {
+            script.set_wrath_talents(fresh_wrath.clone());
+            memory.pushed_wrath = fresh_wrath;
+        }
         if fresh != memory.pushed {
             gate.audit("feed_talents", "the talent pages");
             debug!(
@@ -268,6 +283,15 @@ fn rank_of(t: &Talent, known: &BTreeSet<u32>) -> u32 {
         .unwrap_or(0)
 }
 
+fn rank_of_spec(t: &Talent, spec: &TalentGroupInfo) -> u32 {
+    spec.talents
+        .iter()
+        .find(|&&(id, _)| id == t.id)
+        .map_or(0, |&(_, max_rank_idx)| {
+            (u32::from(max_rank_idx) + 1).min(t.max_rank())
+        })
+}
+
 fn rank_of_with_wrath(
     t: &Talent,
     known: &BTreeSet<u32>,
@@ -276,9 +300,74 @@ fn rank_of_with_wrath(
     let from_spells = rank_of(t, known);
     let from_spec = wrath
         .and_then(WrathTalentState::active_player_spec)
-        .and_then(|spec| spec.talents.iter().find(|&&(id, _)| id == t.id))
-        .map_or(0, |&(_, max_rank_idx)| (u32::from(max_rank_idx) + 1).min(t.max_rank()));
+        .map_or(0, |spec| rank_of_spec(t, spec));
     from_spells.max(from_spec)
+}
+
+pub(crate) fn build_wrath_talent_groups(
+    catalog: &TalentCatalog,
+    known: &BTreeSet<u32>,
+    wrath: Option<&WrathTalentState>,
+    spells: &benilla_formats::SpellCatalog,
+    race: u8,
+    class: u8,
+    points: (u32, u32),
+    active_snapshot: &TalentUiState,
+) -> WrathTalentUiState {
+    let Some(wrath) = wrath else {
+        return WrathTalentUiState::default();
+    };
+    let active_group = wrath.active_spec.saturating_add(1).max(1);
+    let mut groups = Vec::with_capacity(wrath.specs.len());
+    for (spec_idx, spec) in wrath.specs.iter().enumerate() {
+        let mut glyphs = [0u16; 6];
+        for (i, &g) in spec.glyphs.iter().take(6).enumerate() {
+            glyphs[i] = g;
+        }
+        let is_active = spec_idx == usize::from(wrath.active_spec);
+        let single_spec_state = WrathTalentState {
+            player_unspent_points: wrath.player_unspent_points,
+            active_spec: 0,
+            specs: vec![spec.clone()],
+            pet_unspent_points: None,
+            pet_talents: Vec::new(),
+            involuntary_reset_flag: None,
+        };
+        let empty_spells = BTreeSet::new();
+        let page = if is_active {
+            active_snapshot.clone()
+        } else {
+            build_pages_with_wrath(
+                catalog,
+                &empty_spells,
+                Some(&single_spec_state),
+                spells,
+                race,
+                class,
+                points,
+            )
+        };
+        let spent_in_spec: u32 = page.tabs.iter().map(|t| t.points_spent).sum();
+        let active_spent: u32 = active_snapshot.tabs.iter().map(|t| t.points_spent).sum();
+        let total_budget = active_spent.saturating_add(points.0);
+        let unspent_points = if is_active {
+            points.0
+        } else {
+            total_budget.saturating_sub(spent_in_spec)
+        };
+        groups.push(WrathTalentGroupView {
+            tabs: page.tabs,
+            talents: page.talents,
+            unspent_points,
+            glyphs,
+        });
+    }
+    WrathTalentUiState {
+        active_group,
+        groups,
+        pet_unspent_points: wrath.pet_unspent_points.unwrap_or(0),
+        pet_talents: wrath.pet_talents.clone(),
+    }
 }
 
 /// Builds the pushed snapshot.

@@ -508,17 +508,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     // `GetLFGQueuedList([table])` (`LFGInfo_Scripts.cpp:544`): the caller's table, cleared and
-    // filled with the queued dungeon slots. benilla has no dungeon-finder queue, so the
-    // reference's empty queue is an empty table (or the caller's table, cleared).
+    // filled with the queued dungeon slots (`table[slot] = true`).
     lua.globals().set(
         "GetLFGQueuedList",
-        lua.create_function(|lua, arg: Option<Value>| match arg {
-            Some(Value::Table(table)) => {
-                table.clear()?;
-                Ok(Value::Table(table))
+        lua.create_function(|lua, arg: Option<Value>| {
+            let table = match arg {
+                Some(Value::Table(table)) => {
+                    table.clear()?;
+                    table
+                }
+                Some(Value::Nil) | None => lua.create_table()?,
+                Some(_) => return Err(mlua::Error::runtime("Usage: GetLFDQueuedList([table])")),
+            };
+            let dungeons = lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .wrath_lfg
+                .queued_dungeons
+                .clone();
+            for slot in dungeons {
+                table.set(i64::from(slot), true)?;
             }
-            Some(Value::Nil) | None => Ok(Value::Table(lua.create_table()?)),
-            Some(_) => Err(mlua::Error::runtime("Usage: GetLFDQueuedList([table])")),
+            Ok(Value::Table(table))
         })?,
     )?;
     // The queue/arena/battleground list queries are empty until their subsystems populate them;
@@ -616,13 +627,91 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| Ok(super::client::locale_name(lua)))?,
     )?;
 
-    // `VehicleExit` (`MainMenuBar.xml`, the vehicle leave button's `function=`): 3.3.5a registers
-    // it as a frame-script global at boot. It acts on the vehicle the player is in, and that button
-    // exists only inside one (`MainMenuBar.lua` shows it on `UNIT_ENTERED_VEHICLE`); benilla has no
-    // vehicles, so the stock paths never reach an action here.
+    // `VehicleExit`, `VehiclePrevSeat`, `VehicleNextSeat`, `UnitSwitchToVehicleSeat`, `CanExitVehicle`
+    // (`UnitVehicle_C.cpp:744-818`): enqueue scoped 12340 vehicle requests when the player is in a
+    // replicated vehicle scope.
     lua.globals().set(
         "VehicleExit",
-        lua.create_function(|_, _args: mlua::MultiValue| Ok(()))?,
+        lua.create_function(|lua, _args: mlua::MultiValue| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if let Some((session_epoch, world_generation)) = model.wrath_scope {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::VehicleExit {
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "VehiclePrevSeat",
+        lua.create_function(|lua, _args: mlua::MultiValue| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if let Some((session_epoch, world_generation)) = model.wrath_scope {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::VehiclePrevSeat {
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "VehicleNextSeat",
+        lua.create_function(|lua, _args: mlua::MultiValue| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if let Some((session_epoch, world_generation)) = model.wrath_scope {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::VehicleNextSeat {
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "UnitSwitchToVehicleSeat",
+        lua.create_function(|lua, args: mlua::MultiValue| {
+            let seat = args
+                .get(1)
+                .and_then(|v| lua.coerce_integer(v.clone()).ok().flatten())
+                .unwrap_or(1) as i8;
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if let (Some((session_epoch, world_generation)), Some(vehicle)) =
+                (model.wrath_scope, model.vehicle_guid)
+            {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::VehicleSwitchSeat {
+                            vehicle,
+                            seat,
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "CanExitVehicle",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.vehicle_guid.is_some())
+        })?,
     )?;
     // The pitch controls are the other vehicle-only named handlers in VehicleMenuBar.xml. With
     // no vehicle the frame is never shown; defining the handlers keeps the XML's OnMouseDown/Up
@@ -667,27 +756,123 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // `GetLFGProposal` (`UIParent.lua:3571`, the minimap LFG dropdown's load): ten values, the
-    // first "a proposal exists". benilla has no dungeon-finder queue, so there is no proposal.
+    // `GetLFGProposal` (`UIParent.lua:3571`, `LFGInfo_Scripts.cpp:414`): returns
+    // `(proposalExists, id, typeID, subtypeID, name, texture, role, hasResponded, totalEncounters,
+    // completedEncounters, numMembers, isLeader, isHoliday)` when a proposal is active.
     lua.globals().set(
         "GetLFGProposal",
-        lua.create_function(|_, ()| Ok(false))?,
+        lua.create_function(|lua, ()| -> mlua::Result<MultiValue> {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(proposal) = model.wrath_lfg.proposal.as_ref().filter(|p| !p.silent) else {
+                return Ok(MultiValue::from_vec(vec![Value::Boolean(false)]));
+            };
+            let local = proposal.players.iter().find(|p| p.is_local).copied();
+            let role_str = match local.map_or(0, |p| p.role) {
+                r if r & 0x02 != 0 => "TANK",
+                r if r & 0x04 != 0 => "HEALER",
+                r if r & 0x08 != 0 => "DAMAGER",
+                _ => "NONE",
+            };
+            let is_leader = local.is_some_and(|p| p.role & 0x01 != 0);
+            let has_responded = local.is_some_and(|p| p.responded);
+            let dungeon_id = proposal.dungeon_id & 0x00FF_FFFF;
+            let completed = proposal.completed_mask.count_ones();
+            Ok(MultiValue::from_vec(vec![
+                Value::Boolean(true),
+                Value::Integer(i64::from(proposal.proposal_id)),
+                Value::Integer(1),
+                Value::Integer(1),
+                Value::String(lua.create_string(&format!("Dungeon #{dungeon_id}"))?),
+                Value::String(lua.create_string("")?),
+                Value::String(lua.create_string(role_str)?),
+                Value::Boolean(has_responded),
+                Value::Integer(0),
+                Value::Integer(i64::from(completed)),
+                Value::Integer(proposal.players.len() as i64),
+                Value::Boolean(is_leader),
+                Value::Boolean(false),
+            ]))
+        })?,
     )?;
-    // `GetLFGInfoServer` and `GetLFGRoleUpdate` (`UIParent.lua:3572`, `:3573`): the server-side
-    // LFG state — party membership, the queue, the role check. With no dungeon-finder queue the
-    // answers are the idle ones: no party, no queue, no role check, no slots.
+    // `GetLFGProposalMember(index)` (`LFGInfo_Scripts.cpp:469`): `(role, isPlayer, isInDungeon,
+    // isSameGroup, hasResponded, accepted)`.
+    lua.globals().set(
+        "GetLFGProposalMember",
+        lua.create_function(|lua, index: Option<i64>| -> mlua::Result<MultiValue> {
+            let idx = index.unwrap_or(1).saturating_sub(1) as usize;
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(member) = model
+                .wrath_lfg
+                .proposal
+                .as_ref()
+                .and_then(|p| p.players.get(idx))
+            else {
+                return Ok(MultiValue::new());
+            };
+            let role_str = match member.role {
+                r if r & 0x02 != 0 => "TANK",
+                r if r & 0x04 != 0 => "HEALER",
+                r if r & 0x08 != 0 => "DAMAGER",
+                _ => "NONE",
+            };
+            Ok(MultiValue::from_vec(vec![
+                Value::String(lua.create_string(role_str)?),
+                Value::Boolean(member.is_local),
+                Value::Boolean(member.in_dungeon),
+                Value::Boolean(member.in_same_group),
+                Value::Boolean(member.responded),
+                Value::Boolean(member.accepted),
+            ]))
+        })?,
+    )?;
+    // `GetLFGInfoServer` (`UIParent.lua:3572`, `LFGInfo_Scripts.cpp:250`): `(inParty, joined,
+    // queued, noPartialClear, achievements, lfgComment, slotCount)`.
     lua.globals().set(
         "GetLFGInfoServer",
-        lua.create_function(|_, ()| {
-            Ok((
-                false,
-                false,
-                false,
-                false,
-                false,
-                mlua::Value::Nil,
-                0i64,
-            ))
+        lua.create_function(|lua, ()| -> mlua::Result<MultiValue> {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let lfg = &model.wrath_lfg;
+            let comment = if lfg.joined {
+                Value::String(lua.create_string(&lfg.comment)?)
+            } else {
+                Value::Nil
+            };
+            Ok(MultiValue::from_vec(vec![
+                Value::Boolean(lfg.lfg_joined),
+                Value::Boolean(lfg.joined),
+                Value::Boolean(lfg.queued),
+                Value::Boolean(lfg.no_partial_clear),
+                Value::Boolean(lfg.achievements),
+                comment,
+                Value::Integer(lfg.queued_dungeons.len() as i64),
+            ]))
+        })?,
+    )?;
+    // `GetLFGQueueStats` (`LFGFrame.lua:392`, `LFGInfo_Scripts.cpp:365`):
+    // `(hasData, leaderNeeds, tankNeeds, healerNeeds, dpsNeeds, instanceType, instanceName,
+    // tankWait, healerWait, dpsWait, averageWait, queuedTime)`
+    lua.globals().set(
+        "GetLFGQueueStats",
+        lua.create_function(|lua, ()| -> mlua::Result<MultiValue> {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(stats) = model.wrath_lfg.queue_status else {
+                return Ok(MultiValue::from_vec(vec![Value::Boolean(false)]));
+            };
+            let dungeon_id = stats.dungeon_id & 0x00FF_FFFF;
+            Ok(MultiValue::from_vec(vec![
+                Value::Boolean(true),
+                Value::Integer(0),
+                Value::Integer(i64::from(stats.tanks_needed)),
+                Value::Integer(i64::from(stats.healers_needed)),
+                Value::Integer(i64::from(stats.dps_needed)),
+                Value::Integer(1),
+                Value::String(lua.create_string(&format!("Dungeon #{dungeon_id}"))?),
+                Value::Integer(i64::from(stats.wait_time_tank)),
+                Value::Integer(i64::from(stats.wait_time_healer)),
+                Value::Integer(i64::from(stats.wait_time_dps)),
+                Value::Integer(i64::from(stats.wait_time_avg)),
+                Value::Integer(i64::from(stats.queued_time)),
+            ]))
         })?,
     )?;
     lua.globals().set(
@@ -695,15 +880,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok((false, mlua::Value::Nil, mlua::Value::Nil)))?,
     )?;
 
-    // `IsListedInLFR` and `IsPartyLFG` (`UIParent.lua:3583`, `:3585`, `GetLFGMode`'s listing and
-    // party tests): no raid-finder listing and no dungeon-finder party, as benilla has neither.
+    // `IsListedInLFR` and `IsPartyLFG` (`UIParent.lua:3583`, `:3585`).
     lua.globals().set(
         "IsListedInLFR",
         lua.create_function(|_, ()| Ok(false))?,
     )?;
     lua.globals().set(
         "IsPartyLFG",
-        lua.create_function(|_, ()| Ok(false))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.wrath_lfg.lfg_joined)
+        })?,
     )?;
 
     // Voice chat is permanently absent: the interface's `VoiceChat.xml` is skipped forever
@@ -1056,10 +1243,216 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // `GetLFGRoles` (`LFGFrame.lua:251`) & `UnitGroupRolesAssigned` (`PlayerFrame.lua:250`): LFG roles.
+    // `GetLFGRoles`, `SetLFGRoles`, `SetLFGComment`, `SetLFGDungeon`, `ClearAllLFGDungeons`,
+    // `JoinLFG`, `LeaveLFG`, `AcceptProposal`, `RejectProposal` (`LFGFrame.lua`,
+    // `CGLookingForGroup.cpp:183-241`).
     lua.globals().set(
         "GetLFGRoles",
-        lua.create_function(|_, _: mlua::MultiValue| Ok((false, false, false, false)))?,
+        lua.create_function(|lua, _: mlua::MultiValue| {
+            let roles = lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .wrath_lfg
+                .roles;
+            Ok((
+                roles & 0x01 != 0,
+                roles & 0x02 != 0,
+                roles & 0x04 != 0,
+                roles & 0x08 != 0,
+            ))
+        })?,
+    )?;
+    lua.globals().set(
+        "SetLFGRoles",
+        lua.create_function(|lua, args: mlua::MultiValue| {
+            let flag_at = |idx: usize| {
+                matches!(
+                    args.get(idx),
+                    Some(Value::Boolean(true)) | Some(Value::Integer(1..))
+                )
+            };
+            let mut roles = 0u8;
+            if flag_at(0) {
+                roles |= 0x01;
+            }
+            if flag_at(1) {
+                roles |= 0x02;
+            }
+            if flag_at(2) {
+                roles |= 0x04;
+            }
+            if flag_at(3) {
+                roles |= 0x08;
+            }
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.wrath_lfg.roles = roles;
+            if let Some((session_epoch, world_generation)) = model.wrath_scope {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::LfgSetRoles {
+                            roles,
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "SetLFGComment",
+        lua.create_function(|lua, comment: Option<String>| {
+            let mut comment = comment.unwrap_or_default();
+            comment.truncate(256);
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.wrath_lfg.comment = comment.clone();
+            if let Some((session_epoch, world_generation)) = model.wrath_scope {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::SetLfgComment {
+                            comment,
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "SetLFGDungeon",
+        lua.create_function(|lua, args: mlua::MultiValue| {
+            let slot = match (args.front(), args.get(1)) {
+                (Some(a), Some(b)) => {
+                    let kind = lua.coerce_integer(a.clone())?.unwrap_or(0) as u32;
+                    let id = lua.coerce_integer(b.clone())?.unwrap_or(0) as u32;
+                    if id > 0 && kind <= 0xFF {
+                        (id & 0x00FF_FFFF) | ((kind & 0xFF) << 24)
+                    } else {
+                        kind
+                    }
+                }
+                (Some(a), None) => lua.coerce_integer(a.clone())?.unwrap_or(0) as u32,
+                _ => 0,
+            };
+            if slot != 0 {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                if !model.wrath_lfg.selected_slots.contains(&slot)
+                    && model.wrath_lfg.selected_slots.len() < 50
+                {
+                    model.wrath_lfg.selected_slots.push(slot);
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "ClearAllLFGDungeons",
+        lua.create_function(|lua, _: mlua::MultiValue| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            model.wrath_lfg.selected_slots.clear();
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "JoinLFG",
+        lua.create_function(|lua, args: mlua::MultiValue| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let mut slots = model.wrath_lfg.selected_slots.clone();
+            if slots.is_empty() {
+                for arg in &args {
+                    if let Ok(Some(slot)) = lua.coerce_integer(arg.clone()) {
+                        if slot > 0 && slots.len() < 50 {
+                            slots.push(slot as u32);
+                        }
+                    }
+                }
+            }
+            if let Some((session_epoch, world_generation)) = model.wrath_scope {
+                if model.wrath_scoped_commands.len() < 16 {
+                    let comment = model.wrath_lfg.comment.clone();
+                    let roles = model.wrath_lfg.roles;
+                    let no_partial_clear = model.wrath_lfg.no_partial_clear;
+                    let achievements = model.wrath_lfg.achievements;
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::LfgJoin {
+                            slots,
+                            comment,
+                            roles,
+                            no_partial_clear,
+                            achievements,
+                            needs: [0, 0, 0],
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "LeaveLFG",
+        lua.create_function(|lua, _: mlua::MultiValue| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if let Some((session_epoch, world_generation)) = model.wrath_scope {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::LfgLeave {
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "AcceptProposal",
+        lua.create_function(|lua, arg: Option<u32>| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let proposal_id = arg.or_else(|| model.wrath_lfg.proposal.as_ref().map(|p| p.proposal_id));
+            if let (Some((session_epoch, world_generation)), Some(proposal_id)) =
+                (model.wrath_scope, proposal_id)
+            {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::LfgProposalResult {
+                            proposal_id,
+                            accept: true,
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set(
+        "RejectProposal",
+        lua.create_function(|lua, arg: Option<u32>| {
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let proposal_id = arg.or_else(|| model.wrath_lfg.proposal.as_ref().map(|p| p.proposal_id));
+            if let (Some((session_epoch, world_generation)), Some(proposal_id)) =
+                (model.wrath_scope, proposal_id)
+            {
+                if model.wrath_scoped_commands.len() < 16 {
+                    model.wrath_scoped_commands.push_back(
+                        super::model::WrathScopedCommand::LfgProposalResult {
+                            proposal_id,
+                            accept: false,
+                            session_epoch,
+                            world_generation,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        })?,
     )?;
     lua.globals().set(
         "UnitGroupRolesAssigned",
@@ -1510,6 +1903,7 @@ impl super::UiScript {
         if model.wrath_scope != scope {
             model.wrath_scope = scope;
             model.calendar_fetches.clear();
+            model.wrath_scoped_commands.clear();
         }
     }
 
@@ -1589,19 +1983,63 @@ impl super::UiScript {
         self.model_mut().calendar = None;
     }
 
-    /// Clear every scoped rune/calendar fact, including the scope `OpenCalendar()` tags with.
+    /// Clear every scoped rune/calendar/LFG/vehicle fact, including the scope `OpenCalendar()` tags with.
     pub fn clear_wrath_scoped_ui(&mut self) {
         let mut model = self.model_mut();
         model.runes = None;
         model.calendar = None;
         model.wrath_scope = None;
         model.calendar_fetches.clear();
+        model.wrath_lfg = super::model::WrathLfgState::default();
+        model.wrath_scoped_commands.clear();
+        model.vehicle_guid = None;
     }
 
     /// Drain `OpenCalendar()` requests as `(session_epoch, world_generation)`; the app sends each
     /// as `ClientCommand::OpenCalendar`, where the Wrath tap enforces the same scope.
     pub fn take_calendar_fetches(&mut self) -> Vec<(u64, u64)> {
         self.model_mut().calendar_fetches.drain(..).collect()
+    }
+
+    /// Synchronize server-authored 12340 Dungeon Finder state into the VM model while preserving
+    /// locally selected roles/dungeons.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_wrath_lfg_server_state(
+        &mut self,
+        joined: bool,
+        queued: bool,
+        lfg_joined: bool,
+        no_partial_clear: bool,
+        achievements: bool,
+        queued_dungeons: Vec<u32>,
+        comment: Option<&str>,
+        last_join_result: Option<(u32, u32)>,
+        queue_status: Option<super::model::WrathLfgQueueStatusState>,
+        proposal: Option<super::model::WrathLfgProposalState>,
+    ) {
+        let mut model = self.model_mut();
+        model.wrath_lfg.joined = joined;
+        model.wrath_lfg.queued = queued;
+        model.wrath_lfg.lfg_joined = lfg_joined;
+        model.wrath_lfg.no_partial_clear = no_partial_clear;
+        model.wrath_lfg.achievements = achievements;
+        model.wrath_lfg.queued_dungeons = queued_dungeons;
+        if let Some(comment) = comment {
+            model.wrath_lfg.comment = comment.to_owned();
+        }
+        model.wrath_lfg.last_join_result = last_join_result;
+        model.wrath_lfg.queue_status = queue_status;
+        model.wrath_lfg.proposal = proposal;
+    }
+
+    /// Set the replicated vehicle transport GUID for the local player.
+    pub fn set_wrath_vehicle_guid(&mut self, guid: Option<u64>) {
+        self.model_mut().vehicle_guid = guid;
+    }
+
+    /// Drain queued 12340 LFG and vehicle commands from the VM.
+    pub fn take_wrath_scoped_commands(&mut self) -> Vec<super::model::WrathScopedCommand> {
+        self.model_mut().wrath_scoped_commands.drain(..).collect()
     }
 }
 
@@ -2733,5 +3171,256 @@ mod tests {
                 assert_eq!(s.arity(&call).unwrap(), 0, "{call}");
             }
         }
+    }
+
+    #[test]
+    fn wrath_dual_spec_talents_and_glyph_sockets_read_groups() {
+        use crate::script::talent::{
+            TalentSlotView, TalentTabView, WrathTalentGroupView, WrathTalentUiState,
+        };
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_wrath_talents(WrathTalentUiState {
+            active_group: 2,
+            groups: vec![
+                WrathTalentGroupView {
+                    tabs: vec![TalentTabView {
+                        name: "Arms".into(),
+                        icon: "Ability_Warrior_SavageBlow".into(),
+                        points_spent: 5,
+                        background: "WarriorArms".into(),
+                    }],
+                    talents: vec![vec![TalentSlotView {
+                        talent_id: 101,
+                        name: "Heroic Strike".into(),
+                        icon: "Ability_Rogue_Ambush".into(),
+                        tier: 1,
+                        column: 1,
+                        rank: 2,
+                        max_rank: 3,
+                        prereq_tier: None,
+                        prereq_column: None,
+                        meets_prereq: true,
+                        rank_spells: vec![78, 284, 285],
+                        description: "Next melee attack.".into(),
+                        next_rank_description: None,
+                    }]],
+                    unspent_points: 4,
+                    glyphs: [21, 22, 0, 24, 0, 0],
+                },
+                WrathTalentGroupView {
+                    tabs: vec![TalentTabView {
+                        name: "Protection".into(),
+                        icon: "Ability_Warrior_DefensiveStance".into(),
+                        points_spent: 11,
+                        background: "WarriorProtection".into(),
+                    }],
+                    talents: vec![vec![TalentSlotView {
+                        talent_id: 202,
+                        name: "Shield Specialization".into(),
+                        icon: "INV_Shield_06".into(),
+                        tier: 1,
+                        column: 2,
+                        rank: 5,
+                        max_rank: 5,
+                        prereq_tier: None,
+                        prereq_column: None,
+                        meets_prereq: true,
+                        rank_spells: vec![12298],
+                        description: "Block chance.".into(),
+                        next_rank_description: None,
+                    }]],
+                    unspent_points: 9,
+                    glyphs: [31, 0, 33, 0, 35, 36],
+                },
+            ],
+            pet_unspent_points: 3,
+            pet_talents: Vec::new(),
+        });
+
+        assert_eq!(s.eval::<i64>("return GetNumTalentGroups()").unwrap(), 2);
+        assert_eq!(s.eval::<i64>("return GetActiveTalentGroup()").unwrap(), 2);
+        assert_eq!(
+            s.eval::<i64>("return GetUnspentTalentPoints(false, false, 1)").unwrap(),
+            4
+        );
+        assert_eq!(
+            s.eval::<i64>("return GetUnspentTalentPoints(false, false, 2)").unwrap(),
+            9
+        );
+        assert_eq!(
+            s.eval::<i64>("return GetUnspentTalentPoints(false, true, 1)").unwrap(),
+            3
+        );
+
+        let (tab1_name, _, tab1_spent): (String, String, u32) =
+            s.eval("return GetTalentTabInfo(1, false, false, 1)").unwrap();
+        assert_eq!(tab1_name, "Arms");
+        assert_eq!(tab1_spent, 5);
+
+        let (tab2_name, _, tab2_spent): (String, String, u32) =
+            s.eval("return GetTalentTabInfo(1, false, false, 2)").unwrap();
+        assert_eq!(tab2_name, "Protection");
+        assert_eq!(tab2_spent, 11);
+
+        let (enabled, glyph_type, glyph_id): (bool, i64, Option<i64>) =
+            s.eval("return GetGlyphSocketInfo(1, 1)").unwrap();
+        assert!(enabled);
+        assert_eq!(glyph_type, 1);
+        assert_eq!(glyph_id, Some(21));
+
+        let (enabled, glyph_type, glyph_id): (bool, i64, Option<i64>) =
+            s.eval("return GetGlyphSocketInfo(2, 2)").unwrap();
+        assert!(enabled);
+        assert_eq!(glyph_type, 2);
+        assert_eq!(glyph_id, None);
+    }
+
+    #[test]
+    fn wrath_lfg_and_vehicle_natives_read_server_state_and_emit_scoped_commands() {
+        use crate::script::model::{
+            WrathLfgProposalMemberState, WrathLfgProposalState, WrathLfgQueueStatusState,
+            WrathScopedCommand,
+        };
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_wrath_scope(3, 5);
+        s.set_wrath_vehicle_guid(Some(0xF130_0001_0000_0042));
+        assert!(s.eval::<bool>("return CanExitVehicle()").unwrap());
+
+        s.set_wrath_lfg_server_state(
+            true,
+            true,
+            true,
+            false,
+            true,
+            "Heroic daily",
+            vec![262],
+            Some(WrathLfgQueueStatusState {
+                dungeon_id: 262,
+                wait_time_avg: 45,
+                wait_time: 40,
+                wait_time_tank: 10,
+                wait_time_healer: 20,
+                wait_time_dps: 60,
+                tanks_needed: 0,
+                healers_needed: 1,
+                dps_needed: 2,
+                queued_time: 12,
+            }),
+            Some(WrathLfgProposalState {
+                dungeon_id: 262,
+                state: 1,
+                proposal_id: 77,
+                bosses_mask: 0,
+                silent: false,
+                is_local: true,
+                completed_mask: 0b101,
+                players: vec![WrathLfgProposalMemberState {
+                    role: 0x02 | 0x01,
+                    is_local: true,
+                    in_dungeon: false,
+                    in_same_group: true,
+                    responded: true,
+                    accepted: true,
+                }],
+            }),
+        );
+
+        let (in_party, joined, queued, _no_partial, achievements, comment, slots): (
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            String,
+            i64,
+        ) = s.eval("return GetLFGInfoServer()").unwrap();
+        assert!(in_party && joined && queued && achievements);
+        assert_eq!(comment, "Heroic daily");
+        assert_eq!(slots, 1);
+
+        let (has_stats, _, tanks, healers, dps): (bool, i64, i64, i64, i64) =
+            s.eval("return GetLFGQueueStats()").unwrap();
+        assert!(has_stats);
+        assert_eq!((tanks, healers, dps), (0, 1, 2));
+
+        let (exists, prop_id, _, _, _, _, role, responded, _, completed, members, is_leader): (
+            bool,
+            i64,
+            i64,
+            i64,
+            String,
+            String,
+            String,
+            bool,
+            i64,
+            i64,
+            i64,
+            bool,
+        ) = s.eval("return GetLFGProposal()").unwrap();
+        assert!(exists);
+        assert_eq!(prop_id, 77);
+        assert_eq!(role, "TANK");
+        assert!(responded && is_leader);
+        assert_eq!((completed, members), (2, 1));
+
+        s.run(
+            r#"
+            SetLFGRoles(false, true, false, true)
+            SetLFGComment("Need emblems")
+            ClearAllLFGDungeons()
+            SetLFGDungeon(1, 262)
+            JoinLFG()
+            AcceptProposal()
+            VehicleNextSeat()
+            UnitSwitchToVehicleSeat("player", 2)
+            VehicleExit()
+            "#,
+        )
+        .unwrap();
+
+        let cmds = s.take_wrath_scoped_commands();
+        assert_eq!(cmds.len(), 7);
+        assert!(matches!(
+            cmds[0],
+            WrathScopedCommand::LfgSetRoles {
+                roles: 0x0A,
+                session_epoch: 3,
+                world_generation: 5
+            }
+        ));
+        assert!(matches!(
+            &cmds[2],
+            WrathScopedCommand::LfgJoin {
+                slots,
+                roles: 0x0A,
+                session_epoch: 3,
+                world_generation: 5,
+                ..
+            } if slots == &[0x0100_0106]
+        ));
+        assert!(matches!(
+            cmds[3],
+            WrathScopedCommand::LfgProposalResult {
+                proposal_id: 77,
+                accept: true,
+                session_epoch: 3,
+                world_generation: 5
+            }
+        ));
+        assert!(matches!(
+            cmds[5],
+            WrathScopedCommand::VehicleSwitchSeat {
+                vehicle: 0xF130_0001_0000_0042,
+                seat: 2,
+                session_epoch: 3,
+                world_generation: 5
+            }
+        ));
+
+        s.clear_wrath_scoped_ui();
+        assert!(!s.eval::<bool>("return CanExitVehicle()").unwrap());
+        assert!(!s.eval::<bool>("return IsPartyLFG()").unwrap());
     }
 }
