@@ -32,7 +32,7 @@ fn capture_hotpatch_events(
                 HotpatchEvent::CandidateWithdrawn { attempt } => {
                     PatchEvent::CandidateWithdrawn { attempt }
                 }
-                HotpatchEvent::PublicationRejected { attempt, reason } => {
+                HotpatchEvent::PublicationRejected { attempt, reason, .. } => {
                     PatchEvent::PublicationRejected {
                         attempt,
                         reason: match reason {

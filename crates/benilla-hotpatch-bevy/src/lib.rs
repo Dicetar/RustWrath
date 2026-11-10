@@ -1,5 +1,5 @@
 //! Sample after pose edits, compose the patched frame, then restore the next frame's input.
-use benilla_hotpatch::{Host, RestoreOutcome};
+use benilla_hotpatch::{Host, PatchRejectReason, RestoreOutcome};
 use benilla_hotpatch_abi::{BoneLocal, RigSpan};
 use benilla_world::rig_anim::{AnimParked, PoseModulePass, RigPose};
 use bevy::prelude::*;
@@ -30,7 +30,11 @@ pub enum HotpatchReason {
 pub enum HotpatchEvent {
     CandidateStaged { attempt: PatchAttemptId },
     CandidateWithdrawn { attempt: PatchAttemptId },
-    PublicationRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
+    PublicationRejected {
+        attempt: Option<PatchAttemptId>,
+        reason: HotpatchReason,
+        detail: PatchRejectReason,
+    },
     CandidateRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
     Activated { attempt: Option<PatchAttemptId>, digest: Option<[u8; 20]> },
     FrameFailed { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
@@ -82,12 +86,54 @@ impl Plugin for HotpatchPlugin {
             warn!("hotpatch: {message}");
             last_quarantine_error = Some(message);
         }
+        // Pose/movement crash sentinel: a marker written after the artifact bytes were verified and
+        // before the irreversible `Library::new` (loading windows) or immediately before the staged
+        // pose candidate's canary `process()` call may have survived a native fault. Recover it
+        // before the first poll: quarantine the crashed pose or movement digest (and persist the
+        // store so it survives another crash) or fail safe on a malformed marker. Startup never
+        // fails on either outcome.
+        let mut last_sentinel_error = None;
+        match host.load_active_sentinel() {
+            Ok(Some(digest)) => {
+                warn!(
+                    "hotpatch: recovered crashed module {digest}; quarantining before next launch"
+                );
+                // Commit the recovered digest before removing the marker. The marker is the only
+                // durable record between the crash and the quarantine rename; a crash or persist
+                // failure here must leave it for the next launch to retry.
+                match host.persist_quarantine() {
+                    Ok(()) => {
+                        // `persist_quarantine` clears the marker only after committing the
+                        // recovered digest; a clear failure is reported through the sentinel slot.
+                        if let Some(error) = host.take_sentinel_error() {
+                            warn!("hotpatch: {error}");
+                            last_sentinel_error = Some(error);
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!(
+                            "quarantine save after sentinel recovery: {error:#}; marker retained"
+                        );
+                        warn!("hotpatch: {message}");
+                        last_quarantine_error = Some(message);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let message = format!("active sentinel load: {error:#}");
+                warn!("hotpatch: {message}");
+                last_sentinel_error = Some(message);
+            }
+        }
         app.add_message::<HotpatchEvent>()
         .insert_resource(Runtime {
             host,
             next_poll: 0.0,
             last_error: None,
+            last_publication_detail: None,
             last_quarantine_error,
+            last_sentinel_error,
             reported_revision: None,
             reported_digest: None,
             refresh: false,
@@ -107,7 +153,12 @@ impl Plugin for HotpatchPlugin {
         })
         .add_systems(Update, poll)
         .add_systems(PostUpdate, apply_pose.in_set(PoseModulePass))
-        .add_systems(Last, (capture_pose, restore_pose).chain());
+        .add_systems(Last, (capture_pose, restore_pose).chain())
+        // Declared ahead of the pose chain: all three systems take `ResMut<Runtime>` and this
+        // edge's clear must not be skipped because a pose system panicked on the exit frame. An
+        // explicit `AppExit` is the clean-exit signal; `Runtime::drop` stays the fallback for a
+        // bare `App` drop.
+        .add_systems(Last, clear_active_sentinel_on_app_exit.before(capture_pose));
     }
 }
 
@@ -116,11 +167,20 @@ struct Runtime {
     host: Host,
     next_poll: f64,
     last_error: Option<String>,
+    /// Last typed publication reason emitted or observed. The coarse `last_error` message is the
+    /// dedupe key for free-form text; this separate slot lets a transient -> terminal transition
+    /// with identical error text still emit the new typed detail.
+    last_publication_detail: Option<PatchRejectReason>,
     /// Last reported quarantine load/save error. Deliberately separate from `last_error`: the
     /// publication/retention paths share and clear that slot, so reusing it here would let a
     /// persistent save failure re-emit `PublicationRejected`/`RetentionFailed` (and the save
     /// warning) every 1 Hz tick. Only a successful save clears this slot.
     last_quarantine_error: Option<String>,
+    /// Last reported pose/movement crash-sentinel load/write/clear error. Deliberately separate
+    /// from `last_error` and `last_quarantine_error`: a best-effort sentinel write/clear failure
+    /// must not re-emit publication/retention events or mask a successful save, and a sentinel load
+    /// failure at startup must not fail the plugin.
+    last_sentinel_error: Option<String>,
     reported_revision: Option<String>,
     reported_digest: Option<String>,
     refresh: bool,
@@ -141,6 +201,35 @@ struct Runtime {
     activations: VecDeque<(Option<[u8; 20]>, PatchAttemptId)>,
 }
 
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Rust runs `Drop` during panic unwind as well as on an orderly `App` drop. A panic inside
+        // a marker-covered call (`Loaded::open`, the canary `evaluate`, movement `process`) must
+        // not delete the marker for the operation that just panicked: that marker is what makes
+        // the next launch quarantine the crashing digest. Bail out while unwinding; only an
+        // ordinary drop is treated as the clean-exit safety net.
+        if std::thread::panicking() {
+            return;
+        }
+        // Clean-exit safety net: remove a stale `active-sentinel.toml` so an orderly client exit
+        // cannot leave it for the next launch (which would wrongly quarantine a healthy digest).
+        // A pending recovery marker is the only durable record of an uncommitted recovered digest
+        // and must survive to the next launch, so it is retained here. Best effort: do not
+        // intentionally panic or block.
+        match self.host.clear_active_sentinel_on_clean_shutdown() {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!(
+                    "hotpatch: clean shutdown retained active-sentinel.toml for the next launch"
+                );
+            }
+            Err(error) => {
+                warn!("hotpatch: clean shutdown active sentinel clear failed: {error:#}");
+            }
+        }
+    }
+}
+
 fn report(runtime: &mut Runtime, error: String) {
     if runtime.last_error.as_ref() != Some(&error) {
         warn!("hotpatch: {error}");
@@ -159,6 +248,21 @@ fn report_quarantine(runtime: &mut Runtime, error: String) {
         warn!("hotpatch: {error}");
     }
     runtime.last_quarantine_error = Some(error);
+}
+
+/// Report a pose/movement crash-sentinel error through its own dedupe slot.
+///
+/// The host sets [`Host::sentinel_error`] only for best-effort sentinel write/clear failures during
+/// `poll`, `evaluate` or movement staging (the module load/evaluation is never failed or skipped
+/// because the sentinel could not be written). A startup sentinel load failure goes directly to
+/// `last_sentinel_error`; it never populates the host slot. This slot is independent of both
+/// `last_error` and `last_quarantine_error`, so a sentinel issue neither re-emits
+/// publication/retention events nor is masked by a successful quarantine save.
+fn report_sentinel(runtime: &mut Runtime, error: String) {
+    if runtime.last_sentinel_error.as_ref() != Some(&error) {
+        warn!("hotpatch: {error}");
+    }
+    runtime.last_sentinel_error = Some(error);
 }
 
 fn digest_from_hex(hex: &str) -> Option<[u8; 20]> {
@@ -216,6 +320,7 @@ fn poll(
         Ok(true) => {
             runtime.refresh = true;
             runtime.last_error = None;
+            runtime.last_publication_detail = None;
             let attempt = runtime.next_attempt;
             runtime.next_attempt = runtime.next_attempt.saturating_add(1);
             runtime.candidate_attempt = Some(attempt);
@@ -224,12 +329,20 @@ fn poll(
         Ok(false) => {}
         Err(error) => {
             let message = format!("{error:#}");
-            if runtime.last_error.as_ref() != Some(&message) {
+            let detail = runtime
+                .host
+                .take_publication_reason()
+                .unwrap_or(PatchRejectReason::Unknown);
+            let message_changed = runtime.last_error.as_ref() != Some(&message);
+            let detail_changed = runtime.last_publication_detail != Some(detail);
+            if message_changed || detail_changed {
                 events.write(HotpatchEvent::PublicationRejected {
                     attempt: None,
                     reason: HotpatchReason::Publication,
+                    detail,
                 });
             }
+            runtime.last_publication_detail = Some(detail);
             report(&mut runtime, message);
         }
     }
@@ -249,6 +362,14 @@ fn poll(
     match runtime.host.persist_quarantine() {
         Ok(()) => runtime.last_quarantine_error = None,
         Err(error) => report_quarantine(&mut runtime, format!("quarantine save: {error:#}")),
+    }
+    // Drain the best-effort pose/movement crash-sentinel error slot. A failed write/clear during
+    // the host poll, canary evaluation or movement staging lands here; the module load/evaluation
+    // itself is never failed or skipped because the sentinel could not be written. Reported through
+    // the dedicated slot, not `last_error` or the quarantine slot.
+    let sentinel_error = runtime.host.take_sentinel_error();
+    if let Some(error) = sentinel_error {
+        report_sentinel(&mut runtime, error);
     }
 }
 
@@ -501,6 +622,29 @@ fn capture_pose(time: Res<Time>, mut runtime: ResMut<Runtime>, rigs: Query<&RigP
             input.translation, output.translation, model.translation
         );
     }
+}
+
+/// Clean-exit safety net on Bevy's explicit exit edge.
+///
+/// A window close and console `/quit` raise `WindowCloseRequested`, which
+/// `bevy_window::exit_on_all_closed` turns into `AppExit` in `PostUpdate`; the Exit Game/logout path
+/// writes `AppExit` directly in `Update`. Both precede `Last`, so a `Last` system observes the exit
+/// a player causes. This calls the same host method as [`Runtime`]'s destructor, which remains the
+/// fallback for a bare `App` drop.
+fn clear_active_sentinel_on_app_exit(
+    mut exits: MessageReader<AppExit>,
+    mut runtime: ResMut<Runtime>,
+) {
+    if exits.read().next().is_none() {
+        return;
+    }
+    // A pending recovery or an unowned/unvalidated marker is retained by the host method;
+    // the Drop fallback warns about those. This edge only reports real clear errors.
+    if let Err(error) = runtime.host.clear_active_sentinel_on_clean_shutdown() {
+        warn!("hotpatch: AppExit active sentinel clear failed: {error:#}");
+    }
+    // `impl Drop for Runtime` keeps its `std::thread::panicking()` guard: a system never runs
+    // during an unwind, so the destructor still owns the panic case.
 }
 
 #[cfg(all(test, target_os = "windows"))]
