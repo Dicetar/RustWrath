@@ -4490,7 +4490,7 @@ fn translate_gameplay(
             vec![SessionEvent::GroupLeaderChanged { name }]
         }
         WrathGameplayEvent::GroupDestroyed => vec![SessionEvent::GroupDestroyed],
-        WrathGameplayEvent::GroupList(list) => vec![wrath_group_list(*list)],
+        WrathGameplayEvent::GroupList(list) => wrath_group_list_events(*list),
         WrathGameplayEvent::PartyCommandResult {
             operation,
             member,
@@ -4729,6 +4729,26 @@ pub(crate) fn wrath_group_list(list: gameplay::social::GroupList) -> SessionEven
         leader: list.leader_guid,
         loot,
     }
+}
+
+pub(crate) fn wrath_group_list_events(list: gameplay::social::GroupList) -> Vec<SessionEvent> {
+    let role_deltas: Vec<SessionEvent> = list
+        .members
+        .iter()
+        .filter(|member| member.roles != 0)
+        .map(|member| SessionEvent::PartyMemberStats {
+            guid: member.guid,
+            full: false,
+            info: Box::new(benilla_protocol::messages::PartyMemberStatsInfo {
+                lfg_roles: Some(member.roles),
+                ..Default::default()
+            }),
+        })
+        .collect();
+    let mut out = Vec::with_capacity(1 + role_deltas.len());
+    out.push(wrath_group_list(list));
+    out.extend(role_deltas);
+    out
 }
 
 pub(crate) fn wrath_party_stats(stats: gameplay::social::PartyMemberStats) -> SessionEvent {

@@ -98,14 +98,25 @@ fn install_wrath(lua: &Lua) -> mlua::Result<()> {
             if prefix.contains('\t') {
                 return Err(mlua::Error::runtime("Addon prefix cannot contain a tab"));
             }
+            let distribution = lua.coerce_string(distribution)?
+                .map_or_else(|| "PARTY".to_owned(), |value| value.to_string_lossy());
+            // WMBridge composes its HELLO line before `sendPayload` attempts CHANNEL and falls
+            // back to WHISPER (`WMBridge.lua:135-175`). When a fallback whisper carries a stale
+            // `transport=CHANNEL` tag, rewrite it to the actual `transport=SELF_WHISPER` lane.
+            let message = if distribution.eq_ignore_ascii_case("WHISPER")
+                && prefix == "WMBridge"
+                && message.contains("transport=CHANNEL")
+            {
+                message.replace("transport=CHANNEL", "transport=SELF_WHISPER")
+            } else {
+                message
+            };
             let text = format!("{prefix}\t{message}");
             // The installed AzerothCore ChatHandler rejects messages past 255 bytes. Refuse
             // an oversized structured message rather than silently truncating its payload.
             if text.len() > 255 {
                 return Err(mlua::Error::runtime("Addon prefix and message exceed the server's 255-byte limit"));
             }
-            let distribution = lua.coerce_string(distribution)?
-                .map_or_else(|| "PARTY".to_owned(), |value| value.to_string_lossy());
             if distribution.eq_ignore_ascii_case("WHISPER") {
                 let target = lua_tostring(lua, &target)?;
                 if target.is_empty() {
@@ -204,6 +215,14 @@ impl super::UiScript {
     pub fn take_addon_sends(&mut self) -> Vec<AddonSend> {
         self.take_calls_where(|call| match call {
             super::ScriptCall::AddonMessage(send) => Some(send.clone()),
+            _ => None,
+        })
+    }
+
+    /// The `SendAddonMessage(..., "WHISPER", target)` sends a harness's VM kept, in call order.
+    pub fn take_addon_whispers(&mut self) -> Vec<AddonWhisper> {
+        self.take_calls_where(|call| match call {
+            super::ScriptCall::AddonWhisper(whisper) => Some(whisper.clone()),
             _ => None,
         })
     }
@@ -537,5 +556,81 @@ mod tests {
             assert_eq!(dist.token(), token);
             assert_eq!(AddonDistribution::from_token(token), Some(dist));
         }
+    }
+
+    #[test]
+    fn wmbridge_self_whisper_hello_and_kill_events() {
+        use crate::script::{CombatLogPartyKill, CombatLogUnit, UiTarget};
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.keep_calls();
+
+        // 1. An unconfirmed JoinTemporaryChannel/JoinChannelByName in Wrath335 does not report a
+        // confirmed channel id, and a pre-composed HELLO falling back from CHANNEL to WHISPER
+        // reports transport=SELF_WHISPER.
+        s.run(
+            r#"
+            JoinTemporaryChannel("WMBridge")
+            PendingChannelId = GetChannelName("WMBridge")
+            local msg = "HELLO|version=1|player=Firna|transport=CHANNEL"
+            local ok = pcall(SendAddonMessage, "WMBridge", msg, "CHANNEL", 1)
+            ChannelSendSucceeded = ok
+            if not ok then
+                SendAddonMessage("WMBridge", msg, "WHISPER", "Firna")
+            end
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(s.eval::<i64>("return PendingChannelId").unwrap(), 0);
+        assert!(!s.eval::<bool>("return ChannelSendSucceeded").unwrap());
+        let whispers = s.take_addon_whispers();
+        assert_eq!(
+            whispers,
+            vec![AddonWhisper {
+                text: "WMBridge\tHELLO|version=1|player=Firna|transport=SELF_WHISPER".to_owned(),
+                target: "Firna".to_owned(),
+            }]
+        );
+
+        // 2. Both COMBAT_LOG_EVENT and COMBAT_LOG_EVENT_UNFILTERED are admitted in Wrath335, and
+        // PARTY_KILL dispatches the 8-argument event WMBridge consumes.
+        s.run(
+            r#"
+            local f = CreateFrame("Frame")
+            f:RegisterEvent("COMBAT_LOG_EVENT")
+            f:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+            f:SetScript("OnEvent", function(self, event, ts, subevent, srcGuid, srcName, srcFlags, dstGuid, dstName, dstFlags)
+                if event == "COMBAT_LOG_EVENT_UNFILTERED" and subevent == "PARTY_KILL" then
+                    SendAddonMessage("WMBridge", string.format("KILL|src=%s|dst=%s|%s", srcGuid, dstGuid, dstName), "WHISPER", "Firna")
+                end
+            end)
+            "#,
+        )
+        .unwrap();
+
+        s.fire_combat_log_party_kill(&CombatLogPartyKill {
+            timestamp: 1_700_000_000.0,
+            source: CombatLogUnit {
+                guid: 0x0000_0000_0000_0001,
+                name: Some("Firna".to_owned()),
+                flags: 0x0511,
+            },
+            dest: CombatLogUnit {
+                guid: 0xF130_0000_2F00_002A,
+                name: Some("Kobold Vermin".to_owned()),
+                flags: 0x0a48,
+            },
+        });
+
+        let kill_whispers = s.take_addon_whispers();
+        assert_eq!(
+            kill_whispers,
+            vec![AddonWhisper {
+                text: "WMBridge\tKILL|src=0x0000000000000001|dst=0xF13000002F00002A|Kobold Vermin"
+                    .to_owned(),
+                target: "Firna".to_owned(),
+            }]
+        );
     }
 }

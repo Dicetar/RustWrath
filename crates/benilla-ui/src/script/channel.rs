@@ -350,6 +350,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     let name = s.to_str()?;
                     slot_of(&model, &name).and_then(|n| {
                         let slot = model.joined_channels[n - 1].as_ref()?;
+                        if model.target == super::UiTarget::Wrath335 && !slot.confirmed {
+                            return None;
+                        }
                         Some((n as i64, slot.name.clone()))
                     })
                 }

@@ -763,23 +763,35 @@ mod social {
                 }),
             };
 
+            let events = crate::wrath::wrath_group_list_events(list);
+            assert_eq!(events.len(), 3);
             let SessionEvent::GroupList {
                 group_type,
                 own_flags,
                 members,
                 leader,
                 loot,
-            } = crate::wrath::wrath_group_list(list)
+            } = &events[0]
             else {
                 panic!("expected GroupList event");
             };
-            assert_eq!(group_type, 0x02);
-            assert_eq!(own_flags, 3 | GROUP_MEMBER_ASSISTANT);
+            assert_eq!(*group_type, 0x02);
+            assert_eq!(*own_flags, 3 | GROUP_MEMBER_ASSISTANT);
             assert_eq!(members.len(), 2);
             assert_eq!(members[0].flags, 2 | GROUP_MEMBER_ASSISTANT);
             assert_eq!(members[1].flags, 4);
-            assert_eq!(leader, 0x10);
+            assert_eq!(*leader, 0x10);
             assert_eq!(loot.map(|l| (l.method, l.threshold)), Some((2, 4)));
+
+            let mut group = crate::ui_party::GroupState::default();
+            for ev in events.into_iter().skip(1) {
+                let SessionEvent::PartyMemberStats { guid, full, info } = ev else {
+                    panic!("expected PartyMemberStats role delta");
+                };
+                group.apply_stats(guid, full, *info);
+            }
+            assert_eq!(group.stats.get(&0x10).and_then(|s| s.lfg_roles), Some(0x02));
+            assert_eq!(group.stats.get(&0x11).and_then(|s| s.lfg_roles), Some(0x08));
         }
     }
 }

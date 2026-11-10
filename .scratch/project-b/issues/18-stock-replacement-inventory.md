@@ -72,12 +72,12 @@ family tables are diagnostic detail under those 32 rows, not extra denominator e
 
 |Addon|Actual file(s) and hash prefix|TOC / interface|Declared saved state|Required host contract|Status|
 |---|---|---|---|---|---|
-|WMBridge 0.1.0|`WMBridge\WMBridge.lua` 20,086 B `267ec1624f3f774e`; `.toc` `27e9145ae34dc08a`|`30300`; `## SavedVariables:` empty|none|`SendAddonMessage` CHANNEL-or-WHISPER, `GetChannelName`, channel join/remove, chat filters, `COMBAT_LOG_EVENT_UNFILTERED`, item/cursor/tooltip calls|PARTIAL|
-|WM_Multiclass (interface 30300)|`WM_Multiclass.lua` 13,175 B `cc4b994ad01c2ab3`; `.toc` `80d96e18a4d28dcb`; `WM_SpellmakingV3.lua` 68,856 B `c6bdf814772a8f9e`|`30300`, no `## Version`; `SavedVariablesPerCharacter: WM_MulticlassSettings`|per character `WM_MulticlassSettings` (`spellwrightV3.draft`, `xpAnchor`)|`MulticlassRequest` returning `1`, `MulticlassPoll` returning one hex packet, `UnitClass`, `UnitPower`/`UnitPowerMax` runic, `GetSpellInfo`, `UIDropDownMenu_*`, secure action attributes|BROKEN (D02)|
+|WMBridge 0.1.0|`WMBridge\WMBridge.lua` 20,086 B `267ec1624f3f774e`; `.toc` `27e9145ae34dc08a`|`30300`; `## SavedVariables:` empty|none|`SendAddonMessage` CHANNEL-or-WHISPER (`transport=SELF_WHISPER` normalized on fallback), `GetChannelName` (confirmed only on `Wrath335`), channel join/remove, chat filters, `COMBAT_LOG_EVENT_UNFILTERED`, item/cursor/tooltip calls|PARTIAL · focused test (D01)|
+|WM_Multiclass (interface 30300)|`WM_Multiclass.lua` 13,175 B `cc4b994ad01c2ab3`; `.toc` `80d96e18a4d28dcb`; `WM_SpellmakingV3.lua` 68,856 B `c6bdf814772a8f9e`|`30300`, no `## Version`; `SavedVariablesPerCharacter: WM_MulticlassSettings`|per character `WM_MulticlassSettings` (`spellwrightV3.draft`, `xpAnchor`)|`MulticlassRequest` returning `1`, `MulticlassPoll` returning one hex packet, `UnitClass`, `UnitPower`/`UnitPowerMax` runic, `GetSpellInfo`, `UIDropDownMenu_*`, secure action attributes|PARTIAL · focused test (D02)|
 |WMQuestieCompat 0.1.0|`WMQuestieCompat.lua` 1,701 B `6edb2f3e7812161e`; `.toc` `0c167c0d7cc6a9b0`|`30300`; `OptionalDeps: Questie-335`|none|`ADDON_LOADED`/`PLAYER_LOGIN`, `Questie.Error`, `Questie.db.char.TrackedQuests`|UNKNOWN (D04)|
 |Questie-335 9.5.1|`Questie-335.toc` `1ce807739228ce81`; `Questie.lua` `9645d91e7e965dfd`|Seven TOCs; `Questie-335.toc` is `30300`, `Questie-WOTLKC.toc` is `30403` and is not the 3.3.5 selection|`QuestieConfig` account; `QuestieConfigCharacter` per character|stock quest-log/map APIs plus its own `QuestieCompat.C_Map`/`C_Timer`/`C_QuestLog` shims|UNKNOWN (D04)|
-|Bagnon 2.13.3|`Bagnon.toc` `835981e2b9ecab9a`; `main.lua` `c21f7a6b8be4e209`|`30300`; `SavedVariables: BagnonGlobalSettings`; `SavedVariablesPerCharacter: BagnonFrameSettings`|account and per character|`GetContainerItemInfo` 7 values, `GetContainerItemQuestInfo`, `GetItemInfo` 11 values, `GetItemQualityColor`, `GetContainerItemCooldown`|PARTIAL (D05)|
-|Bartender4 4.4.2-2-g3b02ee4|`bartender4.toc` `a0b9187368da0c2a`|`30300`; `SavedVariables: Bartender4DB`|account (`Bartender4DB`)|`SecureHandlerStateTemplate`, `RegisterStateDriver`, `UnregisterStateDriver`, `WrapScript`, `GetActionInfo` 3 values, `GetShapeshiftFormInfo` 4 values, `GetPetActionInfo` 7 values|BROKEN (D06)|
+|Bagnon 2.13.3|`Bagnon.toc` `835981e2b9ecab9a`; `main.lua` `c21f7a6b8be4e209`|`30300`; `SavedVariables: BagnonGlobalSettings`; `SavedVariablesPerCharacter: BagnonFrameSettings`|account and per character|`GetContainerItemInfo` 7 values, `GetContainerItemQuestInfo`, `GetItemInfo` 11 values, `GetItemQualityColor`, `GetContainerItemCooldown`|PARTIAL · focused test (D05)|
+|Bartender4 4.4.2-2-g3b02ee4|`bartender4.toc` `a0b9187368da0c2a`|`30300`; `SavedVariables: Bartender4DB`|account (`Bartender4DB`)|`SecureHandlerStateTemplate`, `RegisterStateDriver`, `UnregisterStateDriver`, `WrapScript`, `GetActionInfo` 3 values, `GetShapeshiftFormInfo` 4 values, `GetPetActionInfo` 7 values|PARTIAL · focused test (D06)|
 
 The Bartender4 directory also carries `changelog-bartender4-4.4.2-12-g94f3b58.txt`; that is a
 different build's changelog, not the loaded TOC version. No version is inferred from file presence.
@@ -94,9 +94,9 @@ reference's zero-return or nil shape, not a fabricated success.
 |`GetContainerItemCooldown(bag, slot)`|start, duration, enable|`container.rs` 1177|Bagnon `utility/itemEvents.lua` 88/119/145|source matches|
 |`GetContainerNumSlots(bag)`|number, 0 outside the range; Wrath accepts -2..11|`container.rs` 1116|Bagnon, bank|source matches|
 |`GetItemInfo(item)`|name, link, quality, itemLevel, reqLevel, type, subType, stack, equipLoc, texture, sellPrice; unknown = zero returns|`item_stats/wrath.rs` 147–167|Bagnon `itemSlotInfo.lua` 22; ActionBar tooltips|source matches|
-|`GetItemCount(item[, bank[, uses]])`|number or nil when no host count|`item_stats/wrath.rs` 131–146|stock bags/Bagnon neighbors|**nil-vs-0 risk**: 3.3.5 normally returns 0|
+|`GetItemCount(item[, bank[, uses]])`|number, 0 on miss in Wrath 3.3.5|`item_stats/wrath.rs` 131–160|stock bags/Bagnon neighbors|source matches|
 |`GetItemQualityColor(quality)`|r, g, b, hex|`item_stats.rs` 608|Bagnon `components/item.lua` 383/400|source matches|
-|`GetActionInfo(slot)`|3.3.5 returns type, id, subType; host returns type, id only|`action.rs` 408–425|Bartender4 `actionbutton.lua` 106 (`subtype` feeds `IsHelpfulSpell`); WM_SpellmakingV3 281|**PARTIAL**: third return missing|
+|`GetActionInfo(slot)`|3.3.5 returns type, id, subType (3 values in `Wrath335`)|`action.rs` 408–445|Bartender4 `actionbutton.lua` 106 (`subtype` feeds `IsHelpfulSpell`); WM_SpellmakingV3 281|source matches|
 |`GetActionCooldown(slot)`|start, duration, enabled|`action.rs` 735|Bartender4 action button|source matches|
 |`GetActionTexture(slot)`|texture or nil|`action.rs` 375|Bartender4 `actionbutton.lua` 266|source matches|
 |`IsUsableAction` / `IsActionInRange` / `ActionHasRange`|1/nil or boolean pairs as the reference pushes|`action.rs` 611/623/645|Bartender4 `actionbutton.lua` 25/228|source matches|
@@ -107,11 +107,11 @@ reference's zero-return or nil shape, not a fabricated success.
 |`GetQuestLogLeaderBoard(i, quest)`|text, type, finished; missing = three nils|`quest_log.rs` 1472–1494|Questie `Compat.lua` 380|source matches|
 |`GetNumQuestLogEntries()` / reward/choice/count getters|two counts; detail counts/rows|`quest_log.rs` 1301, 1554–1710|Questie quest log cache|source matches|
 |`GetBuildInfo()`|version, build, date, toc|`client.rs` 137; `glue_core.rs` 886|Questie `QuestieCompat.Is335`|source matches|
-|`GetSpellInfo(spell)`|host exposes 9 values: name, rank, icon, cost, channeled, powerType, castMs, minRange, maxRange|`wrath_spell.rs` 112–125|WM_SpellmakingV3 277–278 assumes at least 9; stock 3.3.5 expects 7|**PARTIAL**: extra/renumbered returns leak to stock callers|
-|`SendAddonMessage(prefix, message, distribution, target)`|WHISPER admitted; CHANNEL intentionally refused; composed text capped at 255 bytes|`addon_message.rs` 90–122|WMBridge 135–159; WM_SpellmakingV3 36|**PARTIAL**: WMBridge CHANNEL always fails; long graphs raise|
-|`GetChannelName(nameOrIndex)`|id, name or nil, instance|`channel.rs` 340–371|WMBridge `ensureChannel`|source matches|
-|`CreateFrame(kind, name, parent, template)`|unknown template leaves a bare frame plus a warning|`object.rs` 938–946; `loader/mod.rs` 196–201|Bartender4 secure bars|**BROKEN** for secure templates|
-|`RegisterStateDriver` / `UnregisterStateDriver` / `WrapScript`|secure state-driver global and frame method|absent from `crates/`; `object/attributes.rs` 1–2 stores attributes only|Bartender4 `bar.lua` 133/407/467, `bartender4.lua` 179–199, `actionbutton.lua` 88/97|**BROKEN**|
+|`GetSpellInfo(spell)`|host exposes 9 values: name, rank, icon, cost, channeled, powerType, castMs, minRange, maxRange|`wrath_spell.rs` 112–125|WM_SpellmakingV3 277–278 assumes at least 9; stock 3.3.5 expects 9|source matches|
+|`SendAddonMessage(prefix, message, distribution, target)`|WHISPER admitted and normalizes `WMBridge` fallback `transport=SELF_WHISPER`; CHANNEL intentionally refused; composed text capped at 255 bytes|`addon_message.rs` 90–140|WMBridge 135–159; WM_SpellmakingV3 36|source matches (255-byte server cap enforced)|
+|`GetChannelName(nameOrIndex)`|id, name or nil, instance; requires confirmed slot on `Wrath335`|`channel.rs` 340–374|WMBridge `ensureChannel`|source matches|
+|`CreateFrame(kind, name, parent, template)`|admits `SecureHandlerBaseTemplate`, `SecureHandlerClickTemplate`, `SecureHandlerStateTemplate`|`secure.rs` 54–78|Bartender4 secure bars|source matches (bounded non-executing)|
+|`RegisterStateDriver` / `UnregisterStateDriver` / `WrapScript`|bounded non-executing secure state-driver globals and frame method|`secure.rs` 80–215|Bartender4 `bar.lua` 133/407/467, `bartender4.lua` 179–199, `actionbutton.lua` 88/97|source matches (bounded non-executing)|
 |`hooksecurefunc`|post-hook a global or method|`posthook.rs` 29|WMBridge 465/476; WM_SpellmakingV3 290–305|source matches|
 |`UIDropDownMenu_*`|stock FrameXML template and functions|shipped FrameXML, not a Rust native|WM_Multiclass 30–38|not runtime-verified|
 

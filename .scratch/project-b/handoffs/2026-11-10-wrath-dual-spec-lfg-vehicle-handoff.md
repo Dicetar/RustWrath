@@ -47,20 +47,20 @@ The following untracked and dirty files were deliberately **not staged** and pre
 
 ---
 
-## 4. Immediate Next Slices for the Next Session
+## 4. Follow-Up Slices Completed (D01, D06, D07, D11, D12)
 
-To close out the remaining rows in `release-matrix-2026-11-05.md` toward the **Northshire Alpha Gate**:
+All 5 follow-up slices toward the **Northshire Alpha Gate** are now wired, unit-tested, and reconciled in `docs/architecture/release-matrix-2026-11-05.md` and `.scratch/project-b/issues/18-stock-replacement-inventory.md`:
 
 1. **Slice 1: D01 / U2 — WMBridge Combat Log & Transport Truth**:
-   - Emit `COMBAT_LOG_EVENT_UNFILTERED` for Wrath combat logs (unblocks WMBridge kill reporting).
-   - Report actual active transport in WMBridge `HELLO`.
+   - `crates/benilla-ui/src/script/channel.rs`: `GetChannelName(name)` on `UiTarget::Wrath335` now requires `slot.confirmed` so unconfirmed `JoinTemporaryChannel("WMBridge")` calls return `(0, nil, 0)` until `YOU_JOINED` arrives.
+   - `crates/benilla-ui/src/script/addon_message.rs`: `SendAddonMessage` (`install_wrath`) rewrites stale `transport=CHANNEL` to `transport=SELF_WHISPER` when `WMBridge` falls back from `CHANNEL` to `WHISPER`. Added `UiScript::take_addon_whispers` and `wmbridge_self_whisper_hello_and_kill_events`.
+   - `crates/benilla-ui/src/script/target.rs`: Admitted `"COMBAT_LOG_EVENT"` alongside `"COMBAT_LOG_EVENT_UNFILTERED"` in `WRATH_INGAME_EVENTS`.
 2. **Slice 2: D12 — Social Inbound Widening**:
-   - In `wrath_party_stats`, widen player/pet HP from `u16` to `u32` (prevent HP clamping).
-   - Preserve 12340 LFG roles and dungeon difficulty bytes on group members.
+   - `crates/benilla-app/src/wrath.rs`: `wrath_party_stats` preserves 32-bit `cur_hp`/`max_hp`, 32-bit `pet_cur_hp`/`pet_max_hp`, 64-slot 32-bit aura spell IDs, and `vehicle_seat`. Added `wrath_group_list_events` so `SMSG_GROUP_LIST` also emits `PartyMemberStats` role deltas (`lfg_roles`) for members with 12340 LFG role bits. Verified in `crates/benilla-app/src/lib.rs`.
 3. **Slice 3: D11 — Economy Multi-Attachment & Trade Sockets**:
-   - In `wrath.rs`, widen `MailListEntry` to carry all 12 attachments (currently only attachment 0 is kept).
-   - Retain 3.3.5 `trade_id` and the three socket enchant words in `TradeStatusExtended`.
+   - `crates/benilla-app/src/wrath.rs`: `wrath_mail_list` retains all 12 attachments and `inline_body`, and `wrath_trade_extended` retains `trade_id` and `socket_enchant: [u32; 3]`. Verified in `crates/benilla-app/src/lib.rs`.
 4. **Slice 4: D06 / U1 — Bartender4 Secure State Driver**:
-   - Add a bounded shim for `RegisterStateDriver`, `UnregisterStateDriver`, and `WrapScript` to allow Bartender4 action buttons to initialize without throwing Lua frame template errors.
+   - `crates/benilla-ui/src/script/secure.rs`: Bounded non-executing `SecureHandlerStateTemplate`, `RegisterStateDriver`, `UnregisterStateDriver`, `WrapScript`, and 3-return `GetActionInfo` verified by `bartender4_secure_state_driver_surface`.
 5. **Slice 5: D07 — Action Button Dual-Spec State Rejuvenation**:
-   - Verify that `SMSG_ACTION_BUTTONS` state 2 does not clear the action bar during spec change.
+   - `crates/benilla-app/src/spell/net.rs`: `SMSG_ACTION_BUTTONS` state 0/1/2 handling and 144-slot preservation verified by `wrath_action_buttons_state_two_keeps_the_bar` and `wrath_action_buttons_144_cap`.
+

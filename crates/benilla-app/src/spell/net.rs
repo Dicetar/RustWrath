@@ -4433,4 +4433,14 @@ mod tests {
         assert_eq!(slots.buttons.len(), 144);
         assert_eq!(slots.buttons.get(&143).map(|b| b.action), Some(1143));
     }
+
+    #[test]
+    fn wrath_action_buttons_state_two_keeps_the_bar() {
+        action_buttons_state_two_keeps_the_live_bar_and_marks_pending();
+    }
+
+    #[test]
+    fn wrath_action_buttons_144_cap() {
+        action_buttons_state_one_keeps_all_144_slots();
+    }
 }

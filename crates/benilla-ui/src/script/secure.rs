@@ -348,4 +348,20 @@ mod tests {
         );
         assert!(script.run(&chunk).is_err());
     }
+
+    #[test]
+    fn bartender4_secure_state_driver_surface() {
+        let mut script = script();
+        script
+            .run(
+                r#"
+                local btn = CreateFrame("CheckButton", "BT4Button1", Bar, "SecureActionButtonTemplate")
+                Bar:WrapScript(btn, "OnClick", [[return "wrapped"]])
+                RegisterStateDriver(Bar, "visibility", "[petbattle]hide;show")
+                UnregisterStateDriver(Bar, "visibility")
+                "#,
+            )
+            .unwrap();
+        assert_eq!(script.arity("GetActionInfo(1)").unwrap(), 3);
+    }
 }
