@@ -187,6 +187,35 @@ struct Runtime {
     activations: VecDeque<(Option<[u8; 20]>, PatchAttemptId)>,
 }
 
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Rust runs `Drop` during panic unwind as well as on an orderly `App` drop. A panic inside
+        // a marker-covered call (`Loaded::open`, the canary `evaluate`, movement `process`) must
+        // not delete the marker for the operation that just panicked: that marker is what makes
+        // the next launch quarantine the crashing digest. Bail out while unwinding; only an
+        // ordinary drop is treated as the clean-exit safety net.
+        if std::thread::panicking() {
+            return;
+        }
+        // Clean-exit safety net: remove a stale `active-sentinel.toml` so an orderly client exit
+        // cannot leave it for the next launch (which would wrongly quarantine a healthy digest).
+        // A pending recovery marker is the only durable record of an uncommitted recovered digest
+        // and must survive to the next launch, so it is retained here. Best effort: do not
+        // intentionally panic or block.
+        match self.host.clear_active_sentinel_on_clean_shutdown() {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!(
+                    "hotpatch: clean shutdown retained active-sentinel.toml for the next launch"
+                );
+            }
+            Err(error) => {
+                warn!("hotpatch: clean shutdown active sentinel clear failed: {error:#}");
+            }
+        }
+    }
+}
+
 fn report(runtime: &mut Runtime, error: String) {
     if runtime.last_error.as_ref() != Some(&error) {
         warn!("hotpatch: {error}");
