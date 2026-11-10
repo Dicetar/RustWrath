@@ -82,11 +82,11 @@ impl Plugin for HotpatchPlugin {
             warn!("hotpatch: {message}");
             last_quarantine_error = Some(message);
         }
-        // Pose loading-window crash sentinel: a marker written after the artifact bytes were
-        // verified and before the irreversible `Library::new` may have survived a native fault.
-        // Recover it before the first poll: quarantine the crashed pose digest (and persist the
-        // store so it survives another crash) or fail safe on a malformed marker. Startup never
-        // fails on either outcome.
+        // Pose crash sentinel: a marker written after the artifact bytes were verified and before
+        // the irreversible `Library::new` (loading window) or immediately before the staged
+        // candidate's canary `process()` call may have survived a native fault. Recover it before
+        // the first poll: quarantine the crashed pose digest (and persist the store so it survives
+        // another crash) or fail safe on a malformed marker. Startup never fails on either outcome.
         let mut last_sentinel_error = None;
         match host.load_active_sentinel() {
             Ok(Some(digest)) => {
@@ -161,7 +161,7 @@ struct Runtime {
     /// persistent save failure re-emit `PublicationRejected`/`RetentionFailed` (and the save
     /// warning) every 1 Hz tick. Only a successful save clears this slot.
     last_quarantine_error: Option<String>,
-    /// Last reported pose loading-window sentinel load/write/clear error. Deliberately separate
+    /// Last reported pose crash-sentinel load/write/clear error. Deliberately separate
     /// from `last_error` and `last_quarantine_error`: a best-effort sentinel write/clear failure
     /// must not re-emit publication/retention events or mask a successful save, and a sentinel load
     /// failure at startup must not fail the plugin.
@@ -206,12 +206,12 @@ fn report_quarantine(runtime: &mut Runtime, error: String) {
     runtime.last_quarantine_error = Some(error);
 }
 
-/// Report a pose loading-window sentinel error through its own dedupe slot.
+/// Report a pose crash-sentinel error through its own dedupe slot.
 ///
 /// The host sets [`Host::sentinel_error`] only for best-effort sentinel write/clear failures during
-/// `poll` (the module load is never failed or skipped because the sentinel could not be written). A
-/// startup sentinel load failure goes directly to `last_sentinel_error`; it never populates the host
-/// slot. This slot is independent of both `last_error` and
+/// `poll` or `evaluate` (the module load/evaluation is never failed or skipped because the sentinel
+/// could not be written). A startup sentinel load failure goes directly to `last_sentinel_error`; it
+/// never populates the host slot. This slot is independent of both `last_error` and
 /// `last_quarantine_error`, so a sentinel issue neither re-emits publication/retention events nor is
 /// masked by a successful quarantine save.
 fn report_sentinel(runtime: &mut Runtime, error: String) {
@@ -310,10 +310,10 @@ fn poll(
         Ok(()) => runtime.last_quarantine_error = None,
         Err(error) => report_quarantine(&mut runtime, format!("quarantine save: {error:#}")),
     }
-    // Drain the best-effort pose loading-window sentinel error slot. Only a failed write/clear
-    // during the host poll lands here; the module load itself is never failed or skipped because
-    // the sentinel could not be written. Reported through the dedicated slot, not `last_error` or
-    // the quarantine slot.
+    // Drain the best-effort pose crash-sentinel error slot. A failed write/clear during the host
+    // poll or canary evaluation lands here; the module load/evaluation itself is never failed or
+    // skipped because the sentinel could not be written. Reported through the dedicated slot, not
+    // `last_error` or the quarantine slot.
     let sentinel_error = runtime.host.take_sentinel_error();
     if let Some(error) = sentinel_error {
         report_sentinel(&mut runtime, error);

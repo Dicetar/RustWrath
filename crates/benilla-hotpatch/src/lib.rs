@@ -36,7 +36,8 @@ const MAX_RESTORE_OUTCOMES: usize = 8;
 /// and a loaded processor that is rejected by a canary batch or fails while active; retained copies
 /// are dropped or skipped. The pose and movement seams each own a store with this cap. Both stores
 /// are persisted by `Host::persist_quarantine` and restored by `Host::load_persistent_quarantine`
-/// through `quarantine.toml`; typed reasons, per-revision totals and the crash sentinel remain H03.
+/// through `quarantine.toml`; typed reasons, per-revision totals and the movement crash sentinel
+/// remain H03.
 const MAX_QUARANTINED_DIGESTS: usize = 32;
 /// Digest-only quarantine store beside the publications. It records exactly the two bounded digest
 /// lists: no library path, revision, timestamp or OS error text is written, and no entry is ever
@@ -47,13 +48,14 @@ const QUARANTINE_TEMP: &str = "quarantine.toml.tmp";
 /// Upper bound on the digest-only quarantine file. The file holds at most 64 digests, so this is
 /// generous; a larger file is rejected before it is read into memory.
 const MAX_QUARANTINE_FILE_BYTES: u64 = 64 * 1024;
-/// Pose loading-window crash sentinel beside the publications: written after the artifact bytes are
-/// verified and before the irreversible `Library::new` maps the DLL, so a native fault during load
-/// leaves a marker the next launch can act on. Cleared again once the load attempt returns.
+/// Pose crash sentinel beside the publications: written after the artifact bytes are verified and
+/// before the irreversible native call (`Library::new` for the loading window, the staged
+/// candidate's `process` for the canary window), so a native fault in either call leaves a marker
+/// the next launch can act on. Cleared again once the call returns.
 const ACTIVE_SENTINEL_FILE: &str = "active-sentinel.toml";
 /// Temp sibling used for the write-then-rename replacement of [`ACTIVE_SENTINEL_FILE`].
 const ACTIVE_SENTINEL_TEMP: &str = "active-sentinel.toml.tmp";
-/// Upper bound on the digest-only loading marker. The file holds four short fields; a larger file
+/// Upper bound on the digest-only crash marker. The file holds four short fields; a larger file
 /// is rejected before it is read into memory.
 const MAX_ACTIVE_SENTINEL_BYTES: u64 = 16 * 1024;
 
@@ -173,7 +175,7 @@ struct QuarantineFile {
     movement: Vec<String>,
 }
 
-/// Which native seam a loading-window sentinel belongs to. Only the pose seam is implemented in
+/// Which native seam a pose crash sentinel belongs to. Only the pose seam is implemented in
 /// this slice; the movement kind is future H03 work and is rejected by the loader rather than
 /// quarantined through the pose store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,20 +184,20 @@ enum SentinelKind {
     Pose, // future: Movement
 }
 
-/// Lifecycle stage of a loading-window sentinel. Only the loading stage is written in this slice;
-/// the canary stage is future H03 work and is rejected by the loader rather than treated as loading.
+/// Lifecycle stage of a pose sentinel. Both pose call-scoped windows (loading and staged
+/// canary) are implemented; a movement sentinel remains future H03 work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum SentinelStage {
     Loading,
-    /// Future H03 canary-window marker. Parsed for forward compatibility but rejected by the
-    /// loading-window loader rather than treated as a loading crash.
+    /// Staged-candidate canary window: written immediately before the candidate's
+    /// `Loaded::evaluate` call and cleared when it returns.
     Canary,
 }
 
-/// On-disk shape of `<root>/active-sentinel.toml`: the digest-only loading marker of the pose module
-/// that was being loaded when the process died. It carries no library path and no OS error text, so
-/// it can never be joined to a path or mistaken for a diagnosis.
+/// On-disk shape of `<root>/active-sentinel.toml`: the digest-only marker of the pose module that
+/// was being loaded or canary-evaluated when the process died. It carries no library path and no
+/// OS error text, so it can never be joined to a path or mistaken for a diagnosis.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ActiveSentinelFile {
@@ -257,7 +259,7 @@ fn write_quarantine_temp(root: &Path, temp: &Path, text: &str) -> Result<()> {
     file.sync_all().context("flush quarantine temp file")
 }
 
-/// Write the loading-window sentinel document to its temp sibling and flush it, mirroring
+/// Write the pose crash-sentinel document to its temp sibling and flush it, mirroring
 /// [`write_quarantine_temp`] for the `active-sentinel.toml` document shape.
 fn write_sentinel_temp(root: &Path, temp: &Path, text: &str) -> Result<()> {
     std::fs::create_dir_all(root).context("create publication folder")?;
@@ -902,17 +904,16 @@ pub struct Host {
     /// names the same bad artifact (`B -> C -> B`) is refused before `Library::new` without
     /// re-reading the DLL. A frame rejected by host validation never reaches this store. The list
     /// is persisted to `quarantine.toml` (see [`Host::persist_quarantine`]) and restored at startup
-    /// (see [`Host::load_persistent_quarantine`]); typed reasons, persistent health and the pose
-    /// loading-window crash sentinel (implemented in this slice, the canary window remains H03) are
-    /// H03.
+    /// (see [`Host::load_persistent_quarantine`]); typed reasons and persistent health remain H03.
+    /// The pose loading and staged-canary sentinels are implemented in this slice.
     quarantined_digests: VecDeque<String>,
-    /// The pose loading-window crash sentinel error slot. Deliberately separate from
+    /// The pose crash-sentinel error slot. Deliberately separate from
     /// `Host::observed`/`self.rejection` and from the quarantine slots: a best-effort sentinel write
-    /// or clear failure must never fail or skip the module load, only surface here.
+    /// or clear failure must never fail or skip the module load/evaluation, only surface here.
     sentinel_error: Option<String>,
-    /// Digest recovered from an unclean loading marker but not yet committed to
-    /// `quarantine.toml`. While set, the marker is retained and a new pose load must commit the
-    /// recovered quarantine before writing a replacement marker.
+    /// Digest recovered from an unclean pose marker but not yet committed to
+    /// `quarantine.toml`. While set, the marker is retained and a new pose load/canary must commit
+    /// the recovered quarantine before writing a replacement marker.
     sentinel_recovery_pending: Option<String>,
     /// The movement seam's own manifest latch, independent of the pose publication.
     movement_observed: Option<String>,
@@ -937,7 +938,7 @@ pub struct Host {
     /// Deliberately separate from the pose store so the same bytes under a different ABI cannot
     /// suppress the other seam; H03 may unify the stores under a `(ModuleKind, digest)` key. Both
     /// lists travel in the same `quarantine.toml` but stay separate in memory. Typed reasons,
-    /// persistent health, the crash sentinel and the frame counters remain H03.
+    /// persistent health, the movement crash sentinel and the frame counters remain H03.
     movement_quarantined_digests: VecDeque<String>,
     /// Which hot-pluggable gameplay seams are enabled. Pose is always enabled; the movement
     /// staging path consults this before it opens an artifact.
@@ -1110,13 +1111,13 @@ impl Host {
         written
     }
 
-    /// Write the pose loading-window crash sentinel for a verified publication to
-    /// `<root>/active-sentinel.toml`.
+    /// Write a pose crash sentinel for a verified publication to `<root>/active-sentinel.toml`.
     ///
-    /// The document holds only the digest identity of the pose module that was being loaded when the
-    /// process died: `{ revision, sha1, kind = "pose", stage = "loading" }`. There is no library
-    /// path and no OS error text, so the file can never be joined to a path or mistaken for a
-    /// diagnosis; it is a loading marker, not a manifest and never selects code to load.
+    /// The document holds only the digest identity of the pose module that was being loaded or
+    /// evaluated as a staged canary when the process died: `{ revision, sha1, kind = "pose",
+    /// stage }`. There is no library path and no OS error text, so the file can never be joined to
+    /// a path or mistaken for a diagnosis; it is a loading/canary marker, not a manifest and never
+    /// selects code to load.
     ///
     /// `sha1` is validated and normalized through [`quarantine_entry_digest`], so only an exactly
     /// 40 ASCII hex digit content identity is written. The document is written to
@@ -1125,13 +1126,18 @@ impl Host {
     /// delete-then-rename window; a failure before the rename leaves the previous file intact with
     /// only an inert temp behind, which this function removes best-effort. The contents are flushed;
     /// the directory entry is not, so this is atomic replacement, not a power-loss durability
-    /// guarantee. This is the load-before-crash marker for the pose seam only; the canary-window and
-    /// movement sentinels remain future H03 work.
+    /// guarantee. This covers the pose loading and staged-canary windows only; the movement sentinel
+    /// remains future H03 work.
     ///
-    /// Best effort: the caller (`Host::poll`) treats a failure here as a [`Self::sentinel_error`]
-    /// and still performs the module load, because an unloadable sentinel must never fail or skip
-    /// the load it was written for.
-    fn write_active_sentinel(&mut self, publication: &Publication) -> Result<()> {
+    /// Best effort: callers (`Host::poll` and `Host::evaluate`) treat a failure here as a
+    /// [`Self::sentinel_error`] and still perform the module load/evaluation, because an
+    /// unwritable sentinel must never fail or skip the work it was written for.
+    fn write_active_sentinel(
+        &mut self,
+        revision: &str,
+        sha1: &str,
+        stage: SentinelStage,
+    ) -> Result<()> {
         if self.sentinel_recovery_pending.is_some() {
             // A recovered digest is awaiting its quarantine commit. Commit it and clear the old
             // marker before writing a replacement; on failure keep the old marker and let the
@@ -1139,14 +1145,14 @@ impl Host {
             self.persist_quarantine()
                 .context("commit pending sentinel recovery before a new load")?;
         }
-        let Some(sha1) = quarantine_entry_digest(&publication.sha1) else {
+        let Some(sha1) = quarantine_entry_digest(sha1) else {
             bail!("active sentinel digest is not a 40-hex content identity");
         };
         let file = ActiveSentinelFile {
-            revision: publication.revision.clone(),
+            revision: revision.to_owned(),
             sha1: sha1.clone(),
             kind: SentinelKind::Pose,
-            stage: SentinelStage::Loading,
+            stage,
         };
         let text = toml::to_string(&file).context("serialize active sentinel")?;
         ensure!(
@@ -1164,11 +1170,11 @@ impl Host {
         written
     }
 
-    /// Clear the pose loading-window crash sentinel. `NotFound` is the success case (nothing to
+    /// Clear the pose crash sentinel. `NotFound` is the success case (nothing to
     /// clear), any other removal error is returned so the caller can surface it through
     /// [`Self::sentinel_error`]. [`Self::persist_quarantine`] calls this after committing a
-    /// recovered digest; `Host::poll` calls it after a marker the current load actually wrote.
-    /// Startup recovery does not call it directly.
+    /// recovered digest; `Host::poll` and `Host::evaluate` call it after a marker the current
+    /// load or canary call actually wrote. Startup recovery does not call it directly.
     pub fn clear_active_sentinel(&self) -> Result<()> {
         let path = self.root.join(ACTIVE_SENTINEL_FILE);
         match std::fs::remove_file(&path) {
@@ -1178,25 +1184,29 @@ impl Host {
         }
     }
 
-    /// Load the pose loading-window crash sentinel written by a previous launch that died during
-    /// `Library::new`/entry/header validation.
+    /// Load a pose crash sentinel written by a previous launch that died during the pose loading
+    /// window (`Library::new`/entry/header validation) or during the staged candidate's canary
+    /// evaluation window.
     ///
     /// Returns `Ok(None)` when no sentinel file is present (no crash marker). A missing file is the
     /// normal clean state; the pose store is untouched. A malformed document, an unknown field, a
     /// digest that is not exactly 40 ASCII hex digits, or a future sentinel kind/stage is an error:
     /// the file is left in place and both digest stores stay unchanged (fail-safe), because a
     /// recoverable marker must never be silently overwritten from unvalidated state. A `Pose` kind
-    /// marker is recovered by adding its normalized digest to the bounded pose quarantine (through
-    /// the existing dedupe/cap helpers), **without removing the marker**; the caller must persist
-    /// the quarantine first and then call [`Self::clear_active_sentinel`], so a crash or persist
-    /// failure between recovery and commit leaves the marker for the next launch. Returns
-    /// `Some(digest)`.
-    /// A future movement kind or canary stage is rejected as an error rather than quarantined
-    /// through the pose loading store.
+    /// marker with stage `loading` or `canary` is recovered by adding its normalized digest to the
+    /// bounded pose quarantine (through the existing dedupe/cap helpers), **without removing the
+    /// marker**; the caller must persist the quarantine first and then call
+    /// [`Self::clear_active_sentinel`], so a crash or persist failure between recovery and commit
+    /// leaves the marker for the next launch. Returns `Some(digest)`.
+    /// A future movement kind is rejected as an error rather than quarantined through the pose
+    /// loading store. Both pose call-scoped windows (open and staged canary) are recovered; unknown
+    /// stage strings remain TOML parse errors.
     ///
-    /// The crash window itself (the fault inside `Library::new` before the clear runs) cannot be
-    /// exercised by a test; it is verified by inspection of the write-before-open/clear-after-return
-    /// ordering in [`Self::poll`].
+    /// The crash window itself (the fault inside `Library::new` before the clear runs, or inside
+    /// `process()` before the canary clear runs) cannot be exercised by a test. The regular path is
+    /// verified by the observing probe, which parses the canary marker during the module call and
+    /// asserts it is gone afterwards; the native-fault path is verified by inspection of the
+    /// write-before-call/clear-after-return ordering in [`Self::poll`] and [`Self::evaluate`].
     pub fn load_active_sentinel(&mut self) -> Result<Option<String>> {
         let path = self.root.join(ACTIVE_SENTINEL_FILE);
         let metadata = match std::fs::metadata(&path) {
@@ -1220,9 +1230,9 @@ impl Host {
                 "active sentinel kind is not supported by this host"
             ));
         }
-        if file.stage != SentinelStage::Loading {
+        if file.stage != SentinelStage::Loading && file.stage != SentinelStage::Canary {
             return Err(anyhow::anyhow!(
-                "active sentinel stage is not the implemented loading window"
+                "active sentinel stage is not an implemented pose window"
             ));
         }
         let digest = sha1;
@@ -1231,9 +1241,9 @@ impl Host {
         Ok(Some(digest))
     }
 
-    /// Drain the best-effort pose loading-window sentinel error slot. Only a failed write or clear
-    /// during `poll` sets it; a module load is never failed or skipped because the sentinel could not
-    /// be written.
+    /// Drain the best-effort pose crash-sentinel error slot. A failed write or clear during `poll`
+    /// or `evaluate` sets it; a module load/evaluation is never failed or skipped because the
+    /// sentinel could not be written.
     pub fn take_sentinel_error(&mut self) -> Option<String> {
         self.sentinel_error.take()
     }
@@ -1349,7 +1359,11 @@ impl Host {
         // A failure here is best effort: it never fails or skips the module load. Clear only when
         // this load actually wrote a marker; a failed write may have intentionally retained a
         // pending-recovery marker, which must survive for the next launch.
-        let sentinel_written = match self.write_active_sentinel(&publication) {
+        let sentinel_written = match self.write_active_sentinel(
+            &publication.revision,
+            &publication.sha1,
+            SentinelStage::Loading,
+        ) {
             Ok(()) => true,
             Err(error) => {
                 self.sentinel_error = Some(format!("active sentinel write: {error:#}"));
@@ -1586,6 +1600,8 @@ impl Host {
     /// only after all output validates. The caller's rig spans must tile the bone batch in order:
     /// a gap, overlap, reordered span or empty rig list with bones is a host/caller error and never
     /// reaches a module or quarantines a digest. All calls are synchronous; no DLL worker may escape.
+    /// A staged candidate is wrapped in a best-effort `active-sentinel.toml` canary marker for the
+    /// duration of its `Loaded::evaluate` call.
     pub fn evaluate(
         &mut self,
         bones: &[BoneLocal],
@@ -1672,7 +1688,36 @@ impl Host {
             bail!("host input bone contains non-finite or zero-norm transform");
         }
         if let Some(candidate) = self.pending.take() {
-            match candidate.evaluate(bones, rigs, seconds, output) {
+            // Pose canary-window sentinel: the candidate has already been loaded and verified, so
+            // mark it as in-canary before the irreversible `process()` call. A native fault during
+            // that call leaves this marker for the next launch to quarantine. A failure here is
+            // best effort and never skips the evaluation. Clear only when this call actually wrote
+            // a marker; a failed write may have intentionally retained a pending-recovery marker.
+            let sentinel_written = match self.write_active_sentinel(
+                &candidate.revision,
+                &candidate.digest,
+                SentinelStage::Canary,
+            ) {
+                Ok(()) => true,
+                Err(error) => {
+                    self.sentinel_error =
+                        Some(format!("active sentinel write: {error:#}"));
+                    false
+                }
+            };
+            let canary_result = candidate.evaluate(bones, rigs, seconds, output);
+            // Immediately after the canary call returns, clear the marker this call wrote. A
+            // successful return, a regular `Err` and a panic-free completion all reach this point;
+            // only a process fault, a host panic, or a failed clear can leave a new marker behind.
+            // A clear failure is reported; the stale marker can quarantine a healthy digest on the
+            // next launch. Do not clear a retained pending-recovery marker when the write failed.
+            if sentinel_written {
+                if let Err(error) = self.clear_active_sentinel() {
+                    self.sentinel_error =
+                        Some(format!("active sentinel clear: {error:#}"));
+                }
+            }
+            match canary_result {
                 Ok(()) => {
                     if let Some(old) = self.active.replace(candidate) {
                         self.previous.retain(|m| m.digest != old.digest);
@@ -2887,6 +2932,14 @@ mod tests {
     /// Counts calls through the span-tiling probe. Only the tiling test references this counter, so
     /// it cannot race the host-validation probe above.
     static TILING_DISPATCHES: AtomicUsize = AtomicUsize::new(0);
+
+    /// Root observed by the canary-marker probe. Only the marker-ordering test sets it.
+    static CANARY_MARKER_ROOT: std::sync::Mutex<Option<std::path::PathBuf>> =
+        std::sync::Mutex::new(None);
+
+    /// Whether the canary-marker probe saw a marker matching the pose canary stage, revision and
+    /// digest at [`CANARY_MARKER_ROOT`] while the staged module was being called.
+    static CANARY_MARKER_SEEN: AtomicUsize = AtomicUsize::new(0);
 
     fn pose_test_root(tag: &str) -> std::path::PathBuf {
         let unique = format!(
@@ -7280,10 +7333,10 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Pose loading-window crash sentinel (`<root>/active-sentinel.toml`). These cases exercise
-    // the write/clear/load lifecycle with in-process hosts; no native library is built or loaded,
-    // and the crash-inside-`Library::new` window itself is verified by inspection of the poll
-    // ordering (write after verify, before open; clear immediately after open returns).
+    // Pose crash sentinel (`<root>/active-sentinel.toml`). These cases exercise the
+    // write/clear/load lifecycle with in-process hosts for the loading and staged-canary windows;
+    // no native library is built or loaded, and the crash-inside-`Library::new`/`process()` window
+    // itself is verified by inspection of the write-before-call/clear-after-return ordering.
     // ------------------------------------------------------------------
 
     #[test]
@@ -7344,7 +7397,7 @@ mod tests {
             sha1: "0".repeat(40),
         };
         let error = host
-            .write_active_sentinel(&publication)
+            .write_active_sentinel(&publication.revision, &publication.sha1, SentinelStage::Loading)
             .expect_err("the writer must not create a marker the loader rejects");
         assert!(
             error.to_string().contains("exceeds"),
@@ -7379,7 +7432,9 @@ mod tests {
             library: format!("pose-{}.dll", "1".repeat(40)),
             sha1: persistent_digest(72),
         };
-        assert!(host.write_active_sentinel(&new_publication).is_err());
+        assert!(host
+            .write_active_sentinel(&new_publication.revision, &new_publication.sha1, SentinelStage::Loading)
+            .is_err());
         let text = std::fs::read_to_string(root.join(ACTIVE_SENTINEL_FILE))
             .expect("the recovered marker remains");
         assert!(
@@ -7388,7 +7443,7 @@ mod tests {
         );
 
         std::fs::remove_dir(root.join(QUARANTINE_FILE)).expect("remove the blocker");
-        host.write_active_sentinel(&new_publication)
+        host.write_active_sentinel(&new_publication.revision, &new_publication.sha1, SentinelStage::Loading)
             .expect("commit the recovery and write the new marker");
         assert!(
             host.is_quarantined(&recovered),
@@ -7600,26 +7655,28 @@ mod tests {
             "a future-kind sentinel must not quarantine through the pose store"
         );
 
-        // A future canary stage parses but is rejected by the loading-window loader.
+        // An unknown stage string is not a valid pose window and remains a TOML/serde parse
+        // error: the file and both stores are left untouched.
         std::fs::write(
             root.join(ACTIVE_SENTINEL_FILE),
             format!(
-                "revision = \"rev-x\"\nsha1 = \"{digest}\"\nkind = \"pose\"\nstage = \"canary\"\n"
+                "revision = \"rev-x\"\nsha1 = \"{digest}\"\nkind = \"pose\"\nstage = \"clean\"\n"
             ),
         )
-        .expect("write canary-stage sentinel");
+        .expect("write unknown-stage sentinel");
         assert!(
             host.load_active_sentinel().is_err(),
-            "a canary-stage sentinel is not a loading-window recovery"
+            "an unknown sentinel stage is a parse error"
         );
         assert!(
             root.join(ACTIVE_SENTINEL_FILE).exists(),
-            "a rejected canary-stage sentinel keeps the file"
+            "an unknown-stage sentinel keeps the file"
         );
         assert!(
             host.quarantined_digests.is_empty(),
-            "a canary-stage sentinel must not quarantine as a load crash"
+            "an unknown-stage sentinel must not quarantine"
         );
+        assert!(host.movement_quarantined_digests.is_empty());
 
         // An oversized sentinel is rejected before it is read (valid TOML, only the size check
         // can reject it).
@@ -7647,7 +7704,7 @@ mod tests {
             library: format!("pose-{}.dll", "0".repeat(40)),
             sha1: persistent_digest(71),
         };
-        host.write_active_sentinel(&publication)
+        host.write_active_sentinel(&publication.revision, &publication.sha1, SentinelStage::Loading)
             .expect("write the active sentinel");
         let text = std::fs::read_to_string(root.join(ACTIVE_SENTINEL_FILE))
             .expect("read the written sentinel");
@@ -7708,6 +7765,257 @@ mod tests {
             "a cleared sentinel must not leave a sentinel error"
         );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn active_sentinel_canary_stage_is_quarantined_and_persisted() {
+        let root = pose_test_root("sentinel-canary-quarantine");
+        let digest = persistent_digest(91);
+        let revision = "rev-canary-crashed";
+        std::fs::write(
+            root.join(ACTIVE_SENTINEL_FILE),
+            format!(
+                "revision = \"{revision}\"\nsha1 = \"{digest}\"\nkind = \"pose\"\nstage = \"canary\"\n"
+            ),
+        )
+        .expect("write canary sentinel");
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_active_sentinel().expect("recover the canary sentinel"),
+            Some(digest.clone()),
+            "the crashed canary digest is recovered from the marker"
+        );
+        assert!(
+            host.is_quarantined(&digest),
+            "the crashed canary digest is quarantined for the next launch"
+        );
+        assert!(
+            root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "the marker remains until the recovered quarantine is committed"
+        );
+
+        host.persist_quarantine()
+            .expect("persist the recovered quarantine");
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "persist commits the store and clears the recovered marker"
+        );
+        let mut restored = Host::new(root.clone());
+        assert_eq!(
+            restored
+                .load_persistent_quarantine()
+                .expect("reload the persisted store"),
+            1,
+            "the recovered digest survives another crash through the persisted store"
+        );
+        assert!(
+            restored.is_quarantined(&digest),
+            "the recovered digest is in the persisted pose store"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn successful_canary_clears_the_marker() {
+        let root = pose_test_root("sentinel-canary-success");
+        let mut host = Host::new(root.clone());
+        host.pending = Some(Loaded::probe("rev-candidate", CANARY_DIGEST, allow_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a valid canary batch promotes")
+        );
+        assert_eq!(host.digest(), Some(CANARY_DIGEST));
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "a successful canary clears its marker"
+        );
+        assert!(
+            host.take_sentinel_error().is_none(),
+            "no sentinel error is recorded on the success path"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejected_canary_clears_the_marker_and_quarantines() {
+        let root = pose_test_root("sentinel-canary-reject");
+        let mut host = Host::new(root.clone());
+        host.pending = Some(Loaded::probe("rev-candidate", CANARY_DIGEST, reject_pose));
+
+        let mut output = Vec::new();
+        // No active module, so the evaluate returns the existing tolerated outcome (false).
+        let result = host
+            .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+            .expect("a rejected canary leaves no active module");
+        assert!(!result, "no module produces output after a rejected canary with no active");
+        assert!(host.is_quarantined(CANARY_DIGEST));
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "a rejected canary clears its marker"
+        );
+        assert!(
+            host.take_sentinel_error().is_none(),
+            "no sentinel error is recorded on the rejection path"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn canary_marker_exists_during_the_canary_call() {
+        let root = pose_test_root("sentinel-canary-observed");
+        // A native fault inside the canary call cannot be exercised in-process: unwinding out of
+        // an `extern "C"` probe aborts rather than unwinding through `catch_unwind`. Instead the
+        // probe records whether the digest-only marker is already on disk when module code runs,
+        // and the clear-after-return ordering is asserted after `evaluate` returns. A real fault
+        // leaves the marker by the same write-before-call/clear-after-return ordering.
+        unsafe extern "C" fn observe_canary_marker(
+            frame: *const PoseFrame,
+            out: *mut BoneLocal,
+            count: u32,
+        ) -> i32 {
+            let valid = CANARY_MARKER_ROOT
+                .lock()
+                .expect("canary marker root lock")
+                .as_ref()
+                .is_some_and(|root| {
+                    std::fs::read_to_string(root.join(ACTIVE_SENTINEL_FILE))
+                        .ok()
+                        .and_then(|text| toml::from_str::<ActiveSentinelFile>(&text).ok())
+                        .is_some_and(|file| {
+                            file.kind == SentinelKind::Pose
+                                && file.stage == SentinelStage::Canary
+                                && file.revision == "rev-candidate"
+                                && file.sha1 == CANARY_DIGEST
+                        })
+                });
+            CANARY_MARKER_SEEN.store(usize::from(valid), Ordering::SeqCst);
+            // SAFETY: the host owns the frame and output buffer for this call.
+            unsafe { allow_pose(frame, out, count) }
+        }
+
+        *CANARY_MARKER_ROOT
+            .lock()
+            .expect("canary marker root lock") = Some(root.clone());
+        CANARY_MARKER_SEEN.store(0, Ordering::SeqCst);
+        let mut host = Host::new(root.clone());
+        host.pending = Some(Loaded::probe(
+            "rev-candidate",
+            CANARY_DIGEST,
+            observe_canary_marker,
+        ));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a valid canary batch promotes")
+        );
+        assert_eq!(
+            CANARY_MARKER_SEEN.load(Ordering::SeqCst),
+            1,
+            "the canary marker names the pose canary stage, revision and digest before module code runs"
+        );
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "the marker is cleared immediately after the canary call returns"
+        );
+        assert!(
+            host.take_sentinel_error().is_none(),
+            "no sentinel error is recorded on the observed canary path"
+        );
+        *CANARY_MARKER_ROOT
+            .lock()
+            .expect("canary marker root lock") = None;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn canary_sentinel_write_failure_is_fail_open() {
+        let root = pose_test_root("sentinel-canary-write-fail");
+        // Put a directory at the sentinel path so the rename fails.
+        std::fs::create_dir_all(root.join(ACTIVE_SENTINEL_FILE)).expect("block sentinel path");
+        let mut host = Host::new(root.clone());
+        host.pending = Some(Loaded::probe("rev-candidate", CANARY_DIGEST, allow_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a failed sentinel write must not fail the load")
+        );
+        assert_eq!(host.digest(), Some(CANARY_DIGEST));
+        let error = host
+            .take_sentinel_error()
+            .expect("the failed write is reported through the sentinel slot");
+        assert!(
+            error.contains("active sentinel write"),
+            "the recorded error is the write failure: {error}"
+        );
+        assert!(
+            !error.contains("clear"),
+            "no clear is attempted after a failed write: {error}"
+        );
+        // No clear is attempted: the directory remains at the sentinel path.
+        assert!(
+            root.join(ACTIVE_SENTINEL_FILE).is_dir(),
+            "the directory blocker remains because no clear ran"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pending_recovery_blocks_a_canary_marker_without_losing_the_old_one() {
+        let root = pose_test_root("sentinel-canary-pending");
+        let recovered = persistent_digest(92);
+        std::fs::write(
+            root.join(ACTIVE_SENTINEL_FILE),
+            format!(
+                "revision = \"rev-crashed\"\nsha1 = \"{recovered}\"\nkind = \"pose\"\nstage = \"loading\"\n"
+            ),
+        )
+        .expect("write sentinel");
+        std::fs::create_dir_all(root.join(QUARANTINE_FILE)).expect("block the store path");
+
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_active_sentinel().expect("recover the marker"),
+            Some(recovered.clone())
+        );
+        host.pending = Some(Loaded::probe("rev-candidate", CANARY_DIGEST, allow_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the canary still runs when the pending recovery cannot commit"),
+            "the failed canary marker write is fail-open for evaluation"
+        );
+        assert_eq!(host.digest(), Some(CANARY_DIGEST));
+        let error = host
+            .take_sentinel_error()
+            .expect("the blocked recovery commit is reported");
+        assert!(
+            error.contains("commit pending sentinel recovery"),
+            "the recorded error names the pending recovery commit: {error}"
+        );
+        let text = std::fs::read_to_string(root.join(ACTIVE_SENTINEL_FILE))
+            .expect("the recovered marker must not be replaced while its commit is blocked");
+        assert!(
+            text.contains(&recovered),
+            "the recovered digest is still the marker: {text}"
+        );
+        assert!(
+            !text.contains(CANARY_DIGEST),
+            "the new canary marker did not overwrite the pending recovery: {text}"
+        );
+
+        std::fs::remove_dir(root.join(QUARANTINE_FILE)).expect("remove the blocker");
+        host.persist_quarantine().expect("commit the recovered store");
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "the successful commit clears the recovered marker"
+        );
+        assert!(host.is_quarantined(&recovered));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
