@@ -36,8 +36,8 @@ const MAX_RESTORE_OUTCOMES: usize = 8;
 /// and a loaded processor that is rejected by a canary batch or fails while active; retained copies
 /// are dropped or skipped. The pose and movement seams each own a store with this cap. Both stores
 /// are persisted by `Host::persist_quarantine` and restored by `Host::load_persistent_quarantine`
-/// through `quarantine.toml`; typed reasons, per-revision totals and the movement canary sentinel
-/// remain H03.
+/// through `quarantine.toml`; typed reasons, per-revision totals and the movement active-frame
+/// sentinel remain H03.
 const MAX_QUARANTINED_DIGESTS: usize = 32;
 /// Digest-only quarantine store beside the publications. It records exactly the two bounded digest
 /// lists: no library path, revision, timestamp or OS error text is written, and no entry is ever
@@ -176,7 +176,7 @@ struct QuarantineFile {
 }
 
 /// Which native seam a crash sentinel belongs to. The pose seam covers the loading and staged-canary
-/// windows; the movement seam covers its loading window only in this slice.
+/// windows; the movement seam covers its loading and staged-canary windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum SentinelKind {
@@ -184,14 +184,15 @@ enum SentinelKind {
     Movement,
 }
 
-/// Lifecycle stage of a crash sentinel. The pose loading/staged-canary and movement loading
-/// windows are implemented; a movement canary marker remains future H03 work.
+/// Lifecycle stage of a crash sentinel. The pose loading/staged-canary and movement
+/// loading/staged-canary windows are implemented.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum SentinelStage {
     Loading,
-    /// Staged-candidate canary window: written immediately before the candidate's
-    /// `Loaded::evaluate` call and cleared when it returns.
+    /// Staged-candidate canary window: written immediately before the pose candidate's
+    /// `Loaded::evaluate` call or the first staged movement proposal's `process` call, and cleared
+    /// when that call returns.
     Canary,
 }
 
@@ -946,6 +947,11 @@ pub struct Host {
     /// that same candidate. Cleared at the start of every proposal call, on every refusal, and
     /// whenever the selected or staged state changes (a new stage, unload or seam toggle).
     movement_proposal_ready: bool,
+    /// One-shot guard for the movement canary crash sentinel: the first staged movement proposal
+    /// writes the marker immediately before `process`; every later staged proposal and every active
+    /// proposal leaves it unset. Reset whenever a new staged candidate is installed, or a candidate
+    /// is unloaded/committed/rejected, so a fresh staging can mark again.
+    movement_canary_attempted: bool,
     /// Bounded quarantine (in-memory plus `quarantine.toml`) of movement digests rejected after their bytes were verified:
     /// a terminal post-verification `MovementLoaded::open` failure, or a module-produced `Status`
     /// or output-validation failure in `movement_proposal`. A changed manifest that still names
@@ -953,7 +959,7 @@ pub struct Host {
     /// Deliberately separate from the pose store so the same bytes under a different ABI cannot
     /// suppress the other seam; H03 may unify the stores under a `(ModuleKind, digest)` key. Both
     /// lists travel in the same `quarantine.toml` but stay separate in memory. Typed reasons,
-    /// persistent health, the movement canary sentinel and the frame counters remain H03.
+    /// persistent health, the movement active-frame sentinel and the frame counters remain H03.
     movement_quarantined_digests: VecDeque<String>,
     /// Which hot-pluggable gameplay seams are enabled. Pose is always enabled; the movement
     /// staging path consults this before it opens an artifact.
@@ -984,6 +990,7 @@ impl Host {
             movement_refusal: None,
             movement_rejection: None,
             movement_proposal_ready: false,
+            movement_canary_attempted: false,
             movement_quarantined_digests: VecDeque::new(),
             seams: ModularGameplayRegistry::new(),
         }
@@ -1142,13 +1149,13 @@ impl Host {
     /// delete-then-rename window; a failure before the rename leaves the previous file intact with
     /// only an inert temp behind, which this function removes best-effort. The contents are flushed;
     /// the directory entry is not, so this is atomic replacement, not a power-loss durability
-    /// guarantee. This covers the pose loading/staged-canary and movement loading windows only; a
-    /// movement canary marker remains future H03 work.
+    /// guarantee. This covers the pose loading/staged-canary windows and the movement
+    /// loading/staged-canary windows.
     ///
-    /// Best effort: callers (`Host::poll`, `Host::evaluate` and `Host::stage_movement_processor`)
-    /// treat a failure here as a [`Self::sentinel_error`] and still perform the module
-    /// load/evaluation, because an unwritable sentinel must never fail or skip the work it was
-    /// written for.
+    /// Best effort: callers (`Host::poll`, `Host::evaluate`, `Host::stage_movement_processor` and
+    /// `Host::movement_proposal`) treat a failure here as a [`Self::sentinel_error`] and still
+    /// perform the module load/evaluation, because an unwritable sentinel must never fail or skip
+    /// the work it was written for.
     fn write_active_sentinel(
         &mut self,
         kind: SentinelKind,
@@ -1191,9 +1198,9 @@ impl Host {
     /// Clear the pose/movement crash sentinel. `NotFound` is the success case (nothing to
     /// clear), any other removal error is returned so the caller can surface it through
     /// [`Self::sentinel_error`]. [`Self::persist_quarantine`] calls this after committing a
-    /// recovered digest; `Host::poll`, `Host::evaluate` and `Host::stage_movement_processor` call
-    /// it after a marker the current operation actually wrote. Startup recovery does not call it
-    /// directly.
+    /// recovered digest; `Host::poll`, `Host::evaluate`, `Host::stage_movement_processor` and
+    /// `Host::movement_proposal` call it after a marker the current operation actually wrote.
+    /// Startup recovery does not call it directly.
     pub fn clear_active_sentinel(&self) -> Result<()> {
         let path = self.root.join(ACTIVE_SENTINEL_FILE);
         match std::fs::remove_file(&path) {
@@ -1205,7 +1212,8 @@ impl Host {
 
     /// Load a pose/movement crash sentinel written by a previous launch that died during a pose
     /// loading window (`Library::new`/entry/header validation), the staged pose candidate's canary
-    /// evaluation window, or the movement loading window (`MovementLoaded::open`/`Library::new`).
+    /// evaluation window, the movement loading window (`MovementLoaded::open`/`Library::new`), or
+    /// the first staged movement proposal's `process` window.
     ///
     /// Returns `Ok(None)` when no sentinel file is present (no crash marker). A missing file is the
     /// normal clean state; both digest stores are untouched. A malformed document, an unknown
@@ -1214,14 +1222,12 @@ impl Host {
     /// (fail-safe),
     /// because a recoverable marker must never be silently overwritten from unvalidated state. A
     /// `Pose` marker with stage `loading` or `canary` is recovered by adding its normalized digest
-    /// to the bounded pose quarantine; a `Movement` marker with stage `loading` is recovered into
-    /// the bounded movement quarantine (both through the existing dedupe/cap helpers), **without
-    /// removing the marker**; the caller must persist the quarantine first and then call
-    /// [`Self::clear_active_sentinel`], so a crash or persist failure between recovery and commit
-    /// leaves the marker for the next launch. Returns `Some(digest)`.
-    /// A movement canary marker is rejected as an error rather than quarantined through the
-    /// movement loading store; both pose windows and the movement loading window are recovered,
-    /// and unknown stage strings remain TOML parse errors.
+    /// to the bounded pose quarantine; a `Movement` marker with stage `loading` or `canary` is
+    /// recovered into the bounded movement quarantine (both through the existing dedupe/cap
+    /// helpers), **without removing the marker**; the caller must persist the quarantine first and
+    /// then call [`Self::clear_active_sentinel`], so a crash or persist failure between recovery and
+    /// commit leaves the marker for the next launch. Returns `Some(digest)`.
+    /// Unknown stage strings remain TOML parse errors.
     ///
     /// The crash window itself (the fault inside `Library::new` before the clear runs, or inside
     /// `process()` before the canary clear runs) cannot be exercised by a test. The regular path is
@@ -1257,9 +1263,7 @@ impl Host {
                 self.quarantine_digest(&digest);
             }
             SentinelKind::Movement => {
-                if file.stage != SentinelStage::Loading {
-                    // The movement canary window remains future H03 work; a future-stage marker
-                    // must not be silently recovered as a load crash.
+                if file.stage != SentinelStage::Loading && file.stage != SentinelStage::Canary {
                     return Err(anyhow::anyhow!(
                         "active sentinel stage is not an implemented movement window"
                     ));
@@ -1272,8 +1276,8 @@ impl Host {
     }
 
     /// Drain the best-effort pose/movement crash-sentinel error slot. A failed write or clear
-    /// during `poll`, `evaluate` or movement staging sets it; a module load/evaluation is never
-    /// failed or skipped because the sentinel could not be written.
+    /// during `poll`, `evaluate`, movement staging or a staged movement proposal sets it; a module
+    /// load/evaluation is never failed or skipped because the sentinel could not be written.
     pub fn take_sentinel_error(&mut self) -> Option<String> {
         self.sentinel_error.take()
     }
@@ -1496,6 +1500,7 @@ impl Host {
             if enabled && !was_enabled {
                 // Let the next stage call publish the manifest that was refused while disabled.
                 self.movement_proposal_ready = false;
+                self.movement_canary_attempted = false;
                 self.movement_observed = None;
                 self.movement_failure_stamp = None;
                 self.movement_refusal = None;
@@ -2036,6 +2041,8 @@ impl Host {
                         // A newly staged candidate has not proposed yet; only its own accepted proposal
                         // may arm the commit gate.
                         self.movement_proposal_ready = false;
+                        // A new staged candidate gets a fresh one-shot canary marker.
+                        self.movement_canary_attempted = false;
                         self.movement_observed = Some(text);
                         self.movement_failure_stamp = None;
                         self.movement_refusal = None;
@@ -2099,6 +2106,10 @@ impl Host {
     /// `bounds`. This never promotes: the controller evaluates the same proposal and only then
     /// calls [`Self::commit_movement_processor`].
     ///
+    /// The first staged proposal is wrapped in a one-shot `active-sentinel.toml` canary marker
+    /// for the duration of its `process` call; later staged proposals and active per-frame calls
+    /// are unmarked (the latter remain H03).
+    ///
     /// Nothing is written to the caller's proposal when a proposal is refused. A `FrameInput`
     /// refusal hands prediction back for this frame but leaves `movement_pending`/`movement_active`
     /// untouched, so the same processor can serve the next valid frame; `NoModule` is likewise
@@ -2156,7 +2167,38 @@ impl Host {
             anim_override: 0,
             emit_move_opcode: 0,
         };
+        // Movement canary-window sentinel (one-shot): the first staged proposal marks the
+        // candidate as in-canary immediately before the irreversible `process` call. A native
+        // fault during that call leaves this marker for the next launch to quarantine. Active
+        // proposals never write a marker, and a second staged proposal does not either. A write
+        // or clear failure is best effort and never fails or skips the proposal; a failed write
+        // leaves no new marker and retains any pending-recovery marker.
+        let sentinel_written = if staged && !self.movement_canary_attempted {
+            self.movement_canary_attempted = true;
+            match self.write_active_sentinel(
+                SentinelKind::Movement,
+                &revision,
+                &digest,
+                SentinelStage::Canary,
+            ) {
+                Ok(()) => true,
+                Err(error) => {
+                    self.sentinel_error = Some(format!("active sentinel write: {error:#}"));
+                    false
+                }
+            }
+        } else {
+            false
+        };
         let status = unsafe { process(frame, &mut output) };
+        // Clear the marker this call wrote immediately after `process` returns, on every regular
+        // path (success, non-zero status, or output validation below). Only a process fault, a
+        // host panic or a failed clear can leave a new marker behind.
+        if sentinel_written {
+            if let Err(error) = self.clear_active_sentinel() {
+                self.sentinel_error = Some(format!("active sentinel clear: {error:#}"));
+            }
+        }
         if status != 0 {
             self.quarantine_movement_digest(&digest);
             return Err(self.reject_movement_candidate(
@@ -2214,6 +2256,7 @@ impl Host {
         };
         self.movement_active = Some(candidate);
         self.movement_proposal_ready = false;
+        self.movement_canary_attempted = false;
         self.movement_refusal = None;
         true
     }
@@ -2234,6 +2277,7 @@ impl Host {
         let staged = self.movement_pending.take().is_some();
         let active = self.movement_active.take().is_some();
         self.movement_proposal_ready = false;
+        self.movement_canary_attempted = false;
         staged | active
     }
 
@@ -2276,6 +2320,9 @@ impl Host {
         detail: String,
     ) -> MovementRefusal {
         self.movement_proposal_ready = false;
+        // Dropping a staged candidate (or both slots on an active failure) ends any
+        // one-shot canary attempt for that candidate.
+        self.movement_canary_attempted = false;
         if staged {
             self.movement_pending = None;
             if self
@@ -2999,6 +3046,7 @@ mod tests {
     const NEWEST_DIGEST: &str = "4444444444444444444444444444444444444444";
     const BAD_PREDECESSOR_DIGEST: &str = "5555555555555555555555555555555555555555";
     const GOOD_PREDECESSOR_DIGEST: &str = "6666666666666666666666666666666666666666";
+    const MOVEMENT_CANARY_DIGEST: &str = "7777777777777777777777777777777777777777";
 
     /// Counts calls through the test-only dispatch probe. Reset by the host-validation test that
     /// uses it; no other test references the counter.
@@ -3015,6 +3063,22 @@ mod tests {
     /// Whether the canary-marker probe saw a marker matching the pose canary stage, revision and
     /// digest at [`CANARY_MARKER_ROOT`] while the staged module was being called.
     static CANARY_MARKER_SEEN: AtomicUsize = AtomicUsize::new(0);
+
+    /// Root observed by the movement canary-marker probe.
+    static MOVEMENT_CANARY_ROOT: std::sync::Mutex<Option<std::path::PathBuf>> =
+        std::sync::Mutex::new(None);
+
+    /// Whether the movement canary-marker probe saw a marker matching the movement canary stage,
+    /// revision and digest at [`MOVEMENT_CANARY_ROOT`].
+    static MOVEMENT_CANARY_SEEN: AtomicUsize = AtomicUsize::new(0);
+
+    /// Number of times the movement canary-marker probe ran.
+    static MOVEMENT_CANARY_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Serializes the tests that share [`MOVEMENT_CANARY_ROOT`]/[`MOVEMENT_CANARY_SEEN`]/
+    /// [`MOVEMENT_CANARY_CALLS`]; default test threads could otherwise interleave their probe
+    /// observations.
+    static MOVEMENT_CANARY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn pose_test_root(tag: &str) -> std::path::PathBuf {
         let unique = format!(
@@ -4531,6 +4595,34 @@ mod tests {
         0
     }
 
+    /// Observe the one-shot movement canary marker during the module call. The probe records
+    /// whether it saw the movement/canary marker with the candidate identity, then returns a valid
+    /// proposal so the host promotes nothing by itself.
+    unsafe extern "C" fn observe_movement_canary(
+        frame: *const MovementFrame,
+        out: *mut MovementOutput,
+    ) -> i32 {
+        MOVEMENT_CANARY_CALLS.fetch_add(1, Ordering::SeqCst);
+        let valid = MOVEMENT_CANARY_ROOT
+            .lock()
+            .expect("movement canary root lock")
+            .as_ref()
+            .is_some_and(|root| {
+                std::fs::read_to_string(root.join(ACTIVE_SENTINEL_FILE))
+                    .ok()
+                    .and_then(|text| toml::from_str::<ActiveSentinelFile>(&text).ok())
+                    .is_some_and(|file| {
+                        file.kind == SentinelKind::Movement
+                            && file.stage == SentinelStage::Canary
+                            && file.revision == "rev-candidate"
+                            && file.sha1 == MOVEMENT_CANARY_DIGEST
+                    })
+            });
+        MOVEMENT_CANARY_SEEN.store(usize::from(valid), Ordering::SeqCst);
+        // SAFETY: the host owns the frame and output buffer for this call.
+        unsafe { propose_step(frame, out) }
+    }
+
     unsafe extern "C" fn propose_nan(frame: *const MovementFrame, out: *mut MovementOutput) -> i32 {
         let mut output = mirrored(frame);
         output.position[1] = f32::NAN;
@@ -4607,7 +4699,9 @@ mod tests {
     }
 
     fn probe_host(process: ProcessMovement) -> Host {
-        let mut host = Host::new(std::env::temp_dir());
+        // A unique root per probe keeps the one-shot movement canary marker out of the shared
+        // system temp directory when focused tests run in parallel.
+        let mut host = Host::new(movement_test_root("movement-probe"));
         host.set_seam_enabled(ModuleKind::Movement, true);
         host.movement_pending = Some(MovementLoaded::probe("rev-movement", process));
         host
@@ -5339,7 +5433,7 @@ mod tests {
 
     #[test]
     fn staged_movement_failure_retains_a_healthy_active_with_a_different_digest() {
-        let mut host = Host::new(std::env::temp_dir());
+        let mut host = Host::new(movement_test_root("movement-staged-retain"));
         host.set_seam_enabled(ModuleKind::Movement, true);
         let failed_digest = "b".repeat(40);
         let active_digest = "a".repeat(40);
@@ -5411,7 +5505,7 @@ mod tests {
 
     #[test]
     fn staged_movement_failure_with_the_same_active_digest_clears_both_slots() {
-        let mut host = Host::new(std::env::temp_dir());
+        let mut host = Host::new(movement_test_root("movement-staged-same-digest"));
         host.set_seam_enabled(ModuleKind::Movement, true);
         let digest = "c".repeat(40);
         host.movement_pending =
@@ -7724,30 +7818,30 @@ mod tests {
             "both stores stay empty on an invalid-digest sentinel"
         );
 
-        // A movement canary marker is still future H03 work and is rejected rather than recovered
-        // through either store.
+        // An unknown stage string is not a valid movement window and remains a TOML/serde parse
+        // error: the file and both stores are left untouched.
         std::fs::write(
             root.join(ACTIVE_SENTINEL_FILE),
             format!(
-                "revision = \"rev-x\"\nsha1 = \"{digest}\"\nkind = \"movement\"\nstage = \"canary\"\n"
+                "revision = \"rev-x\"\nsha1 = \"{digest}\"\nkind = \"movement\"\nstage = \"clean\"\n"
             ),
         )
-        .expect("write future-stage sentinel");
+        .expect("write unknown-stage sentinel");
         assert!(
             host.load_active_sentinel().is_err(),
-            "a movement canary sentinel is rejected"
+            "an unknown movement stage is rejected"
         );
         assert!(
             root.join(ACTIVE_SENTINEL_FILE).exists(),
-            "a rejected future-stage sentinel keeps the file"
+            "a rejected unknown-stage sentinel keeps the file"
         );
         assert!(
             host.quarantined_digests.is_empty(),
-            "a rejected movement canary sentinel must not quarantine through the pose store"
+            "an unknown movement stage must not quarantine through the pose store"
         );
         assert!(
             host.movement_quarantined_digests.is_empty(),
-            "a rejected movement canary sentinel must not quarantine through the movement store"
+            "an unknown movement stage must not quarantine through the movement store"
         );
 
         // An unknown stage string is not a valid pose window and remains a TOML/serde parse
@@ -8120,10 +8214,9 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Movement loading-window sentinel (`<root>/active-sentinel.toml`,
-    // `kind = "movement"`, `stage = "loading"`). These cases mirror the pose
-    // sentinel lifecycle for the movement seam's loading window only; the
-    // movement canary window remains future H03 work.
+    // Movement crash sentinel (`<root>/active-sentinel.toml`, `kind = "movement"`). These cases
+    // mirror the pose sentinel lifecycle for the movement loading window and the one-shot first
+    // staged proposal; an active movement processor's per-frame calls remain unmarked H03.
     // ------------------------------------------------------------------
 
     #[test]
@@ -8179,29 +8272,75 @@ mod tests {
     }
 
     #[test]
-    fn movement_canary_stage_is_rejected_fail_safe() {
+    fn movement_canary_sentinel_is_quarantined_and_persisted() {
         let root = movement_test_root("movement-sentinel-canary");
         let digest = persistent_digest(202);
         std::fs::write(
             root.join(ACTIVE_SENTINEL_FILE),
             format!(
-                "revision = \"rev-x\"\nsha1 = \"{digest}\"\nkind = \"movement\"\nstage = \"canary\"\n"
+                "revision = \"rev-crashed\"\nsha1 = \"{digest}\"\nkind = \"movement\"\nstage = \"canary\"\n"
             ),
         )
         .expect("write movement canary sentinel");
         let mut host = Host::new(root.clone());
-        assert!(
-            host.load_active_sentinel().is_err(),
-            "a movement canary sentinel is rejected (future H03 work)"
+        assert_eq!(
+            host.load_active_sentinel()
+                .expect("recover the movement canary marker"),
+            Some(digest.clone()),
+            "the crashed movement canary digest is recovered"
         );
         assert!(
-            root.join(ACTIVE_SENTINEL_FILE).exists(),
-            "a rejected movement canary sentinel keeps the file"
+            host.is_movement_quarantined(&digest),
+            "the crashed movement canary digest is quarantined"
         );
         assert!(
             host.quarantined_digests.is_empty(),
-            "both stores stay empty on a rejected movement canary sentinel"
+            "a movement canary marker must never fill the pose store"
         );
+        assert!(
+            root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "the marker remains until the recovered quarantine is committed"
+        );
+
+        host.persist_quarantine()
+            .expect("persist the recovered movement canary quarantine");
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "persist commits the store and clears the recovered canary marker"
+        );
+        let mut restored = Host::new(root.clone());
+        assert_eq!(
+            restored
+                .load_persistent_quarantine()
+                .expect("reload the persisted store"),
+            1,
+            "the recovered movement canary digest survives another crash"
+        );
+        assert!(restored.is_movement_quarantined(&digest));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_unknown_stage_is_rejected_fail_safe() {
+        let root = movement_test_root("movement-sentinel-unknown-stage");
+        let digest = persistent_digest(206);
+        std::fs::write(
+            root.join(ACTIVE_SENTINEL_FILE),
+            format!(
+                "revision = \"rev-x\"\nsha1 = \"{digest}\"\nkind = \"movement\"\nstage = \"clean\"\n"
+            ),
+        )
+        .expect("write unknown-stage movement sentinel");
+        let mut host = Host::new(root.clone());
+        assert!(
+            host.load_active_sentinel().is_err(),
+            "an unknown movement stage remains a deserialize error"
+        );
+        assert!(
+            root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "a rejected unknown-stage sentinel keeps the file"
+        );
+        assert!(host.quarantined_digests.is_empty());
         assert!(host.movement_quarantined_digests.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -8361,6 +8500,220 @@ mod tests {
             host2.is_movement_quarantined(&digest),
             "the movement store still holds the recovered digest"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staged_movement_proposal_writes_the_canary_marker_during_process() {
+        let _canary_guard = MOVEMENT_CANARY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = movement_test_root("movement-canary-observed");
+        *MOVEMENT_CANARY_ROOT
+            .lock()
+            .expect("movement canary root lock") = Some(root.clone());
+        MOVEMENT_CANARY_SEEN.store(0, Ordering::SeqCst);
+        MOVEMENT_CANARY_CALLS.store(0, Ordering::SeqCst);
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-candidate",
+            MOVEMENT_CANARY_DIGEST,
+            observe_movement_canary,
+        ));
+
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("a valid staged movement proposal");
+        assert_eq!(source, MovementProposalSource::Staged);
+        assert_eq!(
+            MOVEMENT_CANARY_SEEN.load(Ordering::SeqCst),
+            1,
+            "the movement canary marker names the movement stage, revision and digest before process runs"
+        );
+        assert_eq!(MOVEMENT_CANARY_CALLS.load(Ordering::SeqCst), 1);
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "the marker is cleared immediately after the staged process call returns"
+        );
+        assert!(
+            host.take_sentinel_error().is_none(),
+            "no sentinel error is recorded on the observed canary path"
+        );
+
+        // The marker is one-shot: a second staged proposal runs the module but rewrites nothing.
+        MOVEMENT_CANARY_SEEN.store(0, Ordering::SeqCst);
+        let (_, second_source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the same staged candidate proposes again");
+        assert_eq!(second_source, MovementProposalSource::Staged);
+        assert_eq!(MOVEMENT_CANARY_CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            MOVEMENT_CANARY_SEEN.load(Ordering::SeqCst),
+            0,
+            "a second staged proposal must not rewrite the one-shot marker"
+        );
+        *MOVEMENT_CANARY_ROOT
+            .lock()
+            .expect("movement canary root lock") = None;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn active_movement_proposal_does_not_write_a_marker() {
+        let _canary_guard = MOVEMENT_CANARY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = movement_test_root("movement-canary-active");
+        *MOVEMENT_CANARY_ROOT
+            .lock()
+            .expect("movement canary root lock") = Some(root.clone());
+        MOVEMENT_CANARY_SEEN.store(0, Ordering::SeqCst);
+        MOVEMENT_CANARY_CALLS.store(0, Ordering::SeqCst);
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_active = Some(MovementLoaded::probe_with_digest(
+            "rev-candidate",
+            MOVEMENT_CANARY_DIGEST,
+            observe_movement_canary,
+        ));
+
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("a valid active movement proposal");
+        assert_eq!(source, MovementProposalSource::Active);
+        assert_eq!(MOVEMENT_CANARY_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            MOVEMENT_CANARY_SEEN.load(Ordering::SeqCst),
+            0,
+            "an active movement processor must not write a canary marker during process"
+        );
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "an active movement processor must not write a canary marker"
+        );
+        assert!(host.take_sentinel_error().is_none());
+        *MOVEMENT_CANARY_ROOT
+            .lock()
+            .expect("movement canary root lock") = None;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejected_staged_movement_proposal_clears_the_canary_marker() {
+        let root = movement_test_root("movement-canary-reject");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-candidate",
+            MOVEMENT_CANARY_DIGEST,
+            reject_frame,
+        ));
+
+        let error = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect_err("a non-zero status rejects the staged proposal");
+        assert!(matches!(error, MovementRefusal::Status(7)));
+        assert!(
+            host.is_movement_quarantined(MOVEMENT_CANARY_DIGEST),
+            "the rejected staged movement digest is quarantined"
+        );
+        assert!(
+            !root.join(ACTIVE_SENTINEL_FILE).exists(),
+            "a regular staged rejection clears the canary marker"
+        );
+        assert!(host.take_sentinel_error().is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_canary_write_failure_is_fail_open() {
+        let root = movement_test_root("movement-canary-write-fail");
+        // Put a directory at the sentinel path so the rename fails.
+        std::fs::create_dir_all(root.join(ACTIVE_SENTINEL_FILE)).expect("block sentinel path");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-candidate",
+            MOVEMENT_CANARY_DIGEST,
+            propose_step,
+        ));
+
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("a failed sentinel write must not skip the movement proposal");
+        assert_eq!(source, MovementProposalSource::Staged);
+        let error = host
+            .take_sentinel_error()
+            .expect("the failed write is reported through the sentinel slot");
+        assert!(
+            error.contains("active sentinel write"),
+            "the recorded error is the write failure: {error}"
+        );
+        assert!(
+            !error.contains("clear"),
+            "no clear is attempted after a failed write: {error}"
+        );
+        assert!(
+            root.join(ACTIVE_SENTINEL_FILE).is_dir(),
+            "the directory blocker remains because no clear ran"
+        );
+
+        // The one-shot is consumed: a second staged proposal does not retry the write.
+        let (_, second_source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged candidate still proposes after the failed write");
+        assert_eq!(second_source, MovementProposalSource::Staged);
+        assert!(
+            host.take_sentinel_error().is_none(),
+            "the failed write is not retried on the next staged proposal"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unload_resets_the_movement_canary_one_shot() {
+        let _canary_guard = MOVEMENT_CANARY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = movement_test_root("movement-canary-reset");
+        *MOVEMENT_CANARY_ROOT
+            .lock()
+            .expect("movement canary root lock") = Some(root.clone());
+        MOVEMENT_CANARY_SEEN.store(0, Ordering::SeqCst);
+        MOVEMENT_CANARY_CALLS.store(0, Ordering::SeqCst);
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-candidate",
+            MOVEMENT_CANARY_DIGEST,
+            observe_movement_canary,
+        ));
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the first staged proposal writes the marker");
+        assert_eq!(MOVEMENT_CANARY_SEEN.load(Ordering::SeqCst), 1);
+
+        assert!(host.unload_movement_processor());
+        assert!(
+            !host.movement_canary_attempted,
+            "unloading resets the one-shot attempt"
+        );
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-candidate",
+            MOVEMENT_CANARY_DIGEST,
+            observe_movement_canary,
+        ));
+        MOVEMENT_CANARY_SEEN.store(0, Ordering::SeqCst);
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("a newly staged candidate writes the marker again");
+        assert_eq!(
+            MOVEMENT_CANARY_SEEN.load(Ordering::SeqCst),
+            1,
+            "a new staged candidate gets a fresh canary marker"
+        );
+        *MOVEMENT_CANARY_ROOT
+            .lock()
+            .expect("movement canary root lock") = None;
         let _ = std::fs::remove_dir_all(&root);
     }
 
