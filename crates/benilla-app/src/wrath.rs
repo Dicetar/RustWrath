@@ -4903,7 +4903,7 @@ pub(crate) fn wrath_map_to_bg_type_id(map_or_bg_id: u32) -> u32 {
 pub(crate) fn wrath_battlefield_status(
     status: gameplay::wrath_systems::BattlefieldStatus,
 ) -> SessionEvent {
-    let Some(slot) = status.slot else {
+    let Some(slot) = status.queue else {
         return SessionEvent::BattlefieldStatus(benilla_protocol::messages::BattlefieldStatus {
             slot: status.queue_slot,
             map_id: 0,

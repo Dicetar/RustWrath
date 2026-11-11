@@ -9,8 +9,9 @@ use benilla_world::rig_anim::RigPose;
 use benilla_world::schedule::WorldStage;
 use bevy::prelude::*;
 
+use crate::player::camera::FlyCam;
 use crate::player::{
-    CameraControl, MoveSpeed, MovementProcessor, MovementProcessorOutcome,
+    MoveSpeed, MovementProcessor, MovementProcessorOutcome,
     MovementProcessorRefusal, MovementProcessorState, MovementProposal as AppMovementProposal,
     Player, PlayerControlSet, MODULE_OWNED_FLAGS, MODULE_SPEED_SLACK, MODULE_STEP_FLOOR,
     MODULE_STEP_SLACK, TERMINAL_VELOCITY,
@@ -88,7 +89,7 @@ fn prepare_movement_hotpatch(
     mut processor: ResMut<MovementProcessor>,
     player: Option<Res<Player>>,
     move_speed: Option<Res<MoveSpeed>>,
-    rig: Option<Res<CameraControl>>,
+    cameras: Query<&FlyCam>,
 ) {
     let Some(player) = player else {
         return;
@@ -96,32 +97,33 @@ fn prepare_movement_hotpatch(
     let dt = time.delta_secs();
     let run_speed = move_speed
         .as_ref()
-        .map(|s| s.0)
+        .map(|s| s.value)
         .filter(|s| s.is_finite() && *s > 0.0)
         .unwrap_or(7.0);
     let walk_speed = (run_speed * (2.5 / 7.0)).max(0.1);
     let swim_speed = (run_speed * (4.722222 / 7.0)).max(0.1);
-    let velocity = [player.horiz_vel.x, player.vel_y, player.horiz_vel.z];
-    let horiz_speed = player.horiz_vel.length();
+    let velocity = player.velocity();
+    let horiz_speed = velocity.x.hypot(velocity.z);
     let body_speed = horiz_speed.max(run_speed);
     let liquid_height = player
         .liquid_surface
         .filter(|y| y.is_finite())
         .unwrap_or(f32::NEG_INFINITY);
-    let camera_yaw = rig
-        .as_ref()
-        .map(|r| r.yaw)
+    let camera_yaw = cameras
+        .iter()
+        .next()
+        .map(FlyCam::yaw)
         .filter(|y| y.is_finite())
-        .unwrap_or(player.face_yaw);
+        .unwrap_or(player.facing());
     let frame = MovementFrame {
         dt_seconds: dt,
         position: player.pos.to_array(),
-        velocity,
-        facing: player.face_yaw,
-        pitch: player.mover_pitch,
+        velocity: velocity.to_array(),
+        facing: player.facing(),
+        pitch: player.pitch(),
         camera_yaw,
         input_buttons: 0,
-        move_flags: player.move_flags,
+        move_flags: player.move_flags(),
         run_speed,
         walk_speed,
         swim_speed,
@@ -133,10 +135,10 @@ fn prepare_movement_hotpatch(
     let bounds = MovementBounds {
         max_step: (body_speed * dt.max(0.0) * MODULE_STEP_SLACK + MODULE_STEP_FLOOR).max(0.05),
         max_horizontal_speed: (body_speed * MODULE_SPEED_SLACK + MODULE_STEP_FLOOR).max(0.05),
-        max_vertical_speed: (TERMINAL_VELOCITY.max(player.vel_y.abs()) * MODULE_SPEED_SLACK)
+        max_vertical_speed: (TERMINAL_VELOCITY.max(velocity.y.abs()) * MODULE_SPEED_SLACK)
             .max(1.0),
         max_abs_facing: std::f32::consts::TAU
-            .max(player.face_yaw.abs() + std::f32::consts::TAU),
+            .max(player.facing().abs() + std::f32::consts::TAU),
         permitted_flags: MODULE_OWNED_FLAGS,
     };
     drive_movement_proposal(&mut runtime, &mut processor, &frame, &bounds);

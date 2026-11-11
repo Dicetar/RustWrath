@@ -209,7 +209,7 @@ pub(super) fn tick_state_drivers(lua: &Lua) {
             .iter()
             .filter_map(|(&bits, rows)| {
                 let handle = FrameHandle::from_fingerprint_bits(bits);
-                let id = model.frame_id.get(&handle).copied()?;
+                let id = model.frame_to_id.get(&handle).copied()?;
                 let pairs = rows
                     .iter()
                     .map(|(s, c)| (s.clone(), c.clone()))
