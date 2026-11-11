@@ -49,10 +49,31 @@ fn capture_hotpatch_events(
                             PatchRejectReason::ManifestMalformed => {
                                 HotpatchReason::ManifestMalformed
                             }
+                            PatchRejectReason::InvalidBasename => {
+                                HotpatchReason::InvalidBasename
+                            }
+                            PatchRejectReason::EmptyRevision => HotpatchReason::EmptyRevision,
+                            PatchRejectReason::ArtifactTooLarge => {
+                                HotpatchReason::ArtifactTooLarge
+                            }
+                            PatchRejectReason::DigestMismatch => HotpatchReason::DigestMismatch,
+                            PatchRejectReason::ImmutableFilename => {
+                                HotpatchReason::ImmutableFilename
+                            }
                             PatchRejectReason::ArtifactRejected => {
                                 HotpatchReason::ArtifactRejected
                             }
                             PatchRejectReason::Quarantined => HotpatchReason::Quarantined,
+                            PatchRejectReason::ModuleLoadFailed => {
+                                HotpatchReason::ModuleLoadFailed
+                            }
+                            PatchRejectReason::MissingEntryPoint => {
+                                HotpatchReason::MissingEntryPoint
+                            }
+                            PatchRejectReason::AbiMismatch => HotpatchReason::AbiMismatch,
+                            PatchRejectReason::MissingProcessor => {
+                                HotpatchReason::MissingProcessor
+                            }
                             PatchRejectReason::LoadFailed => HotpatchReason::LoadFailed,
                             _ => match reason {
                                 BevyReason::Publication => HotpatchReason::Publication,

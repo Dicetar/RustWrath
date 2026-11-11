@@ -845,8 +845,17 @@ pub(crate) enum HotpatchReason {
     TransientIoPending,
     ManifestUnreadable,
     ManifestMalformed,
+    InvalidBasename,
+    EmptyRevision,
+    ArtifactTooLarge,
+    DigestMismatch,
+    ImmutableFilename,
     ArtifactRejected,
     Quarantined,
+    ModuleLoadFailed,
+    MissingEntryPoint,
+    AbiMismatch,
+    MissingProcessor,
     LoadFailed,
 }
 

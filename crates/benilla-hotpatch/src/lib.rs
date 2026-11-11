@@ -340,39 +340,139 @@ fn digest_bytes(digest: &str) -> Option<ModuleDigest> {
     Some(bytes)
 }
 
+/// A publication verification or load failure that carries a stable [`PatchRejectReason`].
+///
+/// The reason is the fine, recorder-safe code; the printable `detail` stays separate so the
+/// existing free-form log text is unchanged. `Display` is the previous outer context label (or the
+/// plain verification/contract message); an error produced by `Library::new`/`library.get` is kept
+/// as `inner` and exposed through [`std::error::Error::source`]. `anyhow`'s alternate formatter
+/// appends the source chain, so the previous `{error:#}` text is reproduced exactly while
+/// [`transient_io`] can still find a Windows sharing/lock `std::io::Error` underneath a failed
+/// load.
+struct PatchRejection {
+    reason: PatchRejectReason,
+    detail: &'static str,
+    /// The wrapped source error for a failed `Library::new`/`library.get`, or `None` for a plain
+    /// verification/contract message. Stored as an `anyhow::Error` so its whole source chain
+    /// (including `libloading`'s `std::io::Error` source on Windows) survives.
+    inner: Option<anyhow::Error>,
+}
+
+impl PatchRejection {
+    /// A deterministic verification/contract failure with no wrapped source error.
+    fn plain(reason: PatchRejectReason, detail: &'static str) -> Self {
+        Self {
+            reason,
+            detail,
+            inner: None,
+        }
+    }
+
+    /// A load failure that keeps the context label as `Display` and exposes the native/source error
+    /// through [`std::error::Error::source`].
+    fn wrapped(reason: PatchRejectReason, detail: &'static str, inner: anyhow::Error) -> Self {
+        Self {
+            reason,
+            detail,
+            inner: Some(inner),
+        }
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        anyhow::Error::new(self)
+    }
+}
+
+impl std::fmt::Display for PatchRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Keep the previous outer context label; `anyhow`'s `{:#}` formatter appends the
+        // `source()` chain, so embedding `inner` here would duplicate the wrapped load error.
+        formatter.write_str(self.detail)
+    }
+}
+
+impl std::fmt::Debug for PatchRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PatchRejection")
+            .field("reason", &self.reason)
+            .field("detail", &self.detail)
+            .finish()
+    }
+}
+
+impl std::error::Error for PatchRejection {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // `anyhow::Error` implements both `AsRef<dyn Error>` and
+        // `AsRef<dyn Error + Send + Sync>`; annotate the `Send + Sync` form so the call is
+        // unambiguous, then upcast it to the plain error trait object.
+        let inner: &(dyn std::error::Error + Send + Sync + 'static) = self.inner.as_ref()?.as_ref();
+        Some(inner as &(dyn std::error::Error + 'static))
+    }
+}
+
+/// Extract the fine reason from a [`verify_publication`]/[`Loaded::open`] error.
+///
+/// `None` means the failure is untyped/legacy, so the caller keeps its coarse fallback.
+fn publication_reason(error: &anyhow::Error) -> Option<PatchRejectReason> {
+    error
+        .downcast_ref::<PatchRejection>()
+        .map(|rejection| rejection.reason)
+}
+
 /// Verify a publication's artifact for one seam and return its pinned path and content digest.
 ///
 /// The order is load-bearing and shared by every seam: basename, non-empty revision, size cap,
-/// content digest, then the immutable `<prefix><digest>.dll` name. A digest mismatch is reported
-/// before the filename test so the diagnostic names the bytes; `Host::poll` treats that
-/// deterministic mismatch as terminal, while an unreadable/incomplete artifact keeps its retry.
+/// content digest, then the immutable `<prefix><digest>.dll` name. Every deterministic rejection
+/// carries its fine [`PatchRejectReason`] in a [`PatchRejection`]; filesystem I/O (`metadata`,
+/// `read`) stays a raw `std::io::Error` so the poll call site can keep classifying it as
+/// transient. A digest mismatch is reported before the filename test so the diagnostic names the
+/// bytes; `Host::poll` treats that deterministic mismatch as terminal, while an
+/// unreadable/incomplete artifact keeps its retry.
 fn verify_publication(
     root: &Path,
     publication: &Publication,
     kind: ModuleKind,
 ) -> Result<(PathBuf, String)> {
     let path = Path::new(&publication.library);
-    ensure!(
-        path.components().count() == 1
-            && matches!(path.components().next(), Some(Component::Normal(_))),
-        "library must be a basename inside the publication folder"
-    );
-    ensure!(!publication.revision.is_empty(), "empty revision");
+    if path.components().count() != 1
+        || !matches!(path.components().next(), Some(Component::Normal(_)))
+    {
+        return Err(PatchRejection::plain(
+            PatchRejectReason::InvalidBasename,
+            "library must be a basename inside the publication folder",
+        )
+        .into_error());
+    }
+    if publication.revision.is_empty() {
+        return Err(
+            PatchRejection::plain(PatchRejectReason::EmptyRevision, "empty revision").into_error(),
+        );
+    }
     let path = root.join(path);
-    ensure!(
-        std::fs::metadata(&path)?.len() <= MAX_LIBRARY_BYTES,
-        "module exceeds 64 MiB limit"
-    );
+    if std::fs::metadata(&path)?.len() > MAX_LIBRARY_BYTES {
+        return Err(PatchRejection::plain(
+            PatchRejectReason::ArtifactTooLarge,
+            "module exceeds 64 MiB limit",
+        )
+        .into_error());
+    }
     let bytes = std::fs::read(&path)?;
     let digest = format!("{:x}", Sha1::digest(&bytes));
-    ensure!(
-        digest == publication.sha1,
-        "module digest differs from publication"
-    );
-    ensure!(
-        publication.library == format!("{}{digest}.dll", kind.prefix()),
-        "module must use its immutable digest filename"
-    );
+    if digest != publication.sha1 {
+        return Err(PatchRejection::plain(
+            PatchRejectReason::DigestMismatch,
+            "module digest differs from publication",
+        )
+        .into_error());
+    }
+    if publication.library != format!("{}{digest}.dll", kind.prefix()) {
+        return Err(PatchRejection::plain(
+            PatchRejectReason::ImmutableFilename,
+            "module must use its immutable digest filename",
+        )
+        .into_error());
+    }
     Ok((path, digest))
 }
 
@@ -462,14 +562,47 @@ impl Loaded {
     fn open(path: PathBuf, digest: String, publication: Publication) -> Result<Self> {
         // SAFETY: executable local modules are explicitly trusted. The caller publishes immutable
         // digest-named libraries. This owner pins code until every invocation has returned.
-        let library = unsafe { Library::new(&path) }.context("loading presentation module")?;
-        let entry =
-            unsafe { library.get::<EntryPoint>(ENTRY) }.context("missing module entry point")?;
+        let library = unsafe { Library::new(&path) }
+            .map_err(|error| {
+                PatchRejection::wrapped(
+                    PatchRejectReason::ModuleLoadFailed,
+                    "loading presentation module",
+                    error.into(),
+                )
+                .into_error()
+            })?;
+        let entry = unsafe { library.get::<EntryPoint>(ENTRY) }
+            .map_err(|error| {
+                PatchRejection::wrapped(
+                    PatchRejectReason::MissingEntryPoint,
+                    "missing module entry point",
+                    error.into(),
+                )
+                .into_error()
+            })?;
         let api = unsafe { entry() };
-        ensure!(!api.is_null(), "null module descriptor");
+        if api.is_null() {
+            return Err(PatchRejection::plain(
+                PatchRejectReason::AbiMismatch,
+                "null module descriptor",
+            )
+            .into_error());
+        }
         let header = unsafe { std::ptr::read(api.cast::<Header>()) };
-        ensure!(header.compatible(), "incompatible presentation ABI");
-        let process = unsafe { (*api).process }.context("missing pose processor")?;
+        if !header.compatible() {
+            return Err(PatchRejection::plain(
+                PatchRejectReason::AbiMismatch,
+                "incompatible presentation ABI",
+            )
+            .into_error());
+        }
+        let Some(process) = (unsafe { (*api).process }) else {
+            return Err(PatchRejection::plain(
+                PatchRejectReason::MissingProcessor,
+                "missing pose processor",
+            )
+            .into_error());
+        };
         Ok(Self {
             revision: publication.revision,
             digest,
@@ -896,8 +1029,10 @@ impl PatchHealth {
 /// Typed reason for a pose publication poll rejection.
 ///
 /// The free-form loader/verification detail remains in the returned error and local log; this is
-/// the stable code carried by `HotpatchEvent::PublicationRejected`. Canary, active-frame,
-/// movement and rollback reasons remain H03.
+/// the stable code carried by `HotpatchEvent::PublicationRejected`. Verification and load failures
+/// carry the fine code in the private `PatchRejection` wrapper; the coarse
+/// [`Self::ArtifactRejected`] and [`Self::LoadFailed`] values are fallbacks for an untyped/legacy
+/// error. Canary, active-frame, movement and rollback reasons remain H03.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PatchRejectReason {
@@ -907,11 +1042,30 @@ pub enum PatchRejectReason {
     ManifestUnreadable,
     /// `ready.toml` parsed as TOML but not as a publication.
     ManifestMalformed,
-    /// The artifact bytes/name/size/revision failed pre-load verification.
+    /// `publication.library` is not a single normal component inside the publication folder.
+    InvalidBasename,
+    /// `publication.revision` is empty.
+    EmptyRevision,
+    /// The artifact exceeds `MAX_LIBRARY_BYTES`.
+    ArtifactTooLarge,
+    /// The computed SHA-1 differs from `publication.sha1`.
+    DigestMismatch,
+    /// The filename is not exactly `<kind-prefix><digest>.dll`.
+    ImmutableFilename,
+    /// Fallback for an untyped/legacy pre-load artifact verification failure.
     ArtifactRejected,
     /// The declared digest is in the bounded quarantine store.
     Quarantined,
-    /// `Library::new`/entry/header/processor validation failed.
+    /// `Library::new` failed for a terminal image/dependency reason. A sharing/lock failure is
+    /// classified `TransientIoPending` by the poll gate instead.
+    ModuleLoadFailed,
+    /// The module exports no entry symbol.
+    MissingEntryPoint,
+    /// The entry returned a null descriptor or `Header::compatible()` failed.
+    AbiMismatch,
+    /// The descriptor has no callable `process` pointer.
+    MissingProcessor,
+    /// Fallback for an untyped/legacy post-verification load failure.
     LoadFailed,
     /// No typed reason was recorded (adapter fallback).
     Unknown,
@@ -1529,7 +1683,9 @@ impl Host {
                 }
                 // Terminal verification failure: record the attempted artifact identity so a later
                 // same-text repair with new bytes is retried instead of being masked by the latch.
-                self.publication_reason = Some(PatchRejectReason::ArtifactRejected);
+                self.publication_reason = Some(
+                    publication_reason(&error).unwrap_or(PatchRejectReason::ArtifactRejected),
+                );
                 self.pose_failure_stamp = attempt_stamp.clone();
                 self.observed = Some(text);
                 return Err(error);
@@ -1574,7 +1730,8 @@ impl Host {
                     self.publication_reason = Some(PatchRejectReason::TransientIoPending);
                     return Err(error);
                 }
-                self.publication_reason = Some(PatchRejectReason::LoadFailed);
+                self.publication_reason =
+                    Some(publication_reason(&error).unwrap_or(PatchRejectReason::LoadFailed));
                 self.quarantine_digest(&quarantine_digest);
                 self.pose_failure_stamp = attempt_stamp;
                 self.observed = Some(text);
@@ -8979,7 +9136,8 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
 
-        // A digest/filename mismatch is a terminal artifact rejection.
+        // A digest/filename mismatch is a terminal artifact rejection; the digest mismatch is
+        // reported before the immutable-filename test.
         let root = pose_test_root("reason-artifact");
         let bytes = b"artifact bytes";
         let digest = format!("{:x}", Sha1::digest(bytes));
@@ -8994,10 +9152,11 @@ mod tests {
         )
         .expect("write mismatched manifest");
         let mut host = Host::new(root.clone());
-        assert!(host.poll().is_err());
+        let error = host.poll().expect_err("the digest mismatch is terminal");
+        assert_eq!(error.to_string(), "module digest differs from publication");
         assert_eq!(
             host.take_publication_reason(),
-            Some(PatchRejectReason::ArtifactRejected)
+            Some(PatchRejectReason::DigestMismatch)
         );
         let _ = std::fs::remove_dir_all(&root);
 
@@ -9013,10 +9172,20 @@ mod tests {
         )
         .expect("write load-failing manifest");
         let mut host = Host::new(root.clone());
-        assert!(host.poll().is_err());
+        let error = host
+            .poll()
+            .expect_err("non-PE bytes reach the native load");
         assert_eq!(
             host.take_publication_reason(),
-            Some(PatchRejectReason::LoadFailed)
+            Some(PatchRejectReason::ModuleLoadFailed)
+        );
+        // The wrapper's `Display` is the old outer context label; anyhow's alternate formatter
+        // appends the source chain, so the previous `{error:#}` text is unchanged and not doubled.
+        assert_eq!(error.to_string(), "loading presentation module");
+        let chained = format!("{error:#}");
+        assert!(
+            chained.starts_with("loading presentation module: "),
+            "the wrapped load source is preserved: {chained}"
         );
         assert!(host.is_quarantined(&digest));
         let _ = std::fs::remove_dir_all(&root);
@@ -9026,6 +9195,167 @@ mod tests {
         let mut host = Host::new(root.clone());
         assert!(!host.poll().expect("no manifest is not an error"));
         assert_eq!(host.take_publication_reason(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pose_poll_reports_fine_verification_reasons() {
+        let digest = persistent_digest(403);
+
+        // A path-like library fails the basename test before any filesystem access.
+        let root = pose_test_root("reason-basename");
+        let non_basename = format!("nested/pose-{digest}.dll");
+        std::fs::write(
+            root.join("ready.toml"),
+            format!(
+                "revision = \"rev-a\"\nlibrary = \"{non_basename}\"\nsha1 = \"{digest}\"\n"
+            ),
+        )
+        .expect("write non-basename manifest");
+        let mut host = Host::new(root.clone());
+        let error = host
+            .poll()
+            .expect_err("the non-basename library is terminal");
+        assert_eq!(
+            error.to_string(),
+            "library must be a basename inside the publication folder"
+        );
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::InvalidBasename)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // An empty revision is rejected by verification before its metadata check; the poll's
+        // pre-verification artifact stamp is a separate step and does not change the reason.
+        let root = pose_test_root("reason-empty-revision");
+        std::fs::write(
+            root.join("ready.toml"),
+            format!("revision = \"\"\nlibrary = \"pose-{digest}.dll\"\nsha1 = \"{digest}\"\n"),
+        )
+        .expect("write empty-revision manifest");
+        let mut host = Host::new(root.clone());
+        let error = host.poll().expect_err("the empty revision is terminal");
+        assert_eq!(error.to_string(), "empty revision");
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::EmptyRevision)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // The size cap is checked from metadata before the artifact is read. `set_len` avoids
+        // writing 64 MiB of data; the fixture is removed with the test root.
+        let root = pose_test_root("reason-too-large");
+        let dll = format!("pose-{digest}.dll");
+        let artifact = std::fs::File::create(root.join(&dll)).expect("create oversized artifact");
+        artifact
+            .set_len(MAX_LIBRARY_BYTES + 1)
+            .expect("extend oversized artifact");
+        drop(artifact);
+        std::fs::write(
+            root.join("ready.toml"),
+            format!("revision = \"rev-a\"\nlibrary = \"{dll}\"\nsha1 = \"{digest}\"\n"),
+        )
+        .expect("write oversized manifest");
+        let mut host = Host::new(root.clone());
+        let error = host.poll().expect_err("the oversized artifact is terminal");
+        assert_eq!(error.to_string(), "module exceeds 64 MiB limit");
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::ArtifactTooLarge)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // The bytes match the declared digest, but the name is not the immutable digest name.
+        let root = pose_test_root("reason-immutable-name");
+        let bytes = b"fine verification reason fixture";
+        let digest = format!("{:x}", Sha1::digest(bytes));
+        let wrong_name = format!("pose-{}.dll", "e".repeat(40));
+        std::fs::write(root.join(&wrong_name), bytes).expect("write artifact");
+        std::fs::write(
+            root.join("ready.toml"),
+            format!("revision = \"rev-a\"\nlibrary = \"{wrong_name}\"\nsha1 = \"{digest}\"\n"),
+        )
+        .expect("write wrong-filename manifest");
+        let mut host = Host::new(root.clone());
+        let error = host
+            .poll()
+            .expect_err("the wrong immutable filename is terminal");
+        assert_eq!(
+            error.to_string(),
+            "module must use its immutable digest filename"
+        );
+        assert_eq!(
+            host.take_publication_reason(),
+            Some(PatchRejectReason::ImmutableFilename)
+        );
+        // The unchanged terminal text is a quiet staging poll and leaves no new reason.
+        assert!(!host.poll().expect("the latched manifest is quiet"));
+        assert_eq!(host.take_publication_reason(), None);
+        let _ = std::fs::remove_dir_all(&root);
+
+        // A successful `Ok(true)` staging poll requires a loadable native module. The reason is
+        // cleared at poll start and assigned only on the terminal error paths, so the successful
+        // `None` invariant is inspection-only here; the quiet `Ok(false)` cases above assert the
+        // same reset without a native artifact.
+        //
+        // Native-only branches are inspection-only in this source slice: a missing entry symbol,
+        // a null descriptor, an incompatible header and a missing `process` pointer need real
+        // export/descriptor fixtures that only a native module build can provide. `Loaded::open`
+        // maps them to `MissingEntryPoint`, `AbiMismatch` (null descriptor and header) and
+        // `MissingProcessor`; no native load is faked here.
+    }
+
+    #[test]
+    fn wrapped_rejection_keeps_the_transient_io_chain_and_reason() {
+        let error = PatchRejection::wrapped(
+            PatchRejectReason::ModuleLoadFailed,
+            "loading presentation module",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied).into(),
+        )
+        .into_error();
+        assert!(
+            transient_io(&error),
+            "a wrapped permission/sharing failure stays transient"
+        );
+        assert_eq!(
+            publication_reason(&error),
+            Some(PatchRejectReason::ModuleLoadFailed)
+        );
+    }
+
+    #[test]
+    fn movement_verify_failure_carries_no_verified_digest_for_a_fine_reason() {
+        let root = movement_test_root("fine-verify-reason");
+        let digest = persistent_digest(501);
+        let publication = Publication {
+            revision: "rev-m".to_owned(),
+            library: format!("movement-{digest}.dll"),
+            sha1: digest.clone(),
+        };
+        std::fs::write(root.join(&publication.library), b"wrong movement bytes")
+            .expect("write mismatched movement artifact");
+
+        let failure = MovementLoaded::verify(&root, &publication)
+            .expect_err("the digest mismatch is a verification failure");
+        assert_eq!(failure.refusal, MovementRefusal::Publication);
+        assert!(!failure.transient, "a digest mismatch is terminal");
+        assert!(
+            failure.verified_digest.is_none(),
+            "verification fails before any digest is proved"
+        );
+        assert!(
+            failure
+                .detail
+                .starts_with("movement publication rejected: "),
+            "the shared detail prefix is preserved: {}",
+            failure.detail
+        );
+        assert!(
+            failure.detail.contains("module digest differs from publication"),
+            "the shared verification detail is preserved: {}",
+            failure.detail
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
