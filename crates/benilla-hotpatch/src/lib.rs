@@ -36,8 +36,8 @@ const MAX_RESTORE_OUTCOMES: usize = 8;
 /// and a loaded processor that is rejected by a canary batch or fails while active; retained copies
 /// are dropped or skipped. The pose and movement seams each own a store with this cap. Both stores
 /// are persisted by `Host::persist_quarantine` and restored by `Host::load_persistent_quarantine`
-/// through `quarantine.toml`; typed reasons, per-revision totals and the movement active-frame
-/// sentinel remain H03.
+/// through `quarantine.toml`; remaining movement/rollback typed reasons, per-revision totals and
+/// the movement active-frame sentinel remain H03.
 const MAX_QUARANTINED_DIGESTS: usize = 32;
 /// Digest-only quarantine store beside the publications. It records exactly the two bounded digest
 /// lists: no library path, revision, timestamp or OS error text is written, and no entry is ever
@@ -62,10 +62,37 @@ const MAX_ACTIVE_SENTINEL_BYTES: u64 = 16 * 1024;
 /// Verified SHA-1 content identity of a loaded module, as raw bytes.
 pub type ModuleDigest = [u8; 20];
 
+/// Recorder-safe reason for one pose evaluation failure.
+///
+/// The free-form loader/evaluation detail stays in `take_rejection`/`take_active_failure` and the
+/// local log; this enum is the stable code carried in recorder events and restore outcomes.
+/// `Status` describes a module-produced non-zero status, while `InvalidOutput` and
+/// `TopologyChanged` split the module output checks (an invalid transform is reported before a
+/// changed `BoneLocal.parent` when both are wrong). `FrameTooLarge` is the `Loaded::evaluate`
+/// ABI-count guard, and `HostFrameRejected` is the adapter's host/caller frame `Err` branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PatchEvaluationReason {
+    /// The module returned this non-zero status for the pose frame.
+    Status(i32),
+    /// The module returned a non-finite transform, a zero-norm rotation or another invalid output.
+    InvalidOutput,
+    /// The module changed `BoneLocal.parent`; when the transform is also invalid,
+    /// [`Self::InvalidOutput`] wins because transform validity is checked first.
+    TopologyChanged,
+    /// The `Loaded::evaluate` ABI-count guard rejected the frame before dispatch.
+    FrameTooLarge,
+    /// The adapter's `Host::evaluate` `Err` branch: the host/caller frame was rejected.
+    HostFrameRejected,
+    /// Fallback for an untyped or future evaluation failure.
+    Unknown,
+}
+
 /// Recorder-safe description of one active-module frame failure and its fallback decision.
 ///
-/// Free-form loader errors stay in `take_active_failure`/logs. This enum carries only the
-/// verified content identity (when available) and whether a retained predecessor was promoted.
+/// Free-form loader errors stay in `take_active_failure`/logs. This enum carries the verified
+/// content identity (when available), whether a retained predecessor was promoted, and the last
+/// evaluation reason that made a restore unavailable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RestoreOutcome {
     /// The failed module was replaced by the newest retained predecessor.
@@ -75,7 +102,12 @@ pub enum RestoreOutcome {
         restored_digest: Option<ModuleDigest>,
     },
     /// The failed module had no retained predecessor; the baseline pose is active again.
-    Unavailable { failed_digest: Option<ModuleDigest> },
+    Unavailable {
+        failed_digest: Option<ModuleDigest>,
+        /// The last predecessor's evaluation reason, or the active module's own reason when no
+        /// predecessor was tried.
+        reason: PatchEvaluationReason,
+    },
 }
 
 /// Read-only in-memory health of the currently active pose module.
@@ -89,8 +121,8 @@ pub enum RestoreOutcome {
 /// is a new activation and starts a clean record. This is the in-memory H03 slice: counters and
 /// thresholds are per activation and this record is neither persisted nor exported outside the
 /// process; [`PatchHealthPolicy`] enforces the thresholds in memory, while persisted health/artifact
-/// stamps, typed reasons and per-revision cumulative accounting remain H03. (The separate digest
-/// quarantine behind `quarantined_digests` is persisted; this snapshot is not.)
+/// stamps, movement typed reasons and per-revision cumulative accounting remain H03. (The separate
+/// digest quarantine behind `quarantined_digests` is persisted; this snapshot is not.)
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PatchHealthSnapshot {
@@ -130,8 +162,8 @@ pub struct PatchHealthSnapshot {
 ///
 /// The default [`PatchHealthPolicy::default`] is the original single-strike behavior: one
 /// consecutive failure demotes, with the cumulative cap (3) only reachable if the consecutive
-/// threshold were relaxed. These thresholds are in-memory only; persistence, remaining typed
-/// canary/active/movement/rollback `PatchRejectReason` values, per-revision cumulative accounting and
+/// threshold were relaxed. These thresholds are in-memory only; persistence, remaining
+/// movement/rollback evaluation reasons, per-revision cumulative accounting and
 /// `max_eval_micros` enforcement remain H03 work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PatchHealthPolicy {
@@ -325,6 +357,46 @@ struct Loaded {
     // `None` exists only for the in-crate probes used by focused tests, which cannot build a
     // native library; production `Loaded::open` always pins `Some(library)`.
     _library: Option<Library>,
+}
+
+/// Typed pose evaluation failure raised by [`Loaded::evaluate`].
+///
+/// `Display` is exactly the existing free-form detail, so every caller that formatted the old
+/// `anyhow` error as `{error}` or `{error:#}` produces the same log text. [`Self::reason`] exposes
+/// the fine [`PatchEvaluationReason`] without parsing that text. Deliberately private: only the
+/// host turns it into a typed slot or a restore outcome.
+struct EvaluationFailure {
+    reason: PatchEvaluationReason,
+    detail: String,
+}
+
+impl EvaluationFailure {
+    fn new(reason: PatchEvaluationReason, detail: impl Into<String>) -> Self {
+        Self {
+            reason,
+            detail: detail.into(),
+        }
+    }
+
+    fn reason(&self) -> PatchEvaluationReason {
+        self.reason
+    }
+}
+
+impl std::fmt::Display for EvaluationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::fmt::Debug for EvaluationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EvaluationFailure")
+            .field("reason", &self.reason)
+            .field("detail", &self.detail)
+            .finish()
+    }
 }
 
 fn digest_bytes(digest: &str) -> Option<ModuleDigest> {
@@ -633,11 +705,13 @@ impl Loaded {
         rigs: &[RigSpan],
         seconds: f64,
         output: &mut Vec<BoneLocal>,
-    ) -> Result<()> {
-        ensure!(
-            bones.len() <= u32::MAX as usize && rigs.len() <= u32::MAX as usize,
-            "pose frame too large"
-        );
+    ) -> std::result::Result<(), EvaluationFailure> {
+        if bones.len() > u32::MAX as usize || rigs.len() > u32::MAX as usize {
+            return Err(EvaluationFailure::new(
+                PatchEvaluationReason::FrameTooLarge,
+                "pose frame too large",
+            ));
+        }
         output.clear();
         output.extend_from_slice(bones);
         let frame = PoseFrame {
@@ -648,18 +722,34 @@ impl Loaded {
             time_seconds: seconds,
         };
         let status = unsafe { (self.process)(&frame, output.as_mut_ptr(), output.len() as u32) };
-        ensure!(
-            status == 0,
-            "module {} rejected pose frame (status {status})",
-            self.revision
-        );
-        ensure!(
-            output
-                .iter()
-                .zip(bones)
-                .all(|(after, before)| after.valid() && after.parent == before.parent),
-            "module returned invalid transforms or changed skeleton topology"
-        );
+        if status != 0 {
+            return Err(EvaluationFailure::new(
+                PatchEvaluationReason::Status(status),
+                format!(
+                    "module {} rejected pose frame (status {status})",
+                    self.revision
+                ),
+            ));
+        }
+        // Check every transform before the topology check so an output that is both invalid and
+        // topology-changing is classified `InvalidOutput`; `TopologyChanged` therefore wins only
+        // when the transforms themselves are valid.
+        if output.iter().any(|after| !after.valid()) {
+            return Err(EvaluationFailure::new(
+                PatchEvaluationReason::InvalidOutput,
+                "module returned invalid transforms or changed skeleton topology",
+            ));
+        }
+        if output
+            .iter()
+            .zip(bones)
+            .any(|(after, before)| after.parent != before.parent)
+        {
+            return Err(EvaluationFailure::new(
+                PatchEvaluationReason::TopologyChanged,
+                "module returned invalid transforms or changed skeleton topology",
+            ));
+        }
         Ok(())
     }
 }
@@ -978,7 +1068,8 @@ fn movement_proposal_of(output: &MovementOutput) -> MovementProposal {
 ///
 /// Reset on every activation so the record always describes the module that is currently (or was
 /// most recently) active. [`PatchHealthPolicy`] decides whether a recorded failure demotes;
-/// persistence, typed reasons and per-revision cumulative accounting remain out of scope.
+/// persistence, remaining movement/rollback typed reasons and per-revision cumulative accounting
+/// remain out of scope.
 #[derive(Clone, Debug, Default)]
 struct PatchHealth {
     consecutive_frame_failures: u32,
@@ -1088,10 +1179,16 @@ pub struct Host {
     /// failure. Defaults to the single-strike behavior; see [`PatchHealthPolicy`].
     health_policy: PatchHealthPolicy,
     rejection: Option<String>,
+    /// Typed reason paired with [`Self::rejection`]. Consumed together through
+    /// [`Host::take_rejection_detail`] or cleared by [`Host::take_rejection`].
+    rejection_reason: Option<PatchEvaluationReason>,
     /// Typed reason for the most recent pose publication poll rejection. Cleared at the start of
     /// every poll and consumed through [`Host::take_publication_reason`].
     publication_reason: Option<PatchRejectReason>,
     active_failure: Option<String>,
+    /// Typed reason paired with [`Self::active_failure`]. Consumed together through
+    /// [`Host::take_active_failure_detail`] or cleared by [`Host::take_active_failure`].
+    active_failure_reason: Option<PatchEvaluationReason>,
     restores: VecDeque<RestoreOutcome>,
     /// Bounded quarantine (in-memory plus `quarantine.toml`) of pose digests rejected after their bytes were verified: a
     /// terminal `Loaded::open` failure, a rejected canary batch, an active frame failure that
@@ -1100,7 +1197,8 @@ pub struct Host {
     /// names the same bad artifact (`B -> C -> B`) is refused before `Library::new` without
     /// re-reading the DLL. A frame rejected by host validation never reaches this store. The list
     /// is persisted to `quarantine.toml` (see [`Host::persist_quarantine`]) and restored at startup
-    /// (see [`Host::load_persistent_quarantine`]); typed reasons and persistent health remain H03.
+    /// (see [`Host::load_persistent_quarantine`]); remaining movement/rollback typed reasons and
+    /// persistent health remain H03.
     /// The pose loading and staged-canary sentinels and the movement loading sentinel are
     /// implemented in this slice.
     quarantined_digests: VecDeque<String>,
@@ -1148,8 +1246,9 @@ pub struct Host {
     /// the same bad artifact (`B -> C -> B`) is refused before any artifact read or `Library::new`.
     /// Deliberately separate from the pose store so the same bytes under a different ABI cannot
     /// suppress the other seam; H03 may unify the stores under a `(ModuleKind, digest)` key. Both
-    /// lists travel in the same `quarantine.toml` but stay separate in memory. Typed reasons,
-    /// persistent health, the movement active-frame sentinel and the frame counters remain H03.
+    /// lists travel in the same `quarantine.toml` but stay separate in memory. Movement/rollback
+    /// typed reasons, persistent health, the movement active-frame sentinel and the frame counters
+    /// remain H03.
     movement_quarantined_digests: VecDeque<String>,
     /// Which hot-pluggable gameplay seams are enabled. Pose is always enabled; the movement
     /// staging path consults this before it opens an artifact.
@@ -1168,8 +1267,10 @@ impl Host {
             health: PatchHealth::default(),
             health_policy: PatchHealthPolicy::default(),
             rejection: None,
+            rejection_reason: None,
             publication_reason: None,
             active_failure: None,
+            active_failure_reason: None,
             restores: VecDeque::new(),
             quarantined_digests: VecDeque::new(),
             sentinel_error: None,
@@ -1628,6 +1729,7 @@ impl Host {
         self.pending = None;
         self.observed = None;
         self.rejection = None;
+        self.rejection_reason = None;
         self.pose_failure_stamp = None;
         let publication: Publication = match toml::from_str(&text) {
             Ok(publication) => publication,
@@ -1770,7 +1872,8 @@ impl Host {
     /// per-activation in this slice. This snapshot itself neither persists nor exports anything;
     /// the digest lists behind the quarantine count are separately saved to `quarantine.toml`, and
     /// the in-memory [`PatchHealthPolicy`] thresholds compare these counters, while persistent
-    /// health, typed reasons and per-revision cumulative accounting remain H03.
+    /// health, remaining movement/rollback typed reasons and per-revision cumulative accounting
+    /// remain H03.
     pub fn health_snapshot(&self) -> PatchHealthSnapshot {
         PatchHealthSnapshot {
             revision: self.active.as_ref().map(|module| module.revision.clone()),
@@ -1796,7 +1899,22 @@ impl Host {
     }
 
     pub fn take_rejection(&mut self) -> Option<String> {
+        // Keep the string-taking API for existing logs/tests, but never leave the paired typed
+        // reason behind for a later detail-taking call to observe as stale state.
+        self.rejection_reason = None;
         self.rejection.take()
+    }
+
+    /// Drain the most recent candidate-rejection detail and its fine typed reason together.
+    ///
+    /// Both slots are cleared even when one is absent; a missing typed reason degrades to
+    /// [`PatchEvaluationReason::Unknown`] so an older/untyped rejection is still reportable.
+    pub fn take_rejection_detail(&mut self) -> Option<(String, PatchEvaluationReason)> {
+        let reason = self
+            .rejection_reason
+            .take()
+            .unwrap_or(PatchEvaluationReason::Unknown);
+        self.rejection.take().map(|detail| (detail, reason))
     }
 
     /// Drain the typed reason for the most recent pose publication poll rejection.
@@ -1841,7 +1959,27 @@ impl Host {
     }
 
     pub fn take_active_failure(&mut self) -> Option<String> {
+        // Clear the paired typed reason so a later detail-taking call cannot report stale state.
+        self.active_failure_reason = None;
         self.active_failure.take()
+    }
+
+    /// Drain the most recent active-failure detail and its fine typed reason together.
+    ///
+    /// Both slots are cleared even when one is absent; a missing typed reason degrades to
+    /// [`PatchEvaluationReason::Unknown`]. A below-threshold tolerated failure and a
+    /// threshold-reaching demotion both populate this slot. The free-form detail may include a
+    /// failing predecessor in the same restore attempt; the typed reason is always the active
+    /// module's own reason, while [`RestoreOutcome::Unavailable`] carries the predecessor/outcome
+    /// reason separately.
+    pub fn take_active_failure_detail(&mut self) -> Option<(String, PatchEvaluationReason)> {
+        let reason = self
+            .active_failure_reason
+            .take()
+            .unwrap_or(PatchEvaluationReason::Unknown);
+        self.active_failure
+            .take()
+            .map(|detail| (detail, reason))
     }
 
     /// Drain the bounded active-failure/restore outcomes accumulated by `evaluate`.
@@ -2096,6 +2234,7 @@ impl Host {
                     self.rejection = Some(format!(
                         "candidate rejected; active module retained: {error:#}"
                     ));
+                    self.rejection_reason = Some(error.reason());
                     // Continue through the old processor in this same frame, avoiding a one-frame
                     // return to the unpatched pose when a replacement fails validation.
                 }
@@ -2115,6 +2254,7 @@ impl Host {
                 }
                 Err(error) => {
                     self.health.record_failure();
+                    let failure_reason = error.reason();
                     if !self.health.threshold_reached(self.health_policy) {
                         // The policy tolerates this failure, so the module stays active for a later
                         // frame: keep `active` and `previous` exactly as they were and leave the
@@ -2131,6 +2271,7 @@ impl Host {
                         self.active = Some(module);
                         output.clear();
                         self.active_failure = Some(failure);
+                        self.active_failure_reason = Some(failure_reason);
                         return Ok(false);
                     }
                     let failed_digest = module.digest_bytes();
@@ -2144,6 +2285,11 @@ impl Host {
                         "active module {} failed; restoring a previous module: {error:#}",
                         module.revision
                     ));
+                    self.active_failure_reason = Some(failure_reason);
+                    // A predecessor failure refines only the `Unavailable` outcome reason. A
+                    // successful restore leaves no predecessor reason in a persistent slot, so no
+                    // stale typed state survives into a later frame.
+                    let mut last_failure_reason = failure_reason;
                     while let Some(previous) = self.previous.pop_back() {
                         // A retained copy of the failed binary would fail identically, and any
                         // other digest already in the quarantine store was proved bad earlier.
@@ -2170,6 +2316,7 @@ impl Host {
                             Err(prev_error) => {
                                 // The predecessor also produced invalid output. Quarantine it and
                                 // drop any deeper retained copy, then keep walking newest-first.
+                                last_failure_reason = prev_error.reason();
                                 self.quarantine_digest(&previous.digest);
                                 self.previous.retain(|m| m.digest != previous.digest);
                                 self.active_failure = Some(format!(
@@ -2183,7 +2330,10 @@ impl Host {
                     // No predecessor produced valid output. The failed module's counters and
                     // timings stay visible; the snapshot's `revision`/`digest` are `None` until a
                     // new activation resets the record.
-                    self.push_restore(RestoreOutcome::Unavailable { failed_digest });
+                    self.push_restore(RestoreOutcome::Unavailable {
+                        failed_digest,
+                        reason: last_failure_reason,
+                    });
                 }
             }
         }
@@ -2273,7 +2423,7 @@ impl Host {
                 // A malformed movement manifest is deterministic content. Latch it so the 1 Hz
                 // stage call does not re-parse and re-report the same bytes; a changed manifest
                 // cleared the latch above and is retried. There is no trustworthy publication, so
-                // no artifact stamp is recorded; H03 adds typed reasons.
+                // no artifact stamp is recorded; H03 adds movement typed reasons.
                 self.movement_failure_stamp = None;
                 self.movement_observed = Some(text);
                 return Err(self.refuse_movement(
@@ -3468,6 +3618,56 @@ mod tests {
         status
     }
 
+    unsafe extern "C" fn zero_norm_pose(
+        frame: *const PoseFrame,
+        out: *mut BoneLocal,
+        count: u32,
+    ) -> i32 {
+        let status = unsafe { allow_pose(frame, out, count) };
+        if !out.is_null() {
+            // SAFETY: `out` points at the host's first output slot for this call.
+            unsafe { (*out).rotation = [0.0; 4] };
+        }
+        status
+    }
+
+    unsafe extern "C" fn changed_parent_pose(
+        frame: *const PoseFrame,
+        out: *mut BoneLocal,
+        count: u32,
+    ) -> i32 {
+        let status = unsafe { allow_pose(frame, out, count) };
+        if !out.is_null() {
+            // SAFETY: `out` points at the host's first output slot for this call.
+            unsafe { (*out).parent = 0 };
+        }
+        status
+    }
+
+    unsafe extern "C" fn invalid_and_reparented_pose(
+        frame: *const PoseFrame,
+        out: *mut BoneLocal,
+        count: u32,
+    ) -> i32 {
+        let status = unsafe { allow_pose(frame, out, count) };
+        if !out.is_null() {
+            // SAFETY: `out` points at the host's first output slot for this call.
+            unsafe {
+                (*out).translation[0] = f32::NAN;
+                (*out).parent = 0;
+            }
+        }
+        status
+    }
+
+    unsafe extern "C" fn reject_pose_three(
+        _frame: *const PoseFrame,
+        _out: *mut BoneLocal,
+        _count: u32,
+    ) -> i32 {
+        3
+    }
+
     unsafe extern "C" fn count_pose(
         frame: *const PoseFrame,
         out: *mut BoneLocal,
@@ -3484,6 +3684,78 @@ mod tests {
     ) -> i32 {
         TILING_DISPATCHES.fetch_add(1, Ordering::SeqCst);
         unsafe { allow_pose(frame, out, count) }
+    }
+
+    #[test]
+    fn loaded_evaluate_reports_typed_reasons_with_unchanged_details() {
+        let bones = [valid_pose_bone()];
+        let rigs = [valid_pose_span()];
+        let mut output = Vec::new();
+
+        let failure = Loaded::probe("rev-status", CANARY_DIGEST, reject_pose)
+            .evaluate(&bones, &rigs, 0.0, &mut output)
+            .expect_err("a non-zero module status is an evaluation failure");
+        assert_eq!(failure.reason(), PatchEvaluationReason::Status(7));
+        assert_eq!(
+            failure.to_string(),
+            "module rev-status rejected pose frame (status 7)"
+        );
+        assert_eq!(
+            format!("{failure:#}"),
+            failure.to_string(),
+            "the alternate formatter adds no source chain to a typed evaluation failure"
+        );
+
+        let failure = Loaded::probe("rev-invalid", CANARY_DIGEST, invalid_pose)
+            .evaluate(&bones, &rigs, 0.0, &mut output)
+            .expect_err("a non-finite output transform is an evaluation failure");
+        assert_eq!(failure.reason(), PatchEvaluationReason::InvalidOutput);
+        assert_eq!(
+            failure.to_string(),
+            "module returned invalid transforms or changed skeleton topology"
+        );
+
+        let failure = Loaded::probe("rev-zero-norm", CANARY_DIGEST, zero_norm_pose)
+            .evaluate(&bones, &rigs, 0.0, &mut output)
+            .expect_err("a zero-norm output rotation is an evaluation failure");
+        assert_eq!(failure.reason(), PatchEvaluationReason::InvalidOutput);
+        assert_eq!(
+            failure.to_string(),
+            "module returned invalid transforms or changed skeleton topology"
+        );
+
+        let failure = Loaded::probe("rev-topology", CANARY_DIGEST, changed_parent_pose)
+            .evaluate(&bones, &rigs, 0.0, &mut output)
+            .expect_err("a changed output parent is an evaluation failure");
+        assert_eq!(failure.reason(), PatchEvaluationReason::TopologyChanged);
+        assert_eq!(
+            failure.to_string(),
+            "module returned invalid transforms or changed skeleton topology"
+        );
+
+        let failure = Loaded::probe(
+            "rev-invalid-topology",
+            CANARY_DIGEST,
+            invalid_and_reparented_pose,
+        )
+        .evaluate(&bones, &rigs, 0.0, &mut output)
+        .expect_err("an invalid transform plus a changed parent is an evaluation failure");
+        assert_eq!(
+            failure.reason(),
+            PatchEvaluationReason::InvalidOutput,
+            "transform validity is checked first, so it wins over the topology change"
+        );
+        assert_eq!(
+            failure.to_string(),
+            "module returned invalid transforms or changed skeleton topology"
+        );
+
+        // `FrameTooLarge` is inspection-only: `Host::evaluate` rejects a batch above the u32 ABI
+        // counts before dispatch, and a test cannot allocate a slice that large to reach the
+        // `Loaded::evaluate` guard directly.
+        assert!(Loaded::probe("rev-ok", CANARY_DIGEST, allow_pose)
+            .evaluate(&bones, &rigs, 0.0, &mut output)
+            .is_ok());
     }
 
     #[test]
@@ -3514,14 +3786,35 @@ mod tests {
                 .any(|module| module.digest == CANARY_DIGEST),
             "the retained copy of the rejected candidate is gone"
         );
-        let rejection = host.take_rejection().expect("candidate rejection detail");
+        let (rejection, reason) = host
+            .take_rejection_detail()
+            .expect("candidate rejection detail");
         assert!(
             rejection.contains("rev-candidate"),
             "the rejection names the candidate: {rejection}"
         );
+        assert_eq!(reason, PatchEvaluationReason::InvalidOutput);
+        assert!(
+            host.take_rejection_detail().is_none(),
+            "the detail-taking accessor clears both the string and the typed reason"
+        );
         assert!(
             host.take_restore_outcomes().is_empty(),
             "candidate rejection is not an active-frame failure"
+        );
+
+        // The string-only accessor must also clear the paired typed reason so a later detail-taking
+        // call cannot observe it as stale state.
+        host.pending = Some(Loaded::probe("rev-candidate-two", NEXT_DIGEST, reject_pose));
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the retained active module still produces this frame")
+        );
+        let rejection = host.take_rejection().expect("string-only rejection detail");
+        assert!(rejection.contains("rev-candidate-two"), "{rejection}");
+        assert!(
+            host.take_rejection_detail().is_none(),
+            "take_rejection cleared the paired typed reason"
         );
     }
 
@@ -3598,6 +3891,7 @@ mod tests {
             host.take_restore_outcomes(),
             vec![RestoreOutcome::Unavailable {
                 failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+                reason: PatchEvaluationReason::Status(7),
             }]
         );
         let failure = host.take_active_failure().expect("active failure detail");
@@ -3790,6 +4084,53 @@ mod tests {
         assert_eq!(snapshot.total_frame_failures, 0);
         assert_eq!(snapshot.last_eval_micros, 0);
         assert_eq!(snapshot.max_eval_micros, 0);
+
+        // The failed active module's typed reason is available for this frame's restore event and
+        // then cleared. A later successful frame must not resurrect it.
+        let (failure, reason) = host
+            .take_active_failure_detail()
+            .expect("the demoted active failure remains observable");
+        assert!(failure.contains("rev-active"), "{failure}");
+        assert_eq!(reason, PatchEvaluationReason::Status(7));
+        assert!(host.take_active_failure_detail().is_none());
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the restored predecessor produces the next frame")
+        );
+        assert!(
+            host.take_active_failure_detail().is_none(),
+            "no stale typed reason survives a successful restore"
+        );
+    }
+
+    #[test]
+    fn unavailable_restore_carries_the_failing_predecessor_reason() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        host.previous.push_back(Loaded::probe(
+            "rev-predecessor",
+            BAD_PREDECESSOR_DIGEST,
+            reject_pose_three,
+        ));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the host recovers a failed restore")
+        );
+        assert_eq!(
+            host.take_restore_outcomes(),
+            vec![RestoreOutcome::Unavailable {
+                failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+                reason: PatchEvaluationReason::Status(3),
+            }],
+            "the last predecessor's reason wins over the active module's own reason"
+        );
+        let (_, active_reason) = host
+            .take_active_failure_detail()
+            .expect("the active failure remains observable");
+        assert_eq!(active_reason, PatchEvaluationReason::Status(7));
     }
 
     #[test]
@@ -4084,6 +4425,7 @@ mod tests {
             host.take_restore_outcomes(),
             vec![RestoreOutcome::Unavailable {
                 failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+                reason: PatchEvaluationReason::Status(7),
             }]
         );
         assert!(host
@@ -4124,10 +4466,14 @@ mod tests {
         assert_eq!(snapshot.digest.as_deref(), Some(ACTIVE_DIGEST));
         assert_eq!(snapshot.consecutive_frame_failures, 1);
         assert_eq!(snapshot.total_frame_failures, 1);
+        let (failure, reason) = host
+            .take_active_failure_detail()
+            .expect("the tolerated failure is still observable");
+        assert!(failure.contains("rev-active"), "{failure}");
+        assert_eq!(reason, PatchEvaluationReason::Status(7));
         assert!(
-            host.take_active_failure()
-                .expect("the tolerated failure is still observable")
-                .contains("rev-active")
+            host.take_active_failure_detail().is_none(),
+            "the detail-taking accessor clears both slots"
         );
         assert!(
             host.take_restore_outcomes().is_empty(),
@@ -4151,7 +4497,48 @@ mod tests {
             host.take_restore_outcomes(),
             vec![RestoreOutcome::Unavailable {
                 failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+                reason: PatchEvaluationReason::Status(7),
             }]
+        );
+    }
+
+    #[test]
+    fn string_only_take_active_failure_clears_the_paired_typed_reason() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.set_health_policy(PatchHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 0,
+        });
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+
+        let mut output = Vec::new();
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the no-limit policy tolerates the failure")
+        );
+        let failure = host
+            .take_active_failure()
+            .expect("the tolerated failure is observable");
+        assert!(failure.contains("rev-active"), "{failure}");
+        assert!(
+            host.take_active_failure_detail().is_none(),
+            "take_active_failure cleared the paired typed reason"
+        );
+    }
+
+    #[test]
+    fn detail_accessors_degrade_a_missing_typed_reason_to_unknown() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.rejection = Some("candidate detail".to_owned());
+        assert_eq!(
+            host.take_rejection_detail(),
+            Some(("candidate detail".to_owned(), PatchEvaluationReason::Unknown))
+        );
+        host.active_failure = Some("active detail".to_owned());
+        assert_eq!(
+            host.take_active_failure_detail(),
+            Some(("active detail".to_owned(), PatchEvaluationReason::Unknown))
         );
     }
 
@@ -4206,6 +4593,7 @@ mod tests {
             host.take_restore_outcomes(),
             vec![RestoreOutcome::Unavailable {
                 failed_digest: Some(pose_outcome_digest(ACTIVE_DIGEST)),
+                reason: PatchEvaluationReason::Status(7),
             }]
         );
     }

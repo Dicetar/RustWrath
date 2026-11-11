@@ -1,6 +1,6 @@
 //! Sample after pose edits, compose the patched frame, then restore the next frame's input.
 use benilla_hotpatch::{Host, RestoreOutcome};
-pub use benilla_hotpatch::PatchRejectReason;
+pub use benilla_hotpatch::{PatchEvaluationReason, PatchRejectReason};
 use benilla_hotpatch_abi::{BoneLocal, RigSpan};
 use benilla_world::rig_anim::{AnimParked, PoseModulePass, RigPose};
 use bevy::prelude::*;
@@ -36,9 +36,19 @@ pub enum HotpatchEvent {
         reason: HotpatchReason,
         detail: PatchRejectReason,
     },
-    CandidateRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
+    CandidateRejected {
+        attempt: Option<PatchAttemptId>,
+        reason: HotpatchReason,
+        /// Fine evaluation code; `Unknown`/future variants fall back to `reason`.
+        detail: PatchEvaluationReason,
+    },
     Activated { attempt: Option<PatchAttemptId>, digest: Option<[u8; 20]> },
-    FrameFailed { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
+    FrameFailed {
+        attempt: Option<PatchAttemptId>,
+        reason: HotpatchReason,
+        /// Fine evaluation code; `Unknown`/future variants fall back to `reason`.
+        detail: PatchEvaluationReason,
+    },
     /// A failed active module was replaced by a retained predecessor that is now active again.
     ///
     /// `restored_attempt` is the predecessor's original activation attempt when it is still
@@ -50,7 +60,11 @@ pub enum HotpatchEvent {
         digest: Option<[u8; 20]>,
     },
     /// The failed active module had no retained predecessor; the baseline pose is active again.
-    RestoreUnavailable { failed_attempt: Option<PatchAttemptId> },
+    RestoreUnavailable {
+        failed_attempt: Option<PatchAttemptId>,
+        /// Fine evaluation code from the restore outcome.
+        detail: PatchEvaluationReason,
+    },
     RetentionFailed { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
 }
 
@@ -133,6 +147,7 @@ impl Plugin for HotpatchPlugin {
             next_poll: 0.0,
             last_error: None,
             last_publication_detail: None,
+            last_frame_detail: None,
             last_quarantine_error,
             last_sentinel_error,
             reported_revision: None,
@@ -172,6 +187,10 @@ struct Runtime {
     /// dedupe key for free-form text; this separate slot lets a transient -> terminal transition
     /// with identical error text still emit the new typed detail.
     last_publication_detail: Option<PatchRejectReason>,
+    /// Last typed detail emitted or observed for a frame failure. The coarse `last_error` message
+    /// remains the dedupe key for free-form text; this slot lets a changed detail with identical
+    /// message text still emit, and a successful activation resets it.
+    last_frame_detail: Option<PatchEvaluationReason>,
     /// Last reported quarantine load/save error. Deliberately separate from `last_error`: the
     /// publication/retention paths share and clear that slot, so reusing it here would let a
     /// persistent save failure re-emit `PublicationRejected`/`RetentionFailed` (and the save
@@ -440,11 +459,12 @@ fn apply_pose(
         time.elapsed_secs_f64(),
         &mut runtime.output,
     );
-    if let Some(error) = runtime.host.take_rejection() {
+    if let Some((error, detail)) = runtime.host.take_rejection_detail() {
         runtime.refresh = false;
         events.write(HotpatchEvent::CandidateRejected {
             attempt: runtime.candidate_attempt,
             reason: HotpatchReason::Evaluation,
+            detail,
         });
         runtime.candidate_attempt = None;
         report(runtime, error);
@@ -453,8 +473,11 @@ fn apply_pose(
     runtime.restored_attempt = None;
     let restore_outcomes = runtime.host.take_restore_outcomes();
     let active_failed = !restore_outcomes.is_empty();
-    // Free-form host errors stay local; only the bounded outcomes below reach the recorder.
-    if let Some(error) = runtime.host.take_active_failure() {
+    // Free-form host errors stay local; only the bounded outcomes below reach the recorder. Hold
+    // the typed active-failure detail so both restore events can carry it in this same frame.
+    let active_failure = runtime.host.take_active_failure_detail();
+    let active_failure_detail = active_failure.as_ref().map(|(_, detail)| *detail);
+    if let Some((error, _)) = active_failure {
         report(runtime, error);
         if !active_failed {
             // A below-threshold failure kept the active module. Force the next frame to
@@ -477,6 +500,8 @@ fn apply_pose(
                 events.write(HotpatchEvent::FrameFailed {
                     attempt: failed_attempt,
                     reason: HotpatchReason::Frame,
+                    detail: active_failure_detail
+                        .unwrap_or(PatchEvaluationReason::Unknown),
                 });
                 events.write(HotpatchEvent::RestoredPrevious {
                     failed_attempt,
@@ -486,7 +511,10 @@ fn apply_pose(
                 runtime.active_attempt = restored_attempt;
                 runtime.restored_attempt = restored_attempt;
             }
-            RestoreOutcome::Unavailable { failed_digest } => {
+            RestoreOutcome::Unavailable {
+                failed_digest,
+                reason,
+            } => {
                 let failed_attempt = match runtime.active_attempt {
                     Some(attempt) => Some(attempt),
                     None => attempt_for_digest(runtime, failed_digest),
@@ -494,8 +522,12 @@ fn apply_pose(
                 events.write(HotpatchEvent::FrameFailed {
                     attempt: failed_attempt,
                     reason: HotpatchReason::Frame,
+                    detail: restore_frame_detail(active_failure_detail),
                 });
-                events.write(HotpatchEvent::RestoreUnavailable { failed_attempt });
+                events.write(HotpatchEvent::RestoreUnavailable {
+                    failed_attempt,
+                    detail: reason,
+                });
                 runtime.active_attempt = None;
                 runtime.restored_attempt = None;
             }
@@ -544,6 +576,7 @@ fn apply_pose(
                 runtime.reported_revision = revision;
                 runtime.reported_digest = active_digest;
                 runtime.last_error = None;
+                runtime.last_frame_detail = None;
             }
         }
         Ok(false) => {
@@ -559,15 +592,44 @@ fn apply_pose(
         Err(error) => {
             runtime.refresh = false;
             let message = format!("pose frame unchanged: {error:#}");
-            if runtime.last_error.as_ref() != Some(&message) {
+            let detail = PatchEvaluationReason::HostFrameRejected;
+            if frame_failure_needs_report(
+                runtime.last_error.as_deref(),
+                runtime.last_frame_detail,
+                &message,
+                detail,
+            ) {
                 events.write(HotpatchEvent::FrameFailed {
                     attempt: runtime.active_attempt,
                     reason: HotpatchReason::Frame,
+                    detail,
                 });
             }
+            runtime.last_frame_detail = Some(detail);
             report(runtime, message);
         }
     }
+}
+
+/// Whether a `Host::evaluate` `Err` frame failure must be emitted. The coarse message remains the
+/// primary dedupe key; a changed typed detail with identical message text also re-emits so a
+/// host/caller frame refusal is not swallowed by an earlier evaluation failure.
+fn frame_failure_needs_report(
+    last_error: Option<&str>,
+    last_detail: Option<PatchEvaluationReason>,
+    message: &str,
+    detail: PatchEvaluationReason,
+) -> bool {
+    last_error != Some(message) || last_detail != Some(detail)
+}
+
+/// The failed active module's own typed reason for a restore `FrameFailed`.
+///
+/// `RestoreOutcome::Unavailable.reason` names the last failing predecessor, not the active module
+/// that `failed_attempt` identifies, so it is never substituted here. An untyped active failure
+/// stays `Unknown`; the predecessor/outcome reason is carried only by `RestoreUnavailable`.
+fn restore_frame_detail(active: Option<PatchEvaluationReason>) -> PatchEvaluationReason {
+    active.unwrap_or(PatchEvaluationReason::Unknown)
 }
 
 fn transform(bone: &BoneLocal) -> Transform {
@@ -646,6 +708,58 @@ fn clear_active_sentinel_on_app_exit(
     }
     // `impl Drop for Runtime` keeps its `std::thread::panicking()` guard: a system never runs
     // during an unwind, so the destructor still owns the panic case.
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::{frame_failure_needs_report, restore_frame_detail, PatchEvaluationReason};
+
+    #[test]
+    fn a_changed_detail_with_the_same_message_re_emits() {
+        let message = "pose frame unchanged: host frame rejected";
+        assert!(
+            frame_failure_needs_report(
+                None,
+                None,
+                message,
+                PatchEvaluationReason::HostFrameRejected,
+            ),
+            "the first failure has no previous message"
+        );
+        assert!(
+            !frame_failure_needs_report(
+                Some(message),
+                Some(PatchEvaluationReason::HostFrameRejected),
+                message,
+                PatchEvaluationReason::HostFrameRejected,
+            ),
+            "identical message and detail stay deduplicated"
+        );
+        assert!(
+            frame_failure_needs_report(
+                Some(message),
+                Some(PatchEvaluationReason::Unknown),
+                message,
+                PatchEvaluationReason::HostFrameRejected,
+            ),
+            "a changed detail re-emits even when the message text is unchanged"
+        );
+    }
+
+    #[test]
+    fn unavailable_restore_frame_failure_uses_the_active_reason() {
+        assert_eq!(
+            restore_frame_detail(Some(PatchEvaluationReason::Status(7))),
+            PatchEvaluationReason::Status(7),
+            "the failed active module keeps its own reason; the predecessor reason is for \
+             RestoreUnavailable only"
+        );
+        assert_eq!(
+            restore_frame_detail(None),
+            PatchEvaluationReason::Unknown,
+            "an untyped active failure is Unknown, not the predecessor's reason"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]

@@ -857,6 +857,12 @@ pub(crate) enum HotpatchReason {
     AbiMismatch,
     MissingProcessor,
     LoadFailed,
+    /// Typed pose evaluation details carried from `HotpatchEvent` candidate/frame failures.
+    EvaluationStatus(i32),
+    EvaluationInvalidOutput,
+    EvaluationTopologyChanged,
+    EvaluationFrameTooLarge,
+    EvaluationHostFrame,
 }
 
 #[cfg(feature = "hotpatch")]
@@ -875,7 +881,10 @@ pub(crate) enum PatchEvent {
         digest: Option<[u8; 20]>,
     },
     /// The failed active module had no retained predecessor; the baseline pose is active.
-    RestoreUnavailable { failed_attempt: Option<u64> },
+    RestoreUnavailable {
+        failed_attempt: Option<u64>,
+        reason: HotpatchReason,
+    },
     RetentionFailed { attempt: Option<u64>, reason: HotpatchReason },
 }
 
@@ -893,6 +902,7 @@ fn patch_event_attempts(event: PatchEvent) -> [Option<u64>; 2] {
         | PatchEvent::RetentionFailed { attempt, .. }
         | PatchEvent::RestoreUnavailable {
             failed_attempt: attempt,
+            ..
         } => [attempt, None],
         PatchEvent::RestoredPrevious {
             failed_attempt,
@@ -924,7 +934,7 @@ fn patch_event_is_terminal_for(event: PatchEvent, attempt: u64) -> bool {
         | PatchEvent::RetentionFailed {
             attempt: rejected, ..
         } => rejected == Some(attempt),
-        PatchEvent::RestoreUnavailable { failed_attempt } => failed_attempt == Some(attempt),
+        PatchEvent::RestoreUnavailable { failed_attempt, .. } => failed_attempt == Some(attempt),
         PatchEvent::RestoredPrevious {
             failed_attempt,
             restored_attempt,
@@ -999,8 +1009,11 @@ fn patch_event_summary(event: PatchEvent, attempt: u64) -> String {
                 )
             }
         }
-        PatchEvent::RestoreUnavailable { failed_attempt } => format!(
-            "attempt {attempt}: active frame failed; no previous module to restore (baseline pose; failed_attempt={})",
+        PatchEvent::RestoreUnavailable {
+            failed_attempt,
+            reason,
+        } => format!(
+            "attempt {attempt}: active frame failed; no previous module to restore (baseline pose; failed_attempt={}, reason={reason:?})",
             hotpatch_attempt_label(failed_attempt)
         ),
         PatchEvent::RetentionFailed { reason, .. } => {
@@ -6415,9 +6428,10 @@ impl History {
                     PatchEvent::RestoredPrevious { failed_attempt, .. } => {
                         failed_attempt == Some(attempt)
                     }
-                    PatchEvent::RestoreUnavailable { failed_attempt } => {
-                        failed_attempt == Some(attempt)
-                    }
+                    PatchEvent::RestoreUnavailable {
+                        failed_attempt,
+                        ..
+                    } => failed_attempt == Some(attempt),
                     _ => false,
                 });
                 if has_restore_terminal {
