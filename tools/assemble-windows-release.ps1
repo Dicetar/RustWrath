@@ -1,16 +1,41 @@
-<# Assemble an offline, version-specific candidate from an already built binary.
-   This script does not build, install, activate, sign, or distribute a release. #>
+<# Assemble an offline, version-specific candidate from an already built binary
+   (or build the release binary first under sccache when -BuildRelease is supplied).
+   This script does not install, activate, sign, or distribute a release. #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$Binary,
+    [Parameter(Mandatory = $false)][string]$Binary = '',
     [Parameter(Mandatory = $true)][string]$Destination,
-    [Parameter(Mandatory = $true)][string]$Version
+    [Parameter(Mandatory = $true)][string]$Version,
+    [switch]$BuildRelease
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $sourceRoot = Split-Path -Parent $PSScriptRoot
 if ($Version -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') { throw 'Invalid version label' }
 if (![IO.Path]::IsPathRooted($Destination)) { throw 'Destination must be an absolute path' }
+if ($BuildRelease) {
+    if (Get-Process benilla,cargo,rustc -ErrorAction SilentlyContinue) {
+        throw 'Close the running client or wait for the active build before building a release candidate.'
+    }
+    $cache = Get-Command sccache -ErrorAction Stop
+    $previousWrapper = $env:RUSTC_WRAPPER
+    $previousIncremental = $env:CARGO_INCREMENTAL
+    try {
+        $env:RUSTC_WRAPPER = $cache.Source
+        $env:CARGO_INCREMENTAL = '0'
+        & cargo build --release --manifest-path (Join-Path $sourceRoot 'Cargo.toml') --target-dir (Join-Path $sourceRoot 'target') -p benilla --features hotpatch
+        if ($LASTEXITCODE -ne 0) {
+            throw 'RustWrath release build failed.'
+        }
+    } finally {
+        $env:RUSTC_WRAPPER = $previousWrapper
+        $env:CARGO_INCREMENTAL = $previousIncremental
+    }
+    if ([string]::IsNullOrWhiteSpace($Binary)) {
+        $Binary = Join-Path $sourceRoot 'target\release\benilla.exe'
+    }
+}
+if ([string]::IsNullOrWhiteSpace($Binary)) { throw 'Supply -Binary or -BuildRelease' }
 if (!(Test-Path -LiteralPath $Binary -PathType Leaf)) { throw "Binary missing: $Binary" }
 $destinationPath = [IO.Path]::GetFullPath($Destination)
 if (Test-Path -LiteralPath $destinationPath) { throw "Destination already exists: $destinationPath" }

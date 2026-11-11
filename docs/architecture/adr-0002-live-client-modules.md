@@ -219,10 +219,16 @@ sections specifying the target contract for `H03` onward are explicitly labeled 
   demotion keeps the last counters visible with `revision`/`digest` `None` until the next commit.
   A changed pose policy marks `state_dirty`; the movement policy is a live override and is not
   serialized in this slice. The persisted store and its schema are described in the persistent
-  patch-state update below. There is still no production movement-controller adapter: the retained
-  active/tolerated handback has no in-tree consumer because the single-slot `MovementProcessor`
-  cannot express a refused proposal beside a retained active processor, so the adapter/handback
-  integration remains H03.
+  patch-state update below. The production movement-controller adapter is wired across
+  `benilla_hotpatch_bevy::Runtime`, `benilla_app::hotpatch` (`prepare_movement_hotpatch` before
+  `PlayerControlSet` and `settle_movement_hotpatch` after `PlayerControlSet`), and
+  `benilla_app::player::MovementProcessor`: `MovementProcessor` tracks `retained_active`,
+  `tolerated_handback`, `last_refusal` and `MovementProcessorOutcome` (`Promoted`, `ActiveAccepted`,
+  `StagedRejected`, `ActiveRejected`, `Drained`), so a `MovementRefusal::Tolerated` or a failed
+  staged candidate over a different-digest active processor hands the current frame back to
+  `Baseline` while preserving `MovementProcessorState::Active` and recording the refusal, and
+  post-frame outcomes call `commit_movement_processor`, `withdraw_movement_proposal` or
+  `unload_movement_processor` on the host.
 
   | Active movement outcome | Health counters | Slot/quarantine | Returned refusal |
   |---|---|---|---|

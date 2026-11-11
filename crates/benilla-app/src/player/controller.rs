@@ -997,16 +997,16 @@ pub(super) fn control(
 /// The move-flag bits a movement module may own. Everything else (root, falling/falling-far,
 /// swimming, on-transport, walk mode, the pitch bits and the server-granted modes) is baseline or
 /// server authority; a proposal setting one is refused, never silently masked.
-const MODULE_OWNED_FLAGS: u32 =
+pub(crate) const MODULE_OWNED_FLAGS: u32 =
     move_flags::ANY_MOVE | move_flags::TURN_LEFT | move_flags::TURN_RIGHT;
 
 /// Slack over the baseline's own frame travel, absorbing integration order differences between a
 /// module and the mover. A proposal beyond it is a teleport-like jump, not this frame's motion.
-const MODULE_STEP_SLACK: f32 = 2.0;
+pub(crate) const MODULE_STEP_SLACK: f32 = 2.0;
 /// Floor so a standing body may still nudge within a frame's rounding noise.
-const MODULE_STEP_FLOOR: f32 = 0.05;
+pub(crate) const MODULE_STEP_FLOOR: f32 = 0.05;
 /// Slack over the baseline's own speed for the proposed velocity.
-const MODULE_SPEED_SLACK: f32 = 1.5;
+pub(crate) const MODULE_SPEED_SLACK: f32 = 1.5;
 /// Slack over the baseline's own turn for a facing change, and a floor for rounding noise.
 const MODULE_FACING_SLACK: f32 = 2.0;
 const MODULE_FACING_FLOOR: f32 = 0.2;
@@ -1220,25 +1220,72 @@ pub(crate) enum MovementProcessorTick {
     Corrected(MovementCorrection),
 }
 
+/// Outcome of the most recent [`MovementProcessor::take_tick`] or [`MovementProcessor::drain`]
+/// evaluation, consumed by the hosting adapter after [`control`] runs to drive
+/// `Host::commit_movement_processor`, `Host::withdraw_movement_proposal`, or
+/// `Host::unload_movement_processor`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MovementProcessorOutcome {
+    /// No module proposal was evaluated or drained this tick.
+    #[default]
+    None,
+    /// A proposal was drained without evaluation because the baseline held authority this frame
+    /// (settle hold, root gate, knockback arc, transport ride, or free-fly).
+    Drained,
+    /// A staged candidate's proposal was accepted and promoted the processor to `Active`.
+    Promoted,
+    /// An already-active processor's proposal was accepted.
+    ActiveAccepted,
+    /// A staged candidate's proposal was rejected by [`evaluate_movement_intent`].
+    StagedRejected(MovementIntentRejection),
+    /// An active processor's proposal was rejected by [`evaluate_movement_intent`].
+    ActiveRejected(MovementIntentRejection),
+}
+
 /// The movement processor selection. `Disabled` by default, so an absent resource is exactly the
 /// pre-seam behavior. The hosting adapter stages a validated candidate, offers at most one
 /// proposal per tick and reports an unload; the controller's verdict alone decides activation.
 ///
-/// `stage`, `offer`, `enable`, `unload` and `disable` are the adapter-facing half of this API. No
-/// adapter lives in this checkout: the feature-gated `benilla-hotpatch-bevy` plugin (outside this
-/// ticket's file boundary) must bridge the host's `movement_proposal`/`commit_movement_processor`
-/// onto it. Until then the resource is absent and `control` runs with `Disabled`.
+/// Supports both single-candidate staging and the retained-active / tolerated-refusal contract:
+/// when a candidate stages over an already-active processor (`stage_over_active`) or when the host
+/// reports a tolerated active failure (`tolerate`), `last_refusal` records the refusal beside the
+/// retained `Active` state while handing this frame's prediction back to `Baseline`.
 #[allow(dead_code)]
 #[derive(Resource, Debug, Default, PartialEq)]
 pub(crate) struct MovementProcessor {
     state: MovementProcessorState,
     proposal: Option<MovementProposal>,
+    retained_active: bool,
+    tolerated_handback: bool,
+    last_refusal: Option<MovementProcessorRefusal>,
+    last_outcome: MovementProcessorOutcome,
 }
 
 #[allow(dead_code)]
 impl MovementProcessor {
     pub(crate) fn state(&self) -> MovementProcessorState {
         self.state
+    }
+
+    /// Whether a previously activated processor is retained underneath a currently `Staged`
+    /// candidate.
+    pub(crate) fn has_retained_active(&self) -> bool {
+        self.retained_active
+    }
+
+    /// Most recent refusal observed by the processor, including a tolerated active refusal or a
+    /// staged-candidate refusal that fell back to a retained `Active` processor.
+    pub(crate) fn last_refusal(&self) -> Option<MovementProcessorRefusal> {
+        match self.state {
+            MovementProcessorState::Refused(reason) => Some(reason),
+            _ => self.last_refusal,
+        }
+    }
+
+    /// Drain the outcome of the most recent tick for the hosting adapter to commit or withdraw on
+    /// the hotpatch host.
+    pub(crate) fn take_outcome(&mut self) -> MovementProcessorOutcome {
+        std::mem::replace(&mut self.last_outcome, MovementProcessorOutcome::None)
     }
 
     /// Turn the seam on without a module: still baseline until a candidate stages.
@@ -1252,19 +1299,52 @@ impl MovementProcessor {
     pub(crate) fn disable(&mut self) {
         self.state = MovementProcessorState::Disabled;
         self.proposal = None;
+        self.retained_active = false;
+        self.tolerated_handback = false;
+        self.last_refusal = None;
+        self.last_outcome = MovementProcessorOutcome::None;
     }
 
-    /// Register a validated candidate. Only a baseline or refused slot may stage; an active module
-    /// must be unloaded by its adapter first so a swap cannot leave two owners mid-motion.
+    /// Register a validated candidate from a baseline or refused slot.
     pub(crate) fn stage(&mut self) -> bool {
         if matches!(
             self.state,
             MovementProcessorState::Baseline | MovementProcessorState::Refused(_)
         ) {
             self.state = MovementProcessorState::Staged;
+            self.retained_active = false;
+            self.tolerated_handback = false;
             true
         } else {
             false
+        }
+    }
+
+    /// Stage a new candidate while retaining the currently `Active` processor as fallback if the
+    /// staged candidate fails its canary or intent evaluation.
+    pub(crate) fn stage_over_active(&mut self) -> bool {
+        match self.state {
+            MovementProcessorState::Active => {
+                self.retained_active = true;
+                self.tolerated_handback = false;
+                self.state = MovementProcessorState::Staged;
+                true
+            }
+            MovementProcessorState::Staged if self.retained_active => {
+                self.tolerated_handback = false;
+                true
+            }
+            MovementProcessorState::Baseline | MovementProcessorState::Refused(_) => self.stage(),
+            _ => false,
+        }
+    }
+
+    /// Ensure the processor is marked `Active` when the host already holds an active processor.
+    pub(crate) fn mark_active(&mut self) {
+        if !matches!(self.state, MovementProcessorState::Disabled) {
+            self.state = MovementProcessorState::Active;
+            self.retained_active = false;
+            self.tolerated_handback = false;
         }
     }
 
@@ -1274,8 +1354,55 @@ impl MovementProcessor {
         if self.proposal.is_some() {
             return false;
         }
+        self.tolerated_handback = false;
         self.proposal = Some(proposal);
         true
+    }
+
+    /// Record a tolerated active-processor refusal (`MovementRefusal::Tolerated`). Hands this
+    /// tick's prediction back to `Baseline` while keeping `MovementProcessorState::Active` for the
+    /// next valid frame and recording `reason` in [`Self::last_refusal`].
+    pub(crate) fn tolerate(&mut self, reason: MovementProcessorRefusal) -> bool {
+        self.proposal = None;
+        if matches!(self.state, MovementProcessorState::Active) || self.retained_active {
+            self.retained_active = false;
+            self.state = MovementProcessorState::Active;
+            self.last_refusal = Some(reason);
+            self.tolerated_handback = true;
+            true
+        } else {
+            self.refuse(reason);
+            false
+        }
+    }
+
+    /// Restore the retained `Active` processor after a staged candidate failed on the host while
+    /// the host kept a different-digest active processor. Records `reason` in
+    /// [`Self::last_refusal`] and hands this frame back to `Baseline`.
+    pub(crate) fn retain_active_on_refusal(&mut self, reason: MovementProcessorRefusal) -> bool {
+        self.proposal = None;
+        if self.retained_active || matches!(self.state, MovementProcessorState::Active) {
+            self.retained_active = false;
+            self.state = MovementProcessorState::Active;
+            self.last_refusal = Some(reason);
+            self.tolerated_handback = true;
+            true
+        } else {
+            self.refuse(reason);
+            false
+        }
+    }
+
+    /// Non-destructive per-frame handback (e.g. `MovementRefusal::FrameInput`): baseline owns this
+    /// frame while `Staged`/`Active` selection and `retained_active` stay intact for the next frame.
+    pub(crate) fn handback_frame(&mut self) {
+        self.proposal = None;
+        if matches!(
+            self.state,
+            MovementProcessorState::Staged | MovementProcessorState::Active
+        ) {
+            self.tolerated_handback = true;
+        }
     }
 
     /// The module went away (unloaded, invalid output, failed candidate). Returns whether a module
@@ -1285,31 +1412,56 @@ impl MovementProcessor {
         let held = matches!(
             self.state,
             MovementProcessorState::Staged | MovementProcessorState::Active
-        );
+        ) || self.retained_active;
         self.proposal = None;
+        self.retained_active = false;
+        self.tolerated_handback = false;
+        self.last_outcome = MovementProcessorOutcome::None;
         if held {
             self.state = MovementProcessorState::Baseline;
+            self.last_refusal = None;
         }
         held
     }
 
-    /// Record a refusal. The slot stays refused until a new candidate stages; baseline owns the
-    /// tick in the meantime.
+    /// Record a refusal. If a staged candidate was refused while a prior active processor was
+    /// retained, falls back to `Active` with `reason` recorded in [`Self::last_refusal`];
+    /// otherwise the slot stays `Refused(reason)` until a new candidate stages.
     pub(crate) fn refuse(&mut self, reason: MovementProcessorRefusal) {
         self.proposal = None;
-        self.state = MovementProcessorState::Refused(reason);
+        self.last_refusal = Some(reason);
+        if let MovementProcessorRefusal::Intent(rejection) = reason {
+            self.last_outcome = match self.last_outcome {
+                MovementProcessorOutcome::Promoted => {
+                    MovementProcessorOutcome::StagedRejected(rejection)
+                }
+                _ => MovementProcessorOutcome::ActiveRejected(rejection),
+            };
+        }
+        if std::mem::take(&mut self.retained_active) {
+            self.state = MovementProcessorState::Active;
+            self.tolerated_handback = true;
+        } else {
+            self.tolerated_handback = false;
+            self.state = MovementProcessorState::Refused(reason);
+        }
     }
 
     /// Drop this tick's proposal without changing the selection (a frame the module may not
     /// steer: settle hold, root-gated step, knockback arc).
     pub(crate) fn drain(&mut self) {
-        self.proposal = None;
+        if self.proposal.take().is_some() {
+            self.last_outcome = MovementProcessorOutcome::Drained;
+        }
+        self.tolerated_handback = false;
     }
 
     /// Select the tick's owner exactly once. The proposal is consumed here, so a correction can
     /// never be applied twice.
     pub(crate) fn take_tick(&mut self, baseline: &MovementBaseline) -> MovementProcessorTick {
         let proposal = self.proposal.take();
+        let tolerated_handback = std::mem::replace(&mut self.tolerated_handback, false);
+        self.last_outcome = MovementProcessorOutcome::None;
         match self.state {
             // Disabled and refused never consult a proposal; baseline keeps the body playable.
             MovementProcessorState::Disabled | MovementProcessorState::Refused(_) => {
@@ -1318,29 +1470,50 @@ impl MovementProcessor {
             MovementProcessorState::Baseline => {
                 if proposal.is_some() {
                     // A proposal with no staged candidate would be an unowned intent.
-                    self.state =
-                        MovementProcessorState::Refused(MovementProcessorRefusal::NotStaged);
+                    let refusal = MovementProcessorRefusal::NotStaged;
+                    self.last_refusal = Some(refusal);
+                    self.state = MovementProcessorState::Refused(refusal);
                 }
                 MovementProcessorTick::Baseline
             }
             MovementProcessorState::Staged | MovementProcessorState::Active => {
+                let was_staged = matches!(self.state, MovementProcessorState::Staged);
                 let Some(proposal) = proposal else {
-                    if matches!(self.state, MovementProcessorState::Active) {
-                        // The active module produced nothing this tick: hand prediction back to
-                        // the baseline once rather than holding a stale owner.
+                    if !tolerated_handback && matches!(self.state, MovementProcessorState::Active) {
+                        // The active module produced nothing this tick with no tolerated/frame
+                        // handback: hand prediction back to the baseline once rather than holding
+                        // a stale owner.
                         self.state = MovementProcessorState::Baseline;
+                        self.last_refusal = None;
                     }
                     return MovementProcessorTick::Baseline;
                 };
                 match evaluate_movement_intent(&proposal, baseline) {
                     MovementIntentVerdict::Accepted(correction) => {
                         self.state = MovementProcessorState::Active;
+                        self.retained_active = false;
+                        self.last_refusal = None;
+                        self.last_outcome = if was_staged {
+                            MovementProcessorOutcome::Promoted
+                        } else {
+                            MovementProcessorOutcome::ActiveAccepted
+                        };
                         MovementProcessorTick::Corrected(correction)
                     }
                     MovementIntentVerdict::Rejected(reason) => {
-                        self.state = MovementProcessorState::Refused(
-                            MovementProcessorRefusal::Intent(reason),
-                        );
+                        let refusal = MovementProcessorRefusal::Intent(reason);
+                        self.last_refusal = Some(refusal);
+                        if was_staged {
+                            self.last_outcome = MovementProcessorOutcome::StagedRejected(reason);
+                            if std::mem::take(&mut self.retained_active) {
+                                self.state = MovementProcessorState::Active;
+                            } else {
+                                self.state = MovementProcessorState::Refused(refusal);
+                            }
+                        } else {
+                            self.last_outcome = MovementProcessorOutcome::ActiveRejected(reason);
+                            self.state = MovementProcessorState::Refused(refusal);
+                        }
                         MovementProcessorTick::Baseline
                     }
                 }
@@ -1659,6 +1832,78 @@ mod movement_module_tests {
             merge_movement_flags(move_flags::FALLING | move_flags::FORWARD, &correction),
             move_flags::FALLING | move_flags::BACKWARD,
             "the arc bit stays the baseline's; only the steering bit is delegated"
+        );
+    }
+
+    #[test]
+    fn tolerated_refusal_and_retained_active_keep_the_active_processor_across_handback() {
+        let mut processor = armed();
+        processor.offer(proposal());
+        assert!(matches!(
+            processor.take_tick(&baseline()),
+            MovementProcessorTick::Corrected(_)
+        ));
+        assert_eq!(processor.take_outcome(), MovementProcessorOutcome::Promoted);
+        assert_eq!(processor.state(), MovementProcessorState::Active);
+        assert_eq!(processor.last_refusal(), None);
+
+        // A tolerated active failure hands this tick back to baseline while retaining Active
+        // and recording the refusal beside it.
+        assert!(processor.tolerate(MovementProcessorRefusal::Host));
+        assert_eq!(processor.state(), MovementProcessorState::Active);
+        assert_eq!(
+            processor.last_refusal(),
+            Some(MovementProcessorRefusal::Host)
+        );
+        assert_eq!(
+            processor.take_tick(&baseline()),
+            MovementProcessorTick::Baseline,
+            "tolerated refusal hands this single tick back to baseline"
+        );
+        assert_eq!(
+            processor.state(),
+            MovementProcessorState::Active,
+            "the active processor stays selected for the next valid tick"
+        );
+
+        // Next valid proposal clears the tolerated refusal and applies normally.
+        processor.offer(proposal());
+        assert!(matches!(
+            processor.take_tick(&baseline()),
+            MovementProcessorTick::Corrected(_)
+        ));
+        assert_eq!(
+            processor.take_outcome(),
+            MovementProcessorOutcome::ActiveAccepted
+        );
+        assert_eq!(processor.last_refusal(), None);
+
+        // Stage a replacement candidate over the active processor; when that candidate's intent is
+        // rejected, the retained active processor is restored with the refusal recorded.
+        assert!(processor.stage_over_active());
+        assert_eq!(processor.state(), MovementProcessorState::Staged);
+        assert!(processor.has_retained_active());
+        let mut bad = proposal();
+        bad.position = Vec3::new(1.0, 2.0, 400.0);
+        processor.offer(bad);
+        assert_eq!(
+            processor.take_tick(&baseline()),
+            MovementProcessorTick::Baseline
+        );
+        assert_eq!(
+            processor.take_outcome(),
+            MovementProcessorOutcome::StagedRejected(MovementIntentRejection::TeleportJump)
+        );
+        assert_eq!(
+            processor.state(),
+            MovementProcessorState::Active,
+            "retained active processor resumes when the staged replacement is rejected"
+        );
+        assert_eq!(
+            processor.last_refusal(),
+            Some(MovementProcessorRefusal::Intent(
+                MovementIntentRejection::TeleportJump
+            ))
         );
     }
 }

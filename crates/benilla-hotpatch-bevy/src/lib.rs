@@ -1,7 +1,10 @@
 //! Sample after pose edits, compose the patched frame, then restore the next frame's input.
 use benilla_hotpatch::{Host, RestoreOutcome};
-pub use benilla_hotpatch::{PatchEvaluationReason, PatchRejectReason};
-use benilla_hotpatch_abi::{BoneLocal, RigSpan};
+pub use benilla_hotpatch::{
+    MovementBounds, MovementHealthPolicy, MovementHealthSnapshot, MovementProposal,
+    MovementProposalSource, MovementRefusal, PatchEvaluationReason, PatchRejectReason,
+};
+pub use benilla_hotpatch_abi::{BoneLocal, ModuleKind, MovementFrame, RigSpan};
 use benilla_world::rig_anim::{AnimParked, PoseModulePass, RigPose};
 use bevy::prelude::*;
 use std::{collections::VecDeque, path::PathBuf};
@@ -71,14 +74,23 @@ pub enum HotpatchEvent {
 pub struct HotpatchPlugin {
     root: PathBuf,
     probe: bool,
+    movement: bool,
 }
 
 impl HotpatchPlugin {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, probe: false }
+        Self {
+            root,
+            probe: false,
+            movement: false,
+        }
     }
     pub fn with_probe(mut self, enabled: bool) -> Self {
         self.probe = enabled;
+        self
+    }
+    pub fn with_movement(mut self, enabled: bool) -> Self {
+        self.movement = enabled;
         self
     }
 }
@@ -90,6 +102,9 @@ impl Plugin for HotpatchPlugin {
             self.root.display()
         );
         let mut host = Host::new(self.root.clone());
+        if self.movement {
+            host.set_seam_enabled(ModuleKind::Movement, true);
+        }
         // Restore the digest quarantines from the previous run so a `B -> C -> B` manifest rewrite
         // cannot re-stage a digest that already failed deterministically. A malformed or unreadable
         // store is logged once and must not fail plugin startup: the in-memory stores stay empty
@@ -162,6 +177,8 @@ impl Plugin for HotpatchPlugin {
             last_quarantine_error,
             last_sentinel_error,
             last_state_error,
+            last_movement_error: None,
+            movement_stage_outcome: None,
             reported_revision: None,
             reported_digest: None,
             refresh: false,
@@ -191,7 +208,7 @@ impl Plugin for HotpatchPlugin {
 }
 
 #[derive(Resource)]
-struct Runtime {
+pub struct Runtime {
     host: Host,
     next_poll: f64,
     last_error: Option<String>,
@@ -219,6 +236,13 @@ struct Runtime {
     /// fail the plugin. A successful parsed load or an actual save (`Ok(true)`) clears it; a clean
     /// `Ok(false)` saves nothing and must not hide an earlier startup load error.
     last_state_error: Option<String>,
+    /// Last reported movement module staging/proposal error. Separate from `last_error` so a
+    /// movement publication or proposal refusal never perturbs pose `PublicationRejected` or
+    /// `RetentionFailed` deduplication.
+    last_movement_error: Option<String>,
+    /// Most recent movement staging transition (`Ok(true)` or `Err(refusal)`) observed on the 1 Hz
+    /// poll or via [`Runtime::stage_movement_processor`], consumed by the movement adapter.
+    movement_stage_outcome: Option<std::result::Result<bool, MovementRefusal>>,
     reported_revision: Option<String>,
     reported_digest: Option<String>,
     refresh: bool,
@@ -237,6 +261,164 @@ struct Runtime {
     restored_attempt: Option<u64>,
     /// Bounded digest→attempt map of observed activations, used only to label restored modules.
     activations: VecDeque<(Option<[u8; 20]>, PatchAttemptId)>,
+}
+
+impl Runtime {
+    /// Create a standalone runtime bound to `root` (used by focused adapter tests).
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            host: Host::new(root),
+            next_poll: 0.0,
+            last_error: None,
+            last_publication_detail: None,
+            last_frame_detail: None,
+            last_quarantine_error: None,
+            last_sentinel_error: None,
+            last_state_error: None,
+            last_movement_error: None,
+            movement_stage_outcome: None,
+            reported_revision: None,
+            reported_digest: None,
+            refresh: false,
+            restore_pending: false,
+            bones: Vec::new(),
+            spans: Vec::new(),
+            entities: Vec::new(),
+            output: Vec::new(),
+            probe: false,
+            next_probe: 0.0,
+            sample: None,
+            next_attempt: 1,
+            candidate_attempt: None,
+            active_attempt: None,
+            restored_attempt: None,
+            activations: VecDeque::new(),
+        }
+    }
+
+    /// Enable or disable the movement seam on the underlying host.
+    pub fn set_movement_seam_enabled(&mut self, enabled: bool) {
+        self.host.set_seam_enabled(ModuleKind::Movement, enabled);
+        if !enabled {
+            self.movement_stage_outcome = None;
+            self.last_movement_error = None;
+        }
+    }
+
+    /// Whether the movement seam is enabled on the underlying host.
+    pub fn is_movement_seam_enabled(&self) -> bool {
+        self.host.is_seam_enabled(ModuleKind::Movement)
+    }
+
+    /// Stage a movement processor from `<root>/movement.toml` and record any staging transition.
+    pub fn stage_movement_processor(&mut self) -> std::result::Result<bool, MovementRefusal> {
+        let outcome = self.host.stage_movement_processor();
+        if let Some(error) = self.host.take_sentinel_error() {
+            report_sentinel(self, error);
+        }
+        match outcome {
+            Ok(true) => {
+                self.last_movement_error = None;
+                self.movement_stage_outcome = Some(Ok(true));
+            }
+            Ok(false) => {}
+            Err(refusal) => {
+                if let Some(detail) = self.host.take_movement_rejection() {
+                    report_movement(self, detail);
+                }
+                self.movement_stage_outcome = Some(Err(refusal));
+            }
+        }
+        outcome
+    }
+
+    /// Drain the latest movement staging transition (`Ok(true)` or `Err(refusal)`).
+    pub fn take_movement_stage_outcome(
+        &mut self,
+    ) -> Option<std::result::Result<bool, MovementRefusal>> {
+        self.movement_stage_outcome.take()
+    }
+
+    /// Whether a movement processor is staged or active.
+    pub fn has_movement_processor(&self) -> bool {
+        self.host.has_movement_processor()
+    }
+
+    /// Whether a movement candidate is currently staged in the pending slot.
+    pub fn movement_processor_staged(&self) -> bool {
+        self.host.movement_processor_staged()
+    }
+
+    /// Whether a movement processor has completed its first accepted intent.
+    pub fn movement_processor_active(&self) -> bool {
+        self.host.movement_processor_active()
+    }
+
+    pub fn movement_revision(&self) -> Option<&str> {
+        self.host.movement_revision()
+    }
+
+    pub fn movement_digest(&self) -> Option<&str> {
+        self.host.movement_digest()
+    }
+
+    pub fn movement_health_snapshot(&self) -> MovementHealthSnapshot {
+        self.host.movement_health_snapshot()
+    }
+
+    pub fn set_movement_health_policy(&mut self, policy: MovementHealthPolicy) {
+        self.host.set_movement_health_policy(policy);
+    }
+
+    pub fn movement_health_policy(&self) -> MovementHealthPolicy {
+        self.host.movement_health_policy()
+    }
+
+    /// Evaluate the staged or active movement processor for `frame` and validate against `bounds`.
+    pub fn propose_movement(
+        &mut self,
+        frame: &MovementFrame,
+        bounds: &MovementBounds,
+    ) -> std::result::Result<(MovementProposal, MovementProposalSource), MovementRefusal> {
+        let result = self.host.movement_proposal(frame, bounds);
+        if let Some(error) = self.host.take_sentinel_error() {
+            report_sentinel(self, error);
+        }
+        match &result {
+            Ok(_) => {
+                self.last_movement_error = None;
+            }
+            Err(_) => {
+                if let Some(detail) = self.host.take_movement_rejection() {
+                    report_movement(self, detail);
+                }
+            }
+        }
+        result
+    }
+
+    /// Promote the staged movement processor after the controller accepted its proposal.
+    pub fn commit_movement_processor(&mut self) -> bool {
+        let committed = self.host.commit_movement_processor();
+        if committed {
+            self.last_movement_error = None;
+        }
+        committed
+    }
+
+    /// Withdraw commit readiness after the controller rejected or drained a staged proposal.
+    pub fn withdraw_movement_proposal(&mut self) -> bool {
+        self.host.withdraw_movement_proposal()
+    }
+
+    /// Unload the staged/active movement processor and hand prediction back to baseline.
+    pub fn unload_movement_processor(&mut self) -> bool {
+        let unloaded = self.host.unload_movement_processor();
+        if unloaded {
+            self.last_movement_error = None;
+        }
+        unloaded
+    }
 }
 
 impl Drop for Runtime {
@@ -314,6 +496,15 @@ fn report_state(runtime: &mut Runtime, error: String) {
         warn!("hotpatch: {error}");
     }
     runtime.last_state_error = Some(error);
+}
+
+/// Report a movement staging/proposal error through its own dedupe slot so movement warnings never
+/// collide with the pose seam's `last_error` slot.
+fn report_movement(runtime: &mut Runtime, error: String) {
+    if runtime.last_movement_error.as_ref() != Some(&error) {
+        warn!("hotpatch: {error}");
+    }
+    runtime.last_movement_error = Some(error);
 }
 
 fn digest_from_hex(hex: &str) -> Option<[u8; 20]> {
@@ -396,6 +587,9 @@ fn poll(
             runtime.last_publication_detail = Some(detail);
             report(&mut runtime, message);
         }
+    }
+    if runtime.host.is_seam_enabled(ModuleKind::Movement) {
+        let _ = runtime.stage_movement_processor();
     }
     if let Err(error) = runtime.host.collect_retired() {
         let message = format!("artifact retention: {error:#}");

@@ -3269,6 +3269,11 @@ impl Host {
         self.movement_pending.is_some() || self.movement_active.is_some()
     }
 
+    /// Whether a movement processor candidate is currently staged and awaiting its first accepted intent.
+    pub fn movement_processor_staged(&self) -> bool {
+        self.movement_pending.is_some()
+    }
+
     /// Whether a movement processor has completed its first accepted intent.
     pub fn movement_processor_active(&self) -> bool {
         self.movement_active.is_some()

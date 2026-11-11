@@ -635,19 +635,36 @@ Cargo slot owner: overseer. No client/server/visual run was made.
 - Build/test/runtime acceptance for the modular closure commits, including the sentinel slice,
   remains unperformed.
 
+### 28. Production movement controller adapter and retained-active / tolerated-refusal handback
+
+- `Host::movement_processor_staged(&self) -> bool` in `crates/benilla-hotpatch/src/lib.rs` exposes
+  pending-slot presence alongside `has_movement_processor` and `movement_processor_active`.
+- `HotpatchPlugin::with_movement` and `pub struct Runtime` in
+  `crates/benilla-hotpatch-bevy/src/lib.rs` (all fields remain private) poll
+  `stage_movement_processor` on the 1 Hz tick when the movement seam is enabled, log/dedupe
+  movement rejections through a dedicated `last_movement_error` slot (never polluting pose
+  `last_error`), drain `take_sentinel_error()` around staging and proposal calls, and expose the
+  movement adapter methods (`set_movement_seam_enabled`, `is_movement_seam_enabled`,
+  `stage_movement_processor`, `take_movement_stage_outcome`, `has_movement_processor`,
+  `movement_processor_staged`, `movement_processor_active`, `propose_movement`,
+  `commit_movement_processor`, `withdraw_movement_proposal`, `unload_movement_processor`).
+- `MovementProcessor` in `crates/benilla-app/src/player/controller.rs` (re-exported in
+  `crates/benilla-app/src/player.rs` and initialized in `PlayerPlugin`) now tracks
+  `retained_active`, `tolerated_handback`, `last_refusal` and `MovementProcessorOutcome`
+  (`None`, `Drained`, `Promoted`, `ActiveAccepted`, `StagedRejected`, `ActiveRejected`), supporting
+  `stage_over_active`, `tolerate`, `retain_active_on_refusal` and `handback_frame`.
+- `crates/benilla-app/src/hotpatch.rs` wires `prepare_movement_hotpatch` before `PlayerControlSet`
+  and `settle_movement_hotpatch` after `PlayerControlSet` (`drive_movement_proposal` and
+  `settle_movement_outcome`), plus focused unit tests in both `controller.rs` and `hotpatch.rs`.
+- `tools/launch-client.ps1` and `tools/assemble-windows-release.ps1` updated with
+  `-WithMovementHotpatch` (`WOW_HOTPATCH_MOVEMENT`), `WM_Multiclass` bundled glue fallback, and
+  optional `-BuildRelease` sccache release compilation.
+
 ## Next concrete step
 
-Release verification was recorded at `e12dc650`: the hotpatch crates check clean and 15 focused
-hotpatch tests pass; `benilla-app --features hotpatch` was blocked by 21 pre-existing
-`benilla-app`/protocol/UI errors outside the hotpatch files (see the verification section above).
-`origin/main` has since advanced to `329a5151` (`fix(app,ui): resolve benilla-app compile blockers
-and tick secure state drivers`), which claims to repair those blockers but has not been re-checked
-by this line. Rerun the app check and app mapping tests on `329a5151`, then the owner-driven
-login → roster → Firna/Northshire run. The production movement controller adapter/handback still
-needs cross-crate design and launch validation. Remaining source-only polish: movement/rollback
-typed reasons, a persisted last-good module identity, and the native marker windows. No release
-claim is possible until the app build and receiver/visible gates pass.
+Run the owner-driven Gate 3 live session (`Launch RustWrath.cmd` against BridgeLab MySQL/auth/world:
+login → realm/roster → world entry → Firna's Northshire route → live `/reload` hotpatch verification)
+and Gate 4 Windows alpha packaging (`tools\assemble-windows-release.ps1 -BuildRelease -Destination <path> -Version <version>`).
 
-Detailed AutoSwarm/ZAEBAL next-session runbook (worktrees, model fallback Flint → Beam →
-DeepSeek, prompt templates, merge/push checklist):
+Detailed AutoSwarm/ZAEBAL next-session runbook:
 `.scratch/project-b/handoffs/2026-11-11-autoswarm-overseer-next-session.md`.

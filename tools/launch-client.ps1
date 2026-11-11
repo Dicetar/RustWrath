@@ -13,7 +13,8 @@ param(
     [switch]$SkipHealthCheck,
     [scriptblock]$HealthPredicate = $null,
     [switch]$WithMulticlass,
-    [string]$MulticlassGluePath = 'D:\WOW\wm-project\client_extensions\multiclass\multiclass_glue.lua'
+    [string]$MulticlassGluePath = 'D:\WOW\wm-project\client_extensions\multiclass\multiclass_glue.lua',
+    [bool]$WithMovementHotpatch = $true
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -152,12 +153,18 @@ if ($StateHome) {
 if (!(Test-Path -LiteralPath $DataPath)) { throw "Game data folder missing: $DataPath" }
 if ($WithMulticlass) {
     if (!$WithAddons) { throw 'Multiclass requires -WithAddons $true' }
-    if (!(Test-Path -LiteralPath $MulticlassGluePath -PathType Leaf)) {
-        throw "Multiclass Glue script missing: $MulticlassGluePath"
-    }
-    $multiclassToc = Join-Path (Split-Path -Parent $DataPath) 'Interface\AddOns\WM_Multiclass\WM_Multiclass.toc'
+    $multiclassDir = Join-Path (Split-Path -Parent $DataPath) 'Interface\AddOns\WM_Multiclass'
+    $multiclassToc = Join-Path $multiclassDir 'WM_Multiclass.toc'
     if (!(Test-Path -LiteralPath $multiclassToc -PathType Leaf)) {
         throw "Required addon missing: $multiclassToc"
+    }
+    if (!(Test-Path -LiteralPath $MulticlassGluePath -PathType Leaf)) {
+        $bundledGlue = Join-Path $multiclassDir 'multiclass_glue.lua'
+        if (Test-Path -LiteralPath $bundledGlue -PathType Leaf) {
+            $MulticlassGluePath = $bundledGlue
+        } else {
+            throw "Multiclass Glue script missing: $MulticlassGluePath"
+        }
     }
 }
 
@@ -175,6 +182,7 @@ $env:WOW_HOST = $AuthServer
 $env:WOW_DATA = $DataPath
 $env:WOW_STOCK_UI = '1'
 $env:WOW_GM = 'off'
+$env:WOW_HOTPATCH_MOVEMENT = if ($WithMovementHotpatch) { '1' } else { '0' }
 $env:WM_ASSET_MANIFEST = Join-Path $repo 'docs\profiles\wm-hd.mpqlist'
 $env:WM_ASSET_PROFILE = 'wm-hd'
 if ($WithMulticlass) {
