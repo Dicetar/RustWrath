@@ -131,6 +131,22 @@ impl Loader<'_> {
                 if let Some(enabled) = level.attr_bool_opt("motionScriptsWhileDisabled") {
                     self.call(wrapper, "SetMotionScriptsWhileDisabled", enabled, dbg);
                 }
+                if let Some(clicks) = level.attr("registerForClicks") {
+                    let tokens: Vec<String> = clicks
+                        .split([',', ' ', '\t'])
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                    if !tokens.is_empty() {
+                        self.call(
+                            wrapper,
+                            "RegisterForClicks",
+                            mlua::Variadic::from_iter(tokens),
+                            dbg,
+                        );
+                    }
+                }
             }
         }
         // Each state-texture element is a new region from the `<Layers>` texture adder (`0x6f26f0`,

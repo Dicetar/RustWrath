@@ -21,13 +21,33 @@ use mlua::{Lua, Table, Value};
 use super::{Model, REG_FRAME_METHODS};
 use crate::widget::FrameHandle;
 
-/// The native templates this host recognises. `SecureHandlerBaseTemplate` is registered too so a
-/// future list-inheriting template can name it without a lookup failure.
+/// The native secure-handler templates this host recognises and marks with `hasSecureHandler`.
 const SECURE_TEMPLATES: &[&str] = &[
     "SecureHandlerBaseTemplate",
     "SecureHandlerClickTemplate",
     "SecureHandlerStateTemplate",
+    "SecureHandlerAttributeTemplate",
+    "SecureHandlerEnterLeaveTemplate",
+    "SecureHandlerShowHideTemplate",
+    "SecureHandlerMouseUpDownTemplate",
+    "SecureHandlerDragTemplate",
 ];
+
+/// Fallback button/header templates registered under a non-client context (`Some(...)`) so bare
+/// VMs and unit tests resolve `CreateFrame(..., "SecureActionButtonTemplate")`, while loading
+/// real `SecureTemplates.xml` / `SecureHandlerTemplates.xml` in client context (`None`) replaces
+/// them cleanly (`Registration::Replaced`).
+const FALLBACK_TEMPLATES: &[(&str, &str)] = &[
+    ("SecureActionButtonTemplate", "CheckButton"),
+    ("SecureUnitButtonTemplate", "Button"),
+    ("ActionButtonTemplate", "CheckButton"),
+    ("SecureAuraHeaderTemplate", "Frame"),
+    ("SecureGroupHeaderTemplate", "Frame"),
+    ("SecurePartyHeaderTemplate", "Frame"),
+    ("SecureRaidGroupHeaderTemplate", "Frame"),
+];
+
+const FALLBACK_CONTEXT: Option<&str> = Some("__benilla_secure_fallback");
 
 const MAX_STATE_LEN: usize = 64;
 const MAX_CONDITION_LEN: usize = 1024;
@@ -54,13 +74,77 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         let mut templates = model.framexml_templates.borrow_mut();
         for name in SECURE_TEMPLATES {
             if !templates.contains(name) {
-                templates.register(name, crate::framexml::Element::empty("Frame"), None);
+                templates.register(
+                    name,
+                    crate::framexml::Element::empty("Frame"),
+                    FALLBACK_CONTEXT,
+                );
+            }
+        }
+        for &(name, tag) in FALLBACK_TEMPLATES {
+            if !templates.contains(name) {
+                templates.register(
+                    name,
+                    crate::framexml::Element::empty(tag),
+                    FALLBACK_CONTEXT,
+                );
             }
         }
     }
 
     let methods: Table = lua.named_registry_value(REG_FRAME_METHODS)?;
     methods.set("WrapScript", lua.create_function(wrap_script)?)?;
+    methods.set("UnwrapScript", lua.create_function(unwrap_script)?)?;
+    methods.set("Execute", lua.create_function(execute_body)?)?;
+    methods.set("SetFrameRef", lua.create_function(set_frame_ref)?)?;
+    methods.set("GetFrameRef", lua.create_function(get_frame_ref)?)?;
+
+    lua.globals().set(
+        "SecureHandlerWrapScript",
+        lua.create_function(
+            |lua, (frame, script, header, pre, post): (Table, Value, Table, Value, Option<Value>)| {
+                wrap_script(lua, (header, frame, script, pre, post))
+            },
+        )?,
+    )?;
+    lua.globals().set(
+        "SecureHandlerUnwrapScript",
+        lua.create_function(|lua, (frame, script): (Table, Value)| {
+            unwrap_script(lua, (frame.clone(), frame, script))
+        })?,
+    )?;
+    lua.globals().set(
+        "SecureHandlerExecute",
+        lua.create_function(|lua, (frame, body): (Table, Value)| {
+            execute_body(lua, (frame, body))
+        })?,
+    )?;
+    lua.globals().set(
+        "SecureHandlerSetFrameRef",
+        lua.create_function(|lua, (frame, label, ref_frame): (Table, Value, Table)| {
+            set_frame_ref(lua, (frame, label, ref_frame))
+        })?,
+    )?;
+    lua.globals().set(
+        "SecureCmdOptionParse",
+        lua.create_function(|lua, text: Value| {
+            let Some(s) = lua.coerce_string(text)? else {
+                return Ok((Value::Nil, Value::Nil));
+            };
+            let raw = s.to_string_lossy();
+            for clause in raw.split(';') {
+                let trimmed = clause.trim();
+                let body = match trimmed.rfind(']') {
+                    Some(idx) => trimmed[idx + 1..].trim(),
+                    None => trimmed,
+                };
+                if !body.is_empty() {
+                    return Ok((Value::String(lua.create_string(body)?), Value::Nil));
+                }
+            }
+            Ok((Value::String(lua.create_string("")?), Value::Nil))
+        })?,
+    )?;
 
     lua.globals().set(
         "RegisterStateDriver",
@@ -111,6 +195,72 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 /// same marker plus the owner set `WrapScript` checks.
 pub(super) fn mark_frame(model: &mut Model, h: FrameHandle) {
     model.secure_frames.insert(key(h));
+}
+
+fn unwrap_script(lua: &Lua, (this, target, script): (Table, Table, Value)) -> mlua::Result<()> {
+    let owner = super::object::frame_handle_of(lua, &this)?;
+    let target = super::object::frame_handle_of(lua, &target)?;
+    let script = text_arg(
+        lua,
+        &script,
+        "Usage: SecureHandler:UnwrapScript(frame, scriptName)",
+    )?;
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    if let Some(rows) = model.secure_wraps.get_mut(&key(owner)) {
+        if let Some(pos) = rows
+            .iter()
+            .rposition(|w| w.target == key(target) && w.script.eq_ignore_ascii_case(&script))
+        {
+            rows.remove(pos);
+        }
+        if rows.is_empty() {
+            model.secure_wraps.remove(&key(owner));
+        }
+    }
+    Ok(())
+}
+
+fn execute_body(lua: &Lua, (this, body): (Table, Value)) -> mlua::Result<()> {
+    let owner = super::object::frame_handle_of(lua, &this)?;
+    let body = text_arg(lua, &body, "Usage: SecureHandler:Execute(body)")?;
+    if body.len() > MAX_WRAP_LEN {
+        return Err(mlua::Error::runtime(
+            "Execute: body exceeds the 4096-byte limit",
+        ));
+    }
+    if body.contains('\0') {
+        return Err(mlua::Error::runtime("Execute: body contains a NUL"));
+    }
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    if !model.secure_frames.contains(&key(owner)) {
+        return Err(mlua::Error::runtime(
+            "Execute: frame is not a secure handler in this host",
+        ));
+    }
+    Ok(())
+}
+
+fn set_frame_ref(
+    lua: &Lua,
+    (this, label, ref_frame): (Table, Value, Table),
+) -> mlua::Result<()> {
+    let _owner = super::object::frame_handle_of(lua, &this)?;
+    let _ref_h = super::object::frame_handle_of(lua, &ref_frame)?;
+    let label = text_arg(
+        lua,
+        &label,
+        "Usage: SecureHandler:SetFrameRef(label, frame)",
+    )?;
+    validate_state(&label).map_err(mlua::Error::runtime)?;
+    let attr_key = format!("_frameref-{}", label.to_ascii_lowercase());
+    this.call_method::<()>("SetAttribute", (attr_key, ref_frame))
+}
+
+fn get_frame_ref(lua: &Lua, (this, label): (Table, Value)) -> mlua::Result<Value> {
+    let _owner = super::object::frame_handle_of(lua, &this)?;
+    let label = text_arg(lua, &label, "Usage: SecureHandler:GetFrameRef(label)")?;
+    let attr_key = format!("_frameref-{}", label.to_ascii_lowercase());
+    this.call_method::<Value>("GetAttribute", attr_key)
 }
 
 /// `SecureHandler:WrapScript(frame, script, preBody [, postBody])`. The reference runs `preBody`
@@ -357,11 +507,39 @@ mod tests {
                 r#"
                 local btn = CreateFrame("CheckButton", "BT4Button1", Bar, "SecureActionButtonTemplate")
                 Bar:WrapScript(btn, "OnClick", [[return "wrapped"]])
+                Bar:SetFrameRef("action1", btn)
+                assert(Bar:GetFrameRef("action1") == btn)
+                Bar:UnwrapScript(btn, "OnClick")
+                local cmd = SecureCmdOptionParse("[mod:shift] 2; 1")
+                assert(cmd == "2" or cmd == "1")
                 RegisterStateDriver(Bar, "visibility", "[petbattle]hide;show")
                 UnregisterStateDriver(Bar, "visibility")
                 "#,
             )
             .unwrap();
         assert_eq!(script.arity("GetActionInfo(1)").unwrap(), 3);
+    }
+
+    #[test]
+    fn real_framexml_replaces_fallback_secure_templates_cleanly() {
+        let script = script();
+        let model = script.model_ref();
+        let mut templates = model.framexml_templates.borrow_mut();
+        assert_eq!(
+            templates.register(
+                "SecureActionButtonTemplate",
+                crate::framexml::Element::empty("CheckButton"),
+                None,
+            ),
+            crate::framexml::Registration::Replaced
+        );
+        assert_eq!(
+            templates.register(
+                "SecureHandlerStateTemplate",
+                crate::framexml::Element::empty("Frame"),
+                None,
+            ),
+            crate::framexml::Registration::Replaced
+        );
     }
 }

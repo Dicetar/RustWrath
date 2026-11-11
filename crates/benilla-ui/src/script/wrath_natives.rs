@@ -1681,21 +1681,32 @@ fn install_quest_poi(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
-/// One numeric argument to `MulticlassRequest`: absent or `nil` is `None`, a whole number in
-/// `u32` range is `Some`, and anything else is the binding's refusal (`Err`), as the native
-/// callback's `ReadInteger` refuses rather than raises.
+/// One numeric argument to `MulticlassRequest`: absent or `nil` is `None`, a whole number (or
+/// numeric string) in `u32` range is `Some`, and anything else is the binding's refusal (`Err`),
+/// as the native callback's `ReadInteger` refuses rather than raises.
 fn multiclass_arg(args: &MultiValue, index: usize) -> Result<Option<u32>, ()> {
+    let check_f64 = |value: f64| -> Result<Option<u32>, ()> {
+        if value.is_finite()
+            && value >= 0.0
+            && value <= f64::from(u32::MAX)
+            && value.trunc() == value
+        {
+            Ok(Some(value as u32))
+        } else {
+            Err(())
+        }
+    };
     match args.get(index) {
         None | Some(Value::Nil) => Ok(None),
         Some(Value::Integer(value)) => u32::try_from(*value).map(Some).map_err(|_| ()),
-        Some(Value::Number(value)) => {
-            let value = *value;
-            if value.is_finite()
-                && value >= 0.0
-                && value <= f64::from(u32::MAX)
-                && value.trunc() == value
-            {
-                Ok(Some(value as u32))
+        Some(Value::Number(value)) => check_f64(*value),
+        Some(Value::String(s)) => {
+            let text = s.to_str().map_err(|_| ())?;
+            let trimmed = text.trim();
+            if let Ok(int_val) = trimmed.parse::<u32>() {
+                Ok(Some(int_val))
+            } else if let Ok(float_val) = trimmed.parse::<f64>() {
+                check_f64(float_val)
             } else {
                 Err(())
             }

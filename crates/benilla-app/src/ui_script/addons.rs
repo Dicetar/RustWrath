@@ -377,13 +377,27 @@ fn chain_addons() -> Vec<Addon> {
 fn discover() -> Vec<Addon> {
     // The archive pass, in `BLIZZARD_ADDONS` order: the shipped `patch.MPQ` listfile's too.
     let mut found = chain_addons();
-    // The loose pass, minus the names the archive registered.
-    let seen: HashSet<String> = found.iter().map(|a| a.name.to_ascii_lowercase()).collect();
-    found.extend(
-        discover_folder()
-            .into_iter()
-            .filter(|a| !seen.contains(&a.name.to_ascii_lowercase())),
-    );
+    // Loose player folders: a loose non-Blizzard folder overrides an unsigned non-Blizzard archive
+    // copy of the same name (such as `WMBridge` in `Interface/AddOns/WMBridge` over `patch-z.mpq`),
+    // while Blizzard's archive addons retain their registration slot and order.
+    let mut seen: HashSet<String> = found.iter().map(|a| a.name.to_ascii_lowercase()).collect();
+    for addon in discover_folder() {
+        let key = addon.name.to_ascii_lowercase();
+        if !seen.contains(&key) {
+            seen.insert(key);
+            found.push(addon);
+        } else if let Some(existing) = found.iter_mut().find(|a| {
+            a.name.eq_ignore_ascii_case(&addon.name)
+                && matches!(a.source, Source::ChainAddon)
+                && !a.toc.secure()
+                && !a
+                    .name
+                    .get(..9)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("Blizzard_"))
+        }) {
+            *existing = addon;
+        }
+    }
     found
 }
 
@@ -504,14 +518,27 @@ fn discover_in(root: &Path) -> Vec<Addon> {
 }
 
 /// `<dir>/<name>.toc`, matched case-insensitively as on the reference's Windows filesystem
-/// (`MyAddon/myaddon.toc` is an addon there). Decoded, not read as UTF-8: one cp1252 byte in a
-/// `## Notes:` line must not make the addon vanish.
+/// (`MyAddon/myaddon.toc` is an addon there). In Wrath mode, multi-TOC folders shipping
+/// `<Name>-335.toc` or `<Name>-WotLK.toc` without a bare `<Name>.toc` fall back to that manifest.
+/// Decoded, not read as UTF-8: one cp1252 byte in a `## Notes:` line must not make the addon vanish.
 fn manifest_in(dir: &Path, name: &str) -> Option<String> {
-    let want = format!("{name}.toc");
-    let entry = std::fs::read_dir(dir).ok()?.flatten().find(|e| {
-        e.file_name()
-            .to_str()
-            .is_some_and(|f| f.eq_ignore_ascii_case(&want))
+    let entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+    let candidates = if crate::wrath::selected_from_env() {
+        vec![
+            format!("{name}.toc"),
+            format!("{name}-335.toc"),
+            format!("{name}-WotLK.toc"),
+            format!("{name}_Wrath.toc"),
+        ]
+    } else {
+        vec![format!("{name}.toc")]
+    };
+    let entry = candidates.iter().find_map(|want| {
+        entries.iter().find(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|f| f.eq_ignore_ascii_case(want))
+        })
     })?;
     let bytes = std::fs::read(entry.path()).ok()?;
     Some(benilla_ui::source::decode(&bytes).into_owned())
@@ -551,12 +578,30 @@ pub(crate) fn addon_replies(
 /// production does. `chain` is whether the addon comes off the player's patch chain.
 pub(crate) fn info_from_toc(name: &str, toc: &Toc, chain: bool) -> benilla_ui::script::AddOnInfo {
     // The metadata lines of the client's locale (`[0xc0e080]`) count; another locale's drop.
-    let locale = super::client_locale().index();
+    let wrath = crate::wrath::selected_from_env();
+    let locale = if wrath {
+        super::client_locale().wrath_index()
+    } else {
+        super::client_locale().index()
+    };
+    let (title, notes, directives) = if wrath {
+        (
+            toc.wrath_metadata_value(name, "Title", locale),
+            toc.wrath_metadata_value(name, "Notes", locale),
+            toc.wrath_metadata(name, locale),
+        )
+    } else {
+        (
+            toc.metadata_value(name, "Title", locale),
+            toc.metadata_value(name, "Notes", locale),
+            toc.metadata(name, locale),
+        )
+    };
     benilla_ui::script::AddOnInfo {
         name: name.to_owned(),
         // From the metadata map, whose `Title` the reader seeds with the folder (`0x51cb3d`).
-        title: toc.metadata_value(name, "Title", locale),
-        notes: toc.metadata_value(name, "Notes", locale),
+        title,
+        notes,
         // The `.toc` has no URL: `0x51e180` answers `[rec+0x30]`, which only the server's
         // `SMSG_ADDON_INFO` writes (`0x51db6a`).
         url: None,
@@ -577,7 +622,7 @@ pub(crate) fn info_from_toc(name: &str, toc: &Toc, chain: bool) -> benilla_ui::s
             .collect(),
         load_with: toc.load_with().into_iter().map(str::to_owned).collect(),
         dependents: Vec::new(), // filled by `register_addons`
-        directives: toc.metadata(name, locale),
+        directives,
         files: toc.files.clone(),
         saved_variables: toc
             .saved_variables()
