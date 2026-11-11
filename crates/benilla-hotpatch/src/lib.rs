@@ -59,16 +59,17 @@ const ACTIVE_SENTINEL_TEMP: &str = "active-sentinel.toml.tmp";
 /// is rejected before it is read into memory.
 const MAX_ACTIVE_SENTINEL_BYTES: u64 = 16 * 1024;
 /// Bounded persisted state beside the publications: the demotion policy, per-revision cumulative
-/// health for the active pose module, and the two artifact stamps that decide whether an
-/// identical-text manifest latches a terminal failure. It is not a manifest and never selects code
-/// to load: a persisted digest only seeds counters for a later verified activation, and a stamp
-/// only says which artifact metadata a latched publication last observed. It is single-client like
-/// `quarantine.toml` (fixed temp name, last-writer-wins replacement).
+/// health for the active pose and movement modules, and the two artifact stamps that decide whether
+/// an identical-text manifest latches a terminal failure. It is not a manifest and never selects
+/// code to load: a persisted digest only seeds counters for a later verified activation, and a
+/// stamp only says which artifact metadata a latched publication last observed. It is
+/// single-client like `quarantine.toml` (fixed temp name, last-writer-wins replacement).
 const PATCH_STATE_FILE: &str = "patch-state.toml";
 /// Temp sibling used for the write-then-rename replacement of [`PATCH_STATE_FILE`].
 const PATCH_STATE_TEMP: &str = "patch-state.toml.tmp";
-/// Upper bound on the whole state document. At most [`MAX_PERSISTED_REVISIONS`] entries plus the
-/// policy and two stamps fit comfortably; a larger file is rejected before it is read.
+/// Upper bound on the whole state document. Two bounded stores (`MAX_PERSISTED_REVISIONS` entries
+/// each) plus the policy and two stamps fit comfortably; a larger file is rejected before it is
+/// read.
 const MAX_PATCH_STATE_BYTES: u64 = 64 * 1024;
 /// Bound on the persisted per-revision health entries. The digest is the key; the newest entry is
 /// last and the oldest is evicted at the cap.
@@ -146,8 +147,9 @@ pub enum RestoreOutcome {
 /// is a new activation and starts a clean consecutive streak, but its cumulative failures and
 /// high-water evaluation time are seeded from the bounded per-revision store in
 /// `patch-state.toml` when that digest was seen in an earlier activation or process run.
-/// [`PatchHealthPolicy`] enforces the thresholds in memory. Remaining movement typed reasons and
-/// movement health remain H03; the persisted store is described on
+/// [`PatchHealthPolicy`] enforces the thresholds in memory. Remaining movement typed reasons
+/// remain H03 (movement health is host-current and persisted; see [`MovementHealthSnapshot`]); the
+/// persisted store is described on
 /// [`Host::load_persistent_state`]/[`Host::persist_state`]. (The separate digest quarantine behind
 /// `quarantined_digests` is persisted too, in `quarantine.toml`.)
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -194,8 +196,8 @@ pub struct PatchHealthSnapshot {
 /// The default [`PatchHealthPolicy::default`] is the original single-strike behavior: one
 /// consecutive failure demotes, with the cumulative cap (3) only reachable if the consecutive
 /// threshold were relaxed. The policy is loaded from and saved to `patch-state.toml`; remaining
-/// movement/rollback evaluation reasons, movement health and `max_eval_micros` enforcement remain
-/// H03 work.
+/// movement/rollback evaluation reasons and `max_eval_micros` enforcement remain H03 work (movement
+/// health has its own live [`MovementHealthPolicy`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PatchHealthPolicy {
     /// Consecutive active-frame failures that demote the module. `0` disables this threshold.
@@ -276,7 +278,8 @@ struct ActiveSentinelFile {
 /// loadable, but a present `[policy]` table requires both thresholds: a missing field is a document
 /// error, never a silent `0`. `deny_unknown_fields` rejects a file that carries any other key,
 /// including one written by a newer binary, so the whole document is understood or none of it is
-/// applied.
+/// applied. `[movement_health]` carries the same bounded per-revision shape as `[health]` for the
+/// movement seam and an absent table loads an empty movement store.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PatchStateFile {
@@ -285,6 +288,8 @@ struct PatchStateFile {
     policy: Option<PersistedPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     health: Option<PersistedHealth>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    movement_health: Option<PersistedHealth>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stamps: Option<PersistedStamps>,
 }
@@ -1054,9 +1059,13 @@ pub enum MovementProposalSource {
 /// written, but it does not always drop the movement slot: `FrameInput` (an unusable caller frame)
 /// and `NoModule` leave the staged/active selection intact, so the caller hands prediction back for
 /// this frame and can use the same processor on the next valid frame. A module-produced `Status` or
-/// output-validation refusal drops the failing candidate and quarantines its verified digest: a
-/// failing staged candidate retains a healthy active processor with a different digest, while a
-/// failing active processor clears both slots. [`MovementRefusal::SeamDisabled`] evicts both. A
+/// output-validation refusal is counted against the active processor's [`MovementHealth`] and
+/// [`MovementHealthPolicy`]: below both enabled thresholds it is tolerated
+/// ([`MovementRefusal::Tolerated`]) and the active processor is retained; at either threshold it
+/// drops the failing candidate and quarantines its verified digest. A failing staged candidate is
+/// always single-strike (its canary failure never changes active health) and retains a healthy
+/// active processor with a different digest, while a failing active processor clears both slots.
+/// [`MovementRefusal::SeamDisabled`] evicts both. A
 /// [`Host::stage_movement_processor`] `Err` drops only the staged candidate and latches as its
 /// variant describes; it does not evict an already-active processor except for
 /// [`MovementRefusal::SeamDisabled`].
@@ -1064,6 +1073,12 @@ pub enum MovementProposalSource {
 pub enum MovementRefusal {
     /// No movement module is staged or active.
     NoModule,
+    /// An active processor failed below both enabled [`MovementHealthPolicy`] thresholds. The
+    /// processor stays active and is not quarantined; the caller renders the baseline movement for
+    /// this frame and may evaluate the same processor on the next valid frame. The precise
+    /// module-produced refusal remains in [`MovementHealthSnapshot::last_refusal`] and the
+    /// free-form detail in [`Host::take_movement_rejection`].
+    Tolerated,
     /// The movement seam was disabled in the host's [`ModularGameplayRegistry`]. The host refused
     /// before reading or loading the DLL artifact, dropped any staged/active movement slot and
     /// latched the manifest text so garbage collection keeps its artifact. Enabling the seam
@@ -1102,6 +1117,70 @@ pub enum MovementRefusal {
     /// The proposal asked the host to emit a movement opcode. `wrath_stream_movement` remains the
     /// sole wire writer, so this is refused rather than forwarded.
     WireWrite,
+}
+
+/// Read-only health snapshot of the currently active movement processor.
+///
+/// The counters and timings describe the active processor's steady-state
+/// [`Host::movement_proposal`] calls; a staged candidate's canary call is an activation probe and
+/// is neither timed nor counted. `revision`/`digest` name the processor active at snapshot time, so
+/// both are `None` after a demotion or unload while the last counters remain visible after a
+/// demotion. `last_refusal` is the most recent module-produced failure (`Status`/validation), even
+/// while the failure was tolerated; it is cleared by a successful active proposal, by a commit and
+/// by an unload/seam disable. A tolerated failure leaves `movement_active` in place, so the caller
+/// sees the same identity beside the incremented counters. The persisted per-revision store is
+/// written separately by [`Host::persist_state`].
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct MovementHealthSnapshot {
+    /// Revision of the processor active at snapshot time, or `None` when the slot is empty.
+    pub revision: Option<String>,
+    /// Verified SHA-1 of the processor active at snapshot time, or `None` when the slot is empty.
+    pub digest: Option<String>,
+    /// Active-processor failures since its last valid proposal or activation.
+    pub consecutive_frame_failures: u32,
+    /// Failures recorded for this verified digest since it was first seen, cumulative across
+    /// reactivations and process runs. [`MovementHealthPolicy::max_total_frame_failures`] compares
+    /// it; a commit seeds it from `patch-state.toml`, while the consecutive count starts at 0.
+    pub total_frame_failures: u32,
+    /// Duration of the most recent steady-state active evaluation, in microseconds. A staged
+    /// candidate's canary call is not timed, so this is 0 until the first active proposal.
+    pub last_eval_micros: u64,
+    /// High-water mark of steady-state active evaluation duration, in microseconds. Seeded from
+    /// the per-revision store on commit.
+    pub max_eval_micros: u64,
+    /// Number of movement digests currently held in the bounded quarantine.
+    pub quarantined_digests: usize,
+    /// Most recent module-produced failure, or `None` after activation/success. A tolerated
+    /// failure keeps it while the active processor is retained.
+    pub last_refusal: Option<MovementRefusal>,
+}
+
+/// Demotion thresholds for the active movement processor.
+///
+/// Both thresholds count the active processor's failed proposals, not staged-candidate canary
+/// failures. The consecutive threshold restarts on every commit (staged becomes active); the total
+/// threshold is per-revision cumulative across reactivations and process runs, seeded from
+/// `patch-state.toml`. The thresholds are independent alternatives: a failure demotes as soon as
+/// *either* enabled threshold is reached, and a value of `0` disables that threshold. `0/0`
+/// therefore never demotes on health counters alone. The default is the original single-strike
+/// behavior (`1/3`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MovementHealthPolicy {
+    /// Consecutive active-processor failures that demote it. `0` disables this threshold.
+    pub max_consecutive_frame_failures: u32,
+    /// Per-revision cumulative active-processor failures that demote it. `0` disables this
+    /// threshold. The count is seeded across reactivations from `patch-state.toml`.
+    pub max_total_frame_failures: u32,
+}
+
+impl Default for MovementHealthPolicy {
+    fn default() -> Self {
+        Self {
+            max_consecutive_frame_failures: 1,
+            max_total_frame_failures: 3,
+        }
+    }
 }
 
 /// Why a loaded movement artifact could not be staged.
@@ -1314,13 +1393,70 @@ fn movement_proposal_of(output: &MovementOutput) -> MovementProposal {
     }
 }
 
+/// Live counters/timings for the active movement processor.
+///
+/// Mirrors [`PatchHealth`] for the movement seam: reset on every commit so the consecutive streak
+/// and last sample describe the processor currently active, while the cumulative total and
+/// evaluation high-water mark are seeded from the bounded per-revision store so they survive a
+/// reactivation and a process restart. A staged candidate's canary call is an activation probe and
+/// never touches this record.
+#[derive(Clone, Debug, Default)]
+struct MovementHealth {
+    consecutive_frame_failures: u32,
+    total_frame_failures: u32,
+    last_eval_micros: u64,
+    max_eval_micros: u64,
+    last_refusal: Option<MovementRefusal>,
+}
+
+impl MovementHealth {
+    /// Record one active-processor evaluation. The `u128` microsecond count saturates to `u64`.
+    fn record_eval(&mut self, elapsed: std::time::Duration) {
+        let micros = elapsed.as_micros().min(u64::MAX as u128) as u64;
+        self.last_eval_micros = micros;
+        self.max_eval_micros = self.max_eval_micros.max(micros);
+    }
+
+    /// An active processor produced a valid proposal: the consecutive streak and the last refusal
+    /// end, while the per-revision cumulative total survives until the next activation.
+    fn record_success(&mut self) {
+        self.consecutive_frame_failures = 0;
+        self.last_refusal = None;
+    }
+
+    /// A module-produced active failure. The precise refusal is kept for the snapshot/detail API.
+    fn record_failure(&mut self, refusal: MovementRefusal) {
+        self.consecutive_frame_failures = self.consecutive_frame_failures.saturating_add(1);
+        self.total_frame_failures = self.total_frame_failures.saturating_add(1);
+        self.last_refusal = Some(refusal);
+    }
+
+    /// Whether the recorded failures reached either enabled threshold in `policy`.
+    ///
+    /// The thresholds are alternatives; a `0` value disables that threshold, so `0/0` never
+    /// demotes on health counters.
+    fn threshold_reached(&self, policy: MovementHealthPolicy) -> bool {
+        (policy.max_consecutive_frame_failures != 0
+            && self.consecutive_frame_failures >= policy.max_consecutive_frame_failures)
+            || (policy.max_total_frame_failures != 0
+                && self.total_frame_failures >= policy.max_total_frame_failures)
+    }
+
+    /// A newly committed processor restarts the consecutive streak, last sample and last refusal;
+    /// the total and high-water mark are then seeded from `patch-state.toml`.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Live counters/timings for the active pose module.
 ///
 /// Reset on every activation so the consecutive streak and last sample always describe the module
 /// that is currently (or was most recently) active. The cumulative total and evaluation high-water
 /// mark are then seeded from the bounded per-revision store, so they survive a reactivation and a
 /// process restart. [`PatchHealthPolicy`] decides whether a recorded failure demotes; remaining
-/// movement/rollback typed reasons and movement health remain out of scope.
+/// movement/rollback typed reasons remain out of scope (movement health has its own
+/// [`MovementHealth`] record).
 #[derive(Clone, Debug, Default)]
 struct PatchHealth {
     consecutive_frame_failures: u32,
@@ -1460,8 +1596,8 @@ pub struct Host {
     /// names the same bad artifact (`B -> C -> B`) is refused before `Library::new` without
     /// re-reading the DLL. A frame rejected by host validation never reaches this store. The list
     /// is persisted to `quarantine.toml` (see [`Host::persist_quarantine`]) and restored at startup
-    /// (see [`Host::load_persistent_quarantine`]); remaining movement/rollback typed reasons and
-    /// movement health remain H03.
+    /// (see [`Host::load_persistent_quarantine`]); remaining movement/rollback typed reasons remain
+    /// H03 (movement health is host-current and persisted).
     /// The pose loading and staged-canary sentinels and the movement loading sentinel are
     /// implemented in this slice.
     quarantined_digests: VecDeque<String>,
@@ -1510,9 +1646,22 @@ pub struct Host {
     /// Deliberately separate from the pose store so the same bytes under a different ABI cannot
     /// suppress the other seam; H03 may unify the stores under a `(ModuleKind, digest)` key. Both
     /// lists travel in the same `quarantine.toml` but stay separate in memory. Movement/rollback
-    /// typed reasons, movement health, the movement active-frame sentinel and the frame counters
-    /// remain H03.
+    /// typed reasons and the movement active-frame sentinel remain H03 (movement health counters
+    /// are host-current and persisted).
     movement_quarantined_digests: VecDeque<String>,
+    /// Live counters/timings for the active movement processor, exposed through
+    /// [`Host::movement_health_snapshot`]. A staged candidate's canary call never touches it; a
+    /// commit seeds its total/high-water mark from [`Self::persisted_movement_health`].
+    movement_health: MovementHealth,
+    /// Demotion thresholds compared against [`Self::movement_health`] after an active movement
+    /// failure. Defaults to the single-strike `1/3`; changed through
+    /// [`Host::set_movement_health_policy`].
+    movement_health_policy: MovementHealthPolicy,
+    /// Bounded per-revision cumulative movement health behind `patch-state.toml`, keyed by verified
+    /// digest and kept oldest-first. A commit seeds [`Self::movement_health`]'s total and
+    /// high-water mark from the entry; steady-state evaluations update it. It grants nothing: a
+    /// digest only seeds counters for a later verified commit, never selects code.
+    persisted_movement_health: VecDeque<PersistedRevisionHealth>,
     /// Which hot-pluggable gameplay seams are enabled. Pose is always enabled; the movement
     /// staging path consults this before it opens an artifact.
     seams: ModularGameplayRegistry,
@@ -1550,6 +1699,9 @@ impl Host {
             movement_proposal_ready: false,
             movement_canary_attempted: false,
             movement_quarantined_digests: VecDeque::new(),
+            movement_health: MovementHealth::default(),
+            movement_health_policy: MovementHealthPolicy::default(),
+            persisted_movement_health: VecDeque::new(),
             seams: ModularGameplayRegistry::new(),
         }
     }
@@ -1664,14 +1816,65 @@ impl Host {
         self.state_dirty = true;
     }
 
+    /// Reset the live movement health record for a newly committed digest and seed its cumulative
+    /// values from the bounded movement store.
+    ///
+    /// The consecutive streak, last sample and last refusal always start at 0/`None` for a new
+    /// activation; only `total_frame_failures` and `max_eval_micros` carry across reactivations and
+    /// process runs. An unknown digest simply starts clean.
+    fn seed_persisted_movement_health(&mut self, digest: &str) {
+        self.movement_health.reset();
+        if let Some(stored) = self
+            .persisted_movement_health
+            .iter()
+            .find(|entry| entry.digest == digest)
+        {
+            self.movement_health.total_frame_failures = stored.total_frame_failures;
+            self.movement_health.max_eval_micros = stored.max_eval_micros;
+        }
+    }
+
+    /// Record the active movement processor's current cumulative failures and high-water
+    /// evaluation time. Called only when one of those persisted fields changed; the digest-keyed
+    /// entry is moved to the newest end and the oldest is evicted at [`MAX_PERSISTED_REVISIONS`].
+    /// The revision label is bounded exactly as for the pose store, and the high-water mark is
+    /// capped at `i64::MAX` so it remains a valid TOML integer.
+    fn sync_persisted_movement_health(&mut self, digest: &str, revision: &str) {
+        if let Some(index) = self
+            .persisted_movement_health
+            .iter()
+            .position(|entry| entry.digest == digest)
+        {
+            self.persisted_movement_health.remove(index);
+        }
+        if self.persisted_movement_health.len() == MAX_PERSISTED_REVISIONS {
+            self.persisted_movement_health.pop_front();
+        }
+        self.persisted_movement_health
+            .push_back(PersistedRevisionHealth {
+                digest: digest.to_owned(),
+                revision: accepted_revision_label(revision)
+                    .unwrap_or("unknown")
+                    .to_owned(),
+                total_frame_failures: self.movement_health.total_frame_failures,
+                max_eval_micros: self.movement_health.max_eval_micros.min(i64::MAX as u64),
+            });
+        self.state_dirty = true;
+    }
+
     /// The bounded document written by [`Self::persist_state`].
     ///
-    /// Empty health or stamps sections are omitted instead of serialized as empty tables; the
-    /// policy is always written so a reload keeps the caller's thresholds rather than silently
-    /// reverting to the default.
+    /// Empty health, movement-health or stamps sections are omitted instead of serialized as
+    /// empty tables; the policy is always written so a reload keeps the caller's thresholds rather
+    /// than silently reverting to the default.
     fn state_document(&self) -> PatchStateFile {
         let revisions: Vec<PersistedRevisionHealth> =
             self.persisted_health.iter().cloned().collect();
+        let movement_revisions: Vec<PersistedRevisionHealth> = self
+            .persisted_movement_health
+            .iter()
+            .cloned()
+            .collect();
         let pose = self
             .pose_failure_stamp
             .as_ref()
@@ -1692,6 +1895,10 @@ impl Host {
                 max_total_frame_failures: self.health_policy.max_total_frame_failures,
             }),
             health: (!revisions.is_empty()).then_some(PersistedHealth { revisions }),
+            movement_health: (!movement_revisions.is_empty())
+                .then_some(PersistedHealth {
+                    revisions: movement_revisions,
+                }),
             stamps,
         }
     }
@@ -1792,23 +1999,28 @@ impl Host {
         written
     }
 
-    /// Replace the policy, persisted per-revision health and both artifact stamps from
-    /// `<root>/patch-state.toml`.
+    /// Replace the policy, persisted per-revision health, both artifact stamps and the movement
+    /// per-revision store from `<root>/patch-state.toml`.
     ///
     /// A missing file is `Ok(0)`. The document is read with a [`MAX_PATCH_STATE_BYTES`] cap and
     /// parsed in full before any host state changes, so an oversized, unreadable, malformed,
-    /// unknown-field or unsupported-schema file returns `Err` with the policy, store, stamps and
+    /// unknown-field or unsupported-schema file returns `Err` with the policy, stores, stamps and
     /// live health untouched. Once the document parses, each entry is validated independently:
     /// an invalid digest, revision label, library basename or oversized artifact length skips that
-    /// entry (and clears that seam's stamp) without failing the rest of the document. The return
-    /// value counts the per-revision entries actually applied, not skipped ones.
+    /// entry (and clears that seam's stamp) without failing the rest of the document. A movement
+    /// entry is validated by the same helpers and skipped without affecting the pose store. The
+    /// return value counts the per-revision entries actually applied across both stores, not
+    /// skipped ones.
     ///
-    /// On success `persisted_health` replaces (not merges with) the in-memory store,
-    /// `health_policy` replaces the current policy, both `*_failure_stamp` slots replace their
-    /// current values and the stored latched manifest text replaces `observed`/`movement_observed`,
-    /// and `state_dirty` is cleared because memory and disk now agree. Live health
-    /// counters are not touched: the next activation of a stored digest seeds its cumulative total
-    /// and high-water mark through [`Self::seed_persisted_health`].
+    /// On success `persisted_health` and `persisted_movement_health` replace (not merge with) their
+    /// in-memory stores, `health_policy` replaces the current pose policy, both
+    /// `*_failure_stamp` slots replace their current values and the stored latched manifest text
+    /// replaces `observed`/`movement_observed`, and `state_dirty` is cleared because memory and
+    /// disk now agree. Live health counters are not touched: the next activation of a stored pose
+    /// digest seeds its cumulative total and high-water mark through
+    /// [`Self::seed_persisted_health`], and the next movement commit does the same through
+    /// [`Self::seed_persisted_movement_health`]. The movement demotion policy is a live host
+    /// override and is not serialized in this slice.
     ///
     /// Loading is advisory state hygiene, not authorization. A persisted digest only seeds
     /// counters for a later verified activation of that same content identity; it never selects,
@@ -1846,6 +2058,10 @@ impl Host {
             .map_or_else(VecDeque::<PersistedRevisionHealth>::new, |health| {
                 accepted_persisted_revisions(&health.revisions)
             });
+        let movement_revisions = file.movement_health.map_or_else(
+            VecDeque::<PersistedRevisionHealth>::new,
+            |health| accepted_persisted_revisions(&health.revisions),
+        );
         let (pose_stamp, pose_latch, movement_stamp, movement_latch) = match file.stamps {
             Some(stamps) => {
                 let (pose_stamp, pose_latch) = stamps
@@ -1869,9 +2085,10 @@ impl Host {
             }
             None => (None, None, None, None),
         };
-        let applied = revisions.len();
+        let applied = revisions.len() + movement_revisions.len();
         self.health_policy = policy;
         self.persisted_health = revisions;
+        self.persisted_movement_health = movement_revisions;
         self.pose_failure_stamp = pose_stamp;
         self.observed = pose_latch;
         self.movement_failure_stamp = movement_stamp;
@@ -1880,7 +2097,7 @@ impl Host {
         Ok(applied)
     }
 
-    /// Write the bounded policy, per-revision health and artifact stamps to
+    /// Write the bounded policy, per-revision pose/movement health and artifact stamps to
     /// `<root>/patch-state.toml`, returning `Ok(true)` when the file was replaced.
     ///
     /// When `state_dirty` is `false` this is `Ok(false)` and the file is not rewritten: a healthy
@@ -2894,9 +3111,9 @@ impl Host {
             let already_refused = self.movement_observed.as_deref() == Some(text.as_str());
             self.movement_observed = Some(text);
             self.set_movement_failure_stamp(None);
-            self.movement_pending = None;
-            self.movement_active = None;
-            self.movement_proposal_ready = false;
+            // Drop whatever slot is held through the same path as a caller handback so the live
+            // movement health record is reset even if this defensive branch is reached directly.
+            self.unload_movement_processor();
             return if already_refused {
                 Ok(false)
             } else {
@@ -3071,6 +3288,52 @@ impl Host {
             .map(|module| module.digest.as_str())
     }
 
+    /// Read-only health of the active movement processor.
+    ///
+    /// `revision`/`digest` name the processor active at snapshot time, so both are `None` after a
+    /// demotion with no retained predecessor or after an unload; a demotion keeps the last
+    /// counters visible, while an unload/seam disable resets them. The counters/timings describe
+    /// the active steady-state [`Self::movement_proposal`] calls only: a staged candidate's canary
+    /// call is not timed or counted. `last_refusal` carries the most recent module-produced
+    /// refusal, including one that was tolerated below a [`MovementHealthPolicy`] threshold, and is
+    /// cleared by a successful active proposal, a commit or an unload. `quarantined_digests` is the
+    /// current movement quarantine length. This returns the live activation counters; the
+    /// persisted per-revision store is written separately by [`Self::persist_state`].
+    pub fn movement_health_snapshot(&self) -> MovementHealthSnapshot {
+        MovementHealthSnapshot {
+            revision: self
+                .movement_active
+                .as_ref()
+                .map(|module| module.revision.clone()),
+            digest: self
+                .movement_active
+                .as_ref()
+                .map(|module| module.digest.clone()),
+            consecutive_frame_failures: self.movement_health.consecutive_frame_failures,
+            total_frame_failures: self.movement_health.total_frame_failures,
+            last_eval_micros: self.movement_health.last_eval_micros,
+            max_eval_micros: self.movement_health.max_eval_micros,
+            quarantined_digests: self.movement_quarantined_digests.len(),
+            last_refusal: self.movement_health.last_refusal,
+        }
+    }
+
+    /// Replace the active-movement demotion thresholds. Affects only failures recorded after this
+    /// call; existing counters are kept, so relaxing the policy lets a processor that already
+    /// failed remain active until the next failure. The movement policy itself is a live override
+    /// and is not serialized in this slice, so a change does not dirty `patch-state.toml`; a later
+    /// active evaluation/failure persists the counters under the new policy.
+    pub fn set_movement_health_policy(&mut self, policy: MovementHealthPolicy) {
+        if self.movement_health_policy != policy {
+            self.movement_health_policy = policy;
+        }
+    }
+
+    /// The demotion thresholds currently in force for active movement-processor failures.
+    pub fn movement_health_policy(&self) -> MovementHealthPolicy {
+        self.movement_health_policy
+    }
+
     pub fn take_movement_refusal(&mut self) -> Option<MovementRefusal> {
         self.movement_refusal.take()
     }
@@ -3091,11 +3354,15 @@ impl Host {
     /// Nothing is written to the caller's proposal when a proposal is refused. A `FrameInput`
     /// refusal hands prediction back for this frame but leaves `movement_pending`/`movement_active`
     /// untouched, so the same processor can serve the next valid frame; `NoModule` is likewise
-    /// non-destructive. A module-produced `Status` or output-validation failure quarantines the
-    /// selected module's verified digest and drops the failing candidate: a staged candidate clears
-    /// `movement_pending` and retains a healthy active processor unless it has the same digest,
-    /// while an active failure clears both slots (this seam keeps no retained predecessor).
-    /// `SeamDisabled` evicts both. A valid proposal or commit never quarantines.
+    /// non-destructive. A module-produced `Status` or output-validation failure is counted against
+    /// the active processor's [`MovementHealth`]; below both enabled [`MovementHealthPolicy`]
+    /// thresholds the active processor is retained, not quarantined, and the call returns
+    /// [`MovementRefusal::Tolerated`] with the precise refusal in the health snapshot. At either
+    /// threshold it quarantines the verified digest and drops the failing candidate. A staged
+    /// candidate keeps the existing single-strike behavior: it clears `movement_pending` and
+    /// retains a healthy active processor unless it has the same digest, and never changes active
+    /// health. An active threshold failure clears both slots (this seam keeps no retained
+    /// predecessor). `SeamDisabled` evicts both. A valid proposal or commit never quarantines.
     pub fn movement_proposal(
         &mut self,
         frame: &MovementFrame,
@@ -3168,7 +3435,15 @@ impl Host {
         } else {
             false
         };
+        // Only the active processor's steady-state call is timed. A staged candidate's first call
+        // is its canary/activation probe, so it must not perturb the active health record.
+        let max_before = self.movement_health.max_eval_micros;
+        let total_before = self.movement_health.total_frame_failures;
+        let started = (!staged).then(std::time::Instant::now);
         let status = unsafe { process(frame, &mut output) };
+        if let Some(started) = started {
+            self.movement_health.record_eval(started.elapsed());
+        }
         // Clear the marker this call wrote immediately after `process` returns, on every regular
         // path (success, non-zero status, or output validation below). Only a process fault, a
         // host panic or a failed clear can leave a new marker behind.
@@ -3178,19 +3453,44 @@ impl Host {
             }
         }
         if status != 0 {
-            self.quarantine_movement_digest(&digest);
-            return Err(self.reject_movement_candidate(
-                staged,
+            let refusal = MovementRefusal::Status(status);
+            let detail = format!("movement module {revision} rejected the frame (status {status})");
+            if staged {
+                // A staged candidate keeps the original single-strike quarantine/drop behavior;
+                // the active health record is untouched.
+                self.quarantine_movement_digest(&digest);
+                return Err(self.reject_movement_candidate(staged, &digest, refusal, detail));
+            }
+            return Err(self.record_active_movement_failure(
+                &revision,
                 &digest,
-                MovementRefusal::Status(status),
-                format!("movement module {revision} rejected the frame (status {status})"),
+                refusal,
+                detail,
+                max_before,
+                total_before,
             ));
         }
         match validate_movement_output(frame, &output, bounds) {
             Ok(()) => {
-                // Only a staged candidate can be promoted later; an active processor already owns
-                // the slot, so an active proposal never arms the commit gate.
-                self.movement_proposal_ready = staged;
+                if staged {
+                    // Only a staged candidate can be promoted later; an active processor already
+                    // owns the slot, so an active proposal never arms the commit gate.
+                    self.movement_proposal_ready = true;
+                } else {
+                    self.movement_proposal_ready = false;
+                    self.movement_health.record_success();
+                    // A successful active proposal is the end of the previous tolerated
+                    // failure: clear the shared refusal/detail channel as well as the snapshot's
+                    // `last_refusal`, so a later `take_movement_refusal` cannot report stale
+                    // `Tolerated` state after recovery.
+                    self.movement_refusal = None;
+                    self.movement_rejection = None;
+                    // A success does not change the cumulative total; it only persists when the
+                    // timed evaluation raised the per-revision high-water mark.
+                    if self.movement_health.max_eval_micros != max_before {
+                        self.sync_persisted_movement_health(&digest, &revision);
+                    }
+                }
                 Ok((
                     movement_proposal_of(&output),
                     if staged {
@@ -3201,12 +3501,19 @@ impl Host {
                 ))
             }
             Err(refusal) => {
-                self.quarantine_movement_digest(&digest);
-                Err(self.reject_movement_candidate(
-                    staged,
+                let detail = format!("movement module {revision} output refused ({refusal:?})");
+                if staged {
+                    // Staged candidates remain single-strike regardless of the active policy.
+                    self.quarantine_movement_digest(&digest);
+                    return Err(self.reject_movement_candidate(staged, &digest, refusal, detail));
+                }
+                Err(self.record_active_movement_failure(
+                    &revision,
                     &digest,
                     refusal,
-                    format!("movement module {revision} output refused ({refusal:?})"),
+                    detail,
+                    max_before,
+                    total_before,
                 ))
             }
         }
@@ -3219,7 +3526,9 @@ impl Host {
     /// candidate. Staging alone never arms this gate. A `FrameInput` failure retains the candidate
     /// but stays unarmed, so it cannot be promoted until a later valid staged proposal; `NoModule`
     /// leaves the empty selection untouched, and a `Status` or output-validation failure drops the
-    /// failing candidate instead.
+    /// failing candidate instead. A successful commit restarts the live movement health record and
+    /// seeds its cumulative total/high-water mark from the persisted digest entry, so the
+    /// consecutive streak, last sample and last refusal start clean.
     pub fn commit_movement_processor(&mut self) -> bool {
         if !self.is_seam_enabled(ModuleKind::Movement) {
             self.unload_movement_processor();
@@ -3232,7 +3541,9 @@ impl Host {
             self.movement_proposal_ready = false;
             return false;
         };
+        let digest = candidate.digest.clone();
         self.movement_active = Some(candidate);
+        self.seed_persisted_movement_health(&digest);
         self.movement_proposal_ready = false;
         self.movement_canary_attempted = false;
         self.movement_refusal = None;
@@ -3250,12 +3561,18 @@ impl Host {
 
     /// Drop the staged or active movement processor and hand prediction back to the baseline
     /// controller. Returns whether anything was held; a second call is a no-op, so the handback
-    /// happens exactly once.
+    /// happens exactly once. The live movement health record is reset, so the snapshot reports no
+    /// identity and zeroed counters; a later commit seeds a fresh record from `patch-state.toml`.
     pub fn unload_movement_processor(&mut self) -> bool {
         let staged = self.movement_pending.take().is_some();
         let active = self.movement_active.take().is_some();
         self.movement_proposal_ready = false;
         self.movement_canary_attempted = false;
+        self.movement_health.reset();
+        // A handback ends any pending tolerated refusal/detail; the slot is empty and a later
+        // `take_movement_refusal` must not report stale state from the removed processor.
+        self.movement_refusal = None;
+        self.movement_rejection = None;
         staged | active
     }
 
@@ -3284,12 +3601,53 @@ impl Host {
         refusal
     }
 
+    /// Record one active-processor failure, persist the updated cumulative total, and either
+    /// tolerate it or demote the processor.
+    ///
+    /// Called only for an active (`!staged`) selection. A below-threshold failure keeps
+    /// `movement_active`, leaves the digest out of quarantine, and returns
+    /// [`MovementRefusal::Tolerated`] while the precise refusal stays in the health snapshot and
+    /// the original detail in `take_movement_rejection`. At either enabled threshold it quarantines
+    /// the verified digest and clears the slot through [`Self::reject_movement_candidate`],
+    /// returning the original refusal.
+    fn record_active_movement_failure(
+        &mut self,
+        revision: &str,
+        digest: &str,
+        refusal: MovementRefusal,
+        detail: String,
+        max_before: u64,
+        total_before: u32,
+    ) -> MovementRefusal {
+        self.movement_health.record_failure(refusal);
+        // Persist the cumulative total before a possible demotion. A saturated total with an
+        // unchanged high-water mark has no persisted change.
+        if self.movement_health.total_frame_failures != total_before
+            || self.movement_health.max_eval_micros != max_before
+        {
+            self.sync_persisted_movement_health(digest, revision);
+        }
+        if !self.movement_health.threshold_reached(self.movement_health_policy) {
+            // Keep the active processor for a later frame and leave the digest out of quarantine.
+            // The caller renders baseline movement for this frame; `last_refusal` still records the
+            // precise module refusal and the rejection detail stays the original message.
+            self.movement_proposal_ready = false;
+            self.movement_refusal = Some(MovementRefusal::Tolerated);
+            self.movement_rejection = Some(detail);
+            return MovementRefusal::Tolerated;
+        }
+        self.quarantine_movement_digest(digest);
+        self.reject_movement_candidate(false, digest, refusal, detail)
+    }
+
     /// Record a module-produced movement failure after its digest was quarantined, and dispose of
     /// the failing candidate. A staged candidate is dropped while a healthy active processor is
     /// retained, unless it carries the same digest: identical content would fail identically. An
     /// active processor failure clears both slots because this seam keeps no retained predecessor.
     /// Caller [`MovementRefusal::FrameInput`] errors never reach this helper; they leave both slots
-    /// untouched so the same processor can serve the next valid frame.
+    /// untouched so the same processor can serve the next valid frame. The active health counters
+    /// are not reset here: a demotion keeps them visible beside a `None` snapshot identity, while a
+    /// staged failure leaves the active record untouched.
     fn reject_movement_candidate(
         &mut self,
         staged: bool,
@@ -5923,6 +6281,29 @@ mod tests {
         host
     }
 
+    fn active_movement_host(tag: &str, process: ProcessMovement) -> Host {
+        let mut host = Host::new(movement_test_root(tag));
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_active = Some(MovementLoaded::probe("rev-active", process));
+        host
+    }
+
+    /// Fail, succeed, fail sequence for the movement total-threshold case.
+    static MOVEMENT_HEALTH_STEP: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn movement_health_sequence(
+        frame: *const MovementFrame,
+        out: *mut MovementOutput,
+    ) -> i32 {
+        let step = MOVEMENT_HEALTH_STEP.fetch_add(1, Ordering::SeqCst);
+        let status = unsafe { propose_step(frame, out) };
+        if matches!(step, 0 | 2) {
+            7
+        } else {
+            status
+        }
+    }
+
     #[test]
     fn movement_candidate_is_staged_but_not_active_until_committed() {
         let mut host = probe_host(propose_step);
@@ -6810,6 +7191,711 @@ mod tests {
             host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
             Err(MovementRefusal::NoModule)
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Movement health, policy and persistence. These cases use in-process probes through
+    // `movement_proposal`; no native movement DLL is built or loaded.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn movement_active_success_records_timing_and_resets_consecutive() {
+        let mut host = active_movement_host("health-success", propose_step);
+        let probe_digest = "0".repeat(40);
+        host.movement_health.record_failure(MovementRefusal::Status(7));
+        host.movement_health.record_failure(MovementRefusal::Status(7));
+        // A 60 s high-water mark proves the success path re-times the call. The in-process probe
+        // itself can complete inside the platform timer's resolution (inspection-only edge), so a
+        // non-zero `last_eval_micros` is deliberately not asserted.
+        host.movement_health
+            .record_eval(std::time::Duration::from_secs(60));
+
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the active processor proposes");
+        assert_eq!(source, MovementProposalSource::Active);
+        let snapshot = host.movement_health_snapshot();
+        assert_eq!(snapshot.revision.as_deref(), Some("rev-active"));
+        assert_eq!(snapshot.digest.as_deref(), Some(probe_digest.as_str()));
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(snapshot.total_frame_failures, 2);
+        assert!(
+            snapshot.last_eval_micros < 60_000_000,
+            "the successful active call replaced the seeded last sample"
+        );
+        assert!(
+            snapshot.max_eval_micros >= 60_000_000,
+            "the seeded high-water mark survives a faster success"
+        );
+        assert_eq!(snapshot.last_refusal, None);
+        assert_eq!(snapshot.quarantined_digests, 0);
+        assert!(
+            host.persisted_movement_health.is_empty(),
+            "a success with no new high-water mark does not sync the store"
+        );
+    }
+
+    #[test]
+    fn movement_active_status_failure_below_threshold_is_tolerated() {
+        let mut host = active_movement_host("health-tolerated-status", reject_frame);
+        let probe_digest = "0".repeat(40);
+        host.set_movement_health_policy(MovementHealthPolicy {
+            max_consecutive_frame_failures: 2,
+            max_total_frame_failures: 0,
+        });
+
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Tolerated)
+        );
+        assert!(
+            host.movement_processor_active(),
+            "a below-threshold failure keeps the processor"
+        );
+        assert!(
+            !host.is_movement_quarantined(&probe_digest),
+            "a tolerated failure must not quarantine the digest"
+        );
+        let snapshot = host.movement_health_snapshot();
+        assert_eq!(snapshot.revision.as_deref(), Some("rev-active"));
+        assert_eq!(snapshot.digest.as_deref(), Some(probe_digest.as_str()));
+        assert_eq!(snapshot.consecutive_frame_failures, 1);
+        assert_eq!(snapshot.total_frame_failures, 1);
+        assert_eq!(snapshot.last_refusal, Some(MovementRefusal::Status(7)));
+        assert_eq!(snapshot.quarantined_digests, 0);
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::Tolerated)
+        );
+        let detail = host
+            .take_movement_rejection()
+            .expect("the original failure detail is kept");
+        assert!(detail.contains("status 7"), "{detail}");
+
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Status(7)),
+            "the second consecutive failure reaches the enabled threshold"
+        );
+        assert!(host.movement_active.is_none(), "the threshold demotes");
+        assert!(host.is_movement_quarantined(&probe_digest));
+        let snapshot = host.movement_health_snapshot();
+        assert_eq!(snapshot.revision, None);
+        assert_eq!(snapshot.digest, None);
+        assert_eq!(snapshot.consecutive_frame_failures, 2);
+        assert_eq!(snapshot.total_frame_failures, 2);
+        assert_eq!(snapshot.last_refusal, Some(MovementRefusal::Status(7)));
+        assert_eq!(snapshot.quarantined_digests, 1);
+        assert_eq!(
+            host.take_movement_refusal(),
+            Some(MovementRefusal::Status(7))
+        );
+    }
+
+    #[test]
+    fn movement_active_output_failure_below_threshold_is_tolerated() {
+        let mut host = active_movement_host("health-tolerated-output", propose_nan);
+        let probe_digest = "0".repeat(40);
+        host.set_movement_health_policy(MovementHealthPolicy {
+            max_consecutive_frame_failures: 2,
+            max_total_frame_failures: 0,
+        });
+
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Tolerated)
+        );
+        assert!(host.movement_processor_active());
+        assert!(!host.is_movement_quarantined(&probe_digest));
+        let snapshot = host.movement_health_snapshot();
+        assert_eq!(snapshot.consecutive_frame_failures, 1);
+        assert_eq!(snapshot.total_frame_failures, 1);
+        assert_eq!(snapshot.last_refusal, Some(MovementRefusal::NonFinite));
+        let detail = host
+            .take_movement_rejection()
+            .expect("the validation detail is kept");
+        assert!(detail.contains("NonFinite"), "{detail}");
+    }
+
+    #[test]
+    fn movement_active_success_and_unload_clear_tolerated_refusal() {
+        let mut host = active_movement_host("health-stale-refusal", reject_frame);
+        host.set_movement_health_policy(MovementHealthPolicy {
+            max_consecutive_frame_failures: 2,
+            max_total_frame_failures: 0,
+        });
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Tolerated)
+        );
+        host.movement_active = Some(MovementLoaded::probe("rev-active", propose_step));
+        assert!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+                .is_ok(),
+            "the active processor recovers"
+        );
+        assert_eq!(host.take_movement_refusal(), None);
+        assert_eq!(host.take_movement_rejection(), None);
+        assert_eq!(host.movement_health_snapshot().last_refusal, None);
+
+        host.movement_active = Some(MovementLoaded::probe("rev-active", reject_frame));
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Tolerated)
+        );
+        assert!(host.unload_movement_processor());
+        assert_eq!(host.take_movement_refusal(), None);
+        assert_eq!(host.take_movement_rejection(), None);
+        assert_eq!(
+            host.movement_health_snapshot(),
+            MovementHealthSnapshot::default()
+        );
+    }
+
+    #[test]
+    fn movement_disabled_stage_resets_the_active_health_record() {
+        let root = movement_test_root("health-disabled-stage");
+        let digest = "0".repeat(40);
+        std::fs::write(
+            root.join(MOVEMENT_MANIFEST),
+            movement_publication_text(
+                "rev-m",
+                &format!("movement-{digest}.dll"),
+                &digest,
+            ),
+        )
+        .expect("write movement manifest");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.movement_active = Some(MovementLoaded::probe("rev-active", propose_step));
+        assert!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+                .is_ok()
+        );
+        host.movement_health.total_frame_failures = 2;
+        host.movement_health.consecutive_frame_failures = 1;
+        host.seams.movement_enabled = false;
+        assert_eq!(
+            host.stage_movement_processor(),
+            Err(MovementRefusal::SeamDisabled)
+        );
+        assert!(host.movement_active.is_none());
+        assert_eq!(
+            host.movement_health_snapshot(),
+            MovementHealthSnapshot::default(),
+            "the defensive disabled-stage branch resets through unload"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_active_output_failure_at_threshold_quarantines() {
+        let mut host = active_movement_host("health-output-threshold", propose_nan);
+        let digest = "0".repeat(40);
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::NonFinite),
+            "the default single-strike policy demotes on the first active failure"
+        );
+        assert!(host.movement_active.is_none());
+        assert!(host.is_movement_quarantined(&digest));
+    }
+
+    #[test]
+    fn movement_zero_policy_tolerates_active_failure() {
+        let mut host = active_movement_host("health-zero-policy", reject_frame);
+        let digest = "0".repeat(40);
+        host.set_movement_health_policy(MovementHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 0,
+        });
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Tolerated)
+        );
+        assert!(host.movement_processor_active());
+        assert!(!host.is_movement_quarantined(&digest));
+        assert_eq!(
+            host.movement_health_snapshot().last_refusal,
+            Some(MovementRefusal::Status(7))
+        );
+    }
+
+    #[test]
+    fn movement_total_threshold_demotes_after_a_success() {
+        MOVEMENT_HEALTH_STEP.store(0, Ordering::SeqCst);
+        let mut host = active_movement_host("health-total", movement_health_sequence);
+        let probe_digest = "0".repeat(40);
+        host.set_movement_health_policy(MovementHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 2,
+        });
+
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Tolerated)
+        );
+        assert!(host.movement_processor_active());
+        assert!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+                .is_ok(),
+            "the active processor succeeds between failures"
+        );
+        let snapshot = host.movement_health_snapshot();
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(snapshot.total_frame_failures, 1);
+
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Status(7))
+        );
+        assert!(
+            host.movement_active.is_none(),
+            "the cumulative threshold demotes even after a success reset the streak"
+        );
+        assert!(host.is_movement_quarantined(&probe_digest));
+        let snapshot = host.movement_health_snapshot();
+        assert_eq!(snapshot.consecutive_frame_failures, 1);
+        assert_eq!(snapshot.total_frame_failures, 2);
+        assert_eq!(snapshot.revision, None);
+        assert_eq!(snapshot.last_refusal, Some(MovementRefusal::Status(7)));
+    }
+
+    #[test]
+    fn staged_movement_failure_keeps_active_health_and_single_strike() {
+        let root = movement_test_root("health-staged");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        // A no-limit policy proves a staged canary failure still quarantines and drops.
+        host.set_movement_health_policy(MovementHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 0,
+        });
+        let active_digest = "a".repeat(40);
+        let failed_digest = "b".repeat(40);
+        host.movement_active = Some(MovementLoaded::probe_with_digest(
+            "rev-active",
+            &active_digest,
+            propose_step,
+        ));
+        host.movement_health.record_failure(MovementRefusal::Status(3));
+        host.movement_health
+            .record_eval(std::time::Duration::from_micros(77));
+        host.movement_health.record_failure(MovementRefusal::Status(3));
+        let before = host.movement_health_snapshot();
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-staged",
+            &failed_digest,
+            reject_frame,
+        ));
+
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Status(7))
+        );
+        assert!(host.is_movement_quarantined(&failed_digest));
+        assert!(
+            host.movement_pending.is_none(),
+            "the staged candidate is dropped"
+        );
+        assert!(
+            host.movement_active.is_some(),
+            "the different-digest active is retained"
+        );
+        let after = host.movement_health_snapshot();
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.digest, before.digest);
+        assert_eq!(
+            after.consecutive_frame_failures,
+            before.consecutive_frame_failures
+        );
+        assert_eq!(after.total_frame_failures, before.total_frame_failures);
+        assert_eq!(after.last_eval_micros, before.last_eval_micros);
+        assert_eq!(after.max_eval_micros, before.max_eval_micros);
+        assert_eq!(after.last_refusal, before.last_refusal);
+        assert_eq!(after.quarantined_digests, before.quarantined_digests + 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_health_lifecycle_ignores_caller_errors_and_resets_on_unload() {
+        let mut host = active_movement_host("health-lifecycle", propose_step);
+        host.movement_health.record_failure(MovementRefusal::Status(7));
+        host.movement_health
+            .record_eval(std::time::Duration::from_micros(5));
+        let before = host.movement_health_snapshot();
+
+        let mut frame = movement_frame();
+        frame.dt_seconds = 0.0;
+        assert_eq!(
+            host.movement_proposal(&frame, &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::FrameInput)
+        );
+        assert_eq!(host.movement_health_snapshot(), before);
+
+        host.movement_pending = Some(MovementLoaded::probe("rev-staged", propose_step));
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged candidate proposes");
+        assert!(host.movement_proposal_ready);
+        assert!(host.withdraw_movement_proposal());
+        assert_eq!(host.movement_health_snapshot(), before);
+
+        assert!(host.unload_movement_processor());
+        assert_eq!(
+            host.movement_health_snapshot(),
+            MovementHealthSnapshot::default(),
+            "unload resets the live record"
+        );
+
+        host.movement_active = Some(MovementLoaded::probe("rev-active", propose_step));
+        host.movement_health.record_failure(MovementRefusal::Status(9));
+        assert_eq!(
+            host.movement_health_snapshot().consecutive_frame_failures,
+            1
+        );
+        host.set_seam_enabled(ModuleKind::Movement, false);
+        assert_eq!(
+            host.movement_health_snapshot(),
+            MovementHealthSnapshot::default(),
+            "seam disable resets the live record"
+        );
+
+        let mut empty = Host::new(movement_test_root("health-nomodule"));
+        empty.set_seam_enabled(ModuleKind::Movement, true);
+        assert_eq!(
+            empty.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::NoModule)
+        );
+        assert_eq!(
+            empty.movement_health_snapshot(),
+            MovementHealthSnapshot::default()
+        );
+    }
+
+    #[test]
+    fn movement_commit_seeds_persisted_health_and_later_frames_update_it() {
+        let root = movement_test_root("health-commit-seed");
+        let mut host = Host::new(root.clone());
+        host.set_seam_enabled(ModuleKind::Movement, true);
+        host.persisted_movement_health
+            .push_back(PersistedRevisionHealth {
+                digest: ACTIVE_DIGEST.to_owned(),
+                revision: "rev-seeded".to_owned(),
+                total_frame_failures: 5,
+                max_eval_micros: 123,
+            });
+        host.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-seeded",
+            ACTIVE_DIGEST,
+            propose_step,
+        ));
+        let (_, source) = host
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the staged candidate proposes");
+        assert_eq!(source, MovementProposalSource::Staged);
+        assert!(host.commit_movement_processor());
+        let snapshot = host.movement_health_snapshot();
+        assert_eq!(snapshot.revision.as_deref(), Some("rev-seeded"));
+        assert_eq!(snapshot.digest.as_deref(), Some(ACTIVE_DIGEST));
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(snapshot.total_frame_failures, 5);
+        assert_eq!(
+            snapshot.last_eval_micros, 0,
+            "the staged activation probe is not timed"
+        );
+        assert_eq!(snapshot.max_eval_micros, 123);
+        assert_eq!(snapshot.last_refusal, None);
+
+        host.set_movement_health_policy(MovementHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 10,
+        });
+        host.movement_active = Some(MovementLoaded::probe_with_digest(
+            "rev-seeded",
+            ACTIVE_DIGEST,
+            reject_frame,
+        ));
+        assert_eq!(
+            host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Tolerated)
+        );
+        let failed = host.movement_health_snapshot();
+        assert_eq!(failed.consecutive_frame_failures, 1);
+        assert_eq!(failed.total_frame_failures, 6);
+        assert_eq!(failed.last_refusal, Some(MovementRefusal::Status(7)));
+        assert_eq!(host.persisted_movement_health.len(), 1);
+        assert_eq!(
+            host.persisted_movement_health[0].total_frame_failures, 6,
+            "a failure syncs the cumulative total before any demotion"
+        );
+
+        host.movement_active = Some(MovementLoaded::probe_with_digest(
+            "rev-seeded",
+            ACTIVE_DIGEST,
+            propose_step,
+        ));
+        host.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the same digest proposes");
+        let recovered = host.movement_health_snapshot();
+        assert_eq!(recovered.consecutive_frame_failures, 0);
+        assert_eq!(recovered.total_frame_failures, 6);
+        assert_eq!(recovered.last_refusal, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_readmission_after_quarantine_seeds_the_stored_total() {
+        let root = movement_test_root("health-readmission");
+        let mut first = Host::new(root.clone());
+        first.set_seam_enabled(ModuleKind::Movement, true);
+        first.set_movement_health_policy(MovementHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 2,
+        });
+        first.movement_active = Some(MovementLoaded::probe_with_digest(
+            "rev-cumulative",
+            ACTIVE_DIGEST,
+            reject_frame,
+        ));
+        assert_eq!(
+            first.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Tolerated)
+        );
+        assert_eq!(first.movement_health_snapshot().total_frame_failures, 1);
+        assert_eq!(
+            first.movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS),
+            Err(MovementRefusal::Status(7))
+        );
+        assert!(first.is_movement_quarantined(ACTIVE_DIGEST));
+        assert!(first.persist_state().expect("persist movement health"));
+
+        let mut second = Host::new(root.clone());
+        assert_eq!(
+            second.load_persistent_state().expect("reload patch state"),
+            1
+        );
+        assert_eq!(second.persisted_movement_health.len(), 1);
+        assert_eq!(
+            second.persisted_movement_health[0].total_frame_failures, 2
+        );
+        second.set_seam_enabled(ModuleKind::Movement, true);
+        // A normal B -> C -> B rewrite stays refused; explicit re-admission (cap eviction or
+        // deleting the quarantine entry) lets the stored total seed the reactivation.
+        second.movement_quarantined_digests.clear();
+        second.movement_pending = Some(MovementLoaded::probe_with_digest(
+            "rev-cumulative",
+            ACTIVE_DIGEST,
+            propose_step,
+        ));
+        second
+            .movement_proposal(&movement_frame(), &MOVEMENT_BOUNDS)
+            .expect("the re-admitted candidate proposes");
+        assert!(second.commit_movement_processor());
+        let snapshot = second.movement_health_snapshot();
+        assert_eq!(snapshot.digest.as_deref(), Some(ACTIVE_DIGEST));
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(
+            snapshot.total_frame_failures, 2,
+            "re-admission starts from the stored cumulative total"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_round_trips_movement_health() {
+        let root = movement_test_root("state-movement-round-trip");
+        let mut host = Host::new(root.clone());
+        let policy = MovementHealthPolicy {
+            max_consecutive_frame_failures: 2,
+            max_total_frame_failures: 7,
+        };
+        host.set_movement_health_policy(policy);
+        assert_eq!(host.movement_health_policy(), policy);
+        assert!(
+            !host.state_dirty,
+            "the movement policy is a live override and is not persisted"
+        );
+        host.movement_health.total_frame_failures = 3;
+        host.movement_health.max_eval_micros = 1234;
+        host.sync_persisted_movement_health(ACTIVE_DIGEST, "rev-movement");
+        assert!(host.persist_state().expect("persist patch state"));
+        let text = std::fs::read_to_string(root.join(PATCH_STATE_FILE))
+            .expect("the state file is readable");
+        assert!(text.contains("[movement_health]"), "{text}");
+        assert!(text.contains(ACTIVE_DIGEST), "{text}");
+        assert!(
+            !text.contains('/') && !text.contains(".."),
+            "no paths are written: {text}"
+        );
+
+        let mut restored = Host::new(root.clone());
+        assert_eq!(
+            restored.load_persistent_state().expect("load patch state"),
+            1
+        );
+        assert!(restored.persisted_health.is_empty());
+        assert_eq!(restored.persisted_movement_health.len(), 1);
+        assert_eq!(
+            restored.persisted_movement_health[0].digest,
+            ACTIVE_DIGEST
+        );
+        assert_eq!(
+            restored.persisted_movement_health[0].revision,
+            "rev-movement"
+        );
+        assert_eq!(
+            restored.persisted_movement_health[0].total_frame_failures,
+            3
+        );
+        assert_eq!(restored.persisted_movement_health[0].max_eval_micros, 1234);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_without_movement_health_loads_an_empty_store() {
+        let root = movement_test_root("state-no-movement");
+        std::fs::write(root.join(PATCH_STATE_FILE), "schema_version = 1\n")
+            .expect("write minimal state");
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_persistent_state()
+                .expect("a schema-1 file without the section loads"),
+            0
+        );
+        assert!(host.persisted_movement_health.is_empty());
+        assert!(host.persisted_health.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_skips_invalid_movement_health_entries_and_dedupes() {
+        let root = movement_test_root("state-movement-invalid");
+        let valid = persistent_digest(0x71);
+        let other = persistent_digest(0x72);
+        let file = PatchStateFile {
+            schema_version: PATCH_STATE_SCHEMA_VERSION,
+            policy: None,
+            health: Some(PersistedHealth {
+                revisions: vec![persisted_revision(ACTIVE_DIGEST, "rev-pose", 1, 1)],
+            }),
+            movement_health: Some(PersistedHealth {
+                revisions: vec![
+                    persisted_revision("not-a-digest", "rev-bad", 9, 9),
+                    persisted_revision(&other, "", 1, 1),
+                    persisted_revision(&valid, "rev-first", 1, 10),
+                    persisted_revision(&valid, "rev-updated", 4, 40),
+                ],
+            }),
+            stamps: None,
+        };
+        std::fs::write(root.join(PATCH_STATE_FILE), patch_state_text(&file))
+            .expect("write state");
+
+        let mut host = Host::new(root.clone());
+        assert_eq!(host.load_persistent_state().expect("load state"), 2);
+        assert_eq!(host.persisted_health.len(), 1);
+        assert_eq!(host.persisted_health[0].digest, ACTIVE_DIGEST);
+        assert_eq!(host.persisted_movement_health.len(), 1);
+        assert_eq!(host.persisted_movement_health[0].digest, valid);
+        assert_eq!(
+            host.persisted_movement_health[0].revision, "rev-updated",
+            "the later duplicate replaces the label and moves to the newest end"
+        );
+        assert_eq!(
+            host.persisted_movement_health[0].total_frame_failures,
+            4,
+            "the later duplicate's counters win"
+        );
+        assert_eq!(host.persisted_movement_health[0].max_eval_micros, 40);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_invalid_pose_health_does_not_discard_movement_health() {
+        let root = movement_test_root("state-pose-invalid-movement-valid");
+        let valid = persistent_digest(0x73);
+        let file = PatchStateFile {
+            schema_version: PATCH_STATE_SCHEMA_VERSION,
+            policy: None,
+            health: Some(PersistedHealth {
+                revisions: vec![persisted_revision("not-a-digest", "rev-bad", 1, 1)],
+            }),
+            movement_health: Some(PersistedHealth {
+                revisions: vec![persisted_revision(&valid, "rev-movement", 2, 20)],
+            }),
+            stamps: None,
+        };
+        std::fs::write(root.join(PATCH_STATE_FILE), patch_state_text(&file))
+            .expect("write state");
+
+        let mut host = Host::new(root.clone());
+        assert_eq!(host.load_persistent_state().expect("load state"), 1);
+        assert!(
+            host.persisted_health.is_empty(),
+            "the invalid pose entry is skipped"
+        );
+        assert_eq!(host.persisted_movement_health.len(), 1);
+        assert_eq!(host.persisted_movement_health[0].digest, valid);
+        assert_eq!(
+            host.persisted_movement_health[0].total_frame_failures,
+            2
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_movement_health_load_respects_the_cap() {
+        let root = movement_test_root("state-movement-cap");
+        let revisions: Vec<PersistedRevisionHealth> = (0..20)
+            .map(|index| {
+                persisted_revision(
+                    &persistent_digest(index),
+                    &format!("rev-{index}"),
+                    index as u32,
+                    index as u64,
+                )
+            })
+            .collect();
+        let file = PatchStateFile {
+            schema_version: PATCH_STATE_SCHEMA_VERSION,
+            policy: None,
+            health: None,
+            movement_health: Some(PersistedHealth { revisions }),
+            stamps: None,
+        };
+        std::fs::write(root.join(PATCH_STATE_FILE), patch_state_text(&file))
+            .expect("write state");
+
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_persistent_state().expect("load state"),
+            MAX_PERSISTED_REVISIONS,
+            "an oversized list keeps only its newest cap-sized window"
+        );
+        assert_eq!(
+            host.persisted_movement_health.len(),
+            MAX_PERSISTED_REVISIONS
+        );
+        assert_eq!(
+            host.persisted_movement_health
+                .front()
+                .map(|entry| entry.digest.as_str()),
+            Some(persistent_digest(4).as_str())
+        );
+        assert_eq!(
+            host.persisted_movement_health
+                .back()
+                .map(|entry| entry.digest.as_str()),
+            Some(persistent_digest(19).as_str())
+        );
+        assert!(
+            !host
+                .persisted_movement_health
+                .iter()
+                .any(|entry| entry.digest == persistent_digest(3)),
+            "the oldest entries were evicted at the cap"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -8966,6 +10052,7 @@ mod tests {
                     persisted_revision(&valid, "rev-updated", 4, 40),
                 ],
             }),
+            movement_health: None,
             stamps: Some(PersistedStamps {
                 pose: Some(PersistedStamp {
                     library: "../escape.dll".to_owned(),
@@ -9059,6 +10146,7 @@ mod tests {
             schema_version: PATCH_STATE_SCHEMA_VERSION,
             policy: None,
             health: Some(PersistedHealth { revisions }),
+            movement_health: None,
             stamps: None,
         };
         std::fs::write(root.join(PATCH_STATE_FILE), patch_state_text(&file))
@@ -9138,6 +10226,7 @@ mod tests {
             health: Some(PersistedHealth {
                 revisions: vec![persisted_revision(CANARY_DIGEST, "rev-canary", 2, 123)],
             }),
+            movement_health: None,
             stamps: None,
         };
         std::fs::write(root.join(PATCH_STATE_FILE), patch_state_text(&file))
@@ -9463,6 +10552,7 @@ mod tests {
             schema_version: PATCH_STATE_SCHEMA_VERSION,
             policy: None,
             health: None,
+            movement_health: None,
             stamps: Some(PersistedStamps {
                 pose: Some(PersistedStamp {
                     library: library.clone(),
@@ -9567,6 +10657,15 @@ mod tests {
         let unchanged = host.health_policy();
         host.set_health_policy(unchanged);
         assert!(!host.state_dirty, "an unchanged policy is not a change");
+
+        host.set_movement_health_policy(MovementHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 9,
+        });
+        assert!(
+            !host.state_dirty,
+            "the movement policy is a live override and does not dirty the state"
+        );
 
         let stamp = ArtifactStamp {
             library: "pose-test.dll".to_owned(),
