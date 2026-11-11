@@ -7721,7 +7721,10 @@ mod tests {
         assert!(host.persist_state().expect("persist patch state"));
         let text = std::fs::read_to_string(root.join(PATCH_STATE_FILE))
             .expect("the state file is readable");
-        assert!(text.contains("[movement_health]"), "{text}");
+        assert!(
+            text.contains("[[movement_health.revisions]]"),
+            "{text}"
+        );
         assert!(text.contains(ACTIVE_DIGEST), "{text}");
         assert!(
             !text.contains('/') && !text.contains(".."),
