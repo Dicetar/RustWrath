@@ -419,13 +419,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let h = honor(lua).unwrap_or_default();
             let target = lua.app_data_ref::<Model>().expect("model app_data").target;
             if target == super::UiTarget::Wrath335 {
-                Ok((i64::from(h.yesterday_hk), i64::from(h.yesterday_honor)))
+                Ok(MultiValue::from_vec(vec![
+                    Value::Integer(i64::from(h.yesterday_hk)),
+                    Value::Integer(i64::from(h.yesterday_honor)),
+                ]))
             } else {
-                Ok((
-                    i64::from(h.yesterday_hk),
-                    i64::from(h.yesterday_dk),
-                    i64::from(h.yesterday_honor),
-                ))
+                Ok(MultiValue::from_vec(vec![
+                    Value::Integer(i64::from(h.yesterday_hk)),
+                    Value::Integer(i64::from(h.yesterday_dk)),
+                    Value::Integer(i64::from(h.yesterday_honor)),
+                ]))
             }
         })?,
     )?;
@@ -468,13 +471,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             };
             let target = lua.app_data_ref::<Model>().expect("model app_data").target;
             if target == super::UiTarget::Wrath335 {
-                Ok((i64::from(h.lifetime_hk), i64::from(highest)))
+                Ok(MultiValue::from_vec(vec![
+                    Value::Integer(i64::from(h.lifetime_hk)),
+                    Value::Integer(i64::from(highest)),
+                ]))
             } else {
-                Ok((
-                    i64::from(h.lifetime_hk),
-                    i64::from(h.lifetime_dk),
-                    i64::from(highest),
-                ))
+                Ok(MultiValue::from_vec(vec![
+                    Value::Integer(i64::from(h.lifetime_hk)),
+                    Value::Integer(i64::from(h.lifetime_dk)),
+                    Value::Integer(i64::from(highest)),
+                ]))
             }
         })?,
     )?;

@@ -606,14 +606,14 @@ mod tests {
         let mut script = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
         script
             .run(
-                r#"
+                r##"
                 local watch = CreateFrame("Frame")
                 watch:RegisterEvent("UPDATE_TICKET")
                 watch:SetScript("OnEvent", function(_, _, ...)
                     TICKET_ARGS = select("#", ...)
                     TICKET_ARG1 = tostring(arg1)
                 end)
-                "#,
+                "##,
             )
             .unwrap();
         script.fire_event("UPDATE_TICKET", update_ticket_args(None));

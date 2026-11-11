@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use mlua::{Lua, Table, Value};
+use mlua::{Lua, ObjectLike, Table, Value};
 
 use super::{Model, REG_FRAME_METHODS};
 use crate::widget::FrameHandle;
