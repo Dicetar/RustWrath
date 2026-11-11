@@ -12,8 +12,8 @@
 //! The steps:
 //! 1. queue: `GetGMStatus()` must fire `UPDATE_GM_STATUS` with 1 (`GMTickets.Enable` defaults on,
 //!    `World.cpp:684`); a 0 is the queue switched off, and the rest SKIPs.
-//! 2. clean: `DeleteGMTicket()` then `GetGMTicket()`, expecting `arg1 == 0`; the get's answer is
-//!    waited on, since a delete with no ticket gets none.
+//! 2. clean: `DeleteGMTicket()` then `GetGMTicket()`, expecting an argument-less `UPDATE_TICKET`;
+//!    the get's answer is waited on, since a delete with no ticket gets none.
 //! 3. create: `NewGMTicket(4, <unique text>)` then `GetGMTicket()`, expecting category 4 and the
 //!    text exactly, which proves the create body's layout.
 //! 4. db: always SKIP. The client never reads map and position back, so the probe prints the row
@@ -21,7 +21,8 @@
 //! 5. edit: `UpdateGMTicket(4, <second text>)` then `GetGMTicket()`, expecting the new text
 //!    exactly, which proves the category byte on `CMSG_GMTICKET_UPDATETEXT` (cmangos-classic reads
 //!    a bare cstring there).
-//! 6. abandon: `DeleteGMTicket()` then `GetGMTicket()`, expecting `arg1 == 0` again.
+//! 6. abandon: `DeleteGMTicket()` then `GetGMTicket()`, expecting an argument-less `UPDATE_TICKET`
+//!    again.
 //!
 //! Lua's calls reach the wire in call order, so each step only waits on the server's round trip.
 //! Answers are not correlated to asks: a GM command, vmangos's post-delete `SendTicket(nullptr)`
@@ -54,8 +55,10 @@ const CATEGORY_ITEM: u32 = 4;
 /// -1 arm is readable; vmangos sends 0 or 1.
 const QUEUE_ENABLED: f64 = 1.0;
 
-/// The `UPDATE_TICKET` `arg1` for no ticket; the Help window tests `arg1 and arg1 ~= 0`.
-const NO_TICKET: f64 = 0.0;
+/// The category slot for an argument-less `UPDATE_TICKET`: the reference signals the no-ticket,
+/// delete and status arms with `nullptr` (`GMTicketInfo.cpp:242,278,299,342`), so Lua's `arg1` is
+/// nil. A wire category is a `u8`, so -1 cannot collide with a real one.
+const NO_TICKET: f64 = -1.0;
 
 /// Settle before the first ask, so the Help window's login-time `GetGMTicket()` is answered before
 /// a baseline is latched.
@@ -131,7 +134,7 @@ enum Phase {
     CleanGap {
         since: f64,
     },
-    /// `GetGMTicket()` called; waiting for `arg1 == 0` (step 2b).
+    /// `GetGMTicket()` called; waiting for an argument-less `UPDATE_TICKET` (step 2b).
     CleanGet {
         since: f64,
         baseline: usize,
@@ -165,7 +168,7 @@ enum Phase {
     AbandonGap {
         since: f64,
     },
-    /// `GetGMTicket()` called; waiting for `arg1 == 0` again (step 6b).
+    /// `GetGMTicket()` called; waiting for an argument-less `UPDATE_TICKET` again (step 6b).
     AbandonGet {
         since: f64,
         baseline: usize,
@@ -173,8 +176,8 @@ enum Phase {
     Done,
 }
 
-/// The `UPDATE_TICKET` answers seen, newest last, as `(category, text)`. The text is `""` when the
-/// category is 0: that fire carries one argument, and `arg2` would be stale.
+/// The `UPDATE_TICKET` answers seen, newest last, as `(category, text)`. An argument-less fire is
+/// recorded as [`NO_TICKET`] with `""`; otherwise the stock seven arguments are read.
 fn ticket_answers(script: &UiScript) -> Vec<(f64, String)> {
     let cats = script
         .eval::<Vec<f64>>("return ProbeGmTicketCat or {}")
@@ -245,13 +248,14 @@ fn gm_ticket_probe(
                     f:RegisterEvent("UPDATE_GM_STATUS")
                     f:SetScript("OnEvent", function()
                         if event == "UPDATE_TICKET" then
-                            local c = arg1 or 0
-                            table.insert(ProbeGmTicketCat, c)
-                            if c == 0 then
+                            local c = arg1
+                            if c == nil then
+                                c = -1
                                 table.insert(ProbeGmTicketText, "")
                             else
                                 table.insert(ProbeGmTicketText, arg2 or "")
                             end
+                            table.insert(ProbeGmTicketCat, c)
                         else
                             table.insert(ProbeGmStatus, arg1 or 0)
                         end
@@ -349,8 +353,8 @@ fn gm_ticket_probe(
                 let seen = ticket_answers(script);
                 if matching(&seen, baseline, |(c, _)| *c == NO_TICKET).is_some() {
                     info!(
-                    "PROBE_GMTICKET: PASS (2 clean) — UPDATE_TICKET fired with arg1 == 0: no open \
-                     ticket, and the 4-byte GMTICKET_STATUS_DEFAULT answer decodes"
+                    "PROBE_GMTICKET: PASS (2 clean) — UPDATE_TICKET fired with no arguments: no \
+                     open ticket, and the 4-byte GMTICKET_STATUS_DEFAULT answer decodes"
                 );
                     probe.passes += 1;
                     probe.phase = Phase::Rest {
@@ -360,7 +364,7 @@ fn gm_ticket_probe(
                     };
                 } else if now - since > ANSWER_TIMEOUT_SECS {
                     error!(
-                        "PROBE_GMTICKET: FAIL (2 clean) — no UPDATE_TICKET with arg1 == 0 within \
+                        "PROBE_GMTICKET: FAIL (2 clean) — no argument-less UPDATE_TICKET within \
                      {ANSWER_TIMEOUT_SECS}s of DeleteGMTicket() + GetGMTicket(). Answers seen \
                      after the baseline: {:?}. A leftover ticket that refuses to clear, or a \
                      GETTICKET round trip that never answers.",
@@ -564,8 +568,8 @@ fn gm_ticket_probe(
                 let seen = ticket_answers(script);
                 if matching(&seen, baseline, |(c, _)| *c == NO_TICKET).is_some() {
                     info!(
-                    "PROBE_GMTICKET: PASS (6 abandon) — UPDATE_TICKET fired with arg1 == 0 again: \
-                     the ticket is gone from the player's view (vmangos marks it closed_by and \
+                    "PROBE_GMTICKET: PASS (6 abandon) — UPDATE_TICKET fired with no arguments \
+                     again: the ticket is gone from the player's view (vmangos marks it closed_by and \
                      keeps the row, so the db-expect rows above still resolve)"
                 );
                     probe.passes += 1;
@@ -650,9 +654,9 @@ mod tests {
     #[test]
     fn a_step_matches_after_its_baseline_and_never_before_it() {
         let answers = vec![
-            (0.0, String::new()),
+            (NO_TICKET, String::new()),
             (4.0, "mine".to_string()),
-            (0.0, String::new()),
+            (NO_TICKET, String::new()),
             (4.0, "mine".to_string()),
         ];
         assert_eq!(matching(&answers, 0, |(_, t)| t == "mine"), Some(1));

@@ -404,6 +404,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // 12340 ActionBarFrame_Scripts.cpp::Script_GetActionInfo (0x005A8F10) returns
     // ("spell", spellbook slot, book type, spell ID). The slot and ID are different namespaces;
     // addons pass the slot/book pair to GetSpellInfo and GetSpellLink.
+    // The reference's slot is `GetSpellSlot(spellId, petSpell) + 1` (lines 72-143); Project B
+    // keeps the donor fallback below and answers the spell ID itself when no book slot holds it.
+    // Wrath's spell queries accept that exact ID + book-type pair back for a spell on the bar
+    // (`spellbook::action_bar_spell_reference`), so the 4-value Wrath tuple stays unchanged.
     // Retain the donor tuple for the older UI target.
     // An empty slot returns nothing and a non-number raises.
     g.set(
@@ -417,11 +421,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     Some(id) => ("macro", id, ""),
                     None if slot.kind == ACTION_KIND_ITEM => ("item", slot.action, ""),
                     None => {
-                        let in_player_book = model
-                            .spellbook
-                            .slots
-                            .iter()
-                            .any(|s| s.spell_id == slot.action);
+                        let player_slots = if model.spell_list.is_empty() {
+                            &model.spellbook.slots
+                        } else {
+                            &model.spell_list
+                        };
+                        let in_player_book = player_slots.iter().any(|s| s.spell_id == slot.action);
                         let in_pet_book = model
                             .pet_book
                             .slots
@@ -438,7 +443,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 out.push_back(Value::String(lua.create_string(kind)?));
                 let wrath_spell = model.target == super::UiTarget::Wrath335 && kind == "spell";
                 let slot_id = if wrath_spell {
-                    let slots = if sub_type == "pet" { &model.pet_book.slots } else { &model.spellbook.slots };
+                    let slots = if sub_type == "pet" {
+                        &model.pet_book.slots
+                    } else if model.spell_list.is_empty() {
+                        &model.spellbook.slots
+                    } else {
+                        &model.spell_list
+                    };
+                    // No displayed/all-learned book slot: the ID is the key, which the Wrath
+                    // spell queries accept with a book type for a spell on the action bar.
                     slots.iter().position(|slot| slot.spell_id == id)
                         .map_or(id, |index| index as u32 + 1)
                 } else {
@@ -883,6 +896,37 @@ mod tests {
         );
         let err = s.run("GetActionInfo()").unwrap_err().to_string();
         assert!(err.contains("Usage: GetActionInfo(slot)"), "{err}");
+    }
+
+    /// Wrath keeps the spell ID as the key when the action's spell has no book slot: the donor
+    /// fallback `map_or(id, ...)` the addon passes back with the book type.
+    #[test]
+    fn wrath_get_action_info_keeps_the_spell_id_without_a_book_slot() {
+        use crate::script::{SpellSlotView, UiTarget};
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.set_spell_list(vec![SpellSlotView {
+            spell_id: 133,
+            ..Default::default()
+        }]);
+        let slot = |kind, action| ActionSlot {
+            kind,
+            action,
+            ..Default::default()
+        };
+        s.set_action(1, Some(slot(super::ACTION_KIND_SPELL, 3009)));
+        s.set_action(2, Some(slot(super::ACTION_KIND_SPELL, 133)));
+        assert_eq!(
+            s.eval::<(String, i64, String, i64)>("return GetActionInfo(1)")
+                .unwrap(),
+            ("spell".into(), 3009, "spell".into(), 3009),
+            "no book slot: the key is the spell ID"
+        );
+        assert_eq!(
+            s.eval::<(String, i64, String, i64)>("return GetActionInfo(2)")
+                .unwrap(),
+            ("spell".into(), 1, "spell".into(), 133),
+            "a book slot keeps the 1-based slot as the key"
+        );
     }
 
     #[test]

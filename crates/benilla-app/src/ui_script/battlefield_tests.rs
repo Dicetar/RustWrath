@@ -7,7 +7,7 @@ use super::test_ui::load_ui as load_xml;
 
 /// The stock pair plus what they call: the panel kit, the confirm dialog, the icon's menu.
 fn session() -> UiScript {
-    let mut s = UiScript::new().unwrap();
+    let mut s = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
     // The list verbs answer nothing without a local player, so seat one.
@@ -57,6 +57,8 @@ fn slot(map_id: u32, name: &str, status: u32, instance: u32) -> BattlefieldQueue
         port_expiration_ms: 75_000,
         estimated_wait_ms: 90_000,
         time_waited_ms: 12_000,
+        team_size: 0,
+        rated: false,
     }
 }
 

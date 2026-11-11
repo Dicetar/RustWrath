@@ -1080,7 +1080,7 @@ fn census(
             local n = GetNumWorldStateUI()
             local out = tostring(n)
             for i = 1, n do
-                local ui, state, hidden, text, icon = GetWorldStateUIInfo(i)
+                local ui_type, state, text, icon, dynamic_icon, tooltip, dynamic_tooltip, extended_ui, e1, e2, e3 = GetWorldStateUIInfo(i)
                 out = out .. " | " .. tostring(state) .. " '" .. tostring(text) .. "' icon=" .. tostring(icon)
             end
             return out
@@ -1094,7 +1094,7 @@ fn census(
             r#"
             local out = ""
             for i = 1, 3 do
-                local s, name, id, lo, hi = GetBattlefieldStatus(i)
+                local s, name, id, lo, hi, team, rated = GetBattlefieldStatus(i)
                 out = out .. i .. "=" .. tostring(s) .. "/" .. tostring(name) .. "/" .. tostring(id) .. " "
             end
             return out .. "runtime=" .. tostring(GetBattlefieldInstanceRunTime())

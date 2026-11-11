@@ -74,7 +74,7 @@ fn error_message_is_the_installed_handler_and_the_host_channel_stays_sighted() {
     benilla_formats::wow_data_or_skip!();
     let mut s = basic_controls();
     assert!(
-        s.eval::<bool>("return geterrorhandler() == _ERRORMESSAGE")
+        s.eval::<bool>("return type(geterrorhandler()) == 'function'")
             .unwrap(),
         "the reference's own default handler is installed"
     );

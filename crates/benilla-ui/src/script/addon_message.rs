@@ -98,20 +98,64 @@ fn install_wrath(lua: &Lua) -> mlua::Result<()> {
             if prefix.contains('\t') {
                 return Err(mlua::Error::runtime("Addon prefix cannot contain a tab"));
             }
-            let text = format!("{prefix}\t{message}");
-            // The installed AzerothCore ChatHandler rejects messages past 255 bytes. Refuse
-            // an oversized structured message rather than silently truncating its payload.
-            if text.len() > 255 {
-                return Err(mlua::Error::runtime("Addon prefix and message exceed the server's 255-byte limit"));
-            }
             let distribution = lua.coerce_string(distribution)?
                 .map_or_else(|| "PARTY".to_owned(), |value| value.to_string_lossy());
+            // WMBridge composes its HELLO line before `sendPayload` attempts CHANNEL and falls
+            // back to WHISPER (`WMBridge.lua:135-175`). When a fallback whisper carries a stale
+            // `transport=CHANNEL` tag, rewrite it to the actual `transport=SELF_WHISPER` lane.
+            let message = if distribution.eq_ignore_ascii_case("WHISPER")
+                && prefix == "WMBridge"
+                && message.contains("transport=CHANNEL")
+            {
+                message.replace("transport=CHANNEL", "transport=SELF_WHISPER")
+            } else {
+                message
+            };
+            let text = format!("{prefix}\t{message}");
             if distribution.eq_ignore_ascii_case("WHISPER") {
                 let target = lua_tostring(lua, &target)?;
                 if target.is_empty() {
                     return Err(mlua::Error::runtime("Addon whisper missing target player"));
                 }
+                // `WM_SpellmakingV3.lua:36` calls `SendAddonMessage("WM_FORGE3", ..., "WHISPER", target)`
+                // without `pcall`. When an upload chunk or graph line exceeds the 255-byte server
+                // cap, split it into <=150-byte `DATA|` (or prefix-bounded) whisper frames rather
+                // than aborting the Spellwright Lua flow.
+                if text.len() > 255 && prefix == "WM_FORGE3" {
+                    let body = message.strip_prefix("DATA|").unwrap_or(&message);
+                    let frame_prefix = if message.starts_with("DATA|") {
+                        "WM_FORGE3\tDATA|"
+                    } else {
+                        "WM_FORGE3\t"
+                    };
+                    let max_chunk = (255usize.saturating_sub(frame_prefix.len())).min(150).max(1);
+                    let mut rest = body;
+                    while !rest.is_empty() {
+                        let mut cut = rest.len().min(max_chunk);
+                        while cut > 0 && !rest.is_char_boundary(cut) {
+                            cut -= 1;
+                        }
+                        let chunk = &rest[..cut];
+                        super::calls::submit(
+                            lua,
+                            super::ScriptCall::AddonWhisper(AddonWhisper {
+                                text: format!("{frame_prefix}{chunk}"),
+                                target: target.clone(),
+                            }),
+                        )?;
+                        rest = &rest[cut..];
+                    }
+                    return Ok(());
+                }
+                if text.len() > 255 {
+                    return Err(mlua::Error::runtime("Addon prefix and message exceed the server's 255-byte limit"));
+                }
                 return super::calls::submit(lua, super::ScriptCall::AddonWhisper(AddonWhisper { text, target }));
+            }
+            // The installed AzerothCore ChatHandler rejects messages past 255 bytes. Refuse
+            // an oversized structured message rather than silently truncating its payload.
+            if text.len() > 255 {
+                return Err(mlua::Error::runtime("Addon prefix and message exceed the server's 255-byte limit"));
             }
             // CHANNEL is intentionally not admitted: the installed server's LANG_ADDON
             // whitelist excludes it. WMBridge can then take its explicit WHISPER fallback.
@@ -204,6 +248,14 @@ impl super::UiScript {
     pub fn take_addon_sends(&mut self) -> Vec<AddonSend> {
         self.take_calls_where(|call| match call {
             super::ScriptCall::AddonMessage(send) => Some(send.clone()),
+            _ => None,
+        })
+    }
+
+    /// The `SendAddonMessage(..., "WHISPER", target)` sends a harness's VM kept, in call order.
+    pub fn take_addon_whispers(&mut self) -> Vec<AddonWhisper> {
+        self.take_calls_where(|call| match call {
+            super::ScriptCall::AddonWhisper(whisper) => Some(whisper.clone()),
             _ => None,
         })
     }
@@ -537,5 +589,152 @@ mod tests {
             assert_eq!(dist.token(), token);
             assert_eq!(AddonDistribution::from_token(token), Some(dist));
         }
+    }
+
+    #[test]
+    fn wmbridge_self_whisper_hello_and_kill_events() {
+        use crate::script::{CombatLogPartyKill, CombatLogUnit, UiTarget};
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.keep_calls();
+
+        // 1. An unconfirmed JoinTemporaryChannel/JoinChannelByName in Wrath335 does not report a
+        // confirmed channel id, and a pre-composed HELLO falling back from CHANNEL to WHISPER
+        // reports transport=SELF_WHISPER.
+        s.run(
+            r#"
+            JoinTemporaryChannel("WMBridge")
+            PendingChannelId = GetChannelName("WMBridge")
+            local msg = "HELLO|version=1|player=Firna|transport=CHANNEL"
+            local ok = pcall(SendAddonMessage, "WMBridge", msg, "CHANNEL", 1)
+            ChannelSendSucceeded = ok
+            if not ok then
+                SendAddonMessage("WMBridge", msg, "WHISPER", "Firna")
+            end
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(s.eval::<i64>("return PendingChannelId").unwrap(), 0);
+        assert!(!s.eval::<bool>("return ChannelSendSucceeded").unwrap());
+        let whispers = s.take_addon_whispers();
+        assert_eq!(
+            whispers,
+            vec![AddonWhisper {
+                text: "WMBridge\tHELLO|version=1|player=Firna|transport=SELF_WHISPER".to_owned(),
+                target: "Firna".to_owned(),
+            }]
+        );
+
+        // 2. Both COMBAT_LOG_EVENT and COMBAT_LOG_EVENT_UNFILTERED are admitted in Wrath335, and
+        // PARTY_KILL dispatches the 8-argument event WMBridge consumes.
+        s.run(
+            r#"
+            local f = CreateFrame("Frame")
+            f:RegisterEvent("COMBAT_LOG_EVENT")
+            f:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+            f:SetScript("OnEvent", function(self, event, ts, subevent, srcGuid, srcName, srcFlags, dstGuid, dstName, dstFlags)
+                if event == "COMBAT_LOG_EVENT_UNFILTERED" and subevent == "PARTY_KILL" then
+                    SendAddonMessage("WMBridge", string.format("KILL|src=%s|dst=%s|%s", srcGuid, dstGuid, dstName), "WHISPER", "Firna")
+                end
+            end)
+            "#,
+        )
+        .unwrap();
+
+        s.fire_combat_log_party_kill(&CombatLogPartyKill {
+            timestamp: 1_700_000_000.0,
+            source: CombatLogUnit {
+                guid: 0x0000_0000_0000_0001,
+                name: Some("Firna".to_owned()),
+                flags: 0x0511,
+            },
+            dest: CombatLogUnit {
+                guid: 0xF130_0000_2F00_002A,
+                name: Some("Kobold Vermin".to_owned()),
+                flags: 0x0a48,
+            },
+        });
+
+        let kill_whispers = s.take_addon_whispers();
+        assert_eq!(
+            kill_whispers,
+            vec![AddonWhisper {
+                text: "WMBridge\tKILL|src=0x0000000000000001|dst=0xF13000002F00002A|Kobold Vermin"
+                    .to_owned(),
+                target: "Firna".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn wm_spellmaking_self_whisper_round_trip() {
+        use crate::script::{ScriptValue, UiTarget};
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        s.keep_calls();
+
+        // Simulate `WM_SpellmakingV3.lua:36` (`SendAddonMessage("WM_FORGE3", payload, "WHISPER", self)`)
+        // without `pcall`, including an oversized `DATA|` graph payload that chunks into <=150-byte
+        // `WM_FORGE3\tDATA|...` whispers, followed by an inbound `QUOTE|<nonce>` reply that triggers
+        // `BUY|<nonce>`.
+        s.run(
+            r#"
+            local f = CreateFrame("Frame")
+            f:RegisterEvent("CHAT_MSG_ADDON")
+            f:SetScript("OnEvent", function(self, event, prefix, msg, dist, sender)
+                if event == "CHAT_MSG_ADDON" and prefix == "WM_FORGE3" then
+                    local nonce = string.match(msg, "^QUOTE|([%w_%-]+)")
+                    if nonce then
+                        SendAddonMessage("WM_FORGE3", "BUY|" .. nonce, "WHISPER", sender)
+                    end
+                end
+            end)
+
+            SendAddonMessage("WM_FORGE3", "LIST", "WHISPER", "Firna")
+            SendAddonMessage("WM_FORGE3", "BEGIN|QUOTE", "WHISPER", "Firna")
+            local graph = "DATA|" .. string.rep("node:cast_bolt->arc_chain;", 12)
+            SendAddonMessage("WM_FORGE3", graph, "WHISPER", "Firna")
+            SendAddonMessage("WM_FORGE3", "FINISH|QUOTE", "WHISPER", "Firna")
+            "#,
+        )
+        .unwrap();
+
+        let sent = s.take_addon_whispers();
+        assert!(
+            sent.len() >= 5,
+            "oversized DATA| payload must split into bounded whispers: {sent:?}"
+        );
+        assert_eq!(sent[0].text, "WM_FORGE3\tLIST");
+        assert_eq!(sent[1].text, "WM_FORGE3\tBEGIN|QUOTE");
+        for chunk in &sent[2..sent.len() - 1] {
+            assert!(chunk.text.starts_with("WM_FORGE3\tDATA|"));
+            assert!(
+                chunk.text.len() <= 255,
+                "each chunk must stay within the 255-byte server cap: {}",
+                chunk.text.len()
+            );
+            assert_eq!(chunk.target, "Firna");
+        }
+        assert_eq!(sent.last().unwrap().text, "WM_FORGE3\tFINISH|QUOTE");
+
+        s.fire_event(
+            "CHAT_MSG_ADDON",
+            vec![
+                ScriptValue::Str("WM_FORGE3".to_owned()),
+                ScriptValue::Str("QUOTE|nonce_9001|cost=250".to_owned()),
+                ScriptValue::Str("WHISPER".to_owned()),
+                ScriptValue::Str("Firna".to_owned()),
+            ],
+        );
+
+        let buy = s.take_addon_whispers();
+        assert_eq!(
+            buy,
+            vec![AddonWhisper {
+                text: "WM_FORGE3\tBUY|nonce_9001".to_owned(),
+                target: "Firna".to_owned(),
+            }]
+        );
     }
 }

@@ -1,6 +1,10 @@
 //! Sample after pose edits, compose the patched frame, then restore the next frame's input.
 use benilla_hotpatch::{Host, RestoreOutcome};
-use benilla_hotpatch_abi::{BoneLocal, RigSpan};
+pub use benilla_hotpatch::{
+    MovementBounds, MovementHealthPolicy, MovementHealthSnapshot, MovementProposal,
+    MovementProposalSource, MovementRefusal, PatchEvaluationReason, PatchRejectReason,
+};
+pub use benilla_hotpatch_abi::{BoneLocal, ModuleKind, MovementFrame, RigSpan};
 use benilla_world::rig_anim::{AnimParked, PoseModulePass, RigPose};
 use bevy::prelude::*;
 use std::{collections::VecDeque, path::PathBuf};
@@ -30,10 +34,24 @@ pub enum HotpatchReason {
 pub enum HotpatchEvent {
     CandidateStaged { attempt: PatchAttemptId },
     CandidateWithdrawn { attempt: PatchAttemptId },
-    PublicationRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
-    CandidateRejected { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
+    PublicationRejected {
+        attempt: Option<PatchAttemptId>,
+        reason: HotpatchReason,
+        detail: PatchRejectReason,
+    },
+    CandidateRejected {
+        attempt: Option<PatchAttemptId>,
+        reason: HotpatchReason,
+        /// Fine evaluation code; `Unknown`/future variants fall back to `reason`.
+        detail: PatchEvaluationReason,
+    },
     Activated { attempt: Option<PatchAttemptId>, digest: Option<[u8; 20]> },
-    FrameFailed { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
+    FrameFailed {
+        attempt: Option<PatchAttemptId>,
+        reason: HotpatchReason,
+        /// Fine evaluation code; `Unknown`/future variants fall back to `reason`.
+        detail: PatchEvaluationReason,
+    },
     /// A failed active module was replaced by a retained predecessor that is now active again.
     ///
     /// `restored_attempt` is the predecessor's original activation attempt when it is still
@@ -45,21 +63,34 @@ pub enum HotpatchEvent {
         digest: Option<[u8; 20]>,
     },
     /// The failed active module had no retained predecessor; the baseline pose is active again.
-    RestoreUnavailable { failed_attempt: Option<PatchAttemptId> },
+    RestoreUnavailable {
+        failed_attempt: Option<PatchAttemptId>,
+        /// Fine evaluation code from the restore outcome.
+        detail: PatchEvaluationReason,
+    },
     RetentionFailed { attempt: Option<PatchAttemptId>, reason: HotpatchReason },
 }
 
 pub struct HotpatchPlugin {
     root: PathBuf,
     probe: bool,
+    movement: bool,
 }
 
 impl HotpatchPlugin {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, probe: false }
+        Self {
+            root,
+            probe: false,
+            movement: false,
+        }
     }
     pub fn with_probe(mut self, enabled: bool) -> Self {
         self.probe = enabled;
+        self
+    }
+    pub fn with_movement(mut self, enabled: bool) -> Self {
+        self.movement = enabled;
         self
     }
 }
@@ -70,11 +101,84 @@ impl Plugin for HotpatchPlugin {
             "hotpatch: watching {} (pose ABI 1; trusted local modules)",
             self.root.display()
         );
+        let mut host = Host::new(self.root.clone());
+        if self.movement {
+            host.set_seam_enabled(ModuleKind::Movement, true);
+        }
+        // Restore the digest quarantines from the previous run so a `B -> C -> B` manifest rewrite
+        // cannot re-stage a digest that already failed deterministically. A malformed or unreadable
+        // store is logged once and must not fail plugin startup: the in-memory stores stay empty
+        // and a later quarantine rewrites the file from memory. The message seeds the quarantine
+        // dedupe slot, not the publication slot.
+        let mut last_quarantine_error = None;
+        if let Err(error) = host.load_persistent_quarantine() {
+            let message = format!("quarantine load: {error:#}");
+            warn!("hotpatch: {message}");
+            last_quarantine_error = Some(message);
+        }
+        // Pose/movement crash sentinel: a marker written after the artifact bytes were verified and
+        // before the irreversible `Library::new` (loading windows) or immediately before the staged
+        // pose candidate's canary `process()` call may have survived a native fault. Recover it
+        // before the first poll: quarantine the crashed pose or movement digest (and persist the
+        // store so it survives another crash) or fail safe on a malformed marker. Startup never
+        // fails on either outcome.
+        let mut last_sentinel_error = None;
+        match host.load_active_sentinel() {
+            Ok(Some(digest)) => {
+                warn!(
+                    "hotpatch: recovered crashed module {digest}; quarantining before next launch"
+                );
+                // Commit the recovered digest before removing the marker. The marker is the only
+                // durable record between the crash and the quarantine rename; a crash or persist
+                // failure here must leave it for the next launch to retry.
+                match host.persist_quarantine() {
+                    Ok(()) => {
+                        // `persist_quarantine` clears the marker only after committing the
+                        // recovered digest; a clear failure is reported through the sentinel slot.
+                        if let Some(error) = host.take_sentinel_error() {
+                            warn!("hotpatch: {error}");
+                            last_sentinel_error = Some(error);
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!(
+                            "quarantine save after sentinel recovery: {error:#}; marker retained"
+                        );
+                        warn!("hotpatch: {message}");
+                        last_quarantine_error = Some(message);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let message = format!("active sentinel load: {error:#}");
+                warn!("hotpatch: {message}");
+                last_sentinel_error = Some(message);
+            }
+        }
+        // Restore persisted policy, per-revision health and artifact stamps once the quarantine and
+        // sentinel startup work is done. A malformed/unsupported store is logged once and must not
+        // fail plugin startup: the defaults stay in force for this run and the next successful save
+        // rewrites the file. The message seeds its own dedupe slot, not the publication or
+        // quarantine/sentinel slots.
+        let mut last_state_error = None;
+        if let Err(error) = host.load_persistent_state() {
+            let message = format!("patch state load: {error:#}");
+            warn!("hotpatch: {message}");
+            last_state_error = Some(message);
+        }
         app.add_message::<HotpatchEvent>()
         .insert_resource(Runtime {
-            host: Host::new(self.root.clone()),
+            host,
             next_poll: 0.0,
             last_error: None,
+            last_publication_detail: None,
+            last_frame_detail: None,
+            last_quarantine_error,
+            last_sentinel_error,
+            last_state_error,
+            last_movement_error: None,
+            movement_stage_outcome: None,
             reported_revision: None,
             reported_digest: None,
             refresh: false,
@@ -94,15 +198,51 @@ impl Plugin for HotpatchPlugin {
         })
         .add_systems(Update, poll)
         .add_systems(PostUpdate, apply_pose.in_set(PoseModulePass))
-        .add_systems(Last, (capture_pose, restore_pose).chain());
+        .add_systems(Last, (capture_pose, restore_pose).chain())
+        // Declared ahead of the pose chain: all three systems take `ResMut<Runtime>` and this
+        // edge's clear must not be skipped because a pose system panicked on the exit frame. An
+        // explicit `AppExit` is the clean-exit signal; `Runtime::drop` stays the fallback for a
+        // bare `App` drop.
+        .add_systems(Last, clear_active_sentinel_on_app_exit.before(capture_pose));
     }
 }
 
 #[derive(Resource)]
-struct Runtime {
+pub struct Runtime {
     host: Host,
     next_poll: f64,
     last_error: Option<String>,
+    /// Last typed publication reason emitted or observed. The coarse `last_error` message is the
+    /// dedupe key for free-form text; this separate slot lets a transient -> terminal transition
+    /// with identical error text still emit the new typed detail.
+    last_publication_detail: Option<PatchRejectReason>,
+    /// Last typed detail emitted or observed for a frame failure. The coarse `last_error` message
+    /// remains the dedupe key for free-form text; this slot lets a changed detail with identical
+    /// message text still emit, and a successful activation resets it.
+    last_frame_detail: Option<PatchEvaluationReason>,
+    /// Last reported quarantine load/save error. Deliberately separate from `last_error`: the
+    /// publication/retention paths share and clear that slot, so reusing it here would let a
+    /// persistent save failure re-emit `PublicationRejected`/`RetentionFailed` (and the save
+    /// warning) every 1 Hz tick. Only a successful save clears this slot.
+    last_quarantine_error: Option<String>,
+    /// Last reported pose/movement crash-sentinel load/write/clear error. Deliberately separate
+    /// from `last_error` and `last_quarantine_error`: a best-effort sentinel write/clear failure
+    /// must not re-emit publication/retention events or mask a successful save, and a sentinel load
+    /// failure at startup must not fail the plugin.
+    last_sentinel_error: Option<String>,
+    /// Last reported `patch-state.toml` load/save error. Deliberately separate from `last_error`,
+    /// `last_quarantine_error` and `last_sentinel_error`: a persistent state save failure must not
+    /// re-emit publication/retention/sentinel events, and a state load failure at startup must not
+    /// fail the plugin. A successful parsed load or an actual save (`Ok(true)`) clears it; a clean
+    /// `Ok(false)` saves nothing and must not hide an earlier startup load error.
+    last_state_error: Option<String>,
+    /// Last reported movement module staging/proposal error. Separate from `last_error` so a
+    /// movement publication or proposal refusal never perturbs pose `PublicationRejected` or
+    /// `RetentionFailed` deduplication.
+    last_movement_error: Option<String>,
+    /// Most recent movement staging transition (`Ok(true)` or `Err(refusal)`) observed on the 1 Hz
+    /// poll or via [`Runtime::stage_movement_processor`], consumed by the movement adapter.
+    movement_stage_outcome: Option<std::result::Result<bool, MovementRefusal>>,
     reported_revision: Option<String>,
     reported_digest: Option<String>,
     refresh: bool,
@@ -123,11 +263,248 @@ struct Runtime {
     activations: VecDeque<(Option<[u8; 20]>, PatchAttemptId)>,
 }
 
+impl Runtime {
+    /// Create a standalone runtime bound to `root` (used by focused adapter tests).
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            host: Host::new(root),
+            next_poll: 0.0,
+            last_error: None,
+            last_publication_detail: None,
+            last_frame_detail: None,
+            last_quarantine_error: None,
+            last_sentinel_error: None,
+            last_state_error: None,
+            last_movement_error: None,
+            movement_stage_outcome: None,
+            reported_revision: None,
+            reported_digest: None,
+            refresh: false,
+            restore_pending: false,
+            bones: Vec::new(),
+            spans: Vec::new(),
+            entities: Vec::new(),
+            output: Vec::new(),
+            probe: false,
+            next_probe: 0.0,
+            sample: None,
+            next_attempt: 1,
+            candidate_attempt: None,
+            active_attempt: None,
+            restored_attempt: None,
+            activations: VecDeque::new(),
+        }
+    }
+
+    /// Enable or disable the movement seam on the underlying host.
+    pub fn set_movement_seam_enabled(&mut self, enabled: bool) {
+        self.host.set_seam_enabled(ModuleKind::Movement, enabled);
+        if !enabled {
+            self.movement_stage_outcome = None;
+            self.last_movement_error = None;
+        }
+    }
+
+    /// Whether the movement seam is enabled on the underlying host.
+    pub fn is_movement_seam_enabled(&self) -> bool {
+        self.host.is_seam_enabled(ModuleKind::Movement)
+    }
+
+    /// Stage a movement processor from `<root>/movement.toml` and record any staging transition.
+    pub fn stage_movement_processor(&mut self) -> std::result::Result<bool, MovementRefusal> {
+        let outcome = self.host.stage_movement_processor();
+        if let Some(error) = self.host.take_sentinel_error() {
+            report_sentinel(self, error);
+        }
+        match outcome {
+            Ok(true) => {
+                self.last_movement_error = None;
+                self.movement_stage_outcome = Some(Ok(true));
+            }
+            Ok(false) => {}
+            Err(refusal) => {
+                if let Some(detail) = self.host.take_movement_rejection() {
+                    report_movement(self, detail);
+                }
+                self.movement_stage_outcome = Some(Err(refusal));
+            }
+        }
+        outcome
+    }
+
+    /// Drain the latest movement staging transition (`Ok(true)` or `Err(refusal)`).
+    pub fn take_movement_stage_outcome(
+        &mut self,
+    ) -> Option<std::result::Result<bool, MovementRefusal>> {
+        self.movement_stage_outcome.take()
+    }
+
+    /// Whether a movement processor is staged or active.
+    pub fn has_movement_processor(&self) -> bool {
+        self.host.has_movement_processor()
+    }
+
+    /// Whether a movement candidate is currently staged in the pending slot.
+    pub fn movement_processor_staged(&self) -> bool {
+        self.host.movement_processor_staged()
+    }
+
+    /// Whether a movement processor has completed its first accepted intent.
+    pub fn movement_processor_active(&self) -> bool {
+        self.host.movement_processor_active()
+    }
+
+    pub fn movement_revision(&self) -> Option<&str> {
+        self.host.movement_revision()
+    }
+
+    pub fn movement_digest(&self) -> Option<&str> {
+        self.host.movement_digest()
+    }
+
+    pub fn movement_health_snapshot(&self) -> MovementHealthSnapshot {
+        self.host.movement_health_snapshot()
+    }
+
+    pub fn set_movement_health_policy(&mut self, policy: MovementHealthPolicy) {
+        self.host.set_movement_health_policy(policy);
+    }
+
+    pub fn movement_health_policy(&self) -> MovementHealthPolicy {
+        self.host.movement_health_policy()
+    }
+
+    /// Evaluate the staged or active movement processor for `frame` and validate against `bounds`.
+    pub fn propose_movement(
+        &mut self,
+        frame: &MovementFrame,
+        bounds: &MovementBounds,
+    ) -> std::result::Result<(MovementProposal, MovementProposalSource), MovementRefusal> {
+        let result = self.host.movement_proposal(frame, bounds);
+        if let Some(error) = self.host.take_sentinel_error() {
+            report_sentinel(self, error);
+        }
+        match &result {
+            Ok(_) => {
+                self.last_movement_error = None;
+            }
+            Err(_) => {
+                if let Some(detail) = self.host.take_movement_rejection() {
+                    report_movement(self, detail);
+                }
+            }
+        }
+        result
+    }
+
+    /// Promote the staged movement processor after the controller accepted its proposal.
+    pub fn commit_movement_processor(&mut self) -> bool {
+        let committed = self.host.commit_movement_processor();
+        if committed {
+            self.last_movement_error = None;
+        }
+        committed
+    }
+
+    /// Withdraw commit readiness after the controller rejected or drained a staged proposal.
+    pub fn withdraw_movement_proposal(&mut self) -> bool {
+        self.host.withdraw_movement_proposal()
+    }
+
+    /// Unload the staged/active movement processor and hand prediction back to baseline.
+    pub fn unload_movement_processor(&mut self) -> bool {
+        let unloaded = self.host.unload_movement_processor();
+        if unloaded {
+            self.last_movement_error = None;
+        }
+        unloaded
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Rust runs `Drop` during panic unwind as well as on an orderly `App` drop. A panic inside
+        // a marker-covered call (`Loaded::open`, the canary `evaluate`, movement `process`) must
+        // not delete the marker for the operation that just panicked: that marker is what makes
+        // the next launch quarantine the crashing digest. Bail out while unwinding; only an
+        // ordinary drop is treated as the clean-exit safety net.
+        if std::thread::panicking() {
+            return;
+        }
+        // Clean-exit safety net: remove a stale `active-sentinel.toml` so an orderly client exit
+        // cannot leave it for the next launch (which would wrongly quarantine a healthy digest).
+        // A pending recovery marker is the only durable record of an uncommitted recovered digest
+        // and must survive to the next launch, so it is retained here. Best effort: do not
+        // intentionally panic or block.
+        match self.host.clear_active_sentinel_on_clean_shutdown() {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!(
+                    "hotpatch: clean shutdown retained active-sentinel.toml for the next launch"
+                );
+            }
+            Err(error) => {
+                warn!("hotpatch: clean shutdown active sentinel clear failed: {error:#}");
+            }
+        }
+    }
+}
+
 fn report(runtime: &mut Runtime, error: String) {
     if runtime.last_error.as_ref() != Some(&error) {
         warn!("hotpatch: {error}");
     }
     runtime.last_error = Some(error);
+}
+
+/// Report a quarantine load/save error through its own dedupe slot.
+///
+/// The publication and retention paths share `Runtime.last_error`, which a successful staging poll
+/// intentionally clears. Reusing that slot for the quarantine would make a persistent save failure
+/// re-emit both events and both warnings on every tick, so this slot is independent and is cleared
+/// only when a save succeeds.
+fn report_quarantine(runtime: &mut Runtime, error: String) {
+    if runtime.last_quarantine_error.as_ref() != Some(&error) {
+        warn!("hotpatch: {error}");
+    }
+    runtime.last_quarantine_error = Some(error);
+}
+
+/// Report a pose/movement crash-sentinel error through its own dedupe slot.
+///
+/// The host sets [`Host::sentinel_error`] only for best-effort sentinel write/clear failures during
+/// `poll`, `evaluate` or movement staging (the module load/evaluation is never failed or skipped
+/// because the sentinel could not be written). A startup sentinel load failure goes directly to
+/// `last_sentinel_error`; it never populates the host slot. This slot is independent of both
+/// `last_error` and `last_quarantine_error`, so a sentinel issue neither re-emits
+/// publication/retention events nor is masked by a successful quarantine save.
+fn report_sentinel(runtime: &mut Runtime, error: String) {
+    if runtime.last_sentinel_error.as_ref() != Some(&error) {
+        warn!("hotpatch: {error}");
+    }
+    runtime.last_sentinel_error = Some(error);
+}
+
+/// Report a `patch-state.toml` load/save error through its own dedupe slot.
+///
+/// A persistent save failure must be visible once per distinct message without re-emitting
+/// `PublicationRejected`/`RetentionFailed` every 1 Hz tick (the paths that share `last_error`) or
+/// borrowing the quarantine/sentinel slots. The host never fails or skips a module load/evaluation
+/// because the state file could not be saved, so this slot is advisory only.
+fn report_state(runtime: &mut Runtime, error: String) {
+    if runtime.last_state_error.as_ref() != Some(&error) {
+        warn!("hotpatch: {error}");
+    }
+    runtime.last_state_error = Some(error);
+}
+
+/// Report a movement staging/proposal error through its own dedupe slot so movement warnings never
+/// collide with the pose seam's `last_error` slot.
+fn report_movement(runtime: &mut Runtime, error: String) {
+    if runtime.last_movement_error.as_ref() != Some(&error) {
+        warn!("hotpatch: {error}");
+    }
+    runtime.last_movement_error = Some(error);
 }
 
 fn digest_from_hex(hex: &str) -> Option<[u8; 20]> {
@@ -185,6 +562,7 @@ fn poll(
         Ok(true) => {
             runtime.refresh = true;
             runtime.last_error = None;
+            runtime.last_publication_detail = None;
             let attempt = runtime.next_attempt;
             runtime.next_attempt = runtime.next_attempt.saturating_add(1);
             runtime.candidate_attempt = Some(attempt);
@@ -193,14 +571,25 @@ fn poll(
         Ok(false) => {}
         Err(error) => {
             let message = format!("{error:#}");
-            if runtime.last_error.as_ref() != Some(&message) {
+            let detail = runtime
+                .host
+                .take_publication_reason()
+                .unwrap_or(PatchRejectReason::Unknown);
+            let message_changed = runtime.last_error.as_ref() != Some(&message);
+            let detail_changed = runtime.last_publication_detail != Some(detail);
+            if message_changed || detail_changed {
                 events.write(HotpatchEvent::PublicationRejected {
                     attempt: None,
                     reason: HotpatchReason::Publication,
+                    detail,
                 });
             }
+            runtime.last_publication_detail = Some(detail);
             report(&mut runtime, message);
         }
+    }
+    if runtime.host.is_seam_enabled(ModuleKind::Movement) {
+        let _ = runtime.stage_movement_processor();
     }
     if let Err(error) = runtime.host.collect_retired() {
         let message = format!("artifact retention: {error:#}");
@@ -211,6 +600,29 @@ fn poll(
             });
         }
         report(&mut runtime, message);
+    }
+    // Save the digest quarantines once per poll tick, after staging and retention have updated
+    // them. Writes are digest-only; a failure is deduplicated through the quarantine slot and never
+    // stops the poll or the seams.
+    match runtime.host.persist_quarantine() {
+        Ok(()) => runtime.last_quarantine_error = None,
+        Err(error) => report_quarantine(&mut runtime, format!("quarantine save: {error:#}")),
+    }
+    // Save the policy/per-revision health/artifact stamps once per poll tick, after the quarantine
+    // save. A clean `Ok(false)` means nothing changed since the last save. A failure is
+    // deduplicated through the state slot and never stops the poll or either seam.
+    match runtime.host.persist_state() {
+        Ok(true) => runtime.last_state_error = None,
+        Ok(false) => {}
+        Err(error) => report_state(&mut runtime, format!("patch state save: {error:#}")),
+    }
+    // Drain the best-effort pose/movement crash-sentinel error slot. A failed write/clear during
+    // the host poll, canary evaluation or movement staging lands here; the module load/evaluation
+    // itself is never failed or skipped because the sentinel could not be written. Reported through
+    // the dedicated slot, not `last_error` or the quarantine slot.
+    let sentinel_error = runtime.host.take_sentinel_error();
+    if let Some(error) = sentinel_error {
+        report_sentinel(&mut runtime, error);
     }
 }
 
@@ -280,11 +692,12 @@ fn apply_pose(
         time.elapsed_secs_f64(),
         &mut runtime.output,
     );
-    if let Some(error) = runtime.host.take_rejection() {
+    if let Some((error, detail)) = runtime.host.take_rejection_detail() {
         runtime.refresh = false;
         events.write(HotpatchEvent::CandidateRejected {
             attempt: runtime.candidate_attempt,
             reason: HotpatchReason::Evaluation,
+            detail,
         });
         runtime.candidate_attempt = None;
         report(runtime, error);
@@ -292,11 +705,20 @@ fn apply_pose(
     // Restore identity is per evaluation; never carry a stale restore into a later activation.
     runtime.restored_attempt = None;
     let restore_outcomes = runtime.host.take_restore_outcomes();
-    // Free-form host errors stay local; only the bounded outcomes below reach the recorder.
-    if let Some(error) = runtime.host.take_active_failure() {
-        report(runtime, error);
-    }
     let active_failed = !restore_outcomes.is_empty();
+    // Free-form host errors stay local; only the bounded outcomes below reach the recorder. Hold
+    // the typed active-failure detail so both restore events can carry it in this same frame.
+    let active_failure = runtime.host.take_active_failure_detail();
+    let active_failure_detail = active_failure.as_ref().map(|(_, detail)| *detail);
+    if let Some((error, _)) = active_failure {
+        report(runtime, error);
+        if !active_failed {
+            // A below-threshold failure kept the active module. Force the next frame to
+            // repack the rigs so the retained module is evaluated again instead of
+            // waiting for an unrelated animation/root change.
+            runtime.refresh = true;
+        }
+    }
     for outcome in restore_outcomes {
         match outcome {
             RestoreOutcome::Restored {
@@ -311,6 +733,8 @@ fn apply_pose(
                 events.write(HotpatchEvent::FrameFailed {
                     attempt: failed_attempt,
                     reason: HotpatchReason::Frame,
+                    detail: active_failure_detail
+                        .unwrap_or(PatchEvaluationReason::Unknown),
                 });
                 events.write(HotpatchEvent::RestoredPrevious {
                     failed_attempt,
@@ -320,7 +744,10 @@ fn apply_pose(
                 runtime.active_attempt = restored_attempt;
                 runtime.restored_attempt = restored_attempt;
             }
-            RestoreOutcome::Unavailable { failed_digest } => {
+            RestoreOutcome::Unavailable {
+                failed_digest,
+                reason,
+            } => {
                 let failed_attempt = match runtime.active_attempt {
                     Some(attempt) => Some(attempt),
                     None => attempt_for_digest(runtime, failed_digest),
@@ -328,8 +755,12 @@ fn apply_pose(
                 events.write(HotpatchEvent::FrameFailed {
                     attempt: failed_attempt,
                     reason: HotpatchReason::Frame,
+                    detail: restore_frame_detail(active_failure_detail),
                 });
-                events.write(HotpatchEvent::RestoreUnavailable { failed_attempt });
+                events.write(HotpatchEvent::RestoreUnavailable {
+                    failed_attempt,
+                    detail: reason,
+                });
                 runtime.active_attempt = None;
                 runtime.restored_attempt = None;
             }
@@ -378,6 +809,7 @@ fn apply_pose(
                 runtime.reported_revision = revision;
                 runtime.reported_digest = active_digest;
                 runtime.last_error = None;
+                runtime.last_frame_detail = None;
             }
         }
         Ok(false) => {
@@ -393,15 +825,44 @@ fn apply_pose(
         Err(error) => {
             runtime.refresh = false;
             let message = format!("pose frame unchanged: {error:#}");
-            if runtime.last_error.as_ref() != Some(&message) {
+            let detail = PatchEvaluationReason::HostFrameRejected;
+            if frame_failure_needs_report(
+                runtime.last_error.as_deref(),
+                runtime.last_frame_detail,
+                &message,
+                detail,
+            ) {
                 events.write(HotpatchEvent::FrameFailed {
                     attempt: runtime.active_attempt,
                     reason: HotpatchReason::Frame,
+                    detail,
                 });
             }
+            runtime.last_frame_detail = Some(detail);
             report(runtime, message);
         }
     }
+}
+
+/// Whether a `Host::evaluate` `Err` frame failure must be emitted. The coarse message remains the
+/// primary dedupe key; a changed typed detail with identical message text also re-emits so a
+/// host/caller frame refusal is not swallowed by an earlier evaluation failure.
+fn frame_failure_needs_report(
+    last_error: Option<&str>,
+    last_detail: Option<PatchEvaluationReason>,
+    message: &str,
+    detail: PatchEvaluationReason,
+) -> bool {
+    last_error != Some(message) || last_detail != Some(detail)
+}
+
+/// The failed active module's own typed reason for a restore `FrameFailed`.
+///
+/// `RestoreOutcome::Unavailable.reason` names the last failing predecessor, not the active module
+/// that `failed_attempt` identifies, so it is never substituted here. An untyped active failure
+/// stays `Unknown`; the predecessor/outcome reason is carried only by `RestoreUnavailable`.
+fn restore_frame_detail(active: Option<PatchEvaluationReason>) -> PatchEvaluationReason {
+    active.unwrap_or(PatchEvaluationReason::Unknown)
 }
 
 fn transform(bone: &BoneLocal) -> Transform {
@@ -455,6 +916,81 @@ fn capture_pose(time: Res<Time>, mut runtime: ResMut<Runtime>, rigs: Query<&RigP
         info!(
             "hotpatch-probe: target rig={entity:?} input={:?} output={:?} composed={:?}",
             input.translation, output.translation, model.translation
+        );
+    }
+}
+
+/// Clean-exit safety net on Bevy's explicit exit edge.
+///
+/// A window close and console `/quit` raise `WindowCloseRequested`, which
+/// `bevy_window::exit_on_all_closed` turns into `AppExit` in `PostUpdate`; the Exit Game/logout path
+/// writes `AppExit` directly in `Update`. Both precede `Last`, so a `Last` system observes the exit
+/// a player causes. This calls the same host method as [`Runtime`]'s destructor, which remains the
+/// fallback for a bare `App` drop.
+fn clear_active_sentinel_on_app_exit(
+    mut exits: MessageReader<AppExit>,
+    mut runtime: ResMut<Runtime>,
+) {
+    if exits.read().next().is_none() {
+        return;
+    }
+    // A pending recovery or an unowned/unvalidated marker is retained by the host method;
+    // the Drop fallback warns about those. This edge only reports real clear errors.
+    if let Err(error) = runtime.host.clear_active_sentinel_on_clean_shutdown() {
+        warn!("hotpatch: AppExit active sentinel clear failed: {error:#}");
+    }
+    // `impl Drop for Runtime` keeps its `std::thread::panicking()` guard: a system never runs
+    // during an unwind, so the destructor still owns the panic case.
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::{frame_failure_needs_report, restore_frame_detail, PatchEvaluationReason};
+
+    #[test]
+    fn a_changed_detail_with_the_same_message_re_emits() {
+        let message = "pose frame unchanged: host frame rejected";
+        assert!(
+            frame_failure_needs_report(
+                None,
+                None,
+                message,
+                PatchEvaluationReason::HostFrameRejected,
+            ),
+            "the first failure has no previous message"
+        );
+        assert!(
+            !frame_failure_needs_report(
+                Some(message),
+                Some(PatchEvaluationReason::HostFrameRejected),
+                message,
+                PatchEvaluationReason::HostFrameRejected,
+            ),
+            "identical message and detail stay deduplicated"
+        );
+        assert!(
+            frame_failure_needs_report(
+                Some(message),
+                Some(PatchEvaluationReason::Unknown),
+                message,
+                PatchEvaluationReason::HostFrameRejected,
+            ),
+            "a changed detail re-emits even when the message text is unchanged"
+        );
+    }
+
+    #[test]
+    fn unavailable_restore_frame_failure_uses_the_active_reason() {
+        assert_eq!(
+            restore_frame_detail(Some(PatchEvaluationReason::Status(7))),
+            PatchEvaluationReason::Status(7),
+            "the failed active module keeps its own reason; the predecessor reason is for \
+             RestoreUnavailable only"
+        );
+        assert_eq!(
+            restore_frame_detail(None),
+            PatchEvaluationReason::Unknown,
+            "an untyped active failure is Unknown, not the predecessor's reason"
         );
     }
 }

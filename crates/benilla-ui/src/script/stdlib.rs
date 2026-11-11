@@ -103,7 +103,8 @@ fn install_wrath(lua: &Lua) -> mlua::Result<()> {
 }
 
 /// `debuglocals([level])` (`0x00819A60`): 5.0's dump of the named locals and upvalues at the
-/// stack level, and no values at all outside the engine's dispatch to the global error handler.
+/// stack level, and no values at all outside a call of the installed error-handler wrapper
+/// ([`wrap_error_handler`]).
 ///
 /// Wrath's stock `Blizzard_DebugTools.lua` stores the answer in
 /// `_ScriptErrorsFrame.locals[index]` and feeds it to a five-`%s` `string.format` (`:398`, `:406`,
@@ -285,10 +286,13 @@ fn install_profile(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
-/// Whether the engine is dispatching to the global error handler, the reference's
-/// `s_inErrorHandler` (`0x00D3F79C`) set around its handler call (`0x819730`). An app-data value of
-/// its own, per VM: `debuglocals` reads it from a shared borrow, which may be held across the
-/// handler call (benilla-mlua keeps each app-data type in its own cell).
+/// Whether the engine is invoking the global error handler, the reference's
+/// `s_inErrorHandler` (`0x00D3F79C`) set around its handler call (`0x819730`). The reference sets
+/// it only around its own engine dispatch; here the installed handler's wrapper
+/// ([`wrap_error_handler`]) sets it for every slot invocation, including a script's direct
+/// `geterrorhandler()(...)` call, and the host dispatch keeps the same guard as a safety net. An
+/// app-data value of its own, per VM: `debuglocals` reads it from a shared borrow, which may be
+/// held across the handler call (benilla-mlua keeps each app-data type in its own cell).
 pub(super) struct ErrorHandlerFlag(pub(super) Cell<bool>);
 
 impl Default for ErrorHandlerFlag {
@@ -297,11 +301,60 @@ impl Default for ErrorHandlerFlag {
     }
 }
 
-/// The handler `seterrorhandler` holds, `None` until one is given.
+/// Sets [`ErrorHandlerFlag`] for one invocation of the installed error handler and restores the
+/// value it found on drop: a handler call that returns, raises or unwinds leaves the VM exactly as
+/// it was. The borrow is shared and `Cell`-based, so a `debuglocals` reached inside the handler can
+/// take its own shared borrow while this guard lives.
+struct ErrorHandlerGuard<'a> {
+    flag: Option<mlua::AppDataRef<'a, ErrorHandlerFlag>>,
+    was: bool,
+}
+
+impl<'a> ErrorHandlerGuard<'a> {
+    fn enter(lua: &'a Lua) -> Self {
+        let flag = lua.app_data_ref::<ErrorHandlerFlag>();
+        let was = flag.as_ref().is_some_and(|f| f.0.get());
+        if let Some(f) = &flag {
+            f.0.set(true);
+        }
+        Self { flag, was }
+    }
+}
+
+impl Drop for ErrorHandlerGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(f) = &self.flag {
+            f.0.set(self.was);
+        }
+    }
+}
+
+/// Run `f` with [`ErrorHandlerFlag`] set, restoring the previous value on return or unwind. The
+/// installed handler's wrapper uses this; the host dispatch keeps the same guard as a safety net,
+/// so a future slot writer that bypassed [`wrap_error_handler`] could not silently leave
+/// `debuglocals` answering zero values again.
+pub(super) fn with_error_handler_flag<R>(lua: &Lua, f: impl FnOnce() -> R) -> R {
+    let _flag = ErrorHandlerGuard::enter(lua);
+    f()
+}
+
+/// The handler `seterrorhandler` holds, `None` until one is given. The slot holds the wrapper, not
+/// the script's own function, so every invocation — the host's dispatch or a script's
+/// `geterrorhandler()` call — runs under [`ErrorHandlerFlag`].
 pub(super) fn error_handler(lua: &Lua) -> Option<mlua::Function> {
     lua.named_registry_value::<Option<mlua::Function>>(super::REG_ERRORHANDLER)
         .ok()
         .flatten()
+}
+
+/// Wrap the function `seterrorhandler` stores: each call runs under [`ErrorHandlerFlag`], which
+/// [`ErrorHandlerGuard`] restores on return or raise. Arguments and results pass through as the
+/// script passed and returned them — the handler still hears the raised value, and its arity is
+/// the script's.
+fn wrap_error_handler(lua: &Lua, handler: mlua::Function) -> mlua::Result<mlua::Function> {
+    lua.create_function(move |lua, args: MultiValue| {
+        with_error_handler_flag(lua, || handler.call::<MultiValue>(args))
+    })
 }
 
 /// `seterrorhandler(f)` / `geterrorhandler()`, engine globals in 1.12 (`0x702900`, `0x702950`)
@@ -309,6 +362,14 @@ pub(super) fn error_handler(lua: &Lua) -> Option<mlua::Function> {
 /// answers nil until something is set; in the running client FrameXML sets `_ERRORMESSAGE` first
 /// (`BasicControls.xml:16`), so every addon finds that. `seterrorhandler` takes a function alone
 /// and raises its `Usage:` on anything else, nil included, so the slot can never be cleared.
+///
+/// The function in the slot is [`wrap_error_handler`]'s, not the one passed: the reference sets
+/// `s_inErrorHandler` around the engine's call (`FrameScript.cpp:1123-1129`), but 3.3.5's stock
+/// dialog can also be reached by a script calling `geterrorhandler()(message)`, which bypasses
+/// that engine path. Wrapping makes the flag structural, so `debuglocals` answers a string in both
+/// cases. `geterrorhandler()` therefore answers a wrapper that calls the script's function; a
+/// `seterrorhandler(geterrorhandler())` round trip keeps the existing wrapper instead of nesting
+/// another.
 fn install_error_handler(lua: &Lua) -> mlua::Result<()> {
     // Born clear; a fork re-installs it beside the profiler's and call host's slots.
     lua.set_app_data(ErrorHandlerFlag::default());
@@ -316,7 +377,13 @@ fn install_error_handler(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "seterrorhandler",
         lua.create_function(|lua, f: Value| match f {
-            Value::Function(f) => lua.set_named_registry_value(super::REG_ERRORHANDLER, f),
+            Value::Function(f) => {
+                if error_handler(lua).as_ref() == Some(&f) {
+                    return lua.set_named_registry_value(super::REG_ERRORHANDLER, f);
+                }
+                let wrapped = wrap_error_handler(lua, f)?;
+                lua.set_named_registry_value(super::REG_ERRORHANDLER, wrapped)
+            }
             _ => Err(mlua::Error::RuntimeError(
                 "Usage: seterrorhandler(errfunc)".into(),
             )),

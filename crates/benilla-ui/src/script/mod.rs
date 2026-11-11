@@ -45,6 +45,7 @@ mod chat_send;
 mod chat_types;
 mod chat_window;
 mod clip;
+mod combat_log;
 mod colorselect;
 mod console_exec;
 mod container;
@@ -371,7 +372,8 @@ pub use minimap::{
 pub(crate) use model::Model;
 pub use model::{
     FontProbe, MacroIconSource, TextureProbe, TextureSizeFn, TextureSizeProbe, WorldLocFn,
-    WorldLocProjector,
+    WorldLocProjector, WrathLfgProposalMemberState, WrathLfgProposalState,
+    WrathLfgQueueStatusState, WrathLfgState, WrathScopedCommand,
 };
 pub use party::{
     PartyMemberInfo, PartyRequest, PartyState, RaidMemberInfo, ReadyCheckState, SavedInstanceInfo,
@@ -400,13 +402,14 @@ pub use skills::{SkillCall, SkillEntry, SkillsState};
 pub use social::{FriendInfo, IgnoreInfo, SocialCall, SocialState, WhoInfo};
 pub use sound::{MusicRequest, SoundRequest};
 pub use spellbook::{
-    resolve_spell_in_books, NamedSpell, PetBookState, SpellBookState, SpellSlotView, SpellTabName,
-    SpellTabView,
+    resolve_spell_in_books, resolve_spell_in_list, NamedSpell, PetBookState, SpellBookState,
+    SpellSlotView, SpellTabName, SpellTabView,
 };
 pub use stable::{StableCall, StableIntent, StablePetSlot, StableState, NUM_STABLE_SLOTS};
 pub use summon::{SummonCall, SummonConfirmUiState};
 pub use talent::{
     TalentCall, TalentPrereqView, TalentReq, TalentTabView, TalentUiState, TalentView,
+    WrathTalentGroupView, WrathTalentUiState,
 };
 pub use taxi::{TaxiCall, TaxiNodeType, TaxiUiNode, TaxiUiState};
 pub use tooltip_aura::{AuraKey, AuraTooltipView};
@@ -465,7 +468,8 @@ const REG_TEXTURE_META: &str = "__benilla_texture_meta";
 const REG_FONTSTRING_METHODS: &str = "__benilla_fontstring_methods";
 const REG_FONTSTRING_META: &str = "__benilla_fontstring_meta";
 /// The error handler `seterrorhandler` holds, the reference's registry reference `[0x8722cc]`;
-/// unset until one is given, as the reference's starts at -1.
+/// unset until one is given, as the reference's starts at -1. It holds the flag-setting wrapper
+/// (`stdlib::wrap_error_handler`), not the script's own function.
 const REG_ERRORHANDLER: &str = "__benilla_errorhandler";
 
 /// Names on both region leaves, each leaf registering its own copy (Texture's `SetAlpha`
@@ -864,6 +868,8 @@ fn install_in_game(lua: &Lua) -> mlua::Result<()> {
     worldstate::install(lua)?;
     net_stats::install(lua)?;
     if lua.app_data_ref::<Model>().expect("model").target == UiTarget::Wrath335 {
+        // `UnitCombatLog_C_Scripts.cpp`: the stock combat-log frame's filter and query surface.
+        combat_log::install(lua)?;
         wrath_spell::install(lua)?;
         wrath_unit::install(lua)?;
         wrath_aura::install(lua)?;
@@ -1706,6 +1712,16 @@ impl UiScript {
         self.model_ref().font_object(name).is_some()
     }
 
+    /// Whether the named frame exists and is currently marked shown (`Frame:IsShown()`).
+    pub fn is_shown(&self, name: &str) -> bool {
+        let model = self.model_ref();
+        model
+            .arena
+            .lookup(name)
+            .and_then(|h| model.arena.frame(h))
+            .is_some_and(|f| f.shown)
+    }
+
     /// The widget kind of a published name, in `CreateFrame`'s spelling (`SimpleHTML`): host-side,
     /// for the corpus harness to attribute a call site to a class unseen by any addon.
     pub fn widget_kind(&self, name: &str) -> Option<&'static str> {
@@ -1789,13 +1805,15 @@ impl UiScript {
     /// [`UiScript::errors`], alone; a handler that raises is recorded there only and stops the
     /// batch, so the path cannot recurse.
     ///
-    /// The handler runs with [`stdlib::ErrorHandlerFlag`] set, which is what lets `debuglocals`
-    /// answer at all, mirroring `s_inErrorHandler` around the reference's call
-    /// (`FrameScript.cpp:1123-1129`). The flag is restored on the error path too, unlike the
-    /// reference's `lua_call` longjmp leak: a later directly called handler must read as outside.
-    /// Because this dispatch runs after the raising call has unwound, the stock handler's
-    /// `debuglocals(4)` names no frame here and its dump is empty; the Locals/Stack panes stay
-    /// empty until an error handler can run at the raise site.
+    /// The slot holds [`stdlib::error_handler`]'s wrapper, which sets `ErrorHandlerFlag` for the
+    /// call and restores it on return or raise; that is what lets `debuglocals` answer both here
+    /// and when a script calls `geterrorhandler()(...)` directly, mirroring `s_inErrorHandler`
+    /// around the reference's call (`FrameScript.cpp:1123-1129`). This dispatch enters the same
+    /// guard as a safety net too, so a future slot writer that bypassed the wrapper could not
+    /// silently leave `debuglocals` answering zero values again. Because this dispatch runs after
+    /// the raising call has unwound, the stock handler's `debuglocals(4)` names no frame here and
+    /// its dump is empty; the Locals/Stack panes stay empty until an error handler can run at the
+    /// raise site.
     pub fn dispatch_script_errors_to_handler(&mut self) {
         let pending = std::mem::take(&mut self.model_mut().pending_error_dispatch);
         if pending.is_empty() {
@@ -1804,18 +1822,12 @@ impl UiScript {
         let Some(handler) = stdlib::error_handler(&self.lua) else {
             return;
         };
-        let flag = self.lua.app_data_ref::<stdlib::ErrorHandlerFlag>();
         for arg in pending {
-            let was = flag.as_ref().is_some_and(|f| f.0.get());
-            if let Some(f) = &flag {
-                f.0.set(true);
-            }
             let ran = host::unheld(&self.lua, || {
-                arg.value(&self.lua).and_then(|v| handler.call::<()>(v))
+                stdlib::with_error_handler_flag(&self.lua, || {
+                    arg.value(&self.lua).and_then(|v| handler.call::<()>(v))
+                })
             });
-            if let Some(f) = &flag {
-                f.0.set(was);
-            }
             if let Err(e) = ran {
                 self.model_mut()
                     .errors

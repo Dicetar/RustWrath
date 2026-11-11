@@ -618,8 +618,15 @@ impl Model {
         if item_id == 0 {
             return None;
         }
+        let wrath = self.is_wrath();
         match self.item_templates.get(&item_id) {
-            Some(t) => Some((t.name.clone(), t.quality, t.icon.clone())),
+            Some(t) => Some((
+                t.name.clone(),
+                t.quality,
+                t.icon.clone().or_else(|| {
+                    wrath.then(|| "Interface\\Icons\\INV_Misc_QuestionMark".to_string())
+                }),
+            )),
             None => {
                 self.item_stat_asks.insert(item_id);
                 self.quest_store.item_waits.insert(item_id);
@@ -859,10 +866,12 @@ pub(crate) fn selected_quest_item(
     index: usize,
 ) -> Option<QuestItemView> {
     let record = model.selected_quest_record()?;
-    let list = match kind {
-        "choice" => &record.choices,
-        "reward" => &record.rewards,
-        _ => return None,
+    let list = if kind.eq_ignore_ascii_case("choice") {
+        &record.choices
+    } else if kind.eq_ignore_ascii_case("reward") {
+        &record.rewards
+    } else {
+        return None;
     };
     let &(item_id, count) = list.get(index.checked_sub(1)?)?;
     let template = model.item_templates.get(&item_id);

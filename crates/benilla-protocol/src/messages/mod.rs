@@ -66,6 +66,7 @@ pub use action_bar::{
 pub use addons::{
     pair_with_sent, AddonRecord, SecureAddon, STANDARD_MODULUS_CRC, STOCK_SECURE_ADDONS,
 };
+pub use crate::events::EntityKind;
 pub use area_trigger::area_trigger;
 pub use attack::{attack_swing, AttackSwingError, AttackerState};
 pub use auction::{

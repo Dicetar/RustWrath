@@ -82,6 +82,12 @@ pub(crate) struct ControlRestore;
 // itself before it.
 pub(crate) use camera::apply_self_model_fade;
 use controller::control;
+pub(crate) use controller::{
+    MovementBaseline, MovementCorrection, MovementIntentRejection, MovementIntentVerdict,
+    MovementProcessor, MovementProcessorOutcome, MovementProcessorRefusal, MovementProcessorState,
+    MovementProcessorTick, MovementProposal, MODULE_OWNED_FLAGS, MODULE_SPEED_SLACK,
+    MODULE_STEP_FLOOR, MODULE_STEP_SLACK,
+};
 // The private camera and `state` items are re-imported for the modules beside this one, which
 // name them `super::X`.
 pub(crate) use camera::{head_height, CameraControl, CameraPivot};
@@ -100,14 +106,13 @@ pub(crate) use approach::{
 /// `SetStandState` run inside a script call.
 pub(crate) use posture::{stand_up_for_attack, stand_up_refused, StandSetter};
 use state::{
-    MoveSpeed, PlayerRide, AIR_NUDGE_SPEED, FALL_FAR_DROP, FALL_FAR_TIME, FOOT_CONE_HEIGHT,
-    GROUND_COS, GROUND_PROBE, JUMP_SPEED, LAND_PROBE, RUN_BACK_RATIO, SKIN_WIDTH,
-    STATIONARY_CHASE_RATE, STEP_SLOPE_RATIO, STEP_SNAP_SLACK, STEP_UP_ADVANCE_PER_YARD, TURN_RATE,
-    TURN_RATE_MOVING, WALK_RATIO, WATER_WALK_PITCH_FLOOR, WEDGE_MIN_FALL, WEDGE_STALL_RATIO,
-    WEDGE_STILL_FRAMES,
+    PlayerRide, AIR_NUDGE_SPEED, FALL_FAR_DROP, FALL_FAR_TIME, FOOT_CONE_HEIGHT, GROUND_COS,
+    GROUND_PROBE, JUMP_SPEED, LAND_PROBE, RUN_BACK_RATIO, SKIN_WIDTH, STATIONARY_CHASE_RATE,
+    STEP_SLOPE_RATIO, STEP_SNAP_SLACK, STEP_UP_ADVANCE_PER_YARD, TURN_RATE, TURN_RATE_MOVING,
+    WALK_RATIO, WATER_WALK_PITCH_FLOOR, WEDGE_MIN_FALL, WEDGE_STALL_RATIO, WEDGE_STILL_FRAMES,
 };
 pub(crate) use state::{
-    OwnControlLost, Player, PlayerCapsule, StandPending, CAPSULE_HEIGHT, CAPSULE_RADIUS,
+    MoveSpeed, OwnControlLost, Player, PlayerCapsule, StandPending, CAPSULE_HEIGHT, CAPSULE_RADIUS,
     CREATURE_STEP_UP_HEIGHT, DEFAULT_COLLISION_HEIGHT, FEATHER_TERMINAL_VELOCITY, GRAVITY,
     HOVER_CLIMB_RATE, HOVER_HEIGHT, SETTLE_TIMEOUT, STEP_UP_HEIGHT, TERMINAL_VELOCITY,
 };
@@ -314,6 +319,7 @@ impl Plugin for PlayerPlugin {
         app.init_resource::<camera::FollowConfig>();
         app.init_resource::<OwnControlLost>();
         app.init_resource::<StandPending>();
+        app.init_resource::<controller::MovementProcessor>();
         app.init_resource::<camera_dynamics::CameraOptions>();
         // Far sight resolves `PLAYER_FARSIGHT` to a pose before `control` seats the camera: a
         // separate system, as `control` holds our `Transform` mutably and cannot read another's.

@@ -27,8 +27,27 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
     m.set(
         "SetText",
         lua.create_function(|lua, (this, s): (Table, Option<mlua::Value>)| {
-            let s = crate::script::binding_abi::text_arg(lua, s)?;
+            // `FrameScript_GetObjectThis` (`0x00975E80:317`) resolves the receiver before the
+            // argument is touched, so a bad receiver raises the member prologue, not this usage.
+            with_editbox(lua, &this, |_| ())?;
             let h = frame_handle_of(lua, &this)?;
+            // `CSimpleEditBox_Scripts.cpp` `Script_SetText` (`0x00975E80:318`) tests the raw tag
+            // with `lua_isstring` (`0x0084DF60`, `lapi.c:320-323`): a string or a number passes,
+            // and nil, a missing argument, a boolean, a table or a function raises the usage line
+            // naming the box. The donor's `SetText` (`0x7984c0`) does the same through
+            // `is-number-or-string` (`0x6f3510`, tested at `0x79854c`) and raises its own usage
+            // line, so this is the 1.12 contract too. Only then does it read the argument through
+            // `lua_tolstring`, so a number is its `%.14g` text.
+            if !matches!(
+                s,
+                Some(Value::String(_) | Value::Integer(_) | Value::Number(_))
+            ) {
+                return Err(mlua::Error::runtime(format!(
+                    "Usage: {}:SetText(\"text\")",
+                    crate::script::binding_abi::name_of(lua, &this)
+                )));
+            }
+            let s = crate::script::binding_abi::text_arg(lua, s)?;
             // SetText keeps a history browse going: the chat parser rewrites each recalled slash
             // line, and ending the browse there would send every Up back to the newest entry.
             // Typed edits, AddHistoryLine and focus gain end it.
@@ -67,13 +86,15 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(crate::script::binding_abi::s_str_to_float(&text))
         })?,
     )?;
-    // Insert: a nil is a no-op, not an error, since the reference reads the argument through
-    // `lua_tostring`, which answers NULL for nil; stock `LootFrame.lua:152` inserts a coin row's
-    // nil link unguarded. A number inserts its digits.
+    // Insert: the gate is `lua_isstring` (`CSimpleEditBox_Scripts.cpp` `Script_Insert`,
+    // `0x00975E10` at line 306; `0x0084DF60`, `lapi.c:320-323`), then `lua_tolstring` (line 308):
+    // a string or a number is inserted, the number as its `%.14g` text; a nil, boolean, table or
+    // function is a silent no-op, not an error, and stock `LootFrame.lua:152` inserts a coin row's
+    // nil link unguarded.
     m.set(
         "Insert",
         lua.create_function(|lua, (this, s): (Table, Option<mlua::Value>)| {
-            let s = crate::script::binding_abi::text_arg(lua, s)?;
+            let s = crate::script::binding_abi::tolstring_arg(lua, s);
             let h = frame_handle_of(lua, &this)?;
             if let Some(s) = s {
                 insert(lua, h, &s, true);
@@ -184,7 +205,11 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     // The sent-line history (`historyLines`): `ChatEdit_AddHistory` pushes each line, Up and Down
-    // recall them.
+    // recall them. Named `lua_tolstring` gap: 3.3.5 `AddHistoryLine` (`0x00976110`) gates arity,
+    // then reads the line with `lua_tolstring` (`:399`), where a function is a NULL that would
+    // reach `CSimpleEditBox::AddHistoryLine`'s `SStrLen`/`SStrCopy` (`:1494-1503`). This host
+    // takes `Option<String>` instead: nil is an empty line, and a function, table or boolean
+    // raises. Left alone here; no stock caller is known to pass a non-string.
     m.set(
         "AddHistoryLine",
         lua.create_function(|lua, (this, line): (Table, Option<String>)| {

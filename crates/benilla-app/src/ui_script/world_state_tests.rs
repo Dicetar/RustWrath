@@ -6,7 +6,7 @@ use benilla_ui::script::{QuadContent, ScriptValue, UiScript, WorldStateUiView};
 use super::test_ui::load_ui as load_xml;
 
 pub(crate) fn harness() -> UiScript {
-    let mut s = UiScript::new().unwrap();
+    let mut s = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
     for f in [
@@ -284,15 +284,15 @@ fn the_bindings_answer_the_reference_shape() {
     assert_eq!(s.eval::<i64>("return GetNumWorldStateUI()").unwrap(), 1);
     assert_eq!(
         s.eval::<String>(
-            "local a,b,c,d,e,f,g,h,i,j = GetWorldStateUIInfo(1)\n\
-             return a..'|'..b..'|'..c..'|'..d..'|'..e..'|'..f..'|'..g..'|'..h..'|'..i..'|'..j"
+            "local a,b,c,d,e,f,g,h,i,j,k = GetWorldStateUIInfo(1)\n\
+             return a..'|'..b..'|'..c..'|'..d..'|'..e..'|'..f..'|'..g..'|'..h..'|'..i..'|'..j..'|'..k"
         )
         .unwrap(),
-        "7|Towers Controlled: 3|Interface\\WorldStateFrame\\AllianceTower||\
+        "0|7|Towers Controlled: 3|Interface\\WorldStateFrame\\AllianceTower||\
          Alliance Towers Controlled|||1|2|3",
         "empty columns are empty strings, never nil"
     );
-    assert_eq!(s.arity("GetWorldStateUIInfo(1)").unwrap(), 10);
+    assert_eq!(s.arity("GetWorldStateUIInfo(1)").unwrap(), 11);
 
     assert_eq!(s.arity("GetWorldStateUIInfo(2)").unwrap(), 1);
     assert_eq!(s.eval::<i64>("return GetWorldStateUIInfo(2)").unwrap(), 0);

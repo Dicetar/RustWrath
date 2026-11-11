@@ -1882,6 +1882,63 @@ pub(crate) enum ClientCommand {
         session_epoch: u64,
         world_generation: u64,
     },
+    /// `CMSG_LFG_JOIN`, scoped to the active Wrath world generation.
+    LfgJoin {
+        slots: Vec<u32>,
+        comment: String,
+        roles: u8,
+        no_partial_clear: bool,
+        achievements: bool,
+        needs: [u8; 3],
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `CMSG_LFG_LEAVE`, scoped to the active Wrath world generation.
+    LfgLeave {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `CMSG_LFG_PROPOSAL_RESULT`, scoped to the active Wrath world generation.
+    LfgProposalResult {
+        proposal_id: u32,
+        accept: bool,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `CMSG_SET_LFG_COMMENT`, scoped to the active Wrath world generation.
+    SetLfgComment {
+        comment: String,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `CMSG_LFG_SET_ROLES`, scoped to the active Wrath world generation.
+    LfgSetRoles {
+        roles: u8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `CMSG_REQUEST_VEHICLE_EXIT`, scoped to the active Wrath world generation.
+    VehicleExit {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `CMSG_REQUEST_VEHICLE_PREV_SEAT`, scoped to the active Wrath world generation.
+    VehiclePrevSeat {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `CMSG_REQUEST_VEHICLE_NEXT_SEAT`, scoped to the active Wrath world generation.
+    VehicleNextSeat {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    /// `CMSG_REQUEST_VEHICLE_SWITCH_SEAT`, scoped to the active Wrath world generation.
+    VehicleSwitchSeat {
+        vehicle: u64,
+        seat: i8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
     /// `CMSG_INSPECT`: the window paints from the streamed `PLAYER_VISIBLE_ITEM_*` fields; the
     /// send also sets our selection server-side (`MiscHandler.cpp:945`).
     Inspect {

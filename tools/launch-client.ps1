@@ -13,7 +13,8 @@ param(
     [switch]$SkipHealthCheck,
     [scriptblock]$HealthPredicate = $null,
     [switch]$WithMulticlass,
-    [string]$MulticlassGluePath = 'D:\WOW\wm-project\client_extensions\multiclass\multiclass_glue.lua'
+    [string]$MulticlassGluePath = 'D:\WOW\wm-project\client_extensions\multiclass\multiclass_glue.lua',
+    [bool]$WithMovementHotpatch = $true
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -85,7 +86,16 @@ if ($BuildLatest -and !$isRelease -and !$releaseRequested) {
         throw 'Close the running client or wait for the active build before rebuilding.'
     }
     Write-Host 'Building the current RustWrath source before launch...'
-    $cache = Get-Command sccache -ErrorAction Stop
+    $cache = Get-Command sccache -ErrorAction SilentlyContinue
+    if (!$cache) {
+        $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin\sccache.exe'
+        if (Test-Path -LiteralPath $cargoBin -PathType Leaf) {
+            $cache = Get-Command $cargoBin -ErrorAction SilentlyContinue
+        }
+    }
+    if (!$cache) {
+        throw "sccache is required by .cargo/config.toml, but was not found in PATH or at $env:USERPROFILE\.cargo\bin\sccache.exe.`nInstall it by running:`n  `$env:RUSTC_WRAPPER=''; cargo install sccache --locked"
+    }
     $previousWrapper = $env:RUSTC_WRAPPER
     $previousIncremental = $env:CARGO_INCREMENTAL
     try {
@@ -152,12 +162,18 @@ if ($StateHome) {
 if (!(Test-Path -LiteralPath $DataPath)) { throw "Game data folder missing: $DataPath" }
 if ($WithMulticlass) {
     if (!$WithAddons) { throw 'Multiclass requires -WithAddons $true' }
-    if (!(Test-Path -LiteralPath $MulticlassGluePath -PathType Leaf)) {
-        throw "Multiclass Glue script missing: $MulticlassGluePath"
-    }
-    $multiclassToc = Join-Path (Split-Path -Parent $DataPath) 'Interface\AddOns\WM_Multiclass\WM_Multiclass.toc'
+    $multiclassDir = Join-Path (Split-Path -Parent $DataPath) 'Interface\AddOns\WM_Multiclass'
+    $multiclassToc = Join-Path $multiclassDir 'WM_Multiclass.toc'
     if (!(Test-Path -LiteralPath $multiclassToc -PathType Leaf)) {
         throw "Required addon missing: $multiclassToc"
+    }
+    if (!(Test-Path -LiteralPath $MulticlassGluePath -PathType Leaf)) {
+        $bundledGlue = Join-Path $multiclassDir 'multiclass_glue.lua'
+        if (Test-Path -LiteralPath $bundledGlue -PathType Leaf) {
+            $MulticlassGluePath = $bundledGlue
+        } else {
+            throw "Multiclass Glue script missing: $MulticlassGluePath"
+        }
     }
 }
 
@@ -175,6 +191,7 @@ $env:WOW_HOST = $AuthServer
 $env:WOW_DATA = $DataPath
 $env:WOW_STOCK_UI = '1'
 $env:WOW_GM = 'off'
+$env:WOW_HOTPATCH_MOVEMENT = if ($WithMovementHotpatch) { '1' } else { '0' }
 $env:WM_ASSET_MANIFEST = Join-Path $repo 'docs\profiles\wm-hd.mpqlist'
 $env:WM_ASSET_PROFILE = 'wm-hd'
 if ($WithMulticlass) {

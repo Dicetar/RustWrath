@@ -763,23 +763,54 @@ mod social {
                 }),
             };
 
+            let events = crate::wrath::wrath_group_list_events(list);
+            assert_eq!(events.len(), 3);
             let SessionEvent::GroupList {
                 group_type,
                 own_flags,
                 members,
                 leader,
                 loot,
-            } = crate::wrath::wrath_group_list(list)
+            } = &events[0]
             else {
                 panic!("expected GroupList event");
             };
-            assert_eq!(group_type, 0x02);
-            assert_eq!(own_flags, 3 | GROUP_MEMBER_ASSISTANT);
+            assert_eq!(*group_type, 0x02);
+            assert_eq!(*own_flags, 3 | GROUP_MEMBER_ASSISTANT);
             assert_eq!(members.len(), 2);
             assert_eq!(members[0].flags, 2 | GROUP_MEMBER_ASSISTANT);
             assert_eq!(members[1].flags, 4);
-            assert_eq!(leader, 0x10);
+            assert_eq!(*leader, 0x10);
             assert_eq!(loot.map(|l| (l.method, l.threshold)), Some((2, 4)));
+
+            let mut group = crate::ui_party::GroupState::default();
+            for ev in events.into_iter().skip(1) {
+                let SessionEvent::PartyMemberStats { guid, full, info } = ev else {
+                    panic!("expected PartyMemberStats role delta");
+                };
+                group.apply_stats(guid, full, *info);
+            }
+            assert_eq!(group.stats.get(&0x10).and_then(|s| s.lfg_roles), Some(0x02));
+            assert_eq!(group.stats.get(&0x11).and_then(|s| s.lfg_roles), Some(0x08));
+        }
+
+        #[test]
+        fn wrath_pet_order_reaches_handle_pet_action() {
+            let pet_guid = 0xF140_0000_0000_0077u64;
+            let packed = (0x07u32 << 24) | 0x02u32; // ACT_COMMAND (0x07), COMMAND_ATTACK (2)
+            let target_guid = 0xF130_0000_2F00_002Au64;
+            let wire =
+                benilla_protocol_wrath::gameplay::encode_pet_action(pet_guid, packed, target_guid);
+            assert_eq!(wire.len(), 20);
+            assert_eq!(
+                u64::from_le_bytes(wire[0..8].try_into().unwrap()),
+                pet_guid
+            );
+            assert_eq!(u32::from_le_bytes(wire[8..12].try_into().unwrap()), packed);
+            assert_eq!(
+                u64::from_le_bytes(wire[12..20].try_into().unwrap()),
+                target_guid
+            );
         }
     }
 }

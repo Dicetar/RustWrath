@@ -128,11 +128,17 @@ fn feed_gm_ticket(
 
 /// `UPDATE_TICKET`'s arguments: category, text, the three day figures, assigned, opened. The wire
 /// has the text first and the reference's handler reorders as it fires, so the decoder keeps wire
-/// order. No ticket is a single `0`: `HelpFrameOpenTicket_OnEvent` tests `arg1 and arg1 ~= 0`
-/// (`HelpFrame.lua:403`), and its else branch resets the form (`:468-475`).
+/// order.
+///
+/// No ticket means no arguments at all: the reference's `SMSG_GM_TICKET_GET_TICKET` no-ticket arm
+/// signals with `nullptr` (`GMTicketInfo.cpp:242`), as do the delete and status arms (`:278`,
+/// `:299`, `:342`). Lua then sees a nil `category`, so `TicketStatusFrame_OnEvent`
+/// (`HelpFrame.lua:373-389`) hides the toast and `HelpFrame`'s `UPDATE_TICKET` handler (`:98-101`)
+/// stays out of its ticket branch. A single `0` is truthy in Lua and would take both into that
+/// branch, where `oldestTicketTime`/`ticketAge` are absent and the arithmetic at `:126` raises.
 fn update_ticket_args(ticket: Option<&benilla_protocol::messages::GmTicket>) -> Vec<ScriptValue> {
     let Some(t) = ticket else {
-        return vec![ScriptValue::Int(0)];
+        return Vec::new();
     };
     vec![
         ScriptValue::Int(i64::from(t.category)),
@@ -584,10 +590,43 @@ mod tests {
         assert_eq!(args[6], ScriptValue::Int(1), "arg7 openedByGM");
     }
 
-    /// The window's form reset hangs on `arg1 and arg1 ~= 0`.
+    /// The no-ticket answer is empty: the 3.3.5 reference signals `UPDATE_TICKET` with `nullptr`
+    /// for this arm (`GMTicketInfo.cpp:242`, pinned 12340), so Lua's `category` is nil. A single
+    /// `0` is truthy in Lua and sends both handlers into the ticket branch, where `HelpFrame` reads
+    /// absent fields and raises at `HelpFrame.lua:126`.
     #[test]
-    fn the_no_ticket_answer_is_a_single_zero() {
-        assert_eq!(update_ticket_args(None), vec![ScriptValue::Int(0)]);
+    fn the_no_ticket_answer_carries_no_arguments() {
+        assert!(update_ticket_args(None).is_empty());
+    }
+
+    /// The stock event shape behind that empty list: in the 3.3.5 VM the listener's payload has no
+    /// first argument at all, so `arg1` is nil rather than the truthy `0` that used to reach it.
+    #[test]
+    fn the_no_ticket_event_reaches_lua_with_no_first_argument() {
+        let mut script = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
+        script
+            .run(
+                r##"
+                local watch = CreateFrame("Frame")
+                watch:RegisterEvent("UPDATE_TICKET")
+                watch:SetScript("OnEvent", function(_, _, ...)
+                    TICKET_ARGS = select("#", ...)
+                    TICKET_ARG1 = tostring(arg1)
+                end)
+                "##,
+            )
+            .unwrap();
+        script.fire_event("UPDATE_TICKET", update_ticket_args(None));
+        assert_eq!(
+            script.eval::<i64>("return TICKET_ARGS").unwrap(),
+            0,
+            "the no-ticket fire carries no payload at all"
+        );
+        assert_eq!(
+            script.eval::<String>("return TICKET_ARG1").unwrap(),
+            "nil",
+            "no category argument: nil, not a truthy 0"
+        );
     }
 
     /// The window's `arg4 < 0 or arg5 < 0` test shows "unavailable".

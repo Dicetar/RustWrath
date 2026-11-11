@@ -33,8 +33,15 @@ Before reserving a slot, inspect processes and coordinate with the task owner. R
 
 | Resource | Owner | Task / command and evidence log | State |
 |---|---|---|---|
-| Cargo | Astra | `cargo build -p benilla --features hotpatch`; `.scratch/project-b/build-2026-11-02-astra-pose.log` | Passed; slot released |
+| Cargo | overseer | Release verification 2026-11-11: `cargo check -p benilla-hotpatch -p benilla-hotpatch-bevy` passed; 15 focused `benilla-hotpatch` tests passed after one test assertion correction; `cargo check -p benilla-app --features hotpatch` remains blocked by 21 pre-existing `benilla-app`/protocol/UI errors, not the hotpatch files. Logs: `.scratch/project-b/release-verify-2026-11-11.log`, `.scratch/project-b/release-tests-2026-11-11.log` | Slot released; app check blocked |
 | Client | Astra / owner | Run `20261102-222346-059`, PID43304, SHA256 `1D853A073F916C1CBD952FA21E36ACB6BA960C29486B919CD2F6A7A13B3B43BC` | Owner entered Northshire as Firna; visible world/combat observed, do not interrupt or compete |
+
+Release verification 2026-11-11: the hotpatch crates compile and the 15 focused hotpatch tests
+pass (one state-file test assertion corrected). The `benilla-app --features hotpatch` check is
+blocked by 21 pre-existing errors in `ui_quest::is_shown` and the `wrath.rs` PvP/LFG protocol
+surface (`BattlefieldStatus`, `PvpLogRow`, `SessionEvent::PvpLogData`, boxed `LfgJoinResult`/
+`LfgProposalUpdate`); these are outside the hotpatch files. No client/server/visual run was made,
+so release readiness is not established.
 
 Update the reservation when acquired and release it on completion. Do not overwrite a
 newer reservation or kill another owner's process to acquire the slot.

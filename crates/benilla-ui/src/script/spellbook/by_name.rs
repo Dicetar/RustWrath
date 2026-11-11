@@ -35,8 +35,26 @@ pub(super) fn resolve_named(
     pet: &PetBookState,
     text: &[u8],
 ) -> Option<NamedSpell> {
+    resolve_named_list(&player.slots, pet, text)
+}
+
+/// All-list-aware name resolution: resolve against an arbitrary player slot slice (the all-learned
+/// list when populated, else the displayed book) without forcing a `SpellBookState`.
+pub fn resolve_spell_in_list(
+    player: &[SpellSlotView],
+    pet: &PetBookState,
+    text: &str,
+) -> Option<NamedSpell> {
+    resolve_named_list(player, pet, text.as_bytes())
+}
+
+pub(super) fn resolve_named_list(
+    player: &[SpellSlotView],
+    pet: &PetBookState,
+    text: &[u8],
+) -> Option<NamedSpell> {
     let (name, rank) = split_name_rank(text);
-    let (slot, pet) = find_in_books(&player.slots, &pet.slots, name, rank)?;
+    let (slot, pet) = find_in_books(player, &pet.slots, name, rank)?;
     Some(NamedSpell {
         spell_id: slot.spell_id,
         pet,

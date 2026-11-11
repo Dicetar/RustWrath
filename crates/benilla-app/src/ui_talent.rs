@@ -16,7 +16,7 @@ use benilla_formats::{Talent, TalentCatalog};
 use benilla_protocol::{SessionEvent, SessionEventKind, TalentGroupInfo};
 use benilla_ui::script::{
     ScriptValue, TalentCall, TalentPrereqView, TalentReq, TalentTabView, TalentUiState, TalentView,
-    UiScript,
+    UiScript, WrathTalentGroupView, WrathTalentUiState,
 };
 
 use crate::net::{ClientCommand, NetCommands, NetHandlerApp, ObjectStore, SelfPlayer};
@@ -147,6 +147,7 @@ fn load_talents(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
 #[derive(Default)]
 struct FeedMemory {
     pushed: TalentUiState,
+    pushed_wrath: WrathTalentUiState,
     /// `None` until the first read, which gives zero deltas.
     points: Option<(u32, u32)>,
 }
@@ -221,6 +222,20 @@ fn feed_talents(
             class,
             points,
         );
+        let fresh_wrath = build_wrath_talent_groups(
+            &talents.catalog,
+            &actions.spells,
+            wrath_talents.as_deref(),
+            &spells.catalog,
+            race,
+            class,
+            points,
+            &fresh,
+        );
+        if fresh_wrath != memory.pushed_wrath {
+            script.set_wrath_talents(fresh_wrath.clone());
+            memory.pushed_wrath = fresh_wrath;
+        }
         if fresh != memory.pushed {
             gate.audit("feed_talents", "the talent pages");
             debug!(
@@ -268,6 +283,15 @@ fn rank_of(t: &Talent, known: &BTreeSet<u32>) -> u32 {
         .unwrap_or(0)
 }
 
+fn rank_of_spec(t: &Talent, spec: &TalentGroupInfo) -> u32 {
+    spec.talents
+        .iter()
+        .find(|&&(id, _)| id == t.id)
+        .map_or(0, |&(_, max_rank_idx)| {
+            (u32::from(max_rank_idx) + 1).min(t.max_rank())
+        })
+}
+
 fn rank_of_with_wrath(
     t: &Talent,
     known: &BTreeSet<u32>,
@@ -276,9 +300,202 @@ fn rank_of_with_wrath(
     let from_spells = rank_of(t, known);
     let from_spec = wrath
         .and_then(WrathTalentState::active_player_spec)
-        .and_then(|spec| spec.talents.iter().find(|&&(id, _)| id == t.id))
-        .map_or(0, |&(_, max_rank_idx)| (u32::from(max_rank_idx) + 1).min(t.max_rank()));
+        .map_or(0, |spec| rank_of_spec(t, spec));
     from_spells.max(from_spec)
+}
+
+pub(crate) fn build_wrath_talent_groups(
+    catalog: &TalentCatalog,
+    known: &BTreeSet<u32>,
+    wrath: Option<&WrathTalentState>,
+    spells: &benilla_formats::SpellCatalog,
+    race: u8,
+    class: u8,
+    points: (u32, u32),
+    active_snapshot: &TalentUiState,
+) -> WrathTalentUiState {
+    let Some(wrath) = wrath else {
+        return WrathTalentUiState::default();
+    };
+    let active_group = wrath.active_spec.saturating_add(1).max(1);
+    let mut groups = Vec::with_capacity(wrath.specs.len());
+    for (spec_idx, spec) in wrath.specs.iter().enumerate() {
+        let mut glyphs = [0u16; 6];
+        for (i, &g) in spec.glyphs.iter().take(6).enumerate() {
+            glyphs[i] = g;
+        }
+        let is_active = spec_idx == usize::from(wrath.active_spec);
+        let single_spec_state = WrathTalentState {
+            player_unspent_points: wrath.player_unspent_points,
+            active_spec: 0,
+            specs: vec![spec.clone()],
+            pet_unspent_points: None,
+            pet_talents: Vec::new(),
+            involuntary_reset_flag: None,
+        };
+        let empty_spells = BTreeSet::new();
+        let page = if is_active {
+            active_snapshot.clone()
+        } else {
+            build_pages_with_wrath(
+                catalog,
+                &empty_spells,
+                Some(&single_spec_state),
+                spells,
+                race,
+                class,
+                points,
+            )
+        };
+        let spent_in_spec: u32 = page.tabs.iter().map(|t| t.points_spent).sum();
+        let active_spent: u32 = active_snapshot.tabs.iter().map(|t| t.points_spent).sum();
+        let total_budget = active_spent.saturating_add(points.0);
+        let unspent_points = if is_active {
+            points.0
+        } else {
+            total_budget.saturating_sub(spent_in_spec)
+        };
+        groups.push(WrathTalentGroupView {
+            tabs: page.tabs,
+            talents: page.talents,
+            unspent_points,
+            glyphs,
+        });
+    }
+    let pet_unspent_points = wrath.pet_unspent_points.unwrap_or(0);
+    let (pet_tabs, pet_talent_views) =
+        build_pet_talent_views(catalog, spells, &wrath.pet_talents, pet_unspent_points);
+    WrathTalentUiState {
+        active_group,
+        groups,
+        pet_unspent_points,
+        pet_talents: wrath.pet_talents.clone(),
+        pet_tabs,
+        pet_talent_views,
+    }
+}
+
+fn build_pet_talent_views(
+    catalog: &TalentCatalog,
+    spells: &benilla_formats::SpellCatalog,
+    pet_talents: &[(u32, u8)],
+    pet_unspent_points: u32,
+) -> (Vec<TalentTabView>, Vec<Vec<TalentView>>) {
+    if pet_talents.is_empty() && pet_unspent_points == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    // Resolve the pet's active talent tab from its learned talents first, or fall back to the
+    // first zero-mask pet tab in `TalentTab.dbc`.
+    let matched_tab = pet_talents
+        .iter()
+        .find_map(|&(talent_id, _)| catalog.talent_by_id(talent_id).and_then(|t| catalog.tab_by_id(t.tab)))
+        .or_else(|| catalog.pet_tabs().into_iter().next());
+
+    if let Some(tab) = matched_tab {
+        let list = catalog.talents_in_tab(tab.id);
+        let rank_of_pet = |t: &Talent| -> u32 {
+            pet_talents
+                .iter()
+                .find(|&&(id, _)| id == t.id)
+                .map_or(0, |&(_, max_rank_idx)| {
+                    (u32::from(max_rank_idx) + 1).min(t.max_rank())
+                })
+        };
+        let spent: u32 = list.iter().map(rank_of_pet).sum();
+        let mut views = Vec::with_capacity(list.len());
+        for t in list {
+            let rank = rank_of_pet(t);
+            let max_rank = t.max_rank();
+            let display_spell = t.ranks[rank.max(1) as usize - 1];
+            let next_spell = if rank > 0 && rank < max_rank {
+                t.ranks[rank as usize]
+            } else {
+                0
+            };
+            let d = spells.get(display_spell);
+            let mut prereqs = Vec::new();
+            let mut all_met = true;
+            for (&id, &need0) in t.prereq_talents.iter().zip(&t.prereq_ranks) {
+                let Some(p) = (id != 0).then(|| catalog.talent(t.tab, id)).flatten() else {
+                    continue;
+                };
+                let need = need0 + 1;
+                let learnable = rank_of_pet(p) >= need;
+                prereqs.push(TalentPrereqView {
+                    tier: p.row + 1,
+                    column: p.col + 1,
+                    learnable,
+                });
+                if !learnable && rank == 0 {
+                    all_met = false;
+                }
+            }
+            if rank == 0 && t.row * 3 > spent {
+                all_met = false;
+            }
+            let learnable = all_met && rank < max_rank && pet_unspent_points > 0;
+            views.push(TalentView {
+                talent_id: t.id,
+                name: d.map(|d| d.name.clone()).unwrap_or_default(),
+                texture: d.and_then(|d| d.icon.clone()),
+                tier: t.row + 1,
+                column: t.col + 1,
+                rank,
+                max_rank,
+                exceptional: t.exceptional,
+                meets_prereq: true,
+                prereqs,
+                display_spell,
+                next_spell,
+                reqs: Vec::new(),
+                learnable,
+            });
+        }
+        let tab_view = TalentTabView {
+            name: tab.name.clone(),
+            background: tab.background.clone(),
+            points_spent: spent,
+            texture: tab.icon.clone(),
+        };
+        return (vec![tab_view], vec![views]);
+    }
+
+    let spent: u32 = pet_talents
+        .iter()
+        .map(|&(_, max_rank_idx)| u32::from(max_rank_idx) + 1)
+        .sum();
+    let views: Vec<TalentView> = pet_talents
+        .iter()
+        .enumerate()
+        .map(|(idx, &(talent_id, max_rank_idx))| {
+            let rank = u32::from(max_rank_idx) + 1;
+            TalentView {
+                talent_id,
+                name: format!("Pet Talent {talent_id}"),
+                texture: None,
+                tier: (idx as u32 / 4) + 1,
+                column: (idx as u32 % 4) + 1,
+                rank,
+                max_rank: rank,
+                exceptional: false,
+                meets_prereq: true,
+                prereqs: Vec::new(),
+                display_spell: 0,
+                next_spell: 0,
+                reqs: Vec::new(),
+                learnable: false,
+            }
+        })
+        .collect();
+    (
+        vec![TalentTabView {
+            name: "Pet".into(),
+            background: "HunterPetFerocity".into(),
+            points_spent: spent,
+            texture: None,
+        }],
+        vec![views],
+    )
 }
 
 /// Builds the pushed snapshot.
@@ -770,6 +987,100 @@ mod tests {
             (wrath.player_unspent_points.unwrap_or(0), 0),
         );
         assert_eq!(wiped.tabs[0].points_spent, 0);
+    }
+
+    #[test]
+    fn pet_talent_tab() {
+        use benilla_ui::script::UiTarget;
+
+        let pet_tab = benilla_formats::TalentTabInfo {
+            id: 410,
+            name: "Ferocity".into(),
+            race_mask: 0,
+            class_mask: 0,
+            background: "HunterPetFerocity".into(),
+            icon: Some("Interface\\Icons\\Ability_Druid_Swipe".into()),
+        };
+        let pet_talents = vec![
+            talent(2101, 410, 0, 0, &[53137, 53138]),
+            talent(2102, 410, 0, 1, &[53140]),
+        ];
+        let spells = [
+            (53137, "Cobra Reflexes"),
+            (53138, "Cobra Reflexes"),
+            (53140, "Dash"),
+        ]
+        .into_iter()
+        .map(|(id, name)| {
+            let d = benilla_formats::SpellDisplay {
+                name: name.into(),
+                icon: Some("Interface\\Icons\\Ability_Hunter_Cobrastrikes".into()),
+                ..Default::default()
+            };
+            (id, d)
+        })
+        .collect();
+        let catalog = TalentCatalog::from_rows(vec![pet_tab], pet_talents);
+        let spell_catalog = benilla_formats::SpellCatalog::from_displays(spells);
+
+        let mut wrath = WrathTalentState::default();
+        wrath.apply_talent_info(true, 2, None, Vec::new(), vec![(2101, 0)]);
+
+        let active = build_pages(&catalog, &BTreeSet::new(), &spell_catalog, 1, 3, (0, 0));
+        let wrath_ui = build_wrath_talent_groups(
+            &catalog,
+            &BTreeSet::new(),
+            Some(&wrath),
+            &spell_catalog,
+            1,
+            3,
+            (0, 0),
+            &active,
+        );
+        assert_eq!(wrath_ui.pet_unspent_points, 2);
+        assert_eq!(wrath_ui.pet_tabs.len(), 1);
+        assert_eq!(wrath_ui.pet_tabs[0].name, "Ferocity");
+        assert_eq!(wrath_ui.pet_tabs[0].points_spent, 1);
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).expect("VM");
+        s.keep_calls();
+        s.set_talents(active);
+        s.set_wrath_talents(wrath_ui);
+
+        assert_eq!(
+            s.eval::<i64>("return GetNumTalentTabs(false, true)").unwrap(),
+            1
+        );
+        let (tab_name, _, spent, bg, preview): (String, String, i64, String, i64) =
+            s.eval("return GetTalentTabInfo(1, false, true, 1)").unwrap();
+        assert_eq!(tab_name, "Ferocity");
+        assert_eq!(spent, 1);
+        assert_eq!(bg, "HunterPetFerocity");
+        assert_eq!(preview, 0);
+
+        assert_eq!(
+            s.eval::<i64>("return GetNumTalents(1, false, true)").unwrap(),
+            2
+        );
+        let (t_name, _, tier, col, rank, max_rank): (String, String, i64, i64, i64, i64) =
+            s.eval("return GetTalentInfo(1, 1, false, true, 1)").unwrap();
+        assert_eq!(t_name, "Cobra Reflexes");
+        assert_eq!((tier, col, rank, max_rank), (1, 1, 1, 2));
+
+        assert_eq!(
+            s.eval::<i64>("return GetUnspentTalentPoints(false, true, 1)")
+                .unwrap(),
+            2
+        );
+
+        s.run("LearnTalent(1, 1, true)").unwrap();
+        assert_eq!(
+            s.take_talent_calls(),
+            vec![TalentCall::Learn {
+                talent_id: 2101,
+                rank: 1,
+            }]
+        );
     }
 }
 

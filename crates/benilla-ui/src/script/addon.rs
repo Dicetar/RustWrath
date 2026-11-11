@@ -180,13 +180,22 @@ fn addon_key(lua: &Lua, model: &Model, key: &Value, usage: &'static str) -> mlua
 /// rest sorted case-insensitively by `## Title`, else folder name (`0x51deb0` through
 /// `AddOn_GetTitle 0x51df20`, `SStrCmpI`), by the CRT `qsort` (`0x73f727`) from the list's order.
 /// Titles that match without case sit where `qsort` leaves them. Empty until the server replies.
+fn is_blizzard_chain_addon(a: &AddOnInfo) -> bool {
+    a.signature_ok
+        || (a.chain
+            && (a.claims_secure
+                || a.name
+                    .get(..9)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("Blizzard_"))))
+}
+
 fn rebuild_index(model: &mut Model) {
     if let Some(reply) = model.addon_reply.take() {
         apply_reply(&mut model.addons, &reply);
         model.addon_reply = Some(reply);
         if model.target == super::UiTarget::Wrath335 {
             for a in &mut model.addons {
-                if a.chain || a.signature_ok {
+                if is_blizzard_chain_addon(a) {
                     a.corrupt = false;
                     a.hidden = true;
                     a.enabled = true;
@@ -197,7 +206,7 @@ fn rebuild_index(model: &mut Model) {
     } else if model.target == super::UiTarget::Wrath335 {
         for a in &mut model.addons {
             a.corrupt = false;
-            if a.chain || a.signature_ok {
+            if is_blizzard_chain_addon(a) {
                 a.hidden = true;
                 a.enabled = true;
                 a.security = AddonSecurity::Secure;
@@ -859,6 +868,27 @@ struct DemandLoad<'a> {
     lua: &'a Lua,
 }
 
+fn chain_addon_path(req: &str) -> String {
+    let norm = req.replace('\\', "/");
+    let trimmed = norm.trim_start_matches('/');
+    if trimmed
+        .get(..10)
+        .is_some_and(|p| p.eq_ignore_ascii_case("Interface/"))
+    {
+        trimmed.to_string()
+    } else if trimmed
+        .get(..9)
+        .is_some_and(|p| p.eq_ignore_ascii_case("FrameXML/"))
+        || trimmed
+            .get(..8)
+            .is_some_and(|p| p.eq_ignore_ascii_case("GlueXML/"))
+    {
+        format!("Interface/{trimmed}")
+    } else {
+        format!("Interface/AddOns/{trimmed}")
+    }
+}
+
 impl DemandLoad<'_> {
     /// The reader for row `i`'s files; `None` when its source is absent (a capture has no folder,
     /// a bare VM no chain).
@@ -866,13 +896,11 @@ impl DemandLoad<'_> {
         let model = self.lua.app_data_ref::<Model>().expect("model");
         if model.addons[i].chain {
             let reader = model.addons_chain_reader.clone()?;
-            Some(Box::new(move |req: &str| {
-                reader(&format!("Interface/AddOns/{req}"))
-            }))
+            Some(Box::new(move |req: &str| reader(&chain_addon_path(req))))
         } else {
             let mut roots: Vec<PathBuf> = model.addons_root.iter().cloned().collect();
             roots.extend(model.addons_extra_roots.iter().cloned());
-            if roots.is_empty() {
+            if roots.is_empty() && model.addons_chain_reader.is_none() {
                 return None;
             }
             let chain_reader = model.addons_chain_reader.clone();
@@ -883,7 +911,7 @@ impl DemandLoad<'_> {
                     .or_else(|| {
                         chain_reader
                             .as_ref()
-                            .and_then(|r| r(&format!("Interface/AddOns/{req}")))
+                            .and_then(|r| r(&chain_addon_path(req)))
                     })
             }))
         }
@@ -1332,5 +1360,60 @@ impl super::UiScript {
     /// enable hash when a verb changed it this session, else `None`, and nothing is written.
     pub fn take_addon_enable_rows(&self) -> Option<Vec<(String, bool)>> {
         self.model_mut().addon_enable.take_dirty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::script::{UiScript, UiTarget};
+
+    #[test]
+    fn wrath_non_blizzard_archive_addons_stay_visible_while_blizzard_ones_hide() {
+        let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        let mut blizzard = AddOnInfo::new("Blizzard_TalentUI", true);
+        blizzard.chain = true;
+        blizzard.claims_secure = true;
+        blizzard.signature_ok = true;
+        let mut wmbridge = AddOnInfo::new("WMBridge", false);
+        wmbridge.chain = true;
+        wmbridge.title = Some("WMBridge".to_string());
+        script.register_addons(vec![blizzard, wmbridge]);
+
+        assert_eq!(script.eval::<i64>("return GetNumAddOns()").unwrap(), 1);
+        assert_eq!(
+            script
+                .eval::<String>("local name = GetAddOnInfo(1); return name")
+                .unwrap(),
+            "WMBridge"
+        );
+        assert_eq!(
+            script
+                .eval::<String>("local _, _, _, _, _, sec = GetAddOnInfo('Blizzard_TalentUI'); return sec")
+                .unwrap(),
+            "SECURE"
+        );
+        assert_eq!(
+            script
+                .eval::<String>("local _, _, _, _, _, sec = GetAddOnInfo('WMBridge'); return sec")
+                .unwrap(),
+            "INSECURE"
+        );
+    }
+
+    #[test]
+    fn chain_addon_path_routes_framexml_and_interface_includes() {
+        assert_eq!(
+            chain_addon_path("Blizzard_AuctionUI/Blizzard_AuctionUI.xml"),
+            "Interface/AddOns/Blizzard_AuctionUI/Blizzard_AuctionUI.xml"
+        );
+        assert_eq!(
+            chain_addon_path("FrameXML/UI.xml"),
+            "Interface/FrameXML/UI.xml"
+        );
+        assert_eq!(
+            chain_addon_path("Interface/FrameXML/UI.xml"),
+            "Interface/FrameXML/UI.xml"
+        );
     }
 }

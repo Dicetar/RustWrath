@@ -493,6 +493,15 @@ pub(crate) const REGISTERED: &[Registered] = &[
     // Outside that table (`0x626d5f`, "60" at `0x862e14`): `0x62c160` reads it first and falls back
     // to the per-class range only when the lookup fails.
     same(crate::ui_chat::combat::DEATH_LOG_RANGE_CVAR, "60"),
+    // `combatLogRetentionTime` (`GameUI_CVar.cpp:633`, account scope 0x10): the raw log's
+    // retention in seconds. `Script_CombatLogGetRetentionTime` (`0x0074D9E0`) pushes the row's
+    // `m_intValue` and `Script_CombatLogSetRetentionTime` (`0x0074D5B0`) writes the integer back,
+    // so the row has a reader here. The 1.12 catalog has no counterpart.
+    ours(
+        "combatLogRetentionTime",
+        "300",
+        "12340 GameUI_CVar.cpp:633; combat-log retention, read by CombatLogGetRetentionTime",
+    ),
     // ── Floating combat text ─────────────────────────────────────────────────────────────────────
     //
     // `CombatDamage` (`0x6032df`, record `[0xc4d944]`) is the master: its two readers, the word

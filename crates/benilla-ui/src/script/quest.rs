@@ -260,11 +260,14 @@ const EMPTY_ROW_ICON: &str = "Interface\\Icons\\INV_Misc_QuestionMark";
 
 /// The list `GetQuestItemInfo(type, index)` reads for `type`.
 pub(super) fn item_vec<'a>(state: &'a QuestState, kind: &str) -> Option<&'a Vec<QuestItemView>> {
-    match kind {
-        "choice" => Some(&state.choices),
-        "reward" => Some(&state.rewards),
-        "required" => Some(&state.required),
-        _ => None,
+    if kind.eq_ignore_ascii_case("choice") {
+        Some(&state.choices)
+    } else if kind.eq_ignore_ascii_case("reward") {
+        Some(&state.rewards)
+    } else if kind.eq_ignore_ascii_case("required") {
+        Some(&state.required)
+    } else {
+        None
     }
 }
 

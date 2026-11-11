@@ -612,17 +612,15 @@ fn install_region_methods(lua: &Lua) -> mlua::Result<()> {
             let drew = model.region_draws(rh);
             let old_loading = model.region_owner_loading(rh);
             let moved = model.arena.set_region_owner(rh, new_owner);
-            if moved {
+            if moved && !model.is_wrath() {
                 // The owner supplies the region's scale to layout; the re-link invalidates nothing
                 // in 1.12 (`0x77fd10`), so the region keeps its rect until the resolve reaches it.
-                // In Wrath, reparented regions to scroll children must invalidate so their rect recomputes.
-                if model.is_wrath() {
-                    model.invalidate_region(rh, true);
-                } else {
-                    model.unsettle_region(rh);
-                }
+                model.unsettle_region(rh);
             }
             model.relink_region_layout(rh, drew, old_loading, moved, None);
+            if model.is_wrath() {
+                model.invalidate_region(rh, true);
+            }
             Ok(())
         },
     )?;
@@ -1023,10 +1021,10 @@ pub(super) fn region_set_point(lua: &Lua, this: &Table, args: &MultiValue) -> ml
     // The frame's store and its unchanged-anchor test (`0x767c70`), which queues no resolve.
     let units = model.layout_units();
     let data = model.region_data.entry(rh).or_default();
-    if data
+    let changed = data
         .anchors
-        .set(Anchor::new(point, rel_to_id, rel_point, x, y), units)
-    {
+        .set(Anchor::new(point, rel_to_id, rel_point, x, y), units);
+    if changed || model.is_wrath() {
         model.invalidate_region(rh, true);
     }
     Ok(())

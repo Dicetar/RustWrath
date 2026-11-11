@@ -51,11 +51,16 @@ fn lift(model: &Model, id: u32) -> Option<Option<CursorPayload>> {
             spell_id: slot.action,
             texture: slot.texture.clone(),
             // The setter reads the spell's record; the book is where the engine has it.
-            passive: model
-                .spellbook
-                .slots
-                .iter()
-                .any(|s| s.spell_id == slot.action && s.passive),
+            passive: {
+                let player_slots = if model.spell_list.is_empty() {
+                    &model.spellbook.slots
+                } else {
+                    &model.spell_list
+                };
+                player_slots
+                    .iter()
+                    .any(|s| s.spell_id == slot.action && s.passive)
+            },
         })),
         _ => None,
     })
@@ -251,12 +256,17 @@ fn plan_place(model: &mut Model, id: u32) -> Place {
         // The face the bar paints for the spell, which the book carries; the cursor shows the
         // book's icon.
         CursorPayload::Spell(s) => {
-            let face = model
-                .spellbook
-                .slots
-                .iter()
-                .find(|b| b.spell_id == s.spell_id)
-                .map_or_else(|| s.texture.clone(), |b| b.bar_face());
+            let face = {
+                let player_slots = if model.spell_list.is_empty() {
+                    &model.spellbook.slots
+                } else {
+                    &model.spell_list
+                };
+                player_slots
+                    .iter()
+                    .find(|b| b.spell_id == s.spell_id)
+                    .map_or_else(|| s.texture.clone(), |b| b.bar_face())
+            };
             slot(ACTION_KIND_SPELL, s.spell_id, &face)
         }
         // `PlaceAction` accepts modes 1, 3, 7 and 8 (`0x4e62e0`): a macro, mode 8, packs its id

@@ -29,6 +29,13 @@ pub struct BattlefieldQueueSlot {
     pub estimated_wait_ms: u32,
     /// `GetBattlefieldTimeWaited`: `now − stamp` in ms, 0 when unset.
     pub time_waited_ms: u32,
+    /// Slot 6 (`m_teamSize`): the battleground's team size; the live-arena source is not wired in
+    /// Project B's 1.12-shaped `BattlefieldStatus`, so it stays 0 (`nil`-ish empty shape) until a
+    /// real arena queue feeds it. Do not invent a value.
+    pub team_size: u32,
+    /// Slot 7 (`m_rated`): `1.0` when the slot is a rated arena queue, else `nil`. The wire has no
+    /// rated flag, so it stays `false` (pushed as `nil`) until a real arena queue feeds it.
+    pub rated: bool,
 }
 
 /// The Map.dbc half of `GetBattlefieldInfo` (`0x4ab0b0`), resolved by the app for the listed map.
@@ -269,7 +276,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Five values on every leg (`0x4ab5c7`): `(nil, nil, 0, 0, 0)` off slots 1..3.
+    // Seven values on every leg (`0x4ab5c7`): `(nil, nil, 0, 0, 0, 0, nil)` off slots 1..3.
     g.set(
         "GetBattlefieldStatus",
         lua.create_function(|lua, index: Value| {
@@ -277,6 +284,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             let Some(slot) = slot_index(index, 3).and_then(|i| model.battlefield_slots.get(i))
             else {
+                let target = lua.app_data_ref::<Model>().expect("model app_data").target;
+                if target == super::UiTarget::Wrath335 {
+                    return Ok(MultiValue::from_vec(vec![
+                        Value::Nil,
+                        Value::Nil,
+                        Value::Number(0.0),
+                        Value::Number(0.0),
+                        Value::Number(0.0),
+                        Value::Number(0.0),
+                        Value::Nil,
+                    ]));
+                }
+                // Donor 1.12 empty shape: five values.
                 return Ok(MultiValue::from_vec(vec![
                     Value::Nil,
                     Value::Nil,
@@ -289,13 +309,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Some(n) => Value::String(lua.create_string(n)?),
                 None => Value::Nil,
             };
-            Ok(MultiValue::from_vec(vec![
-                Value::String(lua.create_string(status_text(slot.status))?),
-                name,
-                Value::Number(f64::from(slot.instance_id)),
-                Value::Number(f64::from(slot.min_level)),
-                Value::Number(f64::from(slot.max_level)),
-            ]))
+            let target = lua.app_data_ref::<Model>().expect("model app_data").target;
+            if target == super::UiTarget::Wrath335 {
+                Ok(MultiValue::from_vec(vec![
+                    Value::String(lua.create_string(status_text(slot.status))?),
+                    name,
+                    Value::Number(f64::from(slot.instance_id)),
+                    Value::Number(f64::from(slot.min_level)),
+                    Value::Number(f64::from(slot.max_level)),
+                    Value::Number(f64::from(slot.team_size)),
+                    if slot.rated {
+                        Value::Number(1.0)
+                    } else {
+                        Value::Nil
+                    },
+                ]))
+            } else {
+                // Donor 1.12 tuple: five values, no team_size/rated.
+                Ok(MultiValue::from_vec(vec![
+                    Value::String(lua.create_string(status_text(slot.status))?),
+                    name,
+                    Value::Number(f64::from(slot.instance_id)),
+                    Value::Number(f64::from(slot.min_level)),
+                    Value::Number(f64::from(slot.max_level)),
+                ]))
+            }
         })?,
     )?;
 
@@ -374,7 +412,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::script::UiScript;
+    use crate::script::{UiScript, UiTarget};
 
     /// A VM with a local player, as every in-world call has.
     fn vm() -> UiScript {
@@ -420,6 +458,8 @@ mod tests {
             port_expiration_ms: 60_000,
             estimated_wait_ms: 30_000,
             time_waited_ms: 5_000,
+            team_size: 0,
+            rated: false,
         }
     }
 
@@ -544,20 +584,20 @@ mod tests {
     }
 
     #[test]
-    fn get_battlefield_status_answers_five_values_on_every_leg() {
-        let mut s = UiScript::new().unwrap();
+    fn get_battlefield_status_answers_seven_values_on_every_leg() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         s.set_battlefield_queue([slot(489, 1, 5), slot(0, 0, 0), slot(529, 9, 2)], 0);
         let n = |s: &mut UiScript, i: &str| s.arity(&format!("GetBattlefieldStatus({i})")).unwrap();
-        assert_eq!(n(&mut s, "1"), 5);
-        assert_eq!(n(&mut s, "0"), 5);
-        assert_eq!(n(&mut s, "4"), 5);
+        assert_eq!(n(&mut s, "1"), 7);
+        assert_eq!(n(&mut s, "0"), 7);
+        assert_eq!(n(&mut s, "4"), 7);
         let got = s
             .eval::<String>(
-                "local st, name, id, lo, hi = GetBattlefieldStatus(1) \
-                 return st .. '|' .. name .. '|' .. id .. '|' .. lo .. '|' .. hi",
+                "local st, name, id, lo, hi, team, rated = GetBattlefieldStatus(1) \
+                 return st .. '|' .. name .. '|' .. id .. '|' .. lo .. '|' .. hi .. '|' .. team .. '|' .. tostring(rated)",
             )
             .unwrap();
-        assert_eq!(got, "queued|Map 489|5|20|29");
+        assert_eq!(got, "queued|Map 489|5|20|29|0|nil");
         assert_eq!(
             s.eval::<String>("return (GetBattlefieldStatus(2))")
                 .unwrap(),
@@ -571,11 +611,11 @@ mod tests {
         );
         let off = s
             .eval::<String>(
-                "local st, name, id, lo, hi = GetBattlefieldStatus(4) \
-                 return tostring(st) .. '|' .. tostring(name) .. '|' .. id .. lo .. hi",
+                "local st, name, id, lo, hi, team, rated = GetBattlefieldStatus(4) \
+                 return tostring(st) .. '|' .. tostring(name) .. '|' .. id .. '|' .. lo .. '|' .. hi .. '|' .. team .. '|' .. tostring(rated)",
             )
             .unwrap();
-        assert_eq!(off, "nil|nil|000");
+        assert_eq!(off, "nil|nil|0|0|0|0|nil");
         let err = s.run("GetBattlefieldStatus('x')").unwrap_err().to_string();
         assert!(err.contains("Usage: GetBattlefieldStatus(index)"), "{err}");
         let mut empty = slot(0, 0, 0);

@@ -333,10 +333,15 @@ impl super::UiScript {
             let id = record.view.id;
             let was = model.macro_bindings.get(&id).copied().unwrap_or_default();
             if pick(id, was) {
-                let next = bind::derive(
+                let player_slots = if model.spell_list.is_empty() {
+                    &model.spellbook.slots
+                } else {
+                    &model.spell_list
+                };
+                let next = bind::derive_with_slots(
                     &aliases,
                     &record.view.body,
-                    &model.spellbook,
+                    player_slots,
                     &model.pet_book,
                     was,
                 );
@@ -414,10 +419,15 @@ fn create_macro(
         },
     });
     // The new record's cast, its selector clear (`0x4f1ca0`), derived in the call (`0x4f123c`).
-    let binding = bind::derive(
+    let player_slots = if model.spell_list.is_empty() {
+        &model.spellbook.slots
+    } else {
+        &model.spell_list
+    };
+    let binding = bind::derive_with_slots(
         aliases,
         &cut_body(body),
-        &model.spellbook,
+        player_slots,
         &model.pet_book,
         MacroBinding::default(),
     );
@@ -463,7 +473,12 @@ fn edit_macro(
         view.local_only = local_only;
         // The record's cast derived again in the call (`0x4f1313`), against the book as it is.
         let was = model.macro_bindings.get(&id).copied().unwrap_or_default();
-        let binding = bind::derive(aliases, &view.body, &model.spellbook, &model.pet_book, was);
+        let player_slots = if model.spell_list.is_empty() {
+            &model.spellbook.slots
+        } else {
+            &model.spell_list
+        };
+        let binding = bind::derive_with_slots(aliases, &view.body, player_slots, &model.pet_book, was);
         model.macro_bindings.insert(id, binding);
         model.macros_dirty = true;
         model.macros_generation += 1;

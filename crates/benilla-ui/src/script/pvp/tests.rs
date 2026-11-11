@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::script::{UiScript, UnitState};
+use crate::script::UiTarget;
 
 /// Every number distinct, so a swapped return cannot pass: the tens digit is the block (session
 /// 1x to lifetime 5x), the units digit the position in it.
@@ -10,6 +11,7 @@ fn honor_state() -> HonorState {
     HonorState {
         session_hk: 11,
         session_dk: 12,
+        session_honor: 13,
         yesterday_hk: 21,
         yesterday_dk: 22,
         yesterday_honor: 23,
@@ -25,6 +27,8 @@ fn honor_state() -> HonorState {
         rank: 9,
         // 51/255 is exactly 0.2, which the engine's multiply does not produce.
         rank_bar: 51,
+        honor_currency: 0,
+        arena_currency: 0,
     }
 }
 
@@ -68,7 +72,7 @@ fn player() -> UnitState {
 }
 
 fn seated() -> UiScript {
-    let mut s = UiScript::new().expect("VM");
+    let mut s = UiScript::with_target(UiTarget::Wrath335).expect("VM");
     s.keep_calls();
     s.set_honor(Some(honor_state()));
     s.set_unit("player", Some(player()));
@@ -113,16 +117,16 @@ fn the_reference_destructuring_lands_every_value_in_the_right_slot() {
     let s = seated();
 
     assert_eq!(
-        s.eval::<(i64, i64)>("local hk, dk = GetPVPSessionStats() return hk, dk")
+        s.eval::<(i64, i64)>("local hk, honor = GetPVPSessionStats() return hk, honor")
             .unwrap(),
-        (11, 12)
+        (11, 13)
     );
     assert_eq!(
-        s.eval::<(i64, i64, i64)>(
-            "local hk, dk, contribution = GetPVPYesterdayStats() return hk, dk, contribution"
+        s.eval::<(i64, i64)>(
+            "local hk, honor = GetPVPYesterdayStats() return hk, honor"
         )
         .unwrap(),
-        (21, 22, 23)
+        (21, 23)
     );
     assert_eq!(
         s.eval::<(i64, i64)>(
@@ -141,11 +145,11 @@ fn the_reference_destructuring_lands_every_value_in_the_right_slot() {
         "the fourth return is last week's STANDING"
     );
     assert_eq!(
-        s.eval::<(i64, i64, i64)>(
-            "local hk, dk, highestRank = GetPVPLifetimeStats() return hk, dk, highestRank"
+        s.eval::<(i64, i64)>(
+            "local hk, highestRank = GetPVPLifetimeStats() return hk, highestRank"
         )
         .unwrap(),
-        (51, 52, 11)
+        (51, 11)
     );
 }
 
@@ -154,7 +158,7 @@ fn the_reference_destructuring_lands_every_value_in_the_right_slot() {
 fn a_lifetime_rank_below_five_is_reported_as_zero() {
     let mut s = seated();
     let third = |s: &UiScript| {
-        s.eval::<i64>("local _, _, highest = GetPVPLifetimeStats() return highest")
+        s.eval::<i64>("local _, highest = GetPVPLifetimeStats() return highest")
             .unwrap()
     };
     for (highest, reported) in [(0u8, 0i64), (1, 0), (4, 0), (5, 5), (6, 6), (18, 18)] {
@@ -170,10 +174,10 @@ fn a_lifetime_rank_below_five_is_reported_as_zero() {
         highest_rank: 3,
         ..honor_state()
     }));
-    assert_eq!(s.arity("GetPVPLifetimeStats()").unwrap(), 3);
+    assert_eq!(s.arity("GetPVPLifetimeStats()").unwrap(), 2);
     assert!(s
         .eval::<bool>(
-            "local _, _, highest = GetPVPLifetimeStats() return type(highest) == 'number'"
+            "local _, highest = GetPVPLifetimeStats() return type(highest) == 'number'"
         )
         .unwrap());
 }
@@ -184,10 +188,10 @@ fn every_getter_returns_exactly_the_reference_arity() {
     let s = seated();
     for (call, width) in [
         ("GetPVPSessionStats()", 2),
-        ("GetPVPYesterdayStats()", 3),
+        ("GetPVPYesterdayStats()", 2),
         ("GetPVPThisWeekStats()", 2),
         ("GetPVPLastWeekStats()", 4),
-        ("GetPVPLifetimeStats()", 3),
+        ("GetPVPLifetimeStats()", 2),
         ("GetPVPRankProgress()", 1),
         ("GetPVPRankInfo(9)", 2),
         ("GetPVPRankInfo(0)", 2),
