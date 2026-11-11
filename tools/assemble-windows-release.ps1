@@ -17,7 +17,16 @@ if ($BuildRelease) {
     if (Get-Process benilla,cargo,rustc -ErrorAction SilentlyContinue) {
         throw 'Close the running client or wait for the active build before building a release candidate.'
     }
-    $cache = Get-Command sccache -ErrorAction Stop
+    $cache = Get-Command sccache -ErrorAction SilentlyContinue
+    if (!$cache) {
+        $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin\sccache.exe'
+        if (Test-Path -LiteralPath $cargoBin -PathType Leaf) {
+            $cache = Get-Command $cargoBin -ErrorAction SilentlyContinue
+        }
+    }
+    if (!$cache) {
+        throw "sccache is required by .cargo/config.toml, but was not found in PATH or at $env:USERPROFILE\.cargo\bin\sccache.exe.`nInstall it by running:`n  `$env:RUSTC_WRAPPER=''; cargo install sccache --locked"
+    }
     $previousWrapper = $env:RUSTC_WRAPPER
     $previousIncremental = $env:CARGO_INCREMENTAL
     try {
