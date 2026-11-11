@@ -36,8 +36,8 @@ const MAX_RESTORE_OUTCOMES: usize = 8;
 /// and a loaded processor that is rejected by a canary batch or fails while active; retained copies
 /// are dropped or skipped. The pose and movement seams each own a store with this cap. Both stores
 /// are persisted by `Host::persist_quarantine` and restored by `Host::load_persistent_quarantine`
-/// through `quarantine.toml`; remaining movement/rollback typed reasons, per-revision totals and
-/// the movement active-frame sentinel remain H03.
+/// through `quarantine.toml`; remaining movement/rollback typed reasons and the movement
+/// active-frame sentinel remain H03.
 const MAX_QUARANTINED_DIGESTS: usize = 32;
 /// Digest-only quarantine store beside the publications. It records exactly the two bounded digest
 /// lists: no library path, revision, timestamp or OS error text is written, and no entry is ever
@@ -58,6 +58,31 @@ const ACTIVE_SENTINEL_TEMP: &str = "active-sentinel.toml.tmp";
 /// Upper bound on the digest-only crash marker. The file holds four short fields; a larger file
 /// is rejected before it is read into memory.
 const MAX_ACTIVE_SENTINEL_BYTES: u64 = 16 * 1024;
+/// Bounded persisted state beside the publications: the demotion policy, per-revision cumulative
+/// health for the active pose module, and the two artifact stamps that decide whether an
+/// identical-text manifest latches a terminal failure. It is not a manifest and never selects code
+/// to load: a persisted digest only seeds counters for a later verified activation, and a stamp
+/// only says which artifact metadata a latched publication last observed. It is single-client like
+/// `quarantine.toml` (fixed temp name, last-writer-wins replacement).
+const PATCH_STATE_FILE: &str = "patch-state.toml";
+/// Temp sibling used for the write-then-rename replacement of [`PATCH_STATE_FILE`].
+const PATCH_STATE_TEMP: &str = "patch-state.toml.tmp";
+/// Upper bound on the whole state document. At most [`MAX_PERSISTED_REVISIONS`] entries plus the
+/// policy and two stamps fit comfortably; a larger file is rejected before it is read.
+const MAX_PATCH_STATE_BYTES: u64 = 64 * 1024;
+/// Bound on the persisted per-revision health entries. The digest is the key; the newest entry is
+/// last and the oldest is evicted at the cap.
+const MAX_PERSISTED_REVISIONS: usize = 16;
+/// Bound on a persisted revision label. Empty, longer or control-containing labels are skipped as
+/// invalid entries rather than treated as a document error.
+const MAX_PERSISTED_REVISION_BYTES: usize = 128;
+/// Bound on the latched manifest text stored beside a terminal-failure artifact stamp. The text is
+/// the exact `ready.toml`/`movement.toml` content needed to make the stamp useful after a restart;
+/// a larger document is dropped rather than persisted partially.
+const MAX_PERSISTED_LATCH_BYTES: usize = 4096;
+/// Only schema version this binary understands. A different version is rejected wholesale so a
+/// newer file is never partially applied.
+const PATCH_STATE_SCHEMA_VERSION: u32 = 1;
 
 /// Verified SHA-1 content identity of a loaded module, as raw bytes.
 pub type ModuleDigest = [u8; 20];
@@ -110,7 +135,7 @@ pub enum RestoreOutcome {
     },
 }
 
-/// Read-only in-memory health of the currently active pose module.
+/// Read-only health snapshot of the currently active pose module.
 ///
 /// The counters and timings describe the active module's steady-state evaluations; the activation
 /// probe that promoted it (candidate canary or predecessor restore) is untimed, so both timings are
@@ -118,11 +143,13 @@ pub enum RestoreOutcome {
 /// time; after a demotion with no valid predecessor the slot is empty, so both are `None` while the
 /// last counters/timings remain visible until the next activation resets them (the failed identity
 /// is still available from `take_active_failure`/`take_restore_outcomes`). A restored predecessor
-/// is a new activation and starts a clean record. This is the in-memory H03 slice: counters and
-/// thresholds are per activation and this record is neither persisted nor exported outside the
-/// process; [`PatchHealthPolicy`] enforces the thresholds in memory, while persisted health/artifact
-/// stamps, movement typed reasons and per-revision cumulative accounting remain H03. (The separate
-/// digest quarantine behind `quarantined_digests` is persisted; this snapshot is not.)
+/// is a new activation and starts a clean consecutive streak, but its cumulative failures and
+/// high-water evaluation time are seeded from the bounded per-revision store in
+/// `patch-state.toml` when that digest was seen in an earlier activation or process run.
+/// [`PatchHealthPolicy`] enforces the thresholds in memory. Remaining movement typed reasons and
+/// movement health remain H03; the persisted store is described on
+/// [`Host::load_persistent_state`]/[`Host::persist_state`]. (The separate digest quarantine behind
+/// `quarantined_digests` is persisted too, in `quarantine.toml`.)
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PatchHealthSnapshot {
@@ -130,48 +157,51 @@ pub struct PatchHealthSnapshot {
     pub revision: Option<String>,
     /// Verified SHA-1 of the module active at snapshot time, or `None` when the slot is empty.
     pub digest: Option<String>,
-    /// Active-module frame failures since its last success or activation.
+    /// Active-module frame failures since its last success or activation. This is the per-
+    /// activation streak, not the cumulative count.
     pub consecutive_frame_failures: u32,
-    /// Active-module frame failures since its last activation. This is the count
-    /// [`PatchHealthPolicy::max_total_frame_failures`] compares; per-revision cumulative accounting
-    /// across reactivations remains H03.
+    /// Frame failures recorded for this verified digest since it was first seen, cumulative across
+    /// reactivations and process runs. This is the count
+    /// [`PatchHealthPolicy::max_total_frame_failures`] compares; a reactivation seeds it from
+    /// `patch-state.toml`, while `consecutive_frame_failures` starts at 0 for the new activation.
     pub total_frame_failures: u32,
     /// Duration of the most recent steady-state active-module evaluation, in microseconds. The
     /// activation probe that promoted this module (candidate canary or predecessor restore) is not
     /// timed, so this is 0 until the first post-activation frame.
     pub last_eval_micros: u64,
-    /// High-water mark of steady-state active-module evaluation duration, in microseconds.
+    /// High-water mark of steady-state active-module evaluation duration, in microseconds. Seeded
+    /// from the per-revision store on reactivation.
     pub max_eval_micros: u64,
     /// Number of pose digests currently held in the bounded quarantine. The list is loaded from
     /// and persisted to `quarantine.toml`; this count is a live in-memory length.
     pub quarantined_digests: usize,
 }
 
-/// In-memory demotion thresholds for the active pose module.
+/// Demotion thresholds for the active pose module.
 ///
 /// Both thresholds count the active module's failed frames, not candidate canary failures or
-/// predecessor restore probes, and both counters restart on every activation (candidate promotion
-/// or a successful predecessor restore). The thresholds are independent alternatives: a failure
-/// demotes as soon as *either* enabled threshold is reached.
+/// predecessor restore probes. The consecutive threshold restarts on every activation (candidate
+/// promotion or a successful predecessor restore); the total threshold is per-revision cumulative
+/// across reactivations and process runs, seeded from `patch-state.toml`. The thresholds are
+/// independent alternatives: a failure demotes as soon as *either* enabled threshold is reached.
 ///
 /// A value of `0` disables that threshold, meaning "no limit" rather than "demote on the first
 /// failure": `max_consecutive_frame_failures = 0` ignores the consecutive streak and
-/// `max_total_frame_failures = 0` ignores the per-activation cumulative count. `0/0` therefore
+/// `max_total_frame_failures = 0` ignores the per-revision cumulative count. `0/0` therefore
 /// never demotes a module on health counters alone; only a caller can change the policy or the
 /// host can lose the module through another failure path.
 ///
 /// The default [`PatchHealthPolicy::default`] is the original single-strike behavior: one
 /// consecutive failure demotes, with the cumulative cap (3) only reachable if the consecutive
-/// threshold were relaxed. These thresholds are in-memory only; persistence, remaining
-/// movement/rollback evaluation reasons, per-revision cumulative accounting and
-/// `max_eval_micros` enforcement remain H03 work.
+/// threshold were relaxed. The policy is loaded from and saved to `patch-state.toml`; remaining
+/// movement/rollback evaluation reasons, movement health and `max_eval_micros` enforcement remain
+/// H03 work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PatchHealthPolicy {
     /// Consecutive active-frame failures that demote the module. `0` disables this threshold.
     pub max_consecutive_frame_failures: u32,
-    /// Active-frame failures since the current activation that demote the module. `0` disables
-    /// this threshold. Per-activation in this slice; cumulative accounting across reactivations
-    /// remains H03.
+    /// Per-revision cumulative active-frame failures that demote the module. `0` disables this
+    /// threshold. The count is seeded across reactivations from `patch-state.toml`.
     pub max_total_frame_failures: u32,
 }
 
@@ -240,6 +270,87 @@ struct ActiveSentinelFile {
     stage: SentinelStage,
 }
 
+/// On-disk shape of `<root>/patch-state.toml`.
+///
+/// Only `schema_version` is required. The sections are optional so an older or minimal file stays
+/// loadable, but a present `[policy]` table requires both thresholds: a missing field is a document
+/// error, never a silent `0`. `deny_unknown_fields` rejects a file that carries any other key,
+/// including one written by a newer binary, so the whole document is understood or none of it is
+/// applied.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchStateFile {
+    schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy: Option<PersistedPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    health: Option<PersistedHealth>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stamps: Option<PersistedStamps>,
+}
+
+/// Persisted demotion thresholds. Both fields are required when the table is present.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedPolicy {
+    max_consecutive_frame_failures: u32,
+    max_total_frame_failures: u32,
+}
+
+/// Persisted per-revision health, oldest entry first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedHealth {
+    #[serde(default)]
+    revisions: Vec<PersistedRevisionHealth>,
+}
+
+/// One bounded per-revision cumulative health record.
+///
+/// `total_frame_failures` is cumulative across reactivations and `max_eval_micros` is the steady-
+/// state high-water mark; neither is trusted as authorization. The digest is re-validated by
+/// [`quarantine_entry_digest`] and only seeds counters for a later verified activation of that
+/// exact content identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedRevisionHealth {
+    digest: String,
+    revision: String,
+    total_frame_failures: u32,
+    max_eval_micros: u64,
+}
+
+/// Persisted artifact stamps, one optional entry per seam.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedStamps {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pose: Option<PersistedStamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    movement: Option<PersistedStamp>,
+}
+
+/// File metadata of the artifact a latched manifest last named.
+///
+/// The shape mirrors [`ArtifactStamp`]: `modified_unix_nanos` is `Option<u64>` and converts with
+/// `UNIX_EPOCH.checked_add(Duration::from_nanos(..))`, so an out-of-range value becomes `None`
+/// (length-only comparison) instead of failing the document. `library` must still be a single
+/// normal basename when loaded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedStamp {
+    library: String,
+    len: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    modified_unix_nanos: Option<u64>,
+    /// The exact manifest text whose terminal failure recorded this stamp. Restoring it lets the
+    /// first poll/stage call take the unchanged-text latched branch and consult the stamp before
+    /// re-verifying. Bounded by [`MAX_PERSISTED_LATCH_BYTES`]; a stamp without a valid latch is
+    /// omitted because it would be unusable after a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latch: Option<String>,
+}
+
 /// Accept exactly 40 ASCII hex digits, normalized to lowercase; everything else is skipped.
 ///
 /// The rejection is deliberately broad: empty, short, over-long/overflowing, nested/path-like
@@ -279,6 +390,136 @@ fn accepted_quarantine_digests(entries: &[String]) -> Vec<String> {
     digests
 }
 
+/// Whether `library` is a single normal basename inside the publication root.
+///
+/// This is the same shape check `artifact_stamp` and `verify_publication` use: a persisted stamp
+/// never becomes a path that can escape the module folder, and a parsed manifest may name a path
+/// only to have it refused before any stat/read.
+fn plain_library_basename(library: &str) -> bool {
+    let path = Path::new(library);
+    path.components().count() == 1 && matches!(path.components().next(), Some(Component::Normal(_)))
+}
+
+/// Accept a persisted revision label: non-empty, at most [`MAX_PERSISTED_REVISION_BYTES`] bytes and
+/// free of control characters. Everything else is an invalid entry and is skipped silently.
+fn accepted_revision_label(revision: &str) -> Option<&str> {
+    if revision.is_empty()
+        || revision.len() > MAX_PERSISTED_REVISION_BYTES
+        || revision.chars().any(char::is_control)
+    {
+        None
+    } else {
+        Some(revision)
+    }
+}
+
+/// Validate one file's per-revision health list into the bounded newest-last window.
+///
+/// Invalid digests and labels are skipped, a duplicate digest replaces its earlier entry and moves
+/// to the newest end, and a list longer than [`MAX_PERSISTED_REVISIONS`] keeps only its newest
+/// entries. Loading the same file twice therefore yields the same window. The digest is normalized
+/// through [`quarantine_entry_digest`]; the counters are ordinary `u32`/`u64` and grant nothing.
+fn accepted_persisted_revisions(
+    entries: &[PersistedRevisionHealth],
+) -> VecDeque<PersistedRevisionHealth> {
+    let mut revisions: VecDeque<PersistedRevisionHealth> = VecDeque::new();
+    for entry in entries {
+        let Some(digest) = quarantine_entry_digest(&entry.digest) else {
+            continue;
+        };
+        let Some(revision) = accepted_revision_label(&entry.revision) else {
+            continue;
+        };
+        if let Some(index) = revisions.iter().position(|held| held.digest == digest) {
+            revisions.remove(index);
+        }
+        if revisions.len() == MAX_PERSISTED_REVISIONS {
+            revisions.pop_front();
+        }
+        revisions.push_back(PersistedRevisionHealth {
+            digest,
+            revision: revision.to_owned(),
+            total_frame_failures: entry.total_frame_failures,
+            max_eval_micros: entry.max_eval_micros,
+        });
+    }
+    revisions
+}
+
+/// Convert persisted nanoseconds since the Unix epoch to a [`SystemTime`].
+///
+/// An out-of-range value is `None`, which [`ArtifactStamp::matches_current`] treats as a
+/// length-only comparison rather than a document error.
+fn system_time_from_unix_nanos(nanos: u64) -> Option<std::time::SystemTime> {
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_nanos(nanos))
+}
+
+/// Convert a [`SystemTime`] to nanoseconds since the Unix epoch for the persisted stamp.
+///
+/// A pre-epoch time, a value wider than `u64` nanoseconds, or a value that does not fit TOML's
+/// signed 64-bit integer becomes `None`; the reloaded stamp then compares by length only.
+fn unix_nanos_from_system_time(time: std::time::SystemTime) -> Option<u64> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| u64::try_from(since.as_nanos()).ok())
+        .filter(|nanos| *nanos <= i64::MAX as u64)
+}
+
+/// Convert a persisted stamp into the in-memory artifact identity plus its latched manifest text,
+/// or skip both when either half is invalid.
+fn accepted_persisted_stamp(stamp: PersistedStamp) -> Option<(ArtifactStamp, String)> {
+    if !plain_library_basename(&stamp.library) || stamp.len > MAX_LIBRARY_BYTES {
+        return None;
+    }
+    let latch = stamp.latch?;
+    if latch.is_empty() || latch.len() > MAX_PERSISTED_LATCH_BYTES {
+        return None;
+    }
+    let publication: Publication = toml::from_str(&latch).ok()?;
+    if publication.library != stamp.library
+        || publication.revision.is_empty()
+        || quarantine_entry_digest(&publication.sha1).is_none()
+    {
+        return None;
+    }
+    Some((
+        ArtifactStamp {
+            library: stamp.library,
+            len: stamp.len,
+            modified: stamp
+                .modified_unix_nanos
+                .and_then(system_time_from_unix_nanos),
+        },
+        latch,
+    ))
+}
+
+/// Serialize an artifact stamp into its bounded persisted shape together with the latched manifest
+/// text, skipping one the loader would reject (a non-basename/oversized library, a missing or
+/// oversized latch, or a latch that no longer parses as the same publication).
+fn persisted_stamp(stamp: &ArtifactStamp, latch: Option<&str>) -> Option<PersistedStamp> {
+    if !plain_library_basename(&stamp.library) || stamp.len > MAX_LIBRARY_BYTES {
+        return None;
+    }
+    let latch = latch?;
+    if latch.is_empty() || latch.len() > MAX_PERSISTED_LATCH_BYTES {
+        return None;
+    }
+    let publication: Publication = toml::from_str(latch).ok()?;
+    if publication.library != stamp.library
+        || publication.revision.is_empty()
+        || quarantine_entry_digest(&publication.sha1).is_none()
+    {
+        return None;
+    }
+    Some(PersistedStamp {
+        library: stamp.library.clone(),
+        len: stamp.len,
+        modified_unix_nanos: stamp.modified.and_then(unix_nanos_from_system_time),
+        latch: Some(latch.to_owned()),
+    })
+}
+
 /// Write the digest-only store to `temp` and flush it before the caller renames it over the target.
 ///
 /// This mirrors `benilla_app::local_state::write_atomic_bytes`: create the folder, create/truncate
@@ -299,6 +540,16 @@ fn write_sentinel_temp(root: &Path, temp: &Path, text: &str) -> Result<()> {
     let mut file = std::fs::File::create(temp).context("create sentinel temp file")?;
     file.write_all(text.as_bytes()).context("write sentinel temp file")?;
     file.sync_all().context("flush sentinel temp file")
+}
+
+/// Write the patch-state document to its temp sibling and flush it, mirroring
+/// [`write_quarantine_temp`] for the `patch-state.toml` document shape.
+fn write_state_temp(root: &Path, temp: &Path, text: &str) -> Result<()> {
+    std::fs::create_dir_all(root).context("create publication folder")?;
+    let mut file = std::fs::File::create(temp).context("create patch state temp file")?;
+    file.write_all(text.as_bytes())
+        .context("write patch state temp file")?;
+    file.sync_all().context("flush patch state temp file")
 }
 
 /// File identity of the artifact named by a manifest that latched a terminal failure.
@@ -322,16 +573,10 @@ struct ArtifactStamp {
 fn artifact_stamp(root: &Path, library: &str) -> Option<ArtifactStamp> {
     // A parsed manifest can name a path; refuse to stat outside the publication root, exactly as
     // `verify_publication` refuses the same name. Such a failure is repairable only by the text.
-    let library_path = Path::new(library);
-    if library_path.components().count() != 1
-        || !matches!(
-            library_path.components().next(),
-            Some(Component::Normal(_))
-        )
-    {
+    if !plain_library_basename(library) {
         return None;
     }
-    let metadata = std::fs::metadata(root.join(library_path)).ok()?;
+    let metadata = std::fs::metadata(root.join(Path::new(library))).ok()?;
     Some(ArtifactStamp {
         library: library.to_owned(),
         len: metadata.len(),
@@ -340,11 +585,16 @@ fn artifact_stamp(root: &Path, library: &str) -> Option<ArtifactStamp> {
 }
 
 impl ArtifactStamp {
-    /// Whether the named artifact still has the recorded length and modification time. A missing
-    /// or unreadable artifact returns `false` so the caller retries instead of masking a repair.
+    /// Whether the named artifact still has the recorded length and, when the recorded modification
+    /// time is present, the same modification time. A missing or unreadable artifact returns
+    /// `false` so the caller retries instead of masking a repair.
     fn matches_current(&self, root: &Path) -> bool {
-        artifact_stamp(root, &self.library)
-            .is_some_and(|current| current.len == self.len && current.modified == self.modified)
+        artifact_stamp(root, &self.library).is_some_and(|current| {
+            current.len == self.len
+                && self
+                    .modified
+                    .map_or(true, |modified| current.modified == Some(modified))
+        })
     }
 }
 
@@ -1064,12 +1314,13 @@ fn movement_proposal_of(output: &MovementOutput) -> MovementProposal {
     }
 }
 
-/// In-memory counters/timings for the active pose module.
+/// Live counters/timings for the active pose module.
 ///
-/// Reset on every activation so the record always describes the module that is currently (or was
-/// most recently) active. [`PatchHealthPolicy`] decides whether a recorded failure demotes;
-/// persistence, remaining movement/rollback typed reasons and per-revision cumulative accounting
-/// remain out of scope.
+/// Reset on every activation so the consecutive streak and last sample always describe the module
+/// that is currently (or was most recently) active. The cumulative total and evaluation high-water
+/// mark are then seeded from the bounded per-revision store, so they survive a reactivation and a
+/// process restart. [`PatchHealthPolicy`] decides whether a recorded failure demotes; remaining
+/// movement/rollback typed reasons and movement health remain out of scope.
 #[derive(Clone, Debug, Default)]
 struct PatchHealth {
     consecutive_frame_failures: u32,
@@ -1087,8 +1338,8 @@ impl PatchHealth {
         self.max_eval_micros = self.max_eval_micros.max(micros);
     }
 
-    /// An active module produced a valid batch: the consecutive streak ends, but the cumulative
-    /// count survives until the next activation resets it.
+    /// An active module produced a valid batch: the consecutive streak ends. The per-revision
+    /// cumulative total survives; it is seeded from `patch-state.toml` on a later activation.
     fn record_success(&mut self) {
         self.consecutive_frame_failures = 0;
     }
@@ -1110,8 +1361,10 @@ impl PatchHealth {
                 && self.total_frame_failures >= policy.max_total_frame_failures)
     }
 
-    /// A newly activated module starts with a clean record. Its first steady-state evaluation on a
-    /// later frame populates the timings; the candidate canary/restore probe is not timed.
+    /// A newly activated module restarts the consecutive streak and last sample. The cumulative
+    /// total and high-water mark are then seeded from `patch-state.toml` through
+    /// [`Host::seed_persisted_health`]; its first steady-state evaluation on a later frame
+    /// populates the timings (the candidate canary/restore probe is not timed).
     fn reset(&mut self) {
         *self = Self::default();
     }
@@ -1175,9 +1428,19 @@ pub struct Host {
     /// In-memory counters/timings for the active pose module, exposed through
     /// [`Host::health_snapshot`]. See [`PatchHealthSnapshot`].
     health: PatchHealth,
-    /// In-memory demotion thresholds compared against [`Self::health`] after an active-module
-    /// failure. Defaults to the single-strike behavior; see [`PatchHealthPolicy`].
+    /// Demotion thresholds compared against [`Self::health`] after an active-module failure.
+    /// Defaults to the single-strike behavior; loaded from and saved to `patch-state.toml`.
+    /// See [`PatchHealthPolicy`].
     health_policy: PatchHealthPolicy,
+    /// Bounded per-revision cumulative health behind `patch-state.toml`, keyed by verified digest
+    /// and kept oldest-first. Activation seeds [`Self::health`]'s total and high-water mark from
+    /// the entry; steady-state evaluations update it. It grants nothing: a digest only seeds
+    /// counters for a later verified activation, never selects code.
+    persisted_health: VecDeque<PersistedRevisionHealth>,
+    /// Whether the policy, persisted health or a seam artifact stamp changed since the last
+    /// successful load/save. Only a changed persisted field sets it, so a per-frame success with an
+    /// unchanged high-water mark does not rewrite the file.
+    state_dirty: bool,
     rejection: Option<String>,
     /// Typed reason paired with [`Self::rejection`]. Consumed together through
     /// [`Host::take_rejection_detail`] or cleared by [`Host::take_rejection`].
@@ -1198,7 +1461,7 @@ pub struct Host {
     /// re-reading the DLL. A frame rejected by host validation never reaches this store. The list
     /// is persisted to `quarantine.toml` (see [`Host::persist_quarantine`]) and restored at startup
     /// (see [`Host::load_persistent_quarantine`]); remaining movement/rollback typed reasons and
-    /// persistent health remain H03.
+    /// movement health remain H03.
     /// The pose loading and staged-canary sentinels and the movement loading sentinel are
     /// implemented in this slice.
     quarantined_digests: VecDeque<String>,
@@ -1247,7 +1510,7 @@ pub struct Host {
     /// Deliberately separate from the pose store so the same bytes under a different ABI cannot
     /// suppress the other seam; H03 may unify the stores under a `(ModuleKind, digest)` key. Both
     /// lists travel in the same `quarantine.toml` but stay separate in memory. Movement/rollback
-    /// typed reasons, persistent health, the movement active-frame sentinel and the frame counters
+    /// typed reasons, movement health, the movement active-frame sentinel and the frame counters
     /// remain H03.
     movement_quarantined_digests: VecDeque<String>,
     /// Which hot-pluggable gameplay seams are enabled. Pose is always enabled; the movement
@@ -1266,6 +1529,8 @@ impl Host {
             previous: VecDeque::new(),
             health: PatchHealth::default(),
             health_policy: PatchHealthPolicy::default(),
+            persisted_health: VecDeque::new(),
+            state_dirty: false,
             rejection: None,
             rejection_reason: None,
             publication_reason: None,
@@ -1329,6 +1594,106 @@ impl Host {
     /// `MovementLoaded::open` failure or a module-produced proposal failure.
     fn is_movement_quarantined(&self, digest: &str) -> bool {
         self.movement_quarantined_digests.iter().any(|d| d == digest)
+    }
+
+    /// Replace the pose artifact stamp and mark the state dirty when it actually changes.
+    /// Setting or clearing a stamp changes the persisted `patch-state.toml` document even though
+    /// it is best-effort recovery metadata, never a digest trust decision.
+    fn set_pose_failure_stamp(&mut self, stamp: Option<ArtifactStamp>) {
+        if self.pose_failure_stamp != stamp {
+            self.pose_failure_stamp = stamp;
+            self.state_dirty = true;
+        }
+    }
+
+    /// Replace the movement artifact stamp and mark the state dirty when it actually changes.
+    fn set_movement_failure_stamp(&mut self, stamp: Option<ArtifactStamp>) {
+        if self.movement_failure_stamp != stamp {
+            self.movement_failure_stamp = stamp;
+            self.state_dirty = true;
+        }
+    }
+
+    /// Reset the live health record for a newly active digest and seed its cumulative values from
+    /// the bounded per-revision store.
+    ///
+    /// The consecutive streak and last sample always start at 0 for a new activation; only
+    /// `total_frame_failures` and `max_eval_micros` carry across reactivations and process runs.
+    /// An unknown digest simply starts clean.
+    fn seed_persisted_health(&mut self, digest: &str) {
+        self.health.reset();
+        if let Some(stored) = self
+            .persisted_health
+            .iter()
+            .find(|entry| entry.digest == digest)
+        {
+            self.health.total_frame_failures = stored.total_frame_failures;
+            self.health.max_eval_micros = stored.max_eval_micros;
+        }
+    }
+
+    /// Record the active module's current cumulative failures and high-water evaluation time.
+    ///
+    /// Called only when one of those persisted fields changed. A digest already in the store is
+    /// moved to the newest end (the reloaded order then matches the most recent activity) and an
+    /// unknown digest is inserted, evicting the oldest entry at [`MAX_PERSISTED_REVISIONS`]. The
+    /// manifest revision is advisory and bounded: a label the loader would reject (empty, longer
+    /// than [`MAX_PERSISTED_REVISION_BYTES`] or containing control characters) is stored as
+    /// `"unknown"`, so the digest-keyed entry survives a reload instead of being silently dropped.
+    /// The high-water mark is capped at `i64::MAX` so it remains a valid TOML integer; the live
+    /// in-memory timing itself is not clamped.
+    fn sync_persisted_health(&mut self, digest: &str, revision: &str) {
+        if let Some(index) = self
+            .persisted_health
+            .iter()
+            .position(|entry| entry.digest == digest)
+        {
+            self.persisted_health.remove(index);
+        }
+        if self.persisted_health.len() == MAX_PERSISTED_REVISIONS {
+            self.persisted_health.pop_front();
+        }
+        self.persisted_health.push_back(PersistedRevisionHealth {
+            digest: digest.to_owned(),
+            revision: accepted_revision_label(revision)
+                .unwrap_or("unknown")
+                .to_owned(),
+            total_frame_failures: self.health.total_frame_failures,
+            max_eval_micros: self.health.max_eval_micros.min(i64::MAX as u64),
+        });
+        self.state_dirty = true;
+    }
+
+    /// The bounded document written by [`Self::persist_state`].
+    ///
+    /// Empty health or stamps sections are omitted instead of serialized as empty tables; the
+    /// policy is always written so a reload keeps the caller's thresholds rather than silently
+    /// reverting to the default.
+    fn state_document(&self) -> PatchStateFile {
+        let revisions: Vec<PersistedRevisionHealth> =
+            self.persisted_health.iter().cloned().collect();
+        let pose = self
+            .pose_failure_stamp
+            .as_ref()
+            .and_then(|stamp| persisted_stamp(stamp, self.observed.as_deref()));
+        let movement = self
+            .movement_failure_stamp
+            .as_ref()
+            .and_then(|stamp| persisted_stamp(stamp, self.movement_observed.as_deref()));
+        let stamps = if pose.is_none() && movement.is_none() {
+            None
+        } else {
+            Some(PersistedStamps { pose, movement })
+        };
+        PatchStateFile {
+            schema_version: PATCH_STATE_SCHEMA_VERSION,
+            policy: Some(PersistedPolicy {
+                max_consecutive_frame_failures: self.health_policy.max_consecutive_frame_failures,
+                max_total_frame_failures: self.health_policy.max_total_frame_failures,
+            }),
+            health: (!revisions.is_empty()).then_some(PersistedHealth { revisions }),
+            stamps,
+        }
     }
 
     /// Merge the persisted digest quarantines from `<root>/quarantine.toml` into both stores.
@@ -1425,6 +1790,128 @@ impl Host {
             }
         }
         written
+    }
+
+    /// Replace the policy, persisted per-revision health and both artifact stamps from
+    /// `<root>/patch-state.toml`.
+    ///
+    /// A missing file is `Ok(0)`. The document is read with a [`MAX_PATCH_STATE_BYTES`] cap and
+    /// parsed in full before any host state changes, so an oversized, unreadable, malformed,
+    /// unknown-field or unsupported-schema file returns `Err` with the policy, store, stamps and
+    /// live health untouched. Once the document parses, each entry is validated independently:
+    /// an invalid digest, revision label, library basename or oversized artifact length skips that
+    /// entry (and clears that seam's stamp) without failing the rest of the document. The return
+    /// value counts the per-revision entries actually applied, not skipped ones.
+    ///
+    /// On success `persisted_health` replaces (not merges with) the in-memory store,
+    /// `health_policy` replaces the current policy, both `*_failure_stamp` slots replace their
+    /// current values and the stored latched manifest text replaces `observed`/`movement_observed`,
+    /// and `state_dirty` is cleared because memory and disk now agree. Live health
+    /// counters are not touched: the next activation of a stored digest seeds its cumulative total
+    /// and high-water mark through [`Self::seed_persisted_health`].
+    ///
+    /// Loading is advisory state hygiene, not authorization. A persisted digest only seeds
+    /// counters for a later verified activation of that same content identity; it never selects,
+    /// opens or quarantines an artifact. A stamp only suppresses a same-text re-read until the
+    /// artifact's length or modification time changes, and no digest or OS error text is trusted
+    /// from the file. The file is single-client scope like `quarantine.toml`: a fixed temp name,
+    /// no interprocess lock and last-writer-wins replacement, so a root shared by concurrent
+    /// clients is unsupported.
+    pub fn load_persistent_state(&mut self) -> Result<usize> {
+        let path = self.root.join(PATCH_STATE_FILE);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(
+            metadata.len() <= MAX_PATCH_STATE_BYTES,
+            "patch state exceeds {MAX_PATCH_STATE_BYTES} bytes"
+        );
+        let text = std::fs::read_to_string(&path).context("read patch state")?;
+        let file: PatchStateFile = toml::from_str(&text).context("parse patch state")?;
+        ensure!(
+            file.schema_version == PATCH_STATE_SCHEMA_VERSION,
+            "unsupported patch state schema version {}",
+            file.schema_version
+        );
+        let policy = file.policy.map_or_else(PatchHealthPolicy::default, |policy| {
+            PatchHealthPolicy {
+                max_consecutive_frame_failures: policy.max_consecutive_frame_failures,
+                max_total_frame_failures: policy.max_total_frame_failures,
+            }
+        });
+        let revisions = file
+            .health
+            .map_or_else(VecDeque::<PersistedRevisionHealth>::new, |health| {
+                accepted_persisted_revisions(&health.revisions)
+            });
+        let (pose_stamp, pose_latch, movement_stamp, movement_latch) = match file.stamps {
+            Some(stamps) => {
+                let (pose_stamp, pose_latch) = stamps
+                    .pose
+                    .and_then(accepted_persisted_stamp)
+                    .map_or((None, None), |(stamp, latch)| {
+                        (Some(stamp), Some(latch))
+                    });
+                let (movement_stamp, movement_latch) = stamps
+                    .movement
+                    .and_then(accepted_persisted_stamp)
+                    .map_or((None, None), |(stamp, latch)| {
+                        (Some(stamp), Some(latch))
+                    });
+                (
+                    pose_stamp,
+                    pose_latch,
+                    movement_stamp,
+                    movement_latch,
+                )
+            }
+            None => (None, None, None, None),
+        };
+        let applied = revisions.len();
+        self.health_policy = policy;
+        self.persisted_health = revisions;
+        self.pose_failure_stamp = pose_stamp;
+        self.observed = pose_latch;
+        self.movement_failure_stamp = movement_stamp;
+        self.movement_observed = movement_latch;
+        self.state_dirty = false;
+        Ok(applied)
+    }
+
+    /// Write the bounded policy, per-revision health and artifact stamps to
+    /// `<root>/patch-state.toml`, returning `Ok(true)` when the file was replaced.
+    ///
+    /// When `state_dirty` is `false` this is `Ok(false)` and the file is not rewritten: a healthy
+    /// steady state with unchanged high-water marks does not write at 1 Hz. Otherwise the document
+    /// is serialized and size-checked, written to `patch-state.toml.tmp` (create/truncate,
+    /// `write_all`, `sync_all`) and renamed over the target in one `std::fs::rename`, the same
+    /// atomic-replacement pattern as [`Self::persist_quarantine`] (no delete-then-rename window;
+    /// the directory entry is not synced, so this is atomic replacement, not a power-loss
+    /// guarantee). A failure before the rename leaves the previous file byte-identical, removes the
+    /// inert temp best-effort, leaves `state_dirty` set and changes no in-memory state, so the next
+    /// poll retries. A failed save never stops the poll or either seam.
+    pub fn persist_state(&mut self) -> Result<bool> {
+        if !self.state_dirty {
+            return Ok(false);
+        }
+        let text = toml::to_string(&self.state_document()).context("serialize patch state")?;
+        ensure!(
+            text.len() as u64 <= MAX_PATCH_STATE_BYTES,
+            "patch state serialization exceeds {MAX_PATCH_STATE_BYTES} bytes"
+        );
+        let target = self.root.join(PATCH_STATE_FILE);
+        let temp = self.root.join(PATCH_STATE_TEMP);
+        if let Err(error) = write_state_temp(&self.root, &temp, &text)
+            .and_then(|()| std::fs::rename(&temp, &target).context("replace patch state"))
+        {
+            // Best effort: a leftover temp file is inert and is overwritten by the next save.
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+        self.state_dirty = false;
+        Ok(true)
     }
 
     /// Write a pose/movement crash sentinel for a verified publication to
@@ -1693,7 +2180,7 @@ impl Host {
                 // Only keep it staged while its publication can still be observed.
                 self.pending = None;
                 self.observed = None;
-                self.pose_failure_stamp = None;
+                self.set_pose_failure_stamp(None);
                 return if error.kind() == std::io::ErrorKind::NotFound {
                     Ok(false)
                 } else {
@@ -1719,7 +2206,7 @@ impl Host {
                 .is_some_and(|stamp| !stamp.matches_current(&self.root))
             {
                 self.observed = None;
-                self.pose_failure_stamp = None;
+                self.set_pose_failure_stamp(None);
             } else {
                 return Ok(false);
             }
@@ -1730,7 +2217,7 @@ impl Host {
         self.observed = None;
         self.rejection = None;
         self.rejection_reason = None;
-        self.pose_failure_stamp = None;
+        self.set_pose_failure_stamp(None);
         let publication: Publication = match toml::from_str(&text) {
             Ok(publication) => publication,
             Err(error) => {
@@ -1738,7 +2225,7 @@ impl Host {
                 // not re-parse and re-report the same bytes; a changed manifest clears the latch
                 // above and is retried. There is no trustworthy publication, so no artifact stamp
                 // is recorded; the typed rejection reason is recorded below.
-                self.pose_failure_stamp = None;
+                self.set_pose_failure_stamp(None);
                 self.observed = Some(text);
                 self.publication_reason = Some(PatchRejectReason::ManifestMalformed);
                 return Err(error.into());
@@ -1751,7 +2238,7 @@ impl Host {
             // `Ok(false)`; a genuinely new digest is still evaluated. The digest is the refusal key,
             // so no artifact stamp is recorded: replacing the bytes must not spam the gate.
             let digest = publication.sha1.clone();
-            self.pose_failure_stamp = None;
+            self.set_pose_failure_stamp(None);
             self.observed = Some(text);
             self.publication_reason = Some(PatchRejectReason::Quarantined);
             bail!(
@@ -1788,7 +2275,7 @@ impl Host {
                 self.publication_reason = Some(
                     publication_reason(&error).unwrap_or(PatchRejectReason::ArtifactRejected),
                 );
-                self.pose_failure_stamp = attempt_stamp.clone();
+                self.set_pose_failure_stamp(attempt_stamp.clone());
                 self.observed = Some(text);
                 return Err(error);
             }
@@ -1835,14 +2322,14 @@ impl Host {
                 self.publication_reason =
                     Some(publication_reason(&error).unwrap_or(PatchRejectReason::LoadFailed));
                 self.quarantine_digest(&quarantine_digest);
-                self.pose_failure_stamp = attempt_stamp;
+                self.set_pose_failure_stamp(attempt_stamp);
                 self.observed = Some(text);
                 return Err(error);
             }
         };
         self.pending = Some(pending);
         // A successful open latches the manifest even though promotion happens on the next batch.
-        self.pose_failure_stamp = None;
+        self.set_pose_failure_stamp(None);
         self.observed = Some(text);
         Ok(true)
     }
@@ -1862,18 +2349,16 @@ impl Host {
         self.active.as_ref().map(|m| m.digest.as_str())
     }
 
-    /// Read-only in-memory health of the active pose module.
+    /// Read-only health of the active pose module.
     ///
     /// `revision`/`digest` name the module active at snapshot time. After a demotion with no valid
     /// predecessor the slot is empty, so both are `None` while the last counters/timings remain
     /// visible until the next activation resets them; the failed identity is available from
-    /// `take_active_failure`/`take_restore_outcomes`. A restored predecessor starts a clean record.
-    /// `quarantined_digests` is the current pose quarantine length. `total_frame_failures` is
-    /// per-activation in this slice. This snapshot itself neither persists nor exports anything;
-    /// the digest lists behind the quarantine count are separately saved to `quarantine.toml`, and
-    /// the in-memory [`PatchHealthPolicy`] thresholds compare these counters, while persistent
-    /// health, remaining movement/rollback typed reasons and per-revision cumulative accounting
-    /// remain H03.
+    /// `take_active_failure`/`take_restore_outcomes`. A restored predecessor starts a new
+    /// activation: the consecutive streak restarts at 0, while the cumulative total and high-water
+    /// evaluation time are seeded from `patch-state.toml`. `quarantined_digests` is the current
+    /// pose quarantine length. This returns the live activation counters; the persisted
+    /// per-revision store is written separately by [`Self::persist_state`].
     pub fn health_snapshot(&self) -> PatchHealthSnapshot {
         PatchHealthSnapshot {
             revision: self.active.as_ref().map(|module| module.revision.clone()),
@@ -1886,14 +2371,19 @@ impl Host {
         }
     }
 
-    /// Replace the in-memory demotion thresholds. Affects only failures recorded after this call;
+    /// Replace the demotion thresholds. Affects only failures recorded after this call;
     /// existing counters are kept, so relaxing a policy lets a module that already failed remain
-    /// active until the next failure. [`PatchHealthPolicy::default`] is single-strike (1/3).
+    /// active until the next failure. [`PatchHealthPolicy::default`] is single-strike (1/3). A
+    /// changed policy marks the persisted state dirty; [`Self::persist_state`] writes it on the
+    /// next poll.
     pub fn set_health_policy(&mut self, policy: PatchHealthPolicy) {
-        self.health_policy = policy;
+        if self.health_policy != policy {
+            self.health_policy = policy;
+            self.state_dirty = true;
+        }
     }
 
-    /// The in-memory demotion thresholds currently in force for active pose-module failures.
+    /// The demotion thresholds currently in force for active pose-module failures.
     pub fn health_policy(&self) -> PatchHealthPolicy {
         self.health_policy
     }
@@ -1938,7 +2428,7 @@ impl Host {
                 self.movement_proposal_ready = false;
                 self.movement_canary_attempted = false;
                 self.movement_observed = None;
-                self.movement_failure_stamp = None;
+                self.set_movement_failure_stamp(None);
                 self.movement_refusal = None;
                 self.movement_rejection = None;
             } else if !enabled && was_enabled {
@@ -2212,6 +2702,7 @@ impl Host {
             }
             match canary_result {
                 Ok(()) => {
+                    let promoted_digest = candidate.digest.clone();
                     if let Some(old) = self.active.replace(candidate) {
                         self.previous.retain(|m| m.digest != old.digest);
                         self.previous.push_back(old);
@@ -2219,9 +2710,11 @@ impl Host {
                     while self.previous.len() > 3 {
                         self.previous.pop_front();
                     }
-                    // A newly promoted candidate starts a fresh health record; the canary call is
-                    // an activation probe, not a timed steady-state evaluation.
-                    self.health.reset();
+                    // A newly promoted candidate is a new activation: the canary call is an
+                    // activation probe, not a timed steady-state evaluation, so the consecutive
+                    // streak and last sample start at 0 while the cumulative total and high-water
+                    // mark are seeded from the per-revision store.
+                    self.seed_persisted_health(&promoted_digest);
                     return Ok(true);
                 }
                 Err(error) => {
@@ -2243,17 +2736,32 @@ impl Host {
         if let Some(module) = self.active.take() {
             // Only the active module is timed. The candidate canary above and the predecessor
             // restore below are activation probes, not steady-state frame evaluations.
+            let max_before = self.health.max_eval_micros;
+            let total_before = self.health.total_frame_failures;
             let started = std::time::Instant::now();
             let result = module.evaluate(bones, rigs, seconds, output);
             self.health.record_eval(started.elapsed());
             match result {
                 Ok(()) => {
-                    self.active = Some(module);
                     self.health.record_success();
+                    // A success does not change the cumulative total; it only persists when the
+                    // timed evaluation raised the per-revision high-water mark.
+                    if self.health.max_eval_micros != max_before {
+                        self.sync_persisted_health(&module.digest, &module.revision);
+                    }
+                    self.active = Some(module);
                     return Ok(true);
                 }
                 Err(error) => {
                     self.health.record_failure();
+                    // An active steady-state failure is the only path that increments the
+                    // per-revision cumulative total; persist it before a possible demotion. A
+                    // saturated total with an unchanged high-water mark has no persisted change.
+                    if self.health.total_frame_failures != total_before
+                        || self.health.max_eval_micros != max_before
+                    {
+                        self.sync_persisted_health(&module.digest, &module.revision);
+                    }
                     let failure_reason = error.reason();
                     if !self.health.threshold_reached(self.health_policy) {
                         // The policy tolerates this failure, so the module stays active for a later
@@ -2303,10 +2811,12 @@ impl Host {
                         match previous.evaluate(bones, rigs, seconds, output) {
                             Ok(()) => {
                                 let restored_digest = previous.digest_bytes();
+                                let restored_key = previous.digest.clone();
                                 self.active = Some(previous);
-                                // The restored predecessor is newly active: its own record starts
-                                // clean, so the failed module's counters/timings are not carried.
-                                self.health.reset();
+                                // The restored predecessor is a new activation: its consecutive
+                                // streak and last sample start clean, while its cumulative total
+                                // and high-water mark are seeded from the per-revision store.
+                                self.seed_persisted_health(&restored_key);
                                 self.push_restore(RestoreOutcome::Restored {
                                     failed_digest,
                                     restored_digest,
@@ -2363,7 +2873,7 @@ impl Host {
                 self.movement_pending = None;
                 self.movement_proposal_ready = false;
                 self.movement_observed = None;
-                self.movement_failure_stamp = None;
+                self.set_movement_failure_stamp(None);
                 return if error.kind() == std::io::ErrorKind::NotFound {
                     Ok(false)
                 } else {
@@ -2383,7 +2893,7 @@ impl Host {
         if !self.is_seam_enabled(ModuleKind::Movement) {
             let already_refused = self.movement_observed.as_deref() == Some(text.as_str());
             self.movement_observed = Some(text);
-            self.movement_failure_stamp = None;
+            self.set_movement_failure_stamp(None);
             self.movement_pending = None;
             self.movement_active = None;
             self.movement_proposal_ready = false;
@@ -2406,7 +2916,7 @@ impl Host {
                 .is_some_and(|stamp| !stamp.matches_current(&self.root))
             {
                 self.movement_observed = None;
-                self.movement_failure_stamp = None;
+                self.set_movement_failure_stamp(None);
             } else {
                 return Ok(false);
             }
@@ -2416,7 +2926,7 @@ impl Host {
         self.movement_pending = None;
         self.movement_proposal_ready = false;
         self.movement_observed = None;
-        self.movement_failure_stamp = None;
+        self.set_movement_failure_stamp(None);
         let publication: Publication = match toml::from_str(&text) {
             Ok(publication) => publication,
             Err(error) => {
@@ -2424,7 +2934,7 @@ impl Host {
                 // stage call does not re-parse and re-report the same bytes; a changed manifest
                 // cleared the latch above and is retried. There is no trustworthy publication, so
                 // no artifact stamp is recorded; H03 adds movement typed reasons.
-                self.movement_failure_stamp = None;
+                self.set_movement_failure_stamp(None);
                 self.movement_observed = Some(text);
                 return Err(self.refuse_movement(
                     MovementRefusal::Publication,
@@ -2439,7 +2949,7 @@ impl Host {
             // is a quiet `Ok(false)`; a genuinely new digest is still evaluated. The digest is the
             // refusal key, so no artifact stamp is recorded.
             let digest = publication.sha1.clone();
-            self.movement_failure_stamp = None;
+            self.set_movement_failure_stamp(None);
             self.movement_observed = Some(text);
             return Err(self.refuse_movement(
                 MovementRefusal::Quarantined,
@@ -2467,14 +2977,14 @@ impl Host {
                 if failure.transient {
                     // Leave `movement_observed` unlatched so an incomplete copy or a
                     // publisher-held artifact is retried unchanged; never quarantine it.
-                    self.movement_failure_stamp = None;
+                    self.set_movement_failure_stamp(None);
                     return Err(self.refuse_movement(failure.refusal, failure.detail));
                 }
                 // A verification failure carries `verified_digest: None`, so no quarantine.
                 if let Some(digest) = failure.verified_digest.as_deref() {
                     self.quarantine_movement_digest(digest);
                 }
-                self.movement_failure_stamp = attempt_stamp;
+                self.set_movement_failure_stamp(attempt_stamp);
                 self.movement_observed = Some(text);
                 Err(self.refuse_movement(failure.refusal, failure.detail))
             }
@@ -2512,7 +3022,7 @@ impl Host {
                         // A new staged candidate gets a fresh one-shot canary marker.
                         self.movement_canary_attempted = false;
                         self.movement_observed = Some(text);
-                        self.movement_failure_stamp = None;
+                        self.set_movement_failure_stamp(None);
                         self.movement_refusal = None;
                         self.movement_rejection = None;
                         Ok(true)
@@ -2521,14 +3031,14 @@ impl Host {
                         if failure.transient {
                             // Leave `movement_observed` unlatched so an incomplete copy or a
                             // publisher-held artifact is retried unchanged; never quarantine it.
-                            self.movement_failure_stamp = None;
+                            self.set_movement_failure_stamp(None);
                             return Err(self.refuse_movement(failure.refusal, failure.detail));
                         }
                         // Only a bytes-verified post-verification failure may quarantine.
                         if let Some(failed_digest) = failure.verified_digest.as_deref() {
                             self.quarantine_movement_digest(failed_digest);
                         }
-                        self.movement_failure_stamp = attempt_stamp;
+                        self.set_movement_failure_stamp(attempt_stamp);
                         self.movement_observed = Some(text);
                         Err(self.refuse_movement(failure.refusal, failure.detail))
                     }
@@ -8204,6 +8714,951 @@ mod tests {
             !root.join(QUARANTINE_TEMP).exists(),
             "the written temp file is cleaned up after a failed rename"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ------------------------------------------------------------------
+    // Persistent patch state (`<root>/patch-state.toml`). These cases exercise the document
+    // shape, validation, cap/eviction, per-revision seeding and stamp round-trip with in-process
+    // probes; no native library is built or loaded. The Bevy plugin/probe fail-open wiring is
+    // inspection-only here (this crate has no Bevy App/probe-process harness), and the
+    // `SystemTime::checked_add` overflow -> length-only branch is likewise inspection-only because
+    // both supported targets represent every `u64`-nanosecond offset from `UNIX_EPOCH`.
+    // ------------------------------------------------------------------
+
+    fn patch_state_text(file: &PatchStateFile) -> String {
+        toml::to_string(file).expect("serialize patch state fixture")
+    }
+
+    fn persisted_revision(
+        digest: &str,
+        revision: &str,
+        total_frame_failures: u32,
+        max_eval_micros: u64,
+    ) -> PersistedRevisionHealth {
+        PersistedRevisionHealth {
+            digest: digest.to_owned(),
+            revision: revision.to_owned(),
+            total_frame_failures,
+            max_eval_micros,
+        }
+    }
+
+    #[test]
+    fn persistent_state_round_trips_policy_health_and_stamps() {
+        let root = pose_test_root("state-round-trip");
+        let mut host = Host::new(root.clone());
+        host.set_health_policy(PatchHealthPolicy {
+            max_consecutive_frame_failures: 2,
+            max_total_frame_failures: 5,
+        });
+        host.health.total_frame_failures = 3;
+        host.health.max_eval_micros = 1234;
+        host.sync_persisted_health(ACTIVE_DIGEST, "rev-active");
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let pose = ArtifactStamp {
+            library: format!("pose-{ACTIVE_DIGEST}.dll"),
+            len: 12345,
+            modified: Some(modified),
+        };
+        let movement = ArtifactStamp {
+            library: format!("movement-{MOVEMENT_CANARY_DIGEST}.dll"),
+            len: 54321,
+            modified: None,
+        };
+        let pose_manifest = format!(
+            "revision = \"rev-active\"\nlibrary = \"{}\"\nsha1 = \"{}\"\n",
+            pose.library,
+            "a".repeat(40)
+        );
+        let movement_manifest = format!(
+            "revision = \"rev-movement\"\nlibrary = \"{}\"\nsha1 = \"{}\"\n",
+            movement.library,
+            "b".repeat(40)
+        );
+        host.observed = Some(pose_manifest.clone());
+        host.movement_observed = Some(movement_manifest.clone());
+        host.set_pose_failure_stamp(Some(pose.clone()));
+        host.set_movement_failure_stamp(Some(movement.clone()));
+
+        assert!(host.persist_state().expect("persist patch state"));
+        assert!(!host.state_dirty, "a successful save clears the dirty flag");
+        assert!(
+            !root.join(PATCH_STATE_TEMP).exists(),
+            "the temp file is renamed over the target, not left behind"
+        );
+
+        let mut restored = Host::new(root.clone());
+        assert_eq!(
+            restored.load_persistent_state().expect("load patch state"),
+            1,
+            "one per-revision entry is applied"
+        );
+        assert_eq!(restored.health_policy(), host.health_policy());
+        assert_eq!(restored.persisted_health.len(), 1);
+        assert_eq!(restored.persisted_health[0].digest, ACTIVE_DIGEST);
+        assert_eq!(restored.persisted_health[0].revision, "rev-active");
+        assert_eq!(restored.persisted_health[0].total_frame_failures, 3);
+        assert_eq!(restored.persisted_health[0].max_eval_micros, 1234);
+        assert_eq!(
+            restored.pose_failure_stamp.as_ref(),
+            Some(&pose),
+            "a first-run artifact stamp round-trips with its modification time"
+        );
+        assert_eq!(
+            restored.movement_failure_stamp.as_ref(),
+            Some(&movement),
+            "a stamp without a modification time round-trips as length-only"
+        );
+        assert_eq!(
+            restored.observed.as_deref(),
+            Some(pose_manifest.as_str()),
+            "the latched pose manifest text is restored so the first poll can consult the stamp"
+        );
+        assert_eq!(
+            restored.movement_observed.as_deref(),
+            Some(movement_manifest.as_str()),
+            "the latched movement manifest text is restored with its stamp"
+        );
+        assert!(
+            !restored.state_dirty,
+            "a successful load clears the dirty flag"
+        );
+        assert!(
+            !restored.persist_state().expect("a clean load writes nothing"),
+            "an unchanged document is not rewritten"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_missing_file_is_an_empty_success() {
+        let root = pose_test_root("state-missing");
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_persistent_state()
+                .expect("a missing state file is not an error"),
+            0
+        );
+        assert!(host.persisted_health.is_empty());
+        assert_eq!(host.health_policy(), PatchHealthPolicy::default());
+        assert!(host.pose_failure_stamp.is_none());
+        assert!(host.movement_failure_stamp.is_none());
+        assert!(!host.state_dirty);
+        assert!(
+            !host.persist_state().expect("a clean state persists as a no-op"),
+            "nothing changed, so nothing is written"
+        );
+        assert!(
+            !root.join(PATCH_STATE_FILE).exists(),
+            "a fresh install never creates an empty state file"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_rejects_bad_documents_without_touching_memory() {
+        let root = pose_test_root("state-bad-documents");
+        let mut host = Host::new(root.clone());
+        let policy = PatchHealthPolicy {
+            max_consecutive_frame_failures: 4,
+            max_total_frame_failures: 9,
+        };
+        host.set_health_policy(policy);
+        host.health.total_frame_failures = 2;
+        host.health.max_eval_micros = 77;
+        host.sync_persisted_health(ACTIVE_DIGEST, "rev-keep");
+        let stamp = ArtifactStamp {
+            library: format!("pose-{ACTIVE_DIGEST}.dll"),
+            len: 1,
+            modified: None,
+        };
+        host.set_pose_failure_stamp(Some(stamp.clone()));
+        let baseline_health: Vec<PersistedRevisionHealth> =
+            host.persisted_health.iter().cloned().collect();
+
+        for (case, text) in [
+            ("malformed", "schema_version = \"one\"\n".to_owned()),
+            (
+                "unknown-field",
+                "schema_version = 1\nextra = true\n".to_owned(),
+            ),
+            ("unsupported-version", "schema_version = 2\n".to_owned()),
+            (
+                "missing-version",
+                "[policy]\nmax_consecutive_frame_failures = 1\nmax_total_frame_failures = 3\n"
+                    .to_owned(),
+            ),
+            (
+                "incomplete-policy",
+                "schema_version = 1\n[policy]\nmax_consecutive_frame_failures = 1\n".to_owned(),
+            ),
+        ] {
+            std::fs::write(root.join(PATCH_STATE_FILE), &text).expect("write bad state");
+            assert!(
+                host.load_persistent_state().is_err(),
+                "{case} must be rejected"
+            );
+            assert_eq!(host.health_policy(), policy, "{case} leaves the policy alone");
+            assert_eq!(
+                host.persisted_health
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<PersistedRevisionHealth>>(),
+                baseline_health,
+                "{case} leaves the per-revision store alone"
+            );
+            assert_eq!(
+                host.pose_failure_stamp.as_ref(),
+                Some(&stamp),
+                "{case} leaves the pose stamp alone"
+            );
+            assert!(
+                host.movement_failure_stamp.is_none(),
+                "{case} leaves the movement stamp alone"
+            );
+            assert!(
+                host.state_dirty,
+                "{case} does not clear the dirty flag on a failed load"
+            );
+        }
+
+        std::fs::write(
+            root.join(PATCH_STATE_FILE),
+            vec![b'a'; (MAX_PATCH_STATE_BYTES + 1) as usize],
+        )
+        .expect("write oversized state");
+        let error = host
+            .load_persistent_state()
+            .expect_err("an oversized state file is rejected before reading");
+        assert!(error.to_string().contains("exceeds"), "{error:#}");
+        assert_eq!(host.health_policy(), policy);
+        assert_eq!(
+            host.persisted_health
+                .iter()
+                .cloned()
+                .collect::<Vec<PersistedRevisionHealth>>(),
+            baseline_health
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_skips_invalid_entries_and_dedupes_by_digest() {
+        let root = pose_test_root("state-invalid-entries");
+        let valid = persistent_digest(0x51);
+        let other = persistent_digest(0x52);
+        let file = PatchStateFile {
+            schema_version: PATCH_STATE_SCHEMA_VERSION,
+            policy: None,
+            health: Some(PersistedHealth {
+                revisions: vec![
+                    persisted_revision("not-a-digest", "rev-invalid-digest", 1, 1),
+                    persisted_revision(&other, "", 1, 1),
+                    persisted_revision(&other, "rev-control\u{7}", 1, 1),
+                    persisted_revision(
+                        &other,
+                        &"r".repeat(MAX_PERSISTED_REVISION_BYTES + 1),
+                        1,
+                        1,
+                    ),
+                    persisted_revision(&valid, "rev-first", 1, 10),
+                    persisted_revision(&valid, "rev-updated", 4, 40),
+                ],
+            }),
+            stamps: Some(PersistedStamps {
+                pose: Some(PersistedStamp {
+                    library: "../escape.dll".to_owned(),
+                    len: 1,
+                    modified_unix_nanos: None,
+                    latch: None,
+                }),
+                movement: Some(PersistedStamp {
+                    library: format!("movement-{other}.dll"),
+                    len: MAX_LIBRARY_BYTES + 1,
+                    modified_unix_nanos: None,
+                    latch: None,
+                }),
+            }),
+        };
+        std::fs::write(root.join(PATCH_STATE_FILE), patch_state_text(&file))
+            .expect("write state");
+
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_persistent_state().expect("load patch state"),
+            1,
+            "only the one valid deduped revision is applied"
+        );
+        assert_eq!(host.persisted_health.len(), 1);
+        assert_eq!(host.persisted_health[0].digest, valid);
+        assert_eq!(
+            host.persisted_health[0].revision, "rev-updated",
+            "the later duplicate replaces the label and moves to the newest end"
+        );
+        assert_eq!(
+            host.persisted_health[0].total_frame_failures, 4,
+            "the later duplicate's counters win"
+        );
+        assert_eq!(host.persisted_health[0].max_eval_micros, 40);
+        assert!(
+            host.pose_failure_stamp.is_none(),
+            "a path-like basename is skipped rather than trusted"
+        );
+        assert!(
+            host.movement_failure_stamp.is_none(),
+            "an oversized artifact length is skipped rather than trusted"
+        );
+        assert_eq!(
+            host.health_policy(),
+            PatchHealthPolicy::default(),
+            "an absent policy table uses the default 1/3"
+        );
+
+        // The persisted document is bounded and carries no path or OS/secret text. The stamp is
+        // paired with a valid latch so it is actually written.
+        let manifest = format!(
+            "revision = \"rev-a\"\nlibrary = \"pose-{valid}.dll\"\nsha1 = \"{}\"\n",
+            "e".repeat(40)
+        );
+        host.observed = Some(manifest);
+        host.set_pose_failure_stamp(Some(ArtifactStamp {
+            library: format!("pose-{valid}.dll"),
+            len: 7,
+            modified: Some(std::time::UNIX_EPOCH),
+        }));
+        assert!(host.persist_state().expect("persist the validated state"));
+        let text = std::fs::read_to_string(root.join(PATCH_STATE_FILE))
+            .expect("the state file is readable");
+        assert!(text.contains(&valid));
+        assert!(
+            !text.contains('/') && !text.contains(".."),
+            "no paths are written: {text}"
+        );
+        assert!(
+            !text.contains("not-a-digest") && !text.contains("escape.dll"),
+            "skipped entries are never written back: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_load_respects_the_cap_and_oldest_eviction() {
+        let root = pose_test_root("state-cap");
+        let revisions: Vec<PersistedRevisionHealth> = (0..20)
+            .map(|index| {
+                persisted_revision(
+                    &persistent_digest(index),
+                    &format!("rev-{index}"),
+                    index as u32,
+                    index as u64,
+                )
+            })
+            .collect();
+        let file = PatchStateFile {
+            schema_version: PATCH_STATE_SCHEMA_VERSION,
+            policy: None,
+            health: Some(PersistedHealth { revisions }),
+            stamps: None,
+        };
+        std::fs::write(root.join(PATCH_STATE_FILE), patch_state_text(&file))
+            .expect("write state");
+
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_persistent_state().expect("load patch state"),
+            MAX_PERSISTED_REVISIONS,
+            "an oversized list keeps only its newest cap-sized window"
+        );
+        assert_eq!(host.persisted_health.len(), MAX_PERSISTED_REVISIONS);
+        let oldest = persistent_digest(4);
+        let newest = persistent_digest(19);
+        assert_eq!(
+            host.persisted_health
+                .front()
+                .map(|entry| entry.digest.as_str()),
+            Some(oldest.as_str()),
+            "the newest 16 entries start oldest-first at index 4"
+        );
+        assert_eq!(
+            host.persisted_health.back().map(|entry| entry.digest.as_str()),
+            Some(newest.as_str())
+        );
+        assert!(
+            !host
+                .persisted_health
+                .iter()
+                .any(|entry| entry.digest == persistent_digest(3)),
+            "the oldest entries were evicted at the cap"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persisted_revision_label_is_bounded_to_a_reloadable_value() {
+        let root = pose_test_root("state-safe-label");
+        let mut host = Host::new(root.clone());
+        host.health.total_frame_failures = 2;
+        host.health.max_eval_micros = 9;
+        host.sync_persisted_health(
+            ACTIVE_DIGEST,
+            &"r".repeat(MAX_PERSISTED_REVISION_BYTES + 1),
+        );
+        host.sync_persisted_health(NEXT_DIGEST, "rev-control\u{7}");
+        assert_eq!(host.persisted_health[0].revision, "unknown");
+        assert_eq!(host.persisted_health[1].revision, "unknown");
+        assert!(host.persist_state().expect("persist patch state"));
+
+        let mut restored = Host::new(root.clone());
+        assert_eq!(
+            restored.load_persistent_state().expect("load patch state"),
+            2,
+            "both digest-keyed entries survive a reload under a safe label"
+        );
+        assert_eq!(restored.persisted_health.len(), 2);
+        assert!(restored
+            .persisted_health
+            .iter()
+            .all(|entry| entry.revision == "unknown"));
+        assert_eq!(restored.persisted_health[0].digest, ACTIVE_DIGEST);
+        assert_eq!(restored.persisted_health[0].total_frame_failures, 2);
+        assert_eq!(restored.persisted_health[0].max_eval_micros, 9);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_seeds_revision_health_on_candidate_promotion() {
+        let root = pose_test_root("state-seed-promotion");
+        let file = PatchStateFile {
+            schema_version: PATCH_STATE_SCHEMA_VERSION,
+            policy: Some(PersistedPolicy {
+                max_consecutive_frame_failures: 0,
+                max_total_frame_failures: 4,
+            }),
+            health: Some(PersistedHealth {
+                revisions: vec![persisted_revision(CANARY_DIGEST, "rev-canary", 2, 123)],
+            }),
+            stamps: None,
+        };
+        std::fs::write(root.join(PATCH_STATE_FILE), patch_state_text(&file))
+            .expect("write state");
+
+        let mut host = Host::new(root.clone());
+        host.load_persistent_state().expect("load patch state");
+        host.pending = Some(Loaded::probe("rev-canary", CANARY_DIGEST, allow_pose));
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a valid canary batch promotes")
+        );
+
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.digest.as_deref(), Some(CANARY_DIGEST));
+        assert_eq!(
+            snapshot.consecutive_frame_failures, 0,
+            "a new activation starts the consecutive streak at 0"
+        );
+        assert_eq!(
+            snapshot.total_frame_failures, 2,
+            "the promoted revision is seeded with its persisted cumulative total"
+        );
+        assert_eq!(
+            snapshot.max_eval_micros, 123,
+            "the promoted revision is seeded with its persisted high-water mark"
+        );
+        assert_eq!(
+            snapshot.last_eval_micros, 0,
+            "the canary activation probe is not timed"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persisted_revision_total_demotes_after_reload() {
+        let root = pose_test_root("state-cumulative-demote");
+        let policy = PatchHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 2,
+        };
+        let mut first = Host::new(root.clone());
+        first.set_health_policy(policy);
+        first.active = Some(Loaded::probe("rev-cumulative", ACTIVE_DIGEST, reject_pose));
+        let mut output = Vec::new();
+        assert!(
+            !first
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a below-threshold active failure is tolerated")
+        );
+        assert_eq!(first.health_snapshot().total_frame_failures, 1);
+        assert_eq!(first.health_snapshot().consecutive_frame_failures, 1);
+        assert!(first.persist_state().expect("persist patch state"));
+
+        let mut second = Host::new(root.clone());
+        assert_eq!(
+            second.load_persistent_state().expect("reload patch state"),
+            1
+        );
+        assert_eq!(second.health_policy(), policy);
+        // Reactivate the same verified digest through the real candidate-promotion seed hook. The
+        // probe then swaps the in-process function pointer for a failing one because a test cannot
+        // build a second native module for the same content identity.
+        second.pending = Some(Loaded::probe("rev-cumulative", ACTIVE_DIGEST, allow_pose));
+        assert!(
+            second
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the reactivated revision promotes")
+        );
+        assert_eq!(
+            second.health_snapshot().total_frame_failures, 1,
+            "the reactivation starts from the persisted cumulative total"
+        );
+        assert_eq!(
+            second.health_snapshot().consecutive_frame_failures, 0,
+            "the consecutive streak starts at 0 for the new activation"
+        );
+
+        second.active = Some(Loaded::probe("rev-cumulative", ACTIVE_DIGEST, reject_pose));
+        assert!(
+            !second
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the cumulative threshold demotes the module")
+        );
+        let snapshot = second.health_snapshot();
+        assert_eq!(snapshot.total_frame_failures, 2);
+        assert_eq!(
+            snapshot.consecutive_frame_failures, 1,
+            "the consecutive threshold is disabled, so the persisted total caused the demotion"
+        );
+        assert_eq!(snapshot.revision, None, "no predecessor remained to restore");
+        assert!(
+            second.is_quarantined(ACTIVE_DIGEST),
+            "the demoted revision is quarantined as before"
+        );
+
+        // A normal B -> C -> B rewrite is refused by the quarantine gate. After explicit
+        // re-admission (cap eviction or deleting the quarantine entry) the stored total seeds the
+        // reactivation rather than restarting at zero.
+        second.quarantined_digests.clear();
+        second.pending = Some(Loaded::probe("rev-cumulative", ACTIVE_DIGEST, allow_pose));
+        assert!(
+            second
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the re-admitted revision promotes")
+        );
+        assert_eq!(
+            second.health_snapshot().total_frame_failures, 2,
+            "the re-admitted revision starts from its stored cumulative total"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_restores_pose_stamp_and_detects_an_artifact_change() {
+        let root = pose_test_root("state-stamp");
+        let digest = persistent_digest(0x61);
+        let library = format!("pose-{digest}.dll");
+        std::fs::write(root.join(&library), b"artifact").expect("write artifact");
+        let stamp = artifact_stamp(&root, &library).expect("the artifact stats");
+        let manifest = format!(
+            "revision = \"rev-a\"\nlibrary = \"{library}\"\nsha1 = \"{}\"\n",
+            "d".repeat(40)
+        );
+        let mut host = Host::new(root.clone());
+        host.observed = Some(manifest);
+        host.set_pose_failure_stamp(Some(stamp.clone()));
+        assert!(host.persist_state().expect("persist patch state"));
+        assert!(stamp.matches_current(&root));
+
+        let mut restored = Host::new(root.clone());
+        assert_eq!(
+            restored.load_persistent_state().expect("load patch state"),
+            0
+        );
+        assert_eq!(
+            restored.pose_failure_stamp.as_ref(),
+            Some(&stamp),
+            "the same-text latch identity is restored across a restart"
+        );
+        assert!(
+            !restored.state_dirty,
+            "a successful load clears the dirty flag"
+        );
+        assert!(
+            restored
+                .pose_failure_stamp
+                .as_ref()
+                .is_some_and(|stamp| stamp.matches_current(&root)),
+            "the restored stamp matches the unchanged artifact"
+        );
+
+        std::fs::write(root.join(&library), b"artifact repaired in place")
+            .expect("change the artifact length");
+        assert!(
+            !restored
+                .pose_failure_stamp
+                .as_ref()
+                .is_some_and(|stamp| stamp.matches_current(&root)),
+            "a changed artifact length clears the latch and retries the same text once"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_skips_oversized_and_out_of_range_stamps() {
+        let root = pose_test_root("state-stamp-bounds");
+        let mut host = Host::new(root.clone());
+        let oversized = ArtifactStamp {
+            library: format!("pose-{ACTIVE_DIGEST}.dll"),
+            len: MAX_LIBRARY_BYTES + 1,
+            modified: None,
+        };
+        let future = ArtifactStamp {
+            library: format!("movement-{MOVEMENT_CANARY_DIGEST}.dll"),
+            len: 7,
+            modified: std::time::UNIX_EPOCH
+                .checked_add(std::time::Duration::from_nanos(u64::MAX)),
+        };
+        let movement_manifest = format!(
+            "revision = \"rev-m\"\nlibrary = \"{}\"\nsha1 = \"{}\"\n",
+            future.library,
+            "c".repeat(40)
+        );
+        host.movement_observed = Some(movement_manifest);
+        host.set_pose_failure_stamp(Some(oversized));
+        host.set_movement_failure_stamp(Some(future));
+        assert!(host.persist_state().expect("persist bounded state"));
+
+        let mut restored = Host::new(root.clone());
+        restored.load_persistent_state().expect("reload state");
+        assert!(
+            restored.pose_failure_stamp.is_none(),
+            "an oversized artifact stamp is not persisted"
+        );
+        assert_eq!(
+            restored.movement_failure_stamp,
+            Some(ArtifactStamp {
+                library: format!("movement-{MOVEMENT_CANARY_DIGEST}.dll"),
+                len: 7,
+                modified: None,
+            }),
+            "an mtime that cannot fit TOML's signed integer reloads as length-only"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_none_mtime_compares_by_length_only() {
+        let root = pose_test_root("state-stamp-length-only");
+        let digest = persistent_digest(0x62);
+        let library = format!("pose-{digest}.dll");
+        std::fs::write(root.join(&library), b"artifact").expect("write artifact");
+        let mut stamp = artifact_stamp(&root, &library).expect("the artifact stats");
+        stamp.modified = None;
+        assert!(
+            stamp.matches_current(&root),
+            "a stamp without a modification time compares by length only"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_restored_stamp_drives_the_same_text_retry() {
+        let root = pose_test_root("state-stamp-poll");
+        let digest = persistent_digest(0x63);
+        let library = format!("pose-{digest}.dll");
+        std::fs::write(root.join(&library), b"artifact").expect("write artifact");
+        let manifest = format!(
+            "revision = \"rev-a\"\nlibrary = \"{library}\"\nsha1 = \"{}\"\n",
+            "0".repeat(40)
+        );
+        std::fs::write(root.join("ready.toml"), &manifest).expect("write manifest");
+        let stamp = artifact_stamp(&root, &library).expect("the artifact stats");
+
+        let mut first = Host::new(root.clone());
+        first.observed = Some(manifest.clone());
+        first.set_pose_failure_stamp(Some(stamp));
+        assert!(first.persist_state().expect("persist the latch stamp"));
+
+        let mut restored = Host::new(root.clone());
+        restored.load_persistent_state().expect("reload state");
+        assert_eq!(
+            restored.observed.as_deref(),
+            Some(manifest.as_str()),
+            "the latch text is restored from the state file"
+        );
+        assert!(
+            !restored
+                .poll()
+                .expect("the restored stamp keeps the unchanged text latched"),
+            "the same text with an unchanged artifact stays a quiet latch"
+        );
+        std::fs::write(root.join(&library), b"artifact repaired in place")
+            .expect("change the artifact length");
+        assert!(
+            restored.poll().is_err(),
+            "a changed artifact clears the restored latch and retries"
+        );
+        assert_eq!(
+            restored.take_publication_reason(),
+            Some(PatchRejectReason::DigestMismatch),
+            "the retry reaches verification again"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_seeds_restored_predecessor_health() {
+        let mut host = Host::new(std::env::temp_dir());
+        host.persisted_health.push_back(PersistedRevisionHealth {
+            digest: NEXT_DIGEST.to_owned(),
+            revision: "rev-restored".to_owned(),
+            total_frame_failures: 5,
+            max_eval_micros: 9,
+        });
+        host.active = Some(Loaded::probe("rev-active", ACTIVE_DIGEST, reject_pose));
+        host.previous
+            .push_back(Loaded::probe("rev-restored", NEXT_DIGEST, allow_pose));
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the valid predecessor restores")
+        );
+        let snapshot = host.health_snapshot();
+        assert_eq!(snapshot.digest.as_deref(), Some(NEXT_DIGEST));
+        assert_eq!(snapshot.consecutive_frame_failures, 0);
+        assert_eq!(snapshot.total_frame_failures, 5);
+        assert_eq!(snapshot.max_eval_micros, 9);
+        assert_eq!(
+            snapshot.last_eval_micros, 0,
+            "the restore probe is not timed"
+        );
+    }
+
+    #[test]
+    fn persistent_state_clamps_a_saturated_high_water_mark_for_toml() {
+        let root = pose_test_root("state-saturated-max");
+        let mut host = Host::new(root.clone());
+        host.health.max_eval_micros = u64::MAX;
+        host.sync_persisted_health(ACTIVE_DIGEST, "rev-max");
+        assert!(
+            host.persist_state().expect("a saturated high-water mark is serializable"),
+            "the dirty clamp is written"
+        );
+        let mut restored = Host::new(root.clone());
+        restored.load_persistent_state().expect("reload the clamped state");
+        assert_eq!(
+            restored.persisted_health[0].max_eval_micros,
+            i64::MAX as u64,
+            "TOML's signed integer bound is the persisted high-water mark"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_skips_invalid_latches() {
+        let root = pose_test_root("state-invalid-latch");
+        let digest = persistent_digest(0x65);
+        let library = format!("pose-{digest}.dll");
+        let file = PatchStateFile {
+            schema_version: PATCH_STATE_SCHEMA_VERSION,
+            policy: None,
+            health: None,
+            stamps: Some(PersistedStamps {
+                pose: Some(PersistedStamp {
+                    library: library.clone(),
+                    len: 1,
+                    modified_unix_nanos: None,
+                    latch: Some("not a publication".to_owned()),
+                }),
+                movement: Some(PersistedStamp {
+                    library: format!("movement-{digest}.dll"),
+                    len: 1,
+                    modified_unix_nanos: None,
+                    latch: Some(format!(
+                        "revision = \"rev-m\"\nlibrary = \"movement-{}\"\nsha1 = \"{}\"\n",
+                        "0".repeat(40),
+                        "0".repeat(40)
+                    )),
+                }),
+            }),
+        };
+        std::fs::write(root.join(PATCH_STATE_FILE), patch_state_text(&file))
+            .expect("write state");
+        let mut host = Host::new(root.clone());
+        assert_eq!(
+            host.load_persistent_state().expect("load state"),
+            0,
+            "no revision entries are applied"
+        );
+        assert!(host.pose_failure_stamp.is_none());
+        assert!(host.movement_failure_stamp.is_none());
+        assert!(host.observed.is_none());
+        assert!(host.movement_observed.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_save_keeps_the_newest_bounded_revisions() {
+        let root = pose_test_root("state-save-cap");
+        let mut host = Host::new(root.clone());
+        for index in 0..(MAX_PERSISTED_REVISIONS + 2) {
+            host.health.total_frame_failures = index as u32 + 1;
+            host.sync_persisted_health(&persistent_digest(index + 1), "rev");
+        }
+        assert!(host.persist_state().expect("persist bounded state"));
+        let mut restored = Host::new(root.clone());
+        restored.load_persistent_state().expect("reload state");
+        assert_eq!(restored.persisted_health.len(), MAX_PERSISTED_REVISIONS);
+        assert_eq!(
+            restored
+                .persisted_health
+                .front()
+                .expect("the oldest retained entry")
+                .digest,
+            persistent_digest(3),
+            "the save-side cap evicts the oldest entries"
+        );
+        assert_eq!(
+            restored
+                .persisted_health
+                .back()
+                .expect("the newest retained entry")
+                .digest,
+            persistent_digest(MAX_PERSISTED_REVISIONS + 2),
+            "the newest entry survives"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_state_dirty_tracks_only_persisted_fields() {
+        let mut host = Host::new(std::env::temp_dir());
+        assert!(!host.state_dirty);
+        host.health.record_failure();
+        assert!(
+            !host.state_dirty,
+            "an unsynced live failure is not yet a persisted change"
+        );
+        host.health.record_success();
+        host.health.record_eval(std::time::Duration::from_micros(5));
+        assert!(
+            !host.state_dirty,
+            "consecutive and last-eval changes alone never mark the state dirty"
+        );
+
+        host.health.max_eval_micros = u64::MAX;
+        host.active = Some(Loaded::probe("rev-same-max", ACTIVE_DIGEST, allow_pose));
+        let mut output = Vec::new();
+        assert!(
+            host.evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("the active module produces this frame")
+        );
+        assert!(
+            !host.state_dirty,
+            "a success below the high-water mark with no new total does not rewrite the state"
+        );
+
+        host.set_health_policy(PatchHealthPolicy {
+            max_consecutive_frame_failures: 0,
+            max_total_frame_failures: 10,
+        });
+        assert!(host.state_dirty, "a changed policy is persisted");
+        host.state_dirty = false;
+        let unchanged = host.health_policy();
+        host.set_health_policy(unchanged);
+        assert!(!host.state_dirty, "an unchanged policy is not a change");
+
+        let stamp = ArtifactStamp {
+            library: "pose-test.dll".to_owned(),
+            len: 1,
+            modified: None,
+        };
+        host.set_pose_failure_stamp(Some(stamp.clone()));
+        assert!(host.state_dirty, "setting a stamp is persisted");
+        host.state_dirty = false;
+        host.set_pose_failure_stamp(Some(stamp));
+        assert!(!host.state_dirty, "an identical stamp is not a change");
+        host.set_pose_failure_stamp(None);
+        assert!(host.state_dirty, "clearing a stamp is persisted");
+        host.state_dirty = false;
+
+        host.active = Some(Loaded::probe("rev-fail", NEXT_DIGEST, reject_pose));
+        assert!(
+            !host
+                .evaluate(&[valid_pose_bone()], &[valid_pose_span()], 0.0, &mut output)
+                .expect("a below-threshold failure is tolerated")
+        );
+        assert!(
+            host.state_dirty,
+            "a cumulative failure-total change is persisted even below the threshold"
+        );
+    }
+
+    #[test]
+    fn failed_state_save_keeps_dirty_and_the_previous_state() {
+        let root = pose_test_root("state-save-failure");
+        let mut host = Host::new(root.clone());
+        host.set_health_policy(PatchHealthPolicy {
+            max_consecutive_frame_failures: 2,
+            max_total_frame_failures: 6,
+        });
+        assert!(host.persist_state().expect("first save"));
+        let previous =
+            std::fs::read_to_string(root.join(PATCH_STATE_FILE)).expect("the state is readable");
+        assert!(!host.state_dirty);
+
+        // A temp path that cannot be created fails before the target is touched.
+        let changed = PatchHealthPolicy {
+            max_consecutive_frame_failures: 3,
+            max_total_frame_failures: 7,
+        };
+        host.set_health_policy(changed);
+        std::fs::create_dir(root.join(PATCH_STATE_TEMP)).expect("block the temp path");
+        assert!(
+            host.persist_state().is_err(),
+            "a blocked temp path must fail the save"
+        );
+        assert!(host.state_dirty, "a failed save leaves the state dirty");
+        assert_eq!(
+            host.health_policy(),
+            changed,
+            "a failed save never rolls back in-memory state"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(PATCH_STATE_FILE))
+                .expect("the previous state is readable"),
+            previous,
+            "the previous document is never truncated before the replacement"
+        );
+        std::fs::remove_dir(root.join(PATCH_STATE_TEMP)).expect("unblock the temp path");
+
+        // A target that cannot be replaced fails after the temp is written; the temp is removed and
+        // the blocking target is left as it was.
+        std::fs::remove_file(root.join(PATCH_STATE_FILE)).expect("remove the target");
+        std::fs::create_dir(root.join(PATCH_STATE_FILE)).expect("block the target path");
+        assert!(
+            host.persist_state().is_err(),
+            "a directory target must fail the replacement"
+        );
+        assert!(host.state_dirty);
+        assert!(
+            root.join(PATCH_STATE_FILE).is_dir(),
+            "the failed replacement leaves the target alone"
+        );
+        assert!(
+            !root.join(PATCH_STATE_TEMP).exists(),
+            "the written temp file is cleaned up after a failed rename"
+        );
+        std::fs::remove_dir(root.join(PATCH_STATE_FILE)).expect("unblock the target path");
+
+        assert!(
+            host.persist_state()
+                .expect("the save succeeds after the block is removed")
+        );
+        assert!(!host.state_dirty, "a successful save clears the dirty flag");
+        let text = std::fs::read_to_string(root.join(PATCH_STATE_FILE))
+            .expect("the saved state is readable");
+        assert!(text.contains("max_total_frame_failures = 7"), "{text}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

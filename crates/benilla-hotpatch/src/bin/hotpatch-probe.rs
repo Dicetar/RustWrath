@@ -2,7 +2,7 @@
 //!
 //! Run it against an isolated module root. It has no lock against a live client: pointing it at
 //! the client's Hotpatch folder would let it adopt/clear that client's crash marker and rewrite
-//! `quarantine.toml` last-writer-wins.
+//! `quarantine.toml` and `patch-state.toml` last-writer-wins.
 use benilla_hotpatch::Host;
 use benilla_hotpatch_abi::{BoneLocal, RigSpan};
 use std::{
@@ -43,9 +43,13 @@ fn main() -> anyhow::Result<()> {
     if let Some(error) = host.take_sentinel_error() {
         eprintln!("{error}");
     }
+    if let Err(error) = host.load_persistent_state() {
+        eprintln!("patch state load: {error:#}");
+    }
     let mut last_persist = Instant::now();
     let mut last_quarantine_error: Option<String> = None;
     let mut last_sentinel_error: Option<String> = None;
+    let mut last_state_error: Option<String> = None;
     let bones = [BoneLocal {
         translation: [0.0; 3],
         rotation: [0.0, 0.0, 0.0, 2.0],
@@ -120,17 +124,31 @@ fn main() -> anyhow::Result<()> {
                 }
                 last_sentinel_error = Some(error);
             }
+            match host.persist_state() {
+                Ok(true) => last_state_error = None,
+                Ok(false) => {}
+                Err(error) => {
+                    let message = format!("patch state save: {error:#}");
+                    if last_state_error.as_deref() != Some(&message) {
+                        eprintln!("{message}");
+                    }
+                    last_state_error = Some(message);
+                }
+            }
             last_persist = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    // Final flush so a digest or sentinel error from the last sub-second is not lost. The probe
-    // remains a dev instrument: this is best-effort and never fails the run.
+    // Final flush so a digest, sentinel or state change from the last sub-second is not lost. The
+    // probe remains a dev instrument: this is best-effort and never fails the run.
     if let Err(error) = host.persist_quarantine() {
         eprintln!("quarantine save: {error:#}");
     }
     if let Some(error) = host.take_sentinel_error() {
         eprintln!("{error}");
+    }
+    if let Err(error) = host.persist_state() {
+        eprintln!("patch state save: {error:#}");
     }
     Ok(())
 }

@@ -141,6 +141,17 @@ impl Plugin for HotpatchPlugin {
                 last_sentinel_error = Some(message);
             }
         }
+        // Restore persisted policy, per-revision health and artifact stamps once the quarantine and
+        // sentinel startup work is done. A malformed/unsupported store is logged once and must not
+        // fail plugin startup: the defaults stay in force for this run and the next successful save
+        // rewrites the file. The message seeds its own dedupe slot, not the publication or
+        // quarantine/sentinel slots.
+        let mut last_state_error = None;
+        if let Err(error) = host.load_persistent_state() {
+            let message = format!("patch state load: {error:#}");
+            warn!("hotpatch: {message}");
+            last_state_error = Some(message);
+        }
         app.add_message::<HotpatchEvent>()
         .insert_resource(Runtime {
             host,
@@ -150,6 +161,7 @@ impl Plugin for HotpatchPlugin {
             last_frame_detail: None,
             last_quarantine_error,
             last_sentinel_error,
+            last_state_error,
             reported_revision: None,
             reported_digest: None,
             refresh: false,
@@ -201,6 +213,12 @@ struct Runtime {
     /// must not re-emit publication/retention events or mask a successful save, and a sentinel load
     /// failure at startup must not fail the plugin.
     last_sentinel_error: Option<String>,
+    /// Last reported `patch-state.toml` load/save error. Deliberately separate from `last_error`,
+    /// `last_quarantine_error` and `last_sentinel_error`: a persistent state save failure must not
+    /// re-emit publication/retention/sentinel events, and a state load failure at startup must not
+    /// fail the plugin. A successful parsed load or an actual save (`Ok(true)`) clears it; a clean
+    /// `Ok(false)` saves nothing and must not hide an earlier startup load error.
+    last_state_error: Option<String>,
     reported_revision: Option<String>,
     reported_digest: Option<String>,
     refresh: bool,
@@ -283,6 +301,19 @@ fn report_sentinel(runtime: &mut Runtime, error: String) {
         warn!("hotpatch: {error}");
     }
     runtime.last_sentinel_error = Some(error);
+}
+
+/// Report a `patch-state.toml` load/save error through its own dedupe slot.
+///
+/// A persistent save failure must be visible once per distinct message without re-emitting
+/// `PublicationRejected`/`RetentionFailed` every 1 Hz tick (the paths that share `last_error`) or
+/// borrowing the quarantine/sentinel slots. The host never fails or skips a module load/evaluation
+/// because the state file could not be saved, so this slot is advisory only.
+fn report_state(runtime: &mut Runtime, error: String) {
+    if runtime.last_state_error.as_ref() != Some(&error) {
+        warn!("hotpatch: {error}");
+    }
+    runtime.last_state_error = Some(error);
 }
 
 fn digest_from_hex(hex: &str) -> Option<[u8; 20]> {
@@ -382,6 +413,14 @@ fn poll(
     match runtime.host.persist_quarantine() {
         Ok(()) => runtime.last_quarantine_error = None,
         Err(error) => report_quarantine(&mut runtime, format!("quarantine save: {error:#}")),
+    }
+    // Save the policy/per-revision health/artifact stamps once per poll tick, after the quarantine
+    // save. A clean `Ok(false)` means nothing changed since the last save. A failure is
+    // deduplicated through the state slot and never stops the poll or either seam.
+    match runtime.host.persist_state() {
+        Ok(true) => runtime.last_state_error = None,
+        Ok(false) => {}
+        Err(error) => report_state(&mut runtime, format!("patch state save: {error:#}")),
     }
     // Drain the best-effort pose/movement crash-sentinel error slot. A failed write/clear during
     // the host poll, canary evaluation or movement staging lands here; the module load/evaluation
