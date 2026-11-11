@@ -59,10 +59,12 @@ pub struct HonorState {
     pub rank_bar: u8,
 }
 
-/// One `MSG_INSPECT_HONOR_STATS` reply as the app decoded it. It has no dishonorable counts past
-/// the session pair (the server writes zeros there), so `GetInspectHonorData` returns twelve.
+/// One decoded inspect reply. Wrath exposes six values, including today's contribution;
+/// the donor exposes twelve and has no today's-contribution field on the wire.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InspectHonorData {
+    /// Today's contribution from the 12340 inspect reply.
+    pub today_honor: u32,
     /// The player the reply was for, the app's key; never returned to Lua.
     pub guid: u64,
     pub session_hk: u16,
@@ -584,7 +586,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetInspectHonorData() → the reference's twelve, in its order:
+    // Donor GetInspectHonorData() → twelve values, in its order:
     //   sessionHK, sessionDK, yesterdayHK, yesterdayHonor, thisweekHK, thisweekHonor,
     //   lastweekHK, lastweekHonor, lastweekStanding, lifetimeHK, lifetimeDK, lifetimeRank
     // Twelve on every path: `0x4c9620` never checks for data and reads zero-initialised slots.
@@ -594,6 +596,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetInspectHonorData",
         lua.create_function(|lua, ()| {
             let d = inspect_honor(lua).unwrap_or_default();
+            // PaperDollInfoFrame_Scripts.cpp::Script_GetInspectHonorData (0x005E77C0).
+            if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+                return Ok(MultiValue::from_vec(vec![
+                    Value::Integer(i64::from(d.session_hk)),
+                    Value::Integer(i64::from(d.today_honor)),
+                    Value::Integer(i64::from(d.yesterday_hk)),
+                    Value::Integer(i64::from(d.yesterday_honor)),
+                    Value::Integer(i64::from(d.lifetime_hk)),
+                    Value::Integer(i64::from(d.highest_rank)),
+                ]));
+            }
             let out = vec![
                 Value::Integer(i64::from(d.session_hk)),
                 Value::Integer(i64::from(d.session_dk)),

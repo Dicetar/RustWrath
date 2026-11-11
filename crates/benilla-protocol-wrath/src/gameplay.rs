@@ -2026,9 +2026,37 @@ pub struct InitialSpellCooldown {
     pub category_cd_ms: u32,
 }
 
+/// Build 12340 inspect reply, PaperDollInfoFrame.cpp::Packet_MSG_INSPECT_HONOR_STATS
+/// (0x005E7A50); also AzerothCore MiscHandler.cpp::HandleInspectHonorStatsOpcode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InspectHonor {
+    pub guid: u64,
+    pub highest_rank: u8,
+    pub today_hk: u16,
+    pub yesterday_hk: u16,
+    pub today_honor: u32,
+    pub yesterday_honor: u32,
+    pub lifetime_hk: u32,
+}
+
+fn read_inspect_honor(body: &[u8]) -> Result<InspectHonor> {
+    anyhow::ensure!(body.len() == 25, "inspect honor reply must contain 25 bytes");
+    let mut r = crate::updates::Reader::new(body);
+    Ok(InspectHonor {
+        guid: r.u64()?,
+        highest_rank: r.u8()?,
+        today_hk: r.u16()?,
+        yesterday_hk: r.u16()?,
+        today_honor: r.u32()?,
+        yesterday_honor: r.u32()?,
+        lifetime_hk: r.u32()?,
+    })
+}
+
 /// One typed reply this slice understands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerEvent {
+    InspectHonor(InspectHonor),
     MonsterMove(MonsterMove),
     AttackStart { attacker: u64, victim: u64 },
     AttackStop { attacker: u64, victim: u64 },
@@ -2621,6 +2649,9 @@ pub fn decode_server(opcode: u16, body: &[u8]) -> Result<Option<ServerEvent>> {
 pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
     use crate::opcode::*;
     Some(match opcode {
+        op if u32::from(op) == MSG_INSPECT_HONOR_STATS => {
+            read_inspect_honor(body).map(ServerEvent::InspectHonor)
+        }
         SMSG_MONSTER_MOVE => movement::read(body, false).map(ServerEvent::MonsterMove),
         SMSG_MONSTER_MOVE_TRANSPORT => movement::read(body, true).map(ServerEvent::MonsterMove),
         SMSG_ATTACKSTART => read_attack_start(body),

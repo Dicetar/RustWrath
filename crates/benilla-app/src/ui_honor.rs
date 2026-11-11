@@ -30,11 +30,11 @@ pub(crate) struct HonorFeedState {
     vm: VmMemo<HonorFeedMemo>,
 }
 
-/// The per-VM change bases: the last snapshot and the held reply's guid.
+/// The per-VM change bases: the last self snapshot and the complete held inspect reply.
 #[derive(Default)]
 struct HonorFeedMemo {
     last: Option<HonorState>,
-    last_inspect: Option<u64>,
+    last_inspect: Option<benilla_protocol::messages::InspectHonorStats>,
 }
 
 /// The inspect-honor reply's handler; the honor award, `SMSG_PVP_CREDIT`, is the chat family's.
@@ -209,11 +209,14 @@ pub(crate) fn feed_honor(
             // Dropped from the resource, so `HasInspectHonorData` and this store agree.
             inspect_honor.0 = None;
         }
-        let held = inspect_honor.0.as_ref().map(|r| r.player_guid);
+        // A second reply for the same player can carry changed honor counters. Comparing only
+        // the guid would leave Lua holding the first reply indefinitely.
+        let held = inspect_honor.0;
         if memo.last_inspect != held {
             script.set_inspect_honor(inspect_honor.0.as_ref().map(|r| {
                 let (session_hk, session_dk) = r.session_kills();
                 InspectHonorData {
+                    today_honor: r.today_honor,
                     guid: r.player_guid,
                     session_hk,
                     session_dk,

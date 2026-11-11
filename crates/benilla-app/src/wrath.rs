@@ -3216,6 +3216,27 @@ fn translate_gameplay(
     received_at: Instant,
 ) -> Vec<SessionEvent> {
     match event {
+        WrathGameplayEvent::InspectHonor(d) => vec![SessionEvent::InspectHonorStats(
+            benilla_protocol::messages::InspectHonorStats {
+                player_guid: d.guid,
+                highest_rank: d.highest_rank,
+                session_kills: u32::from(d.today_hk),
+                today_honor: d.today_honor,
+                yesterday_hk: d.yesterday_hk,
+                unknown_old1: 0,
+                last_week_hk: 0,
+                unknown_old2: 0,
+                this_week_hk: 0,
+                unknown_old3: 0,
+                lifetime_hk: d.lifetime_hk,
+                lifetime_dhk: 0,
+                yesterday_honor: d.yesterday_honor,
+                last_week_honor: 0,
+                this_week_honor: 0,
+                last_week_rank: 0,
+                rank_bar: 0,
+            },
+        )],
         WrathGameplayEvent::MonsterMove(m) => {
             // 3.3.5a (`MoveSplineFlag.h`): `0x1000` is `Walkmode`, `0x2000` is `Flying`,
             // `0x4000` is `OrientationFixed`, `0x40000` is `Catmullrom` (already expanded into

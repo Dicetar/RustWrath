@@ -324,6 +324,7 @@ fn reach(d2: f64) -> benilla_ui::script::UnitReach {
 fn inspect_reply() -> InspectHonorData {
     let s = state();
     InspectHonorData {
+        today_honor: 0,
         guid: 0x0000_0001_0000_2AB3,
         session_hk: s.session_hk,
         session_dk: s.session_dk,

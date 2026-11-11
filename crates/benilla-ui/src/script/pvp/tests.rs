@@ -32,6 +32,7 @@ fn honor_state() -> HonorState {
 /// behind the eighth.
 fn inspect_state() -> InspectHonorData {
     InspectHonorData {
+        today_honor: 72,
         guid: 0xDEAD_BEEF,
         session_hk: 61,
         session_dk: 62,
