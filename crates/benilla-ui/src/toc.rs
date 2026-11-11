@@ -35,6 +35,11 @@ pub const LOCALES: [&str; 8] = [
     "enUS", "koKR", "frFR", "deDE", "zhCN", "zhTW", "esES", "xxYY",
 ];
 
+/// The 12340 client's nine-locale table order (`enUS`..`ruRU`).
+pub const WRATH_LOCALES: [&str; 9] = [
+    "enUS", "koKR", "frFR", "deDE", "zhCN", "zhTW", "esES", "esMX", "ruRU",
+];
+
 /// A directive the reference reads, with the literal its reader tests (`SStrCmpI` with the
 /// literal's own `SStrLen`) and that literal's address. Variants are in the order the reader tests
 /// them, so the first match claims a line: any other directive is dropped (`0x51d3d0`).
@@ -157,13 +162,13 @@ impl Directive {
     /// the dash (`0x51d5f0`); another locale drops the line (`0x51d5e7`); no locale keeps the
     /// key whole. The value is the rest past any colons and spaces (`0x51d610`), trailing
     /// whitespace and a leading tab kept.
-    fn metadata(&self, locale: usize) -> Option<(String, String)> {
+    fn metadata_in(&self, locale: usize, locales: &[&str]) -> Option<(String, String)> {
         let line = self.line.as_bytes();
         let end = line.iter().position(|&b| b == b':').unwrap_or(line.len());
         let mut key_end = end;
         if let Some(dash) = line[..end].iter().rposition(|&b| b == b'-') {
             if let Some(tag) = line.get(dash + 1..dash + 5) {
-                if let Some(slot) = LOCALES
+                if let Some(slot) = locales
                     .iter()
                     .position(|l| tag.eq_ignore_ascii_case(l.as_bytes()))
                 {
@@ -171,6 +176,12 @@ impl Directive {
                         return None;
                     }
                     key_end = dash;
+                } else if WRATH_LOCALES
+                    .iter()
+                    .any(|l| tag.eq_ignore_ascii_case(l.as_bytes()))
+                {
+                    // Drop 3.3.5a locale suffixes (`esMX`, `ruRU`) when reading another locale table.
+                    return None;
                 }
             }
         }
@@ -212,6 +223,15 @@ impl Toc {
     /// "Interface")` is nil. Keys compare case-insensitively. `locale` is the client's locale
     /// index (`[0xc0e080]`), which picks the `-<locale>` lines that count.
     pub fn metadata(&self, folder: &str, locale: usize) -> Vec<(String, String)> {
+        self.metadata_in(folder, locale, &LOCALES)
+    }
+
+    /// [`Self::metadata`] against the 12340 nine-locale table ([`WRATH_LOCALES`]).
+    pub fn wrath_metadata(&self, folder: &str, locale: usize) -> Vec<(String, String)> {
+        self.metadata_in(folder, locale, &WRATH_LOCALES)
+    }
+
+    fn metadata_in(&self, folder: &str, locale: usize, locales: &[&str]) -> Vec<(String, String)> {
         let mut map = vec![("Title".to_string(), folder.to_string())];
         let reaches_the_map = [
             Kind::Title,
@@ -224,7 +244,7 @@ impl Toc {
             if !d.kind().is_some_and(|k| reaches_the_map.contains(&k)) {
                 continue;
             }
-            let Some((key, value)) = d.metadata(locale) else {
+            let Some((key, value)) = d.metadata_in(locale, locales) else {
                 continue;
             };
             match map.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(&key)) {
@@ -238,6 +258,14 @@ impl Toc {
     /// One metadata entry of [`Self::metadata`].
     pub fn metadata_value(&self, folder: &str, key: &str, locale: usize) -> Option<String> {
         self.metadata(folder, locale)
+            .into_iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v)
+    }
+
+    /// One metadata entry of [`Self::wrath_metadata`].
+    pub fn wrath_metadata_value(&self, folder: &str, key: &str, locale: usize) -> Option<String> {
+        self.wrath_metadata(folder, locale)
             .into_iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(key))
             .map(|(_, v)| v)
@@ -780,5 +808,35 @@ mod tests {
         assert_eq!(Toc::parse(""), Toc::default());
         let toc = Toc::parse("# only a comment\n\n");
         assert!(toc.directives.is_empty() && toc.files.is_empty());
+    }
+
+    #[test]
+    fn wrath_locale_suffixes_esmx_and_ruru_are_matched_and_dropped_on_other_locales() {
+        let toc = Toc::parse(
+            "## Title-enUS: English\n## Title-esMX: Mexican Spanish\n## Title-ruRU: Russian\n\
+             ## Notes-ruRU: Russian Notes\n",
+        );
+        // On enUS (0), esMX and ruRU must not leak as literal keys into metadata or wrath_metadata.
+        assert_eq!(
+            toc.metadata("F", 0),
+            vec![("Title".into(), "English".into())]
+        );
+        assert_eq!(
+            toc.wrath_metadata("F", 0),
+            vec![("Title".into(), "English".into())]
+        );
+        // On esMX (7 in Wrath) and ruRU (8 in Wrath), the localized values resolve cleanly.
+        assert_eq!(
+            toc.wrath_metadata_value("F", "Title", 7).as_deref(),
+            Some("Mexican Spanish")
+        );
+        assert_eq!(
+            toc.wrath_metadata_value("F", "Title", 8).as_deref(),
+            Some("Russian")
+        );
+        assert_eq!(
+            toc.wrath_metadata_value("F", "Notes", 8).as_deref(),
+            Some("Russian Notes")
+        );
     }
 }

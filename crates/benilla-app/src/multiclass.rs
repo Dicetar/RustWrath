@@ -283,10 +283,32 @@ impl Drop for Connection {
     }
 }
 
+fn resolve_glue_path() -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("WOW_MULTICLASS_GLUE") {
+        if !path.is_empty() {
+            return Some(std::path::PathBuf::from(path));
+        }
+    }
+    for root in crate::ui_script::addons::roots() {
+        for rel in [
+            "WM_Multiclass/multiclass_glue.lua",
+            "WM_SpellmakingV3/multiclass_glue.lua",
+            "multiclass_glue.lua",
+        ] {
+            let candidate = root.join(rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// The WM DLL injects this owner-maintained script after stock GlueXML. RustWrath loads an
-/// explicitly configured local file instead of copying it into game data or this repository.
+/// explicitly configured local file (or a discovered copy under the AddOns roots) instead of
+/// copying it into game data or this repository.
 pub(crate) fn load_glue(script: &UiScript) {
-    let Some(path) = std::env::var_os("WOW_MULTICLASS_GLUE") else {
+    let Some(path) = resolve_glue_path() else {
         warn!("multiclass: WOW_MULTICLASS_GLUE missing; character-selection controls unavailable");
         return;
     };

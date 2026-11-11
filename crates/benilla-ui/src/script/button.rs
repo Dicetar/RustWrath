@@ -1116,18 +1116,23 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Click([button]) (`0x7826c0`): the physical click's path, toggle and `OnClick` alike, with
-    // the argument mapped to the name the click fires ([`click_arg_name`]).
+    // Click([button [, down]]) (`0x7826c0`): the physical click's path, toggle and `OnClick` alike,
+    // with the argument mapped to the name the click fires ([`click_arg_name`]). In 3.3.5a, an
+    // optional second argument selects the down edge when truthy (`1`/`true`/`"true"`).
     m.set(
         "Click",
-        lua.create_function(|lua, (this, button): (Table, Value)| {
+        lua.create_function(|lua, (this, button, down): (Table, Value, Option<Value>)| {
             let h = frame_handle_of(lua, &this)?;
-            let id = {
+            let (id, is_wrath) = {
                 let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-                model.frame_id(h)
+                (model.frame_id(h), model.target == super::UiTarget::Wrath335)
             };
-            // A released click, flagged as scripted, which only a LootButton reads.
-            click_button(lua, id, click_arg_name(&button), false, true);
+            let down = is_wrath
+                && down
+                    .as_ref()
+                    .is_some_and(|v| super::binding_abi::bool_or_default(Some(v), false));
+            // A released click (or down click in 3.3.5a when requested), flagged as scripted.
+            click_button(lua, id, click_arg_name(&button, is_wrath), down, true);
             Ok(())
         })?,
     )?;
@@ -1165,16 +1170,28 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
 
 /// `Click`'s argument as `0x7826c0` maps it, then named as the base click names its mask
 /// (`0x779540`, table `0x77960c`). A string is compared ignoring case (`0x64a4c0`) with
-/// `LeftButton`, `MiddleButton` and `RightButton` (1, 2, 4); any other string, `""` and
-/// `"Button4"` included, is 0, which fires `UNKNOWN`. A number passes `lua_isstring` (`0x6f3510`)
+/// `LeftButton`, `MiddleButton` and `RightButton` (1, 2, 4), plus `Button4`/`Button5` in 3.3.5a;
+/// any other string is 0, which fires `UNKNOWN`. A number passes `lua_isstring` (`0x6f3510`)
 /// and its decimal text matches none, so it is `UNKNOWN` too. No argument, nil, a boolean, a
 /// table or a function is `LeftButton` (`0x782766`).
-fn click_arg_name(arg: &Value) -> &'static str {
+fn click_arg_name(arg: &Value, is_wrath: bool) -> &'static str {
     match arg {
         Value::String(s) => {
             let b = s.as_bytes();
-            ["LeftButton", "MiddleButton", "RightButton"]
-                .into_iter()
+            let buttons: &[&'static str] = if is_wrath {
+                &[
+                    "LeftButton",
+                    "MiddleButton",
+                    "RightButton",
+                    "Button4",
+                    "Button5",
+                ]
+            } else {
+                &["LeftButton", "MiddleButton", "RightButton"]
+            };
+            buttons
+                .iter()
+                .copied()
                 .find(|n| b.eq_ignore_ascii_case(n.as_bytes()))
                 .unwrap_or("UNKNOWN")
         }
@@ -1184,14 +1201,18 @@ fn click_arg_name(arg: &Value) -> &'static str {
 }
 
 /// Whether `h` fires `OnClick` for the transition `name` (e.g. `"RightButtonDown"`): a Button
-/// checks its `RegisterForClicks` set, ignoring case; any other kind fires on release only.
+/// checks its `RegisterForClicks` set, ignoring case (`"AnyUp"`/`"AnyDown"` matching any button's
+/// Up/Down edge); any other kind fires on release only.
 pub(super) fn wants_click(model: &Model, h: FrameHandle, name: &str) -> bool {
+    let is_up = name.ends_with("Up");
+    let is_down = name.ends_with("Down");
     match model.arena.frame(h).map(|f| &f.kind_state) {
-        Some(KindState::Button(bs)) => bs
-            .registered_clicks
-            .iter()
-            .any(|s| s.eq_ignore_ascii_case(name)),
-        _ => name.ends_with("Up"),
+        Some(KindState::Button(bs)) => bs.registered_clicks.iter().any(|s| {
+            s.eq_ignore_ascii_case(name)
+                || (is_up && s.eq_ignore_ascii_case("AnyUp"))
+                || (is_down && s.eq_ignore_ascii_case("AnyDown"))
+        }),
+        _ => is_up,
     }
 }
 
@@ -1211,9 +1232,11 @@ pub(super) fn release_may_click(model: &Model, h: FrameHandle) -> bool {
 pub(super) fn wants_press_visual(model: &Model, h: FrameHandle, button: &str) -> bool {
     match model.arena.frame(h).map(|f| &f.kind_state) {
         Some(KindState::Button(bs)) => bs.registered_clicks.iter().any(|s| {
-            s.strip_suffix("Up")
-                .or_else(|| s.strip_suffix("Down"))
-                .is_some_and(|b| b.eq_ignore_ascii_case(button))
+            s.eq_ignore_ascii_case("AnyUp")
+                || s.eq_ignore_ascii_case("AnyDown")
+                || s.strip_suffix("Up")
+                    .or_else(|| s.strip_suffix("Down"))
+                    .is_some_and(|b| b.eq_ignore_ascii_case(button))
         }),
         _ => false,
     }
@@ -1371,4 +1394,45 @@ pub(super) fn click_button(
         }
     }
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::script::{UiScript, UiTarget};
+
+    #[test]
+    fn register_for_clicks_any_up_and_any_down_match_edges_and_press_visual() {
+        let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        script
+            .run(
+                r#"
+                Btn = CreateFrame("Button", "TestAnyClickBtn")
+                Btn:RegisterForClicks("AnyUp")
+                LastClick = nil
+                Btn:SetScript("OnClick", function(self, button, down)
+                    LastClick = button .. ":" .. tostring(down)
+                end)
+                "#,
+            )
+            .unwrap();
+        let h = {
+            let model = script.model_ref();
+            let id = *model.by_name.get("TestAnyClickBtn").unwrap();
+            model.handle_of(id).unwrap()
+        };
+        {
+            let model = script.model_ref();
+            assert!(wants_click(&model, h, "LeftButtonUp"));
+            assert!(wants_click(&model, h, "RightButtonUp"));
+            assert!(!wants_click(&model, h, "LeftButtonDown"));
+            assert!(wants_press_visual(&model, h, "LeftButton"));
+            assert!(wants_press_visual(&model, h, "RightButton"));
+        }
+        script.run(r#"Btn:Click("RightButton", true)"#).unwrap();
+        assert_eq!(
+            script.eval::<String>("return LastClick").unwrap(),
+            "RightButton:true"
+        );
+    }
 }
