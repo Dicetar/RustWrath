@@ -382,6 +382,8 @@ impl super::UiScript {
         for (event, args) in pending {
             self.fire_event(&event, args);
         }
+        // Re-evaluate secure state drivers (`RegisterStateDriver`) after event dispatch.
+        super::secure::tick_state_drivers(&self.lua);
         // The item tooltips the caches answered since the last tick rebuild (`0x52e530`).
         for e in super::tooltip_item::build::answer_item_caches(&self.lua) {
             self.push_error(e);

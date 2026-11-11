@@ -25,6 +25,15 @@ impl FrameHandle {
     pub(crate) fn fingerprint_bits(self) -> u64 {
         (u64::from(self.generation) << 32) | u64::from(self.index)
     }
+
+    /// Reconstruct a [`FrameHandle`] from its [`Self::fingerprint_bits`] encoding.
+    #[inline]
+    pub(crate) fn from_fingerprint_bits(bits: u64) -> Self {
+        Self {
+            index: bits as u32,
+            generation: (bits >> 32) as u32,
+        }
+    }
 }
 
 /// A generational handle to a [`Region`] (a texture or fontstring leaf).

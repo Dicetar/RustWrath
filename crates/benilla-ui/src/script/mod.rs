@@ -1712,6 +1712,16 @@ impl UiScript {
         self.model_ref().font_object(name).is_some()
     }
 
+    /// Whether the named frame exists and is currently marked shown (`Frame:IsShown()`).
+    pub fn is_shown(&self, name: &str) -> bool {
+        let model = self.model_ref();
+        model
+            .arena
+            .lookup(name)
+            .and_then(|h| model.arena.frame(h))
+            .is_some_and(|f| f.shown)
+    }
+
     /// The widget kind of a published name, in `CreateFrame`'s spelling (`SimpleHTML`): host-side,
     /// for the corpus harness to attribute a call site to a class unseen by any addon.
     pub fn widget_kind(&self, name: &str) -> Option<&'static str> {

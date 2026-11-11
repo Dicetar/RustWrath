@@ -193,6 +193,41 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Re-evaluates all registered state drivers (`RegisterStateDriver`) against the current UI and
+/// gameplay state, updating `state-<name>` attributes and `visibility` (`Show`/`Hide`) whenever a
+/// condition's resolved value changes.
+pub(super) fn tick_state_drivers(lua: &Lua) {
+    let entries: Vec<(u32, Vec<(String, String)>)> = {
+        let Some(model) = lua.app_data_ref::<Model>() else {
+            return;
+        };
+        if model.secure_drivers.is_empty() {
+            return;
+        }
+        model
+            .secure_drivers
+            .iter()
+            .filter_map(|(&bits, rows)| {
+                let handle = FrameHandle::from_fingerprint_bits(bits);
+                let id = model.frame_id.get(&handle).copied()?;
+                let pairs = rows
+                    .iter()
+                    .map(|(s, c)| (s.clone(), c.clone()))
+                    .collect::<Vec<_>>();
+                Some((id, pairs))
+            })
+            .collect()
+    };
+    for (id, pairs) in entries {
+        let Ok(frame) = super::object::frame_wrapper(lua, id) else {
+            continue;
+        };
+        for (state, condition) in pairs {
+            let _ = apply_state_driver_value(lua, &frame, &state, &condition);
+        }
+    }
+}
+
 fn apply_state_driver_value(
     lua: &Lua,
     frame: &Table,
@@ -201,17 +236,28 @@ fn apply_state_driver_value(
 ) -> mlua::Result<()> {
     let (resolved, _) = eval_secure_cmd_options(lua, condition);
     let attr_name = format!("state-{state}");
+    let current = frame
+        .call_method::<Value>("GetAttribute", attr_name.as_str())
+        .ok()
+        .and_then(|v| match v {
+            Value::String(s) => s.to_str().ok().map(|s| s.to_owned()),
+            _ => None,
+        });
     match resolved.as_deref() {
         None | Some("nil") => {
-            let _ = frame.call_method::<()>("SetAttribute", (attr_name, Value::Nil));
+            if current.is_some() {
+                let _ = frame.call_method::<()>("SetAttribute", (attr_name, Value::Nil));
+            }
         }
         Some(val) => {
-            let _ = frame.call_method::<()>("SetAttribute", (attr_name, val));
-            if state.eq_ignore_ascii_case("visibility") {
-                if val.eq_ignore_ascii_case("show") {
-                    let _ = frame.call_method::<()>("Show", ());
-                } else if val.eq_ignore_ascii_case("hide") {
-                    let _ = frame.call_method::<()>("Hide", ());
+            if current.as_deref() != Some(val) {
+                let _ = frame.call_method::<()>("SetAttribute", (attr_name, val));
+                if state.eq_ignore_ascii_case("visibility") {
+                    if val.eq_ignore_ascii_case("show") {
+                        let _ = frame.call_method::<()>("Show", ());
+                    } else if val.eq_ignore_ascii_case("hide") {
+                        let _ = frame.call_method::<()>("Hide", ());
+                    }
                 }
             }
         }

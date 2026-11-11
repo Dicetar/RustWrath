@@ -4884,33 +4884,36 @@ pub(crate) fn wrath_battlefield_status(
 ) -> SessionEvent {
     let Some(slot) = status.slot else {
         return SessionEvent::BattlefieldStatus(benilla_protocol::messages::BattlefieldStatus {
-            queue_slot: status.queue_slot,
+            slot: status.queue_slot,
             map_id: 0,
-            bracket_id: 0,
+            bracket: 0,
             instance_id: 0,
-            status_id: 0,
-            avg_wait_ms: 0,
-            elapsed_ms: 0,
-            invite_timeout_ms: 0,
-            close_timeout_ms: 0,
+            status: 0,
+            time_ms: None,
+            in_progress: None,
+            queued: None,
         });
     };
     let fallback_map = wrath_bg_type_default_map_id(slot.bg_type);
-    let (map_id, avg_wait_ms, elapsed_ms, invite_timeout_ms, close_timeout_ms) = match slot.arm {
+    let (map_id, time_ms, in_progress, queued) = match slot.arm {
         gameplay::wrath_systems::BattlefieldStatusArm::Queued {
             average_wait_ms,
             queued_ms,
-        } => (fallback_map, average_wait_ms, queued_ms, 0, 0),
+        } => (
+            fallback_map,
+            None,
+            None,
+            Some((average_wait_ms, queued_ms)),
+        ),
         gameplay::wrath_systems::BattlefieldStatusArm::Confirm {
             map_id,
             port_expiration_ms,
             ..
         } => (
             if map_id != 0 { map_id } else { fallback_map },
-            0,
-            0,
-            port_expiration_ms,
-            0,
+            Some(port_expiration_ms),
+            None,
+            None,
         ),
         gameplay::wrath_systems::BattlefieldStatusArm::Active {
             map_id,
@@ -4919,23 +4922,21 @@ pub(crate) fn wrath_battlefield_status(
             ..
         } => (
             if map_id != 0 { map_id } else { fallback_map },
-            0,
-            started_ms,
-            0,
-            auto_leave_ms,
+            None,
+            Some((auto_leave_ms, started_ms)),
+            None,
         ),
-        gameplay::wrath_systems::BattlefieldStatusArm::Inactive => (fallback_map, 0, 0, 0, 0),
+        gameplay::wrath_systems::BattlefieldStatusArm::Inactive => (fallback_map, None, None, None),
     };
     SessionEvent::BattlefieldStatus(benilla_protocol::messages::BattlefieldStatus {
-        queue_slot: status.queue_slot,
+        slot: status.queue_slot,
         map_id,
-        bracket_id: slot.min_level,
+        bracket: slot.min_level,
         instance_id: slot.instance_id,
-        status_id: slot.status,
-        avg_wait_ms,
-        elapsed_ms,
-        invite_timeout_ms,
-        close_timeout_ms,
+        status: slot.status,
+        time_ms,
+        in_progress,
+        queued,
     })
 }
 
@@ -4949,14 +4950,15 @@ pub(crate) fn wrath_pvp_log_data(log: gameplay::wrath_systems::PvpLogData) -> Se
             killing_blows: row.killing_blows,
             honorable_kills: row.honorable_kills.unwrap_or(0),
             deaths: row.deaths.unwrap_or(0),
-            bonus_honor: row.bonus_honor.unwrap_or(0),
+            honor_gained: row.bonus_honor.unwrap_or(0),
             stats: row.objectives,
         })
         .collect();
-    SessionEvent::PvpLogData {
+    SessionEvent::PvpLogData(benilla_protocol::messages::PvpLogData {
+        ended: log.ended,
         winner: log.winner,
         rows,
-    }
+    })
 }
 
 fn wrath_friend_status(
@@ -11667,7 +11669,7 @@ pub fn run_session_with_cancel(
                         }
                         Ok(WrathGameplayEvent::LfgJoinResult(result)) => {
                             feed.push_event(WrathFeedEvent::LfgJoinResult {
-                                result,
+                                result: *result,
                                 session_epoch: session.epoch(),
                                 world_generation: session.world_generation(),
                             });
@@ -11695,7 +11697,7 @@ pub fn run_session_with_cancel(
                         }
                         Ok(WrathGameplayEvent::LfgProposalUpdate(proposal)) => {
                             feed.push_event(WrathFeedEvent::LfgProposalUpdate {
-                                proposal,
+                                proposal: *proposal,
                                 session_epoch: session.epoch(),
                                 world_generation: session.world_generation(),
                             });
