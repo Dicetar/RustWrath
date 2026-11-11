@@ -132,17 +132,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 return Ok((Value::Nil, Value::Nil));
             };
             let raw = s.to_string_lossy();
-            for clause in raw.split(';') {
-                let trimmed = clause.trim();
-                let body = match trimmed.rfind(']') {
-                    Some(idx) => trimmed[idx + 1..].trim(),
-                    None => trimmed,
-                };
-                if !body.is_empty() {
-                    return Ok((Value::String(lua.create_string(body)?), Value::Nil));
-                }
-            }
-            Ok((Value::String(lua.create_string("")?), Value::Nil))
+            let (result, target) = eval_secure_cmd_options(lua, &raw);
+            let res_val = match result {
+                Some(body) => Value::String(lua.create_string(&body)?),
+                None => Value::Nil,
+            };
+            let tgt_val = match target {
+                Some(t) => Value::String(lua.create_string(&t)?),
+                None => Value::Nil,
+            };
+            Ok((res_val, tgt_val))
         })?,
     )?;
 
@@ -158,14 +157,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 "Usage: RegisterStateDriver(frame, state, condition)",
             )?;
             validate_condition(&condition).map_err(mlua::Error::runtime)?;
-            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
-            let rows = model.secure_drivers.entry(key(owner)).or_default();
-            if rows.len() >= 16 && !rows.contains_key(&state) {
-                return Err(mlua::Error::runtime(
-                    "RegisterStateDriver: too many states on one frame",
-                ));
+            {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                let rows = model.secure_drivers.entry(key(owner)).or_default();
+                if rows.len() >= 16 && !rows.contains_key(&state) {
+                    return Err(mlua::Error::runtime(
+                        "RegisterStateDriver: too many states on one frame",
+                    ));
+                }
+                rows.insert(state.clone(), condition.clone());
             }
-            rows.insert(state, condition);
+            apply_state_driver_value(lua, &frame, &state, &condition)?;
             Ok(())
         })?,
     )?;
@@ -189,6 +191,169 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
     Ok(())
+}
+
+fn apply_state_driver_value(
+    lua: &Lua,
+    frame: &Table,
+    state: &str,
+    condition: &str,
+) -> mlua::Result<()> {
+    let (resolved, _) = eval_secure_cmd_options(lua, condition);
+    let attr_name = format!("state-{state}");
+    match resolved.as_deref() {
+        None | Some("nil") => {
+            let _ = frame.call_method::<()>("SetAttribute", (attr_name, Value::Nil));
+        }
+        Some(val) => {
+            let _ = frame.call_method::<()>("SetAttribute", (attr_name, val));
+            if state.eq_ignore_ascii_case("visibility") {
+                if val.eq_ignore_ascii_case("show") {
+                    let _ = frame.call_method::<()>("Show", ());
+                } else if val.eq_ignore_ascii_case("hide") {
+                    let _ = frame.call_method::<()>("Hide", ());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn eval_secure_cmd_options(lua: &Lua, raw: &str) -> (Option<String>, Option<String>) {
+    for clause in raw.split(';') {
+        let trimmed = clause.trim();
+        if !trimmed.starts_with('[') {
+            return (Some(trimmed.to_string()), None);
+        }
+        let mut rest = trimmed;
+        let mut groups = Vec::new();
+        while let Some(after_open) = rest.strip_prefix('[') {
+            let Some(close_idx) = after_open.find(']') else {
+                break;
+            };
+            groups.push(&after_open[..close_idx]);
+            rest = after_open[close_idx + 1..].trim_start();
+        }
+        let action = rest.trim();
+        for group in groups {
+            if let (true, target) = eval_condition_group(lua, group) {
+                return (Some(action.to_string()), target);
+            }
+        }
+    }
+    (None, None)
+}
+
+fn eval_condition_group(lua: &Lua, group: &str) -> (bool, Option<String>) {
+    let mut target: Option<String> = None;
+    for raw_term in group.split(',') {
+        let term = raw_term.trim();
+        if term.is_empty() {
+            continue;
+        }
+        if let Some(unit) = term.strip_prefix('@') {
+            let unit = unit.trim();
+            if !unit.is_empty() {
+                target = Some(unit.to_string());
+            }
+            continue;
+        }
+        if let Some((k, v)) = term.split_once('=') {
+            if k.trim().eq_ignore_ascii_case("target") {
+                let unit = v.trim();
+                if !unit.is_empty() {
+                    target = Some(unit.to_string());
+                }
+                continue;
+            }
+        }
+        let unit = target.as_deref().unwrap_or("target");
+        if !eval_single_condition(lua, term, unit) {
+            return (false, target);
+        }
+    }
+    (true, target)
+}
+
+fn lua_bool_call<A: mlua::IntoLuaMulti>(lua: &Lua, func: &str, args: A) -> bool {
+    let Ok(Value::Function(f)) = lua.globals().get::<Value>(func) else {
+        return false;
+    };
+    match f.call::<Value>(args) {
+        Ok(Value::Nil) | Ok(Value::Boolean(false)) => false,
+        Ok(Value::Integer(0)) => false,
+        Ok(Value::Number(n)) if n == 0.0 => false,
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
+fn lua_i64_call<A: mlua::IntoLuaMulti>(lua: &Lua, func: &str, args: A) -> i64 {
+    let Ok(Value::Function(f)) = lua.globals().get::<Value>(func) else {
+        return 0;
+    };
+    f.call::<i64>(args).unwrap_or(0)
+}
+
+fn matches_int_arg(arg: Option<&str>, current: i64) -> bool {
+    match arg {
+        None | Some("") => current > 0,
+        Some(list) => list
+            .split('/')
+            .map(str::trim)
+            .filter_map(|s| s.parse::<i64>().ok())
+            .any(|n| n == current),
+    }
+}
+
+fn eval_single_condition(lua: &Lua, raw: &str, unit: &str) -> bool {
+    let (name_part, arg_part) = match raw.split_once(':') {
+        Some((k, v)) => (k.trim(), Some(v.trim())),
+        None => (raw.trim(), None),
+    };
+    let lower = name_part.to_ascii_lowercase();
+    let (negated, key) = match lower.strip_prefix("no") {
+        Some(rest) if !rest.is_empty() => (true, rest),
+        _ => (false, lower.as_str()),
+    };
+    let matched = match key {
+        "bonusbar" => matches_int_arg(arg_part, lua_i64_call(lua, "GetBonusBarOffset", ())),
+        "bar" | "actionbar" => matches_int_arg(arg_part, lua_i64_call(lua, "GetActionBarPage", ())),
+        "form" | "stance" => matches_int_arg(arg_part, lua_i64_call(lua, "GetShapeshiftForm", ())),
+        "spec" => matches_int_arg(arg_part, lua_i64_call(lua, "GetActiveTalentGroup", ())),
+        "stealth" => lua_bool_call(lua, "IsStealthed", ()),
+        "combat" => lua_bool_call(lua, "UnitAffectingCombat", "player"),
+        "mounted" => lua_bool_call(lua, "IsMounted", ()),
+        "swimming" => lua_bool_call(lua, "IsSwimming", ()),
+        "flying" => lua_bool_call(lua, "IsFlying", ()),
+        "flyable" => lua_bool_call(lua, "IsFlyableArea", ()),
+        "indoors" => lua_bool_call(lua, "IsIndoors", ()),
+        "outdoors" => lua_bool_call(lua, "IsOutdoors", ()),
+        "vehicleui" => lua_bool_call(lua, "HasVehicleActionBar", ()),
+        "possessbar" => lua_bool_call(lua, "IsPossessBarVisible", ()),
+        "channeling" => lua_bool_call(lua, "UnitChannelInfo", "player"),
+        "pet" => lua_bool_call(lua, "UnitExists", "pet"),
+        "exists" => lua_bool_call(lua, "UnitExists", unit),
+        "help" => lua_bool_call(lua, "UnitCanAssist", ("player", unit)),
+        "harm" => lua_bool_call(lua, "UnitCanAttack", ("player", unit)),
+        "dead" => lua_bool_call(lua, "UnitIsDeadOrGhost", unit),
+        "group" => match arg_part.map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("raid") => lua_i64_call(lua, "GetNumRaidMembers", ()) > 0,
+            Some("party") => lua_i64_call(lua, "GetNumPartyMembers", ()) > 0,
+            _ => {
+                lua_i64_call(lua, "GetNumPartyMembers", ()) > 0
+                    || lua_i64_call(lua, "GetNumRaidMembers", ()) > 0
+            }
+        },
+        "mod" | "modifier" => match arg_part.map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("shift") => lua_bool_call(lua, "IsShiftKeyDown", ()),
+            Some("ctrl") | Some("control") => lua_bool_call(lua, "IsControlKeyDown", ()),
+            Some("alt") => lua_bool_call(lua, "IsAltKeyDown", ()),
+            _ => lua_bool_call(lua, "IsModifierKeyDown", ()),
+        },
+        _ => false,
+    };
+    if negated { !matched } else { matched }
 }
 
 /// The client stores secure handlers on a frame created with a secure template; here it is the
@@ -510,9 +675,13 @@ mod tests {
                 Bar:SetFrameRef("action1", btn)
                 assert(Bar:GetFrameRef("action1") == btn)
                 Bar:UnwrapScript(btn, "OnClick")
-                local cmd = SecureCmdOptionParse("[mod:shift] 2; 1")
-                assert(cmd == "2" or cmd == "1")
+                local cmd, unit = SecureCmdOptionParse("[nocombat, target=player] heal; harm")
+                assert(cmd == "heal" and unit == "player")
+                RegisterStateDriver(Bar, "page", "[bonusbar:1] 7; 1")
+                assert(Bar:GetAttribute("state-page") == "1")
+                Bar:Hide()
                 RegisterStateDriver(Bar, "visibility", "[petbattle]hide;show")
+                assert(Bar:IsShown() == 1)
                 UnregisterStateDriver(Bar, "visibility")
                 "#,
             )
