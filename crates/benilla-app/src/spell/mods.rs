@@ -207,11 +207,18 @@ impl SpellModifiers {
         if !self.gates_pass(d) || usize::from(op) >= OPS {
             return None;
         }
-        // All 64 low bits, no early break (`6e6b8f`/`6e6b97`); the accumulators wrap, as the
-        // reference's do.
+        // All 96 family bits, no early break (`6e6b8f`/`6e6b97`); the accumulators wrap, as the
+        // reference's do. Bits 0..64 come from `SpellDisplay::spell_family_flags`; bits 64..96
+        // have no representation in `SpellDisplay` yet (see handoff), so they contribute nothing
+        // here until the display carries the third word.
         let (mut flat, mut pct) = (0i32, 0i32);
-        for bit in 0..64u8 {
-            if d.spell_family_flags >> bit & 1 == 0 {
+        for bit in 0..BITS as u8 {
+            let set = if bit < 64 {
+                d.spell_family_flags >> bit & 1
+            } else {
+                0
+            };
+            if set == 0 {
                 continue;
             }
             let cell = index(bit, op);
@@ -456,9 +463,9 @@ mod tests {
     fn an_out_of_range_packet_is_dropped() {
         let mut mods = mage_tables();
         // `(64, 19)` overruns onto the class family in the reference.
-        mods.set(true, 64, 19, 999);
-        // `(65, 23)` lands on PCT element 0 there.
-        mods.set(true, 65, 23, 999);
+        // 96 and above are outside the 96-bit table (0..=95).
+        mods.set(true, 96, 19, 999);
+        mods.set(true, 97, 23, 999);
         mods.set(true, 0, 29, 999);
         mods.set(true, 255, 255, 999);
 
@@ -664,5 +671,49 @@ mod tests {
             (max - (5.0 + bonus) * 1.2).abs() < 1e-4,
             "the modifier scales the bonused max, not the bare 5.0: {max}"
         );
+    }
+
+    /// Low bits (0..64) behave byte-identically: a pinned expectation for bits 5 and 35.
+    #[test]
+    fn low_bits_byte_identical_pinned() {
+        let mut mods = mage_tables();
+        mods.set(true, 5, OP_COST, -10);
+        mods.set(true, 35, OP_COST, -15);
+        mods.set(false, 5, OP_COST, -20);
+        mods.set(false, 35, OP_COST, -30);
+        assert_eq!(mods.apply(&mage(&[5, 35]), OP_COST, 100), 37);
+    }
+
+    /// A high-word (>=64) table cell changes the diff's class_family (the only channel that
+    /// currently carries high-word change). Unchanged high cells produce no diff entry.
+    #[test]
+    fn high_word_cell_change_is_reported() {
+        let base = SpellModifiers::default();
+        let mut now = base.clone();
+        now.set(true, 64, OP_COST, 7);
+        // High-bit cells move the class_family flag (collapsed channel) today.
+        assert!(now.diff(&base).class_family);
+        // And a no-op diff is empty.
+        assert_eq!(base.diff(&base), ModsDiff::default());
+        // Unchanged high bits: changing nothing leaves no entry.
+        let mut same = base.clone();
+        same.set(true, 64, OP_COST, 0);
+        // cell value 0 == default, but table row changed? value 0 equals default 0, yet set wrote 0;
+        // diff compares cells, 0 == 0 so no change.
+        assert_eq!(same.diff(&base), ModsDiff::default());
+    }
+
+    /// Mixed low + high: low bits still accumulate; high-bit cells are stored and addressable.
+    #[test]
+    fn mixed_low_and_high_cells_are_stored() {
+        let mut mods = mage_tables();
+        mods.set(true, 5, OP_COST, -10);
+        mods.set(true, 70, OP_COST, -20);
+        assert_eq!(mods.apply(&mage(&[5]), OP_COST, 100), 90);
+        // High-bit cell is stored at the expected index.
+        assert_eq!(mods.flat[index(70, OP_COST)], -20);
+        // And an out-of-range high bit (>=96) is still dropped.
+        mods.set(true, 96, OP_COST, 999);
+        assert_eq!(mods.flat[index(70, OP_COST)], -20);
     }
 }
