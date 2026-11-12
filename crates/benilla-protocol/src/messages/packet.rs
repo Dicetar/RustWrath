@@ -634,8 +634,9 @@ pub enum ServerPacket {
         /// `true`: `0x266`, the flat table (summed, added). `false`: `0x267`, the percent table
         /// (summed, plus 100, clamped at 0, then a raw multiplier).
         flat: bool,
-        /// The row: a `SpellFamilyFlags` bit index, 0..=63, unbounded on the wire. Deviation: the
-        /// consumer refuses 64 and up, because there the reference's store overruns its table.
+        /// The row: a `SpellFamilyFlags` bit index, 0..=95, unbounded on the wire. The modifier
+        /// table is 96 bits (3×u32 family flags in Wrath); the consumer drops a bit out of range
+        /// rather than storing it where the reference's unchecked write would overrun.
         mask_bit: u8,
         /// The column: a SpellModOp, 0..=28, also unbounded on the wire.
         op: u8,
