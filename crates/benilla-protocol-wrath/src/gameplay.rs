@@ -5589,6 +5589,99 @@ mod tests {
         assert!(read_item_info(&truncated).is_err());
     }
 
+    /// One 12340 `MSG_INSPECT_HONOR_STATS` reply body: guid, rank, HKs, honors.
+    fn build_inspect_honor_body(
+        guid: u64,
+        highest_rank: u8,
+        today_hk: u16,
+        yesterday_hk: u16,
+        today_honor: u32,
+        yesterday_honor: u32,
+        lifetime_hk: u32,
+    ) -> Vec<u8> {
+        let mut b = Vec::with_capacity(25);
+        b.extend_from_slice(&guid.to_le_bytes());
+        b.push(highest_rank);
+        b.extend_from_slice(&today_hk.to_le_bytes());
+        b.extend_from_slice(&yesterday_hk.to_le_bytes());
+        b.extend_from_slice(&today_honor.to_le_bytes());
+        b.extend_from_slice(&yesterday_honor.to_le_bytes());
+        b.extend_from_slice(&lifetime_hk.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn inspect_honor_decodes_the_25_byte_12340_reply() {
+        let body = build_inspect_honor_body(
+            0x0700_0000_0001_2345,
+            14,
+            7,
+            3,
+            12_345,
+            678,
+            42_000,
+        );
+        assert_eq!(body.len(), 25);
+        match read_inspect_honor(&body).expect("25-byte reply must decode") {
+            InspectHonor {
+                guid,
+                highest_rank,
+                today_hk,
+                yesterday_hk,
+                today_honor,
+                yesterday_honor,
+                lifetime_hk,
+            } => {
+                assert_eq!(guid, 0x0700_0000_0001_2345);
+                assert_eq!(highest_rank, 14);
+                assert_eq!(today_hk, 7);
+                assert_eq!(yesterday_hk, 3);
+                assert_eq!(today_honor, 12_345);
+                assert_eq!(yesterday_honor, 678);
+                assert_eq!(lifetime_hk, 42_000);
+            }
+        }
+    }
+
+    #[test]
+    fn inspect_honor_zero_body_decodes_to_zeroed_fields() {
+        let body = build_inspect_honor_body(0, 0, 0, 0, 0, 0, 0);
+        let honor = read_inspect_honor(&body).expect("all-zero reply must decode");
+        assert_eq!(
+            honor,
+            InspectHonor {
+                guid: 0,
+                highest_rank: 0,
+                today_hk: 0,
+                yesterday_hk: 0,
+                today_honor: 0,
+                yesterday_honor: 0,
+                lifetime_hk: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_honor_rejects_short_and_oversized_bodies() {
+        // 24 bytes (one byte short): must refuse, not misread the tail fields.
+        let mut short = build_inspect_honor_body(1, 2, 3, 4, 5, 6, 7);
+        short.pop();
+        let err = read_inspect_honor(&short).expect_err("24-byte body must fail");
+        assert!(
+            err.to_string().contains("25 bytes"),
+            "unexpected error for short body: {err:#}"
+        );
+
+        // 26 bytes: an over-long reply is a layout violation, not a truncation to ignore.
+        let mut long = build_inspect_honor_body(1, 2, 3, 4, 5, 6, 7);
+        long.push(0);
+        let err = read_inspect_honor(&long).expect_err("26-byte body must fail");
+        assert!(
+            err.to_string().contains("25 bytes"),
+            "unexpected error for oversized body: {err:#}"
+        );
+    }
+
     #[test]
     fn learn_talent_and_pet_orders_match_12340_wire_layouts() {
         let talent = encode_learn_talent(161, 3);
