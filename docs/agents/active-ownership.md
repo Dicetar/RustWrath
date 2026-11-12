@@ -33,20 +33,31 @@ Before reserving a slot, inspect processes and coordinate with the task owner. R
 
 | Resource | Owner | Task / command and evidence log | State |
 |---|---|---|---|
-| Cargo | overseer | Release verification 2026-11-11: `cargo check -p benilla-hotpatch -p benilla-hotpatch-bevy` passed; 15 focused `benilla-hotpatch` tests passed after one test assertion correction; `cargo check -p benilla-app --features hotpatch` remains blocked by 21 pre-existing `benilla-app`/protocol/UI errors, not the hotpatch files. Logs: `.scratch/project-b/release-verify-2026-11-11.log`, `.scratch/project-b/release-tests-2026-11-11.log` | Slot released; app check blocked |
-| Client | Astra / owner | Run `20261102-222346-059`, PID43304, SHA256 `1D853A073F916C1CBD952FA21E36ACB6BA960C29486B919CD2F6A7A13B3B43BC` | Owner entered Northshire as Firna; visible world/combat observed, do not interrupt or compete |
+| Cargo | overseer | Release verification 2026-11-11: `cargo check -p benilla-hotpatch -p benilla-hotpatch-bevy` passed; 15 focused `benilla-hotpatch` tests passed after one test assertion correction. The 2026-11-11 `benilla-app --features hotpatch` blockage (21 errors in `ui_quest::is_shown` and the wrath PvP/LFG surface) was repaired by `c5d57f18` (check log `check-2026-11-12-merge-inspect-honor-4.log`). After `680c6eac` a new `PetLoyaltyNames::default()` E0599 broke the `benilla-formats`→`benilla-app` chain; fixed in the 2026-11-13 fix round (handoff `2026-11-13-fix-round.md`). Logs: `.scratch/project-b/release-verify-2026-11-11.log`, `.scratch/project-b/release-tests-2026-11-11.log`, `.scratch/project-b/check-2026-11-12-merge-inspect-honor-4.log` | Slot released; app chain compiles |
+| Client | Astra / owner | Run `20261102-222346-059`, PID43304, SHA256 `1D853A073F916C1CBD952FA21E36ACB6BA960C29486B919CD2F6A7A13B3B43BC` | Historical (2026-11-02). No client process as of 2026-11-13; revalidate before reuse |
 
 Release verification 2026-11-11: the hotpatch crates compile and the 15 focused hotpatch tests
-pass (one state-file test assertion corrected). The `benilla-app --features hotpatch` check is
-blocked by 21 pre-existing errors in `ui_quest::is_shown` and the `wrath.rs` PvP/LFG protocol
-surface (`BattlefieldStatus`, `PvpLogRow`, `SessionEvent::PvpLogData`, boxed `LfgJoinResult`/
-`LfgProposalUpdate`); these are outside the hotpatch files. No client/server/visual run was made,
-so release readiness is not established.
+pass (one state-file test assertion corrected). The 2026-11-11 `benilla-app --features hotpatch`
+blockage (21 pre-existing errors in `ui_quest::is_shown` and the wrath PvP/LFG protocol surface)
+was repaired by `c5d57f18` (`check-2026-11-12-merge-inspect-honor-4.log` ends `Finished`).
+`680c6eac` then introduced a new compile break (`PetLoyaltyNames::default()` with no `Default`
+impl), fixed in the 2026-11-13 fix round. No client/server/visual run has been made since
+`680c6eac`; runtime readiness is still not established.
 
 Update the reservation when acquired and release it on completion. Do not overwrite a
 newer reservation or kill another owner's process to acquire the slot.
 
 ## Current evidence and continuation
+
+- 2026-11-13 fix round (DeepSeek V4.1 Flash coordinator + AutoSwarm Anvil/Forge): preflight wire-off
+  notice made Wrath-aware with 3 regression tests; spell-modifier accumulation widened to the full
+  96-bit table with 3 tests (full high-word completion scoped — `SpellDisplay` carrier, see
+  [fix-round handoff](../../.scratch/project-b/handoffs/2026-11-13-fix-round.md)); `PetLoyaltyNames`
+  `Default` build unblocker; `read_inspect_honor` decoder tests (crate suite 121/0); packet doc
+  correction. Handoffs: `2026-11-13-anvil-preflight.md`, `2026-11-13-forge-spell-mods.md`.
+  Open from the dig: global `GetText`/`LocaleProperties.lua` (same blocker as the honor-frame app
+  tests), `VoiceChatSpeakerTemplate` (x220), `MoneyFrame.lua:274 money` (x63),
+  `ChannelFrame.lua:716 texture` (x8).
 
 - Step 2 completed & pushed to `main` and `wotlk` at `1cc5e4fe` (merging `f222a1f8` and `b60362fb`):
   Lossless 12340 keyring cast-gate readers (`reagent_totem_refusal_in_player`), pet spell/GUID
