@@ -606,6 +606,13 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
             lobes.push((benilla_assets::coords::wow_to_bevy(l.bone_z), color));
         }
     }
+    if ambient.iter().sum::<f32>() < 0.05 && lobes.is_empty() && points.is_empty() {
+        ambient = [0.45, 0.45, 0.5];
+        lobes.push((
+            Vec3::new(0.4, 0.7, 0.5).normalize(),
+            [0.75, 0.75, 0.75],
+        ));
+    }
     SceneRig {
         ambient,
         lobes,
@@ -615,18 +622,27 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
 
 fn pane_scene_rig(preview: &GluePreview, model: &M2Model, ghost: bool) -> SceneRig {
     let lights = &preview.effects.lights[0][usize::from(ghost)];
-    if lights.is_empty() {
-        return if ghost { ghost_rig() } else { scene_rig(&model.lights) };
-    }
-    let mut rig = SceneRig::default();
-    for light in lights {
-        for (sum, value) in rig.ambient.iter_mut().zip(light.ambient) { *sum += value; }
-        let vector = benilla_assets::coords::wow_to_bevy(light.vector);
-        if light.omni {
-            rig.points.push((vector, light.diffuse));
-        } else {
-            rig.lobes.push((-vector, light.diffuse));
+    let mut rig = if lights.is_empty() {
+        if ghost { ghost_rig() } else { scene_rig(&model.lights) }
+    } else {
+        let mut rig = SceneRig::default();
+        for light in lights {
+            for (sum, value) in rig.ambient.iter_mut().zip(light.ambient) { *sum += value; }
+            let vector = benilla_assets::coords::wow_to_bevy(light.vector);
+            if light.omni {
+                rig.points.push((vector, light.diffuse));
+            } else {
+                rig.lobes.push((-vector, light.diffuse));
+            }
         }
+        rig
+    };
+    if rig.ambient.iter().sum::<f32>() < 0.05 && rig.lobes.is_empty() && rig.points.is_empty() {
+        rig.ambient = [0.45, 0.45, 0.5];
+        rig.lobes.push((
+            Vec3::new(0.4, 0.7, 0.5).normalize(),
+            [0.75, 0.75, 0.75],
+        ));
     }
     rig
 }

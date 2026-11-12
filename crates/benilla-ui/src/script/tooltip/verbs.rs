@@ -46,6 +46,8 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 {
                     "ANCHOR_LEFT" => TooltipAnchor::Left,
                     "ANCHOR_RIGHT" => TooltipAnchor::Right,
+                    "ANCHOR_BOTTOM" => TooltipAnchor::BottomLeft,
+                    "ANCHOR_TOP" => TooltipAnchor::TopLeft,
                     "ANCHOR_BOTTOMLEFT" => TooltipAnchor::BottomLeft,
                     "ANCHOR_BOTTOMRIGHT" => TooltipAnchor::BottomRight,
                     "ANCHOR_TOPLEFT" => TooltipAnchor::TopLeft,
@@ -268,6 +270,17 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
+    m.set(
+        "SetTracking",
+        lua.create_function(|_lua, (_this, _id): (Table, mlua::Value)| Ok(()))?,
+    )?;
+    m.set(
+        "SetLFGDungeonReward",
+        lua.create_function(
+            |_lua, (_this, _dungeon_id, _index): (Table, mlua::Value, mlua::Value)| Ok(()),
+        )?,
+    )?;
+
     // The content methods: items, spells and auras, talents, units.
     crate::script::tooltip_item::install_methods(lua, &m)?;
     crate::script::tooltip_spell::install_methods(lua, &m)?;

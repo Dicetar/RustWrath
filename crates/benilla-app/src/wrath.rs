@@ -7097,6 +7097,15 @@ fn wrath_tap_commands(
                 trace.record(crate::quest_trace::Stage::Encoded);
             }
             if let Ok(mut queue) = input.0.lock() {
+                if (opcode == benilla_protocol_wrath::opcode::CMSG_ITEM_QUERY_SINGLE
+                    || opcode == benilla_protocol_wrath::opcode::CMSG_NAME_QUERY)
+                    && queue.iter().any(|o| o.opcode == opcode && o.payload == payload)
+                {
+                    if let Some(receipt) = receipt.as_ref() {
+                        receipt.report(crate::net::CommandDelivery::OutboxAdmitted);
+                    }
+                    continue;
+                }
                 if queue.len() < WRATH_OUTBOX_CAP {
                     // The Wrath encoder writes one cast-count byte before the spell ID.
                     let admitted_spell = (opcode == benilla_protocol_wrath::opcode::CMSG_CAST_SPELL)
@@ -7240,7 +7249,7 @@ fn wrath_tap_commands(
 
 /// Uncapped actions admitted per frame boundary; movement is capped separately and may never
 /// evict these entries.
-const WRATH_OUTBOX_CAP: usize = 256;
+const WRATH_OUTBOX_CAP: usize = 4096;
 /// Replaceable motion entries allowed before the streamer evicts its own oldest pose.
 const WRATH_MOVEMENT_QUEUE_CAP: usize = 64;
 
@@ -9321,11 +9330,14 @@ fn wrath_apply_world(world: &mut World) {
                     (33, 29),
                     (34, 30),
                     (35, 31),
+                    (36u16, 36u16),   // UNIT_FIELD_BYTES_0: race, class, gender, power
                     (148u16, 188u16), // PLAYER_DUEL_ARBITER low
                     (149, 189),       // PLAYER_DUEL_ARBITER high
                     (150, benilla_protocol::field::FIELD_PLAYER_FLAGS),
                     (151, 191),       // PLAYER_GUILDID
                     (152, 192),       // PLAYER_GUILDRANK
+                    (153, 193),       // PLAYER_BYTES: skin, face, hairStyle, hairColor
+                    (154, 194),       // PLAYER_BYTES_2: facialHair, bank bags, rest
                     (155, 195),       // PLAYER_BYTES_3
                     (156, 196),       // PLAYER_DUEL_TEAM
                     (157, 197),       // PLAYER_GUILD_TIMESTAMP

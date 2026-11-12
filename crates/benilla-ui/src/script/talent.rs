@@ -530,10 +530,13 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
         lua.create_function(|lua, args: MultiValue| {
             let is_pet =
                 matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
-            if is_pet {
-                return Ok(1i64);
-            }
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if is_pet {
+                let has_pet = model.wrath_talents.pet_unspent_points > 0
+                    || !model.wrath_talents.pet_talents.is_empty()
+                    || !model.wrath_talents.pet_tabs.is_empty();
+                return Ok(if has_pet { 1i64 } else { 0i64 });
+            }
             Ok(model.wrath_talents.groups.len().max(1) as i64)
         })?,
     )?;
@@ -542,10 +545,13 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
         lua.create_function(|lua, args: MultiValue| {
             let is_pet =
                 matches!(args.get(1), Some(Value::Boolean(true)) | Some(Value::Integer(1..)));
-            if is_pet {
-                return Ok(1i64);
-            }
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            if is_pet {
+                let has_pet = model.wrath_talents.pet_unspent_points > 0
+                    || !model.wrath_talents.pet_talents.is_empty()
+                    || !model.wrath_talents.pet_tabs.is_empty();
+                return Ok(if has_pet { 1i64 } else { 0i64 });
+            }
             Ok(i64::from(model.wrath_talents.active_group.max(1)))
         })?,
     )?;

@@ -831,6 +831,64 @@ const SAVED_HEADER: &str = "\
 -- Written at logout/exit from the live globals; executed as a Lua chunk at addon load.
 ";
 
+/// Import existing SavedVariables files from the game install's WTF folder if missing in benilla-config.
+fn seed_saved_variables_from_wtf(addons: &[Addon]) {
+    let Some(saved_dir) = crate::local_state::addon_saved_account_dir() else {
+        return;
+    };
+    let Some(data_dir) = benilla_formats::wow_data() else {
+        return;
+    };
+    let Some(install_dir) = data_dir.parent() else {
+        return;
+    };
+    let wtf = install_dir.join("WTF");
+    if !wtf.is_dir() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&saved_dir);
+    for addon in addons {
+        let dest = saved_dir.join(format!("{}.lua", addon.name));
+        if dest.exists() {
+            continue;
+        }
+        let root_sv = wtf.join("SavedVariables").join(format!("{}.lua", addon.name));
+        if root_sv.is_file() {
+            if let Ok(bytes) = std::fs::read(&root_sv) {
+                let _ = std::fs::write(&dest, bytes);
+                info!(
+                    "ui_script: imported saved variables for {} from {}",
+                    addon.name,
+                    root_sv.display()
+                );
+                continue;
+            }
+        }
+        let account_dir = wtf.join("Account");
+        if let Ok(entries) = std::fs::read_dir(&account_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    let acc_sv = entry
+                        .path()
+                        .join("SavedVariables")
+                        .join(format!("{}.lua", addon.name));
+                    if acc_sv.is_file() {
+                        if let Ok(bytes) = std::fs::read(&acc_sv) {
+                            let _ = std::fs::write(&dest, bytes);
+                            info!(
+                                "ui_script: imported saved variables for {} from {}",
+                                addon.name,
+                                acc_sv.display()
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Load every discovered third-party addon at world entry (`UI_Init 0x48fbf0` → `0x51f600`),
 /// returning every load error tagged by addon. `&mut` because each `ADDON_LOADED` fires
 /// ([`UiScript::fire_event`]) before the next addon's files run, as in the reference.
@@ -866,6 +924,7 @@ pub(super) fn load_third_party(
     let mut roots_iter = all_roots.into_iter();
     let primary_root = roots_iter.next();
     let extra_roots: Vec<PathBuf> = roots_iter.collect();
+    seed_saved_variables_from_wtf(&addons);
     script.register_addons(
         infos,
         primary_root,

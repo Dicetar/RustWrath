@@ -312,4 +312,17 @@ pub(super) const INERT: &[Registered] = &[
     ours("showToolsUI", "-1", "12340 launcher display CVar: show the launcher at start"),
     ours("converted", "0", "12340 trial-to-retail conversion state"),
     ours("accounttype", "", "12340 account type"),
+    // 3.3.5a UI and combat/nameplate CVars
+    ours("talentFrameShown", "0", "Blizzard_TalentUI.lua:303; talent frame shown flag"),
+    ours("fctAuras", "0", "Floating combat text auras"),
+    ours("showArenaEnemyCastbar", "1", "Arena enemy castbar"),
+    ours("UnitNameFriendlyTotemName", "1", "Friendly totem nameplate name"),
+    ours("showCastableDebuffs", "0", "Raid/unit castable debuffs filter"),
+    ours("showTargetOfTarget", "0", "Target of target frame display"),
+    ours("showItemLevel", "0", "Item level display in tooltips"),
+    ours("fctDamageReduction", "0", "Floating combat text damage reduction"),
+    ours("nameplateShowEnemies", "0", "Enemy nameplates display"),
+    ours("nameplateShowFriends", "0", "Friendly nameplates display"),
+    ours("threatShowNumeric", "0", "Numeric threat display"),
+    ours("targetStatusText", "0", "Target frame status text"),
 ];

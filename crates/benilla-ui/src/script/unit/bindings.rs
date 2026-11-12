@@ -875,7 +875,17 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                     Value::String(lua.create_string(name)?),
                     Value::Number(*factor),
                 ),
-                None => (Value::Nil, Value::Nil, Value::Nil),
+                None => {
+                    if model.target == crate::script::UiTarget::Wrath335 {
+                        (
+                            Value::Number(2.0),
+                            Value::String(lua.create_string("Normal")?),
+                            Value::Number(1.0),
+                        )
+                    } else {
+                        (Value::Nil, Value::Nil, Value::Nil)
+                    }
+                }
             })
         })?,
     )?;

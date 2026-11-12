@@ -728,6 +728,103 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         )?;
     }
 
+    // `UnitInVehicle`, `UnitHasVehicleUI`, `UnitTargetsVehicleInRaidUI`, `UnitInVehicleControlSeat`:
+    // vehicle unitframe queries. PetFrame and UnitFrame check `UnitInVehicle` to position vehicle
+    // frames; when absent, target and pet frame initialization crash.
+    lua.globals().set(
+        "UnitInVehicle",
+        lua.create_function(|lua, unit: Option<String>| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let in_veh = unit.as_deref() == Some("player") && model.vehicle_guid.is_some();
+            Ok(in_veh)
+        })?,
+    )?;
+    lua.globals().set(
+        "UnitHasVehicleUI",
+        lua.create_function(|_, _unit: Option<String>| Ok(false))?,
+    )?;
+    lua.globals().set(
+        "UnitTargetsVehicleInRaidUI",
+        lua.create_function(|_, _unit: Option<String>| Ok(false))?,
+    )?;
+    lua.globals().set(
+        "UnitInVehicleControlSeat",
+        lua.create_function(|_, _unit: Option<String>| Ok(false))?,
+    )?;
+
+    // Character PaperDoll and stats window natives (`PaperDollFrame.lua:280`, `:292`, etc.)
+    lua.globals().set(
+        "GetUnitMaxHealthModifier",
+        lua.create_function(|_, _unit: Option<String>| Ok(0.0))?,
+    )?;
+    lua.globals().set(
+        "GetCombatRatingBonus",
+        lua.create_function(|_, _rating: Option<u32>| Ok(0.0))?,
+    )?;
+    lua.globals().set(
+        "GetSpellBonusDamage",
+        lua.create_function(|_, _school: Option<u32>| Ok(0))?,
+    )?;
+    lua.globals().set(
+        "GetSpellBonusHealing",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
+    lua.globals().set(
+        "GetInventoryItemsForSlot",
+        lua.create_function(|lua, _slot: Option<i64>| {
+            let t = lua.create_table()?;
+            Ok(t)
+        })?,
+    )?;
+    lua.globals().set(
+        "GetBackpackCurrencyInfo",
+        lua.create_function(|_, _index: Option<i64>| Ok(Value::Nil))?,
+    )?;
+    lua.globals().set(
+        "CanShowAchievementUI",
+        lua.create_function(|_, ()| Ok(true))?,
+    )?;
+    lua.globals().set(
+        "GetCurrentArenaSeason",
+        lua.create_function(|_, ()| Ok(8))?,
+    )?;
+    lua.globals().set(
+        "IsAtStableMaster",
+        lua.create_function(|_, ()| Ok(false))?,
+    )?;
+    lua.globals().set(
+        "GetVoiceStatus",
+        lua.create_function(|_, _unit: Option<String>| Ok(Value::Nil))?,
+    )?;
+    lua.globals().set(
+        "VoiceChat_Animate",
+        lua.create_function(|_, (_frame, _state): (Value, Value)| Ok(()))?,
+    )?;
+    lua.globals().set(
+        "HasLFGRestrictions",
+        lua.create_function(|_, ()| Ok(false))?,
+    )?;
+    lua.globals().set(
+        "RequestLFDPartyLockInfo",
+        lua.create_function(|_, ()| Ok(()))?,
+    )?;
+    lua.globals().set(
+        "IsBattlefieldArena",
+        lua.create_function(|_, ()| Ok(false))?,
+    )?;
+    lua.globals().set(
+        "GetRandomBGHonorCurrencyBonuses",
+        lua.create_function(|_, ()| Ok((0, 0, 0, 0)))?,
+    )?;
+    lua.globals().set(
+        "ClearFocus",
+        lua.create_function(|_, ()| Ok(()))?,
+    )?;
+    lua.globals().set(
+        "BNGetNumFriendInvites",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
+
     // `GetNumTrackingTypes`/`GetTrackingInfo` (`Minimap.lua:427`, `:430`): the tracking types come
     // from the player's known tracking spells (aura TRACK_CREATURES/TRACK_RESOURCES); the host has
     // not pushed those masks with the spellbook yet, so the catalogue the dropdown enumerates is

@@ -219,7 +219,13 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 Value::Number(units.center(r.left, r.right, s)),
                 Value::Number(units.center(r.bottom, r.top, s)),
             ),
-            None => (Value::Nil, Value::Nil),
+            None => {
+                if model.target == crate::script::UiTarget::Wrath335 {
+                    (Value::Number(0.0), Value::Number(0.0))
+                } else {
+                    (Value::Nil, Value::Nil)
+                }
+            }
         })
     })?;
 
@@ -250,15 +256,24 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             settle_frame(lua, h);
             let model = lua.app_data_ref::<Model>().expect("model");
             let (units, s) = (model.layout_units(), layout_scale(&model, h));
-            Ok(model.frame_rects.get(&h).map(|r| {
-                let e = match pick {
-                    0 => r.left,
-                    1 => r.right,
-                    2 => r.top,
-                    _ => r.bottom,
-                };
-                units.edge(e, s)
-            }))
+            Ok(match model.frame_rects.get(&h) {
+                Some(r) => {
+                    let e = match pick {
+                        0 => r.left,
+                        1 => r.right,
+                        2 => r.top,
+                        _ => r.bottom,
+                    };
+                    Some(units.edge(e, s))
+                }
+                None => {
+                    if model.target == crate::script::UiTarget::Wrath335 {
+                        Some(0.0)
+                    } else {
+                        None
+                    }
+                }
+            })
         })?;
     }
     Ok(())

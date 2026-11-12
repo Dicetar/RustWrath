@@ -27,9 +27,9 @@ use crate::net::{ObjectStore, SelfPlayer};
 
 /// SpellModOps per row: the index stride (`imul eax,eax,0x1d`; the reader's `add edx,0x74`).
 const OPS: usize = 29;
-/// `SpellFamilyFlags` bits: the row count (`cmp eax,0x40`).
-const BITS: usize = 64;
-/// `0x740` dwords per table (`6e72ba: mov ecx,0x740` before each `rep stosd`).
+/// `SpellFamilyFlags` bits: 96 in Wrath 3.3.5a (3x u32 words).
+const BITS: usize = 96;
+/// Total dwords per table (`BITS * OPS`).
 const CELLS: usize = BITS * OPS;
 
 /// `SPELLMOD_COST`, read by [`crate::spell::usable::power_cost`] (`GetPowerCost 0x6e31b0` at
@@ -136,7 +136,7 @@ impl SpellModifiers {
         if usize::from(mask_bit) >= BITS || usize::from(op) >= OPS {
             warn!(
                 "spell_mods: dropping an out-of-range {} modifier — mask bit {mask_bit} \
-                 (0..=63), op {op} (0..=28), value {value}",
+                 (0..=95), op {op} (0..=28), value {value}",
                 if flat { "flat" } else { "pct" }
             );
             return;
@@ -183,15 +183,20 @@ impl SpellModifiers {
     /// What differs from `prev`: the `SpellFamilyFlags` bits with any changed cell, in either
     /// table and at any op, and whether the class family moved.
     pub(crate) fn diff(&self, prev: &SpellModifiers) -> ModsDiff {
-        let bits = (0..BITS).fold(0u64, |bits, bit| {
+        let bits = (0..64).fold(0u64, |bits, bit| {
             let row = bit * OPS..(bit + 1) * OPS;
             let same = self.flat[row.clone()] == prev.flat[row.clone()]
                 && self.pct[row.clone()] == prev.pct[row];
             bits | u64::from(!same) << bit
         });
+        let high_changed = (64..BITS).any(|bit| {
+            let row = bit * OPS..(bit + 1) * OPS;
+            self.flat[row.clone()] != prev.flat[row.clone()]
+                || self.pct[row.clone()] != prev.pct[row]
+        });
         ModsDiff {
             bits,
-            class_family: self.class_family != prev.class_family,
+            class_family: self.class_family != prev.class_family || high_changed,
         }
     }
 
@@ -202,10 +207,10 @@ impl SpellModifiers {
         if !self.gates_pass(d) || usize::from(op) >= OPS {
             return None;
         }
-        // All 64 bits, no early break (`6e6b8f`/`6e6b97`); the accumulators wrap, as the
+        // All 64 low bits, no early break (`6e6b8f`/`6e6b97`); the accumulators wrap, as the
         // reference's do.
         let (mut flat, mut pct) = (0i32, 0i32);
-        for bit in 0..BITS as u8 {
+        for bit in 0..64u8 {
             if d.spell_family_flags >> bit & 1 == 0 {
                 continue;
             }

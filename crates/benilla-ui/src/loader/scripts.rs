@@ -239,6 +239,7 @@ fn handler_parameters(name: &str) -> &'static str {
         "OnValueChanged" => "self, value, ...",
         "OnTextChanged" => "self, userInput, ...",
         "OnCursorChanged" => "self, x, y, width, height, ...",
+        "OnTooltipAddMoney" => "self, cost, maxcost, ...",
         "OnInputLanguageChanged" => "self, language, ...",
         "OnHorizontalScroll" | "OnVerticalScroll" => "self, offset, ...",
         "OnScrollRangeChanged" => "self, xrange, yrange, ...",

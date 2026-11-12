@@ -119,8 +119,18 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
-    // No `HasFocus`: 1.12's EditBox table has these two setters and no getter, and addons keep
-    // their own flag.
+    m.set(
+        "HasFocus",
+        lua.create_function(|lua, this: Table| {
+            let h = frame_handle_of(lua, &this)?;
+            let focused = lua
+                .app_data_ref::<crate::script::Model>()
+                .expect("model")
+                .focused_editbox
+                == Some(h);
+            Ok(focused)
+        })?,
+    )?;
 
     // GetInputLanguage/ToggleInputLanguage (`0x799550`/`0x799610`): the IME's input language, not
     // the chat language. With no IME, as here, the answer is "ROMAN" and the toggle does nothing.

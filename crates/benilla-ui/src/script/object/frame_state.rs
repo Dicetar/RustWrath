@@ -56,6 +56,14 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             ))
         })?,
     )?;
+    m.set(
+        "IsProtected",
+        lua.create_function(|_lua, _this: Table| Ok((false, false)))?,
+    )?;
+    m.set(
+        "CanChangeProtectedState",
+        lua.create_function(|_lua, _this: Table| Ok(true))?,
+    )?;
     // Identity / hierarchy
     set_shared(lua, m, Side::Frame, "GetName", |lua, this: Table| {
         let h = frame_handle_of(lua, &this)?;
