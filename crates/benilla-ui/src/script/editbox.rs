@@ -167,7 +167,7 @@ mod flush;
 mod interact;
 mod relayout;
 mod seam;
-pub(in crate::script) use flush::update;
+pub(in crate::script) use flush::{flush, update};
 pub(super) use interact::{click, copy_selection, cut_selection, drag_end, drag_update};
 pub(in crate::script) use relayout::reseat_resized;
 

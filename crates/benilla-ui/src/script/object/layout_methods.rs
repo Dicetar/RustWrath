@@ -366,8 +366,15 @@ fn size_read(lua: &Lua, h: FrameHandle, width: bool) -> f64 {
     }
     settle_frame(lua, h);
     let model = lua.app_data_ref::<Model>().expect("model");
+    let s = layout_scale(&model, h);
     model.frame_rects.get(&h).map_or(0.0, |r| {
-        if width {
+        if model.target == crate::script::UiTarget::Wrath335 {
+            if width {
+                units.edge((r.right - r.left).max(0.0), s)
+            } else {
+                units.edge((r.top - r.bottom).max(0.0), s)
+            }
+        } else if width {
             units.span(r.left, r.right)
         } else {
             units.span(r.bottom, r.top)

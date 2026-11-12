@@ -829,7 +829,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let m = model(lua);
             let c = &m.glue.create;
             let row = c.catalog.race(c.race_at(c.selected));
-            text(lua, Some(row.map_or("NORMAL", |r| r.tokens[2].as_str())))
+            let token = row
+                .map(|r| r.tokens[2].as_str())
+                .filter(|t| !t.is_empty())
+                .unwrap_or("NORMAL");
+            text(lua, Some(token))
         })?,
     )?;
 
@@ -842,7 +846,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let c = &m.glue.create;
             let row = c.catalog.race(c.race_at(c.selected));
             let sex = c.obj().sex as usize;
-            let token = row.and_then(|r| r.tokens.get(sex)).map(String::as_str);
+            let token = row
+                .and_then(|r| r.tokens.get(sex))
+                .map(String::as_str)
+                .filter(|t| !t.is_empty());
             text(lua, Some(token.unwrap_or("NORMAL")))
         })?,
     )?;

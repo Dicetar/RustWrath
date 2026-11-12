@@ -652,7 +652,12 @@ pub(super) fn install_methods(lua: &Lua, m: &Table) -> mlua::Result<()> {
                 };
                 // The merchant prices an object the player holds at slot index 23 or more
                 // (`0x52e40f`): the vault, the bank bags and the keyring, never a worn item.
-                let sold = (inst.object && inst.guid != 0 && slot0 >= 23).then_some(count);
+                // In 3.3.5a, tooltips show sell prices for all owned items (including worn gear).
+                let sold = if target == super::UiTarget::Wrath335 {
+                    (inst.object && inst.guid != 0).then_some(count)
+                } else {
+                    (inst.object && inst.guid != 0 && slot0 >= 23).then_some(count)
+                };
                 let source_link = lua.app_data_ref::<Model>().expect("model").inv_slot(&unit, slot)
                     .and_then(|view| view.link.clone());
                 let live = build_item(

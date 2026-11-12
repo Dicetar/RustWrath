@@ -88,6 +88,11 @@ impl UiScript {
                         .is_some_and(|s| s.contains("OnUpdate"));
                 (on_update.then(|| model.frame_id(h)), kind_update)
             };
+            if matches!(kind_update, Some(KindUpdate::EditBox))
+                && self.model_ref().target == super::UiTarget::Wrath335
+            {
+                editbox::flush(&self.lua, h);
+            }
             if let Some(id) = on_update {
                 if let Err(e) = event::fire_update_handler(&self.lua, id, elapsed) {
                     self.push_error(e);

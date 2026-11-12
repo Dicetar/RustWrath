@@ -27,7 +27,7 @@ pub(in crate::script) fn update(lua: &Lua, h: FrameHandle, dt: f32) {
 ///
 /// Deviation: the promotion's IME legs (`0x77d417`–`0x77d431`) and the IME writer's `or 6`
 /// (`0x77acde`, in `0x77ac60`) are not modelled: benilla has no IME composition.
-pub(super) fn flush(lua: &Lua, h: FrameHandle) {
+pub(in crate::script) fn flush(lua: &Lua, h: FrameHandle) {
     let Some((entry, owed, left)) = with_eb(lua, h, |eb| {
         (eb.dirty, eb.relayout_owed, !eb.caret_in_window())
     }) else {
@@ -56,8 +56,16 @@ pub(super) fn flush(lua: &Lua, h: FrameHandle) {
 /// the keyboard, whose focus change raises bit 2 (`0x77afa8`), starts its caret solid. `false`
 /// while the advance table is pending, for the next flush to retry.
 fn caret(lua: &Lua, h: FrameHandle) -> bool {
+    let wrath = lua
+        .app_data_ref::<Model>()
+        .expect("model app_data")
+        .target
+        == crate::script::UiTarget::Wrath335;
     // A window still owed its relayout is stale, and the retry places the caret.
     if with_eb(lua, h, |eb| !eb.relayout_owed && !eb.caret_in_window()) == Some(true) {
+        if wrath {
+            let _ = cursor_changed(lua, h);
+        }
         with_eb(lua, h, |eb| eb.caret_shown = false);
         return true;
     }
@@ -85,13 +93,39 @@ fn cursor_changed(lua: &Lua, h: FrameHandle) -> bool {
     if !event::has_widget_handler(lua, id, "OnCursorChanged") {
         return true;
     }
+    let wrath = lua
+        .app_data_ref::<Model>()
+        .expect("model app_data")
+        .target
+        == crate::script::UiTarget::Wrath335;
+    let fire_fallback = |line_h: f32| {
+        if wrath {
+            if let Err(e) = event::fire_widget_handler(
+                lua,
+                id,
+                "OnCursorChanged",
+                vec![
+                    Value::Number(0.0),
+                    Value::Number(0.0),
+                    Value::Number(f64::from(CARET_WIDTH)),
+                    Value::Number(f64::from(line_h)),
+                ],
+            ) {
+                lua.app_data_mut::<Model>()
+                    .expect("model app_data")
+                    .record_lua_error(&e);
+            }
+        }
+    };
     if !super::seam::advances_current(lua, h) {
+        fire_fallback(14.0);
         return false;
     }
     // Already in the box's own units, as the measure answers.
     let Some(line_h) =
         super::ensure_text_region(lua, h).and_then(|rh| relayout::line_height(lua, h, rh))
     else {
+        fire_fallback(14.0);
         return false;
     };
     let args = with_eb(lua, h, |eb| {
@@ -137,6 +171,7 @@ fn cursor_changed(lua: &Lua, h: FrameHandle) -> bool {
     })
     .flatten();
     let Some((x, y)) = args else {
+        fire_fallback(line_h);
         return false;
     };
     // The advance table is in root units (measured at the box's scale, divided by the seam

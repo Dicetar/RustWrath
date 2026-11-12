@@ -597,6 +597,9 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
             *a += c * l.ambient_intensity;
         }
         let color = l.diffuse_color.map(|c| c * l.diffuse_intensity);
+        if color.iter().sum::<f32>() <= 0.01 {
+            continue;
+        }
         if l.is_point() {
             // `LightBlob::point` commits the colour raw, as the world table does: the reference's
             // `0x71ca80` encode is undone by the `0x593040` decode.
@@ -606,7 +609,7 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
             lobes.push((benilla_assets::coords::wow_to_bevy(l.bone_z), color));
         }
     }
-    if ambient.iter().sum::<f32>() < 0.05 && lobes.is_empty() && points.is_empty() {
+    if ambient.iter().sum::<f32>() < 0.05 && lobes.is_empty() {
         ambient = [0.45, 0.45, 0.5];
         lobes.push((
             Vec3::new(0.4, 0.7, 0.5).normalize(),
@@ -628,6 +631,9 @@ fn pane_scene_rig(preview: &GluePreview, model: &M2Model, ghost: bool) -> SceneR
         let mut rig = SceneRig::default();
         for light in lights {
             for (sum, value) in rig.ambient.iter_mut().zip(light.ambient) { *sum += value; }
+            if light.diffuse.iter().sum::<f32>() <= 0.01 {
+                continue;
+            }
             let vector = benilla_assets::coords::wow_to_bevy(light.vector);
             if light.omni {
                 rig.points.push((vector, light.diffuse));
@@ -637,7 +643,7 @@ fn pane_scene_rig(preview: &GluePreview, model: &M2Model, ghost: bool) -> SceneR
         }
         rig
     };
-    if rig.ambient.iter().sum::<f32>() < 0.05 && rig.lobes.is_empty() && rig.points.is_empty() {
+    if rig.ambient.iter().sum::<f32>() < 0.05 && rig.lobes.is_empty() {
         rig.ambient = [0.45, 0.45, 0.5];
         rig.lobes.push((
             Vec3::new(0.4, 0.7, 0.5).normalize(),

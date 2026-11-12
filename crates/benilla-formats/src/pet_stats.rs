@@ -180,9 +180,9 @@ pub fn load_pet_personalities(chain: &mut Chain) -> Result<PetPersonalities> {
 
 /// Load `PetLoyalty.dbc` from the patch chain.
 pub fn load_pet_loyalty_names(chain: &mut Chain) -> Result<PetLoyaltyNames> {
-    let bytes = chain
-        .read_file(PET_LOYALTY)
-        .with_context(|| format!("reading {PET_LOYALTY}"))?;
+    let Ok(bytes) = chain.read_file(PET_LOYALTY) else {
+        return Ok(PetLoyaltyNames::default());
+    };
     let fields = if crate::dbc::field_count(&bytes) == Some(18) {
         18
     } else {

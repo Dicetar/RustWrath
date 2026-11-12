@@ -707,7 +707,9 @@ pub(super) fn install_tooltip_method(lua: &Lua, m: &Table) -> mlua::Result<()> {
             let i = binding_abi::index_arg(lua, i, "Usage: SetTalent(tabIndex, talentIndex)")?;
             let (display, ranks, reqs, mut lines) = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                let Some(t) = talent_at(&model, tab, i) else {
+                let is_pet =
+                    model.target == super::UiTarget::Wrath335 && is_truthy_arg(args.get(3));
+                let Some(t) = talent_at_scope(&model, tab, i, is_pet, args.get(4)) else {
                     return Ok(());
                 };
                 // From the ask-once spell store; a miss shows on the next hover.

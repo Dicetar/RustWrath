@@ -362,14 +362,23 @@ pub(crate) fn build_wrath_talent_groups(
             glyphs,
         });
     }
-    let pet_unspent_points = wrath.pet_unspent_points.unwrap_or(0);
+    let pet_unspent_points = if class == 3 {
+        wrath.pet_unspent_points.unwrap_or(0)
+    } else {
+        0
+    };
+    let pet_talents = if class == 3 {
+        wrath.pet_talents.clone()
+    } else {
+        Vec::new()
+    };
     let (pet_tabs, pet_talent_views) =
-        build_pet_talent_views(catalog, spells, &wrath.pet_talents, pet_unspent_points);
+        build_pet_talent_views(catalog, spells, &pet_talents, pet_unspent_points, class);
     WrathTalentUiState {
         active_group,
         groups,
         pet_unspent_points,
-        pet_talents: wrath.pet_talents.clone(),
+        pet_talents,
         pet_tabs,
         pet_talent_views,
     }
@@ -380,8 +389,9 @@ fn build_pet_talent_views(
     spells: &benilla_formats::SpellCatalog,
     pet_talents: &[(u32, u8)],
     pet_unspent_points: u32,
+    class: u8,
 ) -> (Vec<TalentTabView>, Vec<Vec<TalentView>>) {
-    if pet_talents.is_empty() && pet_unspent_points == 0 {
+    if class != 3 || (pet_talents.is_empty() && pet_unspent_points == 0) {
         return (Vec::new(), Vec::new());
     }
     // Resolve the pet's active talent tab from its learned talents first, or fall back to the
