@@ -10,7 +10,9 @@
 //! starts earlier than the authored data. Every compiler validates its spec before returning.
 
 use crate::action::{ActionId, ActionKind, ActionSpec};
+use crate::data::DodgeSpec;
 use crate::error::{CombatError, CombatResult};
+use crate::identity::ActionRevision;
 use crate::policy::{permille_of, ProfilePolicy};
 use crate::time::TickRate;
 
@@ -232,6 +234,49 @@ pub fn spell_action(
     Ok(spec)
 }
 
+/// Compile the authored dodge from a dodge clip: the clip's own length is the action, the
+/// policy places the i-frames, and the input thresholds sit at the action's end — the v1 dodge
+/// commits for its whole length, with no early cancel into itself or movement. The donor's
+/// two-threshold semantics survive through [`DodgeSpec::dodge_input_threshold`]; loosening
+/// the thresholds is a later authored tuning change, not a compiler decision.
+///
+/// A clip shorter than the policy's i-frame start is a typed error, not a clipped window: that
+/// rig cannot host the authored dodge.
+pub fn dodge_from_clip(
+    clip: ClipSummary,
+    policy: &ProfilePolicy,
+    rate: TickRate,
+    revision: ActionRevision,
+) -> CombatResult<DodgeSpec> {
+    policy.validate()?;
+    if clip.duration_ms == 0 {
+        return Err(CombatError::InvalidConfig("clip duration must be non-zero"));
+    }
+    let total = ticks(rate, clip.duration_ms)?;
+    let start = ticks(rate, policy.dodge_iframe_start_ms)?;
+    if start >= total {
+        return Err(CombatError::InvalidConfig(
+            "the dodge clip is shorter than the authored i-frame start",
+        ));
+    }
+    let end = (start + ticks(rate, policy.dodge_iframe_len_ms)?).min(total);
+    if start >= end {
+        return Err(CombatError::InvalidConfig(
+            "the compiled i-frame window is empty",
+        ));
+    }
+    Ok(DodgeSpec {
+        revision,
+        total_ticks: total,
+        input_from_tick: total,
+        dodge_from_tick: total,
+        cancel_dodge_from_tick: total,
+        cancel_move_from_tick: total,
+        iframes: crate::time::TickWindow { from: start, to: end },
+        stamina_cost: policy.dodge_stamina,
+    })
+}
+
 /// Turn a computed `(from, to)` pair into a half-open window inside `total`, refusing the empty
 /// or inverted pairs a zero-length clip or a mis-tuned policy could produce.
 fn open_window(from: u64, to: u64, total: u64) -> CombatResult<(u64, u64)> {
@@ -247,6 +292,8 @@ fn open_window(from: u64, to: u64, total: u64) -> CombatResult<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::dodge_action;
+    use crate::identity::ActionRevision;
     use crate::time::TickWindow;
 
     fn rate() -> TickRate {
@@ -466,5 +513,52 @@ mod tests {
         .expect("compile");
         assert_eq!(spec.total_ticks, 12);
         assert_eq!(spec.contact, Some(TickWindow { from: 0, to: 2 }));
+    }
+
+    /// The authored dodge compiles from its clip: the clip's length is the action, the policy
+    /// places the i-frames, the input thresholds sit at the end, and the carried-over action
+    /// validates with the same windows and cost.
+    #[test]
+    fn dodge_compiles_from_its_clip() {
+        let spec = dodge_from_clip(
+            clip(30, 500, None),
+            &ProfilePolicy::default(),
+            rate(),
+            ActionRevision(1),
+        )
+        .expect("compile");
+        assert_eq!(spec.total_ticks, 50);
+        assert_eq!(spec.iframes, TickWindow { from: 10, to: 40 });
+        assert_eq!(spec.dodge_input_threshold(), 50, "no early input window");
+        assert_eq!(spec.cancel_dodge_from_tick, 50);
+        assert_eq!(spec.stamina_cost, 25);
+
+        let action = dodge_action(ActionId(1), &spec);
+        action.validate().expect("the compiled dodge validates");
+        assert_eq!(action.iframes, Some(TickWindow { from: 10, to: 40 }));
+        assert_eq!(action.windup_ticks(), 10);
+        assert_eq!(action.recovery_ticks(), 10);
+    }
+
+    /// A clip shorter than the authored i-frame start cannot host the dodge, and a clip whose
+    /// length swallows the i-frame window clamps the window's end to the action, never past it.
+    #[test]
+    fn dodge_refuses_clips_that_cannot_host_the_iframes() {
+        assert!(dodge_from_clip(
+            clip(30, 90, None),
+            &ProfilePolicy::default(),
+            rate(),
+            ActionRevision(1),
+        )
+        .is_err());
+
+        let clipped = dodge_from_clip(
+            clip(30, 350, None),
+            &ProfilePolicy::default(),
+            rate(),
+            ActionRevision(1),
+        )
+        .expect("compile");
+        assert_eq!(clipped.iframes, TickWindow { from: 10, to: 35 });
     }
 }

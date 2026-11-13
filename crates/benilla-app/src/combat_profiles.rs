@@ -20,8 +20,8 @@ use std::collections::HashMap;
 
 use benilla_assets::{AnimClip, ModelAnimations};
 use benilla_combat_core::{
-    melee_action, spell_action, ActionId, ActionKind, ActionSpec, ActionTable, ClipSummary,
-    CombatResult, ProfilePolicy, SpellSummary, TickRate,
+    dodge_from_clip, melee_action, spell_action, ActionId, ActionKind, ActionSpec, ActionTable,
+    ClipSummary, CombatResult, DodgeSpec, ProfilePolicy, SpellSummary, TickRate,
 };
 use benilla_formats::{
     AnimDataCatalog, SpellCastTimeCatalog, SpellDisplay, SpellDurationCatalog,
@@ -29,6 +29,8 @@ use benilla_formats::{
 
 /// The dodge action every encounter shares; the host range `1..=999`.
 pub(crate) const HOST_DODGE: ActionId = ActionId(1);
+/// The `AnimationData.dbc` id of the Dodge clip (`Dodge`, the defense reaction anim 30).
+const DODGE_ANIM: u16 = 30;
 /// Enemy actions are encounter-assigned in `ENEMY_ACTION_BASE..=999_999` (slice 4).
 pub(crate) const ENEMY_ACTION_BASE: u32 = 1_000;
 /// Spell actions are offset by the `Spell.dbc` id from `SPELL_ACTION_BASE` upward.
@@ -138,6 +140,31 @@ pub(crate) fn spell_summary(
         channel_ms,
         interrupt_flags: display.interrupt_flags,
     })
+}
+
+/// Compile the player's dodge from the rig's Dodge clip (`AnimationData` id 30, the defense
+/// reaction the victim's feedback already plays). A rig that ships no Dodge clip carries no
+/// dodge action (`None`): no substitution clip is invented for the first authored dodge, a
+/// named gap in [the plan](../../docs/architecture/souls-combat-action-profiles.md).
+pub(crate) fn player_dodge_spec(
+    anims: &ModelAnimations,
+    anim_data: &AnimDataCatalog,
+    policy: &ProfilePolicy,
+    rate: TickRate,
+    revision: benilla_combat_core::ActionRevision,
+) -> CombatResult<Option<(DodgeSpec, u16)>> {
+    let resolved = anims.resolve(DODGE_ANIM, anim_data);
+    if resolved.id != DODGE_ANIM {
+        return Ok(None);
+    }
+    let Some(clip) = anims.clips.iter().find(|clip| clip.anim_id == resolved.id) else {
+        return Ok(None);
+    };
+    let Some(summary) = clip_summary(clip) else {
+        return Ok(None);
+    };
+    let spec = dodge_from_clip(summary, policy, rate, revision)?;
+    Ok(Some((spec, resolved.id)))
 }
 
 /// The compiled profile set the combat host consumes once slices 2–3 land: the validated action
@@ -356,6 +383,41 @@ mod tests {
             spell_summary(&display, &cast_times, &durations, 80),
             None,
             "a missing cast-time row refuses the profile"
+        );
+    }
+
+    /// The dodge compiles from the rig's own Dodge clip; a rig that ships none carries no dodge
+    /// action, and no substitute clip is invented.
+    #[test]
+    fn player_dodge_spec_profiles_the_rigs_dodge_clip() {
+        let dodging = rig(vec![clip(0, 1.0, &[]), clip(30, 0.5, &[])]);
+        let (spec, anim_id) = player_dodge_spec(
+            &dodging,
+            &AnimDataCatalog::from_rows([]),
+            &ProfilePolicy::default(),
+            rate(),
+            benilla_combat_core::ActionRevision(1),
+        )
+        .expect("compile")
+        .expect("the rig dodges");
+        assert_eq!(anim_id, 30);
+        assert_eq!(spec.total_ticks, 50);
+        assert_eq!(spec.iframes.from, 10);
+        assert_eq!(spec.iframes.to, 40);
+        assert_eq!(spec.stamina_cost, 25);
+
+        let bare = rig(vec![clip(0, 1.0, &[])]);
+        assert_eq!(
+            player_dodge_spec(
+                &bare,
+                &AnimDataCatalog::from_rows([]),
+                &ProfilePolicy::default(),
+                rate(),
+                benilla_combat_core::ActionRevision(1),
+            )
+            .expect("compile"),
+            None,
+            "a rig without a Dodge clip carries no dodge action"
         );
     }
 }

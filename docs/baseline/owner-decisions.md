@@ -52,3 +52,20 @@ asset/model hotpatching.
    to cling to 1.12 donor behavior or maintain strict 1.12 version-boundary gates; retain 1.12
    donor code only where it is genuinely useful and fitting.
 
+2026-11-13 owner-confirmed decisions (Souls combat direction session):
+1. **Global toggle**: Souls combat applies as a global mode switch — when enabled it converts
+   combat across the world; stock combat returns when it is off. This amends the RFC's
+   player-facing per-encounter admission: the server still acknowledges the mode before any
+   rule applies, but the choice is world-wide, not per-encounter. See
+   `docs/architecture/souls-combat-action-profiles.md`.
+2. **New stamina bar**: a separate Souls-style stamina resource powers dodge, guard and melee
+   swings; spells keep their normal power type and costs.
+3. **Auto-attack disabled in Souls mode**: every swing is a deliberate input; the server gates
+   auto-attack while the mode is active.
+4. **Native telegraphs first**: enemies read through their own attack clips; added visual
+   tells (VFX or authored telegraph animations) only where a clip proves unreadable.
+5. **First playable milestone**: the 1v1 melee loop — dodge versus one telegraphed enemy, then
+   a light-attack punish — before player moveset breadth or the spell hybrid.
+6. **Keyboard and mouse first**: rebindable experimental binds (light, heavy, dodge, guard,
+   lock-on); gamepad support later.
+

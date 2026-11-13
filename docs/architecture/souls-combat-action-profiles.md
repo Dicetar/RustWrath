@@ -50,6 +50,25 @@ Nothing below is new; the compilers only join existing seams.
    hit outcomes and mode negotiation remain server-owned per the RFC and `combat_mode.rs`; no
    compiler output is a command, and nothing here sends traffic.
 
+## Owner decisions, 2026-11-13
+
+Recorded in [owner decisions](../baseline/owner-decisions.md); they shape this plan:
+
+- **Global toggle**: the mode is a world-wide switch the server acknowledges before any rule
+  applies — not a player-facing per-encounter choice. This validates the automated-compilers
+  approach: a world-wide mode cannot hand-author its move set, so every action must compile
+  from data. Encounter-level admission remains only as a technical staging detail (the first
+  telegraphed enemy is still one creature) while the mode itself is global.
+- **A new stamina bar** powers dodge, guard and melee; spells keep their own power. The
+  bar is server-owned once the authority seam exists; until then the client may only show
+  prediction, visibly marked.
+- **Auto-attack is disabled** while the mode is on: every swing is deliberate input.
+- **Native telegraphs first**: the enemy's own attack clips carry the windup; VFX or authored
+  tells are added only where a clip proves unreadable.
+- **First playable milestone: the 1v1 melee loop** — dodge versus one telegraphed enemy, then
+  a light-attack punish.
+- **Keyboard and mouse first**, with rebindable experimental binds; gamepad later.
+
 ## Slice roadmap
 
 | Slice | Deliverable | Consumer / acceptance |

@@ -51,6 +51,8 @@ pub use input::{
     BufferedDodge, DodgeButton, DodgeRejection, DodgeResult, GestureOutcome, InputFrame, InputOutcome,
 };
 pub use policy::ProfilePolicy;
-pub use profile::{enemy_action, melee_action, spell_action, ClipSummary, SpellSummary};
+pub use profile::{
+    dodge_from_clip, enemy_action, melee_action, spell_action, ClipSummary, SpellSummary,
+};
 pub use player::{DodgeView, HitOutcome, PlayerPhase, PlayerView};
 pub use time::{TickRate, TickWindow, Ticks};

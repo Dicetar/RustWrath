@@ -7,6 +7,26 @@ plan's step 1 (plus its automated compilers). Plan of record:
 `docs/architecture/souls-combat-action-profiles.md` (new this slice), extending
 `docs/architecture/rfc-modular-souls-combat.md`.
 
+## Owner decisions, later the same day (decision session)
+
+Recorded in `docs/baseline/owner-decisions.md` (2026-11-13 block) and reflected in the plan:
+
+- **Global toggle** (not the recommended opt-in encounters): Souls combat is a world-wide
+  switch the server acknowledges; per-encounter admission stops being the player-facing model.
+  This is why the compilers matter: a world-wide mode cannot hand-author its move set.
+- New stamina bar; auto-attack disabled in Souls mode; native telegraphs first; **first
+  playable milestone is the 1v1 melee loop** (dodge vs one telegraphed enemy, then light-attack
+  punish); keyboard+mouse first.
+
+## Slice 1b: the dodge compiles from data too
+
+The 1v1 loop's first button, same compiler approach: `ProfilePolicy` gained
+`dodge_iframe_start_ms`/`dodge_iframe_len_ms`/`dodge_stamina` (authored, default 100/300/25),
+`dodge_from_clip` compiles the authored [`DodgeSpec`] from the rig's Dodge clip (policy-placed
+i-frames, input thresholds at the action's end, typed refusal when the clip cannot host the
+window), and `benilla-app` gained `player_dodge_spec` resolving `AnimationData` id 30 on the
+rig — `None` for a rig without the clip, no substitute invented (named gap).
+
 Baseline: `main` at `38f56810` (branch `feat/souls-action-profiles`, worktree
 `rw-souls-action-profiles`). No client/server process was running; no gameplay was driven.
 
@@ -48,21 +68,57 @@ Baseline: `main` at `38f56810` (branch `feat/souls-action-profiles`, worktree
 No behavior change: no system reads or writes the new module yet. The combat seam
 (`combat_mode.rs`) is untouched.
 
-## Verification state
+## Verification state (post-repair; the recorded evidence)
 
-- `cargo test -p benilla-combat-core` (worktree-local target): **16 passed, 0 failed**
-  (10 schema/policy, 6 compiler), plus 0 doc-tests. sccache wrapper active per checkout
-  config; no cache-hit claim (stats not read after daemon restarts).
-- `cargo test -p benilla-app --lib combat_profiles` (shared target
-  `CARGO_TARGET_DIR=D:\Projects\project-b-client\target`, the sanctioned worktree-build
-  route): **5 passed, 0 failed**, 6761 filtered out. Compile finished in 2m45s; the 37
-  test-target warnings are pre-existing (dev-panel dead code, `wrath.rs` test arms), none
-  from the new module.
-- Two transient compile failures were fixed during the round: re-exporting `pub(super)`
-  items at `pub(crate)` (E0364 — the items are now `pub(crate)` at their definition sites)
-  and a missing deref in a test `ClipEvent` literal (E0308).
+Both suites below ran after the environment repairs in the note below — sccache daemon
+restarted, every workspace crate force-rebuilt fresh into the shared
+`CARGO_TARGET_DIR=D:\Projects\project-b-client\target`, and the run directory pinned with
+`Set-Location` — plus one real fix in the new test code (a `let rig = rig(..)` shadowing in
+`player_dodge_spec_profiles_the_rigs_dodge_clip`).
+
+- `cargo test -p benilla-combat-core`: **18 passed, 0 failed** (10 schema/policy, 8 compiler
+  including the two dodge tests), 0 doc-tests. sccache wrapper active per checkout config; a
+  freshly restarted daemon reports zero requests, so no cache-hit claim.
+- `cargo test -p benilla-app --lib combat_profiles`: **6 passed, 0 failed**, 6761 filtered out —
+  the five slice-1 tests plus `player_dodge_spec_profiles_the_rigs_dodge_clip`. The remaining
+  test-target warnings are pre-existing (dev-panel dead code, `wrath.rs` test arms), none from
+  the new module.
+- Earlier compile failures in the round, all diagnosed: re-exporting `pub(super)` items at
+  `pub(crate)` (E0364 — the items are now `pub(crate)` at their definition sites); a missing
+  deref in a test `ClipEvent` literal (E0308); the `rig` shadowing (E0618); and the three
+  environment failures below that produced error output which was never this slice's.
+- The earlier shared-target slice-1 "5/5" result is superseded by this 6/6 run. Test counts
+  stay within the 20-case task ceiling.
 - No client, server, receiver or visible-gameplay evidence exists for this slice. No build of
-  `benilla.exe`, no hotpatch claim. Test-run counts stay within the 20-case task ceiling.
+  `benilla.exe`, no hotpatch claim.
+
+## Environment note (2026-11-13, revalidate before relying on it)
+
+Two independent hazards made this slice's app verification report nonsense:
+
+1. **Shell working directory is not reliable for background runs**: three verification runs
+   silently executed in the session's original CWD, `D:\Projects\rustwrath-main-integration`
+   — a stale checkout 100 commits behind `main` whose `benilla-app` lib test does not compile
+   (E0618/E0004 against its own old `wrath.rs`, match at line 3218 there vs 3268 on current
+   `main`). Pin the directory with `Set-Location` inside the command itself and confirm the
+   resolved `cargo tree`/`Compiling` paths before believing any output. The stale checkout is
+   not this ticket's to repair.
+2. **The shared target dir + sccache served stale dependency artifacts**: a correctly
+   directory-pinned run in the worktree still failed with 61 "unresolved import" errors
+   (`benilla_formats::donor_data_or_skip!`, `benilla_ui::script::WrathTalent*`) — symbols that
+   demonstrably exist in the worktree's own sources. The rlibs linked were stale versions,
+   consistent with the fix-round handoff's sccache daemon-restart instability. **The slice-1
+   "5/5 passed" app result ran through the shared target and is not trusted**; the
+   `benilla-combat-core` results (16/16, then 18/18) were always worktree-local and stand.
+3. **Root cause found: the C: system drive hit 0 bytes free.** A hermetic cold build in the
+   worktree-local `target` on C: exhausted the disk mid-build (os error 112; sccache's server
+   also crashed). Disk exhaustion plausibly explains the day's truncated/corrupt artifacts and
+   daemon instability across sessions. Countermeasures taken: the incomplete worktree-local
+   `target` was deleted (C: back to ~5.7 GB free — still tight; the system drive needs
+   attention beyond this ticket), the sccache daemon restarted, and the workspace crates were
+   force-rebuilt fresh into the shared `D:\Projects\project-b-client\target` (registry
+   dependencies stay warm and are shared with the primary checkout's units). The recorded app
+   evidence is the post-repair run in the handoff's verification section.
 
 ## Named gaps (do not re-dig, do not treat as done)
 

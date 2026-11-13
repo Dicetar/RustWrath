@@ -31,6 +31,12 @@ pub struct ProfilePolicy {
     pub enemy_contact_permille: u32,
     /// An enemy clip with a contact key: contact-window length after the key, in ms.
     pub enemy_contact_window_ms: u32,
+    /// A dodge clip: where its i-frames open, in ms from the clip's start.
+    pub dodge_iframe_start_ms: u32,
+    /// A dodge clip: how long its i-frames last, in ms.
+    pub dodge_iframe_len_ms: u32,
+    /// Stamina a dodge spends on acceptance; echoes the fixture's authored 25.
+    pub dodge_stamina: u32,
 }
 
 impl Default for ProfilePolicy {
@@ -50,6 +56,9 @@ impl Default for ProfilePolicy {
             enemy_windup_permille: 500,
             enemy_contact_permille: 150,
             enemy_contact_window_ms: 250,
+            dodge_iframe_start_ms: 100,
+            dodge_iframe_len_ms: 300,
+            dodge_stamina: 25,
         }
     }
 }
@@ -74,11 +83,15 @@ impl ProfilePolicy {
             self.spell_release_window_ms,
             self.spell_instant_minimum_ms,
             self.enemy_contact_window_ms,
+            self.dodge_iframe_len_ms,
         ];
         if windows.iter().any(|&value| value == 0) {
             return Err(CombatError::InvalidConfig("policy ms windows must be non-zero"));
         }
-        if self.melee_light_stamina == 0 || self.melee_heavy_stamina == 0 {
+        if self.melee_light_stamina == 0
+            || self.melee_heavy_stamina == 0
+            || self.dodge_stamina == 0
+        {
             return Err(CombatError::InvalidConfig("policy stamina costs must be non-zero"));
         }
         Ok(())
