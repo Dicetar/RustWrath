@@ -52,6 +52,11 @@ const MAX_PPEM: u16 = 256;
 
 struct Face {
     id: fontdb::ID,
+    /// Each face gets its own single-face `FontSystem` and `SwashCache` so two faces claiming the
+    /// same family name (e.g., `Friz Quadrata TT` in `FRIZQT__.TTF` and `FRIENDS.TTF`) never
+    /// cross-substitute or alias each other's `fontdb::ID`.
+    font_system: FontSystem,
+    swash: SwashCache,
     path: String,
     family: String,
     /// The CSS axes the shaper matches on, read off the face ([`faces::Registered`]).
@@ -68,7 +73,7 @@ struct Face {
 }
 
 /// `(face, glyph, ppem, bake)`: one bitmap per exact device-pixel size and bake.
-type GlyphKey = (fontdb::ID, u16, u16, Bake);
+type GlyphKey = (usize, u16, u16, Bake);
 
 /// One rasterized cell, all in physical px; the layout divides by [`TextEngine::dpi`].
 #[derive(Clone, Copy, Debug)]
@@ -122,8 +127,6 @@ struct FontSource {
 
 /// The font engine: faces, the two caches, and the texture sheet.
 pub(crate) struct TextEngine {
-    font_system: FontSystem,
-    swash: SwashCache,
     faces: Vec<Face>,
     /// Lowercased font path to face index: the four client faces, then any path loaded on demand.
     path_to_face: HashMap<String, usize>,
@@ -170,7 +173,6 @@ impl TextEngine {
     /// Register the client TTFs, each read as a font face opens ([`read_font_bytes`]); `None`, and
     /// no text, without Friz Quadrata.
     fn load(world_assets: &WorldAssets, images: &Assets<Image>, dpi: f32) -> Option<Self> {
-        let mut font_system = client_font_system();
         let mut faces: Vec<Face> = Vec::new();
         let mut path_to_face = HashMap::new();
         let source = FontSource {
@@ -191,11 +193,14 @@ impl TextEngine {
             };
             let ascent_ratio = hhea_ascent_ratio(&bytes).unwrap_or(0.794);
             let sfnt = sfnt::Sfnt::parse(bytes.clone()).map(Arc::new);
+            let mut font_system = client_font_system();
             match register_font(&mut font_system, bytes) {
                 Ok(r) => {
                     path_to_face.insert(path.to_ascii_lowercase(), faces.len());
                     faces.push(Face {
                         id: r.id,
+                        font_system,
+                        swash: SwashCache::new(),
                         path: path.to_string(),
                         family: r.family,
                         weight: r.weight,
@@ -216,8 +221,6 @@ impl TextEngine {
             faces.len()
         );
         Some(Self {
-            font_system,
-            swash: SwashCache::new(),
             faces,
             path_to_face,
             source: Some(source),
@@ -282,12 +285,15 @@ impl TextEngine {
         };
         let ascent_ratio = hhea_ascent_ratio(&bytes).unwrap_or(0.794);
         let sfnt = sfnt::Sfnt::parse(bytes.clone()).map(Arc::new);
-        let r = register_font(&mut self.font_system, bytes)
+        let mut font_system = client_font_system();
+        let r = register_font(&mut font_system, bytes)
             .inspect_err(|e| warn!("ui_text: failed to register {path}: {e:#}"))
             .ok()?;
         let index = self.faces.len();
         self.faces.push(Face {
             id: r.id,
+            font_system,
+            swash: SwashCache::new(),
             path: path.to_string(),
             family: r.family,
             weight: r.weight,
@@ -383,11 +389,11 @@ impl TextEngine {
             let Some(bake) = bake else { return };
             // The pen metrics are cached; the cells for this bake may not be.
             let glyphs = known.glyphs.clone();
-            let Some(id) = self.faces.get(face).map(|f| f.id) else {
+            if face >= self.faces.len() {
                 return;
-            };
+            }
             for g in &glyphs {
-                self.ensure_cell(id, ppem, bake, g);
+                self.ensure_cell(face, ppem, bake, g);
             }
             return;
         }
@@ -401,17 +407,15 @@ impl TextEngine {
         let Some(f) = self.faces.get(face) else {
             return;
         };
-        let (face_id, family, weight, style, stretch) =
-            (f.id, f.family.clone(), f.weight, f.style, f.stretch);
         // The face's own charmap answers first, as `FT_Get_Char_Index` (`0x7ce960`) does ahead of
         // the load (`0x5d1154`): a code point it lacks fails the glyph (`0x5d1162`), so the lookup
         // `0x5cabd0` returns none and the line builder skips the character with no quad and no
         // step (`0x5cced6`). The shaper would draw the face's `.notdef` box in its place.
         let charmap = f.charmap;
-        let mapped = self
+        let mapped = f
             .font_system
             .db()
-            .with_face_data(face_id, |data, index| {
+            .with_face_data(f.id, |data, index| {
                 charmap_glyph(data, index, charmap, ch)
             })
             .flatten();
@@ -419,33 +423,34 @@ impl TextEngine {
             if self.complained.insert(ch) {
                 info!(
                     "ui_text: {} has no glyph for {ch:?}; it draws nothing",
-                    self.faces.get(face).map_or("?", |f| f.path.as_str())
+                    self.faces[face].path
                 );
             }
             self.chars
                 .insert((face, ppem, ch), CharCell { glyphs: Vec::new() });
             return;
         }
-        let attrs = Attrs::new()
-            .family(Family::Name(&family))
-            .weight(weight)
-            .style(style)
-            .stretch(stretch);
         let px = f32::from(ppem);
         let mut glyphs: Vec<GlyphRef> = Vec::new();
         let mut shaped_by = None;
-        {
-            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(px, px));
-            buf.set_wrap(&mut self.font_system, Wrap::None);
+        let substituted_name = {
+            let f = &mut self.faces[face];
+            let attrs = Attrs::new()
+                .family(Family::Name(&f.family))
+                .weight(f.weight)
+                .style(f.style)
+                .stretch(f.stretch);
+            let mut buf = Buffer::new(&mut f.font_system, Metrics::new(px, px));
+            buf.set_wrap(&mut f.font_system, Wrap::None);
             let mut one = [0u8; 4];
             buf.set_text(
-                &mut self.font_system,
+                &mut f.font_system,
                 ch.encode_utf8(&mut one),
                 &attrs,
                 Shaping::Advanced,
                 None,
             );
-            buf.shape_until_scroll(&mut self.font_system, false);
+            buf.shape_until_scroll(&mut f.font_system, false);
             for run in buf.layout_runs() {
                 for g in run.glyphs {
                     // A lone first glyph sits at x = y = 0: the zero-subpixel raster key.
@@ -460,22 +465,23 @@ impl TextEngine {
                     });
                 }
             }
-        }
-        // Naming a face to `cosmic-text` is a query that takes the first face able to draw the
-        // character, so an unmatched family draws and measures in another face: warned once.
-        if let Some(got) = shaped_by.filter(|&got| got != face_id) {
-            if self.substituted.insert(face) {
-                let got_name = self
-                    .font_system
+            shaped_by.filter(|&got| got != f.id).map(|got| {
+                f.font_system
                     .db()
                     .face(got)
-                    .map_or_else(|| format!("{got:?}"), |i| i.post_script_name.clone());
-                let want = self.faces.get(face).map_or("?", |f| f.path.as_str());
+                    .map_or_else(|| format!("{got:?}"), |i| i.post_script_name.clone())
+            })
+        };
+        // Naming a face to `cosmic-text` is a query that takes the first face able to draw the
+        // character, so an unmatched family draws and measures in another face: warned once.
+        if let Some(got_name) = substituted_name {
+            if self.substituted.insert(face) {
+                let f = &self.faces[face];
                 warn!(
-                    "ui_text: '{want}' loaded as family {family:?} (weight {}, style {style:?}) \
+                    "ui_text: '{}' loaded as family {:?} (weight {}, style {:?}) \
                      but {ch:?} shaped in {got_name} instead — text in this face draws and \
                      measures in the wrong one",
-                    weight.0
+                    f.path, f.family, f.weight.0, f.style
                 );
             }
         }
@@ -491,21 +497,24 @@ impl TextEngine {
         self.stats.chars_shaped += 1;
         // The metrics off the face's own tables, as FreeType computes them; a glyph another face
         // shaped keeps the shaper's advance and reads its ink off the outline.
-        let sfnt = self.faces.get(face).and_then(|f| f.sfnt.clone());
-        for g in &mut glyphs {
-            let own = sfnt
-                .as_deref()
-                .filter(|_| g.key.font_id == face_id)
-                .and_then(|t| t.glyph(g.glyph_id, ppem));
-            match own {
-                Some(m) => (g.px, g.ink) = (m.advance, m.ink),
-                None => g.ink = glyph_ink(&mut self.swash, &mut self.font_system, g.key, ppem),
+        {
+            let f = &mut self.faces[face];
+            let sfnt = f.sfnt.clone();
+            for g in &mut glyphs {
+                let own = sfnt
+                    .as_deref()
+                    .filter(|_| g.key.font_id == f.id)
+                    .and_then(|t| t.glyph(g.glyph_id, ppem));
+                match own {
+                    Some(m) => (g.px, g.ink) = (m.advance, m.ink),
+                    None => g.ink = glyph_ink(&mut f.swash, &mut f.font_system, g.key, ppem),
+                }
             }
         }
         if let Some(bake) = bake {
             for g in &glyphs {
                 let g = *g;
-                self.ensure_cell(face_id, ppem, bake, &g);
+                self.ensure_cell(face, ppem, bake, &g);
             }
         }
         self.chars.insert((face, ppem, ch), CharCell { glyphs });
@@ -556,15 +565,15 @@ impl TextEngine {
     /// Its top sits `pad` rows over FreeType's `bitmap_top`, which the reference's vertical seat
     /// (`0x5d1360`) hangs from the ascender, so the ink keeps the bitmap's own row. Only the
     /// raster's first `ppem` rows are baked ([`em_rows`]), before any ring, and they keep their rows.
-    fn ensure_cell(&mut self, face_id: fontdb::ID, ppem: u16, bake: Bake, g: &GlyphRef) {
-        let key: GlyphKey = (face_id, g.glyph_id, ppem, bake);
+    fn ensure_cell(&mut self, face: usize, ppem: u16, bake: Bake, g: &GlyphRef) {
+        let key: GlyphKey = (face, g.glyph_id, ppem, bake);
         if self.cells.contains_key(&key) {
             return;
         }
         let outline = self
             .faces
-            .iter()
-            .find(|f| f.id == g.key.font_id)
+            .get(face)
+            .filter(|f| f.id == g.key.font_id)
             .and_then(|f| f.sfnt.clone())
             .and_then(|t| t.outline(g.glyph_id, ppem));
         // `(cell, w, h, pad, bearing, top)`: the baked cell, its ring's reach, and the bitmap's
@@ -580,7 +589,7 @@ impl TextEngine {
                 let (cell, w, h, pad) = self.coverage_cell(cov, m.w, rows, bake);
                 (cell, w, h, pad, o.bearing(), m.top)
             }),
-            None => self.shaper_raster(g.key).map(|(cov, p, bearing)| {
+            None => self.shaper_raster(face, g.key).map(|(cov, p, bearing)| {
                 let (cov, rows) = em_rows(cov, p.width, p.height, ppem);
                 let (cell, w, h, pad) = self.coverage_cell(cov, p.width, rows, bake);
                 (cell, w, h, pad, Some(bearing), p.top)
@@ -614,16 +623,18 @@ impl TextEngine {
 
     /// The shaper's unhinted antialiased raster of a glyph, its placement and `ceil` of its
     /// outline's `xMin`, for a glyph whose face's tables are not held; `None` with no ink.
-    fn shaper_raster(&mut self, key: CacheKey) -> Option<(Vec<u8>, cosmic_text::Placement, i32)> {
+    fn shaper_raster(
+        &mut self,
+        face: usize,
+        key: CacheKey,
+    ) -> Option<(Vec<u8>, cosmic_text::Placement, i32)> {
         let key = CacheKey {
             flags: key.flags | CacheKeyFlags::DISABLE_HINTING,
             ..key
         };
-        let Self {
-            swash, font_system, ..
-        } = self;
-        let (x0, ..) = outline_box(swash, font_system, key)?;
-        let image = swash.get_image_uncached(font_system, key)?;
+        let f = self.faces.get_mut(face)?;
+        let (x0, ..) = outline_box(&mut f.swash, &mut f.font_system, key)?;
+        let image = f.swash.get_image_uncached(&mut f.font_system, key)?;
         let p = image.placement;
         (p.width > 0 && p.height > 0).then(|| (image.data, p, x0.ceil() as i32))
     }
@@ -679,9 +690,11 @@ impl TextEngine {
         bake: Bake,
         glyph_id: u16,
     ) -> Option<GlyphInfo> {
-        let id = self.faces.get(face)?.id;
+        if face >= self.faces.len() {
+            return None;
+        }
         self.cells
-            .get(&(id, glyph_id, ppem, bake))
+            .get(&(face, glyph_id, ppem, bake))
             .copied()
             .flatten()
     }
@@ -749,7 +762,6 @@ fn read_font_bytes(source: &FontSource, path: &str) -> Option<Vec<u8>> {
 pub(super) fn test_engine(dpi: f32) -> Option<TextEngine> {
     let data = benilla_formats::wow_data()?;
     let chain = benilla_formats::open_chain(&data).ok()?;
-    let mut font_system = client_font_system();
     let mut faces: Vec<Face> = Vec::new();
     let mut path_to_face = HashMap::new();
     for &path in CLIENT_FONTS {
@@ -759,10 +771,13 @@ pub(super) fn test_engine(dpi: f32) -> Option<TextEngine> {
         let charmap = unicode_charmap(&bytes)?;
         let ascent_ratio = hhea_ascent_ratio(&bytes).unwrap_or(0.794);
         let sfnt = sfnt::Sfnt::parse(bytes.clone()).map(Arc::new);
+        let mut font_system = client_font_system();
         let r = register_font(&mut font_system, bytes).ok()?;
         path_to_face.insert(path.to_ascii_lowercase(), faces.len());
         faces.push(Face {
             id: r.id,
+            font_system,
+            swash: SwashCache::new(),
             path: path.to_string(),
             family: r.family,
             weight: r.weight,
@@ -775,8 +790,6 @@ pub(super) fn test_engine(dpi: f32) -> Option<TextEngine> {
     }
     let default_face = *path_to_face.get(&CLIENT_FONTS[0].to_ascii_lowercase())?;
     Some(TextEngine {
-        font_system,
-        swash: SwashCache::new(),
         faces,
         path_to_face,
         // The same chain the four client faces were just read from, so a test can ask for a fifth.
@@ -1115,7 +1128,7 @@ mod differential_tests {
                 // A small and a large size, so a size-dependent substitution cannot hide.
                 for ppem in [10u16, 20] {
                     for text in CORPUS {
-                        let want = shape_whole(&mut e, &family, ppem, text);
+                        let want = shape_whole(&mut e, face, &family, ppem, text);
                         e.ensure_metrics(face, ppem, text);
                         let got: Vec<u16> = text
                             .chars()
@@ -1139,16 +1152,23 @@ mod differential_tests {
     }
 
     /// The whole string shaped in one buffer: its glyph ids.
-    fn shape_whole(e: &mut TextEngine, family: &str, ppem: u16, text: &str) -> Vec<u16> {
+    fn shape_whole(
+        e: &mut TextEngine,
+        face: usize,
+        family: &str,
+        ppem: u16,
+        text: &str,
+    ) -> Vec<u16> {
         if text.is_empty() {
             return Vec::new();
         }
+        let f = &mut e.faces[face];
         let attrs = Attrs::new().family(Family::Name(family));
         let px = f32::from(ppem);
-        let mut buf = Buffer::new(&mut e.font_system, Metrics::new(px, px));
-        buf.set_wrap(&mut e.font_system, Wrap::None);
-        buf.set_text(&mut e.font_system, text, &attrs, Shaping::Advanced, None);
-        buf.shape_until_scroll(&mut e.font_system, false);
+        let mut buf = Buffer::new(&mut f.font_system, Metrics::new(px, px));
+        buf.set_wrap(&mut f.font_system, Wrap::None);
+        buf.set_text(&mut f.font_system, text, &attrs, Shaping::Advanced, None);
+        buf.shape_until_scroll(&mut f.font_system, false);
         buf.layout_runs()
             .flat_map(|run| run.glyphs.iter().map(|g| g.glyph_id))
             .collect()
@@ -1323,12 +1343,116 @@ mod ppem_tests {
         let Some(e) = engine_or_skip() else {
             return;
         };
-        assert_eq!(
-            e.font_system.db().len(),
-            e.faces.len(),
-            "the database must hold exactly the faces we registered — a system font in the pool \
-             is a face the shaper can silently substitute"
+        assert!(!e.faces.is_empty());
+        for f in &e.faces {
+            assert_eq!(
+                f.font_system.db().len(),
+                1,
+                "each face's database must hold only that face — a shared pool or system font \
+                 lets the shaper silently substitute another face"
+            );
+        }
+    }
+
+    /// Replace `name` table entries in an SFNT binary with a single UTF-16BE `nameID = 1`
+    /// (family) + `nameID = 2` (subfamily "Regular") + `nameID = 4` (full name) so a font reports
+    /// a chosen family name to `fontdb`.
+    fn set_family_name(bytes: &[u8], family: &str) -> Option<Vec<u8>> {
+        let num_tables = u16::from_be_bytes(bytes.get(4..6)?.try_into().ok()?) as usize;
+        let name_idx = (0..num_tables).find(|&i| {
+            bytes
+                .get(12 + 16 * i..12 + 16 * i + 4)
+                .is_some_and(|tag| tag == b"name")
+        })?;
+        let mut utf16 = Vec::new();
+        for u in family.encode_utf16() {
+            utf16.extend(u.to_be_bytes());
+        }
+        let sub: Vec<u8> = "Regular".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let records = [(1u16, &utf16[..]), (2u16, &sub[..]), (4u16, &utf16[..])];
+        let header_len = 6 + 12 * records.len();
+        let mut name_table = Vec::new();
+        name_table.extend(0u16.to_be_bytes());
+        name_table.extend((records.len() as u16).to_be_bytes());
+        name_table.extend((header_len as u16).to_be_bytes());
+        let mut storage = Vec::new();
+        for (name_id, data) in records {
+            let offset = storage.len() as u16;
+            storage.extend(data);
+            for half in [3u16, 1, 0x0409, name_id, data.len() as u16, offset] {
+                name_table.extend(half.to_be_bytes());
+            }
+        }
+        name_table.extend(storage);
+
+        let mut out = bytes.to_vec();
+        while out.len() % 4 != 0 {
+            out.push(0);
+        }
+        let new_off = out.len() as u32;
+        let new_len = name_table.len() as u32;
+        out.extend(name_table);
+        let rec = 12 + 16 * name_idx;
+        out[rec + 8..rec + 12].copy_from_slice(&new_off.to_be_bytes());
+        out[rec + 12..rec + 16].copy_from_slice(&new_len.to_be_bytes());
+        Some(out)
+    }
+
+    /// Two registered TTFs that claim the exact same family name (like `FRIZQT__.TTF` and
+    /// `FRIENDS.TTF` both claiming `Friz Quadrata TT`) must each shape, measure, and rasterize from
+    /// their own font without `cosmic-text` or `SwashCache` cross-substituting.
+    #[test]
+    fn faces_sharing_a_family_name_shape_and_rasterize_independently() {
+        let Some(mut e) = engine_or_skip() else {
+            return;
+        };
+        let friz_family = e.faces[e.default_face].family.clone();
+        let arial_bytes = {
+            let source = e.source.as_ref().expect("the test engine carries a chain");
+            let chain = source.chain.lock_recover();
+            chain.read(TEST_FACES[1]).expect("ARIALN is in the chain")
+        };
+        let renamed = set_family_name(&arial_bytes, &friz_family).expect("rewritten name table");
+        let root =
+            std::env::temp_dir().join(format!("benilla-dup-family-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fonts = root.join("DupFamily").join("Fonts");
+        std::fs::create_dir_all(&fonts).unwrap();
+        std::fs::write(fonts.join("friends_clone.ttf"), &renamed).unwrap();
+        e.source.as_mut().unwrap().loose.addons = Some(root.clone());
+
+        let clone_face =
+            e.face_for(Some("Interface\\AddOns\\DupFamily\\Fonts\\friends_clone.ttf"));
+        assert_ne!(clone_face, e.default_face);
+        assert_eq!(e.faces[clone_face].family, friz_family);
+
+        let bake = Bake::ring(0);
+        e.ensure_str(e.default_face, 14, bake, "W");
+        e.ensure_str(clone_face, 14, bake, "W");
+        assert!(
+            e.substituted.is_empty(),
+            "two faces claiming {friz_family:?} must not substitute into each other"
         );
+        let default_w = e.char_cell(e.default_face, 14, 'W').unwrap().glyphs[0];
+        let clone_w = e.char_cell(clone_face, 14, 'W').unwrap().glyphs[0];
+        let arial_face = e.face_for(Some(TEST_FACES[1]));
+        e.ensure_str(arial_face, 14, bake, "W");
+        let arial_w = e.char_cell(arial_face, 14, 'W').unwrap().glyphs[0];
+        assert_eq!(
+            (clone_w.glyph_id, clone_w.px, clone_w.ink),
+            (arial_w.glyph_id, arial_w.px, arial_w.ink),
+            "cloned face must measure from its own outline even when its family collides with Friz"
+        );
+        assert_ne!(
+            e.cell(e.default_face, 14, bake, default_w.glyph_id)
+                .unwrap()
+                .uv,
+            e.cell(clone_face, 14, bake, clone_w.glyph_id)
+                .unwrap()
+                .uv,
+            "each face must hold its own packed atlas cell"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A bold face named by path is the face that shapes, where default attrs (weight 400) would
