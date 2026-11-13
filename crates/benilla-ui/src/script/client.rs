@@ -45,6 +45,44 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: MultiValue| Ok(Value::Nil))?,
     )?;
 
+    // `GetText(token, count, gender)` (`FrameScript_GetText 0x00819D40`): the localized string
+    // global named by `token`, with the plural and gender suffixes the call selects, trying the
+    // most specific name first (`token_Pn_FEMALE`, `token_Pn`, `token_FEMALE`, `token`). A miss
+    // answers `""`, the reference's zeroed text — never nil. English's plural rule
+    // (`PLURAL_RULE_0` in `FrameScript_GetPluralIndex`) appends `_P1` for any count but 1.
+    // 3.3.5a ships this as the engine function, not `FrameXML\LocaleProperties.lua`, so the
+    // Wrath chain has no Lua definition and the host must answer it; 1.12's Lua file, when it
+    // loads, overwrites this global with the same contract.
+    g.set(
+        "GetText",
+        lua.create_function(
+            |lua, (token, count, gender): (Value, Option<i32>, Option<i32>)| {
+                let token = match token {
+                    Value::String(token) => token.to_str()?.to_string(),
+                    _ => return lua.create_string(""),
+                };
+                let plural = if count.is_some_and(|count| count != 1) {
+                    "_P1"
+                } else {
+                    ""
+                };
+                let gender = if gender == Some(1) { "_FEMALE" } else { "" };
+                let globals = lua.globals();
+                for name in [
+                    format!("{token}{plural}{gender}"),
+                    format!("{token}{plural}"),
+                    format!("{token}{gender}"),
+                    token,
+                ] {
+                    if let Ok(Value::String(text)) = globals.get::<Value>(name) {
+                        return Ok(text);
+                    }
+                }
+                lua.create_string("")
+            },
+        )?,
+    )?;
+
     // `GetDebugStats()` (`0x488af0`, `xor eax,eax; ret`): zero values, which `StatsFrame.lua:20`
     // hands straight to `SetText`.
     g.set(
@@ -435,6 +473,61 @@ mod tests {
             s.set_locale(8);
             assert_eq!((s.locale(), locale(&s).as_str()), (0, "enUS"), "{kind}");
         }
+    }
+
+    /// `GetText` (`FrameScript_GetText 0x00819D40`) answers the global string named by the token,
+    /// trying the plural and gender suffixed names most-specific first; a miss is `""`, never nil.
+    #[test]
+    fn get_text_resolves_the_global_string_with_plural_and_gender_suffixes() {
+        let s = UiScript::new().unwrap();
+        s.run(
+            r#"
+            PVP_RANK_8_0 = "Knight-Captain"
+            TRACKER = "Tracking"
+            TRACKER_P1 = "Trackings"
+            FRIEND = "Friend"
+            FRIEND_FEMALE = "Friend (female)"
+            ONLY_BASE = "Only"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.eval::<String>(r#"return GetText("PVP_RANK_8_0")"#).unwrap(),
+            "Knight-Captain"
+        );
+        // English plural rule: the `_P1` form for any count but 1.
+        assert_eq!(
+            s.eval::<String>(r#"return GetText("TRACKER", 2)"#).unwrap(),
+            "Trackings"
+        );
+        assert_eq!(
+            s.eval::<String>(r#"return GetText("TRACKER", 1)"#).unwrap(),
+            "Tracking"
+        );
+        // A `_P1` miss falls back to the base string, as the reference's second lookup does.
+        assert_eq!(
+            s.eval::<String>(r#"return GetText("ONLY_BASE", 5)"#).unwrap(),
+            "Only"
+        );
+        // Gender 1 selects `_FEMALE` when present, then falls back to the base.
+        assert_eq!(
+            s.eval::<String>(r#"return GetText("FRIEND", nil, 1)"#).unwrap(),
+            "Friend (female)"
+        );
+        assert_eq!(
+            s.eval::<String>(r#"return GetText("FRIEND")"#).unwrap(),
+            "Friend"
+        );
+        // A miss answers the empty string, never nil: FrameXML checks it with `if not text`.
+        assert_eq!(
+            s.eval::<String>(r#"return GetText("NO_SUCH_STRING")"#).unwrap(),
+            ""
+        );
+        assert_eq!(
+            s.eval::<String>(r#"return GetText("NO_SUCH_STRING") == "" and "empty" or "nil""#)
+                .unwrap(),
+            "empty"
+        );
     }
 
     /// Never nil: addons index with it at file scope, and a nil index errors far from the cause.
