@@ -44,8 +44,11 @@ pub struct SpellDisplay {
     /// is nonzero and equals the local player's class family (`[0xcecaac]`, `0x6e6b46`).
     pub spell_family: u32,
     /// `SpellFamilyFlags` (columns 161-162, low dword first): the modifier rows that apply, one
-    /// summed cell per set bit over all 64; Cleanse 4987 sets bits 12 and 33.
+    /// summed cell per set bit over bits 0-63; Cleanse 4987 sets bits 12 and 33.
     pub spell_family_flags: u64,
+    /// `SpellFamilyFlags`'s third dword (column 163): bits 64-95 of the 96-bit Wrath mask. 0 on
+    /// the donor layouts and on a Wrath row whose high word is unset.
+    pub spell_family_flags_high: u32,
     /// `PreventionType` (column 165): 1 silence, 2 pacify, 0 neither; the crowd control that
     /// refuses the spell locally (`0x6094f0`, from `TryCast` `0x6e4b60`). A stun refuses all.
     pub prevention_type: u32,
@@ -239,6 +242,7 @@ impl Default for SpellDisplay {
             attributes_ex4: 0,
             spell_family: 0,
             spell_family_flags: 0,
+            spell_family_flags_high: 0,
             prevention_type: 0,
             passive: false,
             cast_ui: 0,
