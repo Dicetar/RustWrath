@@ -48,9 +48,15 @@ impl Element {
         }
     }
 
+    /// The element with one attribute set, for the native templates built in Rust
+    /// (`SecureHandler*` and the other fallbacks); `attr` compares case-insensitively.
+    pub fn with_attr(mut self, name: &str, value: &str) -> Self {
+        self.attrs.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
     /// Case-insensitive attribute lookup.
-    pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs
+    pub fn attr(&self, name: &str) -> Option<&str> {        self.attrs
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())

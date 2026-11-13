@@ -1375,7 +1375,7 @@ mod ppem_tests {
         name_table.extend(0u16.to_be_bytes());
         name_table.extend((records.len() as u16).to_be_bytes());
         name_table.extend((header_len as u16).to_be_bytes());
-        let mut storage = Vec::new();
+        let mut storage: Vec<u8> = Vec::new();
         for (name_id, data) in records {
             let offset = storage.len() as u16;
             storage.extend(data);

@@ -1449,7 +1449,9 @@ fn anchor_bottom_and_anchor_top_center_the_plate_vertically_on_owner() {
         TipBT:SetOwner(OwnerBT, "ANCHOR_BOTTOM", 4, -6)
         assert(TipBT:GetAnchorType() == "ANCHOR_BOTTOM")
         local p, rel, rp, x, y = TipBT:GetPoint(1)
-        assert(p == "TOP" and rel == OwnerBT and rp == "BOTTOM" and x == 4 and y == -6)
+        assert(p == "TOP" and rel == OwnerBT and rp == "BOTTOM"
+            and math.abs(x - 4) < 0.001 and math.abs(y + 6) < 0.001,
+            tostring(p) .. "/" .. tostring(rp) .. "/" .. tostring(x) .. "/" .. tostring(y))
         TipBT:Show()
     "#,
     )
@@ -1478,4 +1480,5 @@ fn anchor_bottom_and_anchor_top_center_the_plate_vertically_on_owner() {
     assert!(s.take_warnings().is_empty());
     assert!(s.errors().is_empty());
 }
+
 

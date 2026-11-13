@@ -74,15 +74,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         let mut templates = model.framexml_templates.borrow_mut();
         for name in SECURE_TEMPLATES {
             if !templates.contains(name) {
-                let mut el = crate::framexml::Element::empty("Frame");
-                el.attrs.push(("protected".to_string(), "true".to_string()));
+                let el = crate::framexml::Element::empty("Frame")
+                    .with_attr("protected", "true");
                 templates.register(name, el, FALLBACK_CONTEXT);
             }
         }
         for &(name, tag) in FALLBACK_TEMPLATES {
             if !templates.contains(name) {
-                let mut el = crate::framexml::Element::empty(tag);
-                el.attrs.push(("protected".to_string(), "true".to_string()));
+                let el = crate::framexml::Element::empty(tag)
+                    .with_attr("protected", "true");
                 templates.register(name, el, FALLBACK_CONTEXT);
             }
         }

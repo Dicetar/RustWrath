@@ -72,17 +72,6 @@ const NOT_YET_ANSWERED: &[(&str, &str, &str)] = &[
 /// Methods answered here that 1.12 does not register on that class, each with why it stays.
 const ALLOWED_BEYOND: &[(&str, &str, &str)] = &[
     (
-        "IsProtected",
-        "Button CheckButton ColorSelect DressUpModel EditBox Frame GameTooltip LootButton MessageFrame Minimap Model MovieFrame PlayerModel ScrollFrame ScrollingMessageFrame SimpleHTML Slider StatusBar TabardModel WorldFrame",
-        "12340's secure-frame query, seated on the shared frame-state table; the 1.12 kits \
-         build their widgets from the same table",
-    ),
-    (
-        "CanChangeProtectedState",
-        "Button CheckButton ColorSelect DressUpModel EditBox Frame GameTooltip LootButton MessageFrame Minimap Model MovieFrame PlayerModel ScrollFrame ScrollingMessageFrame SimpleHTML Slider StatusBar TabardModel WorldFrame",
-        "12340's secure-state query, the pair of IsProtected above and on the same table",
-    ),
-    (
         "GetHyperlinksEnabled",
         "ScrollingMessageFrame",
         "12340's hyperlink toggle getter, beside SetHyperlinksEnabled on the shared message \
