@@ -127,6 +127,11 @@ pub struct UnitCombatStats {
     pub dodge_percent: f32,
     pub parry_percent: f32,
     pub block_percent: f32,
+    /// All 7 schools' combined spell damage bonus (`PLAYER_FIELD_MOD_DAMAGE_DONE_POS[s] + NEG[s]`),
+    /// indexed 0=Physical .. 6=Arcane; `GetSpellBonusDamage(school)` queries 1-based `1..=7`.
+    pub spell_damage_done: [i32; 7],
+    /// Healing bonus (`PLAYER_FIELD_MOD_HEALING_DONE_POS`, Wrath field 1192).
+    pub spell_healing_done: i32,
 }
 
 impl Default for UnitCombatStats {
@@ -171,6 +176,8 @@ impl Default for UnitCombatStats {
             dodge_percent: 0.0,
             parry_percent: 0.0,
             block_percent: 0.0,
+            spell_damage_done: [0; 7],
+            spell_healing_done: 0,
         }
     }
 }
@@ -1552,6 +1559,8 @@ mod tests {
             dodge_percent: 0.0,
             parry_percent: 0.0,
             block_percent: 0.0,
+            spell_damage_done: [0; 7],
+            spell_healing_done: 0,
         }
     }
 

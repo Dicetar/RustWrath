@@ -1441,6 +1441,8 @@ pub(crate) struct Model {
     pub(crate) framerate: f64,
     /// `(shift, ctrl, alt)` for `Is*KeyDown`, pushed before the frame's mouse events.
     pub(crate) modifiers: (bool, bool, bool),
+    /// Unsupported 3.3.5 native names that have already emitted a one-time diagnostic warning in this VM.
+    pub(crate) warned_unsupported_wrath_natives: HashSet<&'static str>,
 }
 
 impl Model {
@@ -1522,6 +1524,15 @@ impl Model {
     /// A warning for the host's terminal only, for a message already retained under another kind.
     pub(crate) fn warn_host_only(&mut self, msg: String) {
         self.warnings.push(msg);
+    }
+
+    /// Records a once-per-VM diagnostic warning when Lua calls an unimplemented 3.3.5 native.
+    pub(crate) fn record_unsupported_native_once(&mut self, name: &'static str, detail: &str) {
+        if self.warned_unsupported_wrath_natives.insert(name) {
+            self.record_warning(format!(
+                "wrath native `{name}` is unsupported in this build: {detail}"
+            ));
+        }
     }
 
     /// Whether this VM is the 3.3.5 client, whose resolver adds `focus`, `vehicle` and `bossN`.
@@ -2065,6 +2076,7 @@ impl Model {
             reputation_headers: Vec::new(),
             reputation_selected: 0,
             faction_standings: HashMap::new(),
+            warned_unsupported_wrath_natives: HashSet::new(),
         }
     }
 

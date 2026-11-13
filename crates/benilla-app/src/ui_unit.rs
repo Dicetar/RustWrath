@@ -1320,6 +1320,10 @@ fn player_snapshot(
             field(benilla_protocol_wrath::fields::PLAYER__FIELD_KNOWN_TITLES2),
         ];
         s.chosen_title = field(benilla_protocol_wrath::fields::PLAYER_CHOSEN_TITLE);
+        s.max_health_modifier = raw
+            .0
+            .get(benilla_protocol_wrath::fields::UNIT_FIELD_MAXHEALTHMODIFIER)
+            .map(f32::from_bits);
     }
     s
 }

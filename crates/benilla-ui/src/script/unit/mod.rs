@@ -236,6 +236,9 @@ pub struct UnitState {
     /// `UNIT_FIELD_SUMMONEDBY` (fields 12-13), 0 for none: `UnitDefense` and `UnitAttackBothHands`
     /// answer a unit the active player summoned (`0x519272`, `0x518881`).
     pub summoned_by: u64,
+    /// `UNIT_FIELD_MAXHEALTHMODIFIER` (3.3.5 field 145): max health scale factor, `None` until
+    /// streamed (3.3.5 default 1.0).
+    pub max_health_modifier: Option<f32>,
 }
 
 /// The name of a unit whose name is not yet known, as the reference's `UnitName` (`0x517220`) and

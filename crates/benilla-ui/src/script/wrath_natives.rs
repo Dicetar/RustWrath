@@ -741,33 +741,149 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _unit: Option<String>| Ok(false))?,
     )?;
 
-    // Character PaperDoll and stats window natives (`PaperDollFrame.lua:280`, `:292`, etc.)
+    // Character PaperDoll, spell bonus, inventory equipment manager, and stable natives
     lua.globals().set(
         "GetUnitMaxHealthModifier",
-        lua.create_function(|_, _unit: Option<String>| Ok(0.0))?,
+        lua.create_function(|lua, unit: Option<String>| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let token = unit.as_deref().unwrap_or("player");
+            Ok(model
+                .unit(token)
+                .and_then(|u| u.max_health_modifier)
+                .filter(|v| *v > 0.0 && v.is_finite())
+                .map_or(1.0, f64::from))
+        })?,
     )?;
     lua.globals().set(
         "GetCombatRatingBonus",
-        lua.create_function(|_, _rating: Option<u32>| Ok(0.0))?,
+        lua.create_function(|lua, index: Value| {
+            let index = crate::script::binding_abi::number_arg(
+                lua,
+                index,
+                "Usage: GetCombatRatingBonus(ratingIndex)",
+            )?
+            .wrapping_sub(1) as u32;
+            if index >= 25 {
+                return Err(mlua::Error::runtime("ratingIndex is in the range 1 .. 25"));
+            }
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "GetCombatRatingBonus",
+                    "no gtCombatRatings.dbc GameTable parser exists in benilla-formats yet",
+                );
+            Ok(0.0)
+        })?,
     )?;
     lua.globals().set(
         "GetSpellBonusDamage",
-        lua.create_function(|_, _school: Option<u32>| Ok(0))?,
+        lua.create_function(|lua, school: Option<i64>| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(school) = school.filter(|s| (1..=7).contains(s)) else {
+                return Ok(0i64);
+            };
+            let idx = (school - 1) as usize;
+            let val = model
+                .player_combat_stats
+                .as_ref()
+                .or_else(|| model.unit("player").map(|u| &u.combat))
+                .and_then(|s| s.spell_damage_done.get(idx).copied())
+                .unwrap_or(0);
+            Ok(i64::from(val))
+        })?,
     )?;
     lua.globals().set(
         "GetSpellBonusHealing",
-        lua.create_function(|_, ()| Ok(0))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let val = model
+                .player_combat_stats
+                .as_ref()
+                .map_or(0, |s| s.spell_healing_done);
+            Ok(i64::from(val))
+        })?,
     )?;
     lua.globals().set(
         "GetInventoryItemsForSlot",
-        lua.create_function(|lua, _slot: Option<i64>| {
-            let t = lua.create_table()?;
-            Ok(t)
+        lua.create_function(
+            |lua, (slot, return_table, _transmog): (Option<i64>, Option<Value>, Option<Value>)| {
+                let t = match return_table {
+                    Some(Value::Table(tbl)) => tbl,
+                    _ => lua.create_table()?,
+                };
+                let Some(slot_u8) = slot.and_then(|s| u8::try_from(s).ok()).filter(|&s| (1..=19).contains(&s)) else {
+                    return Ok(t);
+                };
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                // Player equipment slots (1..=19): ITEM_INVENTORY_LOCATION_PLAYER | slot
+                for inv_slot in 1..=19usize {
+                    if let Some(view) = model.inventory_slots.get(inv_slot).and_then(Option::as_ref) {
+                        if view.item_id != 0 && view.equip_slots.contains(&slot_u8) {
+                            let loc = 0x0010_0000i64 | (inv_slot as i64);
+                            t.set(loc, view.item_id)?;
+                        }
+                    }
+                }
+                // Backpack (0) and worn bags (1..=4): PLAYER | BAGS | (bag << 8) | slot
+                for bag in 0..=4i64 {
+                    if let Some(bag_state) = model.containers.get(&bag) {
+                        for (&bag_slot, item) in &bag_state.slots {
+                            if item.item_id != 0 && item.equip_slots.contains(&slot_u8) {
+                                let loc = 0x0010_0000i64
+                                    | 0x0020_0000i64
+                                    | (bag << 8)
+                                    | i64::from(bag_slot);
+                                t.set(loc, item.item_id)?;
+                            }
+                        }
+                    }
+                }
+                // Bank main container (-1, inv offsets 40..=67) and bank bags (5..=11) while open
+                if model.bank.is_some() {
+                    if let Some(bank_main) = model.containers.get(&-1) {
+                        for (&bank_slot, item) in &bank_main.slots {
+                            if item.item_id != 0 && item.equip_slots.contains(&slot_u8) {
+                                let loc = 0x0040_0000i64 | (39 + i64::from(bank_slot));
+                                t.set(loc, item.item_id)?;
+                            }
+                        }
+                    }
+                    for bag in 5..=11i64 {
+                        if let Some(bag_state) = model.containers.get(&bag) {
+                            for (&bag_slot, item) in &bag_state.slots {
+                                if item.item_id != 0 && item.equip_slots.contains(&slot_u8) {
+                                    let loc = 0x0040_0000i64
+                                        | 0x0020_0000i64
+                                        | ((bag - 4) << 8)
+                                        | i64::from(bag_slot);
+                                    t.set(loc, item.item_id)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(t)
+            },
+        )?,
+    )?;
+    lua.globals().set(
+        "IsAtStableMaster",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(model.stable.state.is_some())
         })?,
     )?;
     lua.globals().set(
         "GetBackpackCurrencyInfo",
-        lua.create_function(|_, _index: Option<i64>| Ok(Value::Nil))?,
+        lua.create_function(|lua, _index: Option<i64>| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "GetBackpackCurrencyInfo",
+                    "no watched-currency tracker or CurrencyTypes.dbc consumer is wired yet",
+                );
+            Ok(Value::Nil)
+        })?,
     )?;
     // Equipment sets (`GetNumEquipmentSets`, read by the gear-manager dialog's OnLoad in
     // `PaperDollFrame.lua:2156`): the host has no equipment-set backend yet (`equipmentManager`
@@ -779,47 +895,123 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     lua.globals().set(
         "CanShowAchievementUI",
-        lua.create_function(|_, ()| Ok(true))?,
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "CanShowAchievementUI",
+                    "achievement packets and Blizzard_AchievementUI host state are not wired",
+                );
+            Ok(false)
+        })?,
     )?;
     lua.globals().set(
         "GetCurrentArenaSeason",
-        lua.create_function(|_, ()| Ok(8))?,
-    )?;
-    lua.globals().set(
-        "IsAtStableMaster",
-        lua.create_function(|_, ()| Ok(false))?,
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "GetCurrentArenaSeason",
+                    "no arena season state is projected from the server session",
+                );
+            Ok(0)
+        })?,
     )?;
     lua.globals().set(
         "GetVoiceStatus",
-        lua.create_function(|_, _unit: Option<String>| Ok(Value::Nil))?,
+        lua.create_function(|lua, _unit: Option<String>| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "GetVoiceStatus",
+                    "voice chat subsystem is disabled in this client",
+                );
+            Ok(Value::Nil)
+        })?,
     )?;
     lua.globals().set(
         "VoiceChat_Animate",
-        lua.create_function(|_, (_frame, _state): (Value, Value)| Ok(()))?,
+        lua.create_function(|lua, (_frame, _state): (Value, Value)| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "VoiceChat_Animate",
+                    "voice chat subsystem is disabled in this client",
+                );
+            Ok(())
+        })?,
     )?;
     lua.globals().set(
         "HasLFGRestrictions",
-        lua.create_function(|_, ()| Ok(false))?,
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "HasLFGRestrictions",
+                    "LFG group-looting restriction state is not projected yet",
+                );
+            Ok(false)
+        })?,
     )?;
     lua.globals().set(
         "RequestLFDPartyLockInfo",
-        lua.create_function(|_, ()| Ok(()))?,
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "RequestLFDPartyLockInfo",
+                    "CMSG_LFG_GET_PARTY_LOCK / SMSG_LFG_PARTY_INFO is not wired yet",
+                );
+            Ok(())
+        })?,
     )?;
     lua.globals().set(
         "IsBattlefieldArena",
-        lua.create_function(|_, ()| Ok(false))?,
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "IsBattlefieldArena",
+                    "arena match state is not projected in Battlefield/PVPBattleground yet",
+                );
+            Ok(false)
+        })?,
     )?;
     lua.globals().set(
         "GetRandomBGHonorCurrencyBonuses",
-        lua.create_function(|_, ()| Ok((0, 0, 0, 0)))?,
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "GetRandomBGHonorCurrencyBonuses",
+                    "SMSG_BATTLEFIELD_MGR / random-BG reward query is not wired yet",
+                );
+            Ok((0, 0, 0, 0))
+        })?,
     )?;
     lua.globals().set(
         "ClearFocus",
-        lua.create_function(|_, ()| Ok(()))?,
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "ClearFocus",
+                    "protected focus target mutation has no CMSG/selection target consumer yet",
+                );
+            Ok(())
+        })?,
     )?;
     lua.globals().set(
         "BNGetNumFriendInvites",
-        lua.create_function(|_, ()| Ok(0))?,
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_unsupported_native_once(
+                    "BNGetNumFriendInvites",
+                    "Battle.net RealID presence service is absent in this client",
+                );
+            Ok(0)
+        })?,
     )?;
 
     // `GetNumTrackingTypes`/`GetTrackingInfo` (`Minimap.lua:427`, `:430`): the tracking types come
@@ -3787,5 +3979,136 @@ mod tests {
         rune_frame_reads_resync_state();
         calendar_get_calendar_refreshes_native_date_and_invites();
         vehicle_exit_uses_the_seat_transport();
+    }
+
+    #[test]
+    fn wrath_paperdoll_inventory_and_stable_natives_read_live_state() {
+        use crate::script::bank::BankState;
+        use crate::script::char_stats::{InvSlotView, InventorySlots, UnitCombatStats};
+        use crate::script::container::{ContainerSlot, ContainerState};
+        use crate::script::stable::StableState;
+        use crate::script::unit::UnitState;
+        use std::collections::HashMap;
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        // Default max health modifier is 1.0 before any snapshot so PaperDollFrame doesn't divide by 0.
+        assert_eq!(
+            s.eval::<f64>("return GetUnitMaxHealthModifier('player')").unwrap(),
+            1.0
+        );
+        s.set_unit(
+            "player",
+            Some(UnitState {
+                max_health_modifier: Some(1.15),
+                ..Default::default()
+            }),
+        );
+        assert!(
+            (s.eval::<f64>("return GetUnitMaxHealthModifier('player')").unwrap() - 1.15).abs()
+                < 1e-6
+        );
+
+        s.set_player_combat_stats(Some(UnitCombatStats {
+            spell_damage_done: [10, 22, 35, 0, 18, 0, 44],
+            spell_healing_done: 128,
+            ..Default::default()
+        }));
+        assert_eq!(s.eval::<i64>("return GetSpellBonusDamage(1)").unwrap(), 10);
+        assert_eq!(s.eval::<i64>("return GetSpellBonusDamage(3)").unwrap(), 35);
+        assert_eq!(s.eval::<i64>("return GetSpellBonusDamage(7)").unwrap(), 44);
+        assert_eq!(s.eval::<i64>("return GetSpellBonusDamage(0)").unwrap(), 0);
+        assert_eq!(s.eval::<i64>("return GetSpellBonusHealing()").unwrap(), 128);
+
+        assert!(!s.eval::<bool>("return IsAtStableMaster()").unwrap());
+        s.set_stable(Some(StableState::default()));
+        assert!(s.eval::<bool>("return IsAtStableMaster()").unwrap());
+
+        let mut inv: InventorySlots = Default::default();
+        inv[1] = Some(InvSlotView {
+            item_id: 7001,
+            equip_slots: vec![1],
+            ..Default::default()
+        });
+        s.set_inventory_slots(inv);
+
+        let mut bag0 = HashMap::new();
+        bag0.insert(
+            3u32,
+            ContainerSlot {
+                item_id: 7002,
+                equip_slots: vec![1],
+                ..Default::default()
+            },
+        );
+        s.set_container(
+            0,
+            Some(ContainerState {
+                name: None,
+                num_slots: 16,
+                slots: bag0,
+            }),
+        );
+        let mut bank_bag = HashMap::new();
+        bank_bag.insert(
+            2u32,
+            ContainerSlot {
+                item_id: 7003,
+                equip_slots: vec![1],
+                ..Default::default()
+            },
+        );
+        s.set_container(
+            5,
+            Some(ContainerState {
+                name: None,
+                num_slots: 12,
+                slots: bank_bag,
+            }),
+        );
+
+        // Bank closed: only worn + bag item should be returned; reusing table arg 2 works.
+        let (worn, bagged, banked_closed): (Option<u32>, Option<u32>, Option<u32>) = s
+            .eval(
+                r#"
+                local tbl = {}
+                local ret = GetInventoryItemsForSlot(1, tbl)
+                assert(ret == tbl)
+                return ret[0x00100001], ret[0x00300003], ret[0x00600102]
+                "#,
+            )
+            .unwrap();
+        assert_eq!(worn, Some(7001));
+        assert_eq!(bagged, Some(7002));
+        assert_eq!(banked_closed, None);
+
+        // Bank open: bank-bag item appears at BANK | BAGS | ((5 - 4) << 8) | 2 = 0x00600102.
+        s.set_bank(Some(BankState::default()));
+        let banked_open: Option<u32> = s
+            .eval("return GetInventoryItemsForSlot(1)[0x00600102]")
+            .unwrap();
+        assert_eq!(banked_open, Some(7003));
+    }
+
+    #[test]
+    fn unsupported_wrath_natives_validate_bounds_and_warn_once() {
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        assert!(s.run("GetCombatRatingBonus(0)").is_err());
+        assert!(s.run("GetCombatRatingBonus(26)").is_err());
+
+        let _ = s.take_warnings();
+        assert_eq!(s.eval::<f64>("return GetCombatRatingBonus(5)").unwrap(), 0.0);
+        assert_eq!(s.eval::<f64>("return GetCombatRatingBonus(6)").unwrap(), 0.0);
+        assert!(!s.eval::<bool>("return CanShowAchievementUI()").unwrap());
+        assert_eq!(s.eval::<i64>("return GetCurrentArenaSeason()").unwrap(), 0);
+        let warns = s.take_warnings();
+        assert_eq!(
+            warns
+                .iter()
+                .filter(|w| w.contains("GetCombatRatingBonus"))
+                .count(),
+            1
+        );
+        assert!(warns.iter().any(|w| w.contains("CanShowAchievementUI")));
+        assert!(warns.iter().any(|w| w.contains("GetCurrentArenaSeason")));
     }
 }
