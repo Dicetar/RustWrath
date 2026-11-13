@@ -635,7 +635,8 @@ mod tests {
     }
 
     /// A read-only row refuses the write as `CVar::Set` does: the native getter keeps the applied
-    /// value while the Model fallback records the requested integer for a later bare VM.
+    /// value, and the Model fallback keeps its old copy because the row owns the value once it
+    /// exists (`f12dda68`).
     #[test]
     fn read_only_retention_cvar_keeps_the_native_getter_on_the_old_value() {
         let mut script = wrath();
@@ -649,6 +650,8 @@ mod tests {
             300,
             "the refused write leaves the CVar at its applied value"
         );
+        // The row is the source of truth once it exists (`f12dda68`): the Model copy keeps its
+        // old value so a refused or later write cannot be shadowed by a stale fallback.
         assert_eq!(
             script
                 .lua()
@@ -656,8 +659,8 @@ mod tests {
                 .expect("model app_data")
                 .combat_log
                 .retention_seconds,
-            120,
-            "the fallback still records the requested integer"
+            300,
+            "the row owns the value; the refused write leaves the fallback behind"
         );
     }
 }

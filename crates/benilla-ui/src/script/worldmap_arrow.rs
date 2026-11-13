@@ -571,10 +571,14 @@ mod tests {
             (af - 1.25).abs() < 1e-6 && (ef - 1.25).abs() < 1e-6,
             "one facing for the pair: {af}, {ef}"
         );
-        assert_eq!(
-            s.eval::<f32>("return PlayerArrowEffectFrame:GetAlpha()").unwrap(),
-            0.65,
-            "the stock alpha reaches the effect frame by name"
+        // `GetAlpha` answers the reference's byte × 1/255 (`0x79b754`), so the stock 0.65 read
+        // back through the byte grid is 165/255, not the literal.
+        let alpha = s
+            .eval::<f32>("return PlayerArrowEffectFrame:GetAlpha()")
+            .unwrap();
+        assert!(
+            (alpha - 165.0 / 255.0).abs() < 1e-6,
+            "the stock alpha reaches the effect frame by name: {alpha}"
         );
     }
 

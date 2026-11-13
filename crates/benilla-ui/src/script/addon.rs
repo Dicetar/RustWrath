@@ -1395,13 +1395,13 @@ mod tests {
         );
         assert_eq!(
             script
-                .eval::<String>("local _, _, _, _, _, sec = GetAddOnInfo('Blizzard_TalentUI'); return sec")
+                .eval::<String>("local _, _, _, _, _, _, sec = GetAddOnInfo('Blizzard_TalentUI'); return sec")
                 .unwrap(),
             "SECURE"
         );
         assert_eq!(
             script
-                .eval::<String>("local _, _, _, _, _, sec = GetAddOnInfo('WMBridge'); return sec")
+                .eval::<String>("local _, _, _, _, _, _, sec = GetAddOnInfo('WMBridge'); return sec")
                 .unwrap(),
             "INSECURE"
         );

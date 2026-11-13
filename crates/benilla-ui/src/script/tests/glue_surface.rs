@@ -129,6 +129,86 @@ fn the_glue_surface_matches_the_shapes_table() {
     }
 }
 
+/// Glue-VM functions the 1.12 glue state does not seat. The host's glue VM shares one surface
+/// with the 3.3.5a GlueXML (its options/video/audio/account/launcher panels read these at load);
+/// the 1.12 glue overlays no definition of its own, so the shared names stay. The list is exact:
+/// a new name adds one, a removed name takes its row off.
+const BEYOND_GLUE_1_12: &[&str] = &[
+    "AcceptChangedOptionWarnings",
+    "AcceptTerminationWithoutNotice",
+    "CancelLogin",
+    "DeclineName",
+    "GetAccountExpansionLevel",
+    "GetBaseMip",
+    "GetCVar",
+    "GetCVarDefault",
+    "GetChangedOptionWarnings",
+    "GetClientExpansionLevel",
+    "GetCreditsText",
+    "GetCurrentMultisampleFormat",
+    "GetCurrentResolution",
+    "GetDoodadAnim",
+    "GetFarclip",
+    "GetGameAccountInfo",
+    "GetGamma",
+    "GetMatrixCoordinates",
+    "GetMultisampleFormats",
+    "GetNumDeclensionSets",
+    "GetNumGameAccounts",
+    "GetRefreshRates",
+    "GetSavedAccountList",
+    "GetScreenResolutions",
+    "GetSelectBackgroundModel",
+    "GetTerrainMip",
+    "GetTexLodBias",
+    "GetUsesToken",
+    "GetVideoCaps",
+    "GetWaterDetail",
+    "GetWorldDetail",
+    "IsLinuxClient",
+    "IsMacClient",
+    "IsScanDLLFinished",
+    "IsShiftKeyDown",
+    "IsStreamingTrial",
+    "IsSystemSupported",
+    "IsTournamentRealmCategory",
+    "IsTrialAccount",
+    "IsWindowsClient",
+    "MatrixCommit",
+    "MatrixEntered",
+    "MatrixRevert",
+    "PlayGlueAmbience",
+    "QuitGameAndRunLauncher",
+    "ReadyForAccountDataTimes",
+    "RealmListUpdateRate",
+    "RegisterCVar",
+    "RequestRealmSplitInfo",
+    "RestartGx",
+    "RestoreVideoDefaults",
+    "ScanDLLContinueAnyway",
+    "ScanDLLStart",
+    "SetBaseMip",
+    "SetCVar",
+    "SetDoodadAnim",
+    "SetFarclip",
+    "SetGameAccount",
+    "SetGamma",
+    "SetMultisampleFormat",
+    "SetSavedAccountList",
+    "SetScreenResolution",
+    "SetTerrainMip",
+    "SetTexLodBias",
+    "SetUsesToken",
+    "SetWaterDetail",
+    "SetWorldDetail",
+    "ShowChangedOptionWarnings",
+    "ShowTerminationWithoutNoticeNotice",
+    "StopAllSFX",
+    "StopGlueAmbience",
+    "TerminationWithoutNoticeAccepted",
+    "TokenEntered",
+];
+
 /// Glue-state functions the glue VM does not answer yet, by registrar table, each with why. The
 /// list only shrinks: a verb is absent until built, never stubbed.
 const NOT_YET: &[(&str, &[&str])] = &[
@@ -138,19 +218,13 @@ const NOT_YET: &[(&str, &[&str])] = &[
         &["ReadFile", "DeleteFile", "AppendToFile"],
     ),
     (
-        "the glue core (0x46ddf0, table 0x8373b8): the movie's setter, the \
-         patch and survey and the billing; each a binding of its own, the ones \
-         with an in-game namesake included",
+        "the glue core (0x46ddf0, table 0x8373b8): the patch's download verbs and the movie's \
+         subtitle setter; each a binding of its own, the ones with an in-game namesake included",
         &[
-            "GetBillingPlan",
-            "GetBillingTimeRemaining",
-            "GetBillingTimeRested",
-            "PINEntered",
             "PatchDownloadApply",
             "PatchDownloadCancel",
             "PatchDownloadProgress",
             "SetMovieSubtitles",
-            "SurveyNotificationDone",
         ],
     ),
 ];
@@ -186,12 +260,24 @@ fn the_glue_vm_answers_the_glue_surface() {
         .map(|(k, _)| k)
         .collect();
 
-    let beyond: Vec<&String> = ours.iter().filter(|n| !surface.contains(*n)).collect();
+    let beyond: Vec<&String> = ours
+        .iter()
+        .filter(|n| !surface.contains(*n) && !BEYOND_GLUE_1_12.contains(&n.as_str()))
+        .collect();
     assert!(
         beyond.is_empty(),
         "the glue VM exposes {} function(s) the glue state does not have: {beyond:?}. The \
          in-game surface stays out of it (`UiScript::new` installs that).",
         beyond.len()
+    );
+    let stale_beyond: Vec<&str> = BEYOND_GLUE_1_12
+        .iter()
+        .copied()
+        .filter(|n| !ours.contains(*n))
+        .collect();
+    assert!(
+        stale_beyond.is_empty(),
+        "listed as beyond the 1.12 glue state but no longer exposed; take them off: {stale_beyond:?}"
     );
     let missing: Vec<&String> = surface
         .iter()

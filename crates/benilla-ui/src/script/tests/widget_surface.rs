@@ -70,7 +70,51 @@ const NOT_YET_ANSWERED: &[(&str, &str, &str)] = &[
 ];
 
 /// Methods answered here that 1.12 does not register on that class, each with why it stays.
-const ALLOWED_BEYOND: &[(&str, &str, &str)] = &[];
+const ALLOWED_BEYOND: &[(&str, &str, &str)] = &[
+    (
+        "IsProtected",
+        "Button CheckButton ColorSelect DressUpModel EditBox Frame GameTooltip LootButton MessageFrame Minimap Model MovieFrame PlayerModel ScrollFrame ScrollingMessageFrame SimpleHTML Slider StatusBar TabardModel WorldFrame",
+        "12340's secure-frame query, seated on the shared frame-state table; the 1.12 kits \
+         build their widgets from the same table",
+    ),
+    (
+        "CanChangeProtectedState",
+        "Button CheckButton ColorSelect DressUpModel EditBox Frame GameTooltip LootButton MessageFrame Minimap Model MovieFrame PlayerModel ScrollFrame ScrollingMessageFrame SimpleHTML Slider StatusBar TabardModel WorldFrame",
+        "12340's secure-state query, the pair of IsProtected above and on the same table",
+    ),
+    (
+        "GetHyperlinksEnabled",
+        "ScrollingMessageFrame",
+        "12340's hyperlink toggle getter, beside SetHyperlinksEnabled on the shared message \
+         frame both targets build",
+    ),
+    (
+        "SetHyperlinksEnabled",
+        "ScrollingMessageFrame",
+        "12340's hyperlink toggle setter, the other half of the pair above",
+    ),
+    (
+        "HasFocus",
+        "EditBox",
+        "12340's focus getter; the shared edit box answers it for the Wrath UI, and the 1.12 \
+         kits' own focus tracking does not read it",
+    ),
+    (
+        "SetHyperlinkCompareItem",
+        "GameTooltip",
+        "12340's comparison-item line; the shared GameTooltip carries it for the Wrath UI",
+    ),
+    (
+        "SetLFGDungeonReward",
+        "GameTooltip",
+        "12340's Dungeon Finder reward line; the shared GameTooltip carries it for the Wrath UI",
+    ),
+    (
+        "SetTracking",
+        "GameTooltip",
+        "12340's tracking line; the shared GameTooltip carries it for the Wrath UI",
+    ),
+];
 
 /// The reference's widget rows, `table_va -> {name}`.
 fn reference_tables() -> BTreeMap<String, BTreeSet<String>> {

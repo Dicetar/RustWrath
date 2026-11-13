@@ -958,24 +958,22 @@ fn has_inspect_honor_data_latches_on_the_push_and_clears_with_it() {
     assert!(!s.eval::<bool>(held()).unwrap());
 }
 
-/// The reference's own twelve-wide destructure, and the standing sitting ninth.
+/// The Wrath contract: six values in `Script_GetInspectHonorData`'s order (`0x005E77C0`); the
+/// donor's twelve-wide shape belongs to the Vanilla112 VM (covered below).
 #[test]
-fn get_inspect_honor_data_returns_the_twelve_in_the_reference_order() {
+fn get_inspect_honor_data_returns_the_wrath_six_in_the_reference_order() {
     let mut s = seated();
     s.set_inspect_honor(Some(inspect_state()));
 
-    assert_eq!(s.arity("GetInspectHonorData()").unwrap(), 12);
+    assert_eq!(s.arity("GetInspectHonorData()").unwrap(), 6);
     let got = s
         .eval::<Vec<i64>>(
-            "local sessionHK, sessionDK, yesterdayHK, yesterdayHonor, thisweekHK, \
-             thisweekHonor, lastweekHK, lastweekHonor, lastweekStanding, lifetimeHK, \
-             lifetimeDK, lifetimeRank = GetInspectHonorData() \
-             return {sessionHK, sessionDK, yesterdayHK, yesterdayHonor, thisweekHK, \
-             thisweekHonor, lastweekHK, lastweekHonor, lastweekStanding, lifetimeHK, \
-             lifetimeDK, lifetimeRank}",
+            "local sessionHK, todayHonor, yesterdayHK, yesterdayHonor, lifetimeHK, lifetimeRank = \
+             GetInspectHonorData() \
+             return {sessionHK, todayHonor, yesterdayHK, yesterdayHonor, lifetimeHK, lifetimeRank}",
         )
         .unwrap();
-    assert_eq!(got, [61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 12]);
+    assert_eq!(got, [61, 72, 63, 64, 70, 12]);
 
     assert_eq!(
         s.eval::<f64>("return GetInspectPVPRankProgress()").unwrap(),
@@ -984,20 +982,33 @@ fn get_inspect_honor_data_returns_the_twelve_in_the_reference_order() {
     );
 }
 
-/// `0x4c9620` is ungated and reads zero-initialised slots; a short return would paint blank rows
-/// where the reference paints zeros.
+/// The donor's twelve-wide shape, which a Vanilla112 VM keeps: only the Wrath branch narrows.
 #[test]
-fn get_inspect_honor_data_answers_twelve_zeros_when_no_reply_is_held() {
+fn a_vanilla_vm_keeps_the_donor_twelve_value_shape() {
+    let mut s = UiScript::new().expect("VM");
+    s.keep_calls();
+    s.set_inspect_honor(Some(inspect_state()));
+    assert_eq!(s.arity("GetInspectHonorData()").unwrap(), 12);
+    assert_eq!(
+        s.eval::<Vec<i64>>("return {GetInspectHonorData()}").unwrap(),
+        [61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 12]
+    );
+}
+
+/// `0x4c9620` is ungated and reads zero-initialised slots; a short return would paint blank rows
+/// where the reference paints zeros. The Wrath branch is six wide.
+#[test]
+fn get_inspect_honor_data_answers_six_zeros_when_no_reply_is_held() {
     let mut s = seated();
     assert_eq!(
         s.arity("GetInspectHonorData()").unwrap(),
-        12,
-        "ungated: twelve on every path"
+        6,
+        "ungated: six on every path"
     );
     assert_eq!(
         s.eval::<Vec<i64>>("return {GetInspectHonorData()}")
             .unwrap(),
-        vec![0; 12]
+        vec![0; 6]
     );
     assert!(s
         .eval::<bool>("return (GetInspectHonorData()) == 0")
@@ -1014,7 +1025,7 @@ fn get_inspect_honor_data_answers_twelve_zeros_when_no_reply_is_held() {
     assert_eq!(
         s.eval::<Vec<i64>>("return {GetInspectHonorData()}")
             .unwrap(),
-        vec![0; 12]
+        vec![0; 6]
     );
 }
 
