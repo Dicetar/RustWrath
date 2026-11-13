@@ -30,6 +30,28 @@ i-frames, input thresholds at the action's end, typed refusal when the clip cann
 window), and `benilla-app` gained `player_dodge_spec` resolving `AnimationData` id 30 on the
 rig — `None` for a rig without the clip, no substitute invented (named gap).
 
+## Slice 4: the general action engine (core) and the light-attack bind
+
+`benilla-combat-core` gained `ActionEngine` — the reusable rules surface the RFC's step 1 asks
+for, generalized from the single-dodge fixture to any validated `ActionTable`:
+
+- ordered requests against a monotonic tick clock: immediate start when idle, one-slot
+  newest-wins buffering with a TTL while busy;
+- half-open active windows reported once (`ActiveOpened`/`ActiveClosed`: contact for strikes,
+  i-frames for a dodge), completion at the total, replacement in the cancel window;
+- the donor's stamina rules: zero bar refuses an immediate request, a partial bar clamps, a
+  held request at zero waits for regeneration instead of dropping (the fixture's nuance);
+- typed refusals (UnknownAction/InsufficientStamina/Dead), interruption, and death ending the
+  action exactly once. 7 focused tests cover the window events, buffering, TTL expiry, the
+  zero-bar nuance, interruption/death and the time-regression error.
+
+The app still runs its own playback prototype (same rules, smaller); moving it onto the engine
+is the next slice's refactor. `combat_playback.rs` also gained the provisional light-attack bind
+(`C`) through the same clock and buffer.
+
+Baseline: `main` at `38f56810` (branch `feat/souls-action-profiles`, worktree
+`rw-souls-action-profiles`). No client/server process was running; no gameplay was driven.
+
 ## Slice 2: action playback wired (the dodge is visible)
 
 `combat_playback.rs` (new) turns `CombatProfiles` into a live path without touching authority:

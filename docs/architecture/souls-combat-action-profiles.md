@@ -69,6 +69,42 @@ Recorded in [owner decisions](../baseline/owner-decisions.md); they shape this p
   a light-attack punish.
 - **Keyboard and mouse first**, with rebindable experimental binds; gamepad later.
 
+## Nuances checklist (living status)
+
+Legend: **done** = source plus focused tests (not runtime/gameplay evidence); **pending** = named
+gap with its owner or blocker. Server-seam items cannot be completed client-side.
+
+| Nuance | State | Where / what remains |
+| --- | --- | --- |
+| One action schema for every action | done | `benilla-combat-core` `action.rs` |
+| Automated melee/spell/enemy profiling | done | `profile.rs`, `combat_profiles.rs` |
+| Dodge profile compiled from the rig clip | done | `dodge_from_clip`, `player_dodge_spec` |
+| Action playback through the animation driver | done | `ActionAnim`/`OneShotReq::Action` |
+| Predicted action clock (windup/active/recovery/finished) | done | `combat_playback.rs` `PredictedAction` |
+| One-slot buffering, newest wins, TTL, cancel window | done | core `ActionEngine`; playback prototype |
+| General action engine (multi-action, interruption, death) | done (core) | `ActionEngine`; app playback not yet refactored onto it |
+| Stamina: spend/clamp/regen-delay, zero-bar eligibility | done (predicted) | `PredictedStamina`; server value pending the seam |
+| Light attack | provisional bind (`C`) | rebindable controls slice |
+| Heavy/charge attacks | profiling done; charge semantics pending | policy + input slice |
+| Combos (`followup`) | schema supports; no authored chains | policy |
+| Guard/block | kind reserved; no compiler | guard slice |
+| Parry/riposte | not started | needs a server-owned riposte window |
+| Poise/stagger | not started | engine hooks + server |
+| Enemy telegraph FSM, native clips first | enemy profiles compile; FSM pending | core FSM harness + server adapter |
+| Enemy cadence (base attack time) | not started | FSM slice |
+| Auto-attack disabled in Souls mode | pending | server gate |
+| Global toggle negotiation with receipts/snapshots | pending | RFC steps 2/5, owner-coordinated |
+| Authoritative dodge/i-frames (hit outcome) | pending | server `MELEE_HIT_DODGE` seam |
+| Spells through the action clock | profiling done; bindings pending | spell-binding slice |
+| Projectile pilot (interrupt, release, cooldown) | pending | spell binding + server |
+| Lock-on | not started | camera/target slice |
+| Sprint (hold versus dodge) | not started | input slice + movement owner |
+| Roll displacement / dodge movement | not started | movement controller + server validation |
+| Authored animations (roll, swings, telegraphs) | not started | Blender pack per the RFC |
+| Rebindable experimental controls | provisional keys only | controls slice |
+| UI: stamina bar and mode state | pending | UI host slice |
+| WM revision publication | pending | RFC step 6 |
+
 ## Slice roadmap
 
 | Slice | Deliverable | Consumer / acceptance |

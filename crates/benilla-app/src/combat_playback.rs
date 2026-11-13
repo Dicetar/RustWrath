@@ -7,9 +7,9 @@
 //! the authoritative seam (`combat_mode.rs`) keeps refusing with `NotSent` until a server mode
 //! channel exists, and `CombatModeView::effective` is never written here.
 //!
-//! Provisional binds (until the RFC's rebindable experimental controls land):
-//! `F10` toggles the client's *requested* mode, `V` requests a dodge. Both are inert with no
-//! local player (glue screens); the dodge only plays once Experimental is requested.
+//! Provisional binds (until the RFC's rebindable experimental controls land): `F10` toggles the
+//! client's *requested* mode, `V` requests a dodge, `C` requests a light attack. All are inert
+//! with no local player (glue screens); actions only play once Experimental is requested.
 
 use std::collections::HashMap;
 
@@ -403,16 +403,21 @@ fn toggle_and_stage_dodge(
     if view.requested != Some(CombatMode::Experimental) {
         return;
     }
-    if !keys.just_pressed(KeyCode::KeyV) {
+    if !keys.just_pressed(KeyCode::KeyV) && !keys.just_pressed(KeyCode::KeyC) {
         return;
     }
+    let action = if keys.just_pressed(KeyCode::KeyV) {
+        HOST_DODGE
+    } else {
+        PLAYER_MELEE_MAIN
+    };
     let now = state.now_ms;
-    let decision = request_action(&mut state, &profiles, HOST_DODGE, now, &mut |_| {});
+    let decision = request_action(&mut state, &profiles, action, now, &mut |_| {});
     if decision == PlaybackDecision::Started {
         *instances += 1;
         requests.write(CombatActionRequest {
             entity,
-            action: HOST_DODGE,
+            action,
             instance: *instances,
         });
     }
