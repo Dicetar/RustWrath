@@ -142,7 +142,8 @@ pub(crate) struct PendingImpacts(pub(crate) bevy::ecs::entity::EntityHashMap<Pen
 
 /// `0x6247d0`'s attack-hit tags: `$AH0`-`$AH3`, or `$CAH`, which every character attack clip
 /// authors beside an inert `$HIT`; never `$HIT`. The inner value is [`SwingImpact::natural`].
-fn impact_tag(ident: &[u8; 4]) -> Option<Option<u8>> {
+/// Also the contact-key set the action-profile compiler reads (see `combat_profiles.rs`).
+pub(crate) fn impact_tag(ident: &[u8; 4]) -> Option<Option<u8>> {
     match ident {
         b"$AH0" => Some(Some(0)),
         b"$AH1" => Some(Some(1)),

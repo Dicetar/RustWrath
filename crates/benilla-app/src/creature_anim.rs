@@ -17,7 +17,8 @@ use benilla_world::schedule::WorldStage;
 /// The pure selection logic: the `0x5fd100` tables, the gait, swing and ready picks, the rate math.
 pub(crate) mod select;
 pub(crate) use select::{
-    ease_strafe_yaw, move_flags, strafe_body_offset, swim_body_rotation, MovementState,
+    ease_strafe_yaw, is_swing_id, move_flags, strafe_body_offset, swim_body_rotation, swing_anim_main,
+    MovementState,
 };
 use select::{Mode, Special};
 
@@ -865,7 +866,9 @@ use breath::{classify_breath, fire_breath};
 
 mod impact;
 use impact::route_swing_impacts;
-pub(crate) use impact::{DefenseAnim, PendingImpacts, SwingImpact, SwingSlowdown};
+pub(crate) use impact::{
+    impact_tag, DefenseAnim, PendingImpacts, SwingImpact, SwingSlowdown,
+};
 
 /// The cast and auto-repeat state the seams queue for after the pass.
 mod edits;

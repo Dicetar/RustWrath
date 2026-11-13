@@ -39,6 +39,7 @@ mod cinematic;
 mod client_state;
 mod combat_log;
 mod combat_mode;
+mod combat_profiles;
 mod combat_text;
 mod console;
 mod crash;
