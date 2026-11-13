@@ -780,6 +780,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetBackpackCurrencyInfo",
         lua.create_function(|_, _index: Option<i64>| Ok(Value::Nil))?,
     )?;
+    // Equipment sets (`GetNumEquipmentSets`, read by the gear-manager dialog's OnLoad in
+    // `PaperDollFrame.lua:2156`): the host has no equipment-set backend yet (`equipmentManager`
+    // is an inert CVar), so the count is the reference's answer with none saved — zero — and the
+    // load-time loop does not run.
+    lua.globals().set(
+        "GetNumEquipmentSets",
+        lua.create_function(|_, ()| Ok(0))?,
+    )?;
     lua.globals().set(
         "CanShowAchievementUI",
         lua.create_function(|_, ()| Ok(true))?,
