@@ -29,6 +29,7 @@ mod action;
 mod core;
 mod data;
 mod enemy;
+mod enemy_brain;
 mod engine;
 mod error;
 mod identity;
@@ -46,6 +47,7 @@ pub use crate::core::{
 };
 pub use data::{CombatConfig, DodgeSpec, EnemySpec, StaminaConfig};
 pub use enemy::{EnemyPhase, EnemyView};
+pub use enemy_brain::{EnemyBrain, EnemyBrainConfig, EnemyEvent};
 pub use engine::{ActionEnd, ActionEngine, ActionRefusal, EngineEvent};
 pub use error::{CombatError, CombatResult};
 pub use identity::{ActionRevision, PlayerId, Sequence, SessionEpoch};

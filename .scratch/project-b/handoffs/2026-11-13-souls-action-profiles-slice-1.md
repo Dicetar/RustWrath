@@ -52,6 +52,18 @@ is the next slice's refactor. `combat_playback.rs` also gained the provisional l
 Baseline: `main` at `38f56810` (branch `feat/souls-action-profiles`, worktree
 `rw-souls-action-profiles`). No client/server process was running; no gameplay was driven.
 
+## Slice 5: playback on the engine, and the enemy brain harness
+
+- `combat_playback.rs` now runs the core `ActionEngine`; the prototype rules are gone. The app
+  keeps only presentation: the ms→tick clock, `phase_of` over the active spec, typed refusals,
+  clip playback on `Started`. Provisional binds unchanged (F10/V/C).
+- `benilla-combat-core` gained `EnemyBrain`: round-robin moves on an authored cadence that never
+  overlaps the strike, telegraph at start, one `ContactClosed`, `StrikeEnded`, poise-break
+  staggering, death, and move-list validation (`EnemyStrike` only). This is the RFC's offline
+  harness; the server adapter feeds `UNIT_FIELD_BASEATTACKTIME` into the cadence field.
+- Evidence: core **28/0** (3 new enemy-brain tests), app `combat_playback::` **3/0**
+  (phase helper, engine-backed state, compiled bindings).
+
 ## Slice 2: action playback wired (the dodge is visible)
 
 `combat_playback.rs` (new) turns `CombatProfiles` into a live path without touching authority:
