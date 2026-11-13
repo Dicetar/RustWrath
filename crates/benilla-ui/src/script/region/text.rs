@@ -170,10 +170,16 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             ),
         ))
     }
-    m.set(
-        "GetStringHeight",
-        lua.create_function(|lua, this: Table| natural_h(lua, &this))?,
-    )?;
+    // 3.3.5a's FontString carries `GetStringHeight`; the 1.12 leaf does not (see `region.rs`'s
+    // target-gated copy). Do not seat it on the donor full table where no leaf can use it.
+    if lua.app_data_ref::<crate::script::Model>().expect("model").target
+        == crate::script::UiTarget::Wrath335
+    {
+        m.set(
+            "GetStringHeight",
+            lua.create_function(|lua, this: Table| natural_h(lua, &this))?,
+        )?;
+    }
 
     // SetJustifyH (XML `justifyH`): the parse, the raise on a miss and the cross-axis clear are
     // `crate::justify`'s, shared with the `<Font>` object.
