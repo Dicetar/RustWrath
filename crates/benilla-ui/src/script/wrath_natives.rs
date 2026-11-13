@@ -3414,8 +3414,9 @@ mod tests {
             true,
             false,
             true,
-            "Heroic daily",
             vec![262],
+            Some("Heroic daily"),
+            None,
             Some(WrathLfgQueueStatusState {
                 dungeon_id: 262,
                 wait_time_avg: 45,
@@ -3432,9 +3433,7 @@ mod tests {
                 dungeon_id: 262,
                 state: 1,
                 proposal_id: 77,
-                bosses_mask: 0,
                 silent: false,
-                is_local: true,
                 completed_mask: 0b101,
                 players: vec![WrathLfgProposalMemberState {
                     role: 0x02 | 0x01,
@@ -3720,6 +3719,7 @@ mod tests {
                 comment,
                 session_epoch: 11,
                 world_generation: 22,
+                ..
             } if slots == &[0x0100_0106] && comment == "Random heroic"
         )));
     }
@@ -3746,7 +3746,7 @@ mod tests {
     fn rune_frame_reads_resync_state() {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         s.set_now(50.0);
-        s.apply_rune_resync([
+        s.set_runes(&[
             (0, 0, 50.0),
             (0, 255, 50.0),
             (1, 128, 50.0),
@@ -3774,7 +3774,6 @@ mod tests {
         assert_eq!(
             s.take_wrath_scoped_commands(),
             vec![WrathScopedCommand::VehicleExit {
-                vehicle: 0xF130_0002_0000_0099,
                 session_epoch: 9,
                 world_generation: 12,
             }]

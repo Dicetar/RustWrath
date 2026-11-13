@@ -1371,14 +1371,20 @@ mod tests {
     #[test]
     fn wrath_non_blizzard_archive_addons_stay_visible_while_blizzard_ones_hide() {
         let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
-        let mut blizzard = AddOnInfo::new("Blizzard_TalentUI", true);
+        let mut blizzard = AddOnInfo {
+            name: "Blizzard_TalentUI".to_string(),
+            ..Default::default()
+        };
         blizzard.chain = true;
         blizzard.claims_secure = true;
         blizzard.signature_ok = true;
-        let mut wmbridge = AddOnInfo::new("WMBridge", false);
+        let mut wmbridge = AddOnInfo {
+            name: "WMBridge".to_string(),
+            ..Default::default()
+        };
         wmbridge.chain = true;
         wmbridge.title = Some("WMBridge".to_string());
-        script.register_addons(vec![blizzard, wmbridge]);
+        script.register_addons(vec![blizzard, wmbridge], None, None, None);
 
         assert_eq!(script.eval::<i64>("return GetNumAddOns()").unwrap(), 1);
         assert_eq!(

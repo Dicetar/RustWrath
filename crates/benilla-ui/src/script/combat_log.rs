@@ -638,7 +638,7 @@ mod tests {
     /// value while the Model fallback records the requested integer for a later bare VM.
     #[test]
     fn read_only_retention_cvar_keeps_the_native_getter_on_the_old_value() {
-        let script = wrath();
+        let mut script = wrath();
         script.register_cvars([("combatLogRetentionTime", "300")]);
         script.set_cvar_read_only("combatLogRetentionTime", true);
         script.run("CombatLogSetRetentionTime(120)").unwrap();

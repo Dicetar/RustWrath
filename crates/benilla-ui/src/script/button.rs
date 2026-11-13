@@ -1416,11 +1416,7 @@ mod tests {
                 "#,
             )
             .unwrap();
-        let h = {
-            let model = script.model_ref();
-            let id = *model.by_name.get("TestAnyClickBtn").unwrap();
-            model.handle_of(id).unwrap()
-        };
+        let h = script.frame_handle("TestAnyClickBtn").unwrap();
         {
             let model = script.model_ref();
             assert!(wants_click(&model, h, "LeftButtonUp"));
