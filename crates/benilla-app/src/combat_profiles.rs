@@ -18,8 +18,8 @@ use std::collections::HashMap;
 
 use benilla_assets::{AnimClip, ModelAnimations};
 use benilla_combat_core::{
-    dodge_from_clip, melee_action, ActionId, ActionKind, ActionSpec, ActionTable, ClipSummary,
-    CombatResult, DodgeSpec, ProfilePolicy, SpellSummary, TickRate,
+    dodge_from_clip, enemy_action, melee_action, ActionId, ActionKind, ActionSpec, ActionTable,
+    ClipSummary, CombatResult, DodgeSpec, ProfilePolicy, SpellSummary, TickRate,
 };
 #[cfg(test)]
 use benilla_combat_core::spell_action;
@@ -167,6 +167,44 @@ pub(crate) fn player_dodge_spec(
     };
     let spec = dodge_from_clip(summary, policy, rate, revision)?;
     Ok(Some((spec, resolved.id)))
+}
+
+/// Compile a creature rig's melee move list: every attack clip the rig actually resolves
+/// (`AttackUnarmed`/`Attack1H`/`Attack2H`/`Attack2HL`/`Attack1HPierce`), as `EnemyStrike` actions
+/// under encounter-assigned ids from `first_id`, each bound to the clip the creature will play.
+/// The `AnimationData` fallback chain is honoured — a rig whose Attack2H falls back to Attack1H
+/// gets one move, not two copies of the same clip. This is the "what enemy uses what animation"
+/// automation: the enemy FSM (`EnemyBrain`) consumes the list it produces.
+pub(crate) fn enemy_melee_actions(
+    first_id: u32,
+    anims: &ModelAnimations,
+    anim_data: &AnimDataCatalog,
+    policy: &ProfilePolicy,
+    rate: TickRate,
+) -> CombatResult<Vec<(ActionSpec, u16)>> {
+    /// AttackUnarmed, Attack1H, Attack2H, Attack2HL, Attack1HPierce — the melee swing ids.
+    const CANDIDATES: [u16; 5] = [16, 17, 18, 19, 85];
+    let mut moves: Vec<(ActionSpec, u16)> = Vec::new();
+    let mut id = first_id;
+    for anim in CANDIDATES {
+        let resolved = anims.resolve(anim, anim_data);
+        if !crate::creature_anim::is_swing_id(resolved.id) {
+            continue;
+        }
+        if moves.iter().any(|(_, bound)| *bound == resolved.id) {
+            // The fallback chain resolved to a clip already profiled.
+            continue;
+        }
+        let Some(clip) = anims.clips.iter().find(|clip| clip.anim_id == resolved.id) else {
+            continue;
+        };
+        let Some(summary) = clip_summary(clip) else {
+            continue;
+        };
+        moves.push((enemy_action(ActionId(id), summary, policy, rate)?, resolved.id));
+        id = id.wrapping_add(1);
+    }
+    Ok(moves)
 }
 
 /// The compiled profile set the playback path consumes: the validated action table plus the
@@ -388,6 +426,72 @@ mod tests {
             None,
             "a missing cast-time row refuses the profile"
         );
+    }
+
+    /// A creature rig profiles every attack clip it actually resolves; the fallback chain is
+    /// honoured, so a single-clip rig yields one move rather than duplicates.
+    #[test]
+    fn enemy_moves_follow_the_rig_and_its_fallback_chain() {
+        let catalog = AnimDataCatalog::from_rows([(
+            18,
+            benilla_formats::AnimEntry {
+                weapon_flags: 0x20,
+                fallback: 17,
+            },
+        )]);
+        // A 2H-capable-looking rig that only ships Attack1H: Attack2H (18) falls back to 17, so
+        // the move list holds the 1H clip once.
+        let single = rig(vec![
+            clip(0, 1.0, &[]),
+            clip(17, 1.0, &[(b"$AH0", 0.4)]),
+        ]);
+        let moves = enemy_melee_actions(
+            1_000,
+            &single,
+            &catalog,
+            &ProfilePolicy::default(),
+            rate(),
+        )
+        .expect("compile");
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0].1, 17);
+        assert_eq!(moves[0].0.kind, ActionKind::EnemyStrike);
+        assert_eq!(
+            moves[0].0.contact.map(|w| (w.from, w.to)),
+            Some((40, 65)),
+            "the enemy contact window runs 25 ticks after its key"
+        );
+
+        // A rig with both unarmed and 1H clips yields two moves under consecutive ids.
+        let dual = rig(vec![
+            clip(0, 1.0, &[]),
+            clip(16, 1.0, &[]),
+            clip(17, 0.8, &[(b"$AH1", 0.3)]),
+        ]);
+        let moves = enemy_melee_actions(
+            1_000,
+            &dual,
+            &AnimDataCatalog::from_rows([]),
+            &ProfilePolicy::default(),
+            rate(),
+        )
+        .expect("compile");
+        assert_eq!(moves.len(), 2);
+        assert_eq!(moves[0].1, 16);
+        assert_eq!(moves[1].1, 17);
+        assert_ne!(moves[0].0.id, moves[1].0.id);
+
+        // A rig without any attack clip carries no moves.
+        let bare = rig(vec![clip(0, 1.0, &[])]);
+        assert!(enemy_melee_actions(
+            1_000,
+            &bare,
+            &AnimDataCatalog::from_rows([]),
+            &ProfilePolicy::default(),
+            rate(),
+        )
+        .expect("compile")
+        .is_empty());
     }
 
     /// The dodge compiles from the rig's own Dodge clip; a rig that ships none carries no dodge

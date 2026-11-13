@@ -90,7 +90,7 @@ gap with its owner or blocker. Server-seam items cannot be completed client-side
 | Guard/block | kind reserved; no compiler | guard slice |
 | Parry/riposte | not started | needs a server-owned riposte window |
 | Poise/stagger | enemy poise break exists in the brain harness; player poise pending | engine hooks + server |
-| Enemy telegraph FSM, native clips first | offline harness done (`EnemyBrain`); server adapter pending | core harness + server adapter |
+| Enemy telegraph FSM, native clips first | per-rig move lists compile automatically; offline harness done (`EnemyBrain`); server adapter pending | core harness + server adapter |
 | Enemy cadence (base attack time) | harness consumes authored cadence; server feeds `BASEATTACKTIME` | FSM adapter slice |
 | Auto-attack disabled in Souls mode | pending | server gate |
 | Global toggle negotiation with receipts/snapshots | pending | RFC steps 2/5, owner-coordinated |
