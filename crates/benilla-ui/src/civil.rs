@@ -190,17 +190,35 @@ mod zone {
         (unsafe { libc::localtime_s(&mut tm, &time) } == 0).then_some(tm)
     }
 
-    /// The runtime's own `_timezone` and `_dstbias`.
+    /// The runtime's own `_timezone` and `_dstbias`, derived the way the Unix arm derives them.
+    /// The UCRT's `_get_dstbias` follows the OS zone even under a `TZ` override, so a guarded
+    /// test could not see its own rule; the January and July offsets through `localtime`, which
+    /// does honour `TZ`, are the rule's own.
     pub(super) fn biases() -> (i32, i32) {
-        reread();
-        // `long` is 32 bits on Windows.
-        let (mut zone, mut bias): (libc::c_long, libc::c_long) = (0, 0);
-        // SAFETY: each writes the one long it is handed.
-        unsafe {
-            libc::get_timezone(&mut zone);
-            libc::get_dstbias(&mut bias);
-        }
-        (zone, bias)
+        let year = super::from_unix(super::unix_seconds()).year;
+        let offsets = [1, 7].map(|month| {
+            let t = super::days_from_civil(year, month, 1) * 86_400;
+            localtime(t).map(|tm| (tm_offset(t, &tm), tm.tm_isdst > 0))
+        });
+        let east = |dst: bool| offsets.iter().flatten().find(|o| o.1 == dst).map(|o| o.0);
+        let standard = east(false)
+            .or_else(|| offsets.iter().flatten().map(|o| o.0).min())
+            .unwrap_or(0);
+        let daylight = east(true).map_or(0, |d| d - standard);
+        (-standard as i32, -daylight as i32)
+    }
+
+    /// The `localtime` block's offset east of UTC, from the fields it wrote for `secs`.
+    fn tm_offset(secs: i64, tm: &libc::tm) -> i64 {
+        let wall = super::days_from_civil(
+            i64::from(tm.tm_year) + 1900,
+            (tm.tm_mon + 1) as u32,
+            tm.tm_mday as u32,
+        ) * 86_400
+            + i64::from(tm.tm_hour) * 3_600
+            + i64::from(tm.tm_min) * 60
+            + i64::from(tm.tm_sec);
+        wall - secs
     }
 
     pub(super) fn name(isdst: bool) -> Vec<u8> {
@@ -246,17 +264,48 @@ impl ZoneGuard {
         let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var_os("TZ");
         std::env::set_var("TZ", tz);
+        crt_tz(Some(std::ffi::OsStr::new(tz)));
         reread_zone();
         Self { old, _lock: lock }
     }
 }
 
+/// The CRT's own copy of `TZ`. The UCRT's `getenv` reads `_environ`, which `SetEnvironmentVariable`
+/// (what `std::env::set_var` uses) does not update, so `_tzset` would keep the machine's zone: the
+/// guard writes through `_putenv_s` beside the process variable. Empty removes the row.
+#[cfg(all(test, windows))]
+fn crt_tz(value: Option<&std::ffi::OsStr>) {
+    use std::os::raw::c_char;
+    extern "C" {
+        fn _putenv_s(name: *const c_char, value: *const c_char) -> std::os::raw::c_int;
+    }
+    let name = std::ffi::CString::new("TZ").expect("literal name");
+    let value = match value {
+        Some(v) => std::ffi::CString::new(v.to_string_lossy().as_bytes())
+            .expect("zone string has no NUL"),
+        None => std::ffi::CString::new("").expect("empty"),
+    };
+    // SAFETY: both are NUL-terminated C strings the runtime copies.
+    unsafe {
+        _putenv_s(name.as_ptr(), value.as_ptr());
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+fn crt_tz(_value: Option<&std::ffi::OsStr>) {}
+
 #[cfg(test)]
 impl Drop for ZoneGuard {
     fn drop(&mut self) {
         match self.old.take() {
-            Some(v) => std::env::set_var("TZ", v),
-            None => std::env::remove_var("TZ"),
+            Some(v) => {
+                std::env::set_var("TZ", &v);
+                crt_tz(Some(&v));
+            }
+            None => {
+                std::env::remove_var("TZ");
+                crt_tz(None);
+            }
         }
         reread_zone();
     }
