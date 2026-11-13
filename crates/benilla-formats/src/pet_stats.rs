@@ -96,6 +96,12 @@ impl PetPersonalities {
 /// `PetLoyalty.dbc`: loyalty level to its localized name.
 pub struct PetLoyaltyNames(HashMap<u32, String>);
 
+impl Default for PetLoyaltyNames {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+
 impl PetLoyaltyNames {
     /// The name for a loyalty level. `None` is `GetPetLoyalty`'s nil, for level `0` and past the
     /// table (`0x4be700` bounds it against `[0xc0d9f8]`).

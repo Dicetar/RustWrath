@@ -37,9 +37,16 @@ fn a_selected_quest_answers_its_own_detail_text_not_a_placeholder_or_another_row
         1,
         "the creature objective is the selected quest's"
     );
-    // The header row above the quest is not a quest: no detail, exactly as the reference's miss.
+    // A header row is not a quest and never becomes the selection; the reference's check
+    // (`0x4def55`) leaves `0xbb7480` alone, so the old selection's detail still answers.
+    s.run("SelectQuestLogEntry(1)").unwrap();
+    assert_eq!(
+        s.eval::<i64>("return GetQuestLogSelection()").unwrap(),
+        2,
+        "a header click does not move the selection"
+    );
     assert!(s
-        .eval::<bool>("SelectQuestLogEntry(1); local d = GetQuestLogQuestText(); return d == nil")
+        .eval::<bool>("local d = GetQuestLogQuestText(); return d ~= nil")
         .unwrap());
 }
 
@@ -177,7 +184,7 @@ fn a_reward_list_answers_each_reward_once_in_index_order() {
 #[test]
 fn the_wrath_watch_list_adds_removes_and_holds_twenty_five() {
     let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
-    let log: Vec<_> = (1..=26u32)
+    let log: Vec<_> = (1..=25u32)
         .map(|q| {
             (
                 q,

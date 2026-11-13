@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn wmbridge_self_whisper_hello_and_kill_events() {
-        use crate::script::{CombatLogPartyKill, CombatLogUnit, UiTarget};
+        use crate::script::{ScriptValue, UiTarget};
 
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         s.keep_calls();
@@ -642,19 +642,21 @@ mod tests {
         )
         .unwrap();
 
-        s.fire_combat_log_party_kill(&CombatLogPartyKill {
-            timestamp: 1_700_000_000.0,
-            source: CombatLogUnit {
-                guid: 0x0000_0000_0000_0001,
-                name: Some("Firna".to_owned()),
-                flags: 0x0511,
-            },
-            dest: CombatLogUnit {
-                guid: 0xF130_0000_2F00_002A,
-                name: Some("Kobold Vermin".to_owned()),
-                flags: 0x0a48,
-            },
-        });
+        // The exactly eight `CombatLogEntry::PushEvent` values for a spell-less event
+        // (`UnitCombatLog_C.cpp:1241-1276`), as the app's party-kill feed posts them.
+        s.fire_event(
+            "COMBAT_LOG_EVENT_UNFILTERED",
+            vec![
+                ScriptValue::Number(1_700_000_000.0),
+                ScriptValue::Str("PARTY_KILL".to_owned()),
+                ScriptValue::Str("0x0000000000000001".to_owned()),
+                ScriptValue::Str("Firna".to_owned()),
+                ScriptValue::Int(0x0511),
+                ScriptValue::Str("0xF13000002F00002A".to_owned()),
+                ScriptValue::Str("Kobold Vermin".to_owned()),
+                ScriptValue::Int(0x0a48),
+            ],
+        );
 
         let kill_whispers = s.take_addon_whispers();
         assert_eq!(

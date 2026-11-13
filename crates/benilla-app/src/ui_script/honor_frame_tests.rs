@@ -36,9 +36,12 @@ fn state() -> HonorState {
 /// The character window, whose fifth tab this page is; [`super::test_ui::CHARACTER_UI`] carries
 /// `HonorFrame.xml`, as `PaperDollFrame.lua:103` writes into it on every show.
 fn load_page(s: &UiScript) {
-    for file in super::test_ui::CHARACTER_UI {
+    for file in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(s, file);
     }
+    // The layer's stock-Lua deviations load after every stock file in production; the page reads
+    // `CharacterFrame_ShowSubFrame`, which the layer makes nil-safe for absent subframes.
+    super::test_ui::load_ui_strict(s, "FrameXMLFixes.xml");
 }
 
 /// An Alliance male level-60 player. Race and class carry both halves: the level line formats
@@ -81,7 +84,7 @@ fn text(s: &mut UiScript, frame: &str) -> String {
 
 #[test]
 fn every_figure_lands_in_its_own_row() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = shown_honor_page();
     for (frame, want) in [
         ("HonorFrameCurrentHKValue", "17"),
@@ -106,7 +109,7 @@ fn every_figure_lands_in_its_own_row() {
 /// The title is keyed by the internal rank and the badge by the visual one, four lower.
 #[test]
 fn the_title_is_the_internal_rank_and_the_badge_is_the_visual_one() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = shown_honor_page();
     assert_eq!(text(&mut s, "HonorFrameCurrentPVPTitle"), "Knight-Captain");
     assert_eq!(text(&mut s, "HonorFrameCurrentPVPRank"), "(Rank 8)");
@@ -127,7 +130,7 @@ fn the_title_is_the_internal_rank_and_the_badge_is_the_visual_one() {
 /// (`HonorFrame.lua:44-54`).
 #[test]
 fn an_unranked_character_reads_none_and_shows_no_badge() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = shown_honor_page();
     s.set_honor(Some(HonorState {
         rank: 0,
@@ -159,7 +162,7 @@ fn an_unranked_character_reads_none_and_shows_no_badge() {
 /// race, not its faction. The bar keeps the sideless red, so the side must stay gone.
 #[test]
 fn a_gm_flagged_player_keeps_his_rank_title_and_loses_only_the_faction_group() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = shown_honor_page();
     s.set_honor(Some(HonorState {
         // Grand Marshal, internal rank 18.
@@ -207,7 +210,7 @@ fn a_gm_flagged_player_keeps_his_rank_title_and_loses_only_the_faction_group() {
 
 #[test]
 fn the_bar_takes_the_fraction_and_the_faction_colour() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let s = shown_honor_page();
     // The client multiplies by the f32 nearest 1/255 (`0x3B808081`, at `0x51aace`) rather than
     // dividing by 255; the two differ in the eighth decimal.
@@ -243,7 +246,7 @@ fn the_bar_takes_the_fraction_and_the_faction_colour() {
 /// `OnEvent`, where the flag comes from the event name.
 #[test]
 fn a_kill_repaints_the_session_but_not_the_week() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = shown_honor_page();
     // A weekly figure moves too, and the kill must not repaint it.
     s.set_honor(Some(HonorState {
@@ -274,13 +277,15 @@ fn a_kill_repaints_the_session_but_not_the_week() {
 /// for both teams.
 #[test]
 fn the_real_global_strings_name_the_rank() {
-    let data = benilla_formats::wow_data_or_skip!();
+    let data = benilla_formats::donor_data_or_skip!();
     let mut chain = benilla_formats::open_chain(&data).expect("open chain");
     let src = chain
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
 
-    let mut s = UiScript::new().unwrap();
+    // The kit is the Wrath character page, so the VM is the Wrath one; a Vanilla112 VM cannot
+    // parse the 3.3.5a chain's Lua (5.1-only syntax) and is not what this page runs on.
+    let mut s = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
     s.set_screen_size(1024.0, 768.0);
     s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
     load_page(&s);
@@ -348,31 +353,15 @@ fn inspect_reply() -> InspectHonorData {
 
 /// The inspect window on its Honor tab, over a rank-12 Alliance target, [`inspect_reply`] held.
 fn shown_inspect_honor_page() -> UiScript {
-    let mut s = UiScript::new().unwrap();
+    // The inspect-honor page is a Wrath contract (MSG_INSPECT_HONOR_STATS, 6-value
+    // GetInspectHonorData); a Vanilla112 VM cannot parse the 3.3.5a chain's Lua.
+    let mut s = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for file in [
-        "Interface\\FrameXML\\GlobalStrings.lua",
-        "Interface\\FrameXML\\Fonts.xml",
-        // `TEXT`, the stock level line's formatter.
-        "Interface\\FrameXML\\BasicControls.xml",
-        "Interface\\FrameXML\\LocaleProperties.lua",
-        r"Interface\FrameXML\UIParent.xml",
-        r"Interface\FrameXML\MoneyFrame.lua",
-        r"Interface\FrameXML\MoneyFrame.xml",
-        "Interface\\FrameXML\\GameTooltip.xml",
-        r"Interface\FrameXML\UIPanelTemplates.lua",
-        r"Interface\FrameXML\UIPanelTemplates.xml",
-        // The inspect window's tabs inherit its tab template.
-        r"Interface\FrameXML\CharacterFrameTemplates.xml",
-        "Interface\\FrameXML\\StaticPopup.xml",
-        // Before the inspect addon, as `inherits=` resolves at load: its slot buttons inherit
-        // `ItemButtonTemplate`, its honor rows `HonorFrame.xml`'s row templates.
-        "Interface\\FrameXML\\ItemButtonTemplate.xml",
-        "Interface\\FrameXML\\HonorFrame.xml",
-        "ScrollTemplates.xml",
-    ] {
-        load_xml(&s, file);
+    // The character window's full stock kit, in production order: the inspect tabs are built
+    // from the same frame, tooltip, popup and secure providers the character page needs.
+    for file in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
+        super::test_ui::load_ui(&s, file);
     }
     // A LoadOnDemand addon, seated off the chain and loaded by stock `InspectFrame_LoadUI`
     // (`UIParent.lua:170`), as the app does.
@@ -396,10 +385,32 @@ fn shown_inspect_honor_page() -> UiScript {
     s
 }
 
+/// The installed `Blizzard_InspectUI` defines the honor page, or this test skips: some installs'
+/// addon carries `InspectPaperDollFrame`, `InspectPVPFrame` and `InspectTalentFrame` only.
+fn inspect_honor_ui_or_skip() -> Option<()> {
+    let toc = super::test_ui::read(r"Interface\AddOns\Blizzard_InspectUI\Blizzard_InspectUI.toc")?;
+    let toc = benilla_ui::toc::Toc::parse(&benilla_ui::source::decode(&toc));
+    let found = toc.files.iter().any(|f| {
+        super::test_ui::read(&format!("Interface\\AddOns\\Blizzard_InspectUI\\{f}"))
+            .is_some_and(|b| String::from_utf8_lossy(&b).contains("InspectHonorFrame"))
+    });
+    if !found {
+        benilla_formats::skipped(
+            "Blizzard_InspectUI has no InspectHonorFrame in this install",
+            &[],
+        );
+        return None;
+    }
+    Some(())
+}
+
 /// The rank block reads the inspected unit, not the player.
 #[test]
 fn the_inspect_page_paints_the_reply_it_holds() {
     let _data = benilla_formats::wow_data_or_skip!();
+    if inspect_honor_ui_or_skip().is_none() {
+        return;
+    }
     let mut s = shown_inspect_honor_page();
     for (frame, want) in [
         ("InspectHonorFrameCurrentHKValue", "17"),
@@ -437,6 +448,9 @@ fn the_inspect_page_paints_the_reply_it_holds() {
 #[test]
 fn the_page_asks_only_when_it_holds_nothing() {
     let _data = benilla_formats::wow_data_or_skip!();
+    if inspect_honor_ui_or_skip().is_none() {
+        return;
+    }
     let mut s = shown_inspect_honor_page();
     assert_eq!(
         s.take_inspect_honor_requests(),
@@ -455,3 +469,28 @@ fn the_page_asks_only_when_it_holds_nothing() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

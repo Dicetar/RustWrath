@@ -331,6 +331,57 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // JoinChannelByName(name [, password]) (`0x49ede8`): claims a slot; the server's confirmation
+    // is a later `YOU_JOINED`, so the slot starts unconfirmed and the Wrath `GetChannelName`
+    // answers 0 until then (`0x4a0627`) — WMBridge's HELLO falls back to SELF_WHISPER while the
+    // join is pending (2026-11-05 handoff). Ten slots is the client's cap (the join body's claim,
+    // `0x49b9c5`); a full list refuses. `JoinTemporaryChannel(name)` claims the same way without
+    // being saved (`0x49df40`), which this host does not persist either.
+    for (verb, usage) in [
+        (
+            "JoinChannelByName",
+            r#"Usage: JoinChannelByName("channel")"#,
+        ),
+        (
+            "JoinTemporaryChannel",
+            r#"Usage: JoinTemporaryChannel("channel")"#,
+        ),
+    ] {
+        // `JoinTemporaryChannel` is a 3.3.5a verb; 1.12.1 has only `JoinChannelByName`, and an
+        // addon's feature test must not see the newer name on the donor target.
+        if verb == "JoinTemporaryChannel"
+            && lua
+                .app_data_ref::<Model>()
+                .expect("model app_data")
+                .target
+                != super::UiTarget::Wrath335
+        {
+            continue;
+        }
+        g.set(
+            verb,
+            lua.create_function(move |lua, name: Value| {
+                let name = super::binding_abi::string_arg(lua, name, usage)?;
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                if model.joined_channels.len() >= 10
+                    || model
+                        .joined_channels
+                        .iter()
+                        .flatten()
+                        .any(|c| c.name.eq_ignore_ascii_case(&name))
+                {
+                    return Ok(());
+                }
+                model.joined_channels.push(Some(JoinedChannel {
+                    name,
+                    id: 0,
+                    confirmed: false,
+                }));
+                Ok(())
+            })?,
+        )?;
+    }
+
     // GetChannelName(x) (`0x4a05e0`): a number, or a string Lua reads as one (`lua_isnumber`,
     // `0x4a05ed`; `ChatFrame.lua:2113` passes the "1" of `/1`), selects a confirmed slot after
     // `__ftol` (`0x4a0602` → `0x49bf30`); any other string selects the first slot of that name in
@@ -1090,8 +1141,21 @@ mod tests {
     }
 
     fn vals(s: &UiScript, i: i64) -> Vec<Value> {
-        s.eval(&format!("return {{GetChannelDisplayInfo({})}}", i))
-            .unwrap()
+        // All returns, nils included: a table constructor would lose the holes to `#`, so ask
+        // the VM for the count and then for each position.
+        let n = s
+            .eval::<i64>(&format!(
+                "return select('#', GetChannelDisplayInfo({i}))"
+            ))
+            .unwrap();
+        (1..=n)
+            .map(|k| {
+                s.eval::<Value>(&format!(
+                    "return select({k}, GetChannelDisplayInfo({i}))"
+                ))
+                .unwrap()
+            })
+            .collect()
     }
 
     fn strv(v: &Value) -> Option<String> {
@@ -1111,7 +1175,9 @@ mod tests {
 
     #[test]
     fn no_joined_channels_gives_three_headers() {
-        let mut s = UiScript::new().unwrap();
+        // `GetChannelDisplayInfo` is the 3.3.5a display-list API (the 1.12 VM has no `select` to
+        // read the nil-holed return), so the test seats the Wrath contract.
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
         s.run(
             "CHANNEL_CATEGORY_GROUP = 'Group' \
              CHANNEL_CATEGORY_WORLD = 'World' \
@@ -1131,7 +1197,7 @@ mod tests {
 
     #[test]
     fn one_zone_and_one_custom_give_five_rows() {
-        let mut s = UiScript::new().unwrap();
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
         s.run(
             "CHANNEL_CATEGORY_GROUP = 'Group' \
              CHANNEL_CATEGORY_WORLD = 'World' \
@@ -1204,7 +1270,7 @@ mod tests {
 
     #[test]
     fn unconfirmed_slot_is_excluded() {
-        let mut s = UiScript::new().unwrap();
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
         s.set_joined_channels(vec![
             slot("Pending", 1, false),
             slot("CustomChan", 0, true),

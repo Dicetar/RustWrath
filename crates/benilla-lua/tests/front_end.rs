@@ -103,6 +103,16 @@ fn chain_chunks(out: &mut Vec<Chunk>) -> bool {
     let Some(data) = benilla_formats::wow_data() else {
         return false;
     };
+    // The front end here is the 1.12 grammar (`check` is Vanilla50); a 3.3.5a interface is 5.1
+    // Lua and belongs to the Wrath dialect's own checks, so only a donor install's interface is
+    // compiled here.
+    if !benilla_formats::is_donor_install(&data) {
+        benilla_formats::skipped(
+            "no 1.12 donor install (the chain is not interface 11200)",
+            &[data],
+        );
+        return false;
+    }
     let chain = benilla_formats::open_chain(&data).expect("open the patch chain");
     let mut names: Vec<String> = chain
         .list()

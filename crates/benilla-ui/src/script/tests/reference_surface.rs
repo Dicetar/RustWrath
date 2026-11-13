@@ -9,7 +9,20 @@ use std::collections::HashSet;
 use super::common::script;
 
 /// Globals the engine exposes that 1.12 does not, each with its reason. The list is exact.
-const BEYOND_1_12: &[&str] = &[];
+const BEYOND_1_12: &[&str] = &[
+    // 12340 host seams the shared VM seats for the Wrath stock UI. The 1.12 stock FrameXML and
+    // this crate's 1.12 kits call the shared verbs, so they stay exposed on both targets; gate
+    // them per target once the donor-facing tests are separated by target.
+    "CanGuildBankRepair",
+    "GetActionInfo",
+    "GetChannelDisplayInfo",
+    "GetInboxItemLink",
+    "GetMultiCastBarOffset",
+    "GetNumDisplayChannels",
+    "TriggerTutorial",
+    "UnitDetailedThreatSituation",
+    "UnitSelectionColor",
+];
 
 /// `reference/lua_globals.tsv`'s names.
 fn reference() -> HashSet<String> {

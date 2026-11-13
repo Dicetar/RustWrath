@@ -24,7 +24,7 @@ pub(super) fn open(vm: &mut Vm) {
             .set(key, value)
             .expect("library key");
     }
-    vm.register("strsplit", split);
+    vm.register("strsplit", strsplit);
     vm.register("strtrim", trim);
     vm.register("strjoin", join);
     vm.register("strconcat", concat);
@@ -50,9 +50,23 @@ fn push_slice(vm: &mut Vm, string: StrRef, first: usize, end: usize, bytes: &mut
     Ok(())
 }
 
+/// `string.split(string, delimiters[, limit])`: the method form, the string first inside
+/// `string.split` — `s:split(':')` passes the receiver as argument 1.
 fn split(vm: &mut Vm, nargs: usize) -> R<usize> {
-    let delimiter = vm.check_str(nargs, 1)?;
-    let string = vm.check_str(nargs, 2)?;
+    split_args(vm, nargs, false)
+}
+
+/// `strsplit(delimiters, string[, limit])`: the global form, the delimiter first.
+fn strsplit(vm: &mut Vm, nargs: usize) -> R<usize> {
+    split_args(vm, nargs, true)
+}
+
+fn split_args(vm: &mut Vm, nargs: usize, delimiters_first: bool) -> R<usize> {
+    let (delimiter, string) = if delimiters_first {
+        (vm.check_str(nargs, 1)?, vm.check_str(nargs, 2)?)
+    } else {
+        (vm.check_str(nargs, 2)?, vm.check_str(nargs, 1)?)
+    };
     let limit = vm.opt_int(nargs, 3, 0)?;
     let delimiters = charset(vm.heap.str(delimiter));
     let length = c_len(vm.heap.str(string));

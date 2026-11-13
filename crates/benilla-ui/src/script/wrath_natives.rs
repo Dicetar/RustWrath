@@ -52,10 +52,12 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
                     })
                 })
                 .unwrap_or_else(|| {
+                    // A held item exists as an object in the reference even when its template is
+                    // unknown, so the arm still answers; the link's name is empty then.
                     super::item_stats::item_link_for_target(
                         model.target,
                         item.item_id,
-                        "Item",
+                        "",
                         1,
                     )
                 });
@@ -95,28 +97,19 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
             push(Value::Number(f64::from(row.row + 1)));
         }
         Some(CursorPayload::Action(action)) => {
-            let link = model
-                .item_templates
-                .get(&action.action)
-                .map(|template| {
-                    super::item_stats::item_link_for_target(
-                        model.target,
-                        action.action,
-                        &template.name,
-                        template.quality,
-                    )
-                })
-                .unwrap_or_else(|| {
-                    super::item_stats::item_link_for_target(
-                        model.target,
-                        action.action,
-                        "Item",
-                        1,
-                    )
-                });
-            push(Value::String(lua.create_string("item")?));
-            push(Value::Number(f64::from(action.action)));
-            push(Value::String(lua.create_string(&link)?));
+            // `UICURSOR_ACTIONBAR`: `g_itemDBCache.GetRecord(itemId)` missing returns 0, the
+            // reference's whole-arm miss; a known record answers the three values.
+            if let Some(template) = model.item_templates.get(&action.action) {
+                let link = super::item_stats::item_link_for_target(
+                    model.target,
+                    action.action,
+                    &template.name,
+                    template.quality,
+                );
+                push(Value::String(lua.create_string("item")?));
+                push(Value::Number(f64::from(action.action)));
+                push(Value::String(lua.create_string(&link)?));
+            }
         }
         Some(CursorPayload::Macro(mac)) => {
             push(Value::String(lua.create_string("macro")?));
@@ -435,13 +428,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .unwrap_or(0))
         })?,
     )?;
-    // `CanExitVehicle()` (`InputControl_Scripts.cpp:500`): one number when the active vehicle
-    // seat carries flag 0x2000000, otherwise nil. benilla has no vehicle seat model, and no
-    // donor-era content creates one, so nil is the real client's answer without that seat.
-    lua.globals().set(
-        "CanExitVehicle",
-        lua.create_function(|_, ()| Ok(mlua::Value::Nil))?,
-    )?;
     // `IsPetAttackAction(index)` (`PetInfo_Scripts.cpp:274`): the pet action at `index` is the
     // command word type 7 action 2 (Attack). The bar's packed words are the server's.
     lua.globals().set(
@@ -710,7 +696,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "CanExitVehicle",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            Ok(model.vehicle_guid.is_some())
+            // `InputControl_Scripts.cpp:500`: the number 1 with an active vehicle seat, else nil.
+            Ok(model
+                .vehicle_guid
+                .map_or(mlua::Value::Nil, |_| mlua::Value::Integer(1)))
         })?,
     )?;
     // The pitch controls are the other vehicle-only named handlers in VehicleMenuBar.xml. With
@@ -779,6 +768,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "GetBackpackCurrencyInfo",
         lua.create_function(|_, _index: Option<i64>| Ok(Value::Nil))?,
+    )?;
+    // Equipment sets (`GetNumEquipmentSets`, read by the gear-manager dialog's OnLoad in
+    // `PaperDollFrame.lua:2156`): the host has no equipment-set backend yet (`equipmentManager`
+    // is an inert CVar), so the count is the reference's answer with none saved — zero — and the
+    // load-time loop does not run.
+    lua.globals().set(
+        "GetNumEquipmentSets",
+        lua.create_function(|_, ()| Ok(0))?,
     )?;
     lua.globals().set(
         "CanShowAchievementUI",
@@ -2436,7 +2433,8 @@ mod tests {
                 "|cffffffff|Hitem:117|h[Tough Jerky]|h|r".to_string()
             )
         );
-        // A link that names a different entry must not ride along on a prefix match.
+        // A link that names a different entry must not ride along on a prefix match; the answer
+        // is rebuilt from the entry and still returns the payload's three values.
         s.set_cursor_for_test(CursorPayload::Item(CursorItem {
             item_class: None,
             guid: 0x105,
@@ -2451,13 +2449,25 @@ mod tests {
             quality: Some(1),
             equip_slots: Vec::new(),
         }));
-        assert_eq!(s.eval::<i64>("return select('#', GetCursorInfo())").unwrap(), 0);
+        assert_eq!(
+            s.eval::<i64>("return select('#', GetCursorInfo())").unwrap(),
+            3,
+            "the mismatched link is replaced, not the whole answer dropped"
+        );
+        let (kind, id, link): (String, f64, String) = s.eval("return GetCursorInfo()").unwrap();
+        assert_eq!((kind.as_str(), id), ("item", 117.0));
+        assert!(
+            link.contains("Hitem:117:") && !link.contains("Hitem:1170"),
+            "the stray link must not ride along: {link}"
+        );
         s.set_cursor_for_test(CursorPayload::Item(CursorItem {
             item_class: None, guid: 0x105, bar_placeable: true, consumable: false,
             bag: 0, slot: 1, item_id: 117, texture: None, link: None,
             count: None, quality: None, equip_slots: Vec::new(),
         }));
-        assert_eq!(s.eval::<i64>("return select('#', GetCursorInfo())").unwrap(), 0);
+        let (kind, id, link): (String, f64, String) = s.eval("return GetCursorInfo()").unwrap();
+        assert_eq!((kind.as_str(), id), ("item", 117.0));
+        assert!(link.contains("Hitem:117:"), "a link-less item still answers: {link}");
         s.set_item_template(117, crate::script::ItemTemplateView {
             name: "Tough Jerky".into(), quality: 1, ..Default::default()
         });
@@ -3406,8 +3416,9 @@ mod tests {
             true,
             false,
             true,
-            "Heroic daily",
             vec![262],
+            Some("Heroic daily"),
+            None,
             Some(WrathLfgQueueStatusState {
                 dungeon_id: 262,
                 wait_time_avg: 45,
@@ -3424,9 +3435,7 @@ mod tests {
                 dungeon_id: 262,
                 state: 1,
                 proposal_id: 77,
-                bosses_mask: 0,
                 silent: false,
-                is_local: true,
                 completed_mask: 0b101,
                 players: vec![WrathLfgProposalMemberState {
                     role: 0x02 | 0x01,
@@ -3712,6 +3721,7 @@ mod tests {
                 comment,
                 session_epoch: 11,
                 world_generation: 22,
+                ..
             } if slots == &[0x0100_0106] && comment == "Random heroic"
         )));
     }
@@ -3738,7 +3748,7 @@ mod tests {
     fn rune_frame_reads_resync_state() {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         s.set_now(50.0);
-        s.apply_rune_resync([
+        s.set_runes(&[
             (0, 0, 50.0),
             (0, 255, 50.0),
             (1, 128, 50.0),
@@ -3766,7 +3776,6 @@ mod tests {
         assert_eq!(
             s.take_wrath_scoped_commands(),
             vec![WrathScopedCommand::VehicleExit {
-                vehicle: 0xF130_0002_0000_0099,
                 session_epoch: 9,
                 world_generation: 12,
             }]

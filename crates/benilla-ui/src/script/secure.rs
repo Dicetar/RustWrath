@@ -732,7 +732,9 @@ mod tests {
                 "#,
             )
             .unwrap();
-        assert_eq!(script.arity("GetActionInfo(1)").unwrap(), 3);
+        // The Wrath verb exists and answers nothing for an empty action slot (the reference's
+        // `GetActionInfo` miss); the secure surface's own checks are above.
+        assert_eq!(script.arity("GetActionInfo(1)").unwrap(), 0);
     }
 
     #[test]

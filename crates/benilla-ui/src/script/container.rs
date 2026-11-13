@@ -3138,6 +3138,8 @@ mod tests {
     #[test]
     fn the_seventh_bank_bag_resolves_for_the_wrath_verbs() {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        // A bare VM has no call host; the verb queues its call instead of raising NO_HOST.
+        s.keep_calls();
         s.set_bank(Some(BankState {
             num_purchased: 7,
             next_cost: 0,

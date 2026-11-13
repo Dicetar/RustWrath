@@ -35,7 +35,7 @@ fn make_glue_vm() -> mlua::Result<UiScript> {
 }
 
 /// Settings read by Wrath FrameXML during startup, with the defaults used by the stock UI fixture.
-const WRATH_UI_CVARS: &[(&str, &str)] = &[
+pub(super) const WRATH_UI_CVARS: &[(&str, &str)] = &[
     // 12340 GameUI_CVar.cpp:647: stock spellbook rank-display preference.
     ("ShowAllSpellRanks", "1"),
     ("Sound_OutputDriverIndex", "0"),

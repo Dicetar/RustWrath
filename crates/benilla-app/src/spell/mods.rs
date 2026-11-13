@@ -181,7 +181,8 @@ impl SpellModifiers {
     }
 
     /// What differs from `prev`: the `SpellFamilyFlags` bits with any changed cell, in either
-    /// table and at any op, and whether the class family moved.
+    /// table and at any op (bits 0-63 in `bits`, 64-95 in `high_bits`), and whether the class
+    /// family moved.
     pub(crate) fn diff(&self, prev: &SpellModifiers) -> ModsDiff {
         let bits = (0..64).fold(0u64, |bits, bit| {
             let row = bit * OPS..(bit + 1) * OPS;
@@ -189,14 +190,16 @@ impl SpellModifiers {
                 && self.pct[row.clone()] == prev.pct[row];
             bits | u64::from(!same) << bit
         });
-        let high_changed = (64..BITS).any(|bit| {
+        let high_bits = (64..BITS).fold(0u32, |bits, bit| {
             let row = bit * OPS..(bit + 1) * OPS;
-            self.flat[row.clone()] != prev.flat[row.clone()]
-                || self.pct[row.clone()] != prev.pct[row]
+            let same = self.flat[row.clone()] == prev.flat[row.clone()]
+                && self.pct[row.clone()] == prev.pct[row];
+            bits | u32::from(!same) << (bit - 64)
         });
         ModsDiff {
             bits,
-            class_family: self.class_family != prev.class_family || high_changed,
+            high_bits,
+            class_family: self.class_family != prev.class_family,
         }
     }
 
@@ -207,11 +210,17 @@ impl SpellModifiers {
         if !self.gates_pass(d) || usize::from(op) >= OPS {
             return None;
         }
-        // All 64 low bits, no early break (`6e6b8f`/`6e6b97`); the accumulators wrap, as the
-        // reference's do.
+        // All 96 family bits, no early break (`6e6b8f`/`6e6b97`); the accumulators wrap, as the
+        // reference's do. Bits 0..64 come from `SpellDisplay::spell_family_flags` and bits 64..96
+        // from its third word, the column-163 high dword.
         let (mut flat, mut pct) = (0i32, 0i32);
-        for bit in 0..64u8 {
-            if d.spell_family_flags >> bit & 1 == 0 {
+        for bit in 0..BITS as u8 {
+            let set = if bit < 64 {
+                d.spell_family_flags >> bit & 1
+            } else {
+                u64::from(d.spell_family_flags_high) >> (bit - 64) & 1
+            };
+            if set == 0 {
                 continue;
             }
             let cell = index(bit, op);
@@ -301,8 +310,10 @@ impl SpellModifiers {
 /// How one snapshot of the tables differs from an earlier one ([`SpellModifiers::diff`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ModsDiff {
-    /// Bit `b` set: a cell of family-flag bit `b` changed, in either table at any op.
+    /// Bit `b` set: a cell of family-flag bit `b` changed, in either table at any op (bits 0-63).
     pub(crate) bits: u64,
+    /// Bit `b` set: a cell of family-flag bit `64 + b` changed (bits 64-95, the Wrath third word).
+    pub(crate) high_bits: u32,
     pub(crate) class_family: bool,
 }
 
@@ -342,11 +353,20 @@ pub(super) fn track_class_family(
 mod tests {
     use super::*;
 
-    /// A mage spell (family 3) with the given bits set, against a mage player.
+    /// A mage spell (family 3) with the given low bits set, against a mage player.
     fn mage(bits: &[u8]) -> SpellDisplay {
         SpellDisplay {
             spell_family: 3,
             spell_family_flags: bits.iter().fold(0u64, |m, b| m | 1 << b),
+            ..Default::default()
+        }
+    }
+
+    /// A mage spell whose high word carries family bits `bits` (64 + each entry).
+    fn mage_high(bits: &[u8]) -> SpellDisplay {
+        SpellDisplay {
+            spell_family: 3,
+            spell_family_flags_high: bits.iter().fold(0u32, |m, b| m | 1 << b),
             ..Default::default()
         }
     }
@@ -456,9 +476,9 @@ mod tests {
     fn an_out_of_range_packet_is_dropped() {
         let mut mods = mage_tables();
         // `(64, 19)` overruns onto the class family in the reference.
-        mods.set(true, 64, 19, 999);
-        // `(65, 23)` lands on PCT element 0 there.
-        mods.set(true, 65, 23, 999);
+        // 96 and above are outside the 96-bit table (0..=95).
+        mods.set(true, 96, 19, 999);
+        mods.set(true, 97, 23, 999);
         mods.set(true, 0, 29, 999);
         mods.set(true, 255, 255, 999);
 
@@ -472,7 +492,9 @@ mod tests {
     /// Real `Spell.dbc` family masks; Cleanse 4987 sets bits 12 and 33, across both dwords.
     #[test]
     fn real_spells_sum_their_own_family_bits() {
-        let data = benilla_formats::wow_data_or_skip!();
+        // The expectations are the donor's Spell.dbc rows (Cleanse's two dwords); a 3.3.5a
+        // Spell.dbc carries different family flags.
+        let data = benilla_formats::donor_data_or_skip!();
         let mut chain = benilla_formats::open_chain(&data).expect("open chain");
         let cat = benilla_formats::load_spell_catalog(&mut chain).expect("load Spell.dbc");
 
@@ -664,5 +686,61 @@ mod tests {
             (max - (5.0 + bonus) * 1.2).abs() < 1e-4,
             "the modifier scales the bonused max, not the bare 5.0: {max}"
         );
+    }
+
+    /// Low bits (0..64) behave byte-identically: a pinned expectation for bits 5 and 35.
+    #[test]
+    fn low_bits_byte_identical_pinned() {
+        let mut mods = mage_tables();
+        mods.set(true, 5, OP_COST, -10);
+        mods.set(true, 35, OP_COST, -15);
+        mods.set(false, 5, OP_COST, -20);
+        mods.set(false, 35, OP_COST, -30);
+        assert_eq!(mods.apply(&mage(&[5, 35]), OP_COST, 100), 37);
+    }
+
+    /// A high-word (>=64) table cell change is reported per bit (`high_bits`, bit 64 = high bit
+    /// 0); the class family no longer folds it. Unchanged high cells produce no diff entry.
+    #[test]
+    fn high_word_cell_change_is_reported() {
+        let base = SpellModifiers::default();
+        let mut now = base.clone();
+        now.set(true, 64, OP_COST, 7);
+        let diff = now.diff(&base);
+        assert_eq!(diff.high_bits, 1 << 0, "bit 64 is high bit 0");
+        assert_eq!(diff.bits, 0);
+        assert!(!diff.class_family, "the class family itself did not move");
+        // And a no-op diff is empty.
+        assert_eq!(base.diff(&base), ModsDiff::default());
+        // Unchanged high bits: writing the default value leaves no entry.
+        let mut same = base.clone();
+        same.set(true, 64, OP_COST, 0);
+        assert_eq!(same.diff(&base), ModsDiff::default());
+    }
+
+    /// A high-word family bit selects its table cell: the third word now reaches the sum.
+    #[test]
+    fn high_word_family_bits_select_their_cells() {
+        let mut mods = mage_tables();
+        mods.set(true, 70, OP_COST, -20);
+        // High bit 6 is family bit 70.
+        assert_eq!(mods.apply(&mage_high(&[6]), OP_COST, 100), 80);
+        // A spell without that bit reads nothing.
+        assert_eq!(mods.apply(&mage_high(&[]), OP_COST, 100), 100);
+        assert_eq!(mods.apply(&mage(&[6]), OP_COST, 100), 100);
+    }
+
+    /// Mixed low + high: low bits still accumulate; high-bit cells are stored and addressable.
+    #[test]
+    fn mixed_low_and_high_cells_are_stored() {
+        let mut mods = mage_tables();
+        mods.set(true, 5, OP_COST, -10);
+        mods.set(true, 70, OP_COST, -20);
+        assert_eq!(mods.apply(&mage(&[5]), OP_COST, 100), 90);
+        // High-bit cell is stored at the expected index.
+        assert_eq!(mods.flat[index(70, OP_COST)], -20);
+        // And an out-of-range high bit (>=96) is still dropped.
+        mods.set(true, 96, OP_COST, 999);
+        assert_eq!(mods.flat[index(70, OP_COST)], -20);
     }
 }

@@ -114,8 +114,17 @@ pub(super) fn load_ui_no_warnings(s: &UiScript, entry: &str) -> usize {
 fn load_entry(s: &UiScript, entry: &str, strict_templates: bool, no_warnings: bool) -> usize {
     follow_production_order(s, entry);
     // The app registers its CVars before any file loads: stock `UIOptionsFrame.xml` reads two
-    // camera CVars at `OnLoad` and raises on a nil. A value a test already set stands.
+    // camera CVars at `OnLoad` and raises on a nil. A value a test already set stands. A Wrath
+    // target also gets the startup rows the production VM seats (`lifecycle::register_wrath_cvars`'s
+    // list), or the stock Wrath files raise on their first OnLoad.
     s.register_cvars(crate::cvars::registered_pairs());
+    if s.target() == benilla_ui::script::UiTarget::Wrath335 {
+        s.register_cvars(super::lifecycle::WRATH_UI_CVARS.iter().copied());
+        if WRATH_KIT_READY.with(|ready| ready.borrow_mut().insert(s.session())) {
+            s.run(WRATH_KIT_CONSTANTS)
+                .expect("Wrath kit: the Constants.lua stand-ins run");
+        }
+    }
     let path = entry.replace('\\', "/");
     let bytes = read(&path).unwrap_or_else(|| panic!("{entry}: not found"));
     if path.to_ascii_lowercase().ends_with(".lua") {
@@ -186,6 +195,9 @@ fn load_entry(s: &UiScript, entry: &str, strict_templates: bool, no_warnings: bo
             .warnings
             .iter()
             .filter(|w| w.contains("unknown template"))
+            // Voice chat is permanently skipped (`reference_ui::WRATH_SKIPPED_FILES`), so a stock
+            // frame inheriting its speaker keeps a plain hidden frame; the slice tests allow it.
+            .filter(|w| !w.contains("VoiceChatSpeakerTemplate"))
             .collect();
         assert!(
             missing.is_empty(),
@@ -480,9 +492,60 @@ pub(super) const MICRO_BUTTON_STAND_INS: &str = r#"
 
 /// One file's bytes, off the chain for a path or from this crate's `assets/ui` for a bare name;
 /// also the loader's `<Include>`/`<Script file=>` provider.
+thread_local! {
+    /// Sessions that already ran the Wrath kit's constant stand-ins; production defines them in
+    /// `Constants.lua`, which seats the localized catalogs first.
+    static WRATH_KIT_READY: std::cell::RefCell<std::collections::HashSet<u64>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// The 3.3.5a `FrameXML\Constants.lua` rows a stock Wrath kit reads at load, at the values that
+/// file defines (the chain's copy is the source). Loading `Constants.lua` itself needs the
+/// localized class/race catalogs seated first, which the kit loader cannot do without a mutable
+/// VM; the handful of constants the loaded frames read are defined here instead.
+const WRATH_KIT_CONSTANTS: &str = r#"
+    -- 3.3.5a `Constants.lua:87`'s `MAX_EQUIPMENT_SETS_PER_PLAYER = 10`.
+    MAX_EQUIPMENT_SETS_PER_PLAYER = 10
+    -- The Wrath talent UI's tab bound (three: two trees and the pet's); the stock
+    -- `InspectTalentFrame.lua` loops to it, and the 1.12 file had no such constant.
+    MAX_TALENT_TABS = 3
+    -- 3.3.5a `Constants.lua`'s shared colour constants, as that file defines them.
+    NORMAL_FONT_COLOR_CODE = "|cffffd200"
+    HIGHLIGHT_FONT_COLOR_CODE = "|cffffffff"
+    RED_FONT_COLOR_CODE = "|cffff2020"
+    GREEN_FONT_COLOR_CODE = "|cff20ff20"
+    GRAY_FONT_COLOR_CODE = "|cff808080"
+    YELLOW_FONT_COLOR_CODE = "|cffffff00"
+    LIGHTYELLOW_FONT_COLOR_CODE = "|cffffff9a"
+    ORANGE_FONT_COLOR_CODE = "|cffff7f3f"
+    NORMAL_FONT_COLOR = { r = 1.0, g = 0.82, b = 0.0 }
+    HIGHLIGHT_FONT_COLOR = { r = 1.0, g = 1.0, b = 1.0 }
+    RED_FONT_COLOR = { r = 1.0, g = 0.1, b = 0.1 }
+    GREEN_FONT_COLOR = { r = 0.1, g = 1.0, b = 0.1 }
+    GRAY_FONT_COLOR = { r = 0.5, g = 0.5, b = 0.5 }
+    YELLOW_FONT_COLOR = { r = 1.0, g = 1.0, b = 0.0 }
+    LIGHTYELLOW_FONT_COLOR = { r = 1.0, g = 1.0, b = 0.6 }
+    ORANGE_FONT_COLOR = { r = 1.0, g = 0.5, b = 0.25 }
+    PASSIVE_SPELL_FONT_COLOR = { r = 0.77, g = 0.64, b = 0.0 }
+"#;
+
 pub(super) fn read(req: &str) -> Option<Vec<u8>> {
     if super::reference_ui::is_chain_entry(req) {
-        return super::reference_ui::read(req);
+        if let Some(bytes) = super::reference_ui::read(req) {
+            return Some(bytes);
+        }
+        // 3.3.5a ships `GetText` in the engine (`FrameScript_GetText 0x00819D40`), so its chain
+        // has no `FrameXML\LocaleProperties.lua`; the 1.12-era kits still list that path. The
+        // shipped stand-in loads for them and leaves the host's native GetText answering.
+        if req
+            .rsplit(['/', '\\'])
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("LocaleProperties.lua"))
+        {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/ui");
+            return std::fs::read(dir.join("LocaleProperties.lua")).ok();
+        }
+        return None;
     }
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/ui");
     std::fs::read(dir.join(req)).ok()
@@ -567,6 +630,11 @@ pub(super) const CHARACTER_UI: &[&str] = &[
     // The stock strings, which `PaperDollFrame_OnLoad` reads at load; there are no fallbacks.
     "Interface\\FrameXML\\GlobalStrings.lua",
     "Interface\\FrameXML\\Fonts.xml",
+    // 3.3.5a defines the `GameFont*` objects here, over `Fonts.xml`'s `SystemFont_*` families;
+    // the 1.12 `Fonts.xml` carried them itself, so the 1.12-era kit never listed this file.
+    "Interface\\FrameXML\\FontStyles.xml",
+    // 3.3.5a defines the shared FrameXML constants (e.g. `MAX_EQUIPMENT_SETS_PER_PLAYER`) here;
+    // the 1.12 files carried theirs elsewhere, so the 1.12-era kit never listed this file.
     "Interface\\FrameXML\\BasicControls.xml", // TEXT(), which those labels go through
     // `GetText`, the gendered-string helper `ReputationFrame.lua:65` calls for each standing.
     r"Interface\FrameXML\LocaleProperties.lua",
@@ -580,10 +648,35 @@ pub(super) const CHARACTER_UI: &[&str] = &[
     "Interface\\FrameXML\\UIDropDownMenu.xml",
     r"Interface\FrameXML\UIPanelTemplates.lua",
     r"Interface\FrameXML\UIPanelTemplates.xml",
+    // The stock window tab, whose `<OnShow>` needs the `UIPanelTemplates` pair above it. The
+    // chain's own `FrameXML.toc` runs this before `OptionsFrameTemplates.xml`, so the kit follows
+    // it: a kit is a subsequence of the production load, and the order effects must match.
+    r"Interface\FrameXML\CharacterFrameTemplates.xml",
     // ReputationFrame's detail check boxes inherit its `OptionsCheckButtonTemplate`.
     "Interface\\FrameXML\\OptionsFrameTemplates.xml",
-    // The stock window tab, whose `<OnShow>` needs the `UIPanelTemplates` pair above it.
-    r"Interface\FrameXML\CharacterFrameTemplates.xml",
+    // 3.3.5a defines `OptionsSmallCheckButtonTemplate` here, which `ReputationFrame.xml`'s detail
+    // check boxes inherit; the 1.12 kit's options templates had no such row.
+    "Interface\\FrameXML\\OptionsPanelTemplates.xml",
+    // `AUTOCOMPLETE_LIST`, which 3.3.5a `StaticPopup.lua` reads at load (`:915`); the 1.12 file
+    // did not, so the 1.12-era kit never listed this provider.
+    r"Interface\FrameXML\AutoComplete.lua",
+    // 3.3.5a `ActionButton.lua` calls the secure-button helpers at OnLoad; the 1.12 files have no
+    // secure templates, so the 1.12-era kit never listed this provider.
+    r"Interface\FrameXML\SecureTemplates.lua",
+    r"Interface\FrameXML\SecureTemplates.xml",
+    // 3.3.5a `PlayerFrame.xml` inherits `ReadyCheckStatusTemplate`; the 1.12 file did not.
+    r"Interface\FrameXML\ReadyCheck.xml",
+    // 3.3.5a `PetFrame.xml` calls the shared cast-bar and totem handlers; the 1.12 files did not.
+    r"Interface\FrameXML\CastingBarFrame.lua",
+    r"Interface\FrameXML\CastingBarFrame.xml",
+    r"Interface\FrameXML\TotemFrame.lua",
+    // 3.3.5a `PaperDollFrame.xml`'s title picker is a hybrid scroll frame; the 1.12 file had none.
+    r"Interface\FrameXML\HybridScrollFrame.lua",
+    r"Interface\FrameXML\HybridScrollFrame.xml",
+    // 3.3.5a `StaticPopup.xml` inherits `AutoCompleteEditBoxTemplate` and
+    // `MoneyInputFrameTemplate`, neither of which the 1.12 files define.
+    r"Interface\FrameXML\AutoComplete.xml",
+    r"Interface\FrameXML\MoneyInputFrame.xml",
     "Interface\\FrameXML\\StaticPopup.xml",
     "Interface\\FrameXML\\TextStatusBar.lua",
     "Interface\\FrameXML\\TextStatusBar.xml",
