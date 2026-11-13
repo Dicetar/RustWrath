@@ -36,9 +36,12 @@ fn state() -> HonorState {
 /// The character window, whose fifth tab this page is; [`super::test_ui::CHARACTER_UI`] carries
 /// `HonorFrame.xml`, as `PaperDollFrame.lua:103` writes into it on every show.
 fn load_page(s: &UiScript) {
-    for file in super::test_ui::CHARACTER_UI {
+    for file in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(s, file);
     }
+    // The layer's stock-Lua deviations load after every stock file in production; the page reads
+    // `CharacterFrame_ShowSubFrame`, which the layer makes nil-safe for absent subframes.
+    super::test_ui::load_ui_strict(s, "FrameXMLFixes.xml");
 }
 
 /// An Alliance male level-60 player. Race and class carry both halves: the level line formats
@@ -280,7 +283,9 @@ fn the_real_global_strings_name_the_rank() {
         .read_file("Interface\\FrameXML\\GlobalStrings.lua")
         .expect("GlobalStrings.lua in the chain");
 
-    let mut s = UiScript::new().unwrap();
+    // The kit is the Wrath character page, so the VM is the Wrath one; a Vanilla112 VM cannot
+    // parse the 3.3.5a chain's Lua (5.1-only syntax) and is not what this page runs on.
+    let mut s = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
     s.set_screen_size(1024.0, 768.0);
     s.run(&String::from_utf8_lossy(&src)).expect("runs clean");
     load_page(&s);
@@ -348,7 +353,9 @@ fn inspect_reply() -> InspectHonorData {
 
 /// The inspect window on its Honor tab, over a rank-12 Alliance target, [`inspect_reply`] held.
 fn shown_inspect_honor_page() -> UiScript {
-    let mut s = UiScript::new().unwrap();
+    // The inspect-honor page is a Wrath contract (MSG_INSPECT_HONOR_STATS, 6-value
+    // GetInspectHonorData); a Vanilla112 VM cannot parse the 3.3.5a chain's Lua.
+    let mut s = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
     for file in [
@@ -455,3 +462,22 @@ fn the_page_asks_only_when_it_holds_nothing() {
     );
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

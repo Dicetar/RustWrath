@@ -135,12 +135,12 @@ fn backpack_with_fitting_helm() -> benilla_ui::script::ContainerState {
 /// A frame count fingerprints the player's own file, not a target: it moves only when that does.
 #[test]
 fn shipped_character_frame_loads_clean() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     let mut counts = std::collections::HashMap::new();
-    for f in super::test_ui::CHARACTER_UI {
-        counts.insert(*f, super::test_ui::load_ui_strict(&s, f));
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
+        counts.insert(f, super::test_ui::load_ui_strict(&s, f));
     }
     assert!(s.errors().is_empty(), "load errors: {:?}", s.errors());
     assert_eq!(
@@ -159,13 +159,13 @@ fn shipped_character_frame_loads_clean() {
 /// rotates the model and closes again.
 #[test]
 fn shipped_character_frame_drives_end_to_end() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
     // The stock tooltip sizes from its measured lines; a fixed-width font stands in for the atlas.
     s.set_text_measurer(Box::new(super::FixedWidthFont(6.0)));
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
 
@@ -359,11 +359,11 @@ fn shipped_character_frame_drives_end_to_end() {
 /// button's `OnLoad` raises its level by 4 (`CharacterFrame.xml:75`), so its red X paints above.
 #[test]
 fn close_button_draws_above_the_paper_doll_page() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -401,11 +401,11 @@ fn close_button_draws_above_the_paper_doll_page() {
 /// `PLAYER_ENTERING_WORLD`, so the test seats one first.
 #[test]
 fn level_line_reads_the_snapshot_and_repaints_on_unit_level() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -451,11 +451,11 @@ fn level_line_reads_the_snapshot_and_repaints_on_unit_level() {
 /// `ItemButtonTemplate.lua:61-82`).
 #[test]
 fn clicking_an_occupied_doll_slot_picks_it_up_and_locks_it() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -509,11 +509,11 @@ fn clicking_an_occupied_doll_slot_picks_it_up_and_locks_it() {
 /// (`ItemButtonTemplate.xml:44`). The mouse is parked off the doll, so only a lock lights a ring.
 #[test]
 fn cursor_update_highlights_fitting_doll_slots_while_holding_a_bag_item() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -573,11 +573,11 @@ fn cursor_update_highlights_fitting_doll_slots_while_holding_a_bag_item() {
 /// A left-button release on the model pane auto-equips the held item (`PaperDollFrame.lua:31-35`).
 #[test]
 fn model_pane_click_auto_equips_a_held_bag_item() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -611,11 +611,11 @@ fn model_pane_click_auto_equips_a_held_bag_item() {
 /// `SetItemButtonDesaturated(this, nil)` resets it to white (`ItemButtonTemplate.lua:71-81`).
 #[test]
 fn broken_equipped_item_tints_its_doll_slot_red() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -684,13 +684,13 @@ fn broken_equipped_item_tints_its_doll_slot_red() {
 /// a skill row selected on the way: the Character tab must switch back while Skills is up.
 #[test]
 fn tab_round_trip_with_a_selected_skill_by_point() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     use benilla_ui::script::{SkillCall, SkillEntry, SkillsState};
 
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -866,11 +866,11 @@ fn tab_round_trip_with_a_selected_skill_by_point() {
 /// click helpers, as in the reference.
 #[test]
 fn rotate_arrows_tap_twice_and_spin_while_held() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -944,11 +944,11 @@ fn rotate_arrows_tap_twice_and_spin_while_held() {
 /// moves the tab row; driven by a bare `ToggleCharacter(page)`, as the `C` binding calls it.
 #[test]
 fn a_keybind_page_switch_moves_the_tab_row_with_it() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -1056,7 +1056,7 @@ fn a_keybind_page_switch_moves_the_tab_row_with_it() {
 /// an authored 115.
 #[test]
 fn the_five_tabs_fit_their_labels_on_the_first_show() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     /// `2 * CharacterFrameTab1Left:GetWidth()`: the two 20-unit end slices.
     const SIDES: f64 = 40.0;
     let mut s = UiScript::new().unwrap();
@@ -1064,7 +1064,7 @@ fn the_five_tabs_fit_their_labels_on_the_first_show() {
     s.set_screen_size(1024.0, 768.0);
     // The app always installs a measurer (`AtlasMeasurer`); a bare VM has none.
     s.set_text_measurer(Box::new(super::FixedWidthFont(6.0)));
-    for f in super::test_ui::CHARACTER_UI {
+    for f in super::test_ui::production_order(&[super::test_ui::CHARACTER_UI]) {
         super::test_ui::load_ui_strict(&s, f);
     }
     s.set_unit("player", Some(player_unit()));
@@ -1143,7 +1143,7 @@ fn the_five_tabs_fit_their_labels_on_the_first_show() {
 /// calls it from a tab's `<OnClick>` on a row of its own.
 #[test]
 fn an_addons_tab_click_selects_through_the_generic_entry_point() {
-    let _data = benilla_formats::wow_data_or_skip!();
+    let _data = benilla_formats::donor_data_or_skip!();
     let mut s = UiScript::new().unwrap();
     s.keep_calls();
     s.set_screen_size(1024.0, 768.0);
