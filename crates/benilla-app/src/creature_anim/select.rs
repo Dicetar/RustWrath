@@ -509,7 +509,7 @@ pub(super) fn unarmed_special(id: u16, main: Option<(u8, u8)>, off: Option<(u8, 
 }
 
 /// The melee swing one-shot ids, the only clips the whiff slow-down touches on the overlay.
-pub(super) fn is_swing_id(id: u16) -> bool {
+pub(crate) fn is_swing_id(id: u16) -> bool {
     matches!(id, 16..=19 | 85 | 87 | 88 | 117)
 }
 
@@ -555,7 +555,7 @@ pub(super) fn state_emote_anim(
 }
 
 /// The mainhand swing id (`0x6246a0`); anything but an equipped melee weapon swings unarmed (16).
-pub(super) fn swing_anim_main(wielded: Option<(u8, u8)>) -> u16 {
+pub(crate) fn swing_anim_main(wielded: Option<(u8, u8)>) -> u16 {
     match wielded {
         Some((2, sub)) => match sub {
             0x0 | 0x4 | 0x7 | 0xb | 0xe => 17, // Attack1H: 1H axe/mace/sword/exotic/misc

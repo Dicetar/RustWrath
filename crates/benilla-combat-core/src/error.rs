@@ -35,6 +35,10 @@ pub enum CombatError {
     SnapshotStaleTick { current: Ticks, snapshot: Ticks },
     SnapshotStaleSequence { current: Option<Sequence>, snapshot: Option<Sequence> },
     SnapshotInvalid(&'static str),
+    /// A compiled action table already holds this action id.
+    DuplicateAction(u32),
+    /// A compiled action names a follow-up the table does not hold.
+    MissingFollowup(u32),
 }
 
 impl fmt::Display for CombatError {
@@ -125,6 +129,12 @@ impl fmt::Display for CombatError {
                 current.map(|value| value.0)
             ),
             Self::SnapshotInvalid(reason) => write!(f, "invalid combat snapshot: {reason}"),
+            Self::DuplicateAction(id) => {
+                write!(f, "the action table already holds action id {id}")
+            }
+            Self::MissingFollowup(id) => {
+                write!(f, "the action table holds no follow-up action id {id}")
+            }
         }
     }
 }

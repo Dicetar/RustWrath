@@ -25,26 +25,38 @@
 //! Project B integration code, not donor code. See
 //! `docs/opencode/combat-donor-assessment.md`.
 
+mod action;
 mod core;
 mod data;
 mod enemy;
+mod enemy_brain;
+mod engine;
 mod error;
 mod identity;
 mod input;
 mod player;
+mod policy;
+mod profile;
 mod stamina;
 mod time;
 
+pub use action::{dodge_action, ActionId, ActionKind, ActionSpec, ActionTable};
 pub use crate::core::{
     AdvanceReport, CombatCore, CombatEvent, CombatSnapshot, MAX_ADVANCE_TICKS, MAX_PENDING_INPUTS,
     ReconcileReport, SubmitOutcome,
 };
 pub use data::{CombatConfig, DodgeSpec, EnemySpec, StaminaConfig};
 pub use enemy::{EnemyPhase, EnemyView};
+pub use enemy_brain::{EnemyBrain, EnemyBrainConfig, EnemyEvent};
+pub use engine::{ActionEnd, ActionEngine, ActionRefusal, EngineEvent};
 pub use error::{CombatError, CombatResult};
 pub use identity::{ActionRevision, PlayerId, Sequence, SessionEpoch};
 pub use input::{
     BufferedDodge, DodgeButton, DodgeRejection, DodgeResult, GestureOutcome, InputFrame, InputOutcome,
+};
+pub use policy::ProfilePolicy;
+pub use profile::{
+    dodge_from_clip, enemy_action, melee_action, spell_action, ClipSummary, SpellSummary,
 };
 pub use player::{DodgeView, HitOutcome, PlayerPhase, PlayerView};
 pub use time::{TickRate, TickWindow, Ticks};
