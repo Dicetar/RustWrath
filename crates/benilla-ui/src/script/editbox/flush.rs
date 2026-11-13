@@ -56,16 +56,8 @@ pub(in crate::script) fn flush(lua: &Lua, h: FrameHandle) {
 /// the keyboard, whose focus change raises bit 2 (`0x77afa8`), starts its caret solid. `false`
 /// while the advance table is pending, for the next flush to retry.
 fn caret(lua: &Lua, h: FrameHandle) -> bool {
-    let wrath = lua
-        .app_data_ref::<Model>()
-        .expect("model app_data")
-        .target
-        == crate::script::UiTarget::Wrath335;
     // A window still owed its relayout is stale, and the retry places the caret.
     if with_eb(lua, h, |eb| !eb.relayout_owed && !eb.caret_in_window()) == Some(true) {
-        if wrath {
-            let _ = cursor_changed(lua, h);
-        }
         with_eb(lua, h, |eb| eb.caret_shown = false);
         return true;
     }
@@ -99,22 +91,24 @@ fn cursor_changed(lua: &Lua, h: FrameHandle) -> bool {
         .target
         == crate::script::UiTarget::Wrath335;
     let fire_fallback = |line_h: f32| {
-        if wrath {
-            if let Err(e) = event::fire_widget_handler(
-                lua,
-                id,
-                "OnCursorChanged",
-                vec![
-                    Value::Number(0.0),
-                    Value::Number(0.0),
-                    Value::Number(f64::from(CARET_WIDTH)),
-                    Value::Number(f64::from(line_h)),
-                ],
-            ) {
-                lua.app_data_mut::<Model>()
-                    .expect("model app_data")
-                    .record_lua_error(&e);
-            }
+        if !wrath || with_eb(lua, h, |eb| eb.fallback_cursor_fired) != Some(false) {
+            return;
+        }
+        with_eb(lua, h, |eb| eb.fallback_cursor_fired = true);
+        if let Err(e) = event::fire_widget_handler(
+            lua,
+            id,
+            "OnCursorChanged",
+            vec![
+                Value::Number(0.0),
+                Value::Number(0.0),
+                Value::Number(f64::from(CARET_WIDTH)),
+                Value::Number(f64::from(line_h)),
+            ],
+        ) {
+            lua.app_data_mut::<Model>()
+                .expect("model app_data")
+                .record_lua_error(&e);
         }
     };
     if !super::seam::advances_current(lua, h) {
@@ -182,6 +176,7 @@ fn cursor_changed(lua: &Lua, h: FrameHandle) -> bool {
         crate::script::object::eff_scale(&model, h)
     };
     let (x, y) = (x / k, y / k);
+    with_eb(lua, h, |eb| eb.fallback_cursor_fired = false);
     if let Err(e) = event::fire_widget_handler(
         lua,
         id,

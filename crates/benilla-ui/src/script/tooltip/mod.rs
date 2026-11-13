@@ -372,6 +372,8 @@ fn apply_anchor(
     let pts = match anchor {
         TooltipAnchor::Right => Some((Point::BottomLeft, Point::TopRight)),
         TooltipAnchor::Left => Some((Point::BottomRight, Point::TopLeft)),
+        TooltipAnchor::Bottom => Some((Point::Top, Point::Bottom)),
+        TooltipAnchor::Top => Some((Point::Bottom, Point::Top)),
         TooltipAnchor::TopRight => Some((Point::BottomRight, Point::TopRight)),
         TooltipAnchor::TopLeft => Some((Point::BottomLeft, Point::TopLeft)),
         TooltipAnchor::BottomRight => Some((Point::TopLeft, Point::BottomRight)),

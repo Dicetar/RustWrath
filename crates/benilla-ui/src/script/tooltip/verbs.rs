@@ -46,8 +46,8 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 {
                     "ANCHOR_LEFT" => TooltipAnchor::Left,
                     "ANCHOR_RIGHT" => TooltipAnchor::Right,
-                    "ANCHOR_BOTTOM" => TooltipAnchor::BottomLeft,
-                    "ANCHOR_TOP" => TooltipAnchor::TopLeft,
+                    "ANCHOR_BOTTOM" => TooltipAnchor::Bottom,
+                    "ANCHOR_TOP" => TooltipAnchor::Top,
                     "ANCHOR_BOTTOMLEFT" => TooltipAnchor::BottomLeft,
                     "ANCHOR_BOTTOMRIGHT" => TooltipAnchor::BottomRight,
                     "ANCHOR_TOPLEFT" => TooltipAnchor::TopLeft,

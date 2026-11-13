@@ -74,20 +74,16 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         let mut templates = model.framexml_templates.borrow_mut();
         for name in SECURE_TEMPLATES {
             if !templates.contains(name) {
-                templates.register(
-                    name,
-                    crate::framexml::Element::empty("Frame"),
-                    FALLBACK_CONTEXT,
-                );
+                let mut el = crate::framexml::Element::empty("Frame");
+                el.attrs.push(("protected".to_string(), "true".to_string()));
+                templates.register(name, el, FALLBACK_CONTEXT);
             }
         }
         for &(name, tag) in FALLBACK_TEMPLATES {
             if !templates.contains(name) {
-                templates.register(
-                    name,
-                    crate::framexml::Element::empty(tag),
-                    FALLBACK_CONTEXT,
-                );
+                let mut el = crate::framexml::Element::empty(tag);
+                el.attrs.push(("protected".to_string(), "true".to_string()));
+                templates.register(name, el, FALLBACK_CONTEXT);
             }
         }
     }
@@ -758,5 +754,73 @@ mod tests {
             ),
             crate::framexml::Registration::Replaced
         );
+    }
+
+    #[test]
+    fn is_protected_and_can_change_protected_state_follow_hierarchy_and_combat() {
+        let mut script = script();
+        script
+            .run(
+                r#"
+                Child = CreateFrame("Frame", "SecureHandlerTestChild", Bar)
+                local btn = CreateFrame("CheckButton", "SecureActionBtn", nil, "SecureActionButtonTemplate")
+                local p_bar, e_bar = Bar:IsProtected()
+                local p_child, e_child = Child:IsProtected()
+                local p_plain, e_plain = Plain:IsProtected()
+                local p_btn, e_btn = btn:IsProtected()
+                assert(p_bar == true and e_bar == true, "secure template is explicitly protected")
+                assert(p_child == true and e_child == false, "child inherits protection non-explicitly")
+                assert(p_plain == false and e_plain == false, "plain frame is unprotected")
+                assert(p_btn == true and e_btn == true, "SecureActionButtonTemplate is explicitly protected")
+                assert(Bar:CanChangeProtectedState() == true)
+                assert(Child:CanChangeProtectedState() == true)
+                assert(Plain:CanChangeProtectedState() == true)
+                "#,
+            )
+            .unwrap();
+
+        let mut player = crate::script::UnitState::default();
+        player.exists = true;
+        player.has_object = true;
+        player.in_combat = true;
+        script.set_unit("player", Some(player.clone()));
+
+        assert!(!script.eval::<bool>("return Bar:CanChangeProtectedState()").unwrap());
+        assert!(!script.eval::<bool>("return Child:CanChangeProtectedState()").unwrap());
+        assert!(script.eval::<bool>("return Plain:CanChangeProtectedState()").unwrap());
+
+        player.in_combat = false;
+        script.set_unit("player", Some(player));
+        assert!(script.eval::<bool>("return Bar:CanChangeProtectedState()").unwrap());
+
+        // XML `protected="true"` and inheriting from an explicit template both mark protected.
+        let xml = r#"<Ui>
+            <Frame name="XmlProtectedBase" virtual="true" protected="true"/>
+            <Frame name="XmlProtectedFrame" inherits="XmlProtectedBase">
+                <Frames>
+                    <Frame name="XmlProtectedChild"/>
+                </Frames>
+            </Frame>
+        </Ui>"#;
+        let doc = crate::framexml::parse(xml).unwrap();
+        let report = crate::loader::load(&script, &doc, &|_| None);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        script
+            .run(
+                r#"
+                local p_xml, e_xml = XmlProtectedFrame:IsProtected()
+                local p_xchild, e_xchild = XmlProtectedChild:IsProtected()
+                assert(p_xml == true and e_xml == true)
+                assert(p_xchild == true and e_xchild == false)
+
+                Plain:SetParent(Bar)
+                local p_rep, e_rep = Plain:IsProtected()
+                assert(p_rep == true and e_rep == false)
+                Plain:SetParent(nil)
+                local p_un, e_un = Plain:IsProtected()
+                assert(p_un == false and e_un == false)
+                "#,
+            )
+            .unwrap();
     }
 }

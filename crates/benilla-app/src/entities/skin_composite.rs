@@ -66,8 +66,9 @@ pub(super) struct SkinComposites {
     /// Finished atlases, swept by distance ([`benilla_world::art_scope`]); `None` for a look with
     /// no atlas, so it is never retried.
     pub(super) done: SpatialCache<SkinKey, Option<Handle<Image>>>,
-    /// Composites on the async compute pool, one per look however many bodies wait on it.
-    running: HashMap<SkinKey, Task<Option<BlpMipChain>>>,
+    /// Composites on the async compute pool with the instant each began, one per look however many
+    /// bodies wait on it.
+    running: HashMap<SkinKey, (Task<Option<BlpMipChain>>, std::time::Instant)>,
 }
 
 impl SkinComposites {
@@ -96,9 +97,20 @@ impl SkinComposites {
         };
         self.running.insert(
             key,
-            AsyncComputeTaskPool::get().spawn(async move { work() }),
+            (
+                AsyncComputeTaskPool::get().spawn(async move { work() }),
+                std::time::Instant::now(),
+            ),
         );
         BodyAtlas::Pending
+    }
+
+    /// Seconds the composite for `key` has been waiting on the async pool, or `None` if it is
+    /// not running.
+    pub(super) fn pending_secs(&self, key: &SkinKey) -> Option<f32> {
+        self.running
+            .get(key)
+            .map(|(_, started)| started.elapsed().as_secs_f32())
     }
 
     /// An atlas composited on this thread on a miss, or waited for if it is already running, as
@@ -131,7 +143,7 @@ impl SkinComposites {
             return done;
         }
         let atlas = match self.running.remove(&key) {
-            Some(task) => block_on(task),
+            Some((task, _)) => block_on(task),
             None => work().and_then(|w| w()),
         };
         self.install(key, atlas, images)
@@ -141,7 +153,7 @@ impl SkinComposites {
     pub(super) fn land(&mut self, images: &mut Assets<Image>) -> usize {
         let mut finished = Vec::new();
         self.running
-            .retain(|key, task| match block_on(future::poll_once(task)) {
+            .retain(|key, (task, _)| match block_on(future::poll_once(task)) {
                 Some(atlas) => {
                     finished.push((*key, atlas));
                     false
@@ -372,5 +384,23 @@ mod tests {
             w2.is_none(),
             "a body still waiting starts its composite again"
         );
+    }
+
+    #[test]
+    fn pending_secs_tracks_elapsed_wait_and_clears_when_landed_or_cleared() {
+        AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+        let mut images = Assets::<Image>::default();
+        let mut c = SkinComposites::default();
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (tx, w) = gated(&ran);
+        let mut w = Some(w);
+
+        assert!(c.pending_secs(&key(4)).is_none());
+        assert_eq!(c.request_with(key(4), || w.take()), BodyAtlas::Pending);
+        assert!(c.pending_secs(&key(4)).is_some_and(|secs| secs >= 0.0));
+
+        tx.send(()).unwrap();
+        land_until(&mut c, &mut images, key(4));
+        assert!(c.pending_secs(&key(4)).is_none());
     }
 }

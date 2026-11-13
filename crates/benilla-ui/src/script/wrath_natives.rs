@@ -766,13 +766,26 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             if index >= 25 {
                 return Err(mlua::Error::runtime("ratingIndex is in the range 1 .. 25"));
             }
-            lua.app_data_mut::<Model>()
-                .expect("model app_data")
-                .record_unsupported_native_once(
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if model.combat_rating_scalers.is_empty() {
+                model.record_unsupported_native_once(
                     "GetCombatRatingBonus",
-                    "no gtCombatRatings.dbc GameTable parser exists in benilla-formats yet",
+                    "gtCombatRatings.dbc GameTable is not loaded",
                 );
-            Ok(0.0)
+                return Ok(0.0);
+            }
+            let player = model.unit("player");
+            let rating = player
+                .and_then(|u| u.combat_ratings.get(index as usize).copied())
+                .unwrap_or(0);
+            let level = player.map_or(1, |u| u.level).clamp(1, 100) as usize;
+            let slot = index as usize * 100 + (level - 1);
+            let scaler = model.combat_rating_scalers.get(slot).copied().unwrap_or(0.0);
+            if scaler > 0.0 && scaler.is_finite() {
+                Ok(f64::from(rating) / f64::from(scaler))
+            } else {
+                Ok(0.0)
+            }
         })?,
     )?;
     lua.globals().set(
@@ -4110,5 +4123,55 @@ mod tests {
         );
         assert!(warns.iter().any(|w| w.contains("CanShowAchievementUI")));
         assert!(warns.iter().any(|w| w.contains("GetCurrentArenaSeason")));
+    }
+
+    #[test]
+    fn combat_rating_bonus_divides_player_rating_by_level_scaler() {
+        use crate::script::unit::UnitState;
+
+        let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+        let mut scalers = vec![1.0_f32; 25 * 100];
+        // Rating index 5 (1-based) => 0-based 4, level 80 => slot 4 * 100 + 79 = 479.
+        scalers[4 * 100 + 79] = 45.905987;
+        // Clamping checks: level 100 => slot 99, level 1 => slot 0.
+        scalers[99] = 50.0;
+        scalers[0] = 2.5;
+        s.set_combat_rating_scalers(scalers);
+
+        let mut ratings = [0u32; 25];
+        ratings[4] = 229;
+        ratings[0] = 10;
+        s.set_unit(
+            "player",
+            Some(UnitState {
+                level: 80,
+                combat_ratings: ratings,
+                ..Default::default()
+            }),
+        );
+        let _ = s.take_warnings();
+        let bonus5: f64 = s.eval("return GetCombatRatingBonus(5)").unwrap();
+        assert!((bonus5 - 229.0 / f64::from(45.905987_f32)).abs() < 1e-6);
+        assert!(s.take_warnings().is_empty());
+
+        s.set_unit(
+            "player",
+            Some(UnitState {
+                level: 120,
+                combat_ratings: ratings,
+                ..Default::default()
+            }),
+        );
+        assert!((s.eval::<f64>("return GetCombatRatingBonus(1)").unwrap() - 0.2).abs() < 1e-6);
+
+        s.set_unit(
+            "player",
+            Some(UnitState {
+                level: 0,
+                combat_ratings: ratings,
+                ..Default::default()
+            }),
+        );
+        assert!((s.eval::<f64>("return GetCombatRatingBonus(1)").unwrap() - 4.0).abs() < 1e-6);
     }
 }

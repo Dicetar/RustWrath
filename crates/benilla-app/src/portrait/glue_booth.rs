@@ -597,9 +597,6 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
             *a += c * l.ambient_intensity;
         }
         let color = l.diffuse_color.map(|c| c * l.diffuse_intensity);
-        if color.iter().sum::<f32>() <= 0.01 {
-            continue;
-        }
         if l.is_point() {
             // `LightBlob::point` commits the colour raw, as the world table does: the reference's
             // `0x71ca80` encode is undone by the `0x593040` decode.
@@ -609,7 +606,11 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
             lobes.push((benilla_assets::coords::wow_to_bevy(l.bone_z), color));
         }
     }
-    if ambient.iter().sum::<f32>() < 0.05 && lobes.is_empty() {
+    let has_active_diffuse = lobes
+        .iter()
+        .chain(&points)
+        .any(|(_, c)| c.iter().sum::<f32>() > 0.01);
+    if ambient.iter().sum::<f32>() < 0.05 && !has_active_diffuse {
         ambient = [0.45, 0.45, 0.5];
         lobes.push((
             Vec3::new(0.4, 0.7, 0.5).normalize(),
@@ -631,9 +632,6 @@ fn pane_scene_rig(preview: &GluePreview, model: &M2Model, ghost: bool) -> SceneR
         let mut rig = SceneRig::default();
         for light in lights {
             for (sum, value) in rig.ambient.iter_mut().zip(light.ambient) { *sum += value; }
-            if light.diffuse.iter().sum::<f32>() <= 0.01 {
-                continue;
-            }
             let vector = benilla_assets::coords::wow_to_bevy(light.vector);
             if light.omni {
                 rig.points.push((vector, light.diffuse));
@@ -643,7 +641,12 @@ fn pane_scene_rig(preview: &GluePreview, model: &M2Model, ghost: bool) -> SceneR
         }
         rig
     };
-    if rig.ambient.iter().sum::<f32>() < 0.05 && rig.lobes.is_empty() {
+    let has_active_diffuse = rig
+        .lobes
+        .iter()
+        .chain(&rig.points)
+        .any(|(_, c)| c.iter().sum::<f32>() > 0.01);
+    if rig.ambient.iter().sum::<f32>() < 0.05 && !has_active_diffuse {
         rig.ambient = [0.45, 0.45, 0.5];
         rig.lobes.push((
             Vec3::new(0.4, 0.7, 0.5).normalize(),
@@ -2887,6 +2890,41 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn unlit_and_zero_intensity_scenes_receive_fallback_lighting() {
+        let empty = scene_rig(&[]);
+        assert_eq!(empty.ambient, [0.45, 0.45, 0.5]);
+        assert_eq!(empty.lobes.len(), 1);
+
+        let zero_only = scene_rig(&[light(
+            0,
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            [1.0; 3],
+            0.0,
+            [1.0; 3],
+            0.0,
+        )]);
+        assert_eq!(zero_only.ambient, [0.45, 0.45, 0.5]);
+        assert_eq!(zero_only.lobes.len(), 2);
+    }
+
+    #[test]
+    fn point_lit_scene_does_not_receive_fallback_directional() {
+        let point_only = scene_rig(&[light(
+            1,
+            [1.0, 2.0, 3.0],
+            [0.0, 0.0, 1.0],
+            [0.8, 0.7, 0.6],
+            1.0,
+            [1.0; 3],
+            0.0,
+        )]);
+        assert_eq!(point_only.ambient, [0.0; 3]);
+        assert!(point_only.lobes.is_empty());
+        assert_eq!(point_only.points.len(), 1);
     }
 
     /// The reference loads the background and the character in one call (`SelectCharacter`).

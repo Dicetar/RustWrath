@@ -505,6 +505,15 @@ impl super::UiScript {
         self.model_ref().exhaustion.get(&state).cloned()
     }
 
+    /// Push `gtCombatRatings.dbc`'s scalers in row order (`rating_idx * 100 + (level - 1)`); an
+    /// empty push leaves the existing table untouched.
+    pub fn set_combat_rating_scalers(&mut self, scalers: Vec<f32>) {
+        if scalers.is_empty() {
+            return;
+        }
+        self.model_mut().combat_rating_scalers = scalers;
+    }
+
     /// Push the combo points (`PLAYER_FIELD_BYTES` byte 1) and their target
     /// (`PLAYER_FIELD_COMBO_TARGET`) together, as `Player::SetComboPoints` writes them. Raw:
     /// `GetComboPoints`' class and target gates are the binding's.

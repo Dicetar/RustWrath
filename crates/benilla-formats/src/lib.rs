@@ -114,6 +114,8 @@ mod durability;
 pub use durability::{load_durability_tables, DurabilityTables};
 mod exhaustion;
 pub use exhaustion::{load_exhaustion, ExhaustionRow};
+mod gt_combat_ratings;
+pub use gt_combat_ratings::{load_gt_combat_ratings, parse_gt_combat_ratings_bytes};
 mod bank_bag_slot_prices;
 pub use bank_bag_slot_prices::{load_bank_bag_slot_prices, BankBagSlotPrices};
 mod stable_slot_prices;

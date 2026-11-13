@@ -404,11 +404,12 @@ pub(super) fn attach_entity_visuals(
                     ) {
                         BodyAtlas::Ready(tex) => tex,
                         BodyAtlas::Pending => {
-                            if now - arrived > 1.5 {
+                            let waited = skin_composites.pending_secs(&key).unwrap_or(0.0);
+                            if waited > 1.5 {
                                 warn!(
                                     "diag[ENTITY_MODEL] Player {:?} BodyAtlas pending timeout ({:.2}s), forcing atlas build",
                                     entity,
-                                    now - arrived
+                                    waited
                                 );
                                 char_skin::forced_body_atlas(
                                     l,

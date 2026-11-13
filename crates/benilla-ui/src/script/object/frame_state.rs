@@ -56,14 +56,26 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             ))
         })?,
     )?;
-    m.set(
-        "IsProtected",
-        lua.create_function(|_lua, _this: Table| Ok((false, false)))?,
-    )?;
-    m.set(
-        "CanChangeProtectedState",
-        lua.create_function(|_lua, _this: Table| Ok(true))?,
-    )?;
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        m.set(
+            "IsProtected",
+            lua.create_function(|lua, this: Table| {
+                let h = frame_handle_of(lua, &this)?;
+                let model = lua.app_data_ref::<Model>().expect("model");
+                Ok(is_protected_state(&model, h))
+            })?,
+        )?;
+        m.set(
+            "CanChangeProtectedState",
+            lua.create_function(|lua, this: Table| {
+                let h = frame_handle_of(lua, &this)?;
+                let model = lua.app_data_ref::<Model>().expect("model");
+                let (protected, _) = is_protected_state(&model, h);
+                let in_combat = model.unit("player").is_some_and(|u| u.in_combat);
+                Ok(!(protected && in_combat))
+            })?,
+        )?;
+    }
     // Identity / hierarchy
     set_shared(lua, m, Side::Frame, "GetName", |lua, this: Table| {
         let h = frame_handle_of(lua, &this)?;
@@ -863,6 +875,34 @@ fn set_shown(lua: &Lua, this: &Table, shown: bool) -> mlua::Result<()> {
     let h = frame_handle_of(lua, this)?;
     visibility::set_shown(lua, h, shown);
     Ok(())
+}
+
+/// Returns `(is_protected, is_explicit)` matching WoW 3.3.5a: `is_explicit` when the frame
+/// itself carries `protected="true"` or a secure template; `is_protected` when it or any
+/// ancestor is explicitly protected.
+fn is_protected_state(model: &Model, h: crate::widget::FrameHandle) -> (bool, bool) {
+    let Some(self_frame) = model.arena.frame(h) else {
+        return (false, false);
+    };
+    if self_frame.protected_explicit {
+        return (true, true);
+    }
+    let mut cur = self_frame.parent;
+    let mut hops = 0usize;
+    while let Some(p) = cur {
+        if hops > 1024 {
+            break;
+        }
+        hops += 1;
+        let Some(pf) = model.arena.frame(p) else {
+            break;
+        };
+        if pf.protected_explicit {
+            return (true, false);
+        }
+        cur = pf.parent;
+    }
+    (false, false)
 }
 
 /// The frame's child ids in link order, the one walk `GetChildren` and `GetNumChildren` share.

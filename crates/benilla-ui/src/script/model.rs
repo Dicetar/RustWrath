@@ -1303,6 +1303,9 @@ pub(crate) struct Model {
     /// `Exhaustion.dbc` by rest byte, `(name, factor)`: `GetRestState` indexes it and row 1 scales
     /// `GetXPExhaustion` (`0x48d3f0`). enUS rows seed it until the app loads the install's own.
     pub(crate) exhaustion: HashMap<u8, (String, f64)>,
+    /// `gtCombatRatings.dbc` scalers in row order (`rating_idx * 100 + (level - 1)`), pushed by
+    /// the host when `WorldAssets` loads; `GetCombatRatingBonus` divides the rating by it.
+    pub(crate) combat_rating_scalers: Vec<f32>,
 
     /// The paper doll's combat stats, `None` until the first push.
     pub(crate) player_combat_stats: Option<char_stats::UnitCombatStats>,
@@ -2043,6 +2046,7 @@ impl Model {
             ]
             .into_iter()
             .collect(),
+            combat_rating_scalers: Vec::new(),
             player_combat_stats: None,
             player_crit_percentage: 0.0,
             ammo_record_asks: Vec::new(),

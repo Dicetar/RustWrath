@@ -120,6 +120,10 @@ pub struct EditBoxState {
     /// A multi-line relayout that found its text's measure pending, retried at each flush until it
     /// lands; with no font engine installed the measure arrives from the host a tick later.
     pub relayout_owed: bool,
+    /// Whether the Wrath pending-measure fallback `OnCursorChanged(0, 0, 4, 14)` has already fired
+    /// while waiting for real advances/line_height, preventing per-frame callback spam; cleared
+    /// once the real measured `OnCursorChanged` fires.
+    pub fallback_cursor_fired: bool,
     /// The window's first display byte (`E+0x348`), which only the flush's relayout moves
     /// ([`Self::rewindow`]), so the window stays where the caret last left it.
     pub scroll_start: usize,
@@ -209,6 +213,7 @@ impl Default for EditBoxState {
             cell_h: 0.0,
             dirty: Self::DIRTY_TEXT,
             relayout_owed: false,
+            fallback_cursor_fired: false,
             scroll_start: 0,
             window_len: 0,
             drag_active: false,

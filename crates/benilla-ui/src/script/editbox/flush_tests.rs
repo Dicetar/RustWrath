@@ -838,3 +838,39 @@ fn a_box_anchored_between_frames_fires_on_text_changed_once() {
     assert_eq!(s.eval::<i64>("return N").unwrap(), 1);
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
+
+#[test]
+fn wrath_cursor_fallback_fires_once_while_pending_and_resumes_when_measured() {
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).expect("Wrath VM");
+    s.set_screen_size(800.0, 600.0);
+    s.run(
+        r#"
+        LOG = {}
+        local e = CreateFrame("EditBox", "Pend")
+        e:SetAutoFocus(false)
+        e:SetPoint("BOTTOMLEFT", 100, 50)
+        e:SetWidth(200); e:SetHeight(32)
+        e:SetScript("OnCursorChanged", function(self, x, y, w, h)
+            table.insert(LOG, format("%g,%g,%g,%g", x, y, w, h))
+        end)
+        e:SetText("ab")
+    "#,
+    )
+    .unwrap();
+    for _ in 0..4 {
+        s.tick(0.016);
+        s.resolve();
+    }
+    assert_eq!(
+        take_log(&s),
+        "0,0,4,14",
+        "fallback fires once while font measurement is absent instead of spamming every frame"
+    );
+
+    s.set_text_measurer(Box::new(Mono));
+    s.tick(0.016);
+    s.resolve();
+    assert_eq!(take_log(&s), "14,0,4,14");
+    assert!(s.errors().is_empty(), "{:?}", s.errors());
+}
+

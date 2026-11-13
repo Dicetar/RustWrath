@@ -1433,3 +1433,49 @@ fn line_text_numbers_print_as_lua_number_text() {
     )
     .unwrap();
 }
+
+#[test]
+fn anchor_bottom_and_anchor_top_center_the_plate_vertically_on_owner() {
+    let mut s = script();
+    s.set_screen_size(800.0, 600.0);
+    s.run(
+        r#"
+        OwnerBT = CreateFrame("Button", "OwnerBT")
+        OwnerBT:SetPoint("BOTTOMLEFT", 200, 200)
+        OwnerBT:SetWidth(80); OwnerBT:SetHeight(40)
+        TipBT = CreateFrame("GameTooltip", "TipBT", nil, "TestTooltipTemplate")
+        TipBT:SetWidth(100); TipBT:SetHeight(30)
+
+        TipBT:SetOwner(OwnerBT, "ANCHOR_BOTTOM", 4, -6)
+        assert(TipBT:GetAnchorType() == "ANCHOR_BOTTOM")
+        local p, rel, rp, x, y = TipBT:GetPoint(1)
+        assert(p == "TOP" and rel == OwnerBT and rp == "BOTTOM" and x == 4 and y == -6)
+        TipBT:Show()
+    "#,
+    )
+    .unwrap();
+    s.resolve();
+    // Owner spans x=[200, 280] (center 240), y=[200, 240]. Tooltip width 100, TOP at owner BOTTOM (240, 200) + (4, -6) = (244, 194).
+    let (left, right, top): (f64, f64, f64) = s
+        .eval("return TipBT:GetLeft(), TipBT:GetRight(), TipBT:GetTop()")
+        .unwrap();
+    assert!(near(left, 194.0) && near(right, 294.0) && near(top, 194.0));
+
+    s.run(
+        r#"
+        TipBT:SetOwner(OwnerBT, "ANCHOR_TOP", -2, 8)
+        assert(TipBT:GetAnchorType() == "ANCHOR_TOP")
+        local p, rel, rp, x, y = TipBT:GetPoint(1)
+        assert(p == "BOTTOM" and rel == OwnerBT and rp == "TOP" and x == -2 and y == 8)
+        TipBT:Show()
+    "#,
+    )
+    .unwrap();
+    s.resolve();
+    let (left, bottom): (f64, f64) = s.eval("return TipBT:GetLeft(), TipBT:GetBottom()").unwrap();
+    // Owner TOP is 240; tooltip BOTTOM at (240 - 2, 240 + 8) = (238, 248); left = 238 - 50 = 188.
+    assert!(near(left, 188.0) && near(bottom, 248.0));
+    assert!(s.take_warnings().is_empty());
+    assert!(s.errors().is_empty());
+}
+

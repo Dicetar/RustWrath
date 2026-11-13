@@ -319,6 +319,28 @@ fn a_region_template_or_a_mismatched_kind_is_named_never_fatal() {
         s.take_warnings().is_empty(),
         "a matching kind has nothing to report"
     );
+
+    // 4 · base-class inheritance: Frame -> Button and Button -> CheckButton are valid subclasses.
+    register(
+        &s,
+        r#"<Ui>
+             <Frame name="BaseFrameTemplate" virtual="true">
+               <Size><AbsDimension x="50" y="20"/></Size>
+             </Frame>
+           </Ui>"#,
+    );
+    s.run(
+        r#"
+        FromBase = CreateFrame("Button", "FromBase", nil, "BaseFrameTemplate")
+        CheckFromBtn = CreateFrame("CheckButton", "CheckFromBtn", nil, "ProbeButtonTemplate")
+    "#,
+    )
+    .unwrap();
+    assert!(s.take_errors().is_empty());
+    assert!(
+        s.take_warnings().is_empty(),
+        "inheriting from Frame or from Button onto CheckButton must not warn"
+    );
 }
 
 /// `<ScrollChild>` builds its one child through the `<Frames>` path (`0x6ee280`) and stores it as

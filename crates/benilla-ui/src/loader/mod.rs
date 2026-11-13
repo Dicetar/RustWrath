@@ -180,12 +180,16 @@ pub fn apply_template(lua: &mlua::Lua, wrapper: &Table, kind: &str, template: &s
             };
             any_resolved = true;
             let tag = &el.tag;
+            let base_compatible = tag.eq_ignore_ascii_case("Frame")
+                || (tag.eq_ignore_ascii_case("Button")
+                    && (kind.eq_ignore_ascii_case("CheckButton")
+                        || kind.eq_ignore_ascii_case("LootButton")));
             if tag.eq_ignore_ascii_case("Texture") || tag.eq_ignore_ascii_case("FontString") {
                 notes.push(format!(
                     "{dbg}: '{name}' is a <{tag}> REGION template, not a frame template; its \
                      frame-shaped content still applies, its region-only content cannot"
                 ));
-            } else if !tag.eq_ignore_ascii_case(kind) {
+            } else if !tag.eq_ignore_ascii_case(kind) && !base_compatible {
                 notes.push(format!(
                     "{dbg}: '{name}' is a <{tag}>, but a {kind} was created; the frame keeps the \
                      kind CreateFrame was given, so the <{tag}>-only parts of the template do not \

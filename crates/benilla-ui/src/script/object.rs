@@ -955,6 +955,9 @@ pub(super) fn create_frame(
         // `WrapScript` can refuse a plain frame instead of pretending it is protected.
         let mut model = lua.app_data_mut::<Model>().expect("model app_data");
         super::secure::mark_frame(&mut model, h);
+        if let Some(frame) = model.arena.frame_mut(h) {
+            frame.protected_explicit = true;
+        }
         wrapper.set("hasSecureHandler", true)?;
     }
     // The builder's post-load hook (`0x6ee4ea`) is `CMinimap::LoadXML` (`0x4ee2b0`) for a Minimap:

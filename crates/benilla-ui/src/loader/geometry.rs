@@ -67,6 +67,13 @@ impl Loader<'_> {
         if el.attr_bool("hidden") {
             self.call(wrapper, "Hide", (), dbg);
         }
+        if el.attr_bool("protected") {
+            if let Ok(h) = crate::script::object::frame_handle_of(self.lua(), wrapper) {
+                if let Some(frame) = self.model().arena.frame_mut(h) {
+                    frame.protected_explicit = true;
+                }
+            }
+        }
         // An unknown `frameStrata=` is logged (`0x7699a4`) and skipped, not raised as the Lua
         // binding would (`0x774360`): `SetFrameStrata` runs only on a hit (`0x769971`), so the
         // frame keeps the strata it had.

@@ -192,10 +192,11 @@ impl Plugin for UiUnitPlugin {
         )
         .add_systems(Update, feed_default_language.in_set(UnitFeed))
         .add_systems(Update, feed_known_languages.in_set(UnitFeed))
-        // `load_exhaustion_rows` pushes into the VM, so it runs per VM; the rest are one-shots.
+        // `load_exhaustion_rows` and `load_combat_ratings` push into the VM, so they run per VM;
+        // the rest are one-shots.
         .add_systems(
             Update,
-            load_exhaustion_rows.in_set(crate::ui_script::UiFeed),
+            (load_exhaustion_rows, load_combat_ratings).in_set(crate::ui_script::UiFeed),
         )
         .add_systems(PostStartup, (load_default_languages, load_languages));
     }
@@ -416,6 +417,36 @@ fn load_exhaustion_rows(
             }
             Err(e) => {
                 error!("ui_unit: Exhaustion.dbc failed — shipped-table fallback holds: {e:#}")
+            }
+        }
+    })
+}
+
+/// Seed each VM's `gtCombatRatings.dbc` table for `GetCombatRatingBonus`.
+fn load_combat_ratings(
+    mut hosted_vm: crate::script_calls::HostedVm,
+    assets: Option<Res<benilla_assets::WorldAssets>>,
+    mut seeded: Local<crate::ui_script::VmMemo<bool>>,
+) {
+    hosted_vm.run(|script| {
+        let (Some(script), Some(assets)) = (script, assets) else {
+            return;
+        };
+        if !seeded.claim(script) {
+            return;
+        }
+        let loaded = {
+            use benilla_assets::LockRecover;
+            let mut chain = assets.chain.lock_recover();
+            benilla_formats::load_gt_combat_ratings(&mut chain)
+        };
+        match loaded {
+            Ok(scalers) => {
+                info!("ui_unit: {} gtCombatRatings.dbc rows", scalers.len());
+                script.set_combat_rating_scalers(scalers);
+            }
+            Err(e) => {
+                warn!("ui_unit: gtCombatRatings.dbc unavailable: {e:#}");
             }
         }
     })
