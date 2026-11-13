@@ -11,24 +11,26 @@
 //!   at startup.
 //!
 //! Everything here is offline and pure: no system, no traffic, no resource mutation. The
-//! consumers are the ones named in [the plan](../../docs/architecture/souls-combat-action-profiles.md):
-//! action-instance playback (slice 2) and combat-host staging (slice 3), neither of which is
-//! wired yet. [`CombatProfiles`] is the typed hand-off target for those slices; until then the
-//! app keeps no instance of it.
+//! playback path (`combat_playback.rs`) fills [`CombatProfiles`] for the local player and plays
+//! requested actions through the one-shot driver path; the combat-host staging slice follows.
 
 use std::collections::HashMap;
 
 use benilla_assets::{AnimClip, ModelAnimations};
 use benilla_combat_core::{
-    dodge_from_clip, melee_action, spell_action, ActionId, ActionKind, ActionSpec, ActionTable,
-    ClipSummary, CombatResult, DodgeSpec, ProfilePolicy, SpellSummary, TickRate,
+    dodge_from_clip, melee_action, ActionId, ActionKind, ActionSpec, ActionTable, ClipSummary,
+    CombatResult, DodgeSpec, ProfilePolicy, SpellSummary, TickRate,
 };
+#[cfg(test)]
+use benilla_combat_core::spell_action;
 use benilla_formats::{
     AnimDataCatalog, SpellCastTimeCatalog, SpellDisplay, SpellDurationCatalog,
 };
 
 /// The dodge action every encounter shares; the host range `1..=999`.
 pub(crate) const HOST_DODGE: ActionId = ActionId(1);
+/// The local player's main-hand melee action.
+pub(crate) const PLAYER_MELEE_MAIN: ActionId = ActionId(2);
 /// The `AnimationData.dbc` id of the Dodge clip (`Dodge`, the defense reaction anim 30).
 const DODGE_ANIM: u16 = 30;
 /// Enemy actions are encounter-assigned in `ENEMY_ACTION_BASE..=999_999` (slice 4).
@@ -167,16 +169,18 @@ pub(crate) fn player_dodge_spec(
     Ok(Some((spec, resolved.id)))
 }
 
-/// The compiled profile set the combat host consumes once slices 2–3 land: the validated action
-/// table plus the binding from action id to the clip id the local rig plays for it. No system
-/// fills or reads this yet; both consumers are named in
-/// [the plan](../../docs/architecture/souls-combat-action-profiles.md).
-#[derive(Debug, Default)]
+/// The compiled profile set the playback path consumes: the validated action table plus the
+/// binding from action id to the clip id the local rig plays for it. `combat_playback.rs` fills
+/// it for the local player and plays requested actions through the one-shot driver path.
+#[derive(bevy::prelude::Resource, Debug, Default)]
 pub(crate) struct CombatProfiles {
     /// The compiled action table; empty until a world build fills it.
     pub(crate) table: Option<ActionTable>,
     /// Action id → the `AnimationData.dbc` id the local rig plays for that action.
     pub(crate) anims: HashMap<ActionId, u16>,
+    /// The `(entity, main-hand weapon)` pair the current table was compiled for; a change here
+    /// (rig load, weapon swap) recompiles.
+    pub(crate) built_for: Option<(bevy::prelude::Entity, Option<(u8, u8)>)>,
 }
 
 #[cfg(test)]

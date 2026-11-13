@@ -636,6 +636,18 @@ impl PlaySeq {
     }
 }
 
+/// A profile-compiled action's clip to play as a one-shot on a unit, from `combat_playback.rs`.
+/// Presentation only: the driver routes it exactly like a swing request, and nothing about it is
+/// authoritative.
+#[derive(Message, Clone, Copy)]
+pub(crate) struct ActionAnim {
+    pub(crate) entity: Entity,
+    /// The `AnimationData.dbc` id to play, resolved through the model's own lookups.
+    pub(crate) anim_id: u16,
+    /// `PlaySeq` stamp, so a same-frame collision with a network swing keeps reference order.
+    pub(crate) seq: u64,
+}
+
 /// A cast lifecycle edge on a streamed unit, off the wire.
 #[derive(Message, Clone, Copy)]
 pub(crate) struct CastEvent {
@@ -1108,6 +1120,7 @@ impl Plugin for CreatureAnimPlugin {
         );
         app.add_message::<AnimSoundEvent>()
             .add_message::<SwingMessage>()
+            .add_message::<ActionAnim>()
             .add_message::<SwingImpact>()
             .add_message::<DefenseAnim>()
             .add_message::<SwingSlowdown>()

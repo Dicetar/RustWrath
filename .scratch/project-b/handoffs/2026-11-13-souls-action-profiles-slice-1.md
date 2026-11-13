@@ -7,6 +7,9 @@ plan's step 1 (plus its automated compilers). Plan of record:
 `docs/architecture/souls-combat-action-profiles.md` (new this slice), extending
 `docs/architecture/rfc-modular-souls-combat.md`.
 
+Baseline: `main` at `38f56810` (branch `feat/souls-action-profiles`, worktree
+`rw-souls-action-profiles`). No client/server process was running; no gameplay was driven.
+
 ## Owner decisions, later the same day (decision session)
 
 Recorded in `docs/baseline/owner-decisions.md` (2026-11-13 block) and reflected in the plan:
@@ -27,8 +30,25 @@ i-frames, input thresholds at the action's end, typed refusal when the clip cann
 window), and `benilla-app` gained `player_dodge_spec` resolving `AnimationData` id 30 on the
 rig — `None` for a rig without the clip, no substitute invented (named gap).
 
-Baseline: `main` at `38f56810` (branch `feat/souls-action-profiles`, worktree
-`rw-souls-action-profiles`). No client/server process was running; no gameplay was driven.
+## Slice 2: action playback wired (the dodge is visible)
+
+`combat_playback.rs` (new) turns `CombatProfiles` into a live path without touching authority:
+
+- `fill_local_profiles` compiles the local player's table (dodge + main-hand melee) when the
+  rig or weapon changes, binding each `ActionId` to the rig's clip;
+- `toggle_and_stage_dodge` is the provisional input: **F10** toggles the client's *requested*
+  mode (never the effective one), **V** stages one dodge while Experimental is requested
+  (inert with no local player; rebindable binds come with the controls slice);
+- `play_combat_actions` resolves each request against the table and hands the clip to the
+  driver as an `ActionAnim` one-shot.
+
+Driver support: `ActionAnim { entity, anim_id, seq }` joins the existing one-shot intake as
+`OneShotReq::Action(u16)` — the same routing, combat fast path, deferral and ordering as a
+swing; no new animation logic. The driver's parameter ceiling required the reader to live in
+its existing `aux` tuple; the driver test harness registers the new message.
+
+Presentation only: no traffic, no stamina debit, no i-frames, no hit. `CombatModeView::effective`
+still never leaves `Baseline`.
 
 ## What landed (source)
 
@@ -83,6 +103,11 @@ restarted, every workspace crate force-rebuilt fresh into the shared
   the five slice-1 tests plus `player_dodge_spec_profiles_the_rigs_dodge_clip`. The remaining
   test-target warnings are pre-existing (dev-panel dead code, `wrath.rs` test arms), none from
   the new module.
+- Slice 2 (playback): `cargo check -p benilla-app --tests` clean; `creature_anim::driver::`
+  **90/90**; `combat_playback::` **1/1**; `combat_profiles::` **6/6**; `combat_mode::` **7/7**.
+  The `ui_chat` failures the wide `combat_` filter also matched are pre-existing 1.12-kit
+  drift (`UIParent.lua:329: unexpected symbol near '...'` — the documented donor-install gap),
+  reproduced before this slice's changes to the same test kit.
 - Earlier compile failures in the round, all diagnosed: re-exporting `pub(super)` items at
   `pub(crate)` (E0364 — the items are now `pub(crate)` at their definition sites); a missing
   deref in a test `ClipEvent` literal (E0308); the `rig` shadowing (E0618); and the three
