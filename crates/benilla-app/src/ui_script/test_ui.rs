@@ -506,6 +506,9 @@ thread_local! {
 const WRATH_KIT_CONSTANTS: &str = r#"
     -- 3.3.5a `Constants.lua:87`'s `MAX_EQUIPMENT_SETS_PER_PLAYER = 10`.
     MAX_EQUIPMENT_SETS_PER_PLAYER = 10
+    -- The Wrath talent UI's tab bound (three: two trees and the pet's); the stock
+    -- `InspectTalentFrame.lua` loops to it, and the 1.12 file had no such constant.
+    MAX_TALENT_TABS = 3
     -- 3.3.5a `Constants.lua`'s shared colour constants, as that file defines them.
     NORMAL_FONT_COLOR_CODE = "|cffffd200"
     HIGHLIGHT_FONT_COLOR_CODE = "|cffffffff"
