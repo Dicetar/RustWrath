@@ -1,5 +1,10 @@
 # Souls action profiles — slice 1 — 2026-11-13
 
+**Published** — merged to `origin/main` at `ffb976ae` (no-ff merge of `feat/souls-action-profiles`,
+base `38f56810`); the feature branch is pushed. Seven source slices on the branch: schema and
+compilers, owner decisions and the dodge compiler, playback wiring, the predicted clock,
+the action engine, the enemy brain harness and the per-rig enemy move lists.
+
 Owner direction 2026-11-13: begin the Elden Ring combat module with **automated application of
 combat logic to all current combat actions** — every usable ability, every enemy attack and the
 animation each plays — instead of hand-authoring one sword profile. This slice implements the
