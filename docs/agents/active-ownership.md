@@ -49,6 +49,13 @@ newer reservation or kill another owner's process to acquire the slot.
 
 ## Current evidence and continuation
 
+- 2026-11-14 enemy nameplates (Claude, branch `fix/wrath-nameplate-cvars`, `a676dd6e`): the two
+  12340 plate CVars now drive `VPlateMode`. Cargo slot used for one focused run of 13 cases
+  (9 passed; 4 failed without reaching the change: one legacy-settings case that cannot pass
+  while the names are registered, three that load the installed 3.3.5a interface into a 1.12 VM)
+  and released; log `.scratch/project-b/test-2026-11-14-claude-nameplate-cvars.log`. Not merged,
+  not in `target/debug/benilla.exe`, no client run; pressing V in game is the open check.
+
 - 2026-11-13 fix round (DeepSeek V4.1 Flash coordinator + AutoSwarm Anvil/Forge): preflight wire-off
   notice made Wrath-aware with 3 regression tests; spell-modifier accumulation widened to the full
   96-bit table with 3 tests (full high-word completion scoped — `SpellDisplay` carrier, see
