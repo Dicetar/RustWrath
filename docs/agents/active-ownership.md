@@ -49,6 +49,15 @@ newer reservation or kill another owner's process to acquire the slot.
 
 ## Current evidence and continuation
 
+- 2026-11-14 Wrath glue/runtime (Claude, branch `fix/wrath-glue-runtime`, worktree
+  `D:\Projects\rw-worktrees\fix-wrath-glue-runtime`, not merged):
+  - `408df3ad`: unnamed `<ButtonText/>` font string. One focused run of 5 cases passed; log
+    `.scratch/project-b/test-2026-11-14-claude-buttontext.log`.
+  - `b0e906f4`: two timing tests for the 153 s ChatFrame/FloatingChatFrame stall.
+  - `919edd7a`: the 12340 plate gate on a Wrath VM, with the six pet/guardian/totem CVars.
+  - The last two are source only, not built or run: the owner batches builds. No Cargo or
+    client slot is held. Handoff: `F:\AI\tmp\rustwrath-handoff-2026-11-14-wrath-glue-runtime.md`.
+
 - 2026-11-14 enemy nameplates (Claude, branch `fix/wrath-nameplate-cvars`, `a676dd6e`): the two
   12340 plate CVars now drive `VPlateMode`. Cargo slot used for one focused run of 13 cases
   (9 passed; 4 failed without reaching the change: one legacy-settings case that cannot pass
