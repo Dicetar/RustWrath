@@ -7,7 +7,7 @@
 //! ticks at the table's [`TickRate`](crate::time::TickRate); every window is half-open
 //! `[from, to)`, matching the donor's `from <= frame < to` convention.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::data::DodgeSpec;
 use crate::error::{CombatError, CombatResult};
@@ -218,7 +218,9 @@ pub struct ActionTable {
     pub revision: ActionRevision,
     /// The rate this table's tick offsets were compiled at.
     pub tick_rate: TickRate,
-    actions: HashMap<ActionId, ActionSpec>,
+    /// Keyed by id in a `BTreeMap` so iteration and validation are deterministic and ordered by
+    /// [`ActionId`], independent of insertion order.
+    actions: BTreeMap<ActionId, ActionSpec>,
 }
 
 impl ActionTable {
@@ -227,7 +229,7 @@ impl ActionTable {
         Self {
             revision,
             tick_rate,
-            actions: HashMap::new(),
+            actions: BTreeMap::new(),
         }
     }
 
@@ -246,7 +248,7 @@ impl ActionTable {
         self.actions.get(&id)
     }
 
-    /// Every action, unordered.
+    /// Every action, ordered by ascending action id.
     pub fn iter(&self) -> impl Iterator<Item = &ActionSpec> + '_ {
         self.actions.values()
     }
@@ -262,7 +264,8 @@ impl ActionTable {
     }
 
     /// Whole-table validation: every action is valid, and every follow-up resolves to an action
-    /// in this same table.
+    /// in this same table. Checks run in ascending action-id order, so the first error is
+    /// deterministic and independent of insertion order.
     pub fn validate(&self) -> CombatResult<()> {
         for spec in self.actions.values() {
             spec.validate()?;
@@ -438,5 +441,36 @@ mod tests {
         assert_eq!(table.len(), 3);
         assert!(table.get(ActionId(0)).is_none());
         assert!(table.get(ActionId(1)).is_some_and(|spec| spec.kind == ActionKind::MeleeLight));
+    }
+
+    /// The table is ordered by action id, not by insertion or hash order: iteration is ascending,
+    /// and validation reports the same first error for every insertion order.
+    #[test]
+    fn iteration_and_validation_are_ordered_by_action_id() {
+        let mut table = ActionTable::new(ActionRevision(1), rate());
+        for id in [30, 10, 20] {
+            table.insert(melee(id, 50)).expect("insert");
+        }
+        let order: Vec<u32> = table.iter().map(|spec| spec.id.0).collect();
+        assert_eq!(order, vec![10, 20, 30]);
+
+        // Two tables holding the same dangling follow-ups, inserted in opposite orders, report
+        // the error for the lowest action id both times.
+        let dangling = |id: u32, followup: u32| {
+            let mut spec = melee(id, 50);
+            spec.followup = Some(ActionId(followup));
+            spec
+        };
+        let mut ascending = ActionTable::new(ActionRevision(1), rate());
+        let mut descending = ActionTable::new(ActionRevision(1), rate());
+        ascending.insert(dangling(10, 998)).expect("insert");
+        ascending.insert(dangling(30, 999)).expect("insert");
+        descending.insert(dangling(30, 999)).expect("insert");
+        descending.insert(dangling(10, 998)).expect("insert");
+        assert_eq!(ascending.validate(), descending.validate());
+        assert!(matches!(
+            ascending.validate(),
+            Err(CombatError::MissingFollowup(998))
+        ));
     }
 }

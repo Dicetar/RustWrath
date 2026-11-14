@@ -48,7 +48,7 @@ pub use crate::core::{
 pub use data::{CombatConfig, DodgeSpec, EnemySpec, StaminaConfig};
 pub use enemy::{EnemyPhase, EnemyView};
 pub use enemy_brain::{EnemyBrain, EnemyBrainConfig, EnemyEvent};
-pub use engine::{ActionEnd, ActionEngine, ActionRefusal, EngineEvent};
+pub use engine::{ActionEnd, ActionEngine, ActionRefusal, EngineEvent, MAX_ADVANCE_SPAN_TICKS};
 pub use error::{CombatError, CombatResult};
 pub use identity::{ActionRevision, PlayerId, Sequence, SessionEpoch};
 pub use input::{
