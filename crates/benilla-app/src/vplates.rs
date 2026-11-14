@@ -41,8 +41,9 @@ use benilla_world::view::WorldCamera;
 pub(crate) mod border;
 
 /// The two script bits of `[0xc4da34]`, bit `0x1` enemy plates and bit `0x8` friendly: engine
-/// state, written only by the four plate verbs ([`apply_plate_verbs`]) and cleared at every world
-/// entry ([`clear_at_world_entry`]). Nothing persists it: FrameXML replays its own
+/// state, written by the four 1.12 plate verbs ([`apply_plate_verbs`]) and by the two 12340
+/// CVars ([`on_cvar`]), and reseated at every world entry ([`clear_at_world_entry`]). The 1.12
+/// kit persists nothing here: FrameXML replays its own
 /// `NAMEPLATES_ON`/`FRIENDNAMEPLATES_ON` saved variables through the verbs
 /// (`UIOptionsFrame.lua:768-780`, `UIParent.lua:234`, `:367`).
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -251,8 +252,43 @@ pub(crate) fn clear_at_world_entry(world: &mut World) {
     if let Some(mut script) = world.get_non_send_resource_mut::<benilla_ui::script::UiScript>() {
         let _ = script.take_nameplate_bit_writes();
     }
+    // 12340 keeps the two toggles in CVars the gate reads directly, so they survive a world
+    // entry; the 1.12 kit leaves both rows at their default and its FrameXML replays the verbs.
+    let seeded = world
+        .get_resource::<crate::cvars::Cvars>()
+        .map(|cvars| VPlateMode {
+            enemies: cvars.flag("nameplateShowEnemies").unwrap_or(false),
+            friends: cvars.flag("nameplateShowFriends").unwrap_or(false),
+        })
+        .unwrap_or_default();
     if let Some(mut mode) = world.get_resource_mut::<VPlateMode>() {
-        *mode = VPlateMode::default();
+        *mode = seeded;
+    }
+}
+
+/// The 12340 plate toggles: `nameplateShowEnemies` and `nameplateShowFriends`, which the 3.3.5a
+/// gate reads directly (`Unit_C.cpp:20459`, `:20463` in the pinned reference). The stock Wrath
+/// interface writes these CVars and never calls the 1.12 plate verbs, so without this observer
+/// the V-key plates could not be switched on in a Wrath session.
+pub(crate) fn on_cvar(ev: On<crate::cvars::CvarChanged>, mut mode: ResMut<VPlateMode>) {
+    let now = match ev.key().as_str() {
+        "nameplateshowenemies" => VPlateMode {
+            enemies: ev.flag(),
+            ..*mode
+        },
+        "nameplateshowfriends" => VPlateMode {
+            friends: ev.flag(),
+            ..*mode
+        },
+        _ => return,
+    };
+    if *mode != now {
+        info!(
+            "nameplates: enemy {}, friendly {} (cvar)",
+            if now.enemies { "ON" } else { "OFF" },
+            if now.friends { "ON" } else { "OFF" }
+        );
+        *mode = now;
     }
 }
 
@@ -702,6 +738,7 @@ impl Plugin for VPlatesPlugin {
             .init_resource::<VPlates>()
             .init_resource::<PlateHover>()
             .init_resource::<PlateClicks>()
+            .add_observer(on_cvar)
             .add_systems(
                 Update,
                 (
@@ -848,6 +885,58 @@ mod tests {
             mode(&app),
             (false, true),
             "and the next verb moves them again"
+        );
+    }
+
+    /// The registry's accepted moves, triggered as the frame's flush does.
+    fn set_cvar(app: &mut App, name: &str, value: &str) {
+        let events = {
+            let mut cvars = app.world_mut().resource_mut::<crate::cvars::Cvars>();
+            let _ = cvars.set(name, value);
+            cvars.take_events()
+        };
+        for event in events {
+            app.world_mut().trigger(event);
+        }
+    }
+
+    /// The 12340 route: a write of either plate CVar moves its own bit and leaves the other,
+    /// with no verb called; the name matches as the registry does, case-blind, and a CVar that
+    /// is no plate toggle moves nothing.
+    #[test]
+    fn the_wrath_plate_cvars_move_their_own_bits() {
+        let mut app = verb_app();
+        app.init_resource::<crate::cvars::Cvars>()
+            .add_observer(on_cvar);
+        app.update();
+        assert_eq!(mode(&app), (false, false), "boot: both clear");
+        set_cvar(&mut app, "nameplateShowEnemies", "1");
+        assert_eq!(mode(&app), (true, false), "enemy plates on");
+        set_cvar(&mut app, "NAMEPLATESHOWFRIENDS", "1");
+        assert_eq!(mode(&app), (true, true), "friendly on, enemy untouched");
+        set_cvar(&mut app, "unitNameNPC", "1");
+        assert_eq!(mode(&app), (true, true), "another CVar moves neither");
+        set_cvar(&mut app, "nameplateShowEnemies", "0");
+        assert_eq!(mode(&app), (false, true), "enemy off, friendly untouched");
+    }
+
+    /// 12340 keeps the toggles in CVars the gate reads directly, so a world entry seats the bits
+    /// from them: plates a past session switched on are on after the entry, and a row at its
+    /// default still clears its bit.
+    #[test]
+    fn world_entry_seats_the_bits_from_the_wrath_cvars() {
+        let mut app = verb_app();
+        app.insert_resource(crate::cvars::Cvars::with_value("nameplateShowEnemies", "1"))
+            .insert_resource(VPlateMode {
+                enemies: false,
+                friends: true,
+            });
+        clear_at_world_entry(app.world_mut());
+        app.update();
+        assert_eq!(
+            mode(&app),
+            (true, false),
+            "enemy from its CVar, friendly cleared"
         );
     }
 

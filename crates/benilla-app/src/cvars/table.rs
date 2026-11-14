@@ -1044,6 +1044,10 @@ pub(crate) const REGISTERED: &[Registered] = &[
     ours("fctSpellMechanicsOther", "0", "GameUI_CVar.cpp:550"),
     ours("secureAbilityToggle", "1", "GameUI_CVar.cpp:527"),
     ours("ShowClassColorInNameplate", "0", "GameUI_CVar.cpp:648"),
+    // The two plate toggles the 12340 gate reads directly (`Unit_C.cpp:20459`, `:20463` in the
+    // pinned reference); `vplates::on_cvar` is their observer.
+    ours("nameplateShowEnemies", "0", "GameUI_CVar.cpp:588"),
+    ours("nameplateShowFriends", "0", "GameUI_CVar.cpp:592"),
     ours("fctPeriodicEnergyGains", "0", "GameUI_CVar.cpp:545"),
     ours("trackerFilter", "7", "GameUI_CVar.cpp:507"),
     ours("showCastableBuffs", "0", "GameUI_CVar.cpp:568"),

@@ -321,8 +321,6 @@ pub(super) const INERT: &[Registered] = &[
     ours("showTargetOfTarget", "0", "Target of target frame display"),
     ours("showItemLevel", "0", "Item level display in tooltips"),
     ours("fctDamageReduction", "0", "Floating combat text damage reduction"),
-    ours("nameplateShowEnemies", "0", "Enemy nameplates display"),
-    ours("nameplateShowFriends", "0", "Friendly nameplates display"),
     ours("threatShowNumeric", "0", "Numeric threat display"),
     ours("targetStatusText", "0", "Target frame status text"),
 ];
