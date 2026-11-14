@@ -8,11 +8,33 @@
 //! `NotSent` until a server mode channel exists. `CombatModeView::effective` is never written
 //! here.
 //!
+//! The prediction follows the world signals presentation already owns:
+//!
+//! - **Death.** The local player's own observation (`WrathWorldView::self_observation`, the same
+//!   `SelfDeath`/zero-health read `combat_mode.rs` closes its window on) ends the engine once and
+//!   clears the refusal, so no clip keeps playing and no request survives the corpse. A revival
+//!   rebuilds the engine over the same compiled table: the engine has no revive of its own.
+//! - **Interruption.** A `SwingMessage` naming the local player as its victim — the melee stream
+//!   `creature_anim` publishes per `SMSG_ATTACKERSTATEUPDATE` — interrupts the running action and
+//!   drops the held request, exactly as the server-side engine would on the same hit.
+//! - **Clock.** The playback clock is a `Duration` accumulated from `Time::delta`; only the tick
+//!   conversion truncates, so sub-millisecond frame time is not lost (~4 % slow at 60 fps when
+//!   each frame's `as_millis` is summed).
+//!
+//! Known engine gaps this module reports rather than fakes: `ActionEngine` has no
+//! stamina-install constructor, so a profile rebuild (rig load, weapon swap) restarts the
+//! predicted bar at full, and no revive/reset, so a resurrection is played by constructing a
+//! fresh engine from the compiled table.
+//!
 //! Provisional binds (until the RFC's rebindable experimental controls land): `F10` toggles the
-//! client's *requested* mode, `V` requests a dodge, `C` requests a light attack. All are inert
-//! with no local player (glue screens); actions only play once Experimental is requested.
+//! client's *requested* mode, `V` requests a dodge, `C` requests a light attack. All three run
+//! through the same gate the binding dispatch uses ([`UiKeyboardCapture`]: a focused EditBox eats
+//! every key and a shown keyboard frame eats the key it consumed), so typing in chat never stages
+//! an action. All are inert with no local player (glue screens); actions only play once
+//! Experimental is requested.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use bevy::prelude::*;
 use benilla_assets::ModelAnimations;
@@ -20,13 +42,16 @@ use benilla_combat_core::{
     dodge_action, ActionEngine, ActionId, ActionRefusal, ActionSpec, ActionTable, EngineEvent,
     ProfilePolicy, StaminaConfig, TickRate, Ticks,
 };
+use benilla_world::schedule::WorldStage;
 
 use crate::combat_mode::{CombatMode, CombatModeView};
 use crate::combat_profiles::{
     player_dodge_spec, player_melee_action, CombatProfiles, HOST_DODGE, PLAYER_MELEE_MAIN,
 };
-use crate::creature_anim::{ActionAnim, AnimData, PlaySeq, Wielded};
+use crate::creature_anim::{ActionAnim, AnimData, PlaySeq, SwingMessage, Wielded};
 use crate::net::SelfPlayer;
+use crate::ui_script::{UiInput, UiKeyboardCapture};
+use crate::wrath::WrathWorldView;
 
 /// The first authored action-table revision. The server-negotiated revision replaces it once
 /// the mode channel exists; every consumer pins this value per session.
@@ -81,14 +106,26 @@ pub(crate) fn phase_of(spec: &ActionSpec, elapsed: u64) -> ActionPhase {
 pub(crate) struct CombatPlaybackState {
     pub(crate) engine: Option<ActionEngine>,
     pub(crate) last_refusal: Option<ActionRefusal>,
-    /// The playback clock in milliseconds, advanced from `Time` each frame.
-    pub(crate) now_ms: u64,
+    /// The playback clock. `Time::delta` is a `Duration`; summing whole milliseconds per frame
+    /// truncates every frame (about 4 % slow at 60 fps), so the full precision is carried here
+    /// and only the tick conversion truncates.
+    clock: Duration,
 }
 
 impl CombatPlaybackState {
+    /// Advance the playback clock by one frame's delta, keeping the sub-millisecond remainder.
+    fn advance_clock(&mut self, delta: Duration) {
+        self.clock = self.clock.saturating_add(delta);
+    }
+
+    /// The playback clock in whole milliseconds.
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.clock.as_millis()).unwrap_or(u64::MAX)
+    }
+
     /// Whole ticks at `now_ms` on the compile clock.
     fn ticks_at(&self) -> Ticks {
-        Ticks::new(self.now_ms * u64::from(PROFILE_TICK_RATE_HZ) / 1000)
+        Ticks::new(self.now_ms() * u64::from(PROFILE_TICK_RATE_HZ) / 1000)
     }
 
     /// The running action's phase, if any.
@@ -114,7 +151,11 @@ impl Plugin for CombatPlaybackPlugin {
                     advance_playback,
                     toggle_and_stage_action,
                 )
-                    .chain(),
+                    .chain()
+                    // The local player is tagged in the Net stage, and the typing gate below
+                    // must read this frame's `UiKeyboardCapture`, written by the UI input pass.
+                    .after(WorldStage::Net)
+                    .after(UiInput),
             );
     }
 }
@@ -123,6 +164,10 @@ impl Plugin for CombatPlaybackPlugin {
 /// rebuild the prediction engine over it. The table carries the dodge and the main-hand melee
 /// action; both compile from the rig's own clips (see `combat_profiles.rs`) and refuse rather
 /// than invent a profile when a clip is missing.
+///
+/// A compile failure is a real defect (a bad clip, a policy the compiler rejects), so it is
+/// reported once per rebuild with the action it names, never swallowed and never repeated per
+/// frame. A missing clip is not a failure: it is the compiler's documented `None` gap.
 fn fill_local_profiles(
     me: Query<(Entity, &ModelAnimations, &Wielded), With<SelfPlayer>>,
     anim_data: Option<Res<AnimData>>,
@@ -145,48 +190,149 @@ fn fill_local_profiles(
     let policy = ProfilePolicy::default();
     let mut table = ActionTable::new(PROFILE_REVISION, rate);
     let mut bindings = HashMap::new();
-    if let Ok(Some((dodge, anim_id))) =
-        player_dodge_spec(anims, &anim_data.0, &policy, rate, PROFILE_REVISION)
-    {
-        let action = dodge_action(HOST_DODGE, &dodge);
-        if table.insert(action).is_ok() {
-            bindings.insert(HOST_DODGE, anim_id);
+    let mut problems: Vec<String> = Vec::new();
+    match player_dodge_spec(anims, &anim_data.0, &policy, rate, PROFILE_REVISION) {
+        Ok(Some((dodge, anim_id))) => match table.insert(dodge_action(HOST_DODGE, &dodge)) {
+            Ok(()) => {
+                bindings.insert(HOST_DODGE, anim_id);
+            }
+            Err(error) => problems.push(format!("dodge {}: {error}", HOST_DODGE.0)),
+        },
+        // No Dodge clip on this rig: the compiler's named gap, not a failure.
+        Ok(None) => {}
+        Err(error) => problems.push(format!("dodge {}: {error}", HOST_DODGE.0)),
+    }
+    match player_melee_action(PLAYER_MELEE_MAIN, main, anims, &anim_data.0, &policy, rate) {
+        Ok(Some((spec, anim_id))) => match table.insert(spec) {
+            Ok(()) => {
+                bindings.insert(PLAYER_MELEE_MAIN, anim_id);
+            }
+            Err(error) => problems.push(format!("melee {}: {error}", PLAYER_MELEE_MAIN.0)),
+        },
+        // The rig resolved no swing clip, or no main hand: the compiler's named gap.
+        Ok(None) => {}
+        Err(error) => problems.push(format!("melee {}: {error}", PLAYER_MELEE_MAIN.0)),
+    }
+    // `ActionEngine::new` is the only constructor, so a rebuild restarts the predicted bar at
+    // full: the old value is read here and reported, never faked back into the engine.
+    let carried_stamina = state.engine.as_ref().map(ActionEngine::stamina);
+    match ActionEngine::new(table.clone(), PREDICTED_STAMINA, BUFFER_TTL_TICKS) {
+        Ok(engine) => state.engine = Some(engine),
+        Err(error) => {
+            problems.push(format!("engine: {error}"));
+            state.engine = None;
         }
     }
-    if let Ok(Some((spec, anim_id))) =
-        player_melee_action(PLAYER_MELEE_MAIN, main, anims, &anim_data.0, &policy, rate)
-    {
-        if table.insert(spec).is_ok() {
-            bindings.insert(PLAYER_MELEE_MAIN, anim_id);
-        }
-    }
-    state.engine = ActionEngine::new(table.clone(), PREDICTED_STAMINA, BUFFER_TTL_TICKS).ok();
     state.last_refusal = None;
+    if !problems.is_empty() {
+        bevy::log::warn!(
+            "souls playback: profile rebuild for {entity:?} (main {main:?}) failed: {}",
+            problems.join("; ")
+        );
+    }
+    if let Some(carried) = carried_stamina.filter(|stamina| *stamina != PREDICTED_STAMINA.max) {
+        // One line per rebuild. The engine exposes no stamina install, so this is the value the
+        // next engine slice must carry (`ActionEngine::with_stamina`/`set_stamina`).
+        benilla_assets::trace::line(
+            "souls",
+            &format!(
+                "rebuild main={main:?}: stamina {carried} -> {} (no ActionEngine stamina install; reported, not faked)",
+                PREDICTED_STAMINA.max
+            ),
+        );
+    }
     profiles.table = Some(table);
     profiles.anims = bindings;
     profiles.built_for = Some((entity, main));
 }
 
+/// The local player's own observation says they are dead. The same signal `combat_mode.rs`
+/// closes its Souls window on: the replicated `SelfDeath` flag, or zero observed health.
+fn self_is_dead(world: Option<&WrathWorldView>) -> bool {
+    world
+        .and_then(|world| world.self_observation.as_ref())
+        .is_some_and(|observation| {
+            matches!(
+                observation.death,
+                benilla_protocol_wrath::session::SelfDeath::Dead
+                    | benilla_protocol_wrath::session::SelfDeath::Ghost
+            ) || observation.resources.health == Some(0)
+        })
+}
+
 /// Advance the playback clock and the engine; every action the engine starts this frame plays
 /// its compiled clip through the driver.
+///
+/// The prediction hears the two world signals presentation owns: the local player's death (one
+/// `die` on the transition, which clears the running action and the held request) and an incoming
+/// melee swing that names the local player as its victim (one `interrupt`). Both are observed
+/// outcomes, not authority: nothing here sends or claims a result.
 fn advance_playback(
     time: Res<Time>,
+    world: Option<Res<WrathWorldView>>,
     profiles: Res<CombatProfiles>,
     mut state: ResMut<CombatPlaybackState>,
     mut play_seq: ResMut<PlaySeq>,
     me: Query<Entity, With<SelfPlayer>>,
+    mut swings: MessageReader<SwingMessage>,
     mut actions: MessageWriter<ActionAnim>,
 ) {
-    state.now_ms = state
-        .now_ms
-        .saturating_add(time.delta().as_millis() as u64);
+    state.advance_clock(time.delta());
     let Ok(entity) = me.single() else {
         return;
     };
     let now = state.ticks_at();
+    if self_is_dead(world.as_deref()) {
+        // One `die` per transition: `is_dead` makes the call idempotent, and a rebuild that
+        // resurrected the engine while the observation was already dead is caught here.
+        let died = state
+            .engine
+            .as_mut()
+            .map(|engine| engine.is_dead() || engine.die(now).is_ok());
+        if died == Some(false) {
+            // The engine only refuses a backwards clock, which this one never is; if it ever
+            // did, drop the prediction rather than keep playing a corpse's clip.
+            state.engine = None;
+        }
+        // The refusal outlives the action, so it is cleared here; the running action and the
+        // held request are the engine's own and `die` cleared both.
+        state.last_refusal = None;
+        // This frame's hits land on a corpse and must not interrupt the next life.
+        for _ in swings.read() {}
+        return;
+    }
+    // A revival restarts the prediction: `ActionEngine` has no revive/reset, so a fresh engine
+    // over the same compiled table is the only way to keep playing after a death. The predicted
+    // bar restarts full, which a resurrection owns anyway.
+    if state.engine.as_ref().is_some_and(ActionEngine::is_dead) {
+        state.engine = None;
+        state.last_refusal = None;
+        if let Some(table) = profiles.table.clone() {
+            match ActionEngine::new(table, PREDICTED_STAMINA, BUFFER_TTL_TICKS) {
+                Ok(engine) => state.engine = Some(engine),
+                Err(error) => {
+                    bevy::log::warn!("souls playback: revive rebuild failed: {error}");
+                }
+            }
+        }
+        if state.engine.is_none() {
+            return;
+        }
+    }
+    // An incoming swing on the local player is the engine's own interruption: it ends the
+    // running action and drops the held request. Our own outgoing swing never names us victim.
+    let interrupted = swings
+        .read()
+        .any(|swing| swing.attacker != entity && swing.victim == Some(entity));
     let Some(engine) = state.engine.as_mut() else {
         return;
     };
+    // Interrupt before advancing, so a hit that lands this frame is not played for one tick
+    // first. The call's own events are ends (plus anything a free cancel window let start
+    // before the stop): none of them is a clip to play.
+    if interrupted && engine.interrupt(now).is_err() {
+        return;
+    }
     let Ok(events) = engine.advance_to(now) else {
         return;
     };
@@ -207,8 +353,14 @@ fn advance_playback(
 /// `V` requests a dodge and `C` a light attack while Experimental is requested. Requests go
 /// through the engine, so buffering, cancel windows, stamina and refusals are the same rules the
 /// server will run.
+///
+/// The three raw keys run through the binding dispatch's own gate ([`UiKeyboardCapture`]): a
+/// focused EditBox eats every key and a shown keyboard frame eats the key it consumed, so typing
+/// `v` in chat never stages a dodge. The arrows' exemption and PRINTSCREEN's pre-focus pass do
+/// not apply to these keys.
 fn toggle_and_stage_action(
     keys: Res<ButtonInput<KeyCode>>,
+    capture: Res<UiKeyboardCapture>,
     me: Query<Entity, With<SelfPlayer>>,
     mut view: ResMut<CombatModeView>,
     profiles: Res<CombatProfiles>,
@@ -216,10 +368,13 @@ fn toggle_and_stage_action(
     mut play_seq: ResMut<PlaySeq>,
     mut actions: MessageWriter<ActionAnim>,
 ) {
+    // `bindings.rs`'s pressed-key gate, without its Super/repeat arms: `just_pressed` is already
+    // edge-only and a chord with no binding is not this path's concern.
+    let eaten = |key: KeyCode| capture.typing || capture.consumed.contains(&key);
     let Ok(entity) = me.single() else {
         return;
     };
-    if keys.just_pressed(KeyCode::F10) {
+    if keys.just_pressed(KeyCode::F10) && !eaten(KeyCode::F10) {
         match view.requested {
             Some(CombatMode::Experimental) => {
                 view.request_baseline();
@@ -232,9 +387,9 @@ fn toggle_and_stage_action(
     if view.requested != Some(CombatMode::Experimental) {
         return;
     }
-    let action = if keys.just_pressed(KeyCode::KeyV) {
+    let action = if keys.just_pressed(KeyCode::KeyV) && !eaten(KeyCode::KeyV) {
         Some(HOST_DODGE)
-    } else if keys.just_pressed(KeyCode::KeyC) {
+    } else if keys.just_pressed(KeyCode::KeyC) && !eaten(KeyCode::KeyC) {
         Some(PLAYER_MELEE_MAIN)
     } else {
         None
@@ -323,8 +478,7 @@ mod tests {
             ActionEngine::new(table.clone(), PREDICTED_STAMINA, BUFFER_TTL_TICKS).expect("engine");
         let mut state = CombatPlaybackState {
             engine: Some(engine),
-            last_refusal: None,
-            now_ms: 0,
+            ..Default::default()
         };
         let profiles = CombatProfiles {
             table: Some(table),
@@ -346,15 +500,40 @@ mod tests {
         );
         assert_eq!(state.phase(&profiles), Some(ActionPhase::Windup));
 
-        state.now_ms = 120;
+        state.clock = Duration::from_millis(120);
         let now = state.ticks_at();
         state.engine.as_mut().expect("engine").advance_to(now).expect("advance");
         assert_eq!(state.phase(&profiles), Some(ActionPhase::Active));
 
-        state.now_ms = 500;
+        state.clock = Duration::from_millis(500);
         let now = state.ticks_at();
         state.engine.as_mut().expect("engine").advance_to(now).expect("advance");
         assert_eq!(state.phase(&profiles), None, "the dodge completed");
+    }
+
+    /// The playback clock keeps the sub-millisecond remainder across frames. Summing each
+    /// frame's `as_millis` (the old path) loses most of a millisecond per 60 fps frame and runs
+    /// the clock seconds short per minute; the `Duration` clock only truncates for the tick
+    /// conversion.
+    #[test]
+    fn the_playback_clock_keeps_submillisecond_time() {
+        let mut state = CombatPlaybackState::default();
+        let frame = Duration::from_nanos(16_666_667);
+        for _ in 0..600 {
+            state.advance_clock(frame);
+        }
+        assert_eq!(
+            state.now_ms(),
+            10_000,
+            "600 frames of 16.666667 ms is 10.0000002 s, not 600 truncated 16 ms"
+        );
+        assert_eq!(
+            state.ticks_at(),
+            Ticks::new(1000),
+            "ten seconds on the 100 Hz compile clock"
+        );
+        // Truncating per frame would be 600 × 16 ms = 9600 ms: the drift this replaces.
+        assert_ne!(state.now_ms(), 600 * 16);
     }
 
     /// The runtime table compiles the same dodge and melee actions the pure compilers produce,
