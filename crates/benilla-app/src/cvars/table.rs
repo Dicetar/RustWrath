@@ -1048,6 +1048,15 @@ pub(crate) const REGISTERED: &[Registered] = &[
     // pinned reference); `vplates::on_cvar` is their observer.
     ours("nameplateShowEnemies", "0", "GameUI_CVar.cpp:588"),
     ours("nameplateShowFriends", "0", "GameUI_CVar.cpp:592"),
+    // The player-owned arm of the same gate (`Unit_C.cpp:20490`-`:20500`): a totem, guardian or
+    // pet whose charmer or creator is a player keeps its plate only while its own row is on.
+    // `vplates::wrath_plate_gate` reads them each frame.
+    ours("nameplateShowEnemyPets", "1", "GameUI_CVar.cpp:589"),
+    ours("nameplateShowEnemyGuardians", "1", "GameUI_CVar.cpp:590"),
+    ours("nameplateShowEnemyTotems", "1", "GameUI_CVar.cpp:591"),
+    ours("nameplateShowFriendlyPets", "1", "GameUI_CVar.cpp:593"),
+    ours("nameplateShowFriendlyGuardians", "1", "GameUI_CVar.cpp:594"),
+    ours("nameplateShowFriendlyTotems", "1", "GameUI_CVar.cpp:595"),
     ours("fctPeriodicEnergyGains", "0", "GameUI_CVar.cpp:545"),
     ours("trackerFilter", "7", "GameUI_CVar.cpp:507"),
     ours("showCastableBuffs", "0", "GameUI_CVar.cpp:568"),
