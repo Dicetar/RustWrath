@@ -194,16 +194,19 @@ impl Loader<'_> {
             // A named label is created as a named region, not aliased after `SetText`, so its
             // `GetName()` answers.
             let bt_name = bt.name().map(|raw| framexml::resolve_name(raw, self_name));
-            if let Some(rname) = bt_name.clone() {
-                match wrapper
-                    .call_method::<Table>("CreateFontString", (rname, Option::<String>::None))
-                {
-                    Ok(fs) => self.call(wrapper, "SetFontString", fs, dbg),
-                    Err(e) => self
-                        .report
-                        .warnings
-                        .push(format!("{dbg}: ButtonText CreateFontString: {e}")),
-                }
+            // `SetText("")` does not lazily create a label in Wrath (`CSimpleButton::SetText`
+            // returns when the value is empty and no label exists). XML still creates the
+            // unnamed ButtonText region before applying its empty/default text, because stock
+            // OnLoad handlers call `GetFontString()` even when the node has no name or text.
+            match wrapper.call_method::<Table>(
+                "CreateFontString",
+                (bt_name.clone(), Option::<String>::None),
+            ) {
+                Ok(fs) => self.call(wrapper, "SetFontString", fs, dbg),
+                Err(e) => self
+                    .report
+                    .warnings
+                    .push(format!("{dbg}: ButtonText CreateFontString: {e}")),
             }
             self.call(wrapper, "SetText", label, dbg);
             if let Ok(region) = wrapper.call_method::<Table>("GetFontString", ()) {

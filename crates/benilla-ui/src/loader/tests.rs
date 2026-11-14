@@ -1819,6 +1819,29 @@ mod loader_tests {
         );
     }
 
+    /// An unnamed `<ButtonText>` is still the button's implicit label. Stock Wrath's GameTimeFrame
+    /// calls `self:GetFontString()` from OnLoad, so dropping the unnamed child leaves a nil region.
+    #[test]
+    fn unnamed_button_text_is_available_during_onload() {
+        let s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let doc = parse(
+            r#"<Ui>
+                <Button name="Clock">
+                    <ButtonText/>
+                    <Scripts>
+                        <OnLoad>button_text_present = this:GetFontString() ~= nil; this:GetFontString():SetDrawLayer("BACKGROUND")</OnLoad>
+                    </Scripts>
+                </Button>
+            </Ui>"#,
+        );
+        let report = load(&s, &doc, &no_files);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+        assert!(s.eval::<bool>("return button_text_present").unwrap());
+        assert!(s
+            .eval::<bool>("return Clock:GetFontString() ~= nil")
+            .unwrap());
+    }
+
     /// The chat edit box's shape. The engine assigns the text slot from the direct-child
     /// `<FontString>` at LoadXML; it never searches the regions, so the header stays its own.
     #[test]
