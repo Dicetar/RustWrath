@@ -171,6 +171,14 @@ mod private {
             self.last_regen = now;
         }
 
+        /// Install a carried value at `now`, clamped, anchoring regeneration from this tick so a
+        /// carried zero still recovers.
+        pub(super) fn install(&mut self, stamina: u32, now: Ticks) {
+            self.current = stamina.min(self.config.max);
+            self.last_spend = Some(now);
+            self.last_regen = now;
+        }
+
         /// Regenerate whole ticks after the post-spend delay; the delay period is never banked.
         pub(super) fn regen(&mut self, now: Ticks) {
             let Some(last_spend) = self.last_spend else {
@@ -226,11 +234,13 @@ impl ActionEngine {
         })
     }
 
-    /// Install a stamina value, clamped to the policy maximum. Used when an adapter rebuilds the
-    /// engine (a weapon or world change) and must carry the bar across the rebuild instead of
-    /// refilling it.
-    pub fn set_stamina(&mut self, stamina: u32) {
-        self.stamina.current = stamina.min(self.stamina.config.max);
+    /// Install a stamina value at `now`, clamped to the policy maximum, and seed the
+    /// regeneration clock from `now`. Used when an adapter rebuilds the engine (a weapon or
+    /// world change) and must carry the bar across the rebuild: a carried bar resumes its
+    /// normal regen policy one delay after the rebuild instead of freezing (a carried zero
+    /// would otherwise deadlock, because only a spend anchors regeneration).
+    pub fn set_stamina(&mut self, stamina: u32, now: Ticks) {
+        self.stamina.install(stamina, now);
     }
 
     /// The pinned table.
@@ -1232,15 +1242,33 @@ mod tests {
         }));
     }
 
-    /// `set_stamina` installs a carried bar, clamped to the policy maximum.
+    /// `set_stamina` installs a carried bar, clamped to the policy maximum, and seeds the regen
+    /// delay from the install tick: a carried zero still regenerates and can spend again.
     #[test]
     fn stamina_can_be_installed_for_a_rebuild() {
         let mut table = ActionTable::new(ActionRevision(1), rate());
         table.insert(melee(1, 50)).expect("insert");
         let mut engine = ActionEngine::new(table, stamina(), 50).expect("engine");
-        engine.set_stamina(37);
+        engine.set_stamina(37, t(0));
         assert_eq!(engine.stamina(), 37);
-        engine.set_stamina(1_000);
+        engine.set_stamina(1_000, t(0));
         assert_eq!(engine.stamina(), 100, "clamped to the policy maximum");
+
+        // A carried zero is not a deadlock: the install anchors regeneration, so the bar comes
+        // back one delay later.
+        let mut table = ActionTable::new(ActionRevision(1), rate());
+        table.insert(melee(1, 50)).expect("insert");
+        let mut engine = ActionEngine::new(table, stamina(), 50).expect("engine");
+        engine.set_stamina(0, t(0));
+        assert_eq!(engine.stamina(), 0);
+        engine.advance_to(t(100)).expect("advance");
+        assert_eq!(engine.stamina(), 0, "the delay period is not banked");
+        engine.advance_to(t(101)).expect("advance");
+        assert_eq!(engine.stamina(), 1, "regeneration resumed after the delay");
+        let events = engine.submit(ActionId(1), t(101)).expect("submit");
+        assert!(matches!(
+            events.first(),
+            Some(EngineEvent::Started { .. })
+        ));
     }
 }

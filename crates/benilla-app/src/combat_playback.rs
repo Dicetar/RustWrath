@@ -12,9 +12,10 @@
 //!
 //! - **Death.** The local player's own observation (`WrathWorldView::self_observation`, the same
 //!   `SelfDeath`/zero-health read `combat_mode.rs` closes its window on) ends the engine once and
-//!   clears the refusal, so no clip keeps playing and no request survives the corpse. A revival
-//!   rebuilds the engine anchored at the playback clock over the same compiled table (the engine
-//!   has no revive of its own), with a full bar.
+//!   clears the refusal, so no new clip starts and no request survives the corpse (a one-shot
+//!   already playing ends on its own clock). A revival rebuilds the engine anchored at the
+//!   playback clock over the same compiled table (the engine has no revive of its own), with a
+//!   full bar.
 //! - **Interruption.** A `SwingMessage` that lands on the local player (`victim_state == 1`,
 //!   attacker someone else) — the melee stream `creature_anim` publishes per
 //!   `SMSG_ATTACKERSTATEUPDATE` — interrupts the running action and drops the held request.
@@ -26,7 +27,8 @@
 //!   walked in bounded chunks rather than dropped.
 //!
 //! A profile rebuild (rig load, weapon swap) carries the predicted bar across via
-//! `ActionEngine::set_stamina`; only a respawn refills it.
+//! `ActionEngine::set_stamina`, which resumes regeneration after the install delay; a respawn
+//! refills the bar immediately.
 //!
 //! Provisional binds (until the RFC's rebindable experimental controls land): `F10` toggles the
 //! client's *requested* mode, `V` requests a dodge, `F9` requests a light attack (`F9` is unbound
@@ -218,7 +220,8 @@ fn fill_local_profiles(
     }
     // A rebuild anchors the engine at the playback clock, so the first span stays inside the
     // engine's bounded-advance contract (a fresh engine at tick zero could never reach an
-    // app-lifetime clock). The bar carries across the rebuild; only a respawn refills it.
+    // app-lifetime clock). The bar carries across the rebuild and resumes regeneration after the
+    // install delay; a respawn refills it.
     let carried_stamina = state.engine.as_ref().map(ActionEngine::stamina);
     match ActionEngine::new_at(
         table.clone(),
@@ -228,7 +231,7 @@ fn fill_local_profiles(
     ) {
         Ok(mut engine) => {
             if let Some(carried) = carried_stamina {
-                engine.set_stamina(carried);
+                engine.set_stamina(carried, state.ticks_at());
             }
             state.engine = Some(engine);
         }
