@@ -212,6 +212,91 @@ pub fn dodge_action(id: ActionId, dodge: &DodgeSpec) -> ActionSpec {
     }
 }
 
+/// Per-input timing for one action: what the single `input_from_ticks` / `cancel_from_ticks`
+/// pair of [`ActionSpec`] cannot say.
+///
+/// The donor's action data gives every kind of queued input its own earliest cancel offset (a
+/// roll may leave a swing sooner or later than the next swing may), and hears a dodge press from
+/// its own offset. An action registered with these through [`ActionTable::insert_with_inputs`]
+/// uses them for the four request classes the engine can tell apart by [`ActionKind`]:
+///
+/// | Held request's kind | Offset used |
+/// |---|---|
+/// | [`ActionKind::MeleeLight`] | `cancel_light` |
+/// | [`ActionKind::MeleeHeavy`] | `cancel_heavy` |
+/// | [`ActionKind::Dodge`] | `cancel_dodge`, and `dodge_input_from` for the press itself |
+/// | [`ActionKind::Guard`] | `cancel_guard` |
+///
+/// `None` means **never**: that class cannot cancel (or, for `dodge_input_from`, is never heard)
+/// while this action runs. Requests of any other kind (spells, enemy strikes) keep using the
+/// spec's own `input_from_ticks` and `cancel_from_ticks`. An action without input windows behaves
+/// exactly as before.
+///
+/// All offsets are ticks from the action's start and may not exceed its total.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct InputWindows {
+    /// Offset from which a dodge press is heard rather than refused.
+    pub dodge_input_from: Option<u64>,
+    /// Earliest offset a held light attack may replace this action.
+    pub cancel_light: Option<u64>,
+    /// Earliest offset a held heavy attack may replace this action.
+    pub cancel_heavy: Option<u64>,
+    /// Earliest offset a held dodge may replace this action.
+    pub cancel_dodge: Option<u64>,
+    /// Earliest offset a held guard may replace this action.
+    pub cancel_guard: Option<u64>,
+}
+
+/// How a request of some kind is timed against a running action that has [`InputWindows`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ClassOffset {
+    /// The kind has no class of its own: use the spec's single offset.
+    Unclassed,
+    /// The class's offset; `None` is never.
+    Classed(Option<u64>),
+}
+
+impl InputWindows {
+    /// The cancel offset for a held request of `kind`.
+    pub(crate) fn cancel_for(&self, kind: ActionKind) -> ClassOffset {
+        match kind {
+            ActionKind::MeleeLight => ClassOffset::Classed(self.cancel_light),
+            ActionKind::MeleeHeavy => ClassOffset::Classed(self.cancel_heavy),
+            ActionKind::Dodge => ClassOffset::Classed(self.cancel_dodge),
+            ActionKind::Guard => ClassOffset::Classed(self.cancel_guard),
+            ActionKind::SpellInstant
+            | ActionKind::SpellCast
+            | ActionKind::SpellChannel
+            | ActionKind::EnemyStrike => ClassOffset::Unclassed,
+        }
+    }
+
+    /// The listening offset for a press of `kind`. Only a dodge has its own.
+    pub(crate) fn input_for(&self, kind: ActionKind) -> ClassOffset {
+        match kind {
+            ActionKind::Dodge => ClassOffset::Classed(self.dodge_input_from),
+            _ => ClassOffset::Unclassed,
+        }
+    }
+
+    /// Every offset must lie inside the action it belongs to.
+    pub fn validate(&self, total_ticks: u64) -> CombatResult<()> {
+        let offsets = [
+            self.dodge_input_from,
+            self.cancel_light,
+            self.cancel_heavy,
+            self.cancel_dodge,
+            self.cancel_guard,
+        ];
+        if offsets.iter().flatten().any(|&offset| offset > total_ticks) {
+            return Err(CombatError::InvalidConfig(
+                "input window offsets cannot exceed the action total",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A validated set of actions under one immutable revision, compiled at one tick rate.
 #[derive(Clone, Debug)]
 pub struct ActionTable {
@@ -222,6 +307,8 @@ pub struct ActionTable {
     /// Keyed by id in a `BTreeMap` so iteration and validation are deterministic and ordered by
     /// [`ActionId`], independent of insertion order.
     actions: BTreeMap<ActionId, ActionSpec>,
+    /// Per-input timing for the actions that have it; every key is also in `actions`.
+    inputs: BTreeMap<ActionId, InputWindows>,
 }
 
 impl ActionTable {
@@ -231,6 +318,7 @@ impl ActionTable {
             revision,
             tick_rate,
             actions: BTreeMap::new(),
+            inputs: BTreeMap::new(),
         }
     }
 
@@ -242,6 +330,20 @@ impl ActionTable {
         }
         self.actions.insert(spec.id, spec);
         Ok(())
+    }
+
+    /// Insert one validated action together with its per-input timing. Same duplicate rule as
+    /// [`Self::insert`]; nothing is stored when either part is invalid.
+    pub fn insert_with_inputs(&mut self, spec: ActionSpec, inputs: InputWindows) -> CombatResult<()> {
+        inputs.validate(spec.total_ticks)?;
+        self.insert(spec)?;
+        self.inputs.insert(spec.id, inputs);
+        Ok(())
+    }
+
+    /// The per-input timing of this action, if it was registered with any.
+    pub fn inputs(&self, id: ActionId) -> Option<&InputWindows> {
+        self.inputs.get(&id)
     }
 
     /// The action with this id, if the table holds it.
@@ -274,6 +376,9 @@ impl ActionTable {
                 if !self.actions.contains_key(&followup) {
                     return Err(CombatError::MissingFollowup(followup.0));
                 }
+            }
+            if let Some(inputs) = self.inputs.get(&spec.id) {
+                inputs.validate(spec.total_ticks)?;
             }
         }
         Ok(())
@@ -442,6 +547,37 @@ mod tests {
         assert_eq!(table.len(), 3);
         assert!(table.get(ActionId(0)).is_none());
         assert!(table.get(ActionId(1)).is_some_and(|spec| spec.kind == ActionKind::MeleeLight));
+    }
+
+    /// Per-input timing is stored with its action, must fit inside it, and stores nothing when
+    /// it does not.
+    #[test]
+    fn input_windows_must_fit_inside_their_action() {
+        let mut table = ActionTable::new(ActionRevision(1), rate());
+        let late = InputWindows {
+            cancel_dodge: Some(51),
+            ..InputWindows::default()
+        };
+        assert!(matches!(
+            table.insert_with_inputs(melee(1, 50), late),
+            Err(CombatError::InvalidConfig(_))
+        ));
+        assert!(table.is_empty());
+
+        let fitting = InputWindows {
+            dodge_input_from: Some(5),
+            cancel_dodge: Some(50),
+            ..InputWindows::default()
+        };
+        table.insert_with_inputs(melee(1, 50), fitting).expect("insert");
+        table.insert(melee(2, 50)).expect("insert");
+        assert_eq!(table.inputs(ActionId(1)), Some(&fitting));
+        assert_eq!(table.inputs(ActionId(2)), None, "an action inserted plainly has none");
+        table.validate().expect("the table validates");
+        assert!(matches!(
+            table.insert_with_inputs(melee(1, 60), fitting),
+            Err(CombatError::DuplicateAction(1))
+        ));
     }
 
     /// The table is ordered by action id, not by insertion or hash order: iteration is ascending,

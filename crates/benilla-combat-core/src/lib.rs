@@ -16,6 +16,8 @@
 //!
 //! **Data:** all action timings and costs come from a caller-supplied [`CombatConfig`]. No preset
 //! here is an extracted Elden Ring value, and the donor's generated action table is not present.
+//! A [`Kit`] holds one weapon's full action records; [`import_kit`] builds one at run time from
+//! the file the owner generated from their own copy of the game, which stays on their machine.
 //!
 //! **Donor attribution:** mechanisms adapted from Funny-Bones/ELDEN-RING-Combat-Rewrite at
 //! `177a3b5ec14a9bde39b9ab458a3400b4038224e3` (MIT): release-time dodge versus hold-to-sprint,
@@ -34,13 +36,15 @@ mod engine;
 mod error;
 mod identity;
 mod input;
+mod kit;
+mod kit_import;
 mod player;
 mod policy;
 mod profile;
 mod stamina;
 mod time;
 
-pub use action::{dodge_action, ActionId, ActionKind, ActionSpec, ActionTable};
+pub use action::{dodge_action, ActionId, ActionKind, ActionSpec, ActionTable, InputWindows};
 pub use crate::core::{
     AdvanceReport, CombatCore, CombatEvent, CombatSnapshot, MAX_ADVANCE_TICKS, MAX_PENDING_INPUTS,
     ReconcileReport, SubmitOutcome,
@@ -54,6 +58,8 @@ pub use identity::{ActionRevision, PlayerId, Sequence, SessionEpoch};
 pub use input::{
     BufferedDodge, DodgeButton, DodgeRejection, DodgeResult, GestureOutcome, InputFrame, InputOutcome,
 };
+pub use kit::{Kit, KitAction, KitCancels, KitError, KitHit, Milli, KIT_FORMAT_VERSION};
+pub use kit_import::{import_kit, ImportOptions, ImportReport};
 pub use policy::ProfilePolicy;
 pub use profile::{
     dodge_from_clip, enemy_action, melee_action, spell_action, ClipSummary, SpellSummary,

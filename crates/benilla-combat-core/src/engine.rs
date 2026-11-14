@@ -20,7 +20,7 @@
 //! [`MAX_ADVANCE_SPAN_TICKS`] is refused with [`CombatError::AdvanceTooLarge`]; callers with a
 //! larger gap advance in bounded chunks.
 
-use crate::action::{ActionId, ActionSpec, ActionTable};
+use crate::action::{ActionId, ActionSpec, ActionTable, ClassOffset};
 use crate::data::StaminaConfig;
 use crate::engine::private::*;
 use crate::error::{CombatError, CombatResult};
@@ -48,8 +48,9 @@ pub enum ActionRefusal {
     InsufficientStamina,
     /// Nothing plays for a dead actor.
     Dead,
-    /// The running action has not reached its `input_from_ticks` offset yet, so it is not
-    /// listening. The request is refused outright and never enters the held slot.
+    /// The running action has not reached its `input_from_ticks` offset yet (for a dodge press on
+    /// an action with per-input timing, its `dodge_input_from` offset), so it is not listening.
+    /// The request is refused outright and never enters the held slot.
     InputWindowClosed,
 }
 
@@ -373,14 +374,29 @@ impl ActionEngine {
         };
         let replace_ready = self.active.is_none_or(|active| {
             let elapsed = active.elapsed(now);
-            let cancel_ready = active
-                .spec
-                .cancel_from_ticks
-                .is_some_and(|from| elapsed >= from);
-            let followup_ready = active
-                .spec
-                .followup
-                .is_none_or(|followup| followup == buffered.id);
+            let held_kind = self.table.get(buffered.id).map(|spec| spec.kind);
+            // An action with per-input timing gives each request class its own cancel offset;
+            // without it (or for a kind with no class) the spec's single offset applies.
+            let classed = self
+                .table
+                .inputs(active.spec.id)
+                .zip(held_kind)
+                .map(|(inputs, kind)| inputs.cancel_for(kind));
+            let cancel_from = match classed {
+                Some(ClassOffset::Classed(from)) => from,
+                Some(ClassOffset::Unclassed) | None => active.spec.cancel_from_ticks,
+            };
+            let cancel_ready = cancel_from.is_some_and(|from| elapsed >= from);
+            // The follow-up names the next step of a chain. With per-input timing it gates only
+            // requests of the follow-up's own kind, so a dodge (or a heavy) still leaves a light
+            // chain at its own offset; without it the follow-up gates every request, as before.
+            let followup_ready = active.spec.followup.is_none_or(|followup| {
+                if followup == buffered.id {
+                    return true;
+                }
+                let followup_kind = self.table.get(followup).map(|spec| spec.kind);
+                matches!(classed, Some(ClassOffset::Classed(_))) && followup_kind != held_kind
+            });
             cancel_ready && followup_ready
         });
         if !replace_ready || !self.stamina.can_spend() {
@@ -404,7 +420,9 @@ impl ActionEngine {
     ///
     /// While an action runs, it hears input only from its `input_from_ticks` offset: an earlier
     /// request is refused with [`ActionRefusal::InputWindowClosed`] and never touches the held
-    /// slot. A submit with no running action is unaffected by that window.
+    /// slot. A dodge press on an action registered with
+    /// [`InputWindows`](crate::action::InputWindows) is heard from its `dodge_input_from` offset
+    /// instead. A submit with no running action is unaffected by that window.
     pub fn submit(&mut self, id: ActionId, now: Ticks) -> CombatResult<Vec<EngineEvent>> {
         let mut events = self.advance_to(now)?;
         if self.dead {
@@ -423,10 +441,21 @@ impl ActionEngine {
             });
             return Ok(events);
         }
-        if self
-            .active
-            .is_some_and(|active| active.elapsed(now) < active.spec.input_from_ticks)
-        {
+        let requested_kind = self.table.get(id).map(|spec| spec.kind);
+        let deaf = self.active.is_some_and(|active| {
+            let elapsed = active.elapsed(now);
+            // A dodge press has its own listening offset on an action with per-input timing.
+            let classed = self
+                .table
+                .inputs(active.spec.id)
+                .zip(requested_kind)
+                .map(|(inputs, kind)| inputs.input_for(kind));
+            match classed {
+                Some(ClassOffset::Classed(from)) => from.is_none_or(|from| elapsed < from),
+                Some(ClassOffset::Unclassed) | None => elapsed < active.spec.input_from_ticks,
+            }
+        });
+        if deaf {
             events.push(EngineEvent::Refused {
                 id,
                 tick: now,
@@ -538,7 +567,7 @@ impl ActionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::ActionKind;
+    use crate::action::{ActionKind, InputWindows};
     use crate::identity::ActionRevision;
     use crate::time::TickRate;
 
@@ -1270,5 +1299,141 @@ mod tests {
             events.first(),
             Some(EngineEvent::Started { .. })
         ));
+    }
+
+    fn dodge(id: u32) -> ActionSpec {
+        ActionSpec {
+            id: ActionId(id),
+            kind: ActionKind::Dodge,
+            total_ticks: 40,
+            input_from_ticks: 0,
+            cancel_from_ticks: Some(40),
+            iframes: Some(TickWindow { from: 0, to: 10 }),
+            contact: None,
+            stamina_cost: 10,
+            interruptible_until: Some(40),
+            followup: None,
+        }
+    }
+
+    /// Action 1 is the swing under test, registered with per-input timing; 2 and 5 are light
+    /// swings, 3 a dodge, 4 a heavy swing.
+    fn engine_with_inputs(swing: ActionSpec, inputs: InputWindows) -> ActionEngine {
+        let mut table = ActionTable::new(ActionRevision(1), rate());
+        table.insert_with_inputs(swing, inputs).expect("insert swing");
+        let heavy = ActionSpec {
+            kind: ActionKind::MeleeHeavy,
+            ..melee(4, 50)
+        };
+        for spec in [melee(2, 50), dodge(3), heavy, melee(5, 50)] {
+            table.insert(spec).expect("insert");
+        }
+        ActionEngine::new(table, stamina(), 50).expect("engine")
+    }
+
+    fn replaced_at(events: &[EngineEvent], by: u32, tick: u64) -> bool {
+        events.contains(&EngineEvent::Ended {
+            id: ActionId(1),
+            tick: t(tick),
+            reason: ActionEnd::Replaced { by: ActionId(by) },
+        })
+    }
+
+    /// With per-input timing each kind of held request leaves the swing at its own offset: the
+    /// dodge before the spec's single offset (40), the light swing after it, the heavy never.
+    #[test]
+    fn each_kind_of_input_cancels_at_its_own_offset() {
+        let inputs = InputWindows {
+            dodge_input_from: Some(0),
+            cancel_light: Some(60),
+            cancel_heavy: None,
+            cancel_dodge: Some(30),
+            cancel_guard: None,
+        };
+
+        let mut engine = engine_with_inputs(melee(1, 100), inputs);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        engine.submit(ActionId(3), t(5)).expect("submit");
+        engine.advance_to(t(29)).expect("advance");
+        assert_eq!(engine.active(), Some(ActionId(1)));
+        assert!(replaced_at(&engine.advance_to(t(30)).expect("advance"), 3, 30));
+        assert_eq!(engine.active(), Some(ActionId(3)));
+
+        let mut engine = engine_with_inputs(melee(1, 100), inputs);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        engine.submit(ActionId(2), t(25)).expect("submit");
+        engine.advance_to(t(59)).expect("advance");
+        assert_eq!(engine.active(), Some(ActionId(1)), "the spec's offset of 40 no longer applies");
+        assert!(replaced_at(&engine.advance_to(t(60)).expect("advance"), 2, 60));
+
+        let mut engine = engine_with_inputs(melee(1, 100), inputs);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        engine.submit(ActionId(4), t(45)).expect("submit");
+        engine.advance_to(t(90)).expect("advance");
+        assert_eq!(engine.active(), Some(ActionId(1)), "never means never");
+        assert_eq!(engine.buffered(), Some(ActionId(4)));
+    }
+
+    /// A dodge press is heard from its own offset, earlier or later than the general one, and
+    /// not at all when the action gives it none.
+    #[test]
+    fn a_dodge_press_has_its_own_listening_offset() {
+        let refused = |events: Vec<EngineEvent>| {
+            matches!(
+                events.last(),
+                Some(EngineEvent::Refused {
+                    reason: ActionRefusal::InputWindowClosed,
+                    ..
+                })
+            )
+        };
+        let late_listener = ActionSpec {
+            input_from_ticks: 20,
+            ..melee(1, 100)
+        };
+        let inputs = InputWindows {
+            dodge_input_from: Some(5),
+            cancel_dodge: Some(40),
+            ..InputWindows::default()
+        };
+        let mut engine = engine_with_inputs(late_listener, inputs);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        assert!(refused(engine.submit(ActionId(3), t(4)).expect("submit")));
+        assert!(refused(engine.submit(ActionId(2), t(10)).expect("submit")), "a swing waits for 20");
+        engine.submit(ActionId(3), t(10)).expect("submit");
+        assert_eq!(engine.buffered(), Some(ActionId(3)));
+
+        let mut engine = engine_with_inputs(melee(1, 100), InputWindows::default());
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        assert!(refused(engine.submit(ActionId(3), t(50)).expect("submit")), "no dodge offset at all");
+        engine.submit(ActionId(2), t(50)).expect("submit");
+        assert_eq!(engine.buffered(), Some(ActionId(2)));
+    }
+
+    /// With per-input timing the follow-up names the next step for its own kind of input only:
+    /// another light swing keeps waiting, a dodge leaves the chain at its own offset.
+    #[test]
+    fn with_input_windows_the_followup_gates_only_its_own_kind() {
+        let chained = ActionSpec {
+            followup: Some(ActionId(2)),
+            ..melee(1, 100)
+        };
+        let inputs = InputWindows {
+            dodge_input_from: Some(0),
+            cancel_light: Some(40),
+            cancel_heavy: Some(40),
+            cancel_dodge: Some(40),
+            cancel_guard: None,
+        };
+        let mut engine = engine_with_inputs(chained, inputs);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        engine.submit(ActionId(5), t(5)).expect("submit");
+        engine.advance_to(t(45)).expect("advance");
+        assert_eq!(engine.active(), Some(ActionId(1)), "a light swing that is not the follow-up waits");
+        assert_eq!(engine.buffered(), Some(ActionId(5)));
+
+        engine.submit(ActionId(3), t(46)).expect("submit");
+        assert!(replaced_at(&engine.advance_to(t(47)).expect("advance"), 3, 47));
+        assert_eq!(engine.active(), Some(ActionId(3)));
     }
 }
