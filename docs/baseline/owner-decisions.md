@@ -69,3 +69,22 @@ asset/model hotpatching.
 6. **Keyboard and mouse first**: rebindable experimental binds (light, heavy, dodge, guard,
    lock-on); gamepad support later.
 
+2026-11-14 owner-confirmed decisions (Souls combat **client-authority** redesign):
+Recorded in full, with source anchors and the open build-order item, in
+[the direction handoff](../../.scratch/project-b/handoffs/2026-11-14-souls-client-authority-direction.md)
+and [the design record](../architecture/souls-combat-client-authority.md). Summary:
+1. **Client decides, thin server module**: the client runs the full Elden Ring player moveset,
+   decides its own hits (weapon collider), dodge/guard/parry outcomes and keeps stamina
+   client-only; a new opcode pair reports swing start/hit and strike verdicts; the server
+   applies stock damage so log, threat, loot and XP stay stock. The server is private/trusted.
+2. **Player kit is Elden Ring data**: clips and timings extracted locally from the owner's
+   install, retargeted onto the WoW rig (this supersedes the compile-from-stock-clips
+   direction for the player kit). Generated data is never committed or shared.
+3. **Enemy melee becomes a server-side cast-time strike** while the mode is on (windup 40% of
+   attack time, 0.6–1.5 s clamp, facing lock, 120° cone at melee reach, nameplate timer);
+   playerbots stay stock. One coordinated server rebuild/restart.
+4. **Sequencing**: one owner-driven stock Northshire run first (login, world entry, movement,
+   one fight, one spell cast), fixing nameplates; retirement of the superseded foundation and
+   the build order after that run remain open (decision 19, recommendation: client slice first).
+5. Cleave, blob, weight and damage tables as recorded in the direction handoff (§3 items 6–10).
+

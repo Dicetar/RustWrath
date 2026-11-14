@@ -1,5 +1,10 @@
 # Automated Souls action profiles — implementation plan
 
+**Superseded for the player kit (2026-11-14)** — the player moveset now comes from extracted and
+retargeted Elden Ring data; the compile-from-stock-clips direction applies only to enemy clips.
+See [souls-combat-client-authority.md](souls-combat-client-authority.md). The core schema,
+compilers and engine defects list below remain the technical record.
+
 **Status** — In implementation since 2026-11-13. Extends [the modular Souls combat RFC](rfc-modular-souls-combat.md)
 (step 1: "extract reusable action rules and a versioned profile") with the owner's direction of
 2026-11-13: the combat logic must apply **automatically to all current combat actions** — every
