@@ -1926,4 +1926,27 @@ mod ppem_tests {
             }
         }
     }
+
+    /// `FRIENDS.TTF`, the chat face, opened and measured the way `FloatingChatFrame.xml`'s load
+    /// first reaches it: a live run stalled 153 s right after the face loaded.
+    #[test]
+    fn the_chat_face_shapes_a_line_in_bounded_time() {
+        let Some(mut e) = engine_or_skip() else {
+            return;
+        };
+        let start = std::time::Instant::now();
+        let face = e.face_for(Some("Fonts\\FRIENDS.TTF"));
+        eprintln!("FRIENDS_OPEN {} ms (face {face})", start.elapsed().as_millis());
+        let line = "General Trade LocalDefense Combat Log Whisper: The quick brown fox 0123456789";
+        for ppem in [10u16, 12, 14] {
+            let start = std::time::Instant::now();
+            e.ensure_metrics(face, ppem, line);
+            eprintln!("FRIENDS_SHAPE ppem {ppem}: {} ms", start.elapsed().as_millis());
+        }
+        let start = std::time::Instant::now();
+        e.ensure_str(face, 14, Bake::ring(0), line);
+        let raster = start.elapsed();
+        eprintln!("FRIENDS_RASTER {} ms", raster.as_millis());
+        assert!(raster.as_secs() < 5, "rasterizing one chat line took {raster:?}");
+    }
 }

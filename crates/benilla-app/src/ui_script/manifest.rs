@@ -633,4 +633,35 @@ mod tests {
         assert_eq!(s.eval::<i64>("return GetNumBindings()").unwrap(), 223);
         assert!(!s.execute_binding("ITUNES_PLAYPAUSE", true).unwrap());
     }
+
+    /// The installed Wrath core, file by file into a Wrath VM as `load_core` walks it, timed: a
+    /// live run spent 153 s in `FloatingChatFrame.xml` that earlier builds spent under a second in.
+    #[test]
+    fn each_wrath_core_file_loads_in_bounded_time() {
+        let _data = benilla_formats::wow_data_or_skip!();
+        let Some(core) = reference_ui::core() else { return };
+        let mut s = UiScript::with_target(benilla_ui::script::UiTarget::Wrath335).unwrap();
+        s.set_screen_size(1024.0, 768.0);
+        s.set_text_measurer(Box::new(crate::ui_script::FixedWidthFont(7.0)));
+        let mut cvars = crate::cvars::Cvars::default();
+        super::super::lifecycle::register_wrath_cvars(&mut cvars);
+        cvars.seed_vm(&mut s);
+        s.register_cvars(crate::cvars::registered_pairs());
+        let mut toc = benilla_ui::status::Status::default();
+        let mut slow = Vec::new();
+        let all = std::time::Instant::now();
+        for file in core.toc.files.iter().filter(|f| !reference_ui::wrath_skipped(f)) {
+            let start = std::time::Instant::now();
+            core.load_files_into(&s, std::slice::from_ref(file), &mut toc);
+            let took = start.elapsed();
+            if took.as_millis() >= 250 {
+                eprintln!("CORE_FILE_TIME {file}: {} ms", took.as_millis());
+            }
+            if took.as_secs() >= 10 {
+                slow.push(format!("{file}: {} ms", took.as_millis()));
+            }
+        }
+        eprintln!("CORE_TOTAL_TIME {} ms", all.elapsed().as_millis());
+        assert!(slow.is_empty(), "core files over 10 s: {slow:?}");
+    }
 }
