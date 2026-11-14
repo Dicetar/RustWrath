@@ -12,6 +12,13 @@
 //!
 //! **Time:** caller-supplied monotonic [`Ticks`], no wall clock, no floats. A request is applied
 //! at the caller's `now`; the engine itself never picks a tick.
+//!
+//! **Step invariance:** [`ActionEngine::advance_to`] walks every tick in order instead of
+//! evaluating the target instant once. A frame jump therefore produces exactly the events — and
+//! the same final state — that advancing one tick at a time would, with each event stamped at the
+//! tick where it happened rather than at the jump's destination. A span wider than
+//! [`MAX_ADVANCE_SPAN_TICKS`] is refused with [`CombatError::AdvanceTooLarge`]; callers with a
+//! larger gap advance in bounded chunks.
 
 use crate::action::{ActionId, ActionSpec, ActionTable};
 use crate::data::StaminaConfig;
@@ -41,7 +48,15 @@ pub enum ActionRefusal {
     InsufficientStamina,
     /// Nothing plays for a dead actor.
     Dead,
+    /// The running action has not reached its `input_from_ticks` offset yet, so it is not
+    /// listening. The request is refused outright and never enters the held slot.
+    InputWindowClosed,
 }
+
+/// Largest tick span one [`ActionEngine::advance_to`] call simulates. A wider gap is refused with
+/// [`CombatError::AdvanceTooLarge`] so no call performs unbounded catch-up work; a caller with a
+/// larger jump advances in bounded chunks.
+pub const MAX_ADVANCE_SPAN_TICKS: u64 = 600;
 
 /// Everything the engine reports, in order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -226,21 +241,48 @@ impl ActionEngine {
         self.dead
     }
 
-    /// Advance the engine to `now`: end completed actions, open and close active windows, start
-    /// a held request in its cancel window when stamina allows, expire a stale buffer, and
-    /// regenerate stamina.
+    /// Advance the engine to `now` one tick at a time: end completed actions, open and close
+    /// active windows, start a held request in its cancel window when stamina and follow-up
+    /// policy allow, expire a stale buffer, and regenerate stamina.
+    ///
+    /// Every boundary is evaluated on the tick it occurs, so one call to `now` reports the same
+    /// events (same order, same ticks) and leaves the same state as calling this once per
+    /// intermediate tick. A span wider than [`MAX_ADVANCE_SPAN_TICKS`] is refused with
+    /// [`CombatError::AdvanceTooLarge`] and leaves the engine untouched.
     pub fn advance_to(&mut self, now: Ticks) -> CombatResult<Vec<EngineEvent>> {
-        if now < self.last {
+        let from = self.last;
+        if now < from {
             return Err(CombatError::TimeWentBackwards {
-                now: self.last,
+                now: from,
                 requested: now,
             });
         }
-        self.last = now;
         let mut events = Vec::new();
         if self.dead {
+            self.last = now;
             return Ok(events);
         }
+        let span = now.elapsed_since(from);
+        if span > MAX_ADVANCE_SPAN_TICKS {
+            return Err(CombatError::AdvanceTooLarge {
+                from,
+                to: now,
+                limit: MAX_ADVANCE_SPAN_TICKS,
+            });
+        }
+        let mut tick = from;
+        while tick < now {
+            tick = tick
+                .checked_add(1)
+                .ok_or(CombatError::TickArithmeticOverflow)?;
+            self.last = tick;
+            self.step(tick, &mut events);
+        }
+        Ok(events)
+    }
+
+    /// One tick of the rules: the body `advance_to` repeats for every tick in its span.
+    fn step(&mut self, now: Ticks, events: &mut Vec<EngineEvent>) {
         self.stamina.regen(now);
 
         if let Some(active) = self.active {
@@ -290,33 +332,45 @@ impl ActionEngine {
 
         // A held request starts when the slot frees or its cancel window opens — but only with
         // a non-zero bar; otherwise it keeps waiting until stamina returns or the TTL expires.
-        let cancel_ready = self.active.is_none_or(|active| {
-            active
+        // A running action with a declared follow-up only yields to that follow-up; any other
+        // held request keeps waiting (and is still subject to the TTL).
+        let Some(buffered) = self.buffered else {
+            return;
+        };
+        let replace_ready = self.active.is_none_or(|active| {
+            let elapsed = active.elapsed(now);
+            let cancel_ready = active
                 .spec
                 .cancel_from_ticks
-                .is_some_and(|from| active.elapsed(now) >= from)
+                .is_some_and(|from| elapsed >= from);
+            let followup_ready = active
+                .spec
+                .followup
+                .is_none_or(|followup| followup == buffered.id);
+            cancel_ready && followup_ready
         });
-        if cancel_ready {
-            if let Some(buffered) = self.buffered {
-                if self.stamina.can_spend() {
-                    self.buffered = None;
-                    if let Some(active) = self.active.take() {
-                        events.push(EngineEvent::Ended {
-                            id: active.spec.id,
-                            tick: now,
-                            reason: ActionEnd::Replaced { by: buffered.id },
-                        });
-                    }
-                    self.start(buffered.id, now, true, &mut events);
-                }
-            }
+        if !replace_ready || !self.stamina.can_spend() {
+            return;
         }
-        Ok(events)
+        self.buffered = None;
+        if let Some(active) = self.active.take() {
+            self.close_active_early(&active, now, events);
+            events.push(EngineEvent::Ended {
+                id: active.spec.id,
+                tick: now,
+                reason: ActionEnd::Replaced { by: buffered.id },
+            });
+        }
+        self.start(buffered.id, now, true, events);
     }
 
     /// Submit one request at `now`. A request while an action runs (or while a request is still
     /// held) occupies the one newest-wins slot; with nothing running it starts immediately, or
     /// is refused at a zero bar.
+    ///
+    /// While an action runs, it hears input only from its `input_from_ticks` offset: an earlier
+    /// request is refused with [`ActionRefusal::InputWindowClosed`] and never touches the held
+    /// slot. A submit with no running action is unaffected by that window.
     pub fn submit(&mut self, id: ActionId, now: Ticks) -> CombatResult<Vec<EngineEvent>> {
         let mut events = self.advance_to(now)?;
         if self.dead {
@@ -332,6 +386,17 @@ impl ActionEngine {
                 id,
                 tick: now,
                 reason: ActionRefusal::UnknownAction,
+            });
+            return Ok(events);
+        }
+        if self
+            .active
+            .is_some_and(|active| active.elapsed(now) < active.spec.input_from_ticks)
+        {
+            events.push(EngineEvent::Refused {
+                id,
+                tick: now,
+                reason: ActionRefusal::InputWindowClosed,
             });
             return Ok(events);
         }
@@ -352,27 +417,43 @@ impl ActionEngine {
         Ok(events)
     }
 
-    /// A hit or forced control ends the running action and drops the held request. A non-lethal
-    /// hit does not kill; [`Self::die`] does.
+    /// A hit or forced control ends the running action and drops the held request.
+    ///
+    /// The running action yields only up to and including its `interruptible_until` offset; past
+    /// it, or when the spec declares `None` (full hyperarmor), the hit changes nothing — no
+    /// `Ended`, and the held request stays. With no running action the held request is dropped.
     pub fn interrupt(&mut self, now: Ticks) -> CombatResult<Vec<EngineEvent>> {
         let mut events = self.advance_to(now)?;
-        self.buffered = None;
-        if let Some(active) = self.active.take() {
-            events.push(EngineEvent::Ended {
-                id: active.spec.id,
-                tick: now,
-                reason: ActionEnd::Interrupted,
-            });
+        let Some(active) = self.active else {
+            self.buffered = None;
+            return Ok(events);
+        };
+        let interruptible = active
+            .spec
+            .interruptible_until
+            .is_some_and(|until| active.elapsed(now) <= until);
+        if !interruptible {
+            return Ok(events);
         }
+        self.buffered = None;
+        self.active = None;
+        self.close_active_early(&active, now, &mut events);
+        events.push(EngineEvent::Ended {
+            id: active.spec.id,
+            tick: now,
+            reason: ActionEnd::Interrupted,
+        });
         Ok(events)
     }
 
     /// The actor died: the running action ends, the buffer clears, and nothing submits again.
+    /// Death ignores `interruptible_until`.
     pub fn die(&mut self, now: Ticks) -> CombatResult<Vec<EngineEvent>> {
         let mut events = self.advance_to(now)?;
         self.dead = true;
         self.buffered = None;
         if let Some(active) = self.active.take() {
+            self.close_active_early(&active, now, &mut events);
             events.push(EngineEvent::Ended {
                 id: active.spec.id,
                 tick: now,
@@ -380,6 +461,22 @@ impl ActionEngine {
             });
         }
         Ok(events)
+    }
+
+    /// Emit `ActiveClosed` when an action leaves early from inside its active window. Windows are
+    /// half-open, so the window is active for `from <= elapsed < to`; an action already past `to`
+    /// closed it during the tick walk.
+    fn close_active_early(&self, active: &ActiveAction, now: Ticks, events: &mut Vec<EngineEvent>) {
+        let elapsed = active.elapsed(now);
+        if active
+            .active_window()
+            .is_some_and(|window| elapsed >= window.from && elapsed < window.to)
+        {
+            events.push(EngineEvent::ActiveClosed {
+                id: active.spec.id,
+                tick: now,
+            });
+        }
     }
 
     /// Start one action: spend its cost and open the instance.
@@ -413,12 +510,14 @@ mod tests {
         TickRate::new(100).expect("100 Hz")
     }
 
+    /// A light swing that listens for input from its first tick; the input-window rule has its
+    /// own test, so the shared trace helper keeps later presses admissible.
     fn melee(id: u32, total: u64) -> ActionSpec {
         ActionSpec {
             id: ActionId(id),
             kind: ActionKind::MeleeLight,
             total_ticks: total,
-            input_from_ticks: total,
+            input_from_ticks: 0,
             cancel_from_ticks: Some(40),
             iframes: None,
             contact: Some(TickWindow { from: 20, to: 30 }),
@@ -674,5 +773,372 @@ mod tests {
             engine.advance_to(t(9)),
             Err(CombatError::TimeWentBackwards { .. })
         ));
+    }
+
+    /// Advance one tick at a time, collecting every event: the reference a single jump must match.
+    fn step_by_tick(
+        engine: &mut ActionEngine,
+        from: Ticks,
+        to: Ticks,
+        events: &mut Vec<EngineEvent>,
+    ) {
+        let mut tick = from;
+        while tick < to {
+            tick = t(tick.get() + 1);
+            events.extend(engine.advance_to(tick).expect("advance"));
+        }
+    }
+
+    fn event_tick(event: EngineEvent) -> Ticks {
+        match event {
+            EngineEvent::Started { tick, .. }
+            | EngineEvent::Ended { tick, .. }
+            | EngineEvent::ActiveOpened { tick, .. }
+            | EngineEvent::ActiveClosed { tick, .. }
+            | EngineEvent::Buffered { tick, .. }
+            | EngineEvent::BufferExpired { tick, .. }
+            | EngineEvent::Refused { tick, .. } => tick,
+        }
+    }
+
+    /// A frame jump must equal advancing tick by tick: same events (including the tick each one
+    /// happened at) and same final state. The traces cross a buffer start, both contact edges,
+    /// completion and a TTL expiry inside the jumped span.
+    #[test]
+    fn advance_to_is_step_invariant() {
+        // (actions, buffer TTL, requests at absolute ticks, final tick, starts from a buffer?)
+        let traces: Vec<(Vec<ActionSpec>, u64, Vec<(ActionId, u64)>, u64, bool)> = vec![
+            // A combo replaces inside the jump, and the next action's contact opens afterwards.
+            (
+                vec![melee(1, 50), melee(2, 50)],
+                50,
+                vec![(ActionId(1), 0), (ActionId(2), 10)],
+                60,
+                true,
+            ),
+            // The held request outlives its TTL inside the jump and is dropped.
+            (
+                vec![
+                    ActionSpec {
+                        cancel_from_ticks: None,
+                        ..melee(1, 200)
+                    },
+                    melee(2, 50),
+                ],
+                50,
+                vec![(ActionId(1), 0), (ActionId(2), 10)],
+                100,
+                false,
+            ),
+            // A zero bar defers the held start past completion; the jump crosses the completion
+            // and the first regenerated tick.
+            (
+                vec![
+                    ActionSpec {
+                        stamina_cost: 100,
+                        ..melee(1, 50)
+                    },
+                    melee(2, 50),
+                ],
+                200,
+                vec![(ActionId(1), 0), (ActionId(2), 10)],
+                120,
+                true,
+            ),
+        ];
+
+        for (actions, ttl, requests, final_tick, starts_from_buffer) in traces {
+            let mut table = ActionTable::new(ActionRevision(1), rate());
+            for spec in &actions {
+                table.insert(*spec).expect("insert");
+            }
+            let mut jumped = ActionEngine::new(table, stamina(), ttl).expect("engine");
+            let mut stepped = jumped.clone();
+
+            let mut jump_events = Vec::new();
+            let mut step_events = Vec::new();
+            let mut stepped_at = t(0);
+            for (id, at) in requests {
+                jump_events.extend(jumped.submit(id, t(at)).expect("submit"));
+                step_by_tick(&mut stepped, stepped_at, t(at), &mut step_events);
+                stepped_at = t(at);
+                step_events.extend(stepped.submit(id, t(at)).expect("submit"));
+            }
+            jump_events.extend(jumped.advance_to(t(final_tick)).expect("advance"));
+            step_by_tick(&mut stepped, stepped_at, t(final_tick), &mut step_events);
+
+            assert_eq!(
+                jump_events, step_events,
+                "one jump must report the same events, at the same ticks, as tick-by-tick stepping"
+            );
+            assert_eq!(jumped.active(), stepped.active());
+            assert_eq!(jumped.buffered(), stepped.buffered());
+            assert_eq!(jumped.stamina(), stepped.stamina());
+            assert_eq!(jumped.is_dead(), stepped.is_dead());
+            assert_eq!(
+                jumped.active_elapsed(t(final_tick)),
+                stepped.active_elapsed(t(final_tick))
+            );
+
+            assert!(
+                jump_events
+                    .iter()
+                    .copied()
+                    .any(|event| event_tick(event) < t(final_tick)),
+                "a boundary inside the jump must be stamped where it happened, not at `now`"
+            );
+            assert!(
+                jump_events
+                    .iter()
+                    .any(|event| matches!(event, EngineEvent::ActiveClosed { .. })),
+                "the contact window closes inside every trace"
+            );
+            assert_eq!(
+                jump_events
+                    .iter()
+                    .any(|event| matches!(event, EngineEvent::Started { from_buffer: true, .. })),
+                starts_from_buffer,
+                "the trace's buffer either starts or expires"
+            );
+        }
+    }
+
+    /// A running action hears input only from its `input_from_ticks` offset. Earlier presses are
+    /// refused, never held, and do not displace a request already waiting; with no running action
+    /// the window does not apply.
+    #[test]
+    fn input_before_the_window_is_refused_not_buffered() {
+        let mut engine = engine_with(vec![
+            ActionSpec {
+                input_from_ticks: 20,
+                ..melee(1, 50)
+            },
+            melee(2, 50),
+        ]);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+
+        let early = engine.submit(ActionId(2), t(10)).expect("submit");
+        assert_eq!(
+            early,
+            vec![EngineEvent::Refused {
+                id: ActionId(2),
+                tick: t(10),
+                reason: ActionRefusal::InputWindowClosed
+            }]
+        );
+        assert_eq!(engine.buffered(), None);
+        assert_eq!(engine.active(), Some(ActionId(1)));
+
+        // The offset is inclusive: from tick 20 the action listens and the request is held.
+        let open = engine.submit(ActionId(2), t(20)).expect("submit");
+        assert!(open.contains(&EngineEvent::Buffered {
+            id: ActionId(2),
+            tick: t(20)
+        }));
+        assert_eq!(engine.buffered(), Some(ActionId(2)));
+
+        // Nothing running: the input window belongs to the active spec, so this starts at once.
+        let mut idle = engine_with(vec![ActionSpec {
+            input_from_ticks: 20,
+            ..melee(1, 50)
+        }]);
+        let started = idle.submit(ActionId(1), t(0)).expect("submit");
+        assert_eq!(
+            started,
+            vec![EngineEvent::Started {
+                id: ActionId(1),
+                tick: t(0),
+                from_buffer: false
+            }]
+        );
+    }
+
+    /// Interruption applies up to and including `interruptible_until`. Past it, or with `None`
+    /// (full hyperarmor), a hit changes nothing and keeps the held request. Death stays
+    /// unconditional.
+    #[test]
+    fn interruption_respects_the_commitment_offset() {
+        // Contact commits the swing at 20: a hit at 20 still interrupts, at 21 it does not.
+        let committed = |id: u32| ActionSpec {
+            interruptible_until: Some(20),
+            ..melee(id, 50)
+        };
+        let mut engine = engine_with(vec![committed(1)]);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        let inside = engine.interrupt(t(20)).expect("interrupt");
+        assert_eq!(
+            inside,
+            vec![
+                EngineEvent::ActiveOpened {
+                    id: ActionId(1),
+                    tick: t(20),
+                    window: TickWindow { from: 20, to: 30 }
+                },
+                EngineEvent::ActiveClosed {
+                    id: ActionId(1),
+                    tick: t(20)
+                },
+                EngineEvent::Ended {
+                    id: ActionId(1),
+                    tick: t(20),
+                    reason: ActionEnd::Interrupted
+                }
+            ],
+            "a hit at the commitment offset ends the action and closes its window"
+        );
+        assert_eq!(engine.active(), None);
+        assert_eq!(engine.buffered(), None);
+
+        let mut engine = engine_with(vec![committed(1), melee(2, 50)]);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        engine.submit(ActionId(2), t(5)).expect("submit");
+        let late = engine.interrupt(t(21)).expect("interrupt");
+        assert!(!late.iter().any(|event| matches!(
+            event,
+            EngineEvent::Ended { .. } | EngineEvent::ActiveClosed { .. }
+        )));
+        assert_eq!(engine.active(), Some(ActionId(1)));
+        assert_eq!(engine.buffered(), Some(ActionId(2)));
+
+        let mut armored = engine_with(vec![
+            ActionSpec {
+                interruptible_until: None,
+                ..melee(1, 50)
+            },
+            melee(2, 50),
+        ]);
+        armored.submit(ActionId(1), t(0)).expect("submit");
+        armored.submit(ActionId(2), t(5)).expect("submit");
+        let shrugged = armored.interrupt(t(10)).expect("interrupt");
+        assert!(shrugged.is_empty());
+        assert_eq!(armored.active(), Some(ActionId(1)));
+        assert_eq!(armored.buffered(), Some(ActionId(2)));
+
+        let died = armored.die(t(11)).expect("die");
+        assert!(died.contains(&EngineEvent::Ended {
+            id: ActionId(1),
+            tick: t(11),
+            reason: ActionEnd::Died
+        }));
+        assert!(armored.is_dead());
+    }
+
+    /// A running action with a declared follow-up only yields to that follow-up in its cancel
+    /// window; any other held request keeps waiting (and still expires).
+    #[test]
+    fn followup_gates_cancel_window_replacement() {
+        let mut engine = engine_with(vec![
+            ActionSpec {
+                followup: Some(ActionId(2)),
+                ..melee(1, 100)
+            },
+            melee(2, 50),
+            melee(3, 50),
+        ]);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        engine.submit(ActionId(3), t(5)).expect("submit");
+
+        let blocked = engine.advance_to(t(40)).expect("advance");
+        assert!(!blocked.iter().any(|event| matches!(
+            event,
+            EngineEvent::Ended { .. } | EngineEvent::Started { .. }
+        )));
+        assert_eq!(engine.active(), Some(ActionId(1)));
+        assert_eq!(engine.buffered(), Some(ActionId(3)));
+
+        // The newest-wins slot takes the actual follow-up, which then replaces at the next tick.
+        engine.submit(ActionId(2), t(41)).expect("submit");
+        assert_eq!(engine.buffered(), Some(ActionId(2)));
+        let replaced = engine.advance_to(t(42)).expect("advance");
+        assert!(replaced.contains(&EngineEvent::Ended {
+            id: ActionId(1),
+            tick: t(42),
+            reason: ActionEnd::Replaced { by: ActionId(2) }
+        }));
+        assert!(replaced.contains(&EngineEvent::Started {
+            id: ActionId(2),
+            tick: t(42),
+            from_buffer: true
+        }));
+        assert_eq!(engine.active(), Some(ActionId(2)));
+        assert_eq!(engine.buffered(), None);
+    }
+
+    /// Leaving an action early from inside its active window closes the window immediately before
+    /// `Ended`: on interrupt, death and replacement. A late death past the window does not invent
+    /// a second close.
+    #[test]
+    fn early_exit_closes_the_active_window_before_ending() {
+        // A wide contact window keeps the action active through its cancel window at 30.
+        let reach = |id: u32| ActionSpec {
+            contact: Some(TickWindow { from: 20, to: 40 }),
+            cancel_from_ticks: Some(30),
+            ..melee(id, 60)
+        };
+
+        let mut engine = engine_with(vec![reach(1), melee(2, 50)]);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        engine.submit(ActionId(2), t(10)).expect("submit");
+        let replaced = engine.advance_to(t(31)).expect("advance");
+        let ended = replaced
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    EngineEvent::Ended { tick, .. } if *tick == t(30)
+                )
+            })
+            .expect("the replacement ends the first action");
+        assert_eq!(
+            replaced[ended],
+            EngineEvent::Ended {
+                id: ActionId(1),
+                tick: t(30),
+                reason: ActionEnd::Replaced { by: ActionId(2) }
+            }
+        );
+        assert_eq!(
+            replaced[ended - 1],
+            EngineEvent::ActiveClosed {
+                id: ActionId(1),
+                tick: t(30)
+            },
+            "ActiveClosed comes immediately before the replacement's Ended"
+        );
+
+        let mut engine = engine_with(vec![reach(1)]);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        let died = engine.die(t(25)).expect("die");
+        assert_eq!(
+            died.get(died.len() - 2),
+            Some(&EngineEvent::ActiveClosed {
+                id: ActionId(1),
+                tick: t(25)
+            })
+        );
+        assert_eq!(
+            died.last(),
+            Some(&EngineEvent::Ended {
+                id: ActionId(1),
+                tick: t(25),
+                reason: ActionEnd::Died
+            })
+        );
+
+        let mut engine = engine_with(vec![reach(1)]);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        let died = engine.die(t(45)).expect("die");
+        let closes: Vec<&EngineEvent> = died
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::ActiveClosed { .. }))
+            .collect();
+        assert_eq!(
+            closes,
+            vec![&EngineEvent::ActiveClosed {
+                id: ActionId(1),
+                tick: t(40)
+            }],
+            "the tick walk already closed the window once, at its end"
+        );
     }
 }
