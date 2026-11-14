@@ -192,8 +192,23 @@ mod private {
 
 impl ActionEngine {
     /// Build an engine over a validated table. `table.revision` pins every event this engine
-    /// emits; `stamina` is the caller's policy (server-owned in production).
+    /// emits; `stamina` is the caller's policy (server-owned in production). The engine's clock
+    /// starts at tick zero; an adapter whose clock already advanced must use [`Self::new_at`]
+    /// (or advance in bounded chunks) so the first span stays within
+    /// [`MAX_ADVANCE_SPAN_TICKS`].
     pub fn new(table: ActionTable, stamina: StaminaConfig, buffer_ttl_ticks: u64) -> CombatResult<Self> {
+        Self::new_at(table, stamina, buffer_ttl_ticks, Ticks::ZERO)
+    }
+
+    /// [`Self::new`] anchored at `start`: the first `advance_to` measures its span from `start`.
+    /// A client whose playback clock is absolute (app uptime) must build its engine this way, or
+    /// the first advance is wider than the span bound and is refused.
+    pub fn new_at(
+        table: ActionTable,
+        stamina: StaminaConfig,
+        buffer_ttl_ticks: u64,
+        start: Ticks,
+    ) -> CombatResult<Self> {
         table.validate()?;
         if buffer_ttl_ticks == 0 {
             return Err(CombatError::InvalidConfig(
@@ -207,8 +222,15 @@ impl ActionEngine {
             active: None,
             buffered: None,
             dead: false,
-            last: Ticks::ZERO,
+            last: start,
         })
+    }
+
+    /// Install a stamina value, clamped to the policy maximum. Used when an adapter rebuilds the
+    /// engine (a weapon or world change) and must carry the bar across the rebuild instead of
+    /// refilling it.
+    pub fn set_stamina(&mut self, stamina: u32) {
+        self.stamina.current = stamina.min(self.stamina.config.max);
     }
 
     /// The pinned table.
@@ -248,7 +270,9 @@ impl ActionEngine {
     /// Every boundary is evaluated on the tick it occurs, so one call to `now` reports the same
     /// events (same order, same ticks) and leaves the same state as calling this once per
     /// intermediate tick. A span wider than [`MAX_ADVANCE_SPAN_TICKS`] is refused with
-    /// [`CombatError::AdvanceTooLarge`] and leaves the engine untouched.
+    /// [`CombatError::AdvanceTooLarge`] and leaves the engine untouched; callers spanning
+    /// longer gaps advance in bounded chunks (the client adapter does). A dead actor performs
+    /// no work and ignores the span bound.
     pub fn advance_to(&mut self, now: Ticks) -> CombatResult<Vec<EngineEvent>> {
         let from = self.last;
         if now < from {
@@ -465,12 +489,14 @@ impl ActionEngine {
 
     /// Emit `ActiveClosed` when an action leaves early from inside its active window. Windows are
     /// half-open, so the window is active for `from <= elapsed < to`; an action already past `to`
-    /// closed it during the tick walk.
+    /// closed it during the tick walk, and one whose window never opened (a same-tick exit at
+    /// `elapsed == 0` with `window.from == 0` before any open edge) has nothing to close.
     fn close_active_early(&self, active: &ActiveAction, now: Ticks, events: &mut Vec<EngineEvent>) {
         let elapsed = active.elapsed(now);
-        if active
-            .active_window()
-            .is_some_and(|window| elapsed >= window.from && elapsed < window.to)
+        if active.active_opened
+            && active
+                .active_window()
+                .is_some_and(|window| elapsed >= window.from && elapsed < window.to)
         {
             events.push(EngineEvent::ActiveClosed {
                 id: active.spec.id,
@@ -1140,5 +1166,81 @@ mod tests {
             }],
             "the tick walk already closed the window once, at its end"
         );
+    }
+
+    /// The span bound: a call wider than the limit is refused and changes nothing; the limit
+    /// itself is accepted. A dead actor skips the bound (it does no work).
+    #[test]
+    fn the_advance_span_is_bounded() {
+        let mut table = ActionTable::new(ActionRevision(1), rate());
+        table.insert(melee(1, 1_000)).expect("insert");
+        let mut engine = ActionEngine::new(table.clone(), stamina(), 50).expect("engine");
+        let refused = engine.advance_to(t(MAX_ADVANCE_SPAN_TICKS + 1));
+        assert!(matches!(
+            refused,
+            Err(CombatError::AdvanceTooLarge { .. })
+        ));
+        assert_eq!(engine.active(), None);
+        engine
+            .advance_to(t(MAX_ADVANCE_SPAN_TICKS))
+            .expect("the bound itself is accepted");
+        assert_eq!(engine.active_elapsed(t(MAX_ADVANCE_SPAN_TICKS)), None);
+
+        // Once dead, the bound no longer applies: a dead actor performs no work.
+        let mut engine = ActionEngine::new(table, stamina(), 50).expect("engine");
+        engine.die(t(0)).expect("die");
+        engine
+            .advance_to(t(MAX_ADVANCE_SPAN_TICKS * 5))
+            .expect("a dead actor advances past the bound without work");
+    }
+
+    /// `new_at` anchors the first span: an absolute-clock adapter (app uptime) can build at its
+    /// current tick and advance normally.
+    #[test]
+    fn new_at_anchors_the_first_advance() {
+        let mut table = ActionTable::new(ActionRevision(1), rate());
+        table.insert(melee(1, 50)).expect("insert");
+        let start = t(120_000);
+        let mut engine = ActionEngine::new_at(table, stamina(), 50, start).expect("engine");
+        engine
+            .advance_to(t(120_010))
+            .expect("the first span is measured from the anchor");
+        engine.submit(ActionId(1), t(120_010)).expect("submit");
+        assert_eq!(engine.active(), Some(ActionId(1)));
+    }
+
+    /// A same-tick forced exit at elapsed zero with a window starting at zero closes nothing:
+    /// the window never opened, so `ActiveClosed` would be a phantom edge.
+    #[test]
+    fn an_unopened_window_is_not_closed_early() {
+        let mut spec = melee(1, 50);
+        spec.contact = Some(TickWindow { from: 0, to: 30 });
+        spec.input_from_ticks = 0;
+        let mut engine = engine_with(vec![spec]);
+        engine.submit(ActionId(1), t(0)).expect("submit");
+        let events = engine.interrupt(t(0)).expect("interrupt");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, EngineEvent::ActiveClosed { .. })),
+            "no ActiveClosed without a preceding ActiveOpened: {events:?}"
+        );
+        assert!(events.contains(&EngineEvent::Ended {
+            id: ActionId(1),
+            tick: t(0),
+            reason: ActionEnd::Interrupted
+        }));
+    }
+
+    /// `set_stamina` installs a carried bar, clamped to the policy maximum.
+    #[test]
+    fn stamina_can_be_installed_for_a_rebuild() {
+        let mut table = ActionTable::new(ActionRevision(1), rate());
+        table.insert(melee(1, 50)).expect("insert");
+        let mut engine = ActionEngine::new(table, stamina(), 50).expect("engine");
+        engine.set_stamina(37);
+        assert_eq!(engine.stamina(), 37);
+        engine.set_stamina(1_000);
+        assert_eq!(engine.stamina(), 100, "clamped to the policy maximum");
     }
 }

@@ -66,7 +66,8 @@ pub struct ActionSpec {
     /// The last offset at which interruption applies; `None` is full hyperarmor. The compiler
     /// commits melee swings at contact and interruptible casts at release.
     pub interruptible_until: Option<u64>,
-    /// A combo follow-up action, admissible only from `cancel_from_ticks`.
+    /// A combo follow-up. `Some(x)` means only `x` may replace this action in its cancel
+    /// window (the chain whitelist); `None` lets any action replace it there.
     pub followup: Option<ActionId>,
 }
 

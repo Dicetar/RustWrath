@@ -99,7 +99,9 @@ pub fn melee_action(
         iframes: None,
         contact: Some(crate::time::TickWindow { from, to }),
         stamina_cost,
-        // The windup is interruptible; the committed arc is hyperarmour.
+        // The windup is interruptible; the committed arc is hyperarmour. The engine's
+        // `interruptible_until` is the last offset that still yields, so the contact-start tick
+        // itself remains interruptible (one tick of slack on the committed arc).
         interruptible_until: Some(from),
         followup: None,
     };

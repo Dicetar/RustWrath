@@ -13,21 +13,24 @@
 //! - **Death.** The local player's own observation (`WrathWorldView::self_observation`, the same
 //!   `SelfDeath`/zero-health read `combat_mode.rs` closes its window on) ends the engine once and
 //!   clears the refusal, so no clip keeps playing and no request survives the corpse. A revival
-//!   rebuilds the engine over the same compiled table: the engine has no revive of its own.
-//! - **Interruption.** A `SwingMessage` naming the local player as its victim — the melee stream
-//!   `creature_anim` publishes per `SMSG_ATTACKERSTATEUPDATE` — interrupts the running action and
-//!   drops the held request, exactly as the server-side engine would on the same hit.
+//!   rebuilds the engine anchored at the playback clock over the same compiled table (the engine
+//!   has no revive of its own), with a full bar.
+//! - **Interruption.** A `SwingMessage` that lands on the local player (`victim_state == 1`,
+//!   attacker someone else) — the melee stream `creature_anim` publishes per
+//!   `SMSG_ATTACKERSTATEUPDATE` — interrupts the running action and drops the held request.
+//!   Misses, dodges, parries, blocks and evades change nothing.
 //! - **Clock.** The playback clock is a `Duration` accumulated from `Time::delta`; only the tick
 //!   conversion truncates, so sub-millisecond frame time is not lost (~4 % slow at 60 fps when
-//!   each frame's `as_millis` is summed).
+//!   each frame's `as_millis` is summed). Every engine is built with `new_at(ticks_at())`, so its
+//!   first advance is anchored at the current tick, and advances past the engine's span bound are
+//!   walked in bounded chunks rather than dropped.
 //!
-//! Known engine gaps this module reports rather than fakes: `ActionEngine` has no
-//! stamina-install constructor, so a profile rebuild (rig load, weapon swap) restarts the
-//! predicted bar at full, and no revive/reset, so a resurrection is played by constructing a
-//! fresh engine from the compiled table.
+//! A profile rebuild (rig load, weapon swap) carries the predicted bar across via
+//! `ActionEngine::set_stamina`; only a respawn refills it.
 //!
 //! Provisional binds (until the RFC's rebindable experimental controls land): `F10` toggles the
-//! client's *requested* mode, `V` requests a dodge, `C` requests a light attack. All three run
+//! client's *requested* mode, `V` requests a dodge, `F9` requests a light attack (`F9` is unbound
+//! in the stock bindings). All three run
 //! through the same gate the binding dispatch uses ([`UiKeyboardCapture`]: a focused EditBox eats
 //! every key and a shown keyboard frame eats the key it consumed), so typing in chat never stages
 //! an action. All are inert with no local player (glue screens); actions only play once
@@ -40,7 +43,7 @@ use bevy::prelude::*;
 use benilla_assets::ModelAnimations;
 use benilla_combat_core::{
     dodge_action, ActionEngine, ActionId, ActionRefusal, ActionSpec, ActionTable, EngineEvent,
-    ProfilePolicy, StaminaConfig, TickRate, Ticks,
+    ProfilePolicy, StaminaConfig, TickRate, Ticks, MAX_ADVANCE_SPAN_TICKS,
 };
 use benilla_world::schedule::WorldStage;
 
@@ -213,11 +216,22 @@ fn fill_local_profiles(
         Ok(None) => {}
         Err(error) => problems.push(format!("melee {}: {error}", PLAYER_MELEE_MAIN.0)),
     }
-    // `ActionEngine::new` is the only constructor, so a rebuild restarts the predicted bar at
-    // full: the old value is read here and reported, never faked back into the engine.
+    // A rebuild anchors the engine at the playback clock, so the first span stays inside the
+    // engine's bounded-advance contract (a fresh engine at tick zero could never reach an
+    // app-lifetime clock). The bar carries across the rebuild; only a respawn refills it.
     let carried_stamina = state.engine.as_ref().map(ActionEngine::stamina);
-    match ActionEngine::new(table.clone(), PREDICTED_STAMINA, BUFFER_TTL_TICKS) {
-        Ok(engine) => state.engine = Some(engine),
+    match ActionEngine::new_at(
+        table.clone(),
+        PREDICTED_STAMINA,
+        BUFFER_TTL_TICKS,
+        state.ticks_at(),
+    ) {
+        Ok(mut engine) => {
+            if let Some(carried) = carried_stamina {
+                engine.set_stamina(carried);
+            }
+            state.engine = Some(engine);
+        }
         Err(error) => {
             problems.push(format!("engine: {error}"));
             state.engine = None;
@@ -228,17 +242,6 @@ fn fill_local_profiles(
         bevy::log::warn!(
             "souls playback: profile rebuild for {entity:?} (main {main:?}) failed: {}",
             problems.join("; ")
-        );
-    }
-    if let Some(carried) = carried_stamina.filter(|stamina| *stamina != PREDICTED_STAMINA.max) {
-        // One line per rebuild. The engine exposes no stamina install, so this is the value the
-        // next engine slice must carry (`ActionEngine::with_stamina`/`set_stamina`).
-        benilla_assets::trace::line(
-            "souls",
-            &format!(
-                "rebuild main={main:?}: stamina {carried} -> {} (no ActionEngine stamina install; reported, not faked)",
-                PREDICTED_STAMINA.max
-            ),
         );
     }
     profiles.table = Some(table);
@@ -260,13 +263,64 @@ fn self_is_dead(world: Option<&WrathWorldView>) -> bool {
         })
 }
 
+/// Advance the engine to an absolute tick in bounded chunks, so a long gap (a load, a hitch, or
+/// a freshly anchored engine after a respawn) never trips the engine's span bound. Errors other
+/// than the bound are logged once per failure rather than silently dropped.
+fn advance_bounded(engine: &mut ActionEngine, target: Ticks) -> Vec<EngineEvent> {
+    let mut events = Vec::new();
+    loop {
+        match engine.advance_to(target) {
+            Ok(mut chunk) => {
+                events.append(&mut chunk);
+                return events;
+            }
+            Err(benilla_combat_core::CombatError::AdvanceTooLarge { from, .. }) => {
+                let step = Ticks::new(from.0.saturating_add(MAX_ADVANCE_SPAN_TICKS));
+                match engine.advance_to(step) {
+                    Ok(mut chunk) => events.append(&mut chunk),
+                    Err(error) => {
+                        bevy::log::warn!("souls playback: bounded advance failed: {error}");
+                        return events;
+                    }
+                }
+            }
+            Err(error) => {
+                bevy::log::warn!("souls playback: advance failed: {error}");
+                return events;
+            }
+        }
+    }
+}
+
+/// Play the clip of every action the engine started in `events`.
+fn play_starts(
+    events: &[EngineEvent],
+    entity: Entity,
+    profiles: &CombatProfiles,
+    play_seq: &mut PlaySeq,
+    actions: &mut MessageWriter<ActionAnim>,
+) {
+    for event in events {
+        if let EngineEvent::Started { id, .. } = event {
+            if let Some(&anim_id) = profiles.anims.get(id) {
+                actions.write(ActionAnim {
+                    entity,
+                    anim_id,
+                    seq: play_seq.next(),
+                });
+            }
+        }
+    }
+}
+
 /// Advance the playback clock and the engine; every action the engine starts this frame plays
 /// its compiled clip through the driver.
 ///
 /// The prediction hears the two world signals presentation owns: the local player's death (one
 /// `die` on the transition, which clears the running action and the held request) and an incoming
-/// melee swing that names the local player as its victim (one `interrupt`). Both are observed
-/// outcomes, not authority: nothing here sends or claims a result.
+/// melee swing that lands on the local player (one `interrupt`; a miss, dodge, parry, block or
+/// evade is not a hit and changes nothing). Both are observed outcomes, not authority: nothing
+/// here sends or claims a result.
 fn advance_playback(
     time: Res<Time>,
     world: Option<Res<WrathWorldView>>,
@@ -283,16 +337,20 @@ fn advance_playback(
     };
     let now = state.ticks_at();
     if self_is_dead(world.as_deref()) {
-        // One `die` per transition: `is_dead` makes the call idempotent, and a rebuild that
-        // resurrected the engine while the observation was already dead is caught here.
-        let died = state
-            .engine
-            .as_mut()
-            .map(|engine| engine.is_dead() || engine.die(now).is_ok());
-        if died == Some(false) {
-            // The engine only refuses a backwards clock, which this one never is; if it ever
-            // did, drop the prediction rather than keep playing a corpse's clip.
-            state.engine = None;
+        // One `die` per transition: `is_dead` makes the call idempotent. The bounded advance
+        // runs first so `die`'s own internal advance never spans more than the engine allows.
+        if let Some(engine) = state.engine.as_mut() {
+            let _ = advance_bounded(engine, now);
+            if !engine.is_dead() {
+                let events = match engine.die(now) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        bevy::log::warn!("souls playback: death advance failed: {error}");
+                        Vec::new()
+                    }
+                };
+                play_starts(&events, entity, &profiles, &mut play_seq, &mut actions);
+            }
         }
         // The refusal outlives the action, so it is cleared here; the running action and the
         // held request are the engine's own and `die` cleared both.
@@ -301,14 +359,18 @@ fn advance_playback(
         for _ in swings.read() {}
         return;
     }
-    // A revival restarts the prediction: `ActionEngine` has no revive/reset, so a fresh engine
-    // over the same compiled table is the only way to keep playing after a death. The predicted
-    // bar restarts full, which a resurrection owns anyway.
-    if state.engine.as_ref().is_some_and(ActionEngine::is_dead) {
+    // A revival restarts the prediction: the engine has no revive/reset, so a fresh engine
+    // anchored at the current tick over the same compiled table keeps playing. The predicted bar
+    // refills, which a resurrection owns anyway.
+    if state
+        .engine
+        .as_ref()
+        .is_none_or(ActionEngine::is_dead)
+    {
         state.engine = None;
         state.last_refusal = None;
         if let Some(table) = profiles.table.clone() {
-            match ActionEngine::new(table, PREDICTED_STAMINA, BUFFER_TTL_TICKS) {
+            match ActionEngine::new_at(table, PREDICTED_STAMINA, BUFFER_TTL_TICKS, now) {
                 Ok(engine) => state.engine = Some(engine),
                 Err(error) => {
                     bevy::log::warn!("souls playback: revive rebuild failed: {error}");
@@ -319,45 +381,41 @@ fn advance_playback(
             return;
         }
     }
-    // An incoming swing on the local player is the engine's own interruption: it ends the
-    // running action and drops the held request. Our own outgoing swing never names us victim.
-    let interrupted = swings
-        .read()
-        .any(|swing| swing.attacker != entity && swing.victim == Some(entity));
+    // Only a landed hit interrupts: `victim_state == 1` is the hit outcome; a miss, dodge,
+    // parry, block or evade leaves the player's action untouched. Drain every message so no
+    // stale swing can interrupt a later action.
+    let hits: Vec<SwingMessage> = swings.read().copied().collect();
+    let interrupted = hits
+        .iter()
+        .any(|swing| swing.attacker != entity && swing.victim == Some(entity) && swing.victim_state == 1);
     let Some(engine) = state.engine.as_mut() else {
         return;
     };
     // Interrupt before advancing, so a hit that lands this frame is not played for one tick
-    // first. The call's own events are ends (plus anything a free cancel window let start
-    // before the stop): none of them is a clip to play.
-    if interrupted && engine.interrupt(now).is_err() {
-        return;
-    }
-    let Ok(events) = engine.advance_to(now) else {
-        return;
-    };
-    for event in events {
-        if let EngineEvent::Started { id, .. } = event {
-            if let Some(&anim_id) = profiles.anims.get(&id) {
-                actions.write(ActionAnim {
-                    entity,
-                    anim_id,
-                    seq: play_seq.next(),
-                });
+    // first. Any action the interruption's own advance started (a free cancel window) still
+    // plays its clip.
+    if interrupted {
+        match engine.interrupt(now) {
+            Ok(events) => play_starts(&events, entity, &profiles, &mut play_seq, &mut actions),
+            Err(error) => {
+                bevy::log::warn!("souls playback: interrupt failed: {error}");
             }
         }
     }
+    let events = advance_bounded(engine, now);
+    play_starts(&events, entity, &profiles, &mut play_seq, &mut actions);
 }
 
 /// The provisional binds: `F10` toggles the client's requested mode (never the effective one);
-/// `V` requests a dodge and `C` a light attack while Experimental is requested. Requests go
-/// through the engine, so buffering, cancel windows, stamina and refusals are the same rules the
-/// server will run.
+/// `V` requests a dodge and `F9` a light attack while Experimental is requested (`F9` is unbound
+/// in the stock bindings; `C` would also open the character pane). Requests go through the
+/// engine, so buffering, cancel windows, stamina and refusals are the same rules the server will
+/// run.
 ///
 /// The three raw keys run through the binding dispatch's own gate ([`UiKeyboardCapture`]): a
 /// focused EditBox eats every key and a shown keyboard frame eats the key it consumed, so typing
-/// `v` in chat never stages a dodge. The arrows' exemption and PRINTSCREEN's pre-focus pass do
-/// not apply to these keys.
+/// `v` in chat never stages a dodge. A Super chord is not this path's concern either. The arrows'
+/// exemption and PRINTSCREEN's pre-focus pass do not apply to these keys.
 fn toggle_and_stage_action(
     keys: Res<ButtonInput<KeyCode>>,
     capture: Res<UiKeyboardCapture>,
@@ -368,9 +426,8 @@ fn toggle_and_stage_action(
     mut play_seq: ResMut<PlaySeq>,
     mut actions: MessageWriter<ActionAnim>,
 ) {
-    // `bindings.rs`'s pressed-key gate, without its Super/repeat arms: `just_pressed` is already
-    // edge-only and a chord with no binding is not this path's concern.
-    let eaten = |key: KeyCode| capture.typing || capture.consumed.contains(&key);
+    let super_down = keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
+    let eaten = |key: KeyCode| super_down || capture.typing || capture.consumed.contains(&key);
     let Ok(entity) = me.single() else {
         return;
     };
@@ -389,7 +446,7 @@ fn toggle_and_stage_action(
     }
     let action = if keys.just_pressed(KeyCode::KeyV) && !eaten(KeyCode::KeyV) {
         Some(HOST_DODGE)
-    } else if keys.just_pressed(KeyCode::KeyC) && !eaten(KeyCode::KeyC) {
+    } else if keys.just_pressed(KeyCode::F9) && !eaten(KeyCode::F9) {
         Some(PLAYER_MELEE_MAIN)
     } else {
         None
@@ -401,25 +458,20 @@ fn toggle_and_stage_action(
     let Some(engine) = state.engine.as_mut() else {
         return;
     };
-    let Ok(events) = engine.submit(action, now) else {
-        return;
+    // Keep the span bounded before submit's own advance (normally a no-op: the frame already
+    // advanced this tick).
+    advance_bounded(engine, now);
+    let events = match engine.submit(action, now) {
+        Ok(events) => events,
+        Err(error) => {
+            bevy::log::warn!("souls playback: submit failed: {error}");
+            return;
+        }
     };
+    play_starts(&events, entity, &profiles, &mut play_seq, &mut actions);
     for event in events {
-        match event {
-            EngineEvent::Started { id, .. } => {
-                state.last_refusal = None;
-                if let Some(&anim_id) = profiles.anims.get(&id) {
-                    actions.write(ActionAnim {
-                        entity,
-                        anim_id,
-                        seq: play_seq.next(),
-                    });
-                }
-            }
-            EngineEvent::Refused { reason, .. } => {
-                state.last_refusal = Some(reason);
-            }
-            _ => {}
+        if let EngineEvent::Refused { reason, .. } = event {
+            state.last_refusal = Some(reason);
         }
     }
 }
