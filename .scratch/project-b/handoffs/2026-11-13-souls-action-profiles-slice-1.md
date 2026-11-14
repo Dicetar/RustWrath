@@ -5,6 +5,26 @@ base `38f56810`); the feature branch is pushed. Seven source slices on the branc
 compilers, owner decisions and the dodge compiler, playback wiring, the predicted clock,
 the action engine, the enemy brain harness and the per-rig enemy move lists.
 
+**2026-11-14 — client-authority redesign recorded.** The direction interview (full text:
+`2026-11-14-souls-client-authority-direction.md`) replaced the server-authoritative model with
+client-decided hits/outcomes and a thin server module; the design record is
+`docs/architecture/souls-combat-client-authority.md`, the RFC and the action-profiles plan are
+marked superseded, and `owner-decisions.md` carries the 2026-11-14 block.
+
+**2026-11-14 — ZAEBAL fix round (2 AutoSwarm agents + 2 independent auditors).** Engine
+defects from the review closed: `advance_to` is step-invariant (per-tick walk, 600-tick span
+bound, boundary-stamped events), `input_from_ticks`/`interruptible_until`/`followup` are
+honored, `ActionTable` is a `BTreeMap`, and `ActiveClosed` is emitted (and only when opened)
+before an early `Ended`. App defects closed: `Duration` playback clock; prediction death via the
+`SelfDeath`/health predicate and revival/reanchoring via `new_at(ticks_at())`; interrupt only on
+a landed hit (`victim_state == 1`) with full message drain; `Started` events from every path
+play their clips; a bounded-advance helper chunks spans and logs errors; profile-compile
+failures warn once per rebuild; the provisional keys (F10/V/F9) sit behind the
+`UiKeyboardCapture` typing/Super gate. The auditors' P0 (fresh engine at tick zero vs the
+app-lifetime clock) and their follow-up (carried stamina missing its regen anchor — a
+zero-bar deadlock) are fixed; final gate: auditor #2 CONFIRMED. Verification: core **38/0**,
+app `cargo check --tests` clean, `combat_playback::` **4/0**. No client run; no gameplay claim.
+
 Owner direction 2026-11-13: begin the Elden Ring combat module with **automated application of
 combat logic to all current combat actions** — every usable ability, every enemy attack and the
 animation each plays — instead of hand-authoring one sword profile. This slice implements the
