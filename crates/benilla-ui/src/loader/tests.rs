@@ -710,6 +710,26 @@ mod loader_tests {
         );
     }
 
+    /// Wrath's stock GlueXML spells its second character tooltip strata `TOOLTIP2`, but the
+    /// client exposes the single topmost `TOOLTIP` bucket. XML loading maps that spelling without
+    /// weakening the strict Lua SetFrameStrata contract.
+    #[test]
+    fn wrath_xml_tooltip2_uses_the_tooltip_stratum() {
+        let s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let doc = parse(
+            r#"<Ui>
+                <Frame name="Tooltip2" frameStrata="TOOLTIP2"/>
+            </Ui>"#,
+        );
+        let report = load(&s, &doc, &no_files);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+        assert!(!report.warnings.iter().any(|w| w.contains("TOOLTIP2")));
+        assert_eq!(
+            s.eval::<String>("return Tooltip2:GetFrameStrata()").unwrap(),
+            "TOOLTIP"
+        );
+    }
+
     /// `CSimpleFrame::LoadXML 0x769820`: a strata `0x6f17d0` does not know logs at severity 1
     /// (`0x7699a4`) and skips `SetFrameStrata 0x76a470`.
     #[test]
@@ -1817,6 +1837,29 @@ mod loader_tests {
                 .unwrap(),
             ("Fonts\\MORPHEUS.TTF".to_string(), 14.0)
         );
+    }
+
+    /// An unnamed `<ButtonText>` is still the button's implicit label. Stock Wrath's GameTimeFrame
+    /// calls `self:GetFontString()` from OnLoad, so dropping the unnamed child leaves a nil region.
+    #[test]
+    fn unnamed_button_text_is_available_during_onload() {
+        let s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let doc = parse(
+            r#"<Ui>
+                <Button name="Clock">
+                    <ButtonText/>
+                    <Scripts>
+                        <OnLoad>button_text_present = this:GetFontString() ~= nil; this:GetFontString():SetDrawLayer("BACKGROUND")</OnLoad>
+                    </Scripts>
+                </Button>
+            </Ui>"#,
+        );
+        let report = load(&s, &doc, &no_files);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+        assert!(s.eval::<bool>("return button_text_present").unwrap());
+        assert!(s
+            .eval::<bool>("return Clock:GetFontString() ~= nil")
+            .unwrap());
     }
 
     /// The chat edit box's shape. The engine assigns the text slot from the direct-child

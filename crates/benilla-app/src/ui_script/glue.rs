@@ -119,6 +119,45 @@ impl GlueScreen {
     }
 }
 
+/// A backwards-compatibility alias used only by Wrath's `CharacterCreate.xml`: its class-info
+/// labels still inherit the 1.12 `QuestFontNormalHuge` name, while Wrath's GlueFontStyles defines
+/// the matching huge gold style as `GlueFontNormalHuge`. The font object is linked, not copied, so
+/// both names resolve to the same localized/style values.
+const WRATH_GLUE_FONT_ALIASES: &str = r#"
+if not QuestFontNormalHuge then
+    QuestFontNormalHuge = CreateFont("QuestFontNormalHuge")
+    QuestFontNormalHuge:SetFontObject(GlueFontNormalHuge)
+end
+"#;
+
+fn install_wrath_glue_font_aliases(script: &UiScript) {
+    if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+        script
+            .run(WRATH_GLUE_FONT_ALIASES)
+            .expect("Wrath glue compatibility font aliases");
+    }
+}
+
+fn load_glue_file_rows(
+    script: &UiScript,
+    glue: &super::addons::Addon,
+    files: &[String],
+    toc: &mut benilla_ui::status::Status,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for file in files {
+        let is_character_create = file
+            .rsplit(['\\', '/'])
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("CharacterCreate.xml"));
+        if is_character_create {
+            install_wrath_glue_font_aliases(script);
+        }
+        failures.extend(glue.load_files_into(script, std::slice::from_ref(file), toc));
+    }
+    failures
+}
+
 /// Load the chain's `GlueXML.toc` into `script`, a glue VM, and fire `FRAMES_LOADED`: the glue
 /// builder's steps from the toc on (`0x46a9b3`, `0x46aa34`). Returns every failure; a loader error
 /// is tagged `"GlueXML/<file>: <error>"`, a handler that raised during the walk is one too. The
@@ -129,7 +168,7 @@ pub(super) fn load_glue(script: &mut UiScript) -> Vec<String> {
     let mut failures = match reference_ui::glue() {
         Some(glue) => {
             let mut toc = benilla_ui::status::Status::default();
-            let failures = glue.load_files_into(script, &glue.toc.files, &mut toc);
+            let failures = load_glue_file_rows(script, &glue, &glue.toc.files, &mut toc);
             let mut log = benilla_ui::status::Status::default();
             let banner = benilla_ui::status::toc_banner(reference_ui::GLUE_TOC);
             toc.close_into(&mut log, script.framexml_debug(), banner);
@@ -446,6 +485,18 @@ mod tests {
         let mut s = UiScript::new_glue().unwrap();
         s.set_screen_size(1024.0, 768.0);
         let mut errors = load_glue(&mut s);
+        assert!(
+            s.eval::<bool>("return type(QuestFontNormalHuge) == 'table'")
+                .unwrap(),
+            "Wrath CharacterCreate compatibility font alias must be installed"
+        );
+        assert!(
+            s.diagnostics()
+                .iter()
+                .all(|d| !d.message.contains("QuestFontNormalHuge")),
+            "the compatibility alias must prevent the missing-font warning: {:?}",
+            s.diagnostics()
+        );
         // `load_glue` reports the walk's handler errors; the rest are the screen's and the ticks'.
         let _ = s.take_errors();
         set_glue_screen(&mut s, GlueScreen::Login);
