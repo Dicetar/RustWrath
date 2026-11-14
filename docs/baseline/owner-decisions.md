@@ -88,3 +88,12 @@ and [the design record](../architecture/souls-combat-client-authority.md). Summa
    the build order after that run remain open (decision 19, recommendation: client slice first).
 5. Cleave, blob, weight and damage tables as recorded in the direction handoff (§3 items 6–10).
 
+
+2026-11-14 owner decision (**VoiceChat.xml stays skipped on Wrath**): the owner chose to keep
+`WRATH_SKIPPED_FILES = ["VoiceChat.xml"]` (`04563c9e`) rather than load it with voice reported
+disabled. Known consequence, accepted: the file defines `VoiceChatSpeakerTemplate` and
+`VoiceChatButtonTemplate`, which four stock frames inherit (`ChannelFrame.xml:39`, `:152`,
+`:1023`; `PlayerFrame.xml:262` `PlayerSpeakerFrame`). Those buttons build without their
+`On`/`Flash` textures, so the undefined-template warnings and the `ChannelFrame.lua:716`
+nil-texture errors in `ChannelFrame_Desaturate` are expected under the skip. Do not suppress
+them or stub the textures; reopening the decision is the owner's call.
