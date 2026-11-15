@@ -6,7 +6,7 @@ use benilla_protocol::messages::{
     SpellHealLog, SpellLogMiss,
 };
 
-use super::{queue_reported, queue_worded, to_me, ChatCtx};
+use super::{queue_reported, queue_worded, ChatCtx};
 use crate::combat_log::feedback;
 use crate::ui_chat::combat::{self, Family, Fills, LineWord, Poses, Stores, UnitClass};
 use crate::ui_chat::ChatLog;
@@ -73,7 +73,7 @@ fn spell_damage_line(
                 amount: i64::from(s.damage),
                 ..Default::default()
             },
-            to_me(victim, LineWord::with("SPLIT_DAMAGE", s.damage)),
+            ctx.word_for(s.target, victim, LineWord::with("SPLIT_DAMAGE", s.damage)),
         );
     }
     if s.periodic {
@@ -170,7 +170,7 @@ fn direct_damage(
         caster,
         target,
         fills,
-        to_me(target.1, word),
+        ctx.word_for(target.0, target.1, word),
     );
 }
 
@@ -230,7 +230,7 @@ fn periodic_damage(
         caster,
         target,
         fills,
-        to_me(target.1, word),
+        ctx.word_for(target.0, target.1, word),
     );
 }
 
@@ -321,7 +321,7 @@ fn reason_line(
             school,
             ..Default::default()
         },
-        to_me(target.1, word),
+        ctx.word_for(target.0, target.1, word),
     );
 }
 
@@ -366,7 +366,7 @@ pub(in crate::combat_log) fn spell_miss(
             school,
             ..Default::default()
         },
-        to_me(target.1, combat::miss_word(miss_info, spell)),
+        ctx.word_for(target.0, target.1, combat::miss_word(miss_info, spell)),
     );
 }
 
@@ -512,7 +512,7 @@ pub(in crate::combat_log) fn spell_heal_log(
         (s.healer, healer),
         (s.target, target),
         fills,
-        to_me(target, LineWord::named(word, s.amount)),
+        ctx.word_for(s.target, target, LineWord::named(word, s.amount)),
     );
 }
 
@@ -581,7 +581,7 @@ fn power_gain_line(
             amount,
             ..Default::default()
         },
-        word.and_then(|w| to_me(target.1, w)),
+        word.and_then(|word| ctx.word_for(target.0, target.1, word)),
     );
 }
 
@@ -719,7 +719,7 @@ fn periodic_heal(
             amount: i64::from(amount),
             ..Default::default()
         },
-        worded.then(|| to_me(target.1, word)).flatten(),
+        worded.then(|| ctx.word_for(target.0, target.1, word)).flatten(),
     );
 }
 
@@ -859,7 +859,8 @@ pub(super) fn power_drain_line(
     let Some(kind) = kind else {
         return;
     };
-    let word = combat::power_amount_word(power, -drained).and_then(|w| to_me(target.1, w));
+    let word = combat::power_amount_word(power, -drained)
+        .and_then(|word| ctx.word_for(target.0, target.1, word));
     queue_worded(
         log,
         ctx,

@@ -30,6 +30,7 @@ pub(super) use spell::{
 /// The classification inputs every line needs, built per packet from `super::Ctx`.
 pub(crate) struct ChatCtx<'a> {
     pub self_guid: &'a SelfGuid,
+    pub wrath: bool,
     pub group: Option<&'a crate::ui_party::GroupState>,
     pub index: &'a GuidIndex,
     pub factions: Option<&'a crate::target::ring::Factions>,
@@ -53,6 +54,18 @@ pub(crate) struct ChatCtx<'a> {
 }
 
 impl ChatCtx<'_> {
+    fn word_for(&self, guid: u64, class: UnitClass, mut word: LineWord) -> Option<LineWord> {
+        if self.wrath {
+            if guid == 0 {
+                return None;
+            }
+            word.recipient = Some(guid);
+            Some(word)
+        } else {
+            (class == UnitClass::Me).then_some(word)
+        }
+    }
+
     fn classify(&self, guid: u64, stores: &impl Stores) -> UnitClass {
         combat::classify(
             guid,
@@ -167,7 +180,7 @@ pub(super) fn attacker_state(
         (s.attacker, attacker),
         (s.victim, victim),
         fills,
-        to_me(victim, word),
+        ctx.word_for(s.victim, victim, word),
     );
 }
 
@@ -203,7 +216,7 @@ pub(super) fn damage_shield(
             (s.victim, bearer),
             (s.attacker, struck),
             fills,
-            to_me(struck, LineWord::with("DAMAGE_SHIELD", s.damage)),
+            ctx.word_for(s.attacker, struck, LineWord::with("DAMAGE_SHIELD", s.damage)),
         );
     }
     super::feedback::wound(log, s.attacker, s.damage, 0, s.school);
@@ -304,7 +317,7 @@ pub(super) fn spell_outcome_log(
     } else {
         (combat::PROCRESIST, "PROC_RESISTED")
     };
-    let word = to_me(target, LineWord::with(word, &spell));
+    let word = ctx.word_for(s.target, target, LineWord::with(word, &spell));
     queue_worded(
         log,
         ctx,
@@ -342,7 +355,7 @@ pub(super) fn spell_dispel_log(
         if !ctx.holds_unit(s.victim, stores) {
             continue;
         }
-        let word = to_me(bearer, LineWord::with("SPELL_DISPELLED", &spell));
+        let word = ctx.word_for(s.victim, bearer, LineWord::with("SPELL_DISPELLED", &spell));
         // The bearer is the line's only endpoint, in the key and the range gate.
         queue_worded(
             log,
@@ -382,7 +395,7 @@ pub(super) fn dispel_failed(
         let Some(kind) = combat::spell_kind(caster, victim, !ctx.spell_harmful(spell_id)) else {
             continue;
         };
-        let word = to_me(victim, LineWord::with("DISPEL_FAILED", &spell));
+        let word = ctx.word_for(s.victim, victim, LineWord::with("DISPEL_FAILED", &spell));
         queue_worded(
             log,
             ctx,
@@ -443,7 +456,7 @@ pub(super) fn enchantment_log(
             (s.owner, owner),
             fills,
             combat::Named::Item(s.item_entry),
-            to_me(owner, LineWord::with("ENCHANTMENT_REMOVED", name)),
+            ctx.word_for(s.owner, owner, LineWord::with("ENCHANTMENT_REMOVED", name)),
         );
         return;
     }
@@ -465,7 +478,7 @@ pub(super) fn enchantment_log(
         (s.owner, owner),
         fills,
         combat::Named::Item(s.item_entry),
-        to_me(owner, LineWord::with("ENCHANTMENT_ADDED", name)),
+        ctx.word_for(s.owner, owner, LineWord::with("ENCHANTMENT_ADDED", name)),
     );
 }
 
@@ -561,7 +574,7 @@ pub(super) fn spell_log_execute(
                             amount: i64::from(count),
                             ..Default::default()
                         },
-                        to_me(victim, LineWord::with("EXTRA_ATTACKS", count)),
+                        ctx.word_for(target, victim, LineWord::with("EXTRA_ATTACKS", count)),
                     );
                 }
                 // Effect 24 CREATE_ITEM: the tradeskill line, literal type `0x3e`, split on the
@@ -600,7 +613,7 @@ pub(super) fn spell_log_execute(
                     let Some(kind) = combat::spell_kind(caster, victim, false) else {
                         continue;
                     };
-                    let word = to_me(victim, LineWord::with("INTERRUPT", &interrupted));
+                    let word = ctx.word_for(target, victim, LineWord::with("INTERRUPT", &interrupted));
                     queue_worded(
                         log,
                         ctx,
@@ -832,7 +845,7 @@ fn spell_cast_line(
                 caster,
                 target,
                 fills,
-                to_me(target.1, word),
+                ctx.word_for(target.0, target.1, word),
             );
         }
         None => {
@@ -856,7 +869,7 @@ fn spell_cast_line(
                 caster,
                 caster,
                 fills,
-                to_me(caster.1, word),
+                ctx.word_for(caster.0, caster.1, word),
             );
         }
     }
@@ -902,7 +915,7 @@ pub(super) fn environmental_damage_log(
                 }),
                 ..Default::default()
             },
-            to_me(victim, combat::damage_word(e.damage, e.absorb, e.resist)),
+            ctx.word_for(e.victim, victim, combat::damage_word(e.damage, e.absorb, e.resist)),
         );
     }
     let school = ENV_DAMAGE_SCHOOLS.get(usize::from(e.damage_type));
@@ -1047,12 +1060,6 @@ fn queue_worded(
         combat::Named::Ready,
         word,
     );
-}
-
-/// A word, for a line about you: each formatter tests the class of the unit its line is about
-/// for 0 before raising one (`0x629ef1`, `0x62d046`, `0x62834b`).
-fn to_me(class: UnitClass, word: LineWord) -> Option<LineWord> {
-    (class == UnitClass::Me).then_some(word)
 }
 
 /// [`queue_named`], answering whether a line was queued: `0x627de0` reports it to `0x627930` in

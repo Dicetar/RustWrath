@@ -1002,6 +1002,7 @@ pub(crate) struct LineWord {
     pub message_type: &'static str,
     pub data: WordText,
     pub extra: Option<String>,
+    pub(crate) recipient: Option<u64>,
 }
 
 impl LineWord {
@@ -1011,6 +1012,7 @@ impl LineWord {
             message_type,
             data: WordText::Text(None),
             extra: None,
+            recipient: None,
         }
     }
 
@@ -1020,6 +1022,7 @@ impl LineWord {
             message_type,
             data: WordText::Text(Some(data.to_string())),
             extra: None,
+            recipient: None,
         }
     }
 
@@ -1033,6 +1036,7 @@ impl LineWord {
             message_type,
             data: WordText::Text(Some(text.to_string())),
             extra: Some(n.to_string()),
+            recipient: None,
         }
     }
 
@@ -1042,6 +1046,7 @@ impl LineWord {
             message_type,
             data: WordText::SubjectName,
             extra: Some(extra.to_string()),
+            recipient: None,
         }
     }
 
@@ -1055,6 +1060,7 @@ impl LineWord {
             message_type,
             data: WordText::Text(Some(data.to_string())),
             extra: Some(extra.to_string()),
+            recipient: None,
         }
     }
 }
@@ -1070,6 +1076,13 @@ pub(crate) enum WordText {
 }
 
 impl PendingCombat {
+    /// The word visible to the combat-text addon in this VM.
+    pub(crate) fn visible_word(&self, script: &benilla_ui::script::UiScript) -> Option<&LineWord> {
+        self.word.as_ref().filter(|word| {
+            word.recipient.is_none_or(|guid| script.combat_text_tracks(guid))
+        })
+    }
+
     /// The word's `arg2` once the names are in.
     pub(crate) fn word_data(&self, word: &LineWord) -> Option<String> {
         match &word.data {
