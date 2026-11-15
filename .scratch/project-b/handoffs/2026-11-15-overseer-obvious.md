@@ -53,11 +53,20 @@ this branch reaches it.
 - **The two `#[ignore]`d probes were not run** in this task. They need the install; the commands
   are in their doc comments (`--ignored --nocapture`).
 - **The gate chain cannot run on this workstation.** `rust-toolchain.toml` pins `1.98.1` with
-  clippy and rustfmt, but `rustup` is not installed and the local toolchain is 1.99.1, so
-  `cargo fmt` and `cargo clippy ... -D warnings` are not the gate the repository defines: local
-  rustfmt prints repo-wide style diffs, and local clippy reports pre-existing debt in workspace
-  crates (278 warnings from `third_party/parry3d` alone) that the pinned clippy may not. The
-  narrow clippy form above is what was available, not the gate.
+  clippy and rustfmt, but `rustup` is not installed and the local toolchain is 1.99.1. The pinned
+  toolchain was installed on 2026-11-15 and both gates measured against it:
+  - `cargo fmt --all -- --check` is not clean anywhere in the tree: hundreds of hunks across
+    dozens of files on `main` (one-line `if … { continue; }`, grouped imports), so the repository
+    is not rustfmt-formatted and running `cargo fmt` would rewrite most of it. Not run.
+  - `cargo clippy --workspace --all-targets -- -D warnings` stops at `benilla-lua`:
+    `collapsible_match`, `src/heap.rs:1152`. `-p benilla-ui -p benilla-app` then stops at 18
+    pre-existing errors in `benilla-ui` (unused imports in `secure.rs`, `selected_guid`,
+    `check_unit_token`, `clamp_like_pattern` and others), none in the files this branch touches.
+    The workspace-wide clippy gate is red on `main` independent of this work; that debt is its
+    own task, and fixing it inside this branch would collide with the other branches in flight.
+  - The `--no-deps` form above is therefore the widest honest check for this branch, not the gate.
+- `sccache --show-stats` reads 0 compile requests from this shell even while `cargo -v` shows the
+  wrapper and the cache directory grows (716 MB). No cache hit is claimed.
 - `sccache --show-stats` reads 0 compile requests from this shell even while `cargo -v` shows the
   wrapper and the cache directory grows (716 MB). No cache hit is claimed.
 - **1.12 gap recorded, not fixed:** the donor plate path reads only `UNIT_VIS_FLAGS_GHOST`
