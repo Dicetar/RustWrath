@@ -42,9 +42,7 @@
 //!
 //! The same table also registers `CombatTextSetActiveUnit` (`Script_CombatTextSetActiveUnit`,
 //! `0x0074D580`, `:153-158`; the registrar `UnitCombatLogRegisterScriptFunctions` is `0x0074D6B0`).
-//! Stock `Blizzard_CombatText.lua:114`, `:120` and `:537` call it, and `Blizzard_CombatText` is
-//! LoadOnDemand (`crates/benilla-app/assets/ui/OptionsFrame.xml:36-39`), so the Combat Text options
-//! path is an adjacent, separate symptom that remains uninstalled with no Project B consumer.
+//! Stock `Blizzard_CombatText` calls it to select the GUID used for packet-derived combat text.
 //!
 //! Stock callers:
 //! - `Interface\AddOns\Blizzard_CombatLog\Blizzard_CombatLog.lua:633-695` calls
@@ -87,6 +85,7 @@ pub(crate) enum FilterSelector {
 pub(crate) struct CombatLogState {
     pub(crate) filters: Vec<CombatLogFilter>,
     pub(crate) retention_seconds: i32,
+    active_text_unit: Option<u64>,
 }
 
 impl Default for CombatLogState {
@@ -94,7 +93,15 @@ impl Default for CombatLogState {
         Self {
             filters: Vec::new(),
             retention_seconds: 300,
+            active_text_unit: None,
         }
+    }
+}
+
+impl super::UiScript {
+    /// Whether the stock Wrath combat-text addon selected this recipient.
+    pub fn combat_text_tracks(&self, guid: u64) -> bool {
+        self.model_ref().combat_log.active_text_unit == Some(guid)
     }
 }
 
@@ -141,6 +148,19 @@ fn number_arg(lua: &Lua, args: &MultiValue) -> mlua::Result<Option<f64>> {
 
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
+
+    globals.set(
+        "CombatTextSetActiveUnit",
+        lua.create_function(|lua, token: Value| {
+            let token = lua.coerce_string(token)?;
+            let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            let guid = token.and_then(|token| {
+                model.unit_guids.guid_of(&token.to_string_lossy()).ok().flatten()
+            });
+            model.combat_log.active_text_unit = guid.filter(|&guid| guid != 0);
+            Ok(())
+        })?,
+    )?;
 
     // `0x0074FA60`: `s_filters.Clear()`.
     globals.set(

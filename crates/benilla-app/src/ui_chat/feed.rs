@@ -611,7 +611,7 @@ impl ChatLog {
         });
         let event = ChatEvent::text_only(line.kind, text);
         let mut out = vec![(super::event::event_name(line.kind), event.script_args())];
-        if let Some(word) = &line.word {
+        if let Some(word) = line.visible_word(script) {
             out.push((
                 "COMBAT_TEXT_UPDATE",
                 crate::ui_unit::combat_text_args(
@@ -996,7 +996,7 @@ pub(super) fn write_combat_line(
         return;
     };
     route(script, windows, &ChatEvent::text_only(line.kind, text));
-    if let Some(word) = &line.word {
+    if let Some(word) = line.visible_word(script) {
         crate::ui_unit::fire_combat_text(
             script,
             word.message_type,
