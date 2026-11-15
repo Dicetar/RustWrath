@@ -758,6 +758,8 @@ pub(crate) struct FeedMemo {
     /// Quests whose slot watcher saw them accepted, waiting for the field watcher's rebuild (which
     /// runs after this feed) to give them a row, so `QUEST_ACCEPTED` carries the right index.
     accept_events: Vec<u32>,
+    /// Whether `JournalRowInModel` has been observed for this VM's post-seat world-entry rows.
+    rows_traced: bool,
 }
 
 /// What the feed reads of the player and the caches.
@@ -892,17 +894,19 @@ pub(crate) fn feed_quest_log(
                 script.set_quest_creature_name(entry, name.to_string());
             }
             memo.creatures_seen = reads.names.creatures_landed_since(usize::MAX).1;
-            // The seat's descriptor commit is the field watcher's input, not a later notice: the
-            // create can land before this VM's player flag, and that notice would then rebuild
-            // nothing. Seat the slots through the watcher's own entry so it rebuilds and fires
-            // `QUEST_LOG_UPDATE` once.
+            // Seat the slots silently ahead of `feed_units`'s world-enter cascade
+            // (`quest_log_enter_world`), which runs the single initial `rebuild` and fires
+            // `QUEST_LOG_UPDATE` once (`0x4de430`). Rebuilding inside the seat would fire ahead of
+            // `PLAYER_LOGIN`/`PLAYER_ENTERING_WORLD`, double-count `record_waits` across the two
+            // rebuilds, and cause the world-entry rebuild to run the `0x4de5b0` fold snapshot
+            // against an already-populated header list (collapsing group 0).
             let slot_views = current_slots;
             debug!(
                 "ui_quest_log: seat {:#x} with {} quests",
                 guid.0,
                 slot_views.iter().filter(|s| s.quest_id != 0).count()
             );
-            script.quest_log_changed(slot_views);
+            script.set_quest_slots(slot_views);
             if let Some(trace) = &reads.quest_trace {
                 let scope = reads.wrath_view.as_ref()
                     .map(|v| (v.session_epoch, v.world_generation));
@@ -918,20 +922,41 @@ pub(crate) fn feed_quest_log(
             }
             memo.prior = None;
             memo.accept_events.clear();
+            memo.rows_traced = false;
             memo.subject = key;
-        } else if (subject.is_some() && memo.subject != key)
-            || (reads.states.is_changed()
-                && quest_log.templates.iter().any(|(_, t)| {
-                    has_world_state_token(&t.details) || has_world_state_token(&t.objectives_text)
-                }))
-        {
-            // The text expands against the player: a name that lands, or a world state a quest's
-            // text reads, expands the held records again, with nothing waiting on them.
-            if subject.is_some() {
-                memo.subject = key;
+        } else {
+            if !memo.rows_traced {
+                if let Some(trace) = &reads.quest_trace {
+                    let scope = reads
+                        .wrath_view
+                        .as_ref()
+                        .map(|v| (v.session_epoch, v.world_generation));
+                    for slot in current_slots.iter().filter(|slot| slot.quest_id != 0) {
+                        if script.quest_log_index(slot.quest_id) != 0 {
+                            trace.observe(
+                                scope,
+                                Some(slot.quest_id),
+                                crate::quest_trace::Stage::JournalRowInModel,
+                            );
+                        }
+                    }
+                }
+                memo.rows_traced = true;
             }
-            for (&id, t) in quest_log.templates.iter() {
-                script.seed_quest_record(id, record_view(t, &tables));
+            if (subject.is_some() && memo.subject != key)
+                || (reads.states.is_changed()
+                    && quest_log.templates.iter().any(|(_, t)| {
+                        has_world_state_token(&t.details) || has_world_state_token(&t.objectives_text)
+                    }))
+            {
+                // The text expands against the player: a name that lands, or a world state a quest's
+                // text reads, expands the held records again, with nothing waiting on them.
+                if subject.is_some() {
+                    memo.subject = key;
+                }
+                for (&id, t) in quest_log.templates.iter() {
+                    script.seed_quest_record(id, record_view(t, &tables));
+                }
             }
         }
 
@@ -2475,6 +2500,24 @@ mod tests {
             rig.script().take_sounds().is_empty(),
             "the sound is the accept row's, played with its line"
         );
+    }
+
+    /// On the Wrath target as well, seating a mixed log (group 0 + a named zone) is silent and
+    /// leaves every group expanded for `quest_log_enter_world`'s single initial rebuild.
+    #[test]
+    fn wrath_seat_is_silent_and_keeps_zone_zero_rows_expanded_at_world_entry() {
+        let mut q0 = quest_template(101, none());
+        q0.zone_or_sort = 0;
+        q0.title = "Zone Zero".into();
+        let mut q7 = quest_template(201, none());
+        q7.zone_or_sort = 7;
+        q7.title = "Zone Seven".into();
+        let mut rig = Rig::wrath(vec![q0, q7], &[101, 201]);
+        assert_eq!(rig.frame(), Vec::<String>::new());
+        assert_eq!(rig.enter_world(), [QLU]);
+        assert_eq!(rig.eval("return tostring(GetNumQuestLogEntries())"), "4");
+        assert_eq!(rig.eval("return (GetQuestLogTitle(2))"), "Zone Zero");
+        assert_eq!(rig.eval("return (GetQuestLogTitle(4))"), "Zone Seven");
     }
 }
 
