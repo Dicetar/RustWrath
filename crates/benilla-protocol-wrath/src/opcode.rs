@@ -402,9 +402,10 @@ pub const CMSG_AUTH_SESSION: u32 = 0x1ED;
 pub const SMSG_AUTH_RESPONSE: u16 = 0x1EE;
 pub const SMSG_LOGIN_VERIFY_WORLD: u16 = 0x236;
 pub const SMSG_ADDON_INFO: u16 = 0x2EF;
-/// An AzerothCore-lineage unofficial opcode this server sends during the login burst
-/// (`Opcodes.h:1340`): the uncompressed form of SMSG_COMPRESSED_MOVES carrying compound
-/// movement-force states. Not in any stock codec; decoded or tolerated locally.
+/// The uncompressed form of `SMSG_COMPRESSED_MOVES`: length-prefixed sub-messages, each one
+/// processed as if it had arrived alone (12340 `Packet_SMSG_MULTIPLE_MOVES` `0x00716AF0`).
+/// AzerothCore sends it once after the add to map with the mover's root, feather fall, water
+/// walk and hover orders (`Player.cpp:11602`); [`crate::world::unpack_moves`] splits it.
 pub const SMSG_MULTIPLE_MOVES: u16 = 0x51E;
 
 /// Talents (`TalentHandler.cpp:27`): `[u32 talent_id, u32 requested_rank]`.
@@ -677,3 +678,27 @@ pub const SMSG_CONVERT_RUNE: u16 = 0x486;
 pub const SMSG_RESYNC_RUNES: u16 = 0x487;
 pub const SMSG_ADD_RUNE_POWER: u16 = 0x488;
 pub const CMSG_CALENDAR_EVENT_SIGNUP: u32 = 0x4BA;
+
+// The rest of the mover-control family 12340 registers (`Unit_C.cpp` `0x00732450`
+// `Packet_MoveMode`, `0x00741C30` `Packet_SplineMoveEffect`, `0x00741BC0`
+// `Packet_SplineSpeedChange`), values from the local `Opcodes.h`.
+pub const SMSG_COMPRESSED_MOVES: u16 = 0x2FB;
+pub const SMSG_SPLINE_MOVE_ROOT: u16 = 0x31A;
+pub const SMSG_MOVE_SET_CAN_FLY: u16 = 0x343;
+pub const SMSG_MOVE_UNSET_CAN_FLY: u16 = 0x344;
+pub const CMSG_MOVE_SET_CAN_FLY_ACK: u16 = 0x345;
+pub const SMSG_FORCE_FLIGHT_SPEED_CHANGE: u16 = 0x381;
+pub const CMSG_FORCE_FLIGHT_SPEED_CHANGE_ACK: u16 = 0x382;
+pub const SMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE: u16 = 0x383;
+pub const CMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE_ACK: u16 = 0x384;
+pub const SMSG_SPLINE_SET_FLIGHT_SPEED: u16 = 0x385;
+pub const SMSG_SPLINE_SET_FLIGHT_BACK_SPEED: u16 = 0x386;
+pub const SMSG_SPLINE_MOVE_SET_FLYING: u16 = 0x422;
+pub const SMSG_SPLINE_MOVE_UNSET_FLYING: u16 = 0x423;
+pub const SMSG_FORCE_PITCH_RATE_CHANGE: u16 = 0x45C;
+pub const CMSG_FORCE_PITCH_RATE_CHANGE_ACK: u16 = 0x45D;
+pub const SMSG_SPLINE_SET_PITCH_RATE: u16 = 0x45E;
+pub const SMSG_MOVE_GRAVITY_DISABLE: u16 = 0x4CE;
+pub const SMSG_MOVE_GRAVITY_ENABLE: u16 = 0x4D0;
+pub const SMSG_SPLINE_MOVE_GRAVITY_DISABLE: u16 = 0x4D3;
+pub const SMSG_SPLINE_MOVE_GRAVITY_ENABLE: u16 = 0x4D4;
