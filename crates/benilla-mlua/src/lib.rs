@@ -246,6 +246,7 @@ fn raise(lua: &Lua, nargs: usize, e: Error) -> LuaError {
         Error::LuaValue {
             value: Some(v),
             message,
+            ..
         } => {
             // Another family's value, or one gone with its thread, raises its text.
             let x = match v.get(lua) {
@@ -257,6 +258,7 @@ fn raise(lua: &Lua, nargs: usize, e: Error) -> LuaError {
         Error::LuaValue {
             message,
             value: None,
+            ..
         } => {
             let msg = vm.str(message.as_bytes());
             vm.throw(msg)
@@ -1030,12 +1032,9 @@ impl Lua {
     pub(crate) fn call_raw(&self, f: benilla_lua::Value, args: MultiValue) -> Result<MultiValue> {
         let argv: Vec<benilla_lua::Value> = args.iter().map(|v| self.unwrap(v)).collect();
         // The arguments' handles stay alive until the values are on the VM's stack.
-        let r = self.vm().pcall_value(f, &argv, -1);
+        let r = self.protect(|vm| vm.call_value(f, &argv, -1));
         drop(args);
-        match r {
-            Ok(vals) => Ok(vals.into_iter().map(|v| self.wrap(v)).collect()),
-            Err(e) => Err(self.error_from(e)),
-        }
+        Ok(r?.into_iter().map(|v| self.wrap(v)).collect())
     }
 
     /// Call `func`, protected and with no arguments, while each named global holds the value
@@ -1054,24 +1053,29 @@ impl Lua {
             .map(|(name, v)| (self.vm().heap.intern(name.as_bytes()), self.unwrap(v)))
             .collect();
         let arguments: Vec<benilla_lua::Value> = args.iter().map(|value| self.unwrap(value)).collect();
-        let result = if arguments.is_empty() {
-            self.vm().call_with_globals(f, &sets)
-        } else {
-            self.vm().call_with_globals_args(f, &sets, &arguments)
-        }.map_err(|error| self.error_from(error));
+        let result = self
+            .vm()
+            .call_with_globals_traced(f, &sets, &arguments)
+            .map_err(|(value, traceback)| self.error_from(value, traceback));
         drop(args);
         result
     }
 
-    /// A Lua error value as an `Error`: its text, as mlua reports a runtime error. A callback's
-    /// panic resumes here, as mlua's `pop_error` resumes it.
-    pub(crate) fn error_from(&self, e: benilla_lua::Value) -> Error {
+    fn protect<T>(&self, f: impl FnOnce(&mut Vm) -> std::result::Result<T, LuaError>) -> Result<T> {
+        self.vm()
+            .protected_traced(f)
+            .map_err(|(value, traceback)| self.error_from(value, traceback))
+    }
+
+    /// Convert a caught error without changing its Lua value. A callback panic resumes here.
+    fn error_from(&self, e: benilla_lua::Value, traceback: String) -> Error {
         if let Some(payload) = take_panic(self.vm(), e) {
             std::panic::resume_unwind(payload);
         }
         Error::LuaValue {
             message: self.vm().display(e),
             value: Some(ErrorValue::new(self.0.family, self.wrap(e))),
+            traceback,
         }
     }
 }
@@ -1394,9 +1398,7 @@ impl Table {
         let lua = &self.lua();
         let ((kx, vx), _held) = lua.raw_pair(key, value)?;
         let t = self.0.get();
-        lua.vm()
-            .protected(|vm| vm.setindex(t, kx, vx, None))
-            .map_err(|e| lua.error_from(e))
+        lua.protect(|vm| vm.setindex(t, kx, vx, None))
     }
 
     /// `t[key]`, with metamethods.
@@ -1405,10 +1407,7 @@ impl Table {
         let (kx, _held) = lua.raw_value(key)?;
         let t = self.0.get();
         // The key goes to an `__index` function as an argument, which roots it.
-        let v = lua
-            .vm()
-            .protected(|vm| vm.index(t, kx, None))
-            .map_err(|e| lua.error_from(e))?;
+        let v = lua.protect(|vm| vm.index(t, kx, None))?;
         V2::from_raw(v, lua)
     }
 
@@ -1473,10 +1472,7 @@ impl Table {
             return Ok(self.raw_len() as Integer);
         }
         let t = self.0.get();
-        let r = lua
-            .vm()
-            .protected(|vm| vm.call_value(len, &[t], 1))
-            .map_err(|e| lua.error_from(e))?;
+        let r = lua.protect(|vm| vm.call_value(len, &[t], 1))?;
         let n = lua.wrap(r[0]);
         lua.coerce_integer(n)?
             .ok_or_else(|| Error::runtime("object length is not an integer"))
@@ -1578,9 +1574,7 @@ impl Table {
     pub fn equals(&self, other: &Table) -> Result<bool> {
         let lua = &self.lua();
         let (a, b) = (self.0.get(), lua.unref(&other.0));
-        lua.vm()
-            .protected(|vm| vm.equals(a, b))
-            .map_err(|e| lua.error_from(e))
+        lua.protect(|vm| vm.equals(a, b))
     }
 
     pub fn to_pointer(&self) -> *const c_void {
@@ -1728,10 +1722,7 @@ impl ObjectLike for Table {
     fn to_string(&self) -> Result<std::string::String> {
         let lua = &self.lua();
         let t = self.0.get();
-        let s = lua
-            .vm()
-            .protected(|vm| benilla_lua::tostring_value(vm, t))
-            .map_err(|e| lua.error_from(e))?;
+        let s = lua.protect(|vm| benilla_lua::tostring_value(vm, t))?;
         Ok(lua.vm().display(s))
     }
 

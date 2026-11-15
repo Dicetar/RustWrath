@@ -60,6 +60,7 @@ if (-not (Test-Path -LiteralPath $metaPath)) {
 
 $lines = New-Object System.Collections.Generic.List[string]
 $locations = New-Object System.Collections.Generic.List[string]
+$luaTracebacks = @{}
 $shareMode = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
 foreach ($p in @($stderrPath, $stdoutPath)) {
     if (Test-Path -LiteralPath $p) {
@@ -71,6 +72,10 @@ foreach ($p in @($stderrPath, $stdoutPath)) {
                 $lineNumber++
                 # Strip ANSI escape sequences for clean regex matching
                 $clean = $line -replace '\x1b\[[0-9;]*[a-zA-Z]', ''
+                # The Lua host writes one continuation line immediately after the error.
+                if ($lineNumber -gt 1 -and $clean -match '^Lua traceback: .+') {
+                    $luaTracebacks[($lines.Count - 1)] = $clean
+                }
                 $lines.Add($clean)
                 $locations.Add("$(Split-Path -Leaf $p):$lineNumber")
             }
@@ -143,10 +148,13 @@ $grouped = @{}
 $failurePattern = '(?i)\b(ERROR|WARN|FATAL|panic|failed|failure|missing|unsupported|unavailable|invalid|rejected|disabled|refused|NaN)\b|runtime error|non-finite|cannot|can.t|not found|not implemented|another action is in progress'
 for ($i = 0; $i -lt $lines.Count; $i++) {
     $line = $lines[$i]
-    if ($line -notmatch $failurePattern) { continue }
+    if ($line.StartsWith('Lua traceback: ') -or $line -notmatch $failurePattern) { continue }
     $categories = @($domains.Keys | Where-Object { $line -match $domains[$_] })
     if ($categories.Count -eq 0) { $categories = @('Other') }
     $message = ($line -replace '^\d{4}-\d{2}-\d{2}T\S+\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+', '').Trim()
+    if ($luaTracebacks.ContainsKey($i)) {
+        $message += ' | ' + $luaTracebacks[$i]
+    }
     $key = ($categories -join ',') + '|' + $message
     if ($grouped.ContainsKey($key)) {
         $grouped[$key].count++
@@ -181,7 +189,9 @@ $assetFailures    = @{}
 $uiLoadFailures   = @{}
 $diagProbes       = @{}
 
-foreach ($line in $lines) {
+for ($i = 0; $i -lt $lines.Count; $i++) {
+    $line = $lines[$i]
+    if ($line.StartsWith('Lua traceback: ')) { continue }
     # 1. Missing global functions: attempt to call global 'Foo' (a nil value)
     if ($line -match 'attempt to call global [''\x60"]([^''\x60"]+)[''\x60"] \(a nil value\)') {
         $name = $Matches[1]
@@ -226,6 +236,9 @@ foreach ($line in $lines) {
     if ($line -match '(?i)(Interface\\|FrameXML|GlueXML|runtime error:|Lua error|ui_script:)') {
         if ($line -match '\b(ERROR|WARN)\b' -or $line -match 'runtime error:') {
             $msg = ($line -replace '^\d{4}-\d{2}-\d{2}T[^\s]+\s+(ERROR|WARN)\s+', '').Trim()
+            if ($luaTracebacks.ContainsKey($i)) {
+                $msg += ' | ' + $luaTracebacks[$i]
+            }
             $luaErrors[$msg] = ($luaErrors[$msg] -as [int]) + 1
         }
     }

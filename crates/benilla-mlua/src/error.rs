@@ -18,11 +18,12 @@ pub enum Error {
     /// A Lua error value, raised in Lua as it is, with no position: one a call into Lua answered
     /// (`message` its text), which a callback that passes it on raises again unchanged, as a C
     /// function `lua_error`s the value its `lua_pcall` left; or, with no value, `message` raised
-    /// bare, as the client's `PlaySound` raises its usage text (`0x458708`). Its `Display` is a
-    /// [`Error::RuntimeError`]'s.
+    /// bare, as the client's `PlaySound` raises its usage text (`0x458708`). The host may add
+    /// a traceback to its display while retaining the untouched Lua error value.
     LuaValue {
         message: String,
         value: Option<crate::ErrorValue>,
+        traceback: String,
     },
     MemoryError(String),
     /// A callback's arguments and results overflow the stack a C function may use.
@@ -66,11 +67,21 @@ impl Error {
         Error::LuaValue {
             message: message.to_string(),
             value: None,
+            traceback: String::new(),
         }
     }
 
     pub fn external<T: Into<Box<dyn std::error::Error + Send + Sync>>>(err: T) -> Self {
         Error::ExternalError(err.into().into())
+    }
+
+    /// The host's file and line chain, when a protected Lua call captured one.
+    pub fn lua_traceback(&self) -> Option<&str> {
+        match self {
+            Error::LuaValue { traceback, .. } if !traceback.is_empty() => Some(traceback),
+            Error::WithContext { cause, .. } => cause.lua_traceback(),
+            _ => None,
+        }
     }
 
     /// The message Lua sees when this error is raised into it: the text, without mlua's
@@ -91,8 +102,13 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::SyntaxError { message, .. } => write!(f, "syntax error: {message}"),
-            Error::RuntimeError(msg) | Error::LuaValue { message: msg, .. } => {
-                write!(f, "runtime error: {msg}")
+            Error::RuntimeError(msg) => write!(f, "runtime error: {msg}"),
+            Error::LuaValue { message, .. } => {
+                write!(f, "runtime error: {message}")?;
+                if let Some(traceback) = self.lua_traceback() {
+                    write!(f, "\nLua traceback: {traceback}")?;
+                }
+                Ok(())
             }
             Error::MemoryError(msg) => write!(f, "memory error: {msg}"),
             Error::StackError => write!(

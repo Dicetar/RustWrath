@@ -753,7 +753,8 @@ fn a_runscript_chunk_is_named_by_its_own_source() {
     let errs = s.take_errors();
     assert!(
         errs.iter()
-            .any(|e| e.starts_with("[string \"error('boom')\"]:1: boom")),
+            .any(|e| e.starts_with("[string \"error('boom')\"]:1: boom")
+                && e.contains("\nLua traceback: [string]:1")),
         "the chunk names itself by its source: {errs:?}"
     );
 }
