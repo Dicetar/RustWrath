@@ -105,6 +105,7 @@ pub mod roll_vote {
     pub const PASS: u8 = 0;
     pub const NEED: u8 = 1;
     pub const GREED: u8 = 2;
+    pub const DISENCHANT: u8 = 3;
 }
 
 /// `CMSG_LOOT_ROLL` (`Loot.cpp:18-23`): `u64 lootedTarget, u32 itemSlot, u8 rollType`. The
@@ -159,6 +160,8 @@ pub struct LootRoll {
     pub suffix_factor: u32,
     pub roll_number: u8,
     pub roll_type: u8,
+    /// Wrath's auto-pass indicator; absent on 1.12.
+    pub auto_pass: Option<bool>,
 }
 
 impl LootRoll {
@@ -247,6 +250,7 @@ pub(super) fn read_loot_roll(r: &mut &[u8]) -> io::Result<LootRoll> {
         suffix_factor,
         roll_number,
         roll_type,
+        auto_pass: None,
     })
 }
 
@@ -589,6 +593,7 @@ mod tests {
                 suffix_factor: 0,
                 roll_number: 0,
                 roll_type: 0,
+                auto_pass: None,
             }
         );
 

@@ -4214,8 +4214,6 @@ fn translate_gameplay(
             countdown_ms,
             wrath_options: Some((item_count, vote_mask)),
         })],
-        // `auto_pass` has no donor field; it is retained on the protocol event for the chat-line
-        // extension recorded in the checkpoint.
         WrathGameplayEvent::LootRoll {
             guid,
             item_slot,
@@ -4225,7 +4223,7 @@ fn translate_gameplay(
             random_property_id,
             roll_number,
             roll_type,
-            auto_pass: _,
+            auto_pass,
         } => vec![SessionEvent::LootRoll(ProtocolLootRoll {
             looted_target: guid,
             item_slot,
@@ -4235,6 +4233,7 @@ fn translate_gameplay(
             suffix_factor,
             roll_number,
             roll_type,
+            auto_pass: Some(auto_pass),
         })],
         WrathGameplayEvent::LootRollWon {
             guid,

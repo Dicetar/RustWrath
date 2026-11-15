@@ -18,7 +18,12 @@ continues to use its own result and confirmation shape.
 12340 reference: `LootFrame_Scripts.cpp::Script_GetLootRollItemInfo` at
 `0x005889D0`, and `Object/ObjectClient/LootRoll.cpp::LootRoll` at `0x006FBC70`.
 The stock query's trailing four tooltip values (three local refusal reasons and
-the required enchanting skill) are outside this slice. Disenchant and auto-pass
-chat messages also remain separate.
+the required enchanting skill) are outside this slice.
+
+The loot chat path now keeps the Wrath auto-pass flag, displays disenchant votes,
+dice, and winners using their distinct strings, and formats Wrath's strings with
+one complete item link. The player's own auto-pass stays visible with
+`showLootSpam` off. See `LootRoll.cpp::RolledStatsAndName` (`0x006FA840`) and
+`WonStatsAndName` (`0x006FB700`).
 
 Source review and `git diff --check` only. No build, tests, or client launch.
