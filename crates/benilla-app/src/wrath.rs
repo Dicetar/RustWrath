@@ -3755,6 +3755,9 @@ fn translate_gameplay(
         }
         WrathGameplayEvent::LoggedOut => vec![SessionEvent::LoggedOut],
         WrathGameplayEvent::LogoutCancelled => vec![SessionEvent::LogoutCancelled],
+        WrathGameplayEvent::TransferAborted { map_id, reason, argument } => {
+            vec![SessionEvent::TransferAborted { reason, map_id: Some(map_id), argument }]
+        }
         WrathGameplayEvent::SpellFailure {
             caster,
             spell_id,

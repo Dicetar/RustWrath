@@ -751,7 +751,7 @@ pub fn decode(packet: ServerPacket) -> Vec<SessionEvent> {
             from_map: transport.map(|(_, from_map)| from_map),
         }],
         ServerPacket::TransferAborted { reason } => {
-            vec![SessionEvent::TransferAborted { reason }]
+            vec![SessionEvent::TransferAborted { reason, map_id: None, argument: None }]
         }
         ServerPacket::TimeSpeed { time, speed } => vec![SessionEvent::TimeSpeed { time, speed }],
         ServerPacket::GameSpeedSet { speed } => vec![SessionEvent::GameSpeedSet { speed }],
