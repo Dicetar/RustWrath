@@ -15,10 +15,12 @@ use crate::cast_failure;
 
 pub mod economy;
 mod movement;
+mod mover_control;
 pub mod pet_talent;
 pub mod social;
 pub mod wrath_systems;
 pub use movement::{MonsterFacing, MonsterMove};
+pub use mover_control::{MoveMode, SpeedKind, SplineMode};
 
 /// The largest undecoded-byte count reported with a typed decode failure.
 ///
@@ -1422,7 +1424,10 @@ pub fn write_movement_info(
         out.extend_from_slice(&t_pos[2].to_le_bytes());
         out.extend_from_slice(&t_o.to_le_bytes());
         out.extend_from_slice(&t_time.to_le_bytes());
-        out.push(0); // transport seat
+        // No seat: 12340 resets `m_transportSeat` to 0xFF (`CMovementStatus.cpp:50`) and only a
+        // vehicle boarding sets one (`UpdateTransportStatus`, `0x006EA1D0`); AzerothCore's
+        // default is the same -1 (`Object.h:303`). This client boards no vehicle.
+        out.push(0xFF);
     }
     if wrath_flags & (0x0020_0000 | 0x0200_0000) != 0 {
         out.extend_from_slice(&pitch.to_le_bytes());
@@ -2593,10 +2598,47 @@ pub enum ServerEvent {
         zone_id: u32,
         states: Vec<(u32, u32)>,
     },
-    ForceRunSpeedChange {
+    /// `SMSG_FORCE_*_SPEED_CHANGE` (all nine kinds): one of our mover's speeds, owed an ack
+    /// with `counter` and the exact `speed`.
+    ForceSpeedChange {
+        kind: SpeedKind,
         guid: u64,
         counter: u32,
         speed: f32,
+    },
+    /// `SMSG_SPLINE_SET_*_SPEED`: any unit's speed, nothing to ack.
+    SpeedChanged {
+        kind: SpeedKind,
+        guid: u64,
+        speed: f32,
+    },
+    /// A mode ordered on our mover (`apply` grants, else revokes), owed an ack with `counter`.
+    MoveMode {
+        mode: MoveMode,
+        apply: bool,
+        guid: u64,
+        counter: u32,
+    },
+    /// `SMSG_SPLINE_MOVE_*`: any unit's mode change, nothing to ack.
+    SplineMoveMode {
+        mode: SplineMode,
+        apply: bool,
+        guid: u64,
+    },
+    /// `SMSG_MOVE_KNOCK_BACK`: a launch for our mover, in wire order; `z_speed_down` is the
+    /// server's `-speedZ`. Owed `CMSG_MOVE_KNOCK_BACK_ACK` with `counter` and this launch.
+    KnockBack {
+        guid: u64,
+        counter: u32,
+        cos_angle: f32,
+        sin_angle: f32,
+        xy_speed: f32,
+        z_speed_down: f32,
+    },
+    /// `SMSG_CLIENT_CONTROL_UPDATE`: whether the client may move `guid`.
+    ClientControl {
+        guid: u64,
+        allow_move: bool,
     },
 }
 
@@ -2918,8 +2960,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_SET_FACTION_STANDING => read_set_faction_standing(body),
         SMSG_PET_CAST_FAILED => read_pet_cast_failed(body),
         SMSG_INIT_WORLD_STATES => read_init_world_states(body),
-        SMSG_FORCE_RUN_SPEED_CHANGE => read_force_run_speed_change(body),
-        _ => return None,
+        _ => return mover_control::parse(opcode, body),
     })
 }
 
@@ -3061,19 +3102,6 @@ fn read_init_world_states(b: &[u8]) -> Result<ServerEvent> {
         map_id,
         zone_id,
         states,
-    })
-}
-
-fn read_force_run_speed_change(b: &[u8]) -> Result<ServerEvent> {
-    let mut r = Reader::new(b);
-    let guid = r.packed_guid()?;
-    let counter = r.u32()?;
-    let _allow_air_control = r.u8()?;
-    let speed = r.f32()?;
-    Ok(ServerEvent::ForceRunSpeedChange {
-        guid,
-        counter,
-        speed,
     })
 }
 
@@ -5888,5 +5916,104 @@ mod tests {
         let pet_buy = petition_buy(0x1122, "Vanguard");
         assert_eq!(u64::from_le_bytes(le::<8>(&pet_buy[0..8])), 0x1122);
         assert_eq!(u32::from_le_bytes(le::<4>(&pet_buy[pet_buy.len() - 4..])), 9);
+    }
+
+    /// A packed guid for unit 7 followed by `tail`.
+    fn mover_body(tail: &[&[u8]]) -> Vec<u8> {
+        let mut b = vec![0x01, 0x07];
+        for part in tail {
+            b.extend_from_slice(part);
+        }
+        b
+    }
+
+    fn mover_event(opcode: u16, body: &[u8]) -> ServerEvent {
+        parse(opcode, body)
+            .expect("mover-control opcodes are decoded")
+            .expect("the AzerothCore body is valid")
+    }
+
+    #[test]
+    fn forced_speeds_carry_the_run_only_byte_and_all_nine_kinds() {
+        use crate::opcode::*;
+        // `Unit::SetSpeed`: the `u8 0` sits between counter and speed for MOVE_RUN alone.
+        let run = mover_body(&[&3u32.to_le_bytes(), &[0], &8.5f32.to_le_bytes()]);
+        assert_eq!(
+            mover_event(SMSG_FORCE_RUN_SPEED_CHANGE, &run),
+            ServerEvent::ForceSpeedChange { kind: SpeedKind::Run, guid: 7, counter: 3, speed: 8.5 }
+        );
+        let plain = mover_body(&[&4u32.to_le_bytes(), &2.5f32.to_le_bytes()]);
+        for (opcode, kind) in [
+            (SMSG_FORCE_WALK_SPEED_CHANGE, SpeedKind::Walk),
+            (SMSG_FORCE_SWIM_BACK_SPEED_CHANGE, SpeedKind::SwimBack),
+            (SMSG_FORCE_FLIGHT_SPEED_CHANGE, SpeedKind::Flight),
+            (SMSG_FORCE_PITCH_RATE_CHANGE, SpeedKind::PitchRate),
+        ] {
+            assert_eq!(
+                mover_event(opcode, &plain),
+                ServerEvent::ForceSpeedChange { kind, guid: 7, counter: 4, speed: 2.5 }
+            );
+        }
+        // The run byte is not optional, and other kinds carry none.
+        assert!(parse(SMSG_FORCE_WALK_SPEED_CHANGE, &run).unwrap().is_err());
+        let spline = mover_body(&[&1.25f32.to_le_bytes()]);
+        assert_eq!(
+            mover_event(SMSG_SPLINE_SET_RUN_BACK_SPEED, &spline),
+            ServerEvent::SpeedChanged { kind: SpeedKind::RunBack, guid: 7, speed: 1.25 }
+        );
+    }
+
+    #[test]
+    fn mover_orders_and_unit_modes_name_their_direction() {
+        use crate::opcode::*;
+        let order = mover_body(&[&9u32.to_le_bytes()]);
+        for (opcode, mode, apply) in [
+            (SMSG_FORCE_MOVE_ROOT, MoveMode::Root, true),
+            (SMSG_FORCE_MOVE_UNROOT, MoveMode::Root, false),
+            (SMSG_MOVE_SET_CAN_FLY, MoveMode::CanFly, true),
+            (SMSG_MOVE_GRAVITY_ENABLE, MoveMode::GravityDisabled, false),
+        ] {
+            assert_eq!(
+                mover_event(opcode, &order),
+                ServerEvent::MoveMode { mode, apply, guid: 7, counter: 9 }
+            );
+        }
+        let unit = mover_body(&[]);
+        for (opcode, mode, apply) in [
+            (SMSG_SPLINE_MOVE_ROOT, SplineMode::Root, true),
+            (SMSG_SPLINE_MOVE_SET_RUN_MODE, SplineMode::WalkMode, false),
+            (SMSG_SPLINE_MOVE_SET_FLYING, SplineMode::Flying, true),
+        ] {
+            assert_eq!(
+                mover_event(opcode, &unit),
+                ServerEvent::SplineMoveMode { mode, apply, guid: 7 }
+            );
+        }
+    }
+
+    #[test]
+    fn knockback_and_client_control_keep_azerothcore_field_order() {
+        use crate::opcode::*;
+        // `Unit::KnockbackFrom`: counter, vcos, vsin, speedXY, -speedZ.
+        let floats: Vec<u8> = [0.6f32, 0.8, 12.0, -7.5]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let body = mover_body(&[&11u32.to_le_bytes(), &floats]);
+        assert_eq!(
+            mover_event(SMSG_MOVE_KNOCK_BACK, &body),
+            ServerEvent::KnockBack {
+                guid: 7,
+                counter: 11,
+                cos_angle: 0.6,
+                sin_angle: 0.8,
+                xy_speed: 12.0,
+                z_speed_down: -7.5,
+            }
+        );
+        assert_eq!(
+            mover_event(SMSG_CLIENT_CONTROL_UPDATE, &mover_body(&[&[0]])),
+            ServerEvent::ClientControl { guid: 7, allow_move: false }
+        );
     }
 }

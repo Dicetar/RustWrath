@@ -4680,17 +4680,130 @@ fn translate_gameplay(
             scope: Some((map_id, zone_id)),
             states,
         }],
-        WrathGameplayEvent::ForceRunSpeedChange {
+        WrathGameplayEvent::ForceSpeedChange {
+            kind,
             guid,
             counter,
             speed,
-        } => vec![SessionEvent::ForceSpeedChange {
-            kind: benilla_protocol::messages::SpeedKind::Run,
+        } => match wrath_speed_kind(kind) {
+            Some(kind) => vec![SessionEvent::ForceSpeedChange {
+                guid,
+                kind,
+                counter,
+                speed,
+            }],
+            None => {
+                // Unsupported: the shared mover has no flight or pitch speed to apply, and an ack
+                // for a speed we never use would tell the server something false.
+                warn!(?kind, guid, speed, "wrath: forced speed has no mover owner; not acked");
+                Vec::new()
+            }
+        },
+        WrathGameplayEvent::SpeedChanged { kind, guid, speed } => match wrath_speed_kind(kind) {
+            Some(kind) => vec![SessionEvent::SpeedChanged { guid, kind, speed }],
+            None => {
+                debug!(?kind, guid, speed, "wrath: unit speed has no motion owner");
+                Vec::new()
+            }
+        },
+        WrathGameplayEvent::MoveMode {
+            mode,
+            apply,
             guid,
             counter,
-            speed,
+        } => match wrath_move_mode(mode) {
+            Some(mode) => vec![SessionEvent::MoveMode {
+                guid,
+                counter,
+                mode,
+                apply,
+            }],
+            None => {
+                // Unsupported: CanFly and gravity need the flight controller the shared mover
+                // lacks, so the order is neither applied nor acked.
+                warn!(?mode, apply, guid, "wrath: move mode has no mover owner; not acked");
+                Vec::new()
+            }
+        },
+        WrathGameplayEvent::SplineMoveMode { mode, apply, guid } => {
+            match wrath_spline_mode(mode) {
+                Some(mode) => vec![SessionEvent::SplineMoveMode { guid, mode, apply }],
+                None => {
+                    debug!(?mode, apply, guid, "wrath: spline mode has no motion owner");
+                    Vec::new()
+                }
+            }
+        }
+        WrathGameplayEvent::KnockBack {
+            guid,
+            counter,
+            cos_angle,
+            sin_angle,
+            xy_speed,
+            z_speed_down,
+        } => vec![SessionEvent::KnockBack {
+            guid,
+            counter,
+            launch: benilla_protocol::messages::JumpInfo {
+                zspeed: z_speed_down,
+                cos_angle,
+                sin_angle,
+                xy_speed,
+            },
         }],
+        WrathGameplayEvent::ClientControl { guid, allow_move } => {
+            vec![SessionEvent::ClientControl {
+                mover: guid,
+                allow_move,
+            }]
+        }
     }
+}
+
+/// The shared mover's speed for a Wrath kind; `None` for flight, flight-back and pitch rate,
+/// which the shared mover does not model.
+fn wrath_speed_kind(kind: gameplay::SpeedKind) -> Option<benilla_protocol::messages::SpeedKind> {
+    use benilla_protocol::messages::SpeedKind as Shared;
+    use gameplay::SpeedKind as Wrath;
+    Some(match kind {
+        Wrath::Walk => Shared::Walk,
+        Wrath::Run => Shared::Run,
+        Wrath::RunBack => Shared::RunBack,
+        Wrath::Swim => Shared::Swim,
+        Wrath::SwimBack => Shared::SwimBack,
+        Wrath::TurnRate => Shared::TurnRate,
+        Wrath::Flight | Wrath::FlightBack | Wrath::PitchRate => return None,
+    })
+}
+
+/// The shared mode for a Wrath mover order; `None` for CanFly and gravity.
+fn wrath_move_mode(mode: gameplay::MoveMode) -> Option<benilla_protocol::messages::MoveMode> {
+    use benilla_protocol::messages::MoveMode as Shared;
+    use gameplay::MoveMode as Wrath;
+    Some(match mode {
+        Wrath::Root => Shared::Root,
+        Wrath::WaterWalk => Shared::WaterWalk,
+        Wrath::FeatherFall => Shared::FeatherFall,
+        Wrath::Hover => Shared::Hover,
+        Wrath::CanFly | Wrath::GravityDisabled => return None,
+    })
+}
+
+/// The shared mode for a Wrath unit broadcast; `None` for flying and gravity.
+fn wrath_spline_mode(
+    mode: gameplay::SplineMode,
+) -> Option<benilla_protocol::messages::SplineMode> {
+    use benilla_protocol::messages::SplineMode as Shared;
+    use gameplay::SplineMode as Wrath;
+    Some(match mode {
+        Wrath::Root => Shared::Root,
+        Wrath::WaterWalk => Shared::WaterWalk,
+        Wrath::FeatherFall => Shared::FeatherFall,
+        Wrath::Hover => Shared::Hover,
+        Wrath::WalkMode => Shared::WalkMode,
+        Wrath::Swimming => Shared::Swimming,
+        Wrath::Flying | Wrath::GravityDisabled => return None,
+    })
 }
 
 fn wrath_group_member_flags(sub_group: u8, member_flags: u8) -> u8 {
@@ -12894,6 +13007,7 @@ mod command_tap_tests {
         assert_eq!(body[26..28], [0x01, 0x05], "the transport's packed guid");
         assert_eq!(f32_at(&body, 28), 4.0);
         assert_eq!(f32_at(&body, 40), 1.5, "facing in the deck's frame");
+        assert_eq!(body[48], 0xFF, "a deck is no vehicle seat");
         // Packed guid 2, pose 16, transport time 4, seat 1, then the fall time.
         assert_eq!(body.len(), 26 + 23 + 4);
     }
