@@ -1446,6 +1446,9 @@ pub(crate) struct Model {
     pub(crate) modifiers: (bool, bool, bool),
     /// Unsupported 3.3.5 native names that have already emitted a one-time diagnostic warning in this VM.
     pub(crate) warned_unsupported_wrath_natives: HashSet<&'static str>,
+    /// Frames a Wrath geometry getter answered `0` for, having no resolved rect: each is named once
+    /// (`object::layout_methods::note_unresolved_rect`).
+    pub(crate) warned_unresolved_rects: HashSet<FrameHandle>,
 }
 
 impl Model {
@@ -2081,6 +2084,7 @@ impl Model {
             reputation_selected: 0,
             faction_standings: HashMap::new(),
             warned_unsupported_wrath_natives: HashSet::new(),
+            warned_unresolved_rects: HashSet::new(),
         }
     }
 
