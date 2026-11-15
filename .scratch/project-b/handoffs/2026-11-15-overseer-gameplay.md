@@ -55,9 +55,28 @@ cases were run by the agent before the two repairs). What it did find is flagged
 
 - **No client run.** The tracker block count is pinned at the watch list, not on screen; the issue
   needs one owner launch with two tracked quests in Westfall to close.
-- `cargo test -p benilla-app --lib ui_quest_log` is 20 passed / 7 failed on this tree (an extra
-  `QUEST_LOG_UPDATE` at the seat, a toast row off by one). One was re-run with this branch's
-  functional change removed and still failed; they predate it and need their own ticket.
+- `cargo test -p benilla-app --lib ui_quest_log` is 20 passed / 7 failed on this tree, all in
+  `ui_quest_log::tests`. Failures and their actual-vs-expected, for the next owner:
+  | Test | Left (actual) | Right (expected) |
+  |---|---|---|
+  | `the_log_signals_at_the_world_entry_and_once_per_block_that_moves_it` | `["QUEST_LOG_UPDATE:nil"]` | `[]` |
+  | `the_last_awaited_record_rebuilds_the_list_once` | `["QUEST_LOG_UPDATE:nil"]` | `[]` |
+  | `an_item_added_before_the_quest_record_lands_toasts_on_its_arrival` | one extra `QUEST_LOG_UPDATE` | one |
+  | `a_completed_quest_toasts_its_end_text` | `QUEST_WATCH_UPDATE:3` | `QUEST_WATCH_UPDATE:2` |
+  | `a_walking_addon_on_twenty_cached_quests_walks_once_at_each_world_entry` | `Beast 10 slain: 0/5` | `Beast 1 slain: 0/5` |
+  | `creature_names_in_flight_signal_once_each_as_they_land` | `22` | `21` |
+  | `a_fold_between_mark_and_confirm_does_not_retarget_the_abandon` | `GetAbandonQuestName()` = `C` | `B` |
+
+  Two clusters are visible. The three `QUEST_LOG_UPDATE` ones are one extra signal at the seat:
+  the code seats the slots through the watcher so it fires once (`76e108da`, 2026-10-30, "Carry the
+  12340 quest exchange into the stock frames"), while the test's doc comment still says "the seat
+  is silent" (from `fcb42ab4`, 2026-10-21). That is either stale tests or a seat that should not
+  signal — decide it against `0x4de430` before touching code. The watch index, the row title and
+  the abandon name all point one row later than the fixture expects (`3` for `2`, `C` for `B`,
+  `Beast 10` for `Beast 1`), which reads as one shared row-mapping fault in the rebuild rather
+  than three separate bugs. Start there.
+- One was re-run with this branch's functional change removed and still failed, so none of the
+  seven is caused by it.
 - The 1.12 tracker test (`questlog_tests`) loads the installed 3.3.5a FrameXML into a 1.12 VM and
   dies at `UIParent.lua:329` — the recorded environment condition, unchanged.
 - Out of scope and flagged by the combat walk: 24 deterministic loot-suite failures
