@@ -9,6 +9,7 @@
 //! live only across its own subtree build, and everything durable lives Lua-side.
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use mlua::{Function, ObjectLike, Table, Value};
 
@@ -104,6 +105,20 @@ pub fn load_in(
     load_into(script.lua(), doc, path, files)
 }
 
+/// Reports the document path, phase, item label and elapsed wall time.
+pub type LoadTiming<'a> = dyn Fn(&str, &str, &str, Duration) + 'a;
+
+/// Load a document while measuring top-level items and their OnLoad handlers.
+pub fn load_in_timed(
+    script: &UiScript,
+    doc: &ParsedDocument,
+    path: &str,
+    files: &dyn Fn(&str) -> Option<Vec<u8>>,
+    timing: &LoadTiming<'_>,
+) -> LoadReport {
+    load_document(script.lua(), doc, path, files, "", Some(timing))
+}
+
 /// [`load_in`] on the VM directly, for a Lua binding (`LoadAddOn`), which holds only `&Lua`.
 pub fn load_into(
     lua: &mlua::Lua,
@@ -123,6 +138,17 @@ pub fn load_into_under(
     files: &dyn Fn(&str) -> Option<Vec<u8>>,
     status_root: &str,
 ) -> LoadReport {
+    load_document(lua, doc, path, files, status_root, None)
+}
+
+fn load_document(
+    lua: &mlua::Lua,
+    doc: &ParsedDocument,
+    path: &str,
+    files: &dyn Fn(&str) -> Option<Vec<u8>>,
+    status_root: &str,
+    timing: Option<&LoadTiming<'_>>,
+) -> LoadReport {
     let mut loader = Loader {
         lua,
         files,
@@ -131,6 +157,7 @@ pub fn load_into_under(
         report: LoadReport::default(),
         warned: HashSet::new(),
         deferred_anchors: Vec::new(),
+        timing,
     };
     loader.report.warnings.extend(doc.warnings.iter().cloned());
     loader.load_doc(doc);
@@ -159,6 +186,7 @@ pub fn apply_template(lua: &mlua::Lua, wrapper: &Table, kind: &str, template: &s
         report: LoadReport::default(),
         warned: HashSet::new(),
         deferred_anchors: Vec::new(),
+        timing: None,
     };
 
     let (own_name, parent_name) = loader.frame_names(wrapper);
@@ -253,6 +281,7 @@ pub fn apply_region_template(lua: &mlua::Lua, wrapper: &Table, template: &str) -
         report: LoadReport::default(),
         warned: HashSet::new(),
         deferred_anchors: Vec::new(),
+        timing: None,
     };
 
     // The binding already made the region; apply what the template adds to that same object.
@@ -430,6 +459,7 @@ struct Loader<'a> {
     /// target built later waits here (`ClassTrainerFrameTemplates.xml:67` hangs the label off the
     /// highlight). Each `decorate` drains its own.
     pub(super) deferred_anchors: Vec<DeferredAnchor>,
+    timing: Option<&'a LoadTiming<'a>>,
 }
 
 /// The nodes an element's `LoadXML` reads, in the order it reads them: the reference merges no
@@ -570,6 +600,7 @@ impl Loader<'_> {
     /// Walk one document's top-level items in order (`0x6ede10`).
     pub(super) fn load_doc(&mut self, doc: &ParsedDocument) {
         for item in &doc.items {
+            let start = self.timing.map(|_| Instant::now());
             match item {
                 TopLevel::Include(path) => self.do_include(path),
                 // Deviation: a `<Script file=>` value with a separator joins the including
@@ -615,6 +646,17 @@ impl Loader<'_> {
                 TopLevel::Instance(el) => {
                     self.materialize(el, None, framexml::DEFAULT_PARENT_NAME);
                 }
+            }
+            if let (Some(start), Some(timing)) = (start, self.timing) {
+                let (phase, label) = match item {
+                    TopLevel::Include(path) => ("include", path.as_str()),
+                    TopLevel::Script(ScriptRef::File(path)) => ("script", path.as_str()),
+                    TopLevel::Script(ScriptRef::Inline { .. }) => ("script", "<inline>"),
+                    TopLevel::Font(el) => ("font", el.name().unwrap_or(&el.tag)),
+                    TopLevel::Template(el) => ("template", el.name().unwrap_or(&el.tag)),
+                    TopLevel::Instance(el) => ("frame", el.name().unwrap_or(&el.tag)),
+                };
+                timing(&self.path, phase, label, start.elapsed());
             }
         }
     }

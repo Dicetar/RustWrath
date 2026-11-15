@@ -4,8 +4,10 @@
 //! but not for the lifecycle: they load outside `AddOn_Load`
 //! ([`super::manifest::load_ingame_ui`]), get no `ADDON_LOADED` and have no registry row.
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 
@@ -144,6 +146,14 @@ impl Addon {
         for file in files {
             // Resolved once into the source's path space, for `read` and the loader alike.
             let path = benilla_ui::loader::join_ref(&self.prefix(), file);
+            // The November Wrath startup stall was observed during this stock document.
+            let trace_chat_load = self.name == super::reference_ui::NAME
+                && script.target() == benilla_ui::script::UiTarget::Wrath335
+                && path.eq_ignore_ascii_case("Interface/FrameXML/FloatingChatFrame.xml");
+            if trace_chat_load {
+                info!("wrath chat load: {path} starting");
+            }
+            let read_start = trace_chat_load.then(Instant::now);
             let Some(bytes) = self.read(&path) else {
                 toc.report(status::FAILURE, status::missing(&path, is_lua(file)));
                 let e = format!("{}/{file}: not found", self.name);
@@ -160,6 +170,7 @@ impl Addon {
                 failures.push(e);
                 continue;
             };
+            let parse_start = read_start.map(|_| Instant::now());
             if is_lua(file) {
                 // What `<Script file=>` gets: one chunk in the one global state, in manifest
                 // order, as `AddOn_Load 0x51f240` hands every listed file to `0x6edb90`.
@@ -189,7 +200,42 @@ impl Addon {
             };
             // The loader resolves relative references against the document's own directory, and
             // names the file a raise came from.
-            let mut report = benilla_ui::loader::load_in(script, &doc, &path, &provider);
+            let (mut report, timings) = if let (Some(read_start), Some(parse_start)) =
+                (read_start, parse_start)
+            {
+                let dependency_read = Cell::new(Duration::ZERO);
+                let timed_provider = |req: &str| {
+                    let started = Instant::now();
+                    let bytes = provider(req);
+                    dependency_read.set(dependency_read.get() + started.elapsed());
+                    bytes
+                };
+                let log_item = |document: &str, phase: &str, item: &str, elapsed: Duration| {
+                    if elapsed >= Duration::from_millis(100) {
+                        let ms = elapsed.as_millis();
+                        info!("wrath chat load: {document} {phase} {item} elapsed_ms={ms}");
+                    }
+                };
+                let build_start = Instant::now();
+                let report = benilla_ui::loader::load_in_timed(
+                    script,
+                    &doc,
+                    &path,
+                    &timed_provider,
+                    &log_item,
+                );
+                let build_end = Instant::now();
+                let timings = (
+                    parse_start.duration_since(read_start),
+                    build_start.duration_since(parse_start),
+                    build_end.duration_since(build_start),
+                    dependency_read.get(),
+                    build_end,
+                );
+                (report, Some(timings))
+            } else {
+                (benilla_ui::loader::load_in(script, &doc, &path, &provider), None)
+            };
             std::mem::take(&mut report.status).close_into(
                 toc,
                 script.framexml_debug(),
@@ -223,6 +269,16 @@ impl Addon {
                 // a burst's first, as in the reference.
                 script.report_script_error(&format!("{}/{file}: {e}", self.name), heard);
                 failures.push(format!("{}/{file}: {e}", self.name));
+            }
+            if let Some((read, parse, build, dependency_read, build_end)) = timings {
+                info!(
+                    "wrath chat load: {path} read_ms={} parse_ms={} build_ms={} dependency_read_ms={} report_ms={}",
+                    read.as_millis(),
+                    parse.as_millis(),
+                    build.as_millis(),
+                    dependency_read.as_millis(),
+                    build_end.elapsed().as_millis(),
+                );
             }
             info!(
                 "ui_script: {}/{file} loaded ({} frames materialized)",
