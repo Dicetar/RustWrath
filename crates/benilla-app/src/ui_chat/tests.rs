@@ -3928,6 +3928,54 @@ fn a_combat_word_follows_its_line_and_only_a_written_one() {
     assert!(s.errors().is_empty(), "handler errors: {:?}", s.errors());
 }
 
+#[test]
+fn wrath_combat_text_uses_the_unit_selected_by_lua() {
+    use benilla_ui::script::{UiScript, UiTarget, UnitGuids};
+    use super::combat::{
+        spell_kind, Fills, LineWord, Named, PendingCombat, UnitClass, Variant, HEALED,
+    };
+
+    let mut script = UiScript::with_target(UiTarget::Wrath335).unwrap();
+    script.set_unit_guids(&UnitGuids {
+        player: 1,
+        vehicle: 3,
+        ..Default::default()
+    });
+    script
+        .run(&format!("{} = 'Heal'", HEALED.key(Variant::OtherSelf)))
+        .unwrap();
+    let word = LineWord {
+        recipient: Some(3),
+        ..LineWord::named("HEAL", 75)
+    };
+    let line = PendingCombat {
+        kind: spell_kind(UnitClass::Creature, UnitClass::Me, true).unwrap(),
+        family: HEALED,
+        variant: Variant::OtherSelf,
+        subject: 2,
+        object: 3,
+        fills: Fills {
+            attacker: "Healer".into(),
+            ..Default::default()
+        },
+        named: Named::Ready,
+        tries: 0,
+        word: Some(word),
+    };
+    let log = super::ChatLog::default();
+    script.run("CombatTextSetActiveUnit('player')").unwrap();
+    let events = log.write_combat_now(&script, &line);
+    assert_eq!(events.len(), 1, "the chat line is still delivered");
+
+    script.run("CombatTextSetActiveUnit('vehicle')").unwrap();
+    let events = log.write_combat_now(&script, &line);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].0, "COMBAT_TEXT_UPDATE");
+
+    script.run("CombatTextSetActiveUnit(nil)").unwrap();
+    assert_eq!(log.write_combat_now(&script, &line).len(), 1);
+}
+
 /// `0x625270` raises `HONOR_GAINED` after its line, signed, and not at all when the line's
 /// template is missing (`0x6253ca`-`0x6253ee`).
 #[test]
