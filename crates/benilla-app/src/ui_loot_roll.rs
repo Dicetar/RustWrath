@@ -84,6 +84,7 @@ struct ActiveRoll {
     suffix_factor: u32,
     /// The wire's `countdownTime`, kept whole: `START_LOOT_ROLL`'s `arg2` and the bar's maximum.
     countdown_ms: u32,
+    wrath_options: Option<(u32, u8)>,
     /// Milliseconds left, saturating at 0; the server's resolution closes the roll, not the tick.
     remaining_ms: u32,
     /// How long the roll has waited for its item template.
@@ -144,6 +145,7 @@ impl LootRolls {
             random_property_id: p.random_property_id,
             suffix_factor: p.suffix_factor,
             countdown_ms: p.countdown_ms,
+            wrath_options: p.wrath_options,
             remaining_ms: p.countdown_ms,
             held_ms: 0,
             phase: Phase::Waiting,
@@ -575,6 +577,7 @@ fn snapshot(
                 time_left_ms: r.remaining_ms,
                 item_id: r.item_id,
                 random_property_id: r.random_property_id,
+                wrath_options: r.wrath_options,
                 // `GetLootRollItemLink`, the chat lines' link; `None` until the template answers.
                 link: t.map(|t| {
                     crate::ui_items::item_link_full_in_target(
@@ -712,7 +715,18 @@ impl LootRollSteps<'_> {
     /// the roll closed with the next one promoted (`0x61bf32`-`0x61bf46`); the VM signals the
     /// vote's `CANCEL_LOOT_ROLL` after this returns (`0x61bf2a`). A stale id is dropped.
     pub(crate) fn vote(&mut self, roll_id: u32, roll_type: u8) {
-        match self.rolls.as_deref_mut().and_then(|r| r.vote(roll_id)) {
+        let Some(rolls) = self.rolls.as_deref_mut() else {
+            return;
+        };
+        if rolls.active.iter().any(|roll| {
+            roll.roll_id == roll_id
+                && roll.wrath_options.is_some_and(|(_, mask)| {
+                    roll_type > 3 || mask & (1 << roll_type) == 0
+                })
+        }) {
+            return;
+        }
+        match rolls.vote(roll_id) {
             Some((looted_target, item_slot)) => {
                 debug!("ui_loot_roll: vote {roll_type} on roll {roll_id}");
                 let _ = self.net.0.send(ClientCommand::LootRoll {
@@ -742,6 +756,7 @@ mod tests {
             random_property_id: 0,
             suffix_factor: 0,
             countdown_ms: 60_000,
+            wrath_options: None,
         }
     }
 

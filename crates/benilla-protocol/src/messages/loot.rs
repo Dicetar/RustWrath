@@ -140,6 +140,8 @@ pub struct LootStartRoll {
     pub suffix_factor: u32,
     /// How long the roll stays open, in ms (vmangos: `60_000`, `Group.cpp:67`).
     pub countdown_ms: u32,
+    /// Wrath supplies a stack count and a per-recipient mask (pass, need, greed, disenchant).
+    pub wrath_options: Option<(u32, u8)>,
 }
 
 /// `SMSG_LOOT_ROLL` (`Loot.cpp:53-63`): one player's vote or dice roll, sent to every roller.
@@ -222,6 +224,7 @@ pub(super) fn read_loot_start_roll(r: &mut &[u8]) -> io::Result<LootStartRoll> {
         random_property_id,
         suffix_factor,
         countdown_ms,
+        wrath_options: None,
     })
 }
 
@@ -504,6 +507,7 @@ mod tests {
                     random_property_id: 0,
                     suffix_factor: 0,
                     countdown_ms: 60_000,
+                    wrath_options: None,
                 }
             ),
             other => panic!("expected LootStartRoll, got {}", other.name()),
