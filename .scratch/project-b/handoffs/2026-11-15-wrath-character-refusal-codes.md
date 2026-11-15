@@ -6,11 +6,14 @@ Branch: fix/wrath-character-refusal-codes
 Issue: none
 Next: Include in the owner build and check return to character selection after a refused character login.
 
-The original integration used character-creation bytes for character-login failures.
-The 12340 values in `WowSvcsClient/Types.h` and AzerothCore `ResponseCodes` map
-to the existing glue result indices: no world, duplicate character, no instances,
-disabled, no character, and locked for transfer. Unsupported failures still use the
-generic character-login dialog. The Wrath rename path also distinguishes a taken name
+The character-login wire byte is AzerothCore's `LoginFailureReason`, not a
+`ResponseCodes` value. `SendCharLoginFailed` writes it directly; the 12340
+`ClientConnection::HandleCharacterLoginFailed` handler (`0x006B2070`)
+confirms indices 1–6 and the two additional Wrath lock reasons at 7 and 8.
+The first version of this branch confused internal response codes with wire
+values. The published follow-up preserves wire indices and shows the two
+Wrath lock reasons without changing the donor dialogs. Unsupported failures
+use the generic character-login dialog. The Wrath rename path distinguishes a taken name
 from a generic refusal, and validates a successful reply's GUID and terminated UTF-8
 name before changing the roster. A malformed rename reply keeps selection available.
 

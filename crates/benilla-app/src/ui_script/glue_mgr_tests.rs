@@ -1400,7 +1400,7 @@ fn a_world_status_past_the_table_reads_its_number() {
 fn a_refused_login_maps_its_byte_through_the_references_table() {
     let got: Vec<&str> = [0u8, 1, 2, 3, 4, 5, 6, 7, 0x41, 0xff]
         .into_iter()
-        .map(|b| GLUE_STATUS_KEYS[usize::from(char_login_status(b))])
+        .map(|b| GLUE_STATUS_KEYS[usize::from(char_login_status(b, false))])
         .collect();
     assert_eq!(
         got,
@@ -1417,6 +1417,15 @@ fn a_refused_login_maps_its_byte_through_the_references_table() {
             "CHAR_LOGIN_FAILED",
         ]
     );
+    assert_eq!(
+        status_text(char_login_status(7, true)).0,
+        Text::Key("CHAR_LOGIN_LOCKED_BY_BILLING")
+    );
+    assert_eq!(
+        status_text(char_login_status(8, true)).0,
+        Text::Key("CHAR_LOGIN_LOCKED_BY_MOBILE_AH")
+    );
+    assert_eq!(char_login_status(0x4e, true), STATUS_CHAR_LOGIN_FAILED);
 }
 
 /// The rebuild a refusal comes back to is in state 9 (`0x402075`), where the screen's list ask
@@ -1429,7 +1438,7 @@ fn a_refused_login_takes_state_9_until_its_dialogs_button() {
     settle(&mut m);
     m.park_out.clear();
     m.outbox.clear();
-    m.on_char_login_failed(1);
+    m.on_char_login_failed(1, false);
     assert_eq!(m.state, ScreenState::EnterWorld, "the rebuild sets it");
     m.state = ScreenState::Idle;
     m.take_refusal();
@@ -1467,7 +1476,7 @@ fn a_refused_login_takes_state_9_until_its_dialogs_button() {
 
     // A session lost before the rebuild leaves no refusal for the next glue.
     let mut m = on_select();
-    m.on_char_login_failed(6);
+    m.on_char_login_failed(6, false);
     m.on_disconnected(SessionEnd::Lost, true);
     m.take_refusal();
     settle(&mut m);
