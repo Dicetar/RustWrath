@@ -1,0 +1,9 @@
+# Next bounded implementation: LFG aura expiration bindings
+
+Do not begin until Astra explicitly releases the current compile and sends this assignment. Read current ownership/workflow. Own only crates/benilla-ui/src/script/wrath_natives.rs and a focused test within that file. Preserve existing changes. No Cargo/client/commits/push/delegation. Request additional file ownership if genuinely required; never fabricate data.
+
+Latest runtime run 20261102-210022-913 repeatedly fails LFDFrame.lua:955 because GetLFGDeserterExpiration is absent. Reference D:/Projects/wowdecomp-reference pin e67b6ffef23655dc7da061cb2d36b7963f6ef71a, WoW/Source/Ui/LFGInfo_Scripts.cpp:103 Script_GetLFGDeserterExpiration (0x005580E0): active player -> aura spell71041 -> aura endtime seconds; no values if player/aura absent. Adjacent GetLFGRandomCooldownExpiration uses aura71328; inspect exact binding and implement the pair if both are currently absent. This is real aura-backed behavior, not empty constant stubs.
+
+Existing UI native Wrath aura seam is script/wrath_aura.rs: host::with_host(...unit_auras(guid)), WrathAuraView.expiration Option<f64>, model.unit_guids.player and guid_of. Reuse that authoritative projection and time basis; do not calculate from current query time. Preserve Wrath-only registration and exact zero-return vs nil shape. Unknown expiration must not invent a timestamp. Handle absent player/host and aura removal. Use no cached separate LFG state.
+
+Add at most two focused tests exercising actual binding with the established test host: missing player/aura returns zero values, known aura retains stable expiration and disappears when removed, unrelated aura does not match. Report test names for Astra to run. Reference behavior only, no decompiled implementation copying. Send diff summary and precise unsupported cases; stop when this bounded task is done.
