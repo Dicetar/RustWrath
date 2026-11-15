@@ -30,6 +30,9 @@ for arg in "$@"; do
     esac
 done
 
+# Note paths are given from the top of the checkout, wherever this is run from.
+cd "$(git rev-parse --show-toplevel)"
+
 if [ "$fetch" = 1 ]; then
     git fetch --prune --quiet "$remote" || echo "fetch failed; showing what was last fetched" >&2
 fi
@@ -38,9 +41,16 @@ git rev-parse --verify --quiet "$remote/$base" >/dev/null || {
     exit 1
 }
 
-# The first header line of that name in the note, without the label.
+# The first 20 lines of a note on a branch. The blob is looked up by id rather than as
+# `branch:path`, which Git Bash on Windows rewrites as a path list.
+header() {
+    blob=$(git ls-tree --full-tree "$1" -- "$2" | cut -f1 | cut -d' ' -f3)
+    [ -n "$blob" ] && git cat-file blob "$blob" | sed -n 1,20p
+}
+
+# The first line of that name in a header, without the label.
 field() {
-    git show "$1:$2" 2>/dev/null | sed -n "1,20s/^$3:[[:space:]]*//p" | sed -n 1p
+    printf '%s\n' "$1" | sed -n "s/^$2:[[:space:]]*//p" | sed -n 1p
 }
 
 tab=$(printf '\t')
@@ -65,17 +75,19 @@ git for-each-ref --sort=-committerdate \
             # failing that, the last by name of the notes it touches.
             name=${ref#"$remote"/}
             note=
+            head=
             for candidate in $(git diff --name-only "$remote/$base...$ref" -- "$notes" 2>/dev/null | sort); do
                 note=$candidate
-                [ "$(field "$ref" "$candidate" Branch)" = "$name" ] && break
+                head=$(header "$ref" "$candidate" || true)
+                [ "$(field "$head" Branch)" = "$name" ] && break
             done
             echo "$name"
             echo "  last push  $date  $author: $subject"
             echo "  commits    $ahead ahead of $base, $behind behind"
             if [ -n "$note" ]; then
-                status=$(field "$ref" "$note" Status)
-                owner=$(field "$ref" "$note" Owner)
-                next=$(field "$ref" "$note" Next)
+                status=$(field "$head" Status)
+                owner=$(field "$head" Owner)
+                next=$(field "$head" Next)
                 echo "  note       $note"
                 echo "  status     ${status:-not stated}${owner:+  ($owner)}"
                 [ -n "$next" ] && echo "  next       $next"
