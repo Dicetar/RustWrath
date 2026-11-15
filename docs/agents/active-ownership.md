@@ -4,6 +4,10 @@ Use one accountable owner per ticket, across whichever crates are needed. Perman
 Astra/OC crate partitions are retired. Standing coordination and execution rules are in
 [workflow.md](workflow.md); this file records assignments and resource reservations.
 
+Since 2026-11-15 the status of a task lives in the task note on its branch, and
+`scripts/agent-tasks.sh` lists every branch in flight ([sync](sync.md)). This file keeps what
+cannot travel through the repository: the Cargo and client slots on the workstation.
+
 ## Current assignments to revalidate
 
 Snapshot reconciled on 2026-11-02 from existing reservations and recorded outcomes.
@@ -55,7 +59,8 @@ newer reservation or kill another owner's process to acquire the slot.
   binary. Cargo slot used for one focused run of 19 combat-core cases (all passed) plus the
   binary build, and released; log `.scratch/project-b/test-2026-11-15-claude-souls-er-kit.log`.
   The converter read the owner's local generated tables into the worktree's ignored `out/kits/`
-  (not committed). Not merged; no app build, no client run; nothing in the app loads a kit yet.
+  (not committed). Landed on `main` as `5f770c6b` the same day; no app build, no client run;
+  nothing in the app loads a kit yet.
   Handoff `.scratch/project-b/handoffs/2026-11-15-souls-er-kit.md`.
 
 - 2026-11-14 enemy nameplates (Claude, branch `fix/wrath-nameplate-cvars`, `a676dd6e`): the two

@@ -10,8 +10,10 @@ on 2026-10-31. All agents, including Astra and PC/OC, use this repository for fu
   Project B changes there.
 - `wotlk`: the existing shared development branch. Track `origin/wotlk` after migration.
 - `main`: the intended published baseline. The migration preserved the destination's initial
-  README commit and existing donor/fork history. Publication uses focused branches
-  and pull requests to `main`; do not force-push shared branches.
+  README commit and existing donor/fork history. Publication uses focused task branches
+  that the integrator lands on `main`, by fast-forward or merge, or by pull request when the
+  owner asks for one ([sync](sync.md)); do not force-push shared branches.
+- The repository is public. Branches, task notes and issues are world-readable.
 
 Before committing, inspect HEAD, the index and dirty files. Stage explicit owned paths only.
 Do not stage another agent's unfinished changes or use `git add .`. Fetch before publishing;
