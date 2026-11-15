@@ -14,6 +14,8 @@ The integration includes login and world entry, movement and mover orders,
 transfer recovery, quest log seating and watch changes, solo and group loot,
 local vehicle seat permissions, combat text, Lua errors, chat load timing,
 auction categories, the rune owner fix, and headless command fixture repairs.
+It also takes the server's batched quest marker refreshes, preserves all 128
+Wrath reputation slots, and accepts the 12340 chat filter tables.
 The overlapping UI changes retain the target-specific button text layers, the
 region registry fix, and the installed-font diagnostics. Both the vehicle and
 item limit DBC catalogs load at startup.
