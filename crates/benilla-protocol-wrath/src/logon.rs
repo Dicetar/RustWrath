@@ -61,7 +61,10 @@ pub fn logon(addr: &str, account: &str, password: &str) -> Result<Logon> {
     let server_proof = auth::read_proof_reply(&mut stream).context("reading proof reply")?;
     let session_key = *challenge
         .verify_server_proof(server_proof)
-        .map_err(|e| anyhow::anyhow!("server proof mismatch (wrong password?): {e}"))?
+        .map_err(|e| {
+            anyhow::Error::new(auth::LogonAuthError::Proof(0x04))
+                .context(format!("server proof mismatch (wrong password?): {e}"))
+        })?
         .session_key();
 
     auth::write_realm_list_request(&mut stream).context("requesting realm list")?;
