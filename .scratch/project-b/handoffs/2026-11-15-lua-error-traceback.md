@@ -21,3 +21,8 @@ named chunks and checks that the host retains both locations while Lua
 hears the bare error. Source review traced the event and click dispatches
 through the protected VM call to the launcher's stderr. The live build,
 test execution and MoneyFrame reproduction are pending the owner's batch.
+
+The diagnostics collector associates the continuation with the preceding
+error in the same log stream. Its report and repair tickets retain the
+caller chain. Errors from `RunScript` retain the same caller information
+and their original headline.

@@ -75,6 +75,15 @@ impl Error {
         Error::ExternalError(err.into().into())
     }
 
+    /// The host's file and line chain, when a protected Lua call captured one.
+    pub fn lua_traceback(&self) -> Option<&str> {
+        match self {
+            Error::LuaValue { traceback, .. } if !traceback.is_empty() => Some(traceback),
+            Error::WithContext { cause, .. } => cause.lua_traceback(),
+            _ => None,
+        }
+    }
+
     /// The message Lua sees when this error is raised into it: the text, without mlua's
     /// category words, as a 1.12 C function raises a string.
     pub(crate) fn lua_message(&self) -> String {
@@ -94,9 +103,9 @@ impl fmt::Display for Error {
         match self {
             Error::SyntaxError { message, .. } => write!(f, "syntax error: {message}"),
             Error::RuntimeError(msg) => write!(f, "runtime error: {msg}"),
-            Error::LuaValue { message, traceback, .. } => {
+            Error::LuaValue { message, .. } => {
                 write!(f, "runtime error: {message}")?;
-                if !traceback.is_empty() {
+                if let Some(traceback) = self.lua_traceback() {
                     write!(f, "\nLua traceback: {traceback}")?;
                 }
                 Ok(())
