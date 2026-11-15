@@ -59,7 +59,7 @@ use benilla_wm_native::{
     ActionStatus,
 };
 use benilla_protocol_wrath::gameplay::{self, ServerEvent as WrathGameplayEvent};
-use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
+use benilla_assets::coords::wow_to_bevy;
 use benilla_ui::script::{QuestSlotView, QUEST_LOG_SLOTS};
 use crate::entities::Equipment;
 use crate::items::{Countdowns, ItemObject};
@@ -2548,8 +2548,10 @@ impl Plugin for WrathNetPlugin {
                     .chain()
                     .in_set(WorldStage::Net),
             );
-            // After `WorldStage::Input`, which owns the controller that writes `Player`.
-            app.add_systems(Update, wrath_stream_movement.in_set(WorldStage::Stream));
+            // A second tap pass after `WorldStage::Input`, which owns the controller: the moves and
+            // acks `movement_net::stream_self_movement` wrote this frame reach the outbox this
+            // frame, in the order they were sent, instead of waiting for the next Net stage.
+            app.add_systems(Update, wrath_tap_commands.in_set(WorldStage::Stream));
             // The Wrath VM's rune/calendar model reads the scoped view the same frame the Net
             // stage adopted it, and drains `OpenCalendar()` fetches into the shared command tap.
             app.add_systems(
@@ -4892,17 +4894,130 @@ fn translate_gameplay(
             scope: Some((map_id, zone_id)),
             states,
         }],
-        WrathGameplayEvent::ForceRunSpeedChange {
+        WrathGameplayEvent::ForceSpeedChange {
+            kind,
             guid,
             counter,
             speed,
-        } => vec![SessionEvent::ForceSpeedChange {
-            kind: benilla_protocol::messages::SpeedKind::Run,
+        } => match wrath_speed_kind(kind) {
+            Some(kind) => vec![SessionEvent::ForceSpeedChange {
+                guid,
+                kind,
+                counter,
+                speed,
+            }],
+            None => {
+                // Unsupported: the shared mover has no flight or pitch speed to apply, and an ack
+                // for a speed we never use would tell the server something false.
+                warn!(?kind, guid, speed, "wrath: forced speed has no mover owner; not acked");
+                Vec::new()
+            }
+        },
+        WrathGameplayEvent::SpeedChanged { kind, guid, speed } => match wrath_speed_kind(kind) {
+            Some(kind) => vec![SessionEvent::SpeedChanged { guid, kind, speed }],
+            None => {
+                debug!(?kind, guid, speed, "wrath: unit speed has no motion owner");
+                Vec::new()
+            }
+        },
+        WrathGameplayEvent::MoveMode {
+            mode,
+            apply,
             guid,
             counter,
-            speed,
+        } => match wrath_move_mode(mode) {
+            Some(mode) => vec![SessionEvent::MoveMode {
+                guid,
+                counter,
+                mode,
+                apply,
+            }],
+            None => {
+                // Unsupported: CanFly and gravity need the flight controller the shared mover
+                // lacks, so the order is neither applied nor acked.
+                warn!(?mode, apply, guid, "wrath: move mode has no mover owner; not acked");
+                Vec::new()
+            }
+        },
+        WrathGameplayEvent::SplineMoveMode { mode, apply, guid } => {
+            match wrath_spline_mode(mode) {
+                Some(mode) => vec![SessionEvent::SplineMoveMode { guid, mode, apply }],
+                None => {
+                    debug!(?mode, apply, guid, "wrath: spline mode has no motion owner");
+                    Vec::new()
+                }
+            }
+        }
+        WrathGameplayEvent::KnockBack {
+            guid,
+            counter,
+            cos_angle,
+            sin_angle,
+            xy_speed,
+            z_speed_down,
+        } => vec![SessionEvent::KnockBack {
+            guid,
+            counter,
+            launch: benilla_protocol::messages::JumpInfo {
+                zspeed: z_speed_down,
+                cos_angle,
+                sin_angle,
+                xy_speed,
+            },
         }],
+        WrathGameplayEvent::ClientControl { guid, allow_move } => {
+            vec![SessionEvent::ClientControl {
+                mover: guid,
+                allow_move,
+            }]
+        }
     }
+}
+
+/// The shared mover's speed for a Wrath kind; `None` for flight, flight-back and pitch rate,
+/// which the shared mover does not model.
+fn wrath_speed_kind(kind: gameplay::SpeedKind) -> Option<benilla_protocol::messages::SpeedKind> {
+    use benilla_protocol::messages::SpeedKind as Shared;
+    use gameplay::SpeedKind as Wrath;
+    Some(match kind {
+        Wrath::Walk => Shared::Walk,
+        Wrath::Run => Shared::Run,
+        Wrath::RunBack => Shared::RunBack,
+        Wrath::Swim => Shared::Swim,
+        Wrath::SwimBack => Shared::SwimBack,
+        Wrath::TurnRate => Shared::TurnRate,
+        Wrath::Flight | Wrath::FlightBack | Wrath::PitchRate => return None,
+    })
+}
+
+/// The shared mode for a Wrath mover order; `None` for CanFly and gravity.
+fn wrath_move_mode(mode: gameplay::MoveMode) -> Option<benilla_protocol::messages::MoveMode> {
+    use benilla_protocol::messages::MoveMode as Shared;
+    use gameplay::MoveMode as Wrath;
+    Some(match mode {
+        Wrath::Root => Shared::Root,
+        Wrath::WaterWalk => Shared::WaterWalk,
+        Wrath::FeatherFall => Shared::FeatherFall,
+        Wrath::Hover => Shared::Hover,
+        Wrath::CanFly | Wrath::GravityDisabled => return None,
+    })
+}
+
+/// The shared mode for a Wrath unit broadcast; `None` for flying and gravity.
+fn wrath_spline_mode(
+    mode: gameplay::SplineMode,
+) -> Option<benilla_protocol::messages::SplineMode> {
+    use benilla_protocol::messages::SplineMode as Shared;
+    use gameplay::SplineMode as Wrath;
+    Some(match mode {
+        Wrath::Root => Shared::Root,
+        Wrath::WaterWalk => Shared::WaterWalk,
+        Wrath::FeatherFall => Shared::FeatherFall,
+        Wrath::Hover => Shared::Hover,
+        Wrath::WalkMode => Shared::WalkMode,
+        Wrath::Swimming => Shared::Swimming,
+        Wrath::Flying | Wrath::GravityDisabled => return None,
+    })
 }
 
 fn wrath_group_member_flags(sub_group: u8, member_flags: u8) -> u8 {
@@ -5432,9 +5547,13 @@ fn wrath_tap_commands(
     mut view: ResMut<WrathWorldView>,
     input: ResMut<WrathInput>,
     trace: Option<Res<crate::quest_trace::Source>>,
+    player: Option<Res<crate::player::Player>>,
 ) {
     let Some(mut tap) = tap else { return };
     let Some(receiver) = tap.0.as_mut() else { return };
+    // One reading for the pass: every `MovementInfo` written below carries the clock the
+    // time-sync reply reports ([`wrath_client_ms`]).
+    let now_ms = wrath_client_ms();
     while let Ok(raw_command) = receiver.try_recv() {
         // Unwrap the shared transport-identity envelope exactly once before matching the inner
         // command. Its trace and scope flag are carried alongside the existing per-variant traces.
@@ -5442,6 +5561,42 @@ fn wrath_tap_commands(
             ClientCommand::Tracked { trace, enforce_scope, command } => (trace, enforce_scope, true, *command),
             other => (None, false, false, other),
         };
+        // Self-movement is replaceable motion with its own admission rule, not an action.
+        if let ClientCommand::Move {
+            kind,
+            flags,
+            pos,
+            orientation,
+            pitch,
+            fall_time,
+            jump,
+            transport,
+        } = command
+        {
+            // 12340 names the mover in every move (`MovementHandler.cpp` drops one whose guid is
+            // not the session's mover); the shared command carries none, as 1.12's do not.
+            let mover = player
+                .as_ref()
+                .and_then(|p| p.foreign_mover)
+                .unwrap_or(view.player_guid);
+            if mover == 0 {
+                continue;
+            }
+            let (opcode, payload) = wrath_move_packet(
+                mover,
+                now_ms,
+                kind,
+                flags,
+                pos,
+                orientation,
+                pitch,
+                fall_time,
+                jump,
+                transport,
+            );
+            admit_wrath_movement(&input, opcode, payload, trace.as_deref());
+            continue;
+        }
         let opening = matches!(&command, ClientCommand::GossipHello { .. } | ClientCommand::QuestgiverHello { .. } | ClientCommand::QuestgiverOpenTracked { .. });
         let scope = Some((view.session_epoch, view.world_generation));
         let cmd_trace = match &command {
@@ -7203,7 +7358,7 @@ fn wrath_tap_commands(
                         counter,
                         speed,
                         wrath_move_flags(flags),
-                        0,
+                        now_ms,
                         pos,
                         orientation,
                         pitch,
@@ -7247,7 +7402,7 @@ fn wrath_tap_commands(
                         counter,
                         apply,
                         wrath_move_flags(flags),
-                        0,
+                        now_ms,
                         pos,
                         orientation,
                     ),
@@ -7267,7 +7422,7 @@ fn wrath_tap_commands(
                     guid,
                     counter,
                     wrath_move_flags(flags),
-                    0,
+                    now_ms,
                     pos,
                     orientation,
                     (launch.zspeed, launch.sin_angle, launch.cos_angle, launch.xy_speed),
@@ -7281,7 +7436,7 @@ fn wrath_tap_commands(
                 spline_id,
             } => Some((
                 u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_SPLINE_DONE),
-                gameplay::move_spline_done(wrath_move_flags(flags), 0, pos, orientation, spline_id),
+                gameplay::move_spline_done(wrath_move_flags(flags), now_ms, pos, orientation, spline_id),
             )),
             ClientCommand::NotActiveMover {
                 guid,
@@ -7294,7 +7449,7 @@ fn wrath_tap_commands(
                 gameplay::not_active_mover(
                     guid,
                     wrath_move_flags(flags),
-                    0,
+                    now_ms,
                     pos,
                     orientation,
                     fall_time,
@@ -10639,15 +10794,6 @@ fn default_speeds() -> MoveSpeeds {
     }
 }
 
-#[derive(Default)]
-struct WrathMoveLocal {
-    started: Option<std::time::Instant>,
-    flags: Option<u32>,
-    pos: Option<[f32; 3]>,
-    facing: Option<f32>,
-    last_send: Option<std::time::Instant>,
-}
-
 const W_FLAG_FORWARD: u32 = 0x1;
 const W_FLAG_BACKWARD: u32 = 0x2;
 const W_FLAG_STRAFE_LEFT: u32 = 0x4;
@@ -10663,8 +10809,6 @@ const W_FLAG_ROOT: u32 = 0x800;
 /// `MOVEMENTFLAG_FALLING_FAR`.
 const W_FLAG_FALLING: u32 = 0x1000;
 const W_FLAG_FALLING_FAR: u32 = 0x2000;
-/// 12340 `MOVEMENTFLAG_SWIMMING`, the same numeric bit as 1.12's.
-const W_FLAG_SWIMMING: u32 = 0x20_0000;
 
 /// The shared 1.12 controller's movement bits in 12340 placement. Only the meanings that moved
 /// are rewritten: ROOT, FALLING/FALLING_FAR and ON_TRANSPORT; walking, steering, swimming,
@@ -10690,153 +10834,137 @@ fn wrath_move_flags(flags: u32) -> u32 {
     out
 }
 
-/// Stream the shared `Player` controller's pose onto the Wrath session. The existing action/input
-/// path remains the source of motion; this adapter only chooses the Wrath opcode for the edge and
-/// writes the 3.3.5 `MovementInfo` fields the server reads.
-fn wrath_stream_movement(
-    player: Option<Res<crate::player::Player>>,
-    self_guid: Option<Res<SelfGuid>>,
-    input: Option<Res<WrathInput>>,
-    mut local: Local<WrathMoveLocal>,
-    trace: Option<Res<crate::quest_trace::Source>>,
+/// The client's millisecond clock: one monotonic reading for the time in every outbound
+/// `MovementInfo` and for the `CMSG_TIME_SYNC_RESP` answer. 12340 answers the sync with the move
+/// event's own time (`CMovement_C::SendTimeSyncResp`, `0x006E9BB0`), and the server adds the delta
+/// it derives from that answer to each move's time, so the two readings must share a clock.
+fn wrath_client_ms() -> u32 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    // Truncation is the wrap of a 32-bit millisecond clock, after 49.7 days.
+    START.get_or_init(Instant::now).elapsed().as_millis() as u32
+}
+
+/// The 12340 opcode of one shared self-movement message. The `MSG_MOVE_*` numbers did not move
+/// between 1.12 and 3.3.5a; the table is explicit so the Wrath wire does not lean on that.
+fn wrath_move_opcode(kind: crate::net::MoveKind) -> u32 {
+    use crate::net::MoveKind;
+    use benilla_protocol_wrath::opcode as op;
+    match kind {
+        MoveKind::StartForward => op::MSG_MOVE_START_FORWARD,
+        MoveKind::StartBackward => op::MSG_MOVE_START_BACKWARD,
+        MoveKind::Stop => op::MSG_MOVE_STOP,
+        MoveKind::StartStrafeLeft => op::MSG_MOVE_START_STRAFE_LEFT,
+        MoveKind::StartStrafeRight => op::MSG_MOVE_START_STRAFE_RIGHT,
+        MoveKind::StopStrafe => op::MSG_MOVE_STOP_STRAFE,
+        MoveKind::StartTurnLeft => op::MSG_MOVE_START_TURN_LEFT,
+        MoveKind::StartTurnRight => op::MSG_MOVE_START_TURN_RIGHT,
+        MoveKind::StopTurn => op::MSG_MOVE_STOP_TURN,
+        MoveKind::Jump => op::MSG_MOVE_JUMP,
+        MoveKind::FallLand => op::MSG_MOVE_FALL_LAND,
+        MoveKind::StartSwim => u32::from(op::MSG_MOVE_START_SWIM),
+        MoveKind::StopSwim => u32::from(op::MSG_MOVE_STOP_SWIM),
+        MoveKind::StartPitchUp => op::MSG_MOVE_START_PITCH_UP,
+        MoveKind::StartPitchDown => op::MSG_MOVE_START_PITCH_DOWN,
+        MoveKind::StopPitch => op::MSG_MOVE_STOP_PITCH,
+        MoveKind::SetWalkMode => u32::from(op::MSG_MOVE_SET_WALK_MODE),
+        MoveKind::SetRunMode => u32::from(op::MSG_MOVE_SET_RUN_MODE),
+        MoveKind::SetFacing => op::MSG_MOVE_SET_FACING,
+        MoveKind::SetPitch => u32::from(op::MSG_MOVE_SET_PITCH),
+        MoveKind::Heartbeat => op::MSG_MOVE_HEARTBEAT,
+    }
+}
+
+/// One self-movement message of the shared streamer (`movement_net::stream_self_movement`) in
+/// 12340 form: the mover's packed guid, then the `MovementInfo`. The streamer owns which message
+/// goes out and when; this only re-places the flags and writes the 3.3.5 layout.
+///
+/// A tail travels with its flag. The streamer supplies the jump tail on every airborne message
+/// and the deck pose on every boarded one; `gameplay::write_movement_info` clears a flag that
+/// arrives without its tail, because the server parses whatever tail the flag announces.
+#[allow(clippy::too_many_arguments)]
+fn wrath_move_packet(
+    mover: u64,
+    time_ms: u32,
+    kind: crate::net::MoveKind,
+    flags: u32,
+    pos: [f32; 3],
+    orientation: f32,
+    pitch: f32,
+    fall_time: u32,
+    jump: Option<benilla_protocol::JumpInfo>,
+    transport: Option<benilla_protocol::TransportPose>,
+) -> (u32, Vec<u8>) {
+    let mut payload = enc_pack_guid(mover);
+    gameplay::write_movement_info(
+        &mut payload,
+        wrath_move_flags(flags),
+        time_ms,
+        pos,
+        orientation,
+        pitch,
+        fall_time,
+        jump.map(|j| (j.zspeed, j.sin_angle, j.cos_angle, j.xy_speed)),
+        transport.map(|t| (t.guid, [t.pos.x, t.pos.y, t.pos.z], t.orientation, 0)),
+    );
+    (wrath_move_opcode(kind), payload)
+}
+
+/// Whether a queued move reports a pose and nothing else, so a later move replaces it whole. The
+/// edges do not qualify: the server acts on the landing (`HandleFall`), the jump and the swim
+/// start by their opcode.
+fn wrath_move_is_pose_only(opcode: u32) -> bool {
+    use benilla_protocol_wrath::opcode as op;
+    opcode == op::MSG_MOVE_HEARTBEAT
+        || opcode == op::MSG_MOVE_SET_FACING
+        || opcode == u32::from(op::MSG_MOVE_SET_PITCH)
+}
+
+/// Admits one replaceable motion entry. At [`WRATH_MOVEMENT_QUEUE_CAP`] it evicts a queued move
+/// first, the oldest pose report if there is one and the oldest edge otherwise: each move carries
+/// the whole flags word and pose, so a newer one supersedes it. A queue full of real actions
+/// refuses the move instead of letting movement drop a cast, quest, loot or logout command.
+fn admit_wrath_movement(
+    input: &WrathInput,
+    opcode: u32,
+    payload: Vec<u8>,
+    trace: Option<&crate::quest_trace::Source>,
 ) {
-    let Some(player) = player else {
-        local.flags = None;
-        return;
-    };
-    let Some(input) = input else { return };
-    let Some(guid) = self_guid.as_ref().and_then(|g| g.0) else {
-        local.flags = None;
-        return;
-    };
-    if !player.active || player.detached || player.control_lost || player.settling {
-        return;
-    }
-    let flags = wrath_move_flags(player.move_flags());
-    if flags & W_FLAG_ONTRANSPORT != 0 {
-        // Transport-local movement needs the transport block; the first route is on foot.
-        return;
-    }
-    let pos = bevy_to_wow(player.pos);
-    let facing = player.facing().rem_euclid(std::f32::consts::TAU);
-    let now = std::time::Instant::now();
-    let started = *local.started.get_or_insert(now);
-    let prev_flags = local.flags.replace(flags);
-    let changed = prev_flags != Some(flags);
-    let moved = local.pos.replace(pos) != Some(pos);
-    let turned = local.facing.replace(facing) != Some(facing);
-    // The pose does not stream per frame: the reference's mover sends a `MSG_MOVE_*` per axis
-    // transition, a `SET_FACING` for a standing turn, and a 500 ms heartbeat while moving (the
-    // 1.12 `stream_self_movement` cadence). A per-frame pose packet floods the server with
-    // heartbeats, whose rate check then rejects the stream.
-    let in_motion = flags
-        & (W_FLAG_FORWARD
-            | W_FLAG_BACKWARD
-            | W_FLAG_STRAFE_LEFT
-            | W_FLAG_STRAFE_RIGHT
-            | W_FLAG_TURN_LEFT
-            | W_FLAG_TURN_RIGHT
-            | W_FLAG_FALLING)
-        != 0;
-    let heartbeat_due = local
-        .last_send
-        .is_none_or(|at| now.duration_since(at) >= Duration::from_millis(500));
-    if !changed && !(in_motion && heartbeat_due) && !(!in_motion && (moved || turned)) {
-        return;
-    }
-    let fall_edge = |was: Option<u32>, now: u32| {
-        let was = was.unwrap_or(0) & W_FLAG_FALLING != 0;
-        let is = now & W_FLAG_FALLING != 0;
-        (was, is)
-    };
-    let (was_falling, is_falling) = fall_edge(prev_flags, flags);
-    let opcode = if !was_falling && is_falling {
-        Some(benilla_protocol_wrath::opcode::MSG_MOVE_JUMP)
-    } else if was_falling && !is_falling {
-        Some(benilla_protocol_wrath::opcode::MSG_MOVE_FALL_LAND)
-    } else {
-        let delta = prev_flags.unwrap_or(0) ^ flags;
-        Some(if delta & (W_FLAG_STRAFE_LEFT | W_FLAG_STRAFE_RIGHT) != 0 {
-            if flags & W_FLAG_STRAFE_LEFT != 0 {
-                benilla_protocol_wrath::opcode::MSG_MOVE_START_STRAFE_LEFT
-            } else if flags & W_FLAG_STRAFE_RIGHT != 0 {
-                benilla_protocol_wrath::opcode::MSG_MOVE_START_STRAFE_RIGHT
-            } else {
-                benilla_protocol_wrath::opcode::MSG_MOVE_STOP_STRAFE
-            }
-        } else if delta & (W_FLAG_TURN_LEFT | W_FLAG_TURN_RIGHT) != 0 {
-            if flags & W_FLAG_TURN_LEFT != 0 {
-                benilla_protocol_wrath::opcode::MSG_MOVE_START_TURN_LEFT
-            } else if flags & W_FLAG_TURN_RIGHT != 0 {
-                benilla_protocol_wrath::opcode::MSG_MOVE_START_TURN_RIGHT
-            } else {
-                benilla_protocol_wrath::opcode::MSG_MOVE_STOP_TURN
-            }
-        } else if delta & (W_FLAG_FORWARD | W_FLAG_BACKWARD) != 0 {
-            if flags & W_FLAG_FORWARD != 0 {
-                benilla_protocol_wrath::opcode::MSG_MOVE_START_FORWARD
-            } else if flags & W_FLAG_BACKWARD != 0 {
-                benilla_protocol_wrath::opcode::MSG_MOVE_START_BACKWARD
-            } else {
-                benilla_protocol_wrath::opcode::MSG_MOVE_STOP
-            }
-        } else if turned && !in_motion {
-            // A standing turn rides `SET_FACING`, as the reference's broadcaster sends it.
-            benilla_protocol_wrath::opcode::MSG_MOVE_SET_FACING
-        } else {
-            benilla_protocol_wrath::opcode::MSG_MOVE_HEARTBEAT
-        })
-    };
-    let Some(opcode) = opcode else { return };
-    let mut payload = enc_pack_guid(guid);
-    payload.extend_from_slice(&flags.to_le_bytes());
-    payload.extend_from_slice(&0u16.to_le_bytes()); // movement flags 2
-    let time = now.duration_since(started).as_millis() as u32;
-    payload.extend_from_slice(&time.to_le_bytes());
-    payload.extend_from_slice(&pos[0].to_le_bytes());
-    payload.extend_from_slice(&pos[1].to_le_bytes());
-    payload.extend_from_slice(&pos[2].to_le_bytes());
-    payload.extend_from_slice(&facing.to_le_bytes());
-    if flags & W_FLAG_SWIMMING != 0 {
-        payload.extend_from_slice(&0f32.to_le_bytes()); // pitch
-    }
-    payload.extend_from_slice(&0u32.to_le_bytes()); // fall time
-    if flags & W_FLAG_FALLING != 0 {
-        payload.extend_from_slice(&[0u8; 16]); // zspeed, sin, cos, xyspeed
-    }
-    if let Ok(mut queue) = input.0.lock() {
-        if queue.len() >= WRATH_MOVEMENT_QUEUE_CAP {
-            // Evict only replaceable motion. A queue full of real actions refuses this pose
-            // instead of letting movement drop a cast, quest, loot or logout command.
-            let Some(oldest_motion) = queue.iter().position(|entry| entry.movement) else {
-                if let Some(trace) = &trace {
-                    trace.note_movement_refused();
-                }
-                return;
-            };
-            let _ = queue.remove(oldest_motion);
-            if let Some(trace) = &trace {
-                trace.note_movement_coalesced();
-            }
+    let Ok(mut queue) = input.0.lock() else {
+        if let Some(trace) = trace {
+            trace.note_movement_refused();
         }
-        if let Some(trace) = &trace {
-            trace.note_movement_admitted();
+        return;
+    };
+    if queue.len() >= WRATH_MOVEMENT_QUEUE_CAP {
+        let evict = queue
+            .iter()
+            .position(|entry| entry.movement && wrath_move_is_pose_only(entry.opcode))
+            .or_else(|| queue.iter().position(|entry| entry.movement));
+        let Some(evict) = evict else {
+            if let Some(trace) = trace {
+                trace.note_movement_refused();
+            }
+            return;
+        };
+        let _ = queue.remove(evict);
+        if let Some(trace) = trace {
+            trace.note_movement_coalesced();
         }
-        let movement_seq = trace.as_ref().map(|t| t.mint_movement_sequence());
-        queue.push_back(WrathOutbound {
-            opcode,
-            payload,
-            movement: true,
-            movement_seq,
-            enqueued_at: Some(std::time::Instant::now()),
-            receipt: None,
-            trace: None,
-            enforce_scope: false,
-        });
-    } else if let Some(trace) = &trace {
-        trace.note_movement_refused();
     }
-    local.last_send = Some(now);
+    if let Some(trace) = trace {
+        trace.note_movement_admitted();
+    }
+    let movement_seq = trace.map(|t| t.mint_movement_sequence());
+    queue.push_back(WrathOutbound {
+        opcode,
+        payload,
+        movement: true,
+        movement_seq,
+        enqueued_at: Some(Instant::now()),
+        receipt: None,
+        trace: None,
+        enforce_scope: false,
+    });
 }
 
 fn object_type_mask(kind: ObjectType) -> u32 {
@@ -12392,10 +12520,12 @@ pub fn run_session_with_cancel(
                     }
                 }
                 if p.opcode == 0x390 {
-                    // time sync: answer to keep the session healthy
+                    // `SMSG_TIME_SYNC_REQ`: echo the counter with the clock the moves are stamped
+                    // on. The server derives its clock delta from this reading and adds it to
+                    // every move's time (`MovementHandler.cpp` `HandleTimeSyncResp`).
                     if p.payload.len() >= 4 {
                         let mut resp = p.payload[0..4].to_vec();
-                        resp.extend_from_slice(&0u32.to_le_bytes());
+                        resp.extend_from_slice(&wrath_client_ms().to_le_bytes());
                         world.send(0x391, &resp)?;
                     }
                 }
@@ -13300,7 +13430,7 @@ mod command_tap_tests {
 
         let _ = world.run_system_once(wrath_tap_commands);
         let sent: Vec<_> = outbox.lock().unwrap().drain(..).collect();
-        assert_eq!(sent.len(), 6, "Move is not duplicated by the tap");
+        assert_eq!(sent.len(), 7, "the tap carries the shared streamer's move as well");
         assert_eq!(sent[0].opcode, benilla_protocol_wrath::opcode::CMSG_SET_SELECTION);
         assert_eq!(sent[1].opcode, benilla_protocol_wrath::opcode::CMSG_ATTACKSWING);
         assert_eq!(sent[2].opcode, benilla_protocol_wrath::opcode::CMSG_CAST_SPELL);
@@ -13311,6 +13441,203 @@ mod command_tap_tests {
         assert_eq!(sent[4].opcode, benilla_protocol_wrath::opcode::CMSG_QUESTGIVER_ACCEPT_QUEST);
         assert_eq!(sent[4].payload.len(), 16);
         assert_eq!(sent[5].opcode, benilla_protocol_wrath::opcode::CMSG_LOOT);
+        // The move is replaceable motion addressed to the session's mover (`view` names guid 1):
+        // its packed guid, then a 30-byte `MovementInfo` with no optional tail.
+        assert_eq!(sent[6].opcode, benilla_protocol_wrath::opcode::MSG_MOVE_HEARTBEAT);
+        assert!(sent[6].movement);
+        assert!(sent[..6].iter().all(|entry| !entry.movement));
+        assert_eq!(sent[6].payload[..2], [0x01, 0x01]);
+        assert_eq!(sent[6].payload.len(), 2 + 30);
+    }
+
+    /// The `MovementInfo` of a move for mover guid 1, past its two-byte packed guid.
+    fn move_body(
+        kind: crate::net::MoveKind,
+        flags: u32,
+        pitch: f32,
+        fall_time: u32,
+        jump: Option<benilla_protocol::JumpInfo>,
+        transport: Option<benilla_protocol::TransportPose>,
+    ) -> (u32, Vec<u8>) {
+        let (opcode, payload) = wrath_move_packet(
+            1,
+            1000,
+            kind,
+            flags,
+            [1.0, 2.0, 3.0],
+            0.5,
+            pitch,
+            fall_time,
+            jump,
+            transport,
+        );
+        assert_eq!(payload[..2], [0x01, 0x01]);
+        (opcode, payload[2..].to_vec())
+    }
+
+    fn u32_at(body: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(body[at..at + 4].try_into().unwrap())
+    }
+
+    fn f32_at(body: &[u8], at: usize) -> f32 {
+        f32::from_le_bytes(body[at..at + 4].try_into().unwrap())
+    }
+
+    /// An airborne move reports how long the fall has run and the launch it follows. The server
+    /// keeps the fall's origin only while the reported fall time grows
+    /// (`Player::UpdateFallInformationIfNeed`), so a zero here cancels fall damage.
+    #[test]
+    fn an_airborne_move_carries_the_fall_time_and_the_jump_tail() {
+        let jump = benilla_protocol::JumpInfo {
+            zspeed: -7.955547,
+            cos_angle: 0.5,
+            sin_angle: 0.25,
+            xy_speed: 7.0,
+        };
+        // 1.12 FORWARD | FALLING.
+        let (opcode, body) =
+            move_body(crate::net::MoveKind::Heartbeat, 0x1 | 0x2000, 0.0, 321, Some(jump), None);
+        assert_eq!(opcode, benilla_protocol_wrath::opcode::MSG_MOVE_HEARTBEAT);
+        assert_eq!(u32_at(&body, 0), 0x1001, "12340 FORWARD | FALLING");
+        assert_eq!(u32_at(&body, 6), 1000, "the client clock");
+        assert_eq!(f32_at(&body, 22), 0.5, "orientation");
+        assert_eq!(u32_at(&body, 26), 321, "fall time");
+        // 12340 order: zspeed, sinAngle, cosAngle, xyspeed.
+        assert_eq!(f32_at(&body, 30), -7.955547);
+        assert_eq!(f32_at(&body, 34), 0.25);
+        assert_eq!(f32_at(&body, 38), 0.5);
+        assert_eq!(f32_at(&body, 42), 7.0);
+        assert_eq!(body.len(), 46);
+    }
+
+    #[test]
+    fn a_swimming_move_carries_the_pitch() {
+        let (_, body) =
+            move_body(crate::net::MoveKind::SetPitch, 0x1 | 0x20_0000, -0.4, 0, None, None);
+        assert_eq!(u32_at(&body, 0), 0x20_0001);
+        assert_eq!(f32_at(&body, 26), -0.4, "pitch precedes the fall time");
+        assert_eq!(u32_at(&body, 30), 0);
+        assert_eq!(body.len(), 34);
+    }
+
+    /// A boarded move carries the deck pose under 12340's transport bit. The 1.12 bit must not
+    /// survive: `0x02000000` is `MOVEMENTFLAG_FLYING` in 12340 and announces a pitch.
+    #[test]
+    fn a_boarded_move_carries_the_transport_block() {
+        let deck = benilla_protocol::TransportPose {
+            guid: 0x05,
+            pos: benilla_protocol::wire::Vector3d { x: 4.0, y: 5.0, z: 6.0 },
+            orientation: 1.5,
+        };
+        let (_, body) =
+            move_body(crate::net::MoveKind::Heartbeat, 0x0200_0000, 0.0, 0, None, Some(deck));
+        assert_eq!(u32_at(&body, 0), 0x200);
+        assert_eq!(body[26..28], [0x01, 0x05], "the transport's packed guid");
+        assert_eq!(f32_at(&body, 28), 4.0);
+        assert_eq!(f32_at(&body, 40), 1.5, "facing in the deck's frame");
+        assert_eq!(body[48], 0xFF, "a deck is no vehicle seat");
+        // Packed guid 2, pose 16, transport time 4, seat 1, then the fall time.
+        assert_eq!(body.len(), 26 + 23 + 4);
+    }
+
+    /// The server reads whatever tail a flag announces, so a flag that arrives without its tail
+    /// is not sent.
+    #[test]
+    fn a_flag_without_its_tail_is_cleared() {
+        let (_, body) =
+            move_body(crate::net::MoveKind::Heartbeat, 0x2000 | 0x0200_0000, 0.0, 0, None, None);
+        assert_eq!(u32_at(&body, 0), 0);
+        assert_eq!(body.len(), 30);
+    }
+
+    /// The opcode numbers are AzerothCore's `Opcodes.h`, written out so the table is checked
+    /// against the server and not against the constants it is built from.
+    #[test]
+    fn each_shared_move_has_its_12340_opcode() {
+        use crate::net::MoveKind;
+        for (kind, opcode) in [
+            (MoveKind::StartForward, 0x0B5),
+            (MoveKind::StartBackward, 0x0B6),
+            (MoveKind::Stop, 0x0B7),
+            (MoveKind::StartStrafeLeft, 0x0B8),
+            (MoveKind::StartStrafeRight, 0x0B9),
+            (MoveKind::StopStrafe, 0x0BA),
+            (MoveKind::Jump, 0x0BB),
+            (MoveKind::StartTurnLeft, 0x0BC),
+            (MoveKind::StartTurnRight, 0x0BD),
+            (MoveKind::StopTurn, 0x0BE),
+            (MoveKind::StartPitchUp, 0x0BF),
+            (MoveKind::StartPitchDown, 0x0C0),
+            (MoveKind::StopPitch, 0x0C1),
+            (MoveKind::SetRunMode, 0x0C2),
+            (MoveKind::SetWalkMode, 0x0C3),
+            (MoveKind::FallLand, 0x0C9),
+            (MoveKind::StartSwim, 0x0CA),
+            (MoveKind::StopSwim, 0x0CB),
+            (MoveKind::SetFacing, 0x0DA),
+            (MoveKind::SetPitch, 0x0DB),
+            (MoveKind::Heartbeat, 0x0EE),
+        ] {
+            assert_eq!(wrath_move_opcode(kind), opcode, "{kind:?}");
+        }
+    }
+
+    fn queued(opcode: u32, movement: bool) -> WrathOutbound {
+        WrathOutbound {
+            opcode,
+            payload: Vec::new(),
+            movement,
+            movement_seq: None,
+            enqueued_at: None,
+            receipt: None,
+            trace: None,
+            enforce_scope: false,
+        }
+    }
+
+    /// Under pressure a move displaces a queued pose report first, then a queued edge, and
+    /// never an action; a queue of actions alone refuses it.
+    #[test]
+    fn a_move_under_pressure_displaces_motion_and_never_an_action() {
+        use benilla_protocol_wrath::opcode as op;
+        let outbox: WrathOutbox = Arc::new(Mutex::new(VecDeque::new()));
+        let fill_with_actions = |outbox: &WrathOutbox| {
+            let mut queue = outbox.lock().unwrap();
+            while queue.len() < WRATH_MOVEMENT_QUEUE_CAP {
+                queue.push_back(queued(op::CMSG_ATTACKSWING, false));
+            }
+        };
+        let moves = |outbox: &WrathOutbox| -> Vec<u32> {
+            let queue = outbox.lock().unwrap();
+            assert_eq!(queue.len(), WRATH_MOVEMENT_QUEUE_CAP);
+            queue.iter().filter(|entry| entry.movement).map(|entry| entry.opcode).collect()
+        };
+        {
+            let mut queue = outbox.lock().unwrap();
+            queue.push_back(queued(op::MSG_MOVE_JUMP, true));
+            queue.push_back(queued(op::MSG_MOVE_HEARTBEAT, true));
+        }
+        fill_with_actions(&outbox);
+        let input = WrathInput(Arc::clone(&outbox));
+
+        admit_wrath_movement(&input, op::MSG_MOVE_FALL_LAND, Vec::new(), None);
+        assert_eq!(
+            moves(&outbox),
+            [op::MSG_MOVE_JUMP, op::MSG_MOVE_FALL_LAND],
+            "the pose report went first"
+        );
+
+        admit_wrath_movement(&input, op::MSG_MOVE_START_FORWARD, Vec::new(), None);
+        assert_eq!(
+            moves(&outbox),
+            [op::MSG_MOVE_FALL_LAND, op::MSG_MOVE_START_FORWARD],
+            "then the oldest edge"
+        );
+
+        outbox.lock().unwrap().retain(|entry| !entry.movement);
+        fill_with_actions(&outbox);
+        admit_wrath_movement(&input, op::MSG_MOVE_HEARTBEAT, Vec::new(), None);
+        assert!(moves(&outbox).is_empty(), "a queue of actions refuses the move");
     }
 
     /// `OpenCalendar()` is the real empty `CMSG_CALENDAR_GET_CALENDAR`; a request written under a

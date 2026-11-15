@@ -988,8 +988,9 @@ pub(super) fn control(
 // host) hands the controller one *proposal* per tick. [`evaluate_movement_intent`] decides whether
 // the proposal is inside the contract this controller owns; an accepted [`MovementCorrection`]
 // carries only a position delta, a velocity, a facing and the delegated steering flags. Nothing
-// here sends a packet: [`wrath_stream_movement`] and `movement_net::stream_self_movement` remain
-// the only movement writers, and the server-correction path in `wire_in` runs ahead of all of it.
+// here sends a packet: `movement_net::stream_self_movement` remains the only movement writer (the
+// Wrath command tap puts its messages on the 12340 wire), and the server-correction path in
+// `wire_in` runs ahead of all of it.
 //
 // The processor is an optional resource. When it is absent the controller behaves exactly as
 // before: `Disabled` is the default and no proposal is ever consulted.

@@ -1114,8 +1114,8 @@ pub enum MovementRefusal {
     Facing(f32),
     /// The proposal set a move-flag bit the seam does not delegate.
     Flags(u32),
-    /// The proposal asked the host to emit a movement opcode. `wrath_stream_movement` remains the
-    /// sole wire writer, so this is refused rather than forwarded.
+    /// The proposal asked the host to emit a movement opcode. The host's movement streamer remains
+    /// the sole wire writer, so this is refused rather than forwarded.
     WireWrite,
 }
 
@@ -1352,7 +1352,7 @@ pub fn validate_movement_output(
     if !output.valid() {
         return Err(MovementRefusal::NonFinite);
     }
-    // A module never writes the movement stream: `wrath_stream_movement` is the sole writer.
+    // A module never writes the movement stream: the host's movement streamer is the sole writer.
     if output.emit_move_opcode != 0 {
         return Err(MovementRefusal::WireWrite);
     }
