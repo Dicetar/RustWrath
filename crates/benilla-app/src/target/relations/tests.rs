@@ -508,6 +508,11 @@ mod shipped {
         let Some(factions) = shipped_factions() else {
             return;
         };
+        let cc_slot = factions
+            .catalog()
+            .reputation_faction(609)
+            .and_then(|f| usize::try_from(f.rep_index).ok())
+            .expect("Cenarion Circle slot");
         let me = human_warrior(ME);
         let mut scene = Scene::new(me, Some(factions));
         let silent = scene.hold(creature(NPC, 996));
@@ -525,8 +530,8 @@ mod shipped {
         assert!(!rel.can_attack(&me, &silent));
         assert!(!rel.can_interact(&me, &silent), "no service bit");
         assert!(rel.can_interact(&me, &gossip));
-        let mut slots = vec![(0u8, 0i32); 64];
-        slots[36] = (benilla_formats::faction_flags::AT_WAR, 0);
+        let mut slots = vec![(0u8, 0i32); (cc_slot + 1).max(64)];
+        slots[cc_slot] = (benilla_formats::faction_flags::AT_WAR, 0);
         scene.reputations = Reputations::from_slots(slots);
         let rel = scene.rel();
         assert_eq!(rel.reaction(&me, &silent), 1);
@@ -561,9 +566,14 @@ mod shipped {
             .template(120)
             .expect("template 120")
             .faction;
+        let bb_slot = factions
+            .catalog()
+            .reputation_faction(faction)
+            .and_then(|f| usize::try_from(f.rep_index).ok())
+            .expect("Booty Bay slot");
         let mut scene = Scene::new(me, Some(factions));
-        let mut slots = vec![(0u8, 0i32); 64];
-        slots[1] = (benilla_formats::faction_flags::AT_WAR, 0);
+        let mut slots = vec![(0u8, 0i32); (bb_slot + 1).max(64)];
+        slots[bb_slot] = (benilla_formats::faction_flags::AT_WAR, 0);
         scene.reputations = Reputations::from_slots(slots.clone());
         assert_eq!(scene.rel().reaction(&me, &goblin), 1, "at war");
         scene.reputations.set_forced(vec![(faction, 4)]);

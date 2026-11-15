@@ -787,8 +787,15 @@ mod tests {
         let mut chain = crate::open_chain(&data).expect("open chain");
         let cat = load_faction_catalog(&mut chain).expect("load factions");
 
-        // 54 of the table's 190 rows carry a reputation slot; the rest are reaction-only.
-        assert_eq!(cat.reputation_factions().count(), 54);
+        let is_donor = crate::is_donor_install(&data);
+        let rep_count = cat.reputation_factions().count();
+        if is_donor {
+            // 54 of the table's 190 rows carry a reputation slot; the rest are reaction-only.
+            assert_eq!(rep_count, 54);
+        } else {
+            // Wrath expands the reputation list beyond 1.12's 64-slot limit.
+            assert!(rep_count > 64, "expected >64 Wrath reputation rows, got {rep_count}");
+        }
 
         // The four Alliance cities sit under Alliance (469), the four Horde ones under Horde (67).
         for id in [72 /* Stormwind */, 47, 69, 54] {
@@ -816,8 +823,8 @@ mod tests {
         // Argent Dawn and the other ungrouped factions carry no team.
         assert_eq!(cat.reputation_faction(529).unwrap().team, 0);
 
-        // Exactly five parents, each a pane header: Alliance, Horde, Steamwheedle Cartel and the
-        // two battleground blocs.
+        // Classic's five parents, each a pane header: Alliance, Horde, Steamwheedle Cartel and the
+        // two battleground blocs (Wrath adds expansion headers on top).
         let mut parents: Vec<u32> = cat
             .reputation_factions()
             .map(|(_, f)| f.team)
@@ -826,7 +833,13 @@ mod tests {
             .into_iter()
             .collect();
         parents.sort_unstable();
-        assert_eq!(parents, [67, 169, 469, 891, 892]);
+        if is_donor {
+            assert_eq!(parents, [67, 169, 469, 891, 892]);
+        } else {
+            for id in [67, 169, 469, 891, 892] {
+                assert!(parents.contains(&id), "missing classic parent {id}");
+            }
+        }
 
         assert!(
             cat.faction_description(529)
