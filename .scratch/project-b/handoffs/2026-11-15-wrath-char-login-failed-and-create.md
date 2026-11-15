@@ -24,3 +24,16 @@
 - Compilation (`cargo check` / `cargo build`): **not run** (per `AGENTS.md`).
 - Unit tests (`cargo test`): **not run** (per `AGENTS.md`; 3 focused unit test additions included in `wrath.rs`, `glue_create_tests.rs`, and `client.rs`).
 - Client / server launch: **not run** (per `AGENTS.md`).
+
+## Landing correction (integrator, 2026-11-15)
+
+- `GetText` now follows the native contract (`Script_GetText` `0x0081b720`,
+  `FrameScript_GetText`, `FrameScript_GetPluralIndex` `0x00817d10`): `GetText("token"
+  [, gender] [, ordinal])`. Only gender 3 adds `_FEMALE`; the ordinal (default -1) picks
+  `_Pn` through the locale's plural rule, so an omitted ordinal under enUS still tries `_P1`
+  first. The branch's argument guessing (2 read as a count, 1 read as female) and main's older
+  `(token, count, gender)` order are both gone; a missing token is the usage error.
+- Not changed, named here: when the new race cannot roll the current class, the native
+  `SetSelectedRace` picks `GetRandomClassID()`; `GlueCreate` still takes the first class of the
+  list. The saved per-race/sex preference branch of `SetSelectedRace` is not modelled either.
+- Not compiled, tests not run.
