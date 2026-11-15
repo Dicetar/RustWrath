@@ -214,6 +214,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(false))?,
     )?;
 
+    // The 3.3.5a video panels' Defaults buttons (`VideoOptionsPanels.lua:92`, `:403`, `:579`):
+    // one page of `ConsoleDeviceDefaults` each ([`super::cvars::restore_video_page`]). No return.
+    for (name, page, restart) in [
+        (
+            "RestoreVideoResolutionDefaults",
+            super::cvars::VIDEO_RESOLUTION_PAGE,
+            true,
+        ),
+        ("RestoreVideoEffectsDefaults", super::cvars::VIDEO_EFFECTS_PAGE, false),
+        ("RestoreVideoStereoDefaults", super::cvars::VIDEO_STEREO_PAGE, false),
+    ] {
+        lua.globals().set(
+            name,
+            lua.create_function(move |lua, _: mlua::MultiValue| {
+                let mut model = lua.app_data_mut::<super::Model>().expect("model app_data");
+                super::cvars::restore_video_page(&mut model, page, restart);
+                Ok(())
+            })?,
+        )?;
+    }
+
     // `UnitIsPossessed` (`PetFrame.lua:186`): no possessed unit exists in benilla, so the stock
     // pet frame keeps its ordinary layout.
     lua.globals().set(
@@ -253,6 +274,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "Sound_GameSystem_GetOutputDriverNameByIndex",
         lua.create_function(|_, index: i64| {
             Ok((index == 0).then_some("Primary Sound Driver"))
+        })?,
+    )?;
+    // `Sound_GameSystem_RestartSoundSystem()` (12340 `0x00985D30`: `SI2::ShutDown(1)`, a 200 ms
+    // sleep, `SI2::Init(1)`), called by `AudioOptionsFrame.lua:29` when a control marked
+    // `restart` changed. The host drains the ask into a rebuild of the output stream on the
+    // current default device (`sound::drain_restart_sound`).
+    lua.globals().set(
+        "Sound_GameSystem_RestartSoundSystem",
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<super::Model>()
+                .expect("model app_data")
+                .restart_sound_asks += 1;
+            Ok(())
         })?,
     )?;
 
@@ -2453,6 +2487,51 @@ mod tests {
     /// nil otherwise, and nil for an undeclared action, the shape `CameraOrSelectOrMoveStop` reads
     /// after `CAMERAORSELECTORMOVE`'s press leg. The chords come from the registered
     /// `<ModifiedClick>` rows (stock `STICKYCAMERA` is CTRL, `SELFCAST` ALT).
+    #[test]
+    fn options_panel_defaults_and_sound_restart_follow_the_reference() {
+        let mut script = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335)
+            .expect("VM");
+        script.register_cvars([
+            ("farclip", "1277"),
+            ("groundEffectDist", "100"),
+            ("gamma", "1.0"),
+            ("windowResizeLock", "0"),
+            ("gxWindow", "0"),
+        ]);
+        script
+            .run(
+                "SetCVar('farclip', '400') SetCVar('groundEffectDist', '40')                  SetCVar('gamma', '1.4') SetCVar('windowResizeLock', '1') SetCVar('gxWindow', '1')",
+            )
+            .unwrap();
+        let get = |script: &crate::script::UiScript, name: &str| {
+            script
+                .eval::<String>(&format!("return GetCVar('{name}')"))
+                .unwrap()
+        };
+
+        script.run("RestoreVideoEffectsDefaults()").unwrap();
+        assert_eq!(get(&script, "farclip"), "1277", "registered default");
+        assert_eq!(get(&script, "groundEffectDist"), "70.0", "CWorldParam's own 70.0");
+        assert_eq!(get(&script, "gamma"), "1.4", "the effects page leaves the display rows");
+        assert_eq!(script.take_restart_gx_asks(), 0, "page 1 does not restart the device");
+
+        script.run("RestoreVideoResolutionDefaults()").unwrap();
+        assert_eq!(get(&script, "gamma"), "1.0");
+        assert_eq!(get(&script, "windowResizeLock"), "0");
+        assert_eq!(get(&script, "gxWindow"), "0");
+        assert_eq!(script.take_restart_gx_asks(), 1, "page 0 ends in CCGxRestart");
+
+        script.run("RestoreVideoStereoDefaults()").unwrap();
+        assert_eq!(script.take_restart_gx_asks(), 0, "unregistered stereo rows are skipped");
+
+        assert_eq!(script.take_restart_sound_asks(), 0);
+        script
+            .run("Sound_GameSystem_RestartSoundSystem() Sound_GameSystem_RestartSoundSystem()")
+            .unwrap();
+        assert_eq!(script.take_restart_sound_asks(), 2, "counted for the host to drain");
+        assert_eq!(script.take_restart_sound_asks(), 0);
+    }
+
     #[test]
     fn is_modified_click_reads_the_held_modifier() {
         let mut script = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335)

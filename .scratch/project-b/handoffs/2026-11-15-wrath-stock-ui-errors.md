@@ -4,7 +4,7 @@ Status: in progress
 Owner: Claude Code (Opus 5.5)
 Branch: fix/wrath-stock-ui-errors
 Issue: none
-Next: F15 settings natives the stock options panels call (BNConnected, sound driver lists, Restore*Defaults), then the F04 movement gaps below
+Next: the F04 movement gaps below
 
 Date 2026-11-15. Worktree `D:/Projects/rw-worktrees/fix-wrath-stock-ui-errors`, cut from `main`
 `9dc36e48`. Nothing on this branch has been compiled or run: the owner builds and launches by
@@ -34,6 +34,25 @@ hand after a batch lands. Every claim below is source-level.
   - The app stores changed chords as `modifiedclick <CHORD> <ACTION>` lines in the same
     `benilla-config/bindings/*.txt` files (`bindings/store.rs`, `bindings.rs`).
   - Named deviation: shift/ctrl/alt are held without their side, so `LSHIFT` reads as either.
+- Options panel Defaults buttons and the sound restart (F15):
+  - `RestoreVideoResolutionDefaults`/`RestoreVideoEffectsDefaults`/`RestoreVideoStereoDefaults`
+    (12340 `0x00510DC0`/`0x00510DD0`/`0x004DD420`, all `ConsoleDeviceDefaults(page)`
+    `0x0076A130`) restore the page's rows (`cvars.rs` `VIDEO_*_PAGE`, `restore_video_page`):
+    `fixedFunction` 0, the `SetGxCVars` rows plus `Client.cpp SetDefaults` (`0x00402530`:
+    desktopGamma 0, gamma 1.0, windowResizeLock) and a `RestartGx` ask on page 0; the
+    `CWorldParam::SetDefaults` (`0x0078E1A0`) rows, groundEffectDist 70.0, and
+    textureFilteringMode on page 1; the stereo rows on page 2. Named deviation: the registered
+    default stands in for `ConsoleDetectSetDefaults` hardware detection, and a row this client
+    never registered is skipped.
+  - `Sound_GameSystem_RestartSoundSystem` (`0x00985D30`, `AudioOptionsFrame.lua:29`) counts an
+    ask; `sound::drain_restart_sound` turns it into a close and immediate reopen of the output
+    stream on the current default device (`OutputBackend::request_restart`). Named deviation: the
+    renderer and playing sounds survive, and `SoundBufferSize`, `Sound_NumChannels` and
+    `Sound_OutputQuality` are not re-read.
+  - Not needed: `BNConnected`/`BNGetMatureLanguageFilter` are only reached behind
+    `BNFeaturesEnabled()`, which answers false; `Sound_ChatSystem_Get*DriverNameByIndex` are only
+    reached for a count above 0, and the chat-system counts answer 0 under the owner's VoiceChat
+    decision.
 
 ## Focused cases written (not run)
 
@@ -44,17 +63,15 @@ hand after a batch lands. Every claim below is source-level.
 5. `wrath_natives.rs` `is_modified_click_reads_the_held_modifier` (rewritten: rows registered,
    STICKYCAMERA is CTRL)
 6. `benilla-app` `bindings/store.rs` `modified_click_lines_round_trip_beside_the_keys`
+7. `wrath_natives.rs` `options_panel_defaults_and_sound_restart_follow_the_reference`
 
 Run with `cargo test -p benilla-ui <name>` / `cargo test -p benilla-app <name>`; none has been
 compiled.
 
 ## Not done
 
-- F15: `BNConnected`/`BNGetMatureLanguageFilter` (`InterfaceOptionsPanels.lua:857/869`),
-  `Sound_GameSystem_RestartSoundSystem`, `Sound_ChatSystem_Get{Input,Output}DriverNameByIndex`
-  (the existing `Sound_ChatSystem_GetNum*Drivers` answer a constant 0),
-  `RestoreVideo{Effects,Resolution,Stereo}Defaults`. Voice* stays out per the owner's VoiceChat
-  decision; the `ChannelFrame.lua:716` and `VoiceChatSpeakerTemplate` warnings are expected.
+- F15: Voice* stays out per the owner's VoiceChat decision; the `ChannelFrame.lua:716` and
+  `VoiceChatSpeakerTemplate` warnings are expected.
 - F04 movement: CAN_FLY/FLYING flags, `CMSG_SET_ACTIVE_MOVER` for possession, a walk-off fall
   sending nothing on its first frame, transport time/seat 0, heartbeat in walk mode,
   `Player::ride` on Wrath. Sibling branches `fix/wrath-movement-wire` (`5a647637`) and

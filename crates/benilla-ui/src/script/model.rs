@@ -796,6 +796,9 @@ pub(crate) struct Model {
     pub(crate) video_caps: super::cvars::VideoCaps,
     /// `RestartGx()` calls, the video window's apply button.
     pub(crate) restart_gx_asks: u32,
+    /// `Sound_GameSystem_RestartSoundSystem()` calls, the sound panel's apply after a control
+    /// marked `restart` changed (`AudioOptionsFrame.lua:29`).
+    pub(crate) restart_sound_asks: u32,
 
     /// Globals `RegisterForSave` declared, in order: written at logout and read back at load.
     pub(crate) saved_names: Vec<String>,
@@ -1822,6 +1825,7 @@ impl Model {
             current_resolution: None,
             video_caps: super::cvars::VideoCaps::default(),
             restart_gx_asks: 0,
+            restart_sound_asks: 0,
             saved_names: Vec::new(),
             held_saved_files: Vec::new(),
             loaded_saved_files: Vec::new(),
