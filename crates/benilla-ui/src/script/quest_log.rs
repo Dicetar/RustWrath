@@ -2078,7 +2078,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // (`0x4e1938`, `0x4e1978`) is a row, `_ftol`ed and looked up by `0x4df150`; a miss takes the
     // selected quest's id (`0xbb7480`, `0x4e195c`, `0x4e199c`), which `SelectQuestLogEntry` only
     // ever sets to a quest, never a header, so the selected row is one. Either way an id of 0
-    // does nothing.
+    // does nothing: `Script_AddQuestWatch` maps a header or an out-of-range row to 0 and its
+    // `if (questId)` guard (`QuestLog_Scripts.cpp:996`-`:1014`) refuses it.
     fn watch_target(lua: &Lua, model: &Model, arg: Value) -> Option<u32> {
         match crate::script::binding_abi::is_number(lua, arg) {
             Some(n) => watch_id_at(model, crate::script::binding_abi::ftol(n) as u32),
@@ -2087,6 +2088,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .filter(|r| !r.is_header)
                 .map(|r| r.quest_id),
         }
+        .filter(|&id| id != 0)
     }
     /// `MAX_WATCHABLE_QUESTS`: 3.3.5's stock `QuestLogFrame.lua:5` allows 25, while the 1.12
     /// frame allows five (`QuestLogFrame.lua:8`). Both caps bind only inside `AddQuestWatch`.
@@ -2165,12 +2167,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, i: Value| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
             // `0x4dede0`: the id is appended while the list holds fewer than the target's cap
-            // (`0x4dede5`), with no test for it already being there; the stock Lua checks
-            // `IsQuestWatched` itself.
+            // (`0x4dede5`), with no test for it already being there; the 1.12 stock Lua checks
+            // `IsQuestWatched` itself, but 3.3.5's does not: `QuestLogFrame.lua:260`-`269` calls
+            // it from both `QUEST_ACCEPTED` and `QUEST_WATCH_UPDATE`, so the same quest would be
+            // watched twice and `WatchFrame_DisplayTrackedQuests` would draw its block twice.
             if let Some(id) = watch_target(lua, &model, i) {
-                // 12340's `CGQuestLog::AddQuestWatch` refreshes an existing watch instead of
-                // appending a duplicate; the 1.12 binding appends, which its stock Lua guards
-                // itself with `IsQuestWatched`.
+                // 12340's `CGQuestLog::AddQuestWatch` (`QuestLog.cpp:545`-`:553`) refreshes an
+                // existing watch instead of appending a duplicate; the 1.12 binding appends.
                 if model.is_wrath() && model.quest_log_watched.contains(&id) {
                     return Ok(());
                 }
