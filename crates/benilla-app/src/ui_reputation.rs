@@ -407,16 +407,18 @@ pub(crate) fn faction_standing(
     catalog
         .reputation_faction(faction_id)
         .and_then(|info| {
-            let index = usize::try_from(info.rep_index).ok().filter(|&i| i < 64)?;
+            let index = usize::try_from(info.rep_index)
+                .ok()
+                .filter(|&i| i < benilla_protocol::messages::WRATH_FACTION_LIST_LEN)?;
             Some(info.base_for(race, class) + reputations.standing(index))
         })
         .unwrap_or(0)
 }
 
-/// Every faction with a reputation index under 64 (`0x4d6379`) at the base for `race`/`class` plus
-/// its wire slot (`0x4d6370`). The base table is zeroed at login (`0x4d5426`) and written only
-/// for a fitting column (`0x4d553c`), so a faction the pane does not list still has its wire
-/// standing here.
+/// Every faction with a reputation index under the store length (`0x4d6379`) at the base for
+/// `race`/`class` plus its wire slot (`0x4d6370`). The base table is zeroed at login (`0x4d5426`)
+/// and written only for a fitting column (`0x4d553c`), so a faction the pane does not list still
+/// has its wire standing here.
 pub(crate) fn faction_standings(
     catalog: &benilla_formats::FactionCatalog,
     reputations: &Reputations,
@@ -426,7 +428,9 @@ pub(crate) fn faction_standings(
     catalog
         .reputation_factions()
         .filter_map(|(faction_id, info)| {
-            let index = usize::try_from(info.rep_index).ok().filter(|&i| i < 64)?;
+            let index = usize::try_from(info.rep_index)
+                .ok()
+                .filter(|&i| i < benilla_protocol::messages::WRATH_FACTION_LIST_LEN)?;
             Some((
                 faction_id,
                 info.base_for(race, class) + reputations.standing(index),
@@ -577,29 +581,31 @@ mod tests {
         let mut chain = benilla_formats::open_chain(&data).expect("open chain");
         let cat = benilla_formats::load_faction_catalog(&mut chain).expect("factions");
 
-        // 1.12 has no class 6 and no class 10; druid is 11.
-        const CLASSES: [u8; 9] = [1, 2, 3, 4, 5, 7, 8, 9, 11];
         const DRUID: u8 = 11;
-        let mut excluded: Vec<(u32, u8, u8)> = Vec::new();
-        for race in 1..=8u8 {
-            for class in CLASSES {
-                for (id, info) in cat.reputation_factions() {
-                    if info.slot_for(race, class).is_none() {
-                        excluded.push((id, race, class));
+        if benilla_formats::is_donor_install(&data) {
+            // 1.12 has no class 6 and no class 10; druid is 11.
+            const CLASSES: [u8; 9] = [1, 2, 3, 4, 5, 7, 8, 9, 11];
+            let mut excluded: Vec<(u32, u8, u8)> = Vec::new();
+            for race in 1..=8u8 {
+                for class in CLASSES {
+                    for (id, info) in cat.reputation_factions() {
+                        if info.slot_for(race, class).is_none() {
+                            excluded.push((id, race, class));
+                        }
                     }
                 }
             }
+            let expected: Vec<(u32, u8, u8)> = [1u8, 2, 3, 5, 7, 8]
+                .into_iter()
+                .map(|race| (609, race, DRUID))
+                .collect();
+            excluded.sort_unstable();
+            assert_eq!(
+                excluded, expected,
+                "the gate should exclude only Cenarion Circle from druids of the six races that \
+                 cannot be druids — i.e. nothing a player can roll"
+            );
         }
-        let expected: Vec<(u32, u8, u8)> = [1u8, 2, 3, 5, 7, 8]
-            .into_iter()
-            .map(|race| (609, race, DRUID))
-            .collect();
-        excluded.sort_unstable();
-        assert_eq!(
-            excluded, expected,
-            "the gate should exclude only Cenarion Circle from druids of the six races that \
-             cannot be druids — i.e. nothing a player can roll"
-        );
 
         // Last match wins, and the druid slot is second.
         let cc = cat.reputation_faction(609).expect("Cenarion Circle");
@@ -624,22 +630,32 @@ mod tests {
         let cat = benilla_formats::load_faction_catalog(&mut chain).expect("factions");
         use benilla_formats::faction_flags as flag;
 
+        let is_donor = benilla_formats::is_donor_install(&data);
         // Every faction some reputation faction names as its `team`: the pane's headers.
         let parents: std::collections::BTreeSet<u32> = cat
             .reputation_factions()
             .map(|(_, f)| f.team)
             .filter(|&t| t != 0)
             .collect();
-        assert_eq!(
-            parents.iter().copied().collect::<Vec<_>>(),
-            [67, 169, 469, 891, 892],
-            "Horde, Steamwheedle, Alliance, and the two battleground blocs"
-        );
+        if is_donor {
+            assert_eq!(
+                parents.iter().copied().collect::<Vec<_>>(),
+                [67, 169, 469, 891, 892],
+                "Horde, Steamwheedle, Alliance, and the two battleground blocs"
+            );
+        } else {
+            for id in [67, 169, 469, 891, 892] {
+                assert!(parents.contains(&id), "missing classic parent {id}");
+            }
+        }
 
         for id in parents {
             let info = cat
                 .reputation_faction(id)
                 .unwrap_or_else(|| panic!("parent {id} has its own reputation slot"));
+            if !is_donor && info.slot_for(1, 1).is_none() {
+                continue;
+            }
             let flags = u8::try_from(info.default_flags_for(1, 1)).expect("a flag byte");
             assert!(
                 flags & flag::HEADER != 0,
@@ -653,15 +669,17 @@ mod tests {
                 "parent {id} reaches the engine WITH its name — that name is the header"
             );
         }
-        // Only one of the five is also `VISIBLE`.
-        let visible_parents = [67u32, 169, 469, 891, 892]
-            .into_iter()
-            .filter(|&id| {
-                let info = cat.reputation_faction(id).unwrap();
-                u8::try_from(info.default_flags_for(1, 1)).unwrap() & flag::VISIBLE != 0
-            })
-            .count();
-        assert_eq!(visible_parents, 1, "only Alliance carries VISIBLE as well");
+        if is_donor {
+            // Only one of the five is also `VISIBLE`.
+            let visible_parents = [67u32, 169, 469, 891, 892]
+                .into_iter()
+                .filter(|&id| {
+                    let info = cat.reputation_faction(id).unwrap();
+                    u8::try_from(info.default_flags_for(1, 1)).unwrap() & flag::VISIBLE != 0
+                })
+                .count();
+            assert_eq!(visible_parents, 1, "only Alliance carries VISIBLE as well");
+        }
     }
 
     /// A human druid has no Cenarion Circle column (609, `0x4d5555`): the pane lists no row, and
@@ -674,7 +692,7 @@ mod tests {
         let cat = benilla_formats::load_faction_catalog(&mut chain).expect("factions");
         let cc = cat.reputation_faction(609).expect("Cenarion Circle");
         let index = usize::try_from(cc.rep_index).unwrap();
-        let mut slots = vec![(0u8, 0i32); 64];
+        let mut slots = vec![(0u8, 0i32); (index + 1).max(64)];
         slots[index] = (0, 500);
         let reps = Reputations::from_slots(slots);
         assert!(reputation_row(609, cc, &cat, 0, 500, 1, 11).is_none());
@@ -732,7 +750,13 @@ mod tests {
             Some(5)
         );
         // A slot the player's race and class do not list, or no faction names: nothing.
-        assert_eq!(visible_line(63, &Reputations::default(), &cat, 1, 1), None);
+        let unused_slot = (0u32..256)
+            .find(|&s| faction_of_slot(&cat, s, 1, 1).is_none())
+            .expect("an unused slot");
+        assert_eq!(
+            visible_line(unused_slot, &Reputations::default(), &cat, 1, 1),
+            None
+        );
     }
 
     /// `0x4d5760`: a rank change prints the new rank, an unchanged rank prints nothing, `HIDDEN`
@@ -764,8 +788,11 @@ mod tests {
         assert_eq!(lines(0, 0, 100), rank(4));
         assert_eq!(lines(0, 0, 5000), rank(5));
         // Several entries print one line each, in order.
+        let unused_slot = (0u32..256)
+            .find(|&s| faction_of_slot(&cat, s, 1, 1).is_none())
+            .expect("an unused slot");
         let two = delta_lines(
-            &[(slot, 5000), (63, 1)],
+            &[(slot, 5000), (unused_slot, 1)],
             &store(slot, flag::VISIBLE, 0),
             &cat,
             1,
@@ -927,7 +954,7 @@ mod live_wire_tests {
     /// also visible) over its four cities, and nothing else. Skips without client data.
     #[test]
     fn a_fresh_alliance_characters_pane_off_live_wire_bytes() {
-        let data = benilla_formats::wow_data_or_skip!();
+        let data = benilla_formats::donor_data_or_skip!();
         let mut chain = benilla_formats::open_chain(&data).expect("open chain");
         let cat = benilla_formats::load_faction_catalog(&mut chain).expect("factions");
         let store = live_store();

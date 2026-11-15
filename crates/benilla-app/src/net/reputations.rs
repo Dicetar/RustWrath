@@ -13,7 +13,7 @@
 use std::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 use std::sync::Arc;
 
-use benilla_protocol::messages::FACTION_LIST_LEN;
+use benilla_protocol::messages::WRATH_FACTION_LIST_LEN;
 use bevy::prelude::*;
 
 /// One slot's flag byte and wire standing.
@@ -23,9 +23,9 @@ struct Slot {
     standing: AtomicI32,
 }
 
-/// The 64 slots.
+/// The reputation slots (64 on 1.12, 128 on Wrath).
 struct Slots {
-    cells: [Slot; FACTION_LIST_LEN],
+    cells: [Slot; WRATH_FACTION_LIST_LEN],
 }
 
 impl Default for Slots {
@@ -76,7 +76,7 @@ impl Reputations {
         &EMPTY
     }
 
-    /// Slot `slot`'s flag byte and wire standing, `(0, 0)` past the 64.
+    /// Slot `slot`'s flag byte and wire standing, `(0, 0)` past the 128.
     pub(crate) fn slot(&self, slot: usize) -> (u8, i32) {
         self.slots.cells.get(slot).map_or((0, 0), |c| {
             (
@@ -86,23 +86,23 @@ impl Reputations {
         })
     }
 
-    /// Slot `slot`'s flag byte (`[slot * 16 + 0xb73294]`), 0 past the 64.
+    /// Slot `slot`'s flag byte (`[slot * 16 + 0xb73294]`), 0 past the 128.
     pub(crate) fn flags(&self, slot: usize) -> u8 {
         self.slot(slot).0
     }
 
-    /// Slot `slot`'s wire standing (`[slot * 16 + 0xb7329c]`), 0 past the 64.
+    /// Slot `slot`'s wire standing (`[slot * 16 + 0xb7329c]`), 0 past the 128.
     pub(crate) fn standing(&self, slot: usize) -> i32 {
         self.slot(slot).1
     }
 
     /// Every slot's `(flags, standing)`, slot 0 first.
     pub(crate) fn slots(&self) -> impl Iterator<Item = (u8, i32)> + '_ {
-        (0..FACTION_LIST_LEN).map(|i| self.slot(i))
+        (0..WRATH_FACTION_LIST_LEN).map(|i| self.slot(i))
     }
 
     /// `SMSG_INITIALIZE_FACTIONS`: the list whole, from slot 0; a slot it does not reach reads
-    /// `(0, 0)`, and one past the 64 is dropped.
+    /// `(0, 0)`, and one past the 128 is dropped.
     pub(crate) fn set_slots(&mut self, slots: &[(u8, i32)]) {
         for (i, cell) in self.slots.cells.iter().enumerate() {
             let (flags, standing) = slots.get(i).copied().unwrap_or((0, 0));

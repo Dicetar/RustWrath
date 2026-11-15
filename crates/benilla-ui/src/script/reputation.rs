@@ -277,14 +277,15 @@ fn rebuild(model: &mut Model) {
     sort(model);
 }
 
-/// The met factions, visible in a slot below 64, in the order the rebuild walks `Faction.dbc`:
-/// from its last row to its first, the ids descending.
+/// The met factions, visible in a slot below the target cap (64 on 1.12, 128 on Wrath), in the
+/// order the rebuild walks `Faction.dbc`: from its last row to its first, the ids descending.
 fn met(model: &Model) -> Vec<FactionEntry> {
+    let max_slots = if model.is_wrath() { 128 } else { 64 };
     let mut met: Vec<FactionEntry> = model
         .reputation
         .entries
         .iter()
-        .filter(|e| e.visible && e.rep_list_id < 64)
+        .filter(|e| e.visible && e.rep_list_id < max_slots)
         .cloned()
         .collect();
     met.sort_by_key(|e| std::cmp::Reverse(e.faction_id));
@@ -508,11 +509,12 @@ fn entry_of(model: &Model, faction: i64) -> Option<&FactionEntry> {
         .find(|e| e.faction_id == faction)
 }
 
-/// A faction's slot (`0x4d5600`), when it has one below 64 (`0x4d5ffe`-`0x4d6007`).
+/// A faction's slot (`0x4d5600`), when it has one below the target cap (64 on 1.12, 128 on Wrath).
 fn slot_of(model: &Model, faction: i64) -> Option<u32> {
+    let max_slots = if model.is_wrath() { 128 } else { 64 };
     entry_of(model, faction)
         .map(|e| e.rep_list_id)
-        .filter(|&slot| slot < 64)
+        .filter(|&slot| slot < max_slots)
 }
 
 /// `0x4d6400`: fold or unfold the header of the entry at a 1-based index into the whole list,
@@ -1458,5 +1460,36 @@ mod tests {
         .unwrap();
         assert_eq!(names(&s)[5], "Elsewhere");
         assert!(s.errors().is_empty(), "{:#?}", s.errors());
+    }
+
+    #[test]
+    fn wrath_lists_and_toggles_factions_in_slots_64_through_127() {
+        let mut wrath = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        wrath.set_reputation(ReputationState {
+            entries: vec![entry(1090, 80, 0, "Kirin Tor")],
+            watched: None,
+        });
+        assert_eq!(wrath.eval::<i64>("return GetNumFactions()").unwrap(), 2);
+        assert_eq!(
+            wrath
+                .eval::<String>("return (GetFactionInfo(2))")
+                .unwrap(),
+            "Kirin Tor"
+        );
+        wrath.run("FactionToggleAtWar(2)").unwrap();
+        assert!(matches!(
+            wrath.take_reputation_calls().as_slice(),
+            [ReputationCall::AtWar {
+                rep_list_id: 80,
+                at_war: true
+            }]
+        ));
+
+        let mut vanilla = UiScript::new().unwrap();
+        vanilla.set_reputation(ReputationState {
+            entries: vec![entry(1090, 80, 0, "Kirin Tor")],
+            watched: None,
+        });
+        assert_eq!(vanilla.eval::<i64>("return GetNumFactions()").unwrap(), 0);
     }
 }
