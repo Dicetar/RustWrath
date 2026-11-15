@@ -2191,6 +2191,14 @@ pub enum ServerEvent {
     LogoutResponse { reason: u32, instant: bool },
     LoggedOut,
     LogoutCancelled,
+    /// `SMSG_TRANSFER_ABORTED` (`Player.cpp:11685-11702`): the refused transfer's map and
+    /// reason byte; `argument` is the one extra byte only reasons 7 (expansion), 8 (difficulty)
+    /// and 9 (unique message) carry — the writer names those the only cases with an argument.
+    TransferAborted {
+        map_id: u32,
+        reason: u8,
+        argument: Option<u8>,
+    },
     ItemInfo { entry: u32, info: Option<ItemInfo> },
     PlayerName { guid: u64, name: String, race: u32, gender: u32, class: u32 },
     GameObjectInfo {
@@ -2693,6 +2701,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_LOGOUT_RESPONSE => read_logout_response(body),
         SMSG_LOGOUT_COMPLETE => Ok(ServerEvent::LoggedOut),
         SMSG_LOGOUT_CANCEL_ACK => Ok(ServerEvent::LogoutCancelled),
+        SMSG_TRANSFER_ABORTED => read_transfer_aborted(body),
         SMSG_INITIAL_SPELLS => read_initial_spells(body),
         SMSG_ITEM_QUERY_SINGLE_RESPONSE => read_item_info(body),
         SMSG_NAME_QUERY_RESPONSE => read_name(body),
@@ -4074,6 +4083,23 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
 fn read_logout_response(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     Ok(ServerEvent::LogoutResponse { reason: r.u32()?, instant: r.u8()? != 0 })
+}
+
+/// `SMSG_TRANSFER_ABORTED` (`Player.cpp:11685-11702`): u32 map + u8 reason, then the argument
+/// byte only for reasons 7/8/9. Any other reason value is the wire's own — the client's switch
+/// simply names no text for it (`0x403910`) — so the byte is not range-checked here.
+fn read_transfer_aborted(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let map_id = r.u32()?;
+    let reason = r.u8()?;
+    let argument = match reason {
+        7 | 8 | 9 => Some(r.u8()?),
+        _ => None,
+    };
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
+    Ok(ServerEvent::TransferAborted { map_id, reason, argument })
 }
 
 fn read_spell_failure(b: &[u8]) -> Result<ServerEvent> {

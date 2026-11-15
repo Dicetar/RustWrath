@@ -504,7 +504,11 @@ fn on_transfer(In(ev): In<SessionEvent>, mut e: Edges, trace: Option<Res<crate::
                 }
             }
         }
-        SessionEvent::TransferAborted { reason } => transfer_aborted(reason, &mut e.transfer),
+        SessionEvent::TransferAborted { reason, map_id, .. } => {
+            if map_id.is_none_or(|map_id| e.transfer.0.is_none_or(|info| info.map_id == map_id)) {
+                transfer_aborted(reason, &mut e.transfer);
+            }
+        }
         _ => {}
     }
 }
