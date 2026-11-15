@@ -4,7 +4,7 @@ Status: in progress
 Owner: Claude Code (Opus 5.5)
 Branch: fix/wrath-stock-ui-errors
 Issue: none
-Next: the F04 movement gaps below
+Next: source review and the owner's batch build; F04 movement gaps continue on `fix/wrath-movement-gaps`
 
 Date 2026-11-15. Worktree `D:/Projects/rw-worktrees/fix-wrath-stock-ui-errors`, cut from `main`
 `9dc36e48`. Nothing on this branch has been compiled or run: the owner builds and launches by
@@ -72,9 +72,9 @@ compiled.
 
 - F15: Voice* stays out per the owner's VoiceChat decision; the `ChannelFrame.lua:716` and
   `VoiceChatSpeakerTemplate` warnings are expected.
-- F04 movement: CAN_FLY/FLYING flags, `CMSG_SET_ACTIVE_MOVER` for possession, a walk-off fall
-  sending nothing on its first frame, transport time/seat 0, heartbeat in walk mode,
-  `Player::ride` on Wrath. Sibling branches `fix/wrath-movement-wire` (`5a647637`) and
-  `fix/wrath-auction-classes` (`ca93372a`) are separate and unchanged.
+- F04 movement: moved to `fix/wrath-movement-gaps` (cut from `fix/wrath-movement-wire`
+  `5a647637`). Its note covers the mover orders, possession, the transport seat and the
+  remaining named items (flight, transport time, `Player::ride`). `fix/wrath-auction-classes`
+  (`ca93372a`) is separate and unchanged.
 - The `MoneyFrame.lua:274` caller is not identified yet; the diagnostic above should name it on
   the next owner launch.
