@@ -475,7 +475,7 @@ fn transfer_pending_both_shapes_and_abort_parse_and_decode() {
     assert!(matches!(abort, ServerPacket::TransferAborted { reason: 2 }));
     assert!(matches!(
         decode(abort).as_slice(),
-        [SessionEvent::TransferAborted { reason: 2 }]
+        [SessionEvent::TransferAborted { reason: 2, map_id: None, argument: None }]
     ));
 }
 

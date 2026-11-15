@@ -19,7 +19,7 @@
 
 use bevy::prelude::*;
 
-use benilla_assets::{LockRecover, WorldAssets};
+use benilla_assets::{LockRecover, MapCatalogRes, WorldAssets};
 use benilla_formats::{chat_channel_flags as chan_flags, ServerMessagesCatalog};
 
 use crate::area::AreaTableRes;
@@ -43,8 +43,13 @@ pub(crate) enum Broadcast {
     Server { message_type: u32, text: String },
     /// `SMSG_CHAT_RESTRICTED`, which carries nothing.
     ChatRestricted,
-    /// `SMSG_TRANSFER_ABORTED`: the reason byte its handler reads (`0x4019aa`).
-    TransferAborted { reason: u8 },
+    /// `SMSG_TRANSFER_ABORTED`: the reason byte its handler reads (`0x4019aa`), plus the 12340
+    /// wire's map and reason-7/8/9 argument byte (`0x403910`); the 1.12 wire leaves both None.
+    TransferAborted {
+        reason: u8,
+        map_id: Option<u32>,
+        argument: Option<u8>,
+    },
 }
 
 /// Load `ServerMessages.dbc`; it must run after `benilla_assets::AssetSet::Open`, or it finds no
@@ -110,6 +115,7 @@ pub(super) fn feed_broadcasts(
     mut vm: crate::script_calls::VmWith<Res<'static, ChannelState>>,
     areas: Option<Res<AreaTableRes>>,
     messages: Option<Res<ServerMessages>>,
+    maps: Option<Res<MapCatalogRes>>,
     world: benilla_world::world_point::WorldPoint,
 ) {
     vm.turn(|script, channels| {
@@ -161,7 +167,7 @@ pub(super) fn feed_broadcasts(
                         log.push_event(ChatEvent::text_only(ChatEventKind::System, text));
                     }
                 }
-                Broadcast::TransferAborted { reason } => {
+                Broadcast::TransferAborted { reason, map_id, argument } => {
                     let get = |key: &str| {
                         script
                             .lua()
@@ -170,7 +176,21 @@ pub(super) fn feed_broadcasts(
                             .ok()
                             .flatten()
                     };
-                    if let Some(text) = transfer_abort_line(reason, get) {
+                    let line = match map_id {
+                        None => transfer_abort_line(reason, get),
+                        // The 12340 handler prints nothing without the map's DBC row
+                        // (`if (map)`, `0x403910`); the row's name fills the text's one `%s`.
+                        Some(map_id) => maps.as_ref().and_then(|maps| {
+                            let maps = &maps.0;
+                            maps.directory(map_id)?;
+                            let name = maps.name(map_id).unwrap_or_default();
+                            let difficulty_message = argument.and_then(|difficulty| {
+                                maps.difficulty_message(map_id, u32::from(difficulty))
+                            });
+                            wrath_transfer_abort_line(reason, argument, name, difficulty_message, get)
+                        }),
+                    };
+                    if let Some(text) = line {
                         log.push_event(ChatEvent::text_only(ChatEventKind::System, text));
                     }
                 }
@@ -205,6 +225,44 @@ pub(crate) fn transfer_abort_line(
         _ => return None,
     };
     Some(get(key).unwrap_or_default())
+}
+
+/// The 12340 handler's line (`Packet_SMSG_TRANSFER_ABORTED`, `0x403910`): the reason names a
+/// `GlobalStrings` key, reasons 7/8/9 baking their argument byte into the key itself
+/// (`TRANSFER_ABORT_INSUF_EXPAN_LVL%d`, `TRANSFER_ABORT_DIFFICULTY%d` at difficulty + 1,
+/// `TRANSFER_ABORT_UNIQUE_MESSAGE%d`), and the map's name fills the text's one `%s`
+/// (`SStrPrintf` passes it as the single argument). A missing or empty key prints nothing
+/// (`if (text && *text)`), unlike the 1.12 handler's empty line; reasons 0, 5 and past 16 name
+/// no key. Reason 8 first tries the localized `MapDifficulty.dbc` row.
+fn wrath_transfer_abort_line(
+    reason: u8,
+    argument: Option<u8>,
+    map_name: &str,
+    difficulty_message: Option<&str>,
+    get: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if reason == 8 {
+        if let Some(message) = difficulty_message.filter(|text| !text.is_empty()) {
+            return Some(message.replacen("%s", map_name, 1));
+        }
+    }
+    let key = match reason {
+        1 => "TRANSFER_ABORT_ERROR".to_string(),
+        2 => "TRANSFER_ABORT_MAX_PLAYERS".to_string(),
+        3 | 12 | 13 | 14 => "TRANSFER_ABORT_NOT_FOUND".to_string(),
+        4 => "TRANSFER_ABORT_TOO_MANY_INSTANCES".to_string(),
+        6 => "TRANSFER_ABORT_ZONE_IN_COMBAT".to_string(),
+        7 => format!("TRANSFER_ABORT_INSUF_EXPAN_LVL{}", argument?),
+        8 => format!("TRANSFER_ABORT_DIFFICULTY{}", u32::from(argument?) + 1),
+        9 => format!("TRANSFER_ABORT_UNIQUE_MESSAGE{}", argument?),
+        10 => "TRANSFER_ABORT_TOO_MANY_REALM_INSTANCES".to_string(),
+        11 => "TRANSFER_ABORT_NEED_GROUP".to_string(),
+        15 => "TRANSFER_ABORT_REALM_ONLY".to_string(),
+        16 => "TRANSFER_ABORT_MAP_NOT_ALLOWED".to_string(),
+        _ => return None,
+    };
+    let template = get(&key).filter(|t| !t.is_empty())?;
+    Some(template.replacen("%s", map_name, 1))
 }
 
 /// One `CHAT_MSG_CHANNEL` line per defense channel reached, with no sender or language: the
@@ -273,6 +331,23 @@ mod tests {
         // `GetText` (`0x703bf0`) gives the empty string for a key the strings lack, and the line
         // is added all the same (`0x4019ff`).
         assert_eq!(super::transfer_abort_line(1, |_| None).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_wrath_difficulty_refusal_prefers_the_maps_message() {
+        let stock = |key: &str| {
+            assert_eq!(key, "TRANSFER_ABORT_DIFFICULTY2");
+            Some("Heroic is unavailable for %s.".to_string())
+        };
+        let line = |message| wrath_transfer_abort_line(8, Some(1), "Test Dungeon", message, stock);
+        assert_eq!(
+            line(Some("Cannot enter %s yet.")).as_deref(),
+            Some("Cannot enter Test Dungeon yet.")
+        );
+        assert_eq!(
+            line(Some("")).as_deref(),
+            Some("Heroic is unavailable for Test Dungeon.")
+        );
     }
 
     /// `ERR_CHAT_RESTRICTED` (451) is a chat row, so the arm above writes a system line.

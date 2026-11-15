@@ -37,6 +37,9 @@ pub const SMSG_TRANSFER_PENDING: u16 = 0x03F;
 /// Far-teleport sequence, step 2 (`Player.cpp:1613`): u32 mapid + f32 x/y/z/o destination.
 /// Receiving this begins the new world scope; the old world's replicated state is discarded.
 pub const SMSG_NEW_WORLD: u16 = 0x03E;
+/// The announced transfer is off (`Player.cpp:11685-11702`, `SendTransferAborted`): u32 mapid +
+/// u8 reason, then one u8 argument only for reasons 7/8/9 (expansion, difficulty, unique message).
+pub const SMSG_TRANSFER_ABORTED: u16 = 0x040;
 /// Near teleport, server to client (`Unit.cpp:16198`): packed GUID + standalone movement
 /// payload (no update-flags prefix). Same world scope.
 pub const MSG_MOVE_TELEPORT: u16 = 0x0C5;

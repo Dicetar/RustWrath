@@ -394,7 +394,13 @@ pub enum SessionEvent {
         from_map: Option<u32>,
     },
     /// `SMSG_TRANSFER_ABORTED`: the announced transfer is off (map full, no instance).
-    TransferAborted { reason: u8 },
+    /// `map_id` and `argument` are the 12340 wire's leading map and its reason-7/8/9 argument
+    /// byte (`Player.cpp:11685-11702`); the 1.12 wire carries the reason alone, both None.
+    TransferAborted {
+        reason: u8,
+        map_id: Option<u32>,
+        argument: Option<u8>,
+    },
     /// The login clock (`SMSG_LOGIN_SETTIMESPEED`): the date the clock is set to and its rate,
     /// as sent.
     TimeSpeed { time: WowTime, speed: f32 },
