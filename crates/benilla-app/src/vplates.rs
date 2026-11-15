@@ -255,6 +255,7 @@ pub(crate) fn wrath_plate_gate(
             return false;
         }
     }
+    // `Unit_C.cpp:20503`: an enemy player who cannot be attacked has no plate.
     friendly || !unit.is_player || unit.attackable
 }
 
@@ -636,8 +637,10 @@ fn drive_vplates(
             let Some(store) = store else {
                 continue;
             };
-            // `0x60f62e`: `bytes_1` byte 3 `& 3` (ghost or creep) has no plate. 12340 tests only
-            // the creep bit, and only on the enemy side ([`wrath_plate_gate`]).
+            // `0x60f62e`: `bytes_1` byte 3 `& 3` (ghost or creep) has no plate; this reads the
+            // ghost bit alone, so a stealthed unit keeps its plate — a 1.12-only gap against the
+            // recorded `& 3`. 12340 has no ghost test, and only an enemy loses its plate to the
+            // creep bit ([`wrath_plate_gate`]).
             if !wrath && store.0.unit_is_ghost_visual() {
                 continue;
             }

@@ -636,6 +636,10 @@ mod tests {
 
     /// Compare the same FrameXML walk with a fixed-width measurer and the app's atlas measurer.
     /// The live run took 153 s between ChatFrame.xml and completion of FloatingChatFrame.xml.
+    ///
+    /// This wall-clock probe uses the installed client and is not part of the default run. Use
+    /// `cargo test -p benilla-app each_wrath_core_file_loads_in_bounded_time -- --ignored --nocapture`;
+    /// `CORE_FILE_TIME` prints every file that took 250 ms or more, and `CORE_TOTAL_TIME` the walk.
     #[test]
     #[ignore = "Wall-clock diagnostic with installed Wrath data"]
     fn each_wrath_core_file_loads_in_bounded_time() {

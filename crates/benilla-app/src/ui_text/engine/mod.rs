@@ -1928,7 +1928,11 @@ mod ppem_tests {
     }
 
     /// `FRIENDS.TTF`, the chat face, opened and measured the way `FloatingChatFrame.xml`'s load
-    /// first reaches it: a live run stalled 153 s right after the face loaded.
+    /// first reaches it: a live run stalled 153 s right after the face loaded. An instrument, not
+    /// a gate: the wall-clock limit is flaky on a loaded workstation.
+    ///
+    /// Run it by hand, with the install present, to see the `FRIENDS_*` timings:
+    /// `cargo test -p benilla-app --lib the_chat_face_shapes_a_line_in_bounded_time -- --ignored --nocapture`
     #[test]
     #[ignore = "Wall-clock diagnostic with the installed chat font"]
     fn the_chat_face_shapes_a_line_in_bounded_time() {
