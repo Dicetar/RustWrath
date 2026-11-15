@@ -53,35 +53,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // 3.3.5a ships this as the engine function, not `FrameXML\LocaleProperties.lua`, so the
     // Wrath chain has no Lua definition and the host must answer it; 1.12's Lua file, when it
     // loads, overwrites this global with the same contract.
-    g.set(
-        "GetText",
-        lua.create_function(
-            |lua, (token, count, gender): (Value, Option<i32>, Option<i32>)| {
-                let token = match token {
-                    Value::String(token) => token.to_str()?.to_string(),
-                    _ => return lua.create_string(""),
-                };
-                let plural = if count.is_some_and(|count| count != 1) {
-                    "_P1"
-                } else {
-                    ""
-                };
-                let gender = if gender == Some(1) { "_FEMALE" } else { "" };
-                let globals = lua.globals();
-                for name in [
-                    format!("{token}{plural}{gender}"),
-                    format!("{token}{plural}"),
-                    format!("{token}{gender}"),
-                    token,
-                ] {
-                    if let Ok(Value::String(text)) = globals.get::<Value>(name) {
-                        return Ok(text);
-                    }
-                }
-                lua.create_string("")
-            },
-        )?,
-    )?;
+    install_get_text(lua)?;
 
     // `GetDebugStats()` (`0x488af0`, `xor eax,eax; ret`): zero values, which `StatsFrame.lua:20`
     // hands straight to `SetText`.
@@ -279,6 +251,67 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     Ok(())
+}
+
+/// `FrameScript_GetText` (`0x00819D40`): localized global-string lookup with plural (`_P1`) and
+/// female (`_FEMALE`) suffixes, shared between the in-game VM and the Wrath Glue VM.
+///
+/// 3.3.5a FrameXML (`ReputationFrame.lua:167`, `HonorFrame.lua`) and GlueXML (`CharacterCreate.lua`)
+/// call `GetText(token, gender[, ordinal])` where `gender` is `UnitSex`/`GetSelectedSex` (`2` male,
+/// `3` female) or `1` (raw female gender), while 1.12/test callers also pass `GetText(token, count, gender)`.
+pub(super) fn install_get_text(lua: &Lua) -> mlua::Result<()> {
+    lua.globals().set(
+        "GetText",
+        lua.create_function(
+            |lua, (token, arg2, arg3): (Value, Option<i32>, Option<i32>)| {
+                let token = match token {
+                    Value::String(token) => token.to_str()?.to_string(),
+                    _ => return lua.create_string(""),
+                };
+                let globals = lua.globals();
+                let mut candidates = Vec::with_capacity(4);
+                if let Some(third) = arg3 {
+                    let plural = if third != 1 && !matches!( (arg2, third), (None, 1 | 3) ) {
+                        "_P1"
+                    } else if arg2.is_some_and(|n| n != 1 && !matches!(n, 2 | 3)) {
+                        "_P1"
+                    } else {
+                        ""
+                    };
+                    let gender = if matches!(arg2, Some(1 | 3)) || matches!(third, 1 | 3) {
+                        "_FEMALE"
+                    } else {
+                        ""
+                    };
+                    if !plural.is_empty() && !gender.is_empty() {
+                        candidates.push(format!("{token}{plural}{gender}"));
+                    }
+                    if !plural.is_empty() {
+                        candidates.push(format!("{token}{plural}"));
+                    }
+                    if !gender.is_empty() {
+                        candidates.push(format!("{token}{gender}"));
+                    }
+                } else if matches!(arg2, Some(1 | 3)) {
+                    // `GetText(token, gender)` with female gender (`1` or `3`): prefer `_FEMALE`
+                    // first, then `_P1` if the caller meant a count of 3.
+                    candidates.push(format!("{token}_FEMALE"));
+                    if arg2 == Some(3) {
+                        candidates.push(format!("{token}_P1"));
+                    }
+                } else if arg2.is_some_and(|count| count != 1) {
+                    candidates.push(format!("{token}_P1"));
+                }
+                candidates.push(token);
+                for name in candidates {
+                    if let Ok(Value::String(text)) = globals.get::<Value>(name) {
+                        return Ok(text);
+                    }
+                }
+                lua.create_string("")
+            },
+        )?,
+    )
 }
 
 impl super::UiScript {
@@ -513,14 +546,36 @@ mod tests {
             s.eval::<String>(r#"return GetText("ONLY_BASE", 5)"#).unwrap(),
             "Only"
         );
-        // Gender 1 selects `_FEMALE` when present, then falls back to the base.
+        // Gender 1 or 3 (3.3.5a UnitSex/GetSelectedSex female) selects `_FEMALE` in either
+        // the 2-arg `GetText(token, gender)` or 3-arg `GetText(token, nil, gender)` form.
         assert_eq!(
             s.eval::<String>(r#"return GetText("FRIEND", nil, 1)"#).unwrap(),
             "Friend (female)"
         );
         assert_eq!(
+            s.eval::<String>(r#"return GetText("FRIEND", 3)"#).unwrap(),
+            "Friend (female)"
+        );
+        assert_eq!(
+            s.eval::<String>(r#"return GetText("FRIEND", 2)"#).unwrap(),
+            "Friend"
+        );
+        assert_eq!(
             s.eval::<String>(r#"return GetText("FRIEND")"#).unwrap(),
             "Friend"
+        );
+        let glue = UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap();
+        glue.run(r#"RACE_INFO_HUMAN = "Human lore"; RACE_INFO_HUMAN_FEMALE = "Human female lore""#)
+            .unwrap();
+        assert_eq!(
+            glue.eval::<String>(r#"return GetText("RACE_INFO_HUMAN", 3)"#)
+                .unwrap(),
+            "Human female lore"
+        );
+        assert_eq!(
+            glue.eval::<String>(r#"return GetText("RACE_INFO_HUMAN", 2)"#)
+                .unwrap(),
+            "Human lore"
         );
         // A miss answers the empty string, never nil: FrameXML checks it with `if not text`.
         assert_eq!(

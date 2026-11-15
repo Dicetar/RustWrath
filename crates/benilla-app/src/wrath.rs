@@ -226,7 +226,7 @@ pub(crate) enum SessionClass {
 /// or a single failed-login edge. Anything else is not a terminal.
 fn terminal_index(event: &SessionEvent) -> Option<usize> {
     match event {
-        SessionEvent::LoggedOut => Some(0),
+        SessionEvent::LoggedOut | SessionEvent::CharacterLoginFailed { .. } => Some(0),
         SessionEvent::Disconnected { .. } => Some(1),
         SessionEvent::LoginFailed { .. } => Some(2),
         _ => None,
@@ -13905,6 +13905,33 @@ mod reply_queue_tests {
     }
 
     #[test]
+    fn character_login_failed_survives_retire_scope_and_precedes_teardown() {
+        let mut replies = SessionReplies::default();
+        replies.push(reply(1));
+        replies.push(forced(SessionEvent::CharacterLoginFailed { result: 0x41 }));
+        replies.push(forced(SessionEvent::Disconnected {
+            reason: "wrath session ended".to_owned(),
+            end: benilla_protocol::SessionEnd::LoggedOut,
+        }));
+        // `wrath_net_drain` runs before `wrath_dispatch_events` and retires the scope on
+        // `WrathFeedEvent::SessionEnded`; terminal edges must survive that backlog clear.
+        assert_eq!(replies.retire_scope(), 1);
+        let drained = replies.take(WRATH_DRAIN_LIMIT, WRATH_DRAIN_BUDGET);
+        assert_eq!(drained.len(), 2);
+        assert!(matches!(
+            drained[0].event,
+            SessionEvent::CharacterLoginFailed { result: 0x41 }
+        ));
+        assert!(matches!(
+            drained[1].event,
+            SessionEvent::Disconnected {
+                end: benilla_protocol::SessionEnd::LoggedOut,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn observations_coalesce_in_place_and_keep_their_position() {
         let mut replies = SessionReplies::default();
         replies.push(reply(1));
@@ -14036,6 +14063,10 @@ mod reply_queue_tests {
     #[test]
     fn classification_names_every_terminal_kind_and_keeps_inventory_replies_ordered() {
         assert_eq!(session_class(&SessionEvent::LoggedOut), SessionClass::Terminal);
+        assert_eq!(
+            session_class(&SessionEvent::CharacterLoginFailed { result: 0x41 }),
+            SessionClass::Terminal
+        );
         assert_eq!(
             session_class(&SessionEvent::Disconnected {
                 reason: String::new(),
