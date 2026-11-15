@@ -224,10 +224,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     chunk.call::<()>(())
                 });
             if let Err(e) = ran {
-                let bare = super::stdlib::lua_message(&e);
+                let mut log = super::stdlib::lua_message(&e);
+                if let Some(traceback) = e.lua_traceback() {
+                    log.push_str("\nLua traceback: ");
+                    log.push_str(traceback);
+                }
                 lua.app_data_mut::<crate::script::Model>()
                     .expect("model")
-                    .record_error(bare, super::model::HandlerArg::Error(e));
+                    .record_error(log, super::model::HandlerArg::Error(e));
             }
             Ok(())
         })?,

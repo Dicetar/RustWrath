@@ -354,8 +354,36 @@ fn the_error_handler_receives_the_bare_lua_message() {
             "{want}: {caught:?}"
         );
     }
-    // The host log keeps the decorated text.
     assert!(s.take_errors().iter().any(|e| e.contains("runtime error")));
+
+    // The Wrath handler passes explicit arguments and still keeps the caller's location.
+    let mut s = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.run("seterrorhandler(function(message) caught = message end)")
+        .unwrap();
+    s.run_chunk_named(
+        b"function UpdateMoney(money) local copper = money / 100 end",
+        "@Interface\\FrameXML\\MoneyFrame.lua",
+    )
+    .unwrap();
+    s.run_chunk_named(
+        b"local f = CreateFrame('Frame')\n\
+          f:RegisterEvent('PLAYER_MONEY')\n\
+          f:SetScript('OnEvent', function(self, event) UpdateMoney(nil) end)",
+        "@Interface\\FrameXML\\MoneyCaller.lua",
+    )
+    .unwrap();
+    s.fire_event("PLAYER_MONEY", vec![]);
+    s.dispatch_script_errors_to_handler();
+    let caught: String = s.eval("return caught").unwrap();
+    assert!(caught.contains("MoneyFrame.lua:1:"), "{caught}");
+    assert!(!caught.contains('\n'), "{caught}");
+    let errors = s.take_errors();
+    assert!(
+        errors.iter().any(|error| error.contains(
+            "Lua traceback: Interface\\FrameXML\\MoneyFrame.lua:1 <- Interface\\FrameXML\\MoneyCaller.lua:3"
+        )),
+        "{errors:#?}"
+    );
 }
 
 /// `fire_global` carries `UPDATE_FACTION` from the faction-header verbs.

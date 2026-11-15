@@ -3,7 +3,7 @@
 
 use mlua::{Function, Lua, MultiValue, Value, Variadic};
 
-use super::{diagnostics::DiagnosticKind, model::HandlerArg, taint, Model};
+use super::{model::HandlerArg, taint, Model};
 
 const REG_FACTORY: &str = "__benilla_posthook_factory";
 const REG_INVOKE_FACTORY: &str = "__benilla_posthook_invoke_factory";
@@ -12,11 +12,9 @@ const USAGE: &str = "Usage: hooksecurefunc([table,] functionName, hookFunction)"
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let run_hook = lua.create_function(|lua, (hook, args): (Function, Variadic<Value>)| {
         if let Err(error) = hook.call::<()>(args) {
-            let message = format!("Post-hook: {}", super::lua_message(&error));
-            let mut model = lua.app_data_mut::<Model>().expect("model");
-            model.diagnostics.record(DiagnosticKind::Error, &message);
-            model.errors.push(message);
-            model.pending_error_dispatch.push(HandlerArg::Error(error));
+            lua.app_data_mut::<Model>()
+                .expect("model")
+                .record_error(format!("Post-hook: {error}"), HandlerArg::Error(error));
         }
         Ok(())
     })?;
