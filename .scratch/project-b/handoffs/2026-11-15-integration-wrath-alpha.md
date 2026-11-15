@@ -22,11 +22,12 @@ The overlapping UI changes retain the target-specific button text layers, the
 region registry fix, and the installed-font diagnostics. Both the vehicle and
 item limit DBC catalogs load at startup.
 
-Source audit corrected the character-login refusal map against the 12340
-`WowSvcsClient/Types.h` enumeration and AzerothCore's `ResponseCodes`; the
-queued branch used values from the character-creation range. Rename now accepts
-the reply layout AzerothCore actually emits and reports a malformed reply as a
-failed rename without dropping character selection.
+Source audit matched character-login refusal bytes to AzerothCore's
+`LoginFailureReason` and the 12340 handler at `0x006B2070`. The wire uses
+small indices, not the global response codes. Wrath now displays its billing
+and Remote/Auction House lock reasons in addition to the shared refusals.
+Rename validates the reply layout AzerothCore emits and reports a malformed
+reply as a failed rename without dropping character selection.
 
 Do not switch the user's dirty checkout to build this branch. The candidate
 worktree can be built in isolation, using the existing installed profile. The

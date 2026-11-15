@@ -291,6 +291,8 @@ const STATUS_CHAR_DELETE_SUCCESS: u8 = 0x39;
 const STATUS_CHAR_LOGIN_IN_PROGRESS: u8 = 0x3c;
 const STATUS_CHAR_LOGIN_FAILED: u8 = 0x41;
 const STATUS_CHAR_LOGIN_LOCKED_FOR_TRANSFER: u8 = 0x44;
+const WRATH_CHAR_LOGIN_LOCKED_BY_BILLING: u8 = 0x55;
+const WRATH_CHAR_LOGIN_LOCKED_BY_MOBILE_AH: u8 = 0x56;
 
 /// The record flags `EnterWorld` tests (`+0xfc`): locked for a paid transfer (`0x46b57e`) and
 /// flagged for a rename (`0x46b5b1`).
@@ -300,10 +302,12 @@ const FLAG_RENAME: u32 = benilla_protocol::CHARACTER_FLAG_RENAME;
 /// `SMSG_CHARACTER_LOGIN_FAILED`'s byte as a status (`0x5aad70`, jump table `0x5aae08`): a 1-based
 /// index onto `0x3e 0x3f 0x40 0x42 0x43 0x44`, every other byte the default arm's
 /// `CHAR_LOGIN_FAILED` (`0x5aadf7`).
-fn char_login_status(result: u8) -> u8 {
+fn char_login_status(result: u8, wrath: bool) -> u8 {
     match result {
         1..=3 => 0x3d + result,
         4..=6 => 0x3e + result,
+        7 if wrath => WRATH_CHAR_LOGIN_LOCKED_BY_BILLING,
+        8 if wrath => WRATH_CHAR_LOGIN_LOCKED_BY_MOBILE_AH,
         _ => STATUS_CHAR_LOGIN_FAILED,
     }
 }
@@ -1033,8 +1037,8 @@ impl GlueMgr {
 
     /// `SMSG_CHARACTER_LOGIN_FAILED` (`0x5aad70`): the status its byte maps to, for the glue
     /// rebuild that leaves the world (`0x401ee0`) to put into state 9 ([`Self::take_refusal`]).
-    fn on_char_login_failed(&mut self, result: u8) {
-        self.refused = Some(char_login_status(result));
+    fn on_char_login_failed(&mut self, result: u8, wrath: bool) {
+        self.refused = Some(char_login_status(result, wrath));
     }
 
     /// The rebuild's half of a refused login (`0x402075`, then `0x5aaa50`): state 9 and the login
@@ -1733,6 +1737,14 @@ fn glue_realm(r: &RealmInfo) -> GlueRealm {
 /// outside the table's 0x53 rows (`0x5aa99d`) as the number, `"(%i)"` (`0x85d5b0`) into
 /// `0xc27eb8`; the byte reaches it unclamped (`0x5aa920`), and the URL walk reads it unchanged.
 fn status_text(code: u8) -> (Text, Option<u8>) {
+    let extended = match code {
+        WRATH_CHAR_LOGIN_LOCKED_BY_BILLING => Some("CHAR_LOGIN_LOCKED_BY_BILLING"),
+        WRATH_CHAR_LOGIN_LOCKED_BY_MOBILE_AH => Some("CHAR_LOGIN_LOCKED_BY_MOBILE_AH"),
+        _ => None,
+    };
+    if let Some(key) = extended {
+        return (Text::Key(key), Some(code));
+    }
     match GLUE_STATUS_KEYS.get(usize::from(code)) {
         Some(key) => (Text::Key(key), Some(code)),
         None => (Text::Raw(format!("({code})")), Some(code)),
@@ -1828,13 +1840,16 @@ pub(crate) fn drive_glue_mgr(
     hosted_vm.run(|script| {
         let shared = shared.clone();
         let now_ms = time.elapsed().as_millis() as u32;
+        let wrath = script.as_ref().map_or_else(crate::wrath::selected_from_env, |s| {
+            s.target() == benilla_ui::script::UiTarget::Wrath335
+        });
         let mut script = script.filter(|s| s.vm_kind() == VmKind::Glue);
         let in_world = state.is_some_and(|s| *s.get() == crate::client_state::ClientState::InWorld);
         let glue_up = script.is_some() && !in_world;
 
         // A refused character login, ahead of the glue build it comes back to (`0x5aad70`).
         for msg in news.login_refusals.read() {
-            shared.get_mut().on_char_login_failed(msg.result);
+            shared.get_mut().on_char_login_failed(msg.result, wrath);
         }
 
         // A glue VM the glue build did not seat ([`seat_glue_build`]) is seated here.

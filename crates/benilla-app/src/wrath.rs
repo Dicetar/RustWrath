@@ -850,20 +850,6 @@ fn extract_login_refusal(err: &anyhow::Error) -> Option<benilla_protocol::LoginR
     None
 }
 
-/// Translate 12340 response codes to the donor GlueMgr's six refusal indices. See
-/// `WowSvcsClient/Types.h::RESPONSE_CODES` and AzerothCore `SharedDefines.h::ResponseCodes`.
-fn char_login_failed_result(raw: u8) -> u8 {
-    match raw {
-        0x4e => 1, // NO_WORLD
-        0x4f => 2, // DUPLICATE_CHARACTER
-        0x50 => 3, // NO_INSTANCES
-        0x52 => 4, // DISABLED
-        0x53 => 5, // NO_CHARACTER
-        0x54 => 6, // LOCKED_FOR_TRANSFER
-        _ => 0,
-    }
-}
-
 /// Map a 12340 `SMSG_CHAR_RENAME` `ResponseCodes` byte onto the status table `GlueMgr::char_rename_status`
 /// reads (`0` = success, `0x31` = `CHAR_CREATE_NAME_IN_USE`, anything else = `CHAR_RENAME_FAILED`).
 fn char_rename_status(raw: u8) -> u8 {
@@ -12143,8 +12129,10 @@ pub fn run_session_with_cancel(
                 multiclass.as_ref().expect("enabled multiclass").receive(&p.payload)?;
             }
             Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHARACTER_LOGIN_FAILED => {
-                let raw = p.payload.first().copied().unwrap_or(0x51);
-                let result = char_login_failed_result(raw);
+                // AzerothCore sends LoginFailureReason, not ResponseCodes. The 12340
+                // ClientConnection::HandleCharacterLoginFailed (0x006B2070) uses the
+                // same 1–6 indices as the donor glue, with 7–8 handled separately there.
+                let result = p.payload.first().copied().unwrap_or(0);
                 if let Some(trace) = &feed.trace {
                     trace.observe(
                         Some((session.epoch(), session.world_generation())),
@@ -14452,18 +14440,6 @@ mod scoped_delivery_tests {
             extract_login_refusal(&world_err),
             Some(benilla_protocol::LoginRefusal::World(0x15))
         );
-    }
-
-    #[test]
-    fn char_login_failed_result_maps_12340_response_codes_to_glue_indices() {
-        assert_eq!(char_login_failed_result(0x4E), 1); // CHAR_LOGIN_NO_WORLD
-        assert_eq!(char_login_failed_result(0x4F), 2); // CHAR_LOGIN_DUPLICATE_CHARACTER
-        assert_eq!(char_login_failed_result(0x50), 3); // CHAR_LOGIN_NO_INSTANCES
-        assert_eq!(char_login_failed_result(0x52), 4); // CHAR_LOGIN_DISABLED
-        assert_eq!(char_login_failed_result(0x53), 5); // CHAR_LOGIN_NO_CHARACTER
-        assert_eq!(char_login_failed_result(0x54), 6); // CHAR_LOGIN_LOCKED_FOR_TRANSFER
-        assert_eq!(char_login_failed_result(0x51), 0); // CHAR_LOGIN_FAILED
-        assert_eq!(char_login_failed_result(0x3B), 0); // CHAR_CREATE_LEVEL_REQUIREMENT
     }
 
     #[test]
