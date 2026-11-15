@@ -761,6 +761,22 @@ impl Vm {
         &mut self,
         f: impl FnOnce(&mut Vm) -> Result<T, LuaError>,
     ) -> Result<T, Value> {
+        self.protected_map(f, |_, value| value)
+    }
+
+    /// Preserve caller locations for a host diagnostic before the protected call unwinds.
+    pub fn protected_traced<T>(
+        &mut self,
+        f: impl FnOnce(&mut Vm) -> Result<T, LuaError>,
+    ) -> Result<T, (Value, String)> {
+        self.protected_map(f, |vm, value| (value, vm.traceback()))
+    }
+
+    fn protected_map<T, E>(
+        &mut self,
+        f: impl FnOnce(&mut Vm) -> Result<T, LuaError>,
+        error: impl FnOnce(&Vm, Value) -> E,
+    ) -> Result<T, E> {
         let (frames, c_depth, top, handlers) = (
             self.frames.len(),
             self.c_depth,
@@ -776,13 +792,14 @@ impl Vm {
         match r {
             Ok(v) => Ok(v),
             Err(e) => {
+                let error = error(self, e.value);
                 self.close_upvals(top);
                 self.frames.truncate(frames);
                 self.c_depth = c_depth;
                 self.top = top;
                 self.handlers.truncate(handlers);
                 self.restore_stack_limit();
-                Err(e.value)
+                Err(error)
             }
         }
     }
@@ -833,39 +850,64 @@ impl Vm {
         globals: &[(StrRef, Value)],
         args: &[Value],
     ) -> Result<(), Value> {
+        self.call_with_globals_impl(f, globals, args, |_, value| value)
+    }
+
+    /// The handler call with the pre-unwind caller locations attached to a host error.
+    pub fn call_with_globals_traced(
+        &mut self,
+        f: Value,
+        globals: &[(StrRef, Value)],
+        args: &[Value],
+    ) -> Result<(), (Value, String)> {
+        self.call_with_globals_impl(f, globals, args, |vm, value| (value, vm.traceback()))
+    }
+
+    fn call_with_globals_impl<E>(
+        &mut self,
+        f: Value,
+        globals: &[(StrRef, Value)],
+        args: &[Value],
+        error: impl Fn(&Vm, Value) -> E,
+    ) -> Result<(), E> {
         let base = self.top;
         let n = globals.len();
         let g = Value::Table(self.globals);
         for &(k, _) in globals {
             self.push(Value::Str(k));
         }
-        let read = self.protected(|vm| {
-            for &(k, _) in globals {
-                let old = vm.index(g, Value::Str(k), None)?;
-                vm.push(old);
-            }
-            Ok(())
-        });
+        let read = self.protected_map(
+            |vm| {
+                for &(k, _) in globals {
+                    let old = vm.index(g, Value::Str(k), None)?;
+                    vm.push(old);
+                }
+                Ok(())
+            },
+            &error,
+        );
         if let Err(e) = read {
             self.top = base;
             return Err(e);
         }
-        let set = self.protected(|vm| {
-            for &(k, v) in globals {
-                vm.setindex(g, Value::Str(k), v, None)?;
-            }
-            Ok(())
-        });
+        let capture = |vm: &Vm, value| (value, error(vm, value));
+        let set = self.protected_map(
+            |vm| {
+                for &(k, v) in globals {
+                    vm.setindex(g, Value::Str(k), v, None)?;
+                }
+                Ok(())
+            },
+            &capture,
+        );
         let called = set.and_then(|()| {
-            let func_idx = self.top;
-            self.push(f);
-            for &argument in args { self.push(argument); }
-            match self.pcall_at(func_idx, args.len(), 0, None) {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e.value),
-            }
+            self.protected_map(|vm| vm.call_value(f, args, 0).map(|_| ()), &capture)
         });
-        let mut restored = Ok(());
+        let mut failed = called.err();
+        if let Some((value, _)) = &failed {
+            // A restore metamethod can collect before the host roots the raised value.
+            self.push(*value);
+        }
         for (i, &(k, _)) in globals.iter().enumerate() {
             let old = self.stack[base + n + i];
             if self.abort.is_some() {
@@ -873,11 +915,17 @@ impl Vm {
                 let _ = self.heap.table_mut(self.globals).set(Value::Str(k), old);
                 continue;
             }
-            let r = self.protected(|vm| vm.setindex(g, Value::Str(k), old, None));
-            restored = restored.and(r);
+            let r = self.protected_map(|vm| vm.setindex(g, Value::Str(k), old, None), &capture);
+            if let (None, Err((value, error))) = (&failed, r) {
+                self.push(value);
+                failed = Some((value, error));
+            }
         }
         self.top = base;
-        called.and(restored)
+        match failed {
+            Some((_, error)) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// A value as a Rust string, for hosts and tests: strings and numbers as `tostring` writes
@@ -2249,6 +2297,41 @@ impl Vm {
     }
 
     // ── stack inspection ─────────────────────────────────────────────────────────────────────
+
+    /// The active Lua file and line chain, with inline chunk text omitted.
+    fn traceback(&self) -> String {
+        use std::fmt::Write;
+
+        const MAX_FRAMES: usize = 16;
+        let mut trace = String::new();
+        let frames = self.frames.iter().rev().filter_map(|frame| {
+            // A live Lua frame keeps its prototype alive. Native frames have no Lua location.
+            let proto = unsafe { frame.proto.as_ref() }?;
+            let line = proto
+                .lines
+                .get(frame.pc().saturating_sub(1))
+                .copied()
+                .unwrap_or(0);
+            Some((&proto.source, line))
+        });
+        for (i, (source, line)) in frames.enumerate() {
+            if i == MAX_FRAMES {
+                trace.push_str(" <- …");
+                break;
+            }
+            if i != 0 {
+                trace.push_str(" <- ");
+            }
+            let label = match source.split_first() {
+                Some((b'@' | b'=', name)) => {
+                    String::from_utf8_lossy(name).replace(['\r', '\n', '\t'], " ")
+                }
+                _ => "[string]".to_string(),
+            };
+            let _ = write!(trace, "{label}:{line}");
+        }
+        trace
+    }
 
     /// The stack level `level` up, as `lua_getstack` and `lua_getinfo(L, "Snl")` see it; a
     /// level a tail call replaced is a `"tail"` frame.

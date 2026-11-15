@@ -18,11 +18,12 @@ pub enum Error {
     /// A Lua error value, raised in Lua as it is, with no position: one a call into Lua answered
     /// (`message` its text), which a callback that passes it on raises again unchanged, as a C
     /// function `lua_error`s the value its `lua_pcall` left; or, with no value, `message` raised
-    /// bare, as the client's `PlaySound` raises its usage text (`0x458708`). Its `Display` is a
-    /// [`Error::RuntimeError`]'s.
+    /// bare, as the client's `PlaySound` raises its usage text (`0x458708`). The host may add
+    /// a traceback to its display while retaining the untouched Lua error value.
     LuaValue {
         message: String,
         value: Option<crate::ErrorValue>,
+        traceback: String,
     },
     MemoryError(String),
     /// A callback's arguments and results overflow the stack a C function may use.
@@ -66,6 +67,7 @@ impl Error {
         Error::LuaValue {
             message: message.to_string(),
             value: None,
+            traceback: String::new(),
         }
     }
 
@@ -91,8 +93,13 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::SyntaxError { message, .. } => write!(f, "syntax error: {message}"),
-            Error::RuntimeError(msg) | Error::LuaValue { message: msg, .. } => {
-                write!(f, "runtime error: {msg}")
+            Error::RuntimeError(msg) => write!(f, "runtime error: {msg}"),
+            Error::LuaValue { message, traceback, .. } => {
+                write!(f, "runtime error: {message}")?;
+                if !traceback.is_empty() {
+                    write!(f, "\nLua traceback: {traceback}")?;
+                }
+                Ok(())
             }
             Error::MemoryError(msg) => write!(f, "memory error: {msg}"),
             Error::StackError => write!(
