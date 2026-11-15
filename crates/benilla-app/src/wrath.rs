@@ -84,6 +84,7 @@ use benilla_protocol::messages::{
     VendorItem as ProtocolVendorItem,
 };
 
+use benilla_protocol_wrath::reducer::VehicleAttachment;
 use benilla_protocol_wrath::session::{LifeEvent, Phase, SelfObservation, SessionState};
 
 /// The UI feed that projects the scoped rune/calendar view into the Wrath VM's model.
@@ -1040,6 +1041,7 @@ pub struct WorldDigest {
     pub map_id: u32,
     pub phase: Phase,
     pub player_guid: u64,
+    pub vehicle: Option<VehicleAttachment>,
     pub self_observation: Option<benilla_protocol_wrath::session::SelfObservation>,
     pub entities: BTreeMap<u64, WrathEntity>,
 }
@@ -2095,6 +2097,7 @@ pub struct WrathWorldView {
     pub map_id: u32,
     pub phase: Option<Phase>,
     pub player_guid: u64,
+    pub(crate) vehicle: Option<VehicleAttachment>,
     pub self_observation: Option<benilla_protocol_wrath::session::SelfObservation>,
     pub entities: BTreeMap<u64, WrathEntity>,
     pub last_changes: WrathChanges,
@@ -2165,6 +2168,7 @@ impl Default for WrathWorldView {
             map_id: 0,
             phase: None,
             player_guid: 0,
+            vehicle: None,
             self_observation: None,
             entities: BTreeMap::new(),
             last_changes: WrathChanges::default(),
@@ -2198,7 +2202,22 @@ impl Default for WrathWorldView {
     }
 }
 
+#[derive(Resource)]
+pub(crate) struct WrathVehicleSeats(pub(crate) benilla_formats::VehicleSeats);
+
 impl WrathWorldView {
+    pub(crate) fn seated_vehicle(&self, player_guid: u64) -> Option<u64> {
+        self.local_vehicle(player_guid).map(|seat| seat.base_guid)
+    }
+
+    pub(crate) fn local_vehicle(&self, player_guid: u64) -> Option<VehicleAttachment> {
+        if player_guid == 0 || player_guid != self.player_guid || self.phase != Some(Phase::InWorld)
+        {
+            return None;
+        }
+        self.vehicle
+    }
+
     /// The mirrored active native cast for `unit`, if the authority's last resolved edge left
     /// one. `None` after the authoritative launch/failure/interruption edge, even though
     /// `last_cast_end` keeps its identity for diagnostics.
@@ -8330,6 +8349,7 @@ fn wrath_net_drain(
                 view.map_id = map_id;
                 view.self_observation = None;
                 view.player_guid = 0;
+                view.vehicle = None;
                 view.entered_world = false;
                 view.vendor = None;
                 view.last_inventory_failure = None;
@@ -8666,6 +8686,7 @@ fn wrath_net_drain(
                 view.entities.clear();
                 view.self_observation = None;
                 view.player_guid = 0;
+                view.vehicle = None;
                 view.entered_world = false;
                 view.gossip_menu = None;
                 view.vendor = None;
@@ -8869,6 +8890,7 @@ fn wrath_net_drain(
         view.entities.clear();
         view.self_observation = None;
         view.player_guid = 0;
+        view.vehicle = None;
         view.entered_world = false;
         view.gossip_menu = None;
         view.vendor = None;
@@ -8961,6 +8983,7 @@ fn wrath_net_drain(
     view.map_id = digest.map_id;
     view.phase = Some(digest.phase);
     view.player_guid = digest.player_guid;
+    view.vehicle = digest.vehicle;
     view.self_observation = digest.self_observation.clone();
 
     let mut changes = WrathChanges {
@@ -12812,6 +12835,9 @@ fn build_digest(session: &SessionState) -> WorldDigest {
         map_id: session.map_id().unwrap_or(0),
         phase: session.phase(),
         player_guid: session.player_guid().unwrap_or(0),
+        vehicle: session
+            .player_guid()
+            .and_then(|guid| session.world().seated_vehicle(guid)),
         self_observation: session.current_self_snapshot(),
         entities,
     }

@@ -844,6 +844,10 @@ fn setup_entities(
             Ok(limits) => commands.insert_resource(crate::ui_items::ItemLimitQuantities(limits)),
             Err(error) => warn!("Wrath item limit quantities unavailable: {error:#}"),
         }
+        match benilla_formats::VehicleSeats::load(&mut chain) {
+            Ok(seats) => commands.insert_resource(crate::wrath::WrathVehicleSeats(seats)),
+            Err(error) => warn!("Wrath vehicle seat permissions unavailable: {error:#}"),
+        }
     }
     match load_creature_catalog(&mut chain) {
         Ok(catalog) => {

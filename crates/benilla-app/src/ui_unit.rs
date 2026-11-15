@@ -717,8 +717,8 @@ pub(crate) fn pet_token_guid(me: Option<&ObjectStore>) -> u64 {
 }
 
 /// Wrath-only unit identities for the target/assist resolver. These are client or encounter
-/// state, not object-store snapshots; zero is nobody. The producers are not wired yet, but the
-/// target path has the same fields as the UI resolver instead of silently rejecting the tokens.
+/// state, not object-store snapshots; zero is nobody. The live vehicle comes from the Wrath
+/// world view; the fallback here lets standalone resolver harnesses supply it.
 #[derive(Resource, Default, Clone, Copy, Debug)]
 pub(crate) struct WrathUnitTokens {
     pub(crate) active: bool,
@@ -739,6 +739,7 @@ pub(crate) struct UnitTokens<'w, 's> {
     interact: Option<Res<'w, crate::ui_session::InteractNpc>>,
     group: Res<'w, crate::ui_party::GroupState>,
     wrath: Option<Res<'w, WrathUnitTokens>>,
+    wrath_world: Option<Res<'w, crate::wrath::WrathWorldView>>,
     /// The stores as of the drain's place, so a verb a listener calls reads its packet's.
     pub(crate) stores: views::ViewStores<'w, 's>,
     me: Query<'w, 's, (Entity, &'static Guid), With<SelfPlayer>>,
@@ -812,7 +813,13 @@ impl UnitTokens<'_, '_> {
             // The interaction NPC's guid, `[0xb4e2d0]` (`0x515c00`).
             UnitBase::Npc => self.interact.as_ref()?.1,
             UnitBase::Focus => wrath.and_then(|w| (w.focus != 0).then_some(w.focus)),
-            UnitBase::Vehicle => wrath.and_then(|w| (w.vehicle != 0).then_some(w.vehicle)),
+            UnitBase::Vehicle => {
+                let wrath = wrath?;
+                match self.wrath_world.as_deref() {
+                    Some(view) => view.seated_vehicle(self.me()?.1),
+                    None => (wrath.vehicle != 0).then_some(wrath.vehicle),
+                }
+            }
             UnitBase::Boss(row) => usize::try_from(row)
                 .ok()
                 .and_then(|row| wrath.and_then(|w| w.boss.get(row).copied()))

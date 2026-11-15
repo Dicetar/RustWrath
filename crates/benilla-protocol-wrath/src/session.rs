@@ -472,17 +472,26 @@ impl SessionState {
                 changed |= self.world.apply_movement(guid, snapshot);
                 events.push(ChangeEvent::Moved { guid });
             }
-            opcode::SMSG_MONSTER_MOVE => {
+            opcode::SMSG_MONSTER_MOVE | opcode::SMSG_MONSTER_MOVE_TRANSPORT => {
                 if self.phase != Phase::Loading {
                     if let Ok(Some(crate::gameplay::ServerEvent::MonsterMove(mv))) =
                         crate::gameplay::decode_server(op, payload)
                     {
                         if self.world.apply_monster_move(&mv) {
                             changed = true;
-                            events.push(ChangeEvent::Moved { guid: mv.guid });
+                            if mv.transport.is_none() {
+                                events.push(ChangeEvent::Moved { guid: mv.guid });
+                            }
                         }
                     }
                 }
+            }
+            opcode::SMSG_PLAYER_VEHICLE_DATA => {
+                // 12340 handler 0x00716DB0: packed unit GUID, then the vehicle row (0 removes it).
+                let mut r = Reader::new(payload);
+                let guid = r.packed_guid().context("vehicle unit guid")?;
+                let id = r.u32().context("vehicle id")?;
+                changed |= self.world.apply_vehicle_id(guid, id);
             }
             opcode::SMSG_DESTROY_OBJECT => {
                 // `Object.cpp:278-286`: full u64 GUID, u8 on-death flag.
