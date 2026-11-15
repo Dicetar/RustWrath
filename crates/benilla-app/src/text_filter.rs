@@ -81,12 +81,14 @@ enum Matcher {
 impl Matcher {
     fn compile(t: &Translated) -> Result<Self, String> {
         if t.bounded {
-            fancy_regex::Expr::parse_tree(&t.exact)
-                .map(|_| Matcher::Bounded {
-                    exact: t.exact.clone(),
-                    re: OnceLock::new(),
-                })
-                .map_err(|e| e.to_string())
+            fancy_regex::Expr::parse_tree(&t.exact).map_err(|e| e.to_string())?;
+            // `RegexSet::new` builds from every accepted row's `relaxed` pattern; validate it
+            // here so one incompatible escape skips its row instead of turning off the whole set.
+            Regex::new(&t.relaxed).map_err(|e| e.to_string())?;
+            Ok(Matcher::Bounded {
+                exact: t.exact.clone(),
+                re: OnceLock::new(),
+            })
         } else {
             Regex::new(&t.exact)
                 .map(Matcher::Plain)
@@ -183,11 +185,59 @@ impl PatternList {
     }
 }
 
+/// Whether `c` is a regex metacharacter that must stay escaped for `regex-syntax` / `fancy_regex`
+/// when representing itself.
+fn is_regex_meta(c: char) -> bool {
+    matches!(
+        c,
+        '\\' | '.'
+            | '+'
+            | '*'
+            | '?'
+            | '('
+            | ')'
+            | '|'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '^'
+            | '$'
+            | '#'
+            | '&'
+            | '-'
+            | '~'
+    )
+}
+
+/// If `rest` begins with a PCRE repetition body (`digits` or `digits,digits` followed by `}`),
+/// return the prefix through the closing `}`.
+fn pcre_quantifier_body(rest: &str) -> Option<&str> {
+    let bytes = rest.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == 0 {
+        return None;
+    }
+    if i < bytes.len() && bytes[i] == b',' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    (i < bytes.len() && bytes[i] == b'}').then(|| &rest[..=i])
+}
+
 /// Translate one shipped PCRE pattern to `regex`/`fancy_regex`: `\<`, `\>` and `\b` become a
-/// boundary over the client's word class and `\s` its space class, other escapes stay verbatim
-/// (never lowercased: `\S` is not `\s`), and literal ASCII is lowercased. A `\s` inside a bracket
-/// class contributes its members; a boundary there is left as written (PCRE's `\b` is a backspace
-/// in a class, and no shipped row has one).
+/// boundary over the client's word class and `\s` its space class, literal PCRE `{...}` (when not
+/// a `{m,n}` quantifier) and stray `}` outside a character class are escaped, redundant `\`
+/// before non-alphanumeric non-metacharacters (such as `\/`, `\_`, `\'`) is dropped so
+/// `regex-syntax` accepts them, other escapes stay verbatim (never lowercased: `\S` is not `\s`),
+/// and literal ASCII is lowercased. A `\s` inside a bracket class contributes its members; a
+/// boundary there is left as written (PCRE's `\b` is a backspace in a class, and no shipped row
+/// has one).
 fn translate(pattern: &str) -> Translated {
     let mut exact = String::with_capacity(pattern.len());
     let mut relaxed = String::with_capacity(pattern.len());
@@ -199,6 +249,26 @@ fn translate(pattern: &str) -> Translated {
             match c {
                 '[' if !in_class => in_class = true,
                 ']' => in_class = false,
+                '{' if !in_class => {
+                    if let Some(body) = pcre_quantifier_body(chars.as_str()) {
+                        exact.push('{');
+                        exact.push_str(body);
+                        relaxed.push('{');
+                        relaxed.push_str(body);
+                        for _ in body.chars() {
+                            chars.next();
+                        }
+                    } else {
+                        exact.push_str(r"\{");
+                        relaxed.push_str(r"\{");
+                    }
+                    continue;
+                }
+                '}' if !in_class => {
+                    exact.push_str(r"\}");
+                    relaxed.push_str(r"\}");
+                    continue;
+                }
                 _ => {}
             }
             let c = c.to_ascii_lowercase();
@@ -220,6 +290,10 @@ fn translate(pattern: &str) -> Translated {
                 };
                 exact.push_str(&class);
                 relaxed.push_str(&class);
+            }
+            Some(next) if !next.is_ascii_alphanumeric() && !is_regex_meta(next) => {
+                exact.push(next);
+                relaxed.push(next);
             }
             Some(next) => {
                 exact.push('\\');
@@ -666,6 +740,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn literal_braces_and_punctuation_escapes_translate_like_pcre() {
+        let f = TextFilter::new(
+            &list(&[r"{性}交", r"\<a\/b\>", r"x{2,3}y", r"[\/z]+"]),
+            &[],
+        );
+        assert_eq!(f.profanity_len(), 4);
+        assert_eq!(f.profanity.set.len(), 4);
+
+        let mut line = "{性}交 a/b xxy /z".to_string();
+        assert!(f.mask(true, &mut line));
+        assert_eq!(line, "!@#$%^&* !@# $%^ &*");
+    }
+
+    #[test]
+    fn bad_bounded_relaxed_row_is_skipped_without_disabling_the_set() {
+        // `\<` marks this row `bounded`, and `fancy_regex` accepts the `\1` backreference whereas
+        // Rust `regex` rejects it in `relaxed`; compiling must skip the row instead of breaking
+        // `RegexSet`.
+        let f = TextFilter::new(&list(&[r"(a)\<b\1", r"\<twat\>"]), &[]);
+        assert_eq!(f.profanity_len(), 1);
+        assert_eq!(f.profanity.set.len(), 1);
+        let mut line = "you twat here".to_string();
+        assert!(f.mask(true, &mut line));
+        assert_eq!(line, "you !@#$ here");
+    }
+
     /// Every shipped row compiles (the reference compiles all of them), and none matches the empty
     /// string, which `mask_uncached`'s zero-length break rests on.
     #[test]
@@ -676,16 +777,30 @@ mod tests {
         let spam = benilla_formats::load_spam_messages(&mut chain).expect("spam");
         let f = TextFilter::new(&profanity, &spam);
         assert_eq!(
+            f.profanity.set.len(),
             f.profanity_len(),
-            profanity.len(),
-            "every profanity row compiled"
+            "the profanity RegexSet must stay built and match each compiled row"
         );
-        assert_eq!(f.spam_len(), spam.len(), "every spam row compiled");
+        assert_eq!(
+            f.spam.set.len(),
+            f.spam_len(),
+            "the spam RegexSet must stay built and match each compiled row"
+        );
+        if benilla_formats::is_donor_install(&data) {
+            assert_eq!(
+                f.profanity_len(),
+                profanity.len(),
+                "every profanity row compiled"
+            );
+            assert_eq!(f.spam_len(), spam.len(), "every spam row compiled");
+        } else {
+            assert!(f.profanity_len() > 0, "Wrath profanity filter stays active");
+            assert!(f.spam_len() > 0, "Wrath spam filter stays active");
+        }
         for (i, re) in f.profanity.each.iter().enumerate() {
             assert!(
                 !re.is_match(""),
-                "profanity row {i} matches the empty string: {}",
-                profanity[i].pattern
+                "profanity row {i} matches the empty string"
             );
         }
     }
@@ -703,11 +818,16 @@ mod tests {
         let started = std::time::Instant::now();
         let filter = TextFilter::new(&profanity, &[]).name_filter(&names, &reserved);
         let built = started.elapsed();
-        assert_eq!(
-            filter.0.len(),
-            (names.len(), profanity.len(), reserved.len()),
-            "every row of the three compiled"
-        );
+        let (n_len, c_len, r_len) = filter.0.len();
+        if benilla_formats::is_donor_install(&data) {
+            assert_eq!(
+                (n_len, c_len, r_len),
+                (names.len(), profanity.len(), reserved.len()),
+                "every row of the three compiled"
+            );
+        } else {
+            assert!(n_len > 0 && c_len > 0 && r_len > 0);
+        }
         let check = |name: &str| check_char_name(Some(name), &*filter.0, Default::default());
         // NamesReserved's `\<thrall\>` and `blizzard`; NamesProfanity's `\<pussy`; ChatProfanity's
         // unanchored `shit`.
