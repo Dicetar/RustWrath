@@ -2227,6 +2227,7 @@ pub enum ServerEvent {
     },
     GossipComplete,
     QuestGiverStatus { npc: u64, status: u32 },
+    QuestGiverStatusMultiple(Vec<(u64, u32)>),
     QuestGreeting {
         npc: u64,
         greeting: String,
@@ -2707,6 +2708,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_GOSSIP_MESSAGE => read_gossip(body),
         SMSG_GOSSIP_COMPLETE => Ok(ServerEvent::GossipComplete),
         SMSG_QUESTGIVER_STATUS => read_questgiver_status(body),
+        SMSG_QUESTGIVER_STATUS_MULTIPLE => read_questgiver_status_multiple(body),
         SMSG_QUESTGIVER_QUEST_LIST => read_quest_greeting(body),
         SMSG_QUESTGIVER_QUEST_DETAILS => read_quest_details(body),
         SMSG_QUESTGIVER_REQUEST_ITEMS => read_quest_request(body),
@@ -4359,9 +4361,32 @@ pub fn vanilla_quest_giver_status(wrath: u32) -> Option<u32> {
 
 fn read_questgiver_status(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
+    let (npc, status) = read_questgiver_status_row(&mut r)?;
+    Ok(ServerEvent::QuestGiverStatus { npc, status })
+}
+
+fn read_questgiver_status_row(r: &mut Reader<'_>) -> Result<(u64, u32)> {
     let npc = r.u64()?;
     let status = vanilla_quest_giver_status(r.u8()? as u32).unwrap_or(0);
-    Ok(ServerEvent::QuestGiverStatus { npc, status })
+    Ok((npc, status))
+}
+
+/// 12340 CGPlayer_C::OnQuestGiverStatusMultiple (0x006D1230).
+fn read_questgiver_status_multiple(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let count = r.u32()? as usize;
+    // A full GUID and one status byte per row; check the payload before allocating.
+    if count > r.remaining() / 9 {
+        return Err(DecodeError::truncated(r.remaining()).into());
+    }
+    let mut rows = Vec::with_capacity(count);
+    for _ in 0..count {
+        rows.push(read_questgiver_status_row(&mut r)?);
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
+    Ok(ServerEvent::QuestGiverStatusMultiple(rows))
 }
 
 fn read_quest_greeting(b: &[u8]) -> Result<ServerEvent> {

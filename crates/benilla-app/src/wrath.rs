@@ -4020,6 +4020,10 @@ fn translate_gameplay(
         WrathGameplayEvent::QuestGiverStatus { npc, status } => {
             vec![SessionEvent::QuestGiverStatus { npc, status }]
         }
+        WrathGameplayEvent::QuestGiverStatusMultiple(rows) => rows
+            .into_iter()
+            .map(|(npc, status)| SessionEvent::QuestGiverStatus { npc, status })
+            .collect(),
         WrathGameplayEvent::QuestGreeting {
             npc,
             greeting,
