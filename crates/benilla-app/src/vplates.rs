@@ -255,7 +255,7 @@ pub(crate) fn wrath_plate_gate(
             return false;
         }
     }
-    !(unit.is_player && !friendly && !unit.attackable)
+    friendly || !unit.is_player || unit.attackable
 }
 
 /// Deviation: the reference dims non-target plates to `0x7F`; raised because that fades them too
@@ -546,6 +546,12 @@ fn drive_vplates(
         let Some(script) = script else {
             return PlateStep::Retire;
         };
+        // 12340 requires an active player before deciding the unit's category (0x0072B060).
+        let wrath = script.target() == benilla_ui::script::UiTarget::Wrath335;
+        let (rel, me) = (world.relations.get(), world.relations.me());
+        if wrath && me.is_none() {
+            return PlateStep::Retire;
+        }
         let cam_tf = GlobalTransform::from(*cam_pose);
         let Some(viewport) = cam.logical_viewport_size() else {
             return PlateStep::Retire;
@@ -571,7 +577,6 @@ fn drive_vplates(
         let hovered_key = script.hovered_nameplate();
         let clicked = script.take_nameplate_clicks();
         let my_level = self_store.and_then(|s| s.0.unit_level()).unwrap_or(1);
-        let (rel, me) = (world.relations.get(), world.relations.me());
         let types = crate::creature_type::CreatureTypeSources {
             names: Some(&names),
             forms: spells.as_deref().map(|s| &s.forms),
@@ -579,8 +584,6 @@ fn drive_vplates(
         };
         // `GetUnitName`'s miss (`0x609324`): the `UNKNOWNOBJECT` text, read once a frame.
         let unknown = script.unknown_object_text();
-        // The 12340 gate (`Unit_C.cpp:20408`) on a Wrath VM; the 1.12 one (`0x60f600`) otherwise.
-        let wrath = script.target() == benilla_ui::script::UiTarget::Wrath335;
         let rows = world
             .cvars
             .as_deref()
