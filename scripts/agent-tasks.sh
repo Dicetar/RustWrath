@@ -61,9 +61,15 @@ git for-each-ref --sort=-committerdate \
             [ "$ahead" = 0 ] && continue
             total=$((total + 1))
             behind=$(git rev-list --count "$ref..$remote/$base")
-            # The task note is the newest note the branch adds or changes.
-            note=$(git diff --name-only "$remote/$base...$ref" -- "$notes" 2>/dev/null | sort | sed -n '$p')
-            echo "${ref#"$remote"/}"
+            # The task note is the note the branch touches whose header names this branch;
+            # failing that, the last by name of the notes it touches.
+            name=${ref#"$remote"/}
+            note=
+            for candidate in $(git diff --name-only "$remote/$base...$ref" -- "$notes" 2>/dev/null | sort); do
+                note=$candidate
+                [ "$(field "$ref" "$candidate" Branch)" = "$name" ] && break
+            done
+            echo "$name"
             echo "  last push  $date  $author: $subject"
             echo "  commits    $ahead ahead of $base, $behind behind"
             if [ -n "$note" ]; then
