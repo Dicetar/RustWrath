@@ -2444,6 +2444,17 @@ impl ClientCommand {
             command: Box::new(command),
         }
     }
+
+    /// Unwrap any [`ClientCommand::Tracked`] transport-identity envelopes so wire-level tests can
+    /// inspect the inner command directly regardless of whether `quest_trace::Source` is seeded.
+    #[cfg(test)]
+    pub(crate) fn into_inner(self) -> Self {
+        let mut current = self;
+        while let Self::Tracked { command, .. } = current {
+            current = *command;
+        }
+        current
+    }
 }
 /// The realm list (`CMD_REALM_LIST`); the IO thread waits for a [`RealmRequest`]. `failed` is a
 /// query that got no answer (`REALM_LIST_FAILED`), `realms` then the list last held.
@@ -3038,6 +3049,22 @@ mod tests {
             .unwrap();
         assert_eq!(listed, [(ME, me, Some(256)), (BOAR, boar, Some(40))]);
         assert_eq!(player, Some(me));
+    }
+
+    #[test]
+    fn tracked_into_inner_unwraps_nested_commands() {
+        let plain = ClientCommand::LootMoney;
+        assert!(matches!(plain.into_inner(), ClientCommand::LootMoney));
+
+        let wrapped = ClientCommand::tracked(
+            None,
+            true,
+            ClientCommand::tracked(None, false, ClientCommand::AutostoreLootItem { slot: 3 }),
+        );
+        assert!(matches!(
+            wrapped.into_inner(),
+            ClientCommand::AutostoreLootItem { slot: 3 }
+        ));
     }
 }
 

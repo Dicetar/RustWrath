@@ -294,6 +294,7 @@ impl Client {
     fn sent(&self) -> Vec<ClientCommand> {
         self.rx
             .try_iter()
+            .map(ClientCommand::into_inner)
             .filter(|c| {
                 matches!(
                     c,
@@ -458,6 +459,7 @@ fn a_shift_skin_casts_then_stores_the_byte() {
     c.drain_casts();
     let sent: Vec<ClientCommand> =
         c.rx.try_iter()
+            .map(ClientCommand::into_inner)
             .filter(|c| {
                 matches!(
                     c,
