@@ -10,6 +10,10 @@
 //!
 //! `bind <COMMAND> [key...]` replaces the command's key list; no tokens means unbound, an absent
 //! command keeps its defaults. Tokens are canonical chord strings and never contain spaces.
+//!
+//! The 3.3.5a modified clicks ride in the same file, one line per action whose chord differs from
+//! its `<ModifiedClick>` default, spelled as the reference's `SaveBindings` writes them
+//! (`modifiedclick <CHORD> <ACTION>`, 12340 `0x005640C0`): `modifiedclick CTRL-BUTTON1 CHATLINK`.
 //! Deviation: the reference saves a full snapshot (`bindings-cache.wtf`); a diff is stored
 //! because a full snapshot would leave every command added later unbound for a saved file.
 
@@ -81,6 +85,31 @@ pub(crate) fn from_diff(text: &str) -> Vec<(String, Vec<String>)> {
         ));
     }
     out
+}
+
+/// The modified-click lines for the live set's changed actions (`modified_click_overrides`).
+pub(crate) fn clicks_to_diff(overrides: &[(String, String)]) -> String {
+    overrides
+        .iter()
+        .map(|(action, chord)| format!("modifiedclick {chord} {action}
+"))
+        .collect()
+}
+
+/// Parse a file's modified-click lines into `(action, chord)`; malformed lines are skipped and
+/// unknown actions kept (an addon that declares one may load later).
+pub(crate) fn clicks_from_diff(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut it = line.split_whitespace();
+            if it.next() != Some("modifiedclick") {
+                return None;
+            }
+            let chord = it.next()?.to_ascii_uppercase();
+            let action = it.next()?.to_ascii_uppercase();
+            it.next().is_none().then_some((action, chord))
+        })
+        .collect()
 }
 
 /// Resolve a diff into the full key table: the defaults, then each override in file order
@@ -159,6 +188,32 @@ mod tests {
         assert_eq!(keys(&resolved, "JUMP"), ["F"]);
         assert!(keys(&resolved, "TOGGLESHEATH").is_empty());
         assert_eq!(keys(&resolved, "MOVEFORWARD"), ["W", "UP"]);
+    }
+
+    /// The modified clicks share the file: their lines round-trip and the key parser skips them,
+    /// as the click parser skips the `bind` lines.
+    #[test]
+    fn modified_click_lines_round_trip_beside_the_keys() {
+        let clicks = vec![
+            ("CHATLINK".to_string(), "CTRL-BUTTON1".to_string()),
+            ("SELFCAST".to_string(), "NONE".to_string()),
+        ];
+        let mut text = to_diff(&[("JUMP".to_string(), vec!["F".to_string()])], &defaults());
+        text.push_str(&clicks_to_diff(&clicks));
+        assert!(text.contains("modifiedclick CTRL-BUTTON1 CHATLINK
+"));
+        assert_eq!(clicks_from_diff(&text), clicks);
+        assert_eq!(
+            from_diff(&text),
+            vec![("JUMP".to_string(), vec!["F".to_string()])],
+            "click lines are not commands"
+        );
+        assert!(
+            clicks_from_diff("modifiedclick SHIFT
+modifiedclick A B C
+").is_empty(),
+            "a line without exactly a chord and an action is skipped"
+        );
     }
 
     #[test]

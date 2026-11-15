@@ -214,12 +214,15 @@ pub(super) fn load_core_bindings(script: &UiScript) -> Vec<String> {
         );
         return Vec::new();
     };
-    match benilla_ui::bindings_xml::parse(&benilla_ui::source::decode(&bytes)) {
-        Ok(bindings) => {
-            script.register_bindings(&bindings);
+    match benilla_ui::bindings_xml::parse_file(&benilla_ui::source::decode(&bytes)) {
+        Ok(file) => {
+            script.register_bindings(&file.bindings);
+            // The same loader's `<ModifiedClick>` rows (`LoadModifiedClick`, 12340 `0x00562DD0`).
+            script.register_modified_clicks(&file.modified_clicks);
             info!(
-                "bindings: {} commands registered from {}",
-                bindings.len(),
+                "bindings: {} commands and {} modified clicks registered from {}",
+                file.bindings.len(),
+                file.modified_clicks.len(),
                 reference_ui::BINDINGS
             );
             Vec::new()

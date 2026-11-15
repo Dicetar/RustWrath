@@ -964,8 +964,11 @@ fn load_bindings(lua: &Lua, name: &str, read: &Reader) {
     let Some(bytes) = read(&path) else {
         return;
     };
-    match crate::bindings_xml::parse(&crate::source::decode(&bytes)) {
-        Ok(bindings) => super::keybind::register_addon_bindings(lua, name, &bindings),
+    match crate::bindings_xml::parse_file(&crate::source::decode(&bytes)) {
+        Ok(file) => {
+            super::keybind::register_addon_bindings(lua, name, &file.bindings);
+            super::keybind::register_addon_modified_clicks(lua, &file.modified_clicks);
+        }
         // Reported, not swallowed: otherwise a broken binding file leaves keys dead silently.
         Err(e) => {
             let msg = format!("{name}/Bindings.xml: {e}");

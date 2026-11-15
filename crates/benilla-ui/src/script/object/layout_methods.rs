@@ -214,18 +214,19 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         settle_frame(lua, h);
         let model = lua.app_data_ref::<Model>().expect("model");
         let (units, s) = (model.layout_units(), layout_scale(&model, h));
-        Ok(match model.frame_rects.get(&h) {
-            Some(r) => (
-                Value::Number(units.center(r.left, r.right, s)),
-                Value::Number(units.center(r.bottom, r.top, s)),
-            ),
-            None => {
-                if model.target == crate::script::UiTarget::Wrath335 {
-                    (Value::Number(0.0), Value::Number(0.0))
-                } else {
-                    (Value::Nil, Value::Nil)
-                }
+        let center = model
+            .frame_rects
+            .get(&h)
+            .map(|r| (units.center(r.left, r.right, s), units.center(r.bottom, r.top, s)));
+        let wrath = model.is_wrath();
+        drop(model);
+        Ok(match center {
+            Some((x, y)) => (Value::Number(x), Value::Number(y)),
+            None if wrath => {
+                note_unresolved_rect(lua, h, "GetCenter");
+                (Value::Number(0.0), Value::Number(0.0))
             }
+            None => (Value::Nil, Value::Nil),
         })
     })?;
 
@@ -256,27 +257,65 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             settle_frame(lua, h);
             let model = lua.app_data_ref::<Model>().expect("model");
             let (units, s) = (model.layout_units(), layout_scale(&model, h));
-            Ok(match model.frame_rects.get(&h) {
-                Some(r) => {
-                    let e = match pick {
-                        0 => r.left,
-                        1 => r.right,
-                        2 => r.top,
-                        _ => r.bottom,
-                    };
-                    Some(units.edge(e, s))
+            let edge = model.frame_rects.get(&h).map(|r| {
+                let e = match pick {
+                    0 => r.left,
+                    1 => r.right,
+                    2 => r.top,
+                    _ => r.bottom,
+                };
+                units.edge(e, s)
+            });
+            let wrath = model.is_wrath();
+            drop(model);
+            Ok(match edge {
+                None if wrath => {
+                    note_unresolved_rect(lua, h, name);
+                    Some(0.0)
                 }
-                None => {
-                    if model.target == crate::script::UiTarget::Wrath335 {
-                        Some(0.0)
-                    } else {
-                        None
-                    }
-                }
+                edge => edge,
             })
         })?;
     }
     Ok(())
+}
+
+/// The Wrath geometry getters answer `0` for a frame with no resolved rect, where 12340 answers
+/// nil: `Script_GetCenter` (`0x0049CF90`) and the edge getters force the pending resize and push
+/// nil when `CLayoutFrame::GetRect` (`0x00489230`) finds the rect-valid bit `0x100` unset, which
+/// `OnFrameResize` (`0x00489570`) leaves unset only when `CalculateRect` meets an undefined edge.
+/// The zero keeps 3.3.5 addons that do arithmetic on the answer running (Bartender4's
+/// `SimpleSticky:SnapFrame`), but it is not the contract, and it moves a snap toward a phantom
+/// origin. Name the frame once per VM, with its anchors and size, so the edge the host failed to
+/// resolve can be traced and the nil restored.
+fn note_unresolved_rect(lua: &Lua, h: FrameHandle, getter: &'static str) {
+    let mut model = lua.app_data_mut::<Model>().expect("model");
+    if !model.warned_unresolved_rects.insert(h) {
+        return;
+    }
+    let who = model
+        .arena
+        .frame(h)
+        .and_then(|f| f.name.clone())
+        .unwrap_or_else(|| UNNAMED.to_string());
+    let input = model.layout_inputs.get(&h);
+    let anchors = input.map_or_else(
+        || "none".to_string(),
+        |i| {
+            i.anchors
+                .iter()
+                .map(|a| format!("{:?}->{:?}.{:?}", a.point, a.relative_to, a.relative_point))
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    );
+    let size = input.map_or_else(
+        || "unset".to_string(),
+        |i| format!("{:?} x {:?}", i.width, i.height),
+    );
+    model.record_warning(format!(
+        "{who}:{getter}(): no resolved rect, answering 0 where 12340 answers nil (anchors [{anchors}], size {size})"
+    ));
 }
 
 /// Resolve the layout now if anything moved, as the reference answers a geometry query against

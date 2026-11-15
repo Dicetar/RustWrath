@@ -352,6 +352,12 @@ impl super::UiScript {
     pub fn take_restart_gx_asks(&mut self) -> u32 {
         std::mem::take(&mut self.model_mut().restart_gx_asks)
     }
+
+    /// Drain the `Sound_GameSystem_RestartSoundSystem()` calls queued since the last call; the
+    /// host answers any number of them with one rebuild of the output stream.
+    pub fn take_restart_sound_asks(&mut self) -> u32 {
+        std::mem::take(&mut self.model_mut().restart_sound_asks)
+    }
 }
 
 /// An engine-side write, for a value the engine owns: queued like a Lua `SetCVar` so the config
@@ -813,6 +819,86 @@ pub const VIDEO_DEFAULT_CVARS: &[&str] = &[
     // Ours, restored with `frillDensity` so the pair keeps describing one detail level.
     "WorldDetail",
 ];
+
+/// One 3.3.5a video options page's rows, as `ConsoleDeviceDefaults(page)` (12340 `0x0076A130`)
+/// and its default callbacks reset them: `(name, value)`, a `None` value being the row's
+/// registered default.
+///
+/// Deviation: the reference writes the hardware-detected defaults (`ConsoleDetectSetDefaults`, and
+/// pixel-shader tiers for `particleDensity` and `projectedTextures`); here the host's registry
+/// is the detection, so a row takes the default it registered. Rows benilla does not register are
+/// skipped, as the reference's `if (cvar_…)` guards skip a missing record.
+pub(crate) type VideoPage = &'static [(&'static str, Option<&'static str>)];
+
+/// `RestoreVideoResolutionDefaults` (`0x00510DC0`), page 0: the detected format's rows
+/// (`SetGxCVars`, `ConsoleDevice_CVar.cpp:335`), then `Client.cpp`'s `SetDefaults` (`0x00402530`)
+/// for the gammas and the resize lock. `fixedFunction` goes to 0 on every page.
+pub(crate) const VIDEO_RESOLUTION_PAGE: VideoPage = &[
+    ("fixedFunction", Some("0")),
+    ("gxColorBits", None),
+    ("gxDepthBits", None),
+    ("gxWindow", None),
+    ("gxResolution", None),
+    ("gxRefresh", None),
+    ("gxTripleBuffer", None),
+    ("gxVSync", None),
+    ("gxAspect", None),
+    ("gxMaximize", None),
+    ("gxCursor", None),
+    ("gxMultisample", None),
+    ("gxMultisampleQuality", None),
+    ("gxFixLag", None),
+    ("desktopGamma", Some("0")),
+    (CVAR_GAMMA, Some("1.0")),
+    ("windowResizeLock", None),
+];
+
+/// `RestoreVideoEffectsDefaults` (`0x00510DD0`), page 1: `CWorldParam::SetDefaults`
+/// (`0x0078E1A0`) in its order, then `Client.cpp`'s `textureFilteringMode`.
+pub(crate) const VIDEO_EFFECTS_PAGE: VideoPage = &[
+    ("fixedFunction", Some("0")),
+    ("farclip", None),
+    ("shadowLevel", None),
+    ("maxLights", None),
+    ("specular", None),
+    ("waterLOD", None),
+    ("particleDensity", None),
+    ("baseMip", None),
+    ("groundEffectDensity", None),
+    ("environmentDetail", None),
+    ("groundEffectDist", Some("70.0")),
+    ("weatherDensity", None),
+    ("extShadowQuality", None),
+    ("ffxDeath", None),
+    ("ffxGlow", None),
+    ("projectedTextures", None),
+    ("textureFilteringMode", None),
+];
+
+/// `RestoreVideoStereoDefaults` (`0x004DD420`, also a glue binding), page 2: the three stereo
+/// rows `Client.cpp`'s `SetDefaults` resets to their defaults.
+pub(crate) const VIDEO_STEREO_PAGE: VideoPage = &[
+    ("fixedFunction", Some("0")),
+    ("gxStereoEnabled", None),
+    ("gxStereoConvergence", None),
+    ("gxStereoSeparation", None),
+];
+
+/// Reset one page's registered rows through the engine's write path, then with `restart` (the
+/// resolution page alone) ask for the device restart (`CCGxRestart`), which commits the latched
+/// `gx*` rows.
+pub(crate) fn restore_video_page(model: &mut Model, page: VideoPage, restart: bool) {
+    for &(name, value) in page {
+        let Some(slot) = model.cvars.get(&name.to_ascii_lowercase()) else {
+            continue;
+        };
+        let value = value.map_or_else(|| slot.default.clone(), str::to_owned);
+        set_from_engine(model, name, value);
+    }
+    if restart {
+        model.restart_gx_asks += 1;
+    }
+}
 
 /// The Video options window's engine verbs that nothing else here provides. Three run at load,
 /// as `UIDropDownMenu_Initialize` calls its initializer at once (`UIDropDownMenu.lua:48-50`):
