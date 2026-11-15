@@ -33,6 +33,9 @@ do not authorize broad test runs, builds or live sessions.
 - When collaboration is authorized, use AutoSwarm to assign, communicate and collect work.
   Inspect tracked calls and manually opened sessions before starting duplicate work.
   Handle routine coordination directly; do not make the owner relay messages.
+- The owner builds and launches the client by hand, after a batch of changes has landed. Do not
+  run Cargo or start the client unless the owner asks for it in that session; report
+  compilation and tests as not run.
 - One coordinator owns Cargo and client slots. Never start a competing build/client or
   terminate another session to acquire a slot. Revalidate stale notes and PIDs.
 - All Cargo build/check/test runs use sccache. The checkout's `.cargo/config.toml` sets

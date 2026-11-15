@@ -48,7 +48,8 @@ update it in place rather than adding a new file per session.
 ## Unfinished work
 
 - A task branch may hold commits that do not compile or pass. Start their subject with `wip:` and
-  state in the note what is broken or unrun. `main` only receives finished work.
+  state in the note what is broken or unrun. `main` only receives work whose source is finished
+  and reviewed; see [landing](#landing-on-main) for what that does not prove.
 - Stage your own paths by name. No `git add .`, no generated or game files; see the
   [repository rules](repository.md).
 - Do not rewrite a pushed branch. No force-push, no rebase of commits another agent may have
@@ -67,11 +68,21 @@ it waits for in `Next:`.
 
 ## Landing on main
 
-One integrator at a time lands branches; it is the session that holds the Cargo slot in
-[active ownership](active-ownership.md). For each `ready to merge` branch it reviews the diff and
-the note, runs the checks the task needs, fast-forwards or merges into `main`, pushes, and
-deletes the remote branch and its worktree. The owner may ask for a pull request instead. Aim to
-empty the ready list daily: a branch that waits a week has to be rebuilt against a moved `main`.
+The owner builds and launches the client by hand, with `Launch RustWrath.cmd` in the integration
+checkout, after a batch of changes has landed. That script builds what is on `main` in that
+checkout and nothing else. Agents do not run Cargo or start the client unless the owner asks for
+it in that session.
+
+So a branch lands on a source review, not on a build. One integrator at a time lands branches,
+when the owner asks for a batch. For each `ready to merge` branch it reads the diff and the note,
+checks the change against its reference and that what it calls exists, merges or fast-forwards
+into `main`, pushes, and deletes the remote branch and its worktree. It leaves a branch alone
+when its worktree holds another session's uncommitted work, and lands only what is pushed. The
+owner may ask for a pull request instead.
+
+Say in the merge commit and in the note what was not compiled or run. `main` can therefore fail
+to build until the owner's next batch. A build or test failure from that batch is the next task:
+fix it on a new branch, with the error text in the note.
 
 After landing, the integrator fast-forwards the integration checkout. Other agents start their
 next task from the new `origin/main`.
