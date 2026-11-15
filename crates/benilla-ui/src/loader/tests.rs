@@ -1862,8 +1862,9 @@ mod loader_tests {
             .unwrap());
     }
 
-    /// The label build is not Wrath-gated: the same unnamed `<ButtonText/>` exists during OnLoad
-    /// on the default 1.12 target, and the handler can address it.
+    /// The same unnamed `<ButtonText/>` exists during OnLoad on the default 1.12 target, where the
+    /// loader's empty `SetText` creates it rather than the Wrath-only region build, and the
+    /// handler can address it.
     #[test]
     fn unnamed_button_text_is_available_during_onload_on_1_12() {
         let s = UiScript::new().unwrap();

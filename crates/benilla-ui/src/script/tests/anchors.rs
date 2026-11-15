@@ -452,3 +452,33 @@ fn get_width_resolves_only_at_a_zero_size() {
         "w 19.999999701977,span,w 199.99999701977,fixed"
     );
 }
+
+// 12340's `GetCenter` (`0x0049CF90`) and edge getters answer nil while the rect-valid bit is clear.
+// The Wrath VM answers 0 there, which keeps 3.3.5 addons' arithmetic running, and names the frame
+// once so the unresolved edge can be traced; the 1.12 VM keeps the nils.
+#[test]
+fn an_unresolved_wrath_frame_answers_zero_and_is_named_once() {
+    use crate::script::{UiScript, UiTarget};
+
+    let mut wrath = UiScript::with_target(UiTarget::Wrath335).unwrap();
+    wrath.run(r#"CreateFrame("Frame", "NoRect")"#).unwrap();
+    let _ = wrath.take_warnings();
+    assert_eq!(
+        wrath.eval::<(f64, f64)>("return NoRect:GetCenter()").unwrap(),
+        (0.0, 0.0)
+    );
+    assert_eq!(wrath.eval::<f64>("return NoRect:GetLeft()").unwrap(), 0.0);
+    let warns = wrath.take_warnings();
+    let named: Vec<_> = warns.iter().filter(|w| w.contains("NoRect:")).collect();
+    assert_eq!(named.len(), 1, "{warns:?}");
+    assert!(named[0].contains("NoRect:GetCenter(): no resolved rect"), "{named:?}");
+
+    let mut vanilla = script();
+    vanilla.run(r#"CreateFrame("Frame", "NoRect")"#).unwrap();
+    assert_eq!(
+        vanilla
+            .eval::<(Option<f64>, Option<f64>)>("return NoRect:GetCenter()")
+            .unwrap(),
+        (None, None)
+    );
+}

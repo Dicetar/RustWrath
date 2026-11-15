@@ -255,7 +255,7 @@ pub(crate) fn wrath_plate_gate(
             return false;
         }
     }
-    // `Unit_C.cpp:20503`: an enemy player who cannot be attacked has no plate.
+    // `:20503`: a player on the enemy side that cannot be attacked has no plate.
     friendly || !unit.is_player || unit.attackable
 }
 

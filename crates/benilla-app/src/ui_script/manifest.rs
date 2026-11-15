@@ -214,12 +214,15 @@ pub(super) fn load_core_bindings(script: &UiScript) -> Vec<String> {
         );
         return Vec::new();
     };
-    match benilla_ui::bindings_xml::parse(&benilla_ui::source::decode(&bytes)) {
-        Ok(bindings) => {
-            script.register_bindings(&bindings);
+    match benilla_ui::bindings_xml::parse_file(&benilla_ui::source::decode(&bytes)) {
+        Ok(file) => {
+            script.register_bindings(&file.bindings);
+            // The same loader's `<ModifiedClick>` rows (`LoadModifiedClick`, 12340 `0x00562DD0`).
+            script.register_modified_clicks(&file.modified_clicks);
             info!(
-                "bindings: {} commands registered from {}",
-                bindings.len(),
+                "bindings: {} commands and {} modified clicks registered from {}",
+                file.bindings.len(),
+                file.modified_clicks.len(),
                 reference_ui::BINDINGS
             );
             Vec::new()
@@ -634,14 +637,19 @@ mod tests {
         assert!(!s.execute_binding("ITUNES_PLAYPAUSE", true).unwrap());
     }
 
-    /// Compare the same FrameXML walk with a fixed-width measurer and the app's atlas measurer.
-    /// The live run took 153 s between ChatFrame.xml and completion of FloatingChatFrame.xml.
+    /// The installed Wrath core, file by file into a Wrath VM as `load_core` walks it, timed once
+    /// with a fixed-width measurer and once with the app's atlas measurer: a live run spent 153 s
+    /// between `ChatFrame.xml` and the end of `FloatingChatFrame.xml` that earlier builds spent
+    /// under a second in — the 2026-11-14 session in
+    /// `benilla-config/Logs/Launcher/20261114-132949-470/stderr.log`, lines 280 and 282.
     ///
-    /// This wall-clock probe uses the installed client and is not part of the default run. Use
+    /// A probe for that one stall, not a gate: it loads the whole installed core and asserts on
+    /// wall-clock time, so it is out of the default run. Run it by hand with
     /// `cargo test -p benilla-app each_wrath_core_file_loads_in_bounded_time -- --ignored --nocapture`;
-    /// `CORE_FILE_TIME` prints every file that took 250 ms or more, and `CORE_TOTAL_TIME` the walk.
+    /// `CORE_FILE_TIME` prints the chat file and every file that took 250 ms or more, and
+    /// `CORE_TOTAL_TIME` each walk.
     #[test]
-    #[ignore = "Wall-clock diagnostic with installed Wrath data"]
+    #[ignore = "probe: the 153 s FloatingChatFrame.xml stall from the 2026-11-14 launcher log, run by hand with --ignored --nocapture"]
     fn each_wrath_core_file_loads_in_bounded_time() {
         use benilla_ui::script::{TextMeasure, UiTarget};
 

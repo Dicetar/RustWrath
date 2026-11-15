@@ -63,6 +63,32 @@ impl std::error::Error for Error {
 /// (`0x4b7084`-`0x4b708d`), an empty body (`0x4b7093`-`0x4b709e`) or `debug="true"`
 /// (`0x4b70a4`-`0x4b70bd`) is skipped too, so the stock file's nine debug rows are not commands.
 pub fn parse(text: &str) -> Result<Vec<Binding>, Error> {
+    parse_file(text).map(|file| file.bindings)
+}
+
+/// One `<ModifiedClick action="…" default="…"/>` row, a 3.3.5a addition the same loader reads
+/// beside the bindings (`CGUIBindings::Load`, 12340 `0x00564760`, dispatching to
+/// `LoadModifiedClick` `0x00562DD0`). The default is the raw chord text; the registrar parses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModifiedClick {
+    /// The action name `IsModifiedClick` and `SetModifiedClick` speak in.
+    pub action: String,
+    /// The `default` attribute, absent or empty being no chord.
+    pub default: Option<String>,
+}
+
+/// A whole `Bindings.xml`: its commands and its modified-click rows, each in document order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct File {
+    pub bindings: Vec<Binding>,
+    /// A 1.12 file has none.
+    pub modified_clicks: Vec<ModifiedClick>,
+}
+
+/// [`parse`], keeping the `<ModifiedClick>` rows too. A row with no or an empty `action` is skipped
+/// (the reference warns, `0x00562DD0`); a repeated action is kept here and refused at registration,
+/// where the reference refuses it against every file loaded before.
+pub fn parse_file(text: &str) -> Result<File, Error> {
     // The reference's expat has no namespace processing, so an undeclared prefix is bound and the
     // text re-read rather than costing the file, as in `framexml::parse`.
     let repaired;
@@ -75,7 +101,17 @@ pub fn parse(text: &str) -> Result<Vec<Binding>, Error> {
         Err(e) => return Err(Error::Xml(e)),
     };
     let mut out = Vec::new();
+    let mut modified_clicks = Vec::new();
     for node in doc.root_element().children() {
+        if node.is_element() && node.tag_name().name().eq_ignore_ascii_case("ModifiedClick") {
+            if let Some(action) = attr_ci(node, "action").filter(|a| !a.is_empty()) {
+                modified_clicks.push(ModifiedClick {
+                    action,
+                    default: attr_ci(node, "default").filter(|d| !d.is_empty()),
+                });
+            }
+            continue;
+        }
         if !node.is_element() || !node.tag_name().name().eq_ignore_ascii_case("Binding") {
             continue;
         }
@@ -97,7 +133,10 @@ pub fn parse(text: &str) -> Result<Vec<Binding>, Error> {
             body,
         });
     }
-    Ok(out)
+    Ok(File {
+        bindings: out,
+        modified_clicks,
+    })
 }
 
 /// Case-insensitive attribute lookup, as the reference's `GetAttribute 0x6f2cf0` folds case.

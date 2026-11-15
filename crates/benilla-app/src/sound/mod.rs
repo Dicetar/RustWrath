@@ -413,6 +413,7 @@ impl Plugin for SoundPlugin {
                 toggle_mute,
                 apply_master_volume.after(toggle_mute),
                 apply_focus_gate,
+                drain_restart_sound.before(poll_mix_health),
                 poll_mix_health,
             ),
         );
@@ -522,6 +523,31 @@ const MIX_HEALTH_REPORT: std::time::Duration = std::time::Duration::from_secs(5)
 /// Drain the backend's mix-health queues every frame (they are bounded rings) and report
 /// deadline misses, voice refusals and the output level. A quiet report during a crackle points
 /// upstream: [`mixer::StreamWatch`] meters stream decoders, and `$WOW_MIX_TAP` records the mix.
+/// Carry `Sound_GameSystem_RestartSoundSystem()` calls (12340 `0x00985D30`: `SI2::ShutDown(1)`,
+/// a 200 ms sleep, `SI2::Init(1)`) into one rebuild of the output stream on the current default
+/// device, which `poll_mix_health` services this frame.
+///
+/// Named deviations from `SI2::Init`: the renderer, its voices and the playing sounds survive the
+/// restart (the reference stops and reloads them), and the init-time settings `SoundBufferSize`,
+/// `Sound_NumChannels` and `Sound_OutputQuality` are not re-read; this host has one output and no
+/// driver index to switch to.
+fn drain_restart_sound(
+    script: Option<NonSendMut<benilla_ui::script::UiScript>>,
+    mut out: NonSendMut<SoundOutput>,
+) {
+    // Only the model's counter is read, so the VM runs nothing and needs no host lent.
+    let Some(mut script) = script else {
+        return;
+    };
+    if script.take_restart_sound_asks() == 0 {
+        return;
+    }
+    match out.mixer.as_mut() {
+        Some(mixer) => mixer.restart_output(),
+        None => warn!("audio: sound system restart asked with no output — nothing to restart"),
+    }
+}
+
 fn poll_mix_health(
     mut out: NonSendMut<SoundOutput>,
     time: Res<Time>,

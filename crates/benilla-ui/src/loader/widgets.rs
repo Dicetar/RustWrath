@@ -181,8 +181,8 @@ impl Loader<'_> {
             } else {
                 FontAttrs::Own
             };
-            // `text=` is each level's, a global-string key (`0x703bf0`), an empty one skipped
-            // (`0x77101b`).
+            // The label's `text=` is each level's, a global-string key (`0x703bf0`), an empty one
+            // skipped (`0x77101b`).
             let label_levels = self.fontstring_levels(bt);
             let mut label = String::new();
             for level in &label_levels {
@@ -190,9 +190,12 @@ impl Loader<'_> {
                     label = self.resolve_text(raw, dbg);
                 }
             }
-            // Create named regions before SetText so GetName() answers. Wrath's XML loader
-            // also creates unnamed labels (CSimpleButton.cpp:939); SetText("") would leave
-            // them absent during OnLoad. The 1.12 unnamed label takes SetText's overlay layer.
+            // A named label is created as a named region first, not aliased after `SetText`, so
+            // its `GetName()` answers. Wrath builds the unnamed `ButtonText` region too, as
+            // `LoadXML_String` does (`CSimpleButton.cpp:939`): there `SetText("")` would not create
+            // one (`CSimpleButton.cpp:650`), and stock OnLoad handlers call `GetFontString()` even
+            // when the node has no name or text. On 1.12 the unnamed label comes from the
+            // `SetText` below, which creates it even for an empty text, on the overlay layer.
             let bt_name = bt.name().map(|raw| framexml::resolve_name(raw, self_name));
             if bt_name.is_some() || self.model().target == crate::script::UiTarget::Wrath335 {
                 match wrapper.call_method::<Table>("CreateFontString", bt_name.as_deref()) {

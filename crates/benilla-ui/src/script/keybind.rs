@@ -11,7 +11,9 @@ use std::collections::HashMap;
 
 use mlua::{Lua, MultiValue, Value};
 
-use crate::bindings_xml::Binding;
+use crate::bindings_xml::{Binding, ModifiedClick};
+
+pub(crate) mod clicks;
 
 use super::Model;
 
@@ -157,6 +159,8 @@ pub(crate) struct KeybindState {
     /// [`Self::generation`] alone.
     signal_owed: bool,
     requests: Vec<KeybindRequest>,
+    /// The 3.3.5a modified clicks, held per set beside the keys ([`clicks`]).
+    pub(crate) clicks: clicks::ClickState,
 }
 
 impl KeybindState {
@@ -269,6 +273,7 @@ impl KeybindState {
             _ => return,
         };
         self.live = list.clone();
+        self.clicks.load(set);
         if set != 0 {
             self.current_set = set;
         }
@@ -285,6 +290,7 @@ impl KeybindState {
         if which == 1 {
             self.stored[1] = None;
         }
+        self.clicks.save(which);
         self.current_set = which;
         self.requests.push(KeybindRequest::Save(which));
     }
@@ -350,6 +356,24 @@ impl super::UiScript {
     /// after its `.toc` files, before its saved variables (`0x51f443`).
     pub fn register_addon_bindings(&self, addon: &str, bindings: &[Binding]) {
         register_addon_bindings(self.lua(), addon, bindings);
+    }
+
+    /// Register a `Bindings.xml`'s `<ModifiedClick>` rows, the core's or an addon's, beside its
+    /// bindings ([`clicks::ClickState::register`]).
+    pub fn register_modified_clicks(&self, rows: &[ModifiedClick]) {
+        self.model_mut().keybinds.clicks.register(rows);
+    }
+
+    /// Seed stored set 1 (account) or 2 (character) with its modified-click changes, `(action,
+    /// chord)`, beside [`Self::seed_binding_set`]; `None` clears it.
+    pub fn seed_click_set(&mut self, set: u32, overrides: Option<Vec<(String, String)>>) {
+        self.model_mut().keybinds.clicks.seed(set, overrides);
+    }
+
+    /// The live set's modified clicks that differ from their defaults, `(action, chord)`, for the
+    /// save beside [`Self::keybind_snapshot`].
+    pub fn modified_click_overrides(&self) -> Vec<(String, String)> {
+        self.model_mut().keybinds.clicks.overrides()
     }
 
     /// Set 0, the defaults, from `WTF\DefaultBindings.wtf` ([`parse_bindings_wtf`]), as
@@ -437,6 +461,13 @@ impl super::UiScript {
     pub fn character_bindings_exist(&self) -> bool {
         self.model_mut().keybinds.stored[1].is_some()
     }
+}
+
+/// Register one addon's `<ModifiedClick>` rows from a bare `&Lua`, beside
+/// [`register_addon_bindings`].
+pub(crate) fn register_addon_modified_clicks(lua: &Lua, rows: &[ModifiedClick]) {
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    model.keybinds.clicks.register(rows);
 }
 
 /// Register one addon's `Bindings.xml` from a bare `&Lua`: `LoadAddOn` runs inside a Lua binding
@@ -615,6 +646,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 lua.create_string(&name)
             })?,
         )?;
+        clicks::install(lua)?;
     }
     // The set's copy into the live table (`0x4b8252` → `0x4b6310`, destination 3) signals
     // `UPDATE_BINDINGS` (`0x4b649d`) before the verb returns. The set is read by `tonumber`
@@ -1286,5 +1318,87 @@ mod addon_persistence_tests {
         s.load_binding_set(2);
         s.register_addon_bindings("MyAddon", &[binding("MYADDONTOGGLE")]);
         assert_eq!(keys(&s, "MYADDONTOGGLE"), ["ALT-Z"]);
+    }
+
+    /// The modified clicks follow the `<ModifiedClick>` rows (an empty action dropped at parse, a
+    /// repeated one refused at registration), `SetModifiedClick` edits the live set and refuses an
+    /// undeclared action or an unparsable chord, a mouse-button chord matches only the click being
+    /// dispatched, and `SaveBindings`/`LoadBindings` carry the clicks with the keys.
+    #[test]
+    fn modified_clicks_follow_their_rows_and_the_binding_sets() {
+        let mut s = wrath_script();
+        let file = crate::bindings_xml::parse_file(
+            r#"<Bindings>
+                <ModifiedClick action="SELFCAST" default="ALT"/>
+                <ModifiedClick action="CHATLINK" default="SHIFT-BUTTON1"/>
+                <ModifiedClick action="SELFCAST" default="CTRL"/>
+                <ModifiedClick action="" default="SHIFT"/>
+            </Bindings>"#,
+        )
+        .unwrap();
+        assert_eq!(file.modified_clicks.len(), 3, "the empty action is skipped");
+        s.register_modified_clicks(&file.modified_clicks);
+        assert_eq!(
+            s.eval::<(i64, String, String, Option<String>)>(
+                "return GetNumModifiedClickActions(), GetModifiedClickAction(1), \
+                 GetModifiedClick('selfcast'), GetModifiedClickAction(3)"
+            )
+            .unwrap(),
+            (2, "SELFCAST".into(), "ALT".into(), None),
+            "the repeated SELFCAST keeps its first default"
+        );
+        assert_eq!(s.eval::<Option<String>>("return GetModifiedClick('NOPE')").unwrap(), None);
+
+        s.eval::<()>("SetModifiedClick('CHATLINK', 'ctrl-button1')").unwrap();
+        for bad in ["SetModifiedClick('NOPE', 'ALT')", "SetModifiedClick('CHATLINK', 'SHIFT-Q')"] {
+            let e = s.run(bad).unwrap_err().to_string();
+            assert!(e.contains("SetModifiedClick(): Unknown action"), "{bad}: {e}");
+        }
+        assert_eq!(
+            s.eval::<String>("return GetModifiedClick('CHATLINK')").unwrap(),
+            "CTRL-BUTTON1"
+        );
+
+        s.set_modifiers(false, true, false);
+        let during = |button: &str| {
+            super::clicks::with_click_button(s.lua(), button, || {
+                s.eval::<Option<i64>>("return IsModifiedClick('CHATLINK')").unwrap()
+            })
+        };
+        assert_eq!(during("LeftButton"), Some(1), "ctrl-left click");
+        assert_eq!(during("RightButton"), None, "the chord names the left button");
+        assert_eq!(
+            s.eval::<Option<i64>>("return IsModifiedClick('CHATLINK')").unwrap(),
+            Some(1),
+            "outside a click the button is not asked"
+        );
+
+        s.eval::<()>("SaveBindings(1)").unwrap();
+        assert_eq!(
+            s.modified_click_overrides(),
+            [("CHATLINK".to_string(), "CTRL-BUTTON1".to_string())],
+            "only the changed action is stored"
+        );
+        s.eval::<()>("LoadBindings(0)").unwrap();
+        assert_eq!(
+            s.eval::<String>("return GetModifiedClick('CHATLINK')").unwrap(),
+            "SHIFT-BUTTON1",
+            "set 0 is the rows' defaults"
+        );
+        s.seed_click_set(2, Some(vec![("SELFCAST".into(), "NONE".into())]));
+        s.eval::<()>("LoadBindings(2)").unwrap();
+        assert_eq!(
+            s.eval::<(String, String)>(
+                "return GetModifiedClick('SELFCAST'), GetModifiedClick('CHATLINK')"
+            )
+            .unwrap(),
+            ("NONE".into(), "SHIFT-BUTTON1".into()),
+            "the character set is its own diff against the defaults"
+        );
+        s.eval::<()>("LoadBindings(1)").unwrap();
+        assert_eq!(
+            s.eval::<String>("return GetModifiedClick('CHATLINK')").unwrap(),
+            "CTRL-BUTTON1"
+        );
     }
 }

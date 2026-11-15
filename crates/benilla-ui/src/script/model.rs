@@ -797,6 +797,9 @@ pub(crate) struct Model {
     pub(crate) video_caps: super::cvars::VideoCaps,
     /// `RestartGx()` calls, the video window's apply button.
     pub(crate) restart_gx_asks: u32,
+    /// `Sound_GameSystem_RestartSoundSystem()` calls, the sound panel's apply after a control
+    /// marked `restart` changed (`AudioOptionsFrame.lua:29`).
+    pub(crate) restart_sound_asks: u32,
 
     /// Globals `RegisterForSave` declared, in order: written at logout and read back at load.
     pub(crate) saved_names: Vec<String>,
@@ -1445,8 +1448,14 @@ pub(crate) struct Model {
     pub(crate) framerate: f64,
     /// `(shift, ctrl, alt)` for `Is*KeyDown`, pushed before the frame's mouse events.
     pub(crate) modifiers: (bool, bool, bool),
+    /// The mouse button of the click whose script is running, `CSimpleTop::m_mouseButtonName`
+    /// ([`super::keybind::clicks::with_click_button`]); `None` outside one.
+    pub(crate) click_button: Option<String>,
     /// Unsupported 3.3.5 native names that have already emitted a one-time diagnostic warning in this VM.
     pub(crate) warned_unsupported_wrath_natives: HashSet<&'static str>,
+    /// Frames a Wrath geometry getter answered `0` for, having no resolved rect: each is named once
+    /// (`object::layout_methods::note_unresolved_rect`).
+    pub(crate) warned_unresolved_rects: HashSet<FrameHandle>,
 }
 
 impl Model {
@@ -1818,6 +1827,7 @@ impl Model {
             current_resolution: None,
             video_caps: super::cvars::VideoCaps::default(),
             restart_gx_asks: 0,
+            restart_sound_asks: 0,
             saved_names: Vec::new(),
             held_saved_files: Vec::new(),
             loaded_saved_files: Vec::new(),
@@ -2025,6 +2035,7 @@ impl Model {
             summon_summoner_lookups: 0,
             framerate: 1000.0,
             modifiers: (false, false, false),
+            click_button: None,
             money: 0,
             net_latency_ms: 0,
             net_bandwidth_kbps: (0.0, 0.0),
@@ -2083,6 +2094,7 @@ impl Model {
             reputation_selected: 0,
             faction_standings: HashMap::new(),
             warned_unsupported_wrath_natives: HashSet::new(),
+            warned_unresolved_rects: HashSet::new(),
         }
     }
 

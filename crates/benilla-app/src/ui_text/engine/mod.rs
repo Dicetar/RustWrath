@@ -1934,7 +1934,7 @@ mod ppem_tests {
     /// Run it by hand, with the install present, to see the `FRIENDS_*` timings:
     /// `cargo test -p benilla-app --lib the_chat_face_shapes_a_line_in_bounded_time -- --ignored --nocapture`
     #[test]
-    #[ignore = "Wall-clock diagnostic with the installed chat font"]
+    #[ignore = "instrument: probes the unexplained 153 s FRIENDS.TTF stall — cargo test -p benilla-app --lib the_chat_face_shapes_a_line_in_bounded_time -- --ignored --nocapture"]
     fn the_chat_face_shapes_a_line_in_bounded_time() {
         benilla_formats::wow_data_or_skip!();
         let mut e = test_engine(1.0).expect("the installed client fonts open");

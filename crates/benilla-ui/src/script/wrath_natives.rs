@@ -151,20 +151,6 @@ fn cursor_info(lua: &Lua) -> mlua::Result<MultiValue> {
     Ok(out)
 }
 
-/// The 3.3.5a `Bindings.xml` `<ModifiedClick>` rows' defaults: SELFCAST ALT, FOCUSCAST NONE,
-/// DRESSUP and SOCKETITEM CTRL, every other action SHIFT. An unknown action has no default.
-fn modified_click(action: &str) -> Option<&'static str> {
-    match action {
-        "SELFCAST" => Some("ALT"),
-        "FOCUSCAST" => Some("NONE"),
-        "DRESSUP" | "SOCKETITEM" => Some("CTRL"),
-        "AUTOLOOTTOGGLE" | "CHATLINK" | "COMPAREITEMS" | "OPENALLBAGS" | "PICKUPACTION"
-        | "QUESTWATCHTOGGLE" | "SHOWITEMFLYOUT" | "SPLITSTACK" | "STICKYCAMERA"
-        | "TOKENWATCHTOGGLE" => Some("SHIFT"),
-        _ => None,
-    }
-}
-
 /// `GetLFGRandomCooldownExpiration` (`0x558060`) and `GetLFGDeserterExpiration` (`0x5580E0`): the
 /// active player's native aura end time for `spell_id` in seconds on the `GetTime()` clock, or no
 /// values with no player, no observed aura list, or no such aura. Both reference bindings walk
@@ -255,6 +241,27 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(false))?,
     )?;
 
+    // The 3.3.5a video panels' Defaults buttons (`VideoOptionsPanels.lua:92`, `:403`, `:579`):
+    // one page of `ConsoleDeviceDefaults` each ([`super::cvars::restore_video_page`]). No return.
+    for (name, page, restart) in [
+        (
+            "RestoreVideoResolutionDefaults",
+            super::cvars::VIDEO_RESOLUTION_PAGE,
+            true,
+        ),
+        ("RestoreVideoEffectsDefaults", super::cvars::VIDEO_EFFECTS_PAGE, false),
+        ("RestoreVideoStereoDefaults", super::cvars::VIDEO_STEREO_PAGE, false),
+    ] {
+        lua.globals().set(
+            name,
+            lua.create_function(move |lua, _: mlua::MultiValue| {
+                let mut model = lua.app_data_mut::<super::Model>().expect("model app_data");
+                super::cvars::restore_video_page(&mut model, page, restart);
+                Ok(())
+            })?,
+        )?;
+    }
+
     // `UnitIsPossessed` (`PetFrame.lua:186`): no possessed unit exists in benilla, so the stock
     // pet frame keeps its ordinary layout.
     lua.globals().set(
@@ -296,6 +303,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok((index == 0).then_some("Primary Sound Driver"))
         })?,
     )?;
+    // `Sound_GameSystem_RestartSoundSystem()` (12340 `0x00985D30`: `SI2::ShutDown(1)`, a 200 ms
+    // sleep, `SI2::Init(1)`), called by `AudioOptionsFrame.lua:29` when a control marked
+    // `restart` changed. The host drains the ask into a rebuild of the output stream on the
+    // current default device (`sound::drain_restart_sound`).
+    lua.globals().set(
+        "Sound_GameSystem_RestartSoundSystem",
+        lua.create_function(|lua, ()| {
+            lua.app_data_mut::<super::Model>()
+                .expect("model app_data")
+                .restart_sound_asks += 1;
+            Ok(())
+        })?,
+    )?;
 
     // `Sound_ChatSystem_*` (`AudioOptionsPanels.lua:600`, `:791`): the voice-chat panels enumerate
     // the Steam voice system's devices. The stock client with voice chat disabled (the default,
@@ -307,39 +327,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "Sound_ChatSystem_GetNumOutputDrivers",
         lua.create_function(|_, ()| Ok(0))?,
-    )?;
-
-    // `GetModifiedClick` (`InterfaceOptionsPanels.xml:225`, `InterfaceOptionsPanels.lua:134`): the
-    // modifier the 3.3.5a `Bindings.xml` `<ModifiedClick>` rows hold by default. An unknown action
-    // answers nil, which the controls panel's `or "NONE"` covers.
-    lua.globals().set(
-        "GetModifiedClick",
-        lua.create_function(|_, action: String| Ok(modified_click(&action)))?,
-    )?;
-
-    // `IsModifiedClick` (the stock bindings' release legs, e.g. `CAMERAORSELECTORMOVE`'s
-    // `CameraOrSelectOrMoveStop(IsModifiedClick("STICKYCAMERA"))`): whether the action's bound
-    // modifier is held right now, 1 or nil. Without it the release leg dies before it can stop the
-    // move the press leg started, and the key stays logically down.
-    lua.globals().set(
-        "IsModifiedClick",
-        lua.create_function(|lua, action: Option<String>| -> mlua::Result<mlua::Value> {
-            let model = lua.app_data_ref::<super::Model>().expect("model app_data");
-            let (shift, ctrl, alt) = model.modifiers;
-            let Some(action) = action else {
-                return Ok(super::binding_abi::flag(shift || ctrl || alt));
-            };
-            let Some(want) = modified_click(&action) else {
-                return Ok(mlua::Value::Nil);
-            };
-            let held = match want {
-                "SHIFT" => shift,
-                "CTRL" => ctrl,
-                "ALT" => alt,
-                _ => false, // NONE
-            };
-            Ok(super::binding_abi::flag(held))
-        })?,
     )?;
 
     // `SpellCanTargetItem(spell)` (`SecureTemplates.lua:537`): the secure action button's gate
@@ -2563,13 +2550,68 @@ mod tests {
         );
     }
 
-    /// The stock bindings' release legs need `IsModifiedClick`: 1 when the action's modifier is
-    /// held, nil otherwise, and nil for an unknown action — the shape `CameraOrSelectOrMoveStop`
-    /// reads after `CAMERAORSELECTORMOVE`'s press leg.
+    /// The stock bindings' release legs need `IsModifiedClick`: 1 when the action's chord is held,
+    /// nil otherwise, and nil for an undeclared action, the shape `CameraOrSelectOrMoveStop` reads
+    /// after `CAMERAORSELECTORMOVE`'s press leg. The chords come from the registered
+    /// `<ModifiedClick>` rows (stock `STICKYCAMERA` is CTRL, `SELFCAST` ALT).
+    #[test]
+    fn options_panel_defaults_and_sound_restart_follow_the_reference() {
+        let mut script = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335)
+            .expect("VM");
+        script.register_cvars([
+            ("farclip", "1277"),
+            ("groundEffectDist", "100"),
+            ("gamma", "1.0"),
+            ("windowResizeLock", "0"),
+            ("gxWindow", "0"),
+        ]);
+        script
+            .run(
+                "SetCVar('farclip', '400') SetCVar('groundEffectDist', '40')                  SetCVar('gamma', '1.4') SetCVar('windowResizeLock', '1') SetCVar('gxWindow', '1')",
+            )
+            .unwrap();
+        let get = |script: &crate::script::UiScript, name: &str| {
+            script
+                .eval::<String>(&format!("return GetCVar('{name}')"))
+                .unwrap()
+        };
+
+        script.run("RestoreVideoEffectsDefaults()").unwrap();
+        assert_eq!(get(&script, "farclip"), "1277", "registered default");
+        assert_eq!(get(&script, "groundEffectDist"), "70.0", "CWorldParam's own 70.0");
+        assert_eq!(get(&script, "gamma"), "1.4", "the effects page leaves the display rows");
+        assert_eq!(script.take_restart_gx_asks(), 0, "page 1 does not restart the device");
+
+        script.run("RestoreVideoResolutionDefaults()").unwrap();
+        assert_eq!(get(&script, "gamma"), "1.0");
+        assert_eq!(get(&script, "windowResizeLock"), "0");
+        assert_eq!(get(&script, "gxWindow"), "0");
+        assert_eq!(script.take_restart_gx_asks(), 1, "page 0 ends in CCGxRestart");
+
+        script.run("RestoreVideoStereoDefaults()").unwrap();
+        assert_eq!(script.take_restart_gx_asks(), 0, "unregistered stereo rows are skipped");
+
+        assert_eq!(script.take_restart_sound_asks(), 0);
+        script
+            .run("Sound_GameSystem_RestartSoundSystem() Sound_GameSystem_RestartSoundSystem()")
+            .unwrap();
+        assert_eq!(script.take_restart_sound_asks(), 2, "counted for the host to drain");
+        assert_eq!(script.take_restart_sound_asks(), 0);
+    }
+
     #[test]
     fn is_modified_click_reads_the_held_modifier() {
         let mut script = crate::script::UiScript::with_target(crate::script::UiTarget::Wrath335)
             .expect("VM");
+        let row = |action: &str, default: &str| crate::bindings_xml::ModifiedClick {
+            action: action.into(),
+            default: Some(default.into()),
+        };
+        script.register_modified_clicks(&[
+            row("SELFCAST", "ALT"),
+            row("STICKYCAMERA", "CTRL"),
+            row("CHATLINK", "SHIFT-BUTTON1"),
+        ]);
         let read = |script: &crate::script::UiScript, action: &str| {
             script
                 .eval::<Option<i64>>(&format!("return IsModifiedClick(\"{action}\")"))
@@ -2596,8 +2638,8 @@ mod tests {
                 .unwrap(),
             "the secure handler's same tail asks this too"
         );
-        script.set_modifiers(true, false, false);
-        assert_eq!(read(&script, "STICKYCAMERA"), Some(1), "shift held");
+        script.set_modifiers(false, true, false);
+        assert_eq!(read(&script, "STICKYCAMERA"), Some(1), "ctrl held");
         assert_eq!(
             script
                 .eval::<Option<i64>>("return IsModifiedClick()")
@@ -2606,18 +2648,21 @@ mod tests {
             "no-arg reads any held modifier"
         );
         assert_eq!(read(&script, "SELFCAST"), None, "self-cast wants alt");
+        script.set_modifiers(true, false, false);
+        assert_eq!(read(&script, "STICKYCAMERA"), None, "shift is not the stock chord");
+        assert_eq!(read(&script, "CHATLINK"), Some(1), "outside a click the button matches");
         script.set_modifiers(false, false, true);
         assert_eq!(read(&script, "SELFCAST"), Some(1), "alt held");
-        assert_eq!(read(&script, "STICKYCAMERA"), None, "no shift with alt");
         assert_eq!(read(&script, "NO_SUCH_ACTION"), None, "unknown actions");
+        assert_eq!(read(&script, "ALT"), Some(1), "a modifier name asks for that modifier");
         assert_eq!(
             script
                 .eval::<Option<String>>("return GetModifiedClick(\"STICKYCAMERA\")")
                 .ok()
                 .flatten()
                 .as_deref(),
-            Some("SHIFT"),
-            "GetModifiedClick answers the same table"
+            Some("CTRL"),
+            "GetModifiedClick answers the registered row"
         );
     }
 
