@@ -119,7 +119,11 @@ impl Client {
 
     /// What went on the wire since the last read.
     pub(crate) fn sent(&self) -> Vec<String> {
-        self.rx.try_iter().filter_map(|c| verb_packet(&c)).collect()
+        self.rx
+            .try_iter()
+            .map(ClientCommand::into_inner)
+            .filter_map(|c| verb_packet(&c))
+            .collect()
     }
 }
 

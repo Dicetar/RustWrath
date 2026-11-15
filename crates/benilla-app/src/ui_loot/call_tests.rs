@@ -202,6 +202,7 @@ pub(super) fn seen(l: &mut Loot) -> String {
 /// The loot packets sent since the last read, in order.
 pub(super) fn sent(l: &Loot) -> Vec<ClientCommand> {
     l.rx.try_iter()
+        .map(ClientCommand::into_inner)
         .filter(|c| {
             matches!(
                 c,

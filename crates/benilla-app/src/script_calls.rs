@@ -2999,6 +2999,7 @@ mod tests {
         };
         let uses = |f: &Frame| {
             f.rx.try_iter()
+                .map(ClientCommand::into_inner)
                 .filter(|c| matches!(c, ClientCommand::UseItem { .. }))
                 .count()
         };
@@ -3101,7 +3102,7 @@ mod tests {
             )
             .unwrap();
         run(&mut f, "UseAction(1)");
-        let sent: Vec<_> = f.rx.try_iter().collect();
+        let sent: Vec<_> = f.rx.try_iter().map(ClientCommand::into_inner).collect();
         assert!(
             sent.iter().any(|c| matches!(
                 c,
@@ -3264,7 +3265,7 @@ mod tests {
         );
         assert!(!script.item_locked(HELD), "the drop unlocked the held item");
         assert!(!script.item_locked(HELM), "the bar's pick takes no lock");
-        let sent: Vec<_> = f.rx.try_iter().collect();
+        let sent: Vec<_> = f.rx.try_iter().map(ClientCommand::into_inner).collect();
         assert!(
             sent.iter().any(|c| matches!(
                 c,
@@ -3298,7 +3299,7 @@ mod tests {
         assert_eq!(script.cursor_item().map(|i| i.guid), Some(HELM));
         assert!(!script.item_locked(HELM));
         assert!(!script.item_locked(HELD), "the held item went back");
-        let sent: Vec<_> = f.rx.try_iter().collect();
+        let sent: Vec<_> = f.rx.try_iter().map(ClientCommand::into_inner).collect();
         assert!(sent.is_empty(), "the question sends nothing: {sent:?}");
         assert_eq!(
             f.app
@@ -3347,7 +3348,7 @@ mod tests {
             .non_send_resource_mut::<UiScript>()
             .set_player_control(false);
         run(&mut f, "PickupContainerItem(0, 1) UseAction(1, 0)");
-        let sent: Vec<_> = f.rx.try_iter().collect();
+        let sent: Vec<_> = f.rx.try_iter().map(ClientCommand::into_inner).collect();
         assert!(
             matches!(
                 sent[..],
@@ -3373,7 +3374,7 @@ mod tests {
             script.set_on_taxi(true);
         }
         run(&mut f, "UseAction(1, 0)");
-        let sent: Vec<_> = f.rx.try_iter().collect();
+        let sent: Vec<_> = f.rx.try_iter().map(ClientCommand::into_inner).collect();
         assert!(
             matches!(
                 sent[..],

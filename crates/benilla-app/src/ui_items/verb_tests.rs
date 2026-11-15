@@ -291,12 +291,17 @@ impl Bags {
 
     /// What went on the wire, the name and item queries aside.
     fn sent(&self) -> Vec<String> {
-        text(self.rx.try_iter().filter(|c| {
-            !matches!(
-                c,
-                ClientCommand::ItemQuery { .. } | ClientCommand::NameQuery { .. }
-            )
-        }))
+        text(
+            self.rx
+                .try_iter()
+                .map(ClientCommand::into_inner)
+                .filter(|c| {
+                    !matches!(
+                        c,
+                        ClientCommand::ItemQuery { .. } | ClientCommand::NameQuery { .. }
+                    )
+                }),
+        )
     }
 
     /// Run `setup`, then `verb` and a roll in one chunk: what the chunk sent.
