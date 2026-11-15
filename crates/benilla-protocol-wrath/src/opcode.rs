@@ -11,7 +11,10 @@ pub const SMSG_CHAR_CREATE: u16 = 0x03A;
 pub const SMSG_CHAR_DELETE: u16 = 0x03C;
 pub const SMSG_CHAR_ENUM: u16 = 0x03B;
 pub const CMSG_PLAYER_LOGIN: u32 = 0x03D;
+pub const SMSG_CHARACTER_LOGIN_FAILED: u16 = 0x041;
 pub const SMSG_LOGIN_SETTIMESPEED: u16 = 0x042;
+pub const CMSG_CHAR_RENAME: u32 = 0x2C7;
+pub const SMSG_CHAR_RENAME: u16 = 0x2C8;
 /// The empty handler: the stock client never sends it (Astra F04; MiscHandler.cpp:485).
 pub const CMSG_PLAYER_LOGOUT: u32 = 0x04A;
 /// The real logout request -> HandleLogoutRequestOpcode (MiscHandler.cpp:425).
