@@ -114,6 +114,15 @@ pub struct ItemInfo {
     /// 7 enchanting, 8 engineering, 9 keyring; 0 none). An enum, not a mask, in 1.12: the
     /// reference's `HasKey` (`0x48ae90`) tests `== 9`.
     pub bag_family: u32,
+    pub wrath_roll: Option<WrathRollItemInfo>,
+}
+
+/// Wrath item query facts used by the stock group loot tooltip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrathRollItemInfo {
+    pub greed_only: bool,
+    pub required_disenchant_skill: Option<i32>,
+    pub item_limit_category: Option<u32>,
 }
 
 impl ItemInfo {
@@ -430,6 +439,7 @@ pub(super) fn read_item_query_response(r: &mut &[u8]) -> io::Result<(u32, Option
             area,
             map,
             bag_family,
+            wrath_roll: None,
         }),
     ))
 }

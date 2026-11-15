@@ -78,6 +78,8 @@ mod locale_routing;
 pub use itembagfamily::{load_item_bag_families, ItemBagFamilyCatalog};
 mod itemclass;
 pub use itemclass::{load_item_classes, ItemClassCatalog};
+mod item_limit_categories;
+pub use item_limit_categories::load_item_limit_quantities;
 mod auction_house;
 pub use auction_house::{load_auction_houses, AuctionHouseCatalog, AuctionHouseInfo};
 mod itemsubclass;

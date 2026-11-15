@@ -1804,6 +1804,7 @@ pub struct ItemInfo {
     pub display_info_id: u32,
     pub quality: u32,
     pub flags: u32,
+    pub flags2: u32,
     pub buy_price: u32,
     pub sell_price: u32,
     pub inventory_type: u32,
@@ -1850,6 +1851,8 @@ pub struct ItemInfo {
     pub area: u32,
     pub map: u32,
     pub bag_family: u32,
+    pub required_disenchant_skill: Option<i32>,
+    pub item_limit_category: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3973,7 +3976,7 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     let display_info_id = r.u32()?;
     let quality = r.u32()?;
     let flags = r.u32()?;
-    let _flags2 = r.u32()?;
+    let flags2 = r.u32()?;
     let buy_price = r.u32()?;
     let sell_price = r.u32()?;
     let inventory_type = r.u32()?;
@@ -4096,11 +4099,28 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     let area = r.u32()?;
     let map = r.u32()?;
     let bag_family = r.u32()?;
+    // Totem category, three socket pairs, socket bonus and gem properties precede this field.
+    // Some captures contain only the prefix through bag family; keep absent fields unknown.
+    let required_disenchant_skill = if r.remaining() >= 10 * 4 {
+        for _ in 0..9 {
+            r.u32()?;
+        }
+        Some(r.i32()?)
+    } else {
+        None
+    };
+    let item_limit_category = if required_disenchant_skill.is_some() && r.remaining() >= 3 * 4 {
+        r.f32()?; // armor damage modifier
+        r.u32()?; // duration
+        Some(r.u32()?)
+    } else {
+        None
+    };
 
     Ok(ServerEvent::ItemInfo {
         entry,
         info: Some(ItemInfo {
-            class, subclass, name, display_info_id, quality, flags, buy_price, sell_price,
+            class, subclass, name, display_info_id, quality, flags, flags2, buy_price, sell_price,
             inventory_type, allowable_class, allowable_race, item_level, required_level,
             required_skill, required_skill_rank, required_spell, required_honor_rank,
             required_city_rank, required_rep_faction, required_rep_rank, max_count, stackable,
@@ -4108,6 +4128,7 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
             delay_ms, ammo_type, ranged_mod_range, spells, spell_charges_0, use_spell, bonding,
             description, page_text, language_id, page_material, start_quest, lock_id, material,
             sheath, random_property, block, item_set, max_durability, area, map, bag_family,
+            required_disenchant_skill, item_limit_category,
         }),
     })
 }

@@ -57,6 +57,7 @@ fn announce(roll_number: u8, roll_type: u8) -> RollLine {
         suffix_factor: 0,
         roll_number,
         roll_type,
+        auto_pass: None,
     })
 }
 

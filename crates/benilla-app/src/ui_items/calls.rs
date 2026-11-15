@@ -35,6 +35,7 @@ pub(crate) struct ItemSteps<'w, 's> {
     wrath: Option<Res<'w, crate::wrath::WrathWorldView>>,
     /// The typed 3.3.5 inventory owner; `None` on the donor path.
     inventory: Option<Res<'w, crate::wrath_inventory::WrathInventory>>,
+    item_limits: Option<Res<'w, super::ItemLimitQuantities>>,
 }
 
 impl ItemSteps<'_, '_> {
@@ -58,6 +59,47 @@ impl ItemSteps<'_, '_> {
             wrath_target,
         );
         super::possession_count(&inv, &self.objects, &self.items, id, bank, uses)
+    }
+
+    pub(crate) fn item_category_would_exceed(&self, category: u32, incoming: u32) -> Option<bool> {
+        let limit = *self.item_limits.as_deref()?.0.get(&category)?;
+        let store = &self.self_q.iter().next()?.0;
+        let inv = crate::wrath_inventory::PlayerInventory::new(
+            store,
+            Some(self.inventory.as_deref()?),
+            true,
+        );
+        let mut total = incoming;
+        let mut complete = true;
+        super::walk_inventory_filtered::<()>(
+            &inv,
+            &self.objects,
+            super::InventoryScope::QUEST_ITEMS,
+            inv.keyring_capacity(),
+            |_| true,
+            |_, _, guid| {
+                let amount = (|| {
+                    let item = self.objects.object(guid)?;
+                    let info = self.items.template(item.object_entry()?, guid, Ask::New(&self.net))?;
+                    if info.wrath_roll?.item_limit_category? == category {
+                        item.item_stack_count()
+                    } else {
+                        Some(0)
+                    }
+                })();
+                if let Some(amount) = amount {
+                    total = total.saturating_add(amount);
+                } else {
+                    complete = false;
+                }
+                (total > limit).then_some(())
+            },
+        );
+        if total > limit {
+            Some(true)
+        } else {
+            complete.then_some(false)
+        }
     }
 
     pub(crate) fn item_family(&self, id: u32) -> Option<u32> {
