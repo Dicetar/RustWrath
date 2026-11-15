@@ -1075,9 +1075,12 @@ impl UiScript {
         // started, still does.
         if down {
             if let Some(id) = press_id {
-                if let Err(e) =
+                // The press's button is `IsModifiedClick`'s click button while the script runs
+                // (`CSimpleFrame::OnLayerMouseDown`, 12340 `0x0048FC30`; the release `0x0048FCE0`).
+                let fired = super::keybind::clicks::with_click_button(&self.lua, button, || {
                     event::fire_widget_handler(&self.lua, id, "OnMouseDown", vec![btn.clone()])
-                {
+                });
+                if let Err(e) = fired {
                     self.push_error(e);
                 }
             }
@@ -1091,9 +1094,10 @@ impl UiScript {
                 }
             }
         } else if let Some(id) = captured_id {
-            if let Err(e) =
+            let fired = super::keybind::clicks::with_click_button(&self.lua, button, || {
                 event::fire_widget_handler(&self.lua, id, "OnMouseUp", vec![btn.clone()])
-            {
+            });
+            if let Err(e) = fired {
                 self.push_error(e);
             }
         }

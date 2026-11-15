@@ -1444,6 +1444,9 @@ pub(crate) struct Model {
     pub(crate) framerate: f64,
     /// `(shift, ctrl, alt)` for `Is*KeyDown`, pushed before the frame's mouse events.
     pub(crate) modifiers: (bool, bool, bool),
+    /// The mouse button of the click whose script is running, `CSimpleTop::m_mouseButtonName`
+    /// ([`super::keybind::clicks::with_click_button`]); `None` outside one.
+    pub(crate) click_button: Option<String>,
     /// Unsupported 3.3.5 native names that have already emitted a one-time diagnostic warning in this VM.
     pub(crate) warned_unsupported_wrath_natives: HashSet<&'static str>,
     /// Frames a Wrath geometry getter answered `0` for, having no resolved rect: each is named once
@@ -2026,6 +2029,7 @@ impl Model {
             summon_summoner_lookups: 0,
             framerate: 1000.0,
             modifiers: (false, false, false),
+            click_button: None,
             money: 0,
             net_latency_ms: 0,
             net_bandwidth_kbps: (0.0, 0.0),

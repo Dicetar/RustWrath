@@ -1362,18 +1362,23 @@ pub(super) fn click_button(
             .expect("model app_data")
             .last_handler_invoked = true;
     }
-    if wrath {
-        let arguments = vec![btn, Value::Boolean(down)];
-        for script in ["PreClick", "OnClick", "PostClick"] {
-            if let Err(error) = event::fire_widget_handler(lua, id, script, arguments.clone()) {
-                outcome.handler_error = true;
-                lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+    // The click's button is the one `IsModifiedClick` matches a chord's button against while the
+    // scripts run (`CSimpleButton::OnClick`, 12340 `0x0096FD70`).
+    super::keybind::clicks::with_click_button(lua, button, || {
+        if wrath {
+            let arguments = vec![btn, Value::Boolean(down)];
+            for script in ["PreClick", "OnClick", "PostClick"] {
+                if let Err(error) = event::fire_widget_handler(lua, id, script, arguments.clone())
+                {
+                    outcome.handler_error = true;
+                    lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
+                }
             }
+        } else if let Err(error) = event::fire_widget_handler(lua, id, "OnClick", vec![btn]) {
+            outcome.handler_error = true;
+            lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
         }
-    } else if let Err(error) = event::fire_widget_handler(lua, id, "OnClick", vec![btn]) {
-        outcome.handler_error = true;
-        lua.app_data_mut::<Model>().expect("model").record_lua_error(&error);
-    }
+    });
     outcome.handler_ran = handler_present;
     // A nameplate click selects its unit, from the pointer or `Click()` alike (the plate's
     // override `0x7cb910` chains the base), after the handler so an erroring hook cannot eat it. A

@@ -247,8 +247,10 @@ pub(crate) fn seed_bindings_for_vm(world: &mut World, script: &mut UiScript) {
     script.set_default_bindings(defaults);
     let defaults = script.default_bindings();
     let account = crate::local_state::bindings_account_path();
-    let overrides = read_diff(&account).unwrap_or_default();
-    script.seed_binding_set(1, Some(store::resolve(&overrides, &defaults)));
+    let text = read_bindings_file(&account).unwrap_or_default();
+    script.seed_binding_set(1, Some(store::resolve(&store::from_diff(&text), &defaults)));
+    // The account file's modified clicks, applied when the core `Bindings.xml` declares the rows.
+    script.seed_click_set(1, Some(store::clicks_from_diff(&text)));
     script.load_binding_set(1);
 
     // The character's own set: its file existing makes it the active set, the reference's rule.
@@ -259,14 +261,17 @@ pub(crate) fn seed_bindings_for_vm(world: &mut World, script: &mut UiScript) {
     let character = id
         .as_ref()
         .and_then(|(realm, name)| crate::local_state::bindings_character_path(realm, name));
-    match read_diff(&character) {
-        Some(overrides) => {
+    match read_bindings_file(&character) {
+        Some(text) => {
+            let overrides = store::from_diff(&text);
             script.seed_binding_set(2, Some(store::resolve(&overrides, &defaults)));
+            script.seed_click_set(2, Some(store::clicks_from_diff(&text)));
             script.load_binding_set(2);
             info!("bindings: character-specific set loaded");
         }
         None => {
             script.seed_binding_set(2, None);
+            script.seed_click_set(2, None);
             script.load_binding_set(1);
         }
     }
@@ -276,11 +281,12 @@ pub(crate) fn seed_bindings_for_vm(world: &mut World, script: &mut UiScript) {
     }
 }
 
-/// Read and parse one diff file; `None` (the defaults) when absent or unreadable.
-fn read_diff(path: &Option<std::path::PathBuf>) -> Option<Vec<(String, Vec<String>)>> {
+/// Read one bindings file; `None` (the defaults) when absent or unreadable. Its keys parse with
+/// [`store::from_diff`], its modified clicks with [`store::clicks_from_diff`].
+fn read_bindings_file(path: &Option<std::path::PathBuf>) -> Option<String> {
     let path = path.as_ref()?;
     match std::fs::read_to_string(path) {
-        Ok(text) => Some(store::from_diff(&text)),
+        Ok(text) => Some(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             warn!("bindings: reading {}: {e}", path.display());
@@ -296,7 +302,8 @@ fn drain_binding_requests(mut hosted_vm: crate::script_calls::HostedVm, files: R
         let Some(script) = script else { return };
         for req in script.take_keybind_requests() {
             let KeybindRequest::Save(which) = req;
-            let text = store::to_diff(&script.keybind_snapshot(), &script.default_bindings());
+            let mut text = store::to_diff(&script.keybind_snapshot(), &script.default_bindings());
+            text.push_str(&store::clicks_to_diff(&script.modified_click_overrides()));
             let path = match which {
                 1 => &files.account,
                 2 => &files.character,

@@ -1041,8 +1041,11 @@ impl benilla_ui::script::AddonLoad for Walk<'_> {
         // the addon's own sandboxed reader; absent is normal.
         let bindings_xml = benilla_ui::loader::join_ref(&addon.prefix(), "Bindings.xml");
         if let Some(bytes) = addon.read(&bindings_xml) {
-            match benilla_ui::bindings_xml::parse(&benilla_ui::source::decode(&bytes)) {
-                Ok(bindings) => script.register_addon_bindings(&addon.name, &bindings),
+            match benilla_ui::bindings_xml::parse_file(&benilla_ui::source::decode(&bytes)) {
+                Ok(file) => {
+                    script.register_addon_bindings(&addon.name, &file.bindings);
+                    script.register_modified_clicks(&file.modified_clicks);
+                }
                 Err(e) => {
                     let e = format!("{}/Bindings.xml: {e}", addon.name);
                     error!("ui_script: {e}");
