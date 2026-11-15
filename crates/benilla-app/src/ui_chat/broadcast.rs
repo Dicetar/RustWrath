@@ -180,10 +180,15 @@ pub(super) fn feed_broadcasts(
                         None => transfer_abort_line(reason, get),
                         // The 12340 handler prints nothing without the map's DBC row
                         // (`if (map)`, `0x403910`); the row's name fills the text's one `%s`.
-                        Some(map_id) => maps
-                            .as_ref()
-                            .and_then(|m| m.0.name(map_id))
-                            .and_then(|name| wrath_transfer_abort_line(reason, argument, name, get)),
+                        Some(map_id) => maps.as_ref().and_then(|maps| {
+                            let maps = &maps.0;
+                            maps.directory(map_id)?;
+                            let name = maps.name(map_id).unwrap_or_default();
+                            let difficulty_message = argument.and_then(|difficulty| {
+                                maps.difficulty_message(map_id, u32::from(difficulty))
+                            });
+                            wrath_transfer_abort_line(reason, argument, name, difficulty_message, get)
+                        }),
                     };
                     if let Some(text) = line {
                         log.push_event(ChatEvent::text_only(ChatEventKind::System, text));
@@ -228,14 +233,19 @@ pub(crate) fn transfer_abort_line(
 /// `TRANSFER_ABORT_UNIQUE_MESSAGE%d`), and the map's name fills the text's one `%s`
 /// (`SStrPrintf` passes it as the single argument). A missing or empty key prints nothing
 /// (`if (text && *text)`), unlike the 1.12 handler's empty line; reasons 0, 5 and past 16 name
-/// no key. Reason 8 first tries the map's `MapDifficulty.dbc` message — that catalog is not
-/// loaded, so the difficulty token is always the fallback here.
-pub(crate) fn wrath_transfer_abort_line(
+/// no key. Reason 8 first tries the localized `MapDifficulty.dbc` row.
+fn wrath_transfer_abort_line(
     reason: u8,
     argument: Option<u8>,
     map_name: &str,
+    difficulty_message: Option<&str>,
     get: impl Fn(&str) -> Option<String>,
 ) -> Option<String> {
+    if reason == 8 {
+        if let Some(message) = difficulty_message.filter(|text| !text.is_empty()) {
+            return Some(message.replacen("%s", map_name, 1));
+        }
+    }
     let key = match reason {
         1 => "TRANSFER_ABORT_ERROR".to_string(),
         2 => "TRANSFER_ABORT_MAX_PLAYERS".to_string(),
@@ -321,6 +331,23 @@ mod tests {
         // `GetText` (`0x703bf0`) gives the empty string for a key the strings lack, and the line
         // is added all the same (`0x4019ff`).
         assert_eq!(super::transfer_abort_line(1, |_| None).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_wrath_difficulty_refusal_prefers_the_maps_message() {
+        let stock = |key: &str| {
+            assert_eq!(key, "TRANSFER_ABORT_DIFFICULTY2");
+            Some("Heroic is unavailable for %s.".to_string())
+        };
+        let line = |message| wrath_transfer_abort_line(8, Some(1), "Test Dungeon", message, stock);
+        assert_eq!(
+            line(Some("Cannot enter %s yet.")).as_deref(),
+            Some("Cannot enter Test Dungeon yet.")
+        );
+        assert_eq!(
+            line(Some("")).as_deref(),
+            Some("Heroic is unavailable for Test Dungeon.")
+        );
     }
 
     /// `ERR_CHAT_RESTRICTED` (451) is a chat row, so the arm above writes a system line.

@@ -19,15 +19,18 @@ the old world. A malformed refusal is rejected by the gameplay decoder and
 does not release the pending phase.
 
 The app displays the localized transfer refusal in system chat using the
-Wrath reason keys. Difficulty refusals use the stock global fallback because
-the app does not load the per-map `MapDifficulty.dbc` message. The 1.12
-packet and reason table retain their existing behavior.
+Wrath reason keys. Difficulty refusals first use the active locale's message
+from `MapDifficulty.dbc` and fall back to the stock global when the row,
+message or optional table is unavailable. The 1.12 packet and reason table
+retain their existing behavior.
 
 The preserved 12340 reference is pinned at
 `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`.
 `Client.cpp::Packet_SMSG_TRANSFER_ABORTED` at `0x00403910` supplies
 the presentation contract. The matching server's `Player::SendTransferAborted`
-confirms the conditional argument byte. The earlier local draft was ported
+confirms the conditional argument byte. `MapDifficultyRec::Read` at
+`0x008B44A0` and the map/difficulty lookup at `0x00634950` supply the
+localized record layout and first-match behavior. The earlier local draft was ported
 to a new worktree and remains intact.
 
 Source review and `git diff --check` passed. The existing session test file
