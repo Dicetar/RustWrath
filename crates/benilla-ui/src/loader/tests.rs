@@ -1862,6 +1862,69 @@ mod loader_tests {
             .unwrap());
     }
 
+    /// The label build is not Wrath-gated: the same unnamed `<ButtonText/>` exists during OnLoad
+    /// on the default 1.12 target, and the handler can address it.
+    #[test]
+    fn unnamed_button_text_is_available_during_onload_on_1_12() {
+        let s = UiScript::new().unwrap();
+        let doc = parse(
+            r#"<Ui>
+                <Button name="Clock">
+                    <ButtonText/>
+                    <Scripts>
+                        <OnLoad>button_text_present = this:GetFontString() ~= nil; this:GetFontString():SetDrawLayer("BACKGROUND")</OnLoad>
+                    </Scripts>
+                </Button>
+            </Ui>"#,
+        );
+        let report = load(&s, &doc, &no_files);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+        assert!(s.eval::<bool>("return button_text_present").unwrap());
+        assert!(s
+            .eval::<bool>("return Clock:GetFontString() ~= nil")
+            .unwrap());
+        assert_eq!(
+            s.eval::<String>("return Clock:GetFontString():GetDrawLayer()")
+                .unwrap(),
+            "BACKGROUND",
+            "the OnLoad handler addressed the live label"
+        );
+    }
+
+    /// An instance's label named as its template's keeps that name, as the state textures do: the
+    /// lookup is retaken after the displaced label dies (`SetName 0x76c650`), while `_G` keeps its
+    /// first holder (`0x701bd0` writes only into an empty one, `0x701c8a`).
+    #[test]
+    fn a_same_named_instance_button_text_keeps_its_name() {
+        let mut s = UiScript::new().unwrap();
+        s.set_screen_size(800.0, 600.0);
+        let doc = parse(
+            r#"<Ui>
+                <Button name="LabelTmpl" virtual="true">
+                    <ButtonText name="$parentText" text="Tmpl"/>
+                </Button>
+                <Button name="LabelInst" inherits="LabelTmpl">
+                    <ButtonText name="$parentText" text="Inst"/>
+                </Button>
+            </Ui>"#,
+        );
+        let report = load(&s, &doc, &no_files);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+        let (name, text, alive) = s
+            .eval::<(String, String, bool)>(
+                r#"local l = LabelInst:GetFontString()
+                return l:GetName(), l:GetText(),
+                    (pcall(LabelInstText.GetName, LabelInstText))"#,
+            )
+            .unwrap();
+        assert_eq!(name, "LabelInstText", "the instance's label keeps the name");
+        assert_eq!(text, "Inst", "the instance's label is the live one");
+        assert!(
+            !alive,
+            "_G holds the destroyed template label, not the replacement"
+        );
+    }
+
     /// The chat edit box's shape. The engine assigns the text slot from the direct-child
     /// `<FontString>` at LoadXML; it never searches the regions, so the header stays its own.
     #[test]

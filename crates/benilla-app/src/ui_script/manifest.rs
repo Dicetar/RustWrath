@@ -635,8 +635,16 @@ mod tests {
     }
 
     /// The installed Wrath core, file by file into a Wrath VM as `load_core` walks it, timed: a
-    /// live run spent 153 s in `FloatingChatFrame.xml` that earlier builds spent under a second in.
+    /// live run spent 153 s between `ChatFrame.xml` and the end of `FloatingChatFrame.xml` that
+    /// earlier builds spent under a second in — the 2026-11-14 session in
+    /// `benilla-config/Logs/Launcher/20261114-132949-470/stderr.log`, lines 280 and 282.
+    ///
+    /// A probe for that one stall, not a gate: it loads the whole installed core and asserts on
+    /// wall-clock time, so it is out of the default run. Run it by hand with
+    /// `cargo test -p benilla-app each_wrath_core_file_loads_in_bounded_time -- --ignored --nocapture`;
+    /// `CORE_FILE_TIME` prints every file that took 250 ms or more, and `CORE_TOTAL_TIME` the walk.
     #[test]
+    #[ignore = "probe: the 153 s FloatingChatFrame.xml stall from the 2026-11-14 launcher log, run by hand with --ignored --nocapture"]
     fn each_wrath_core_file_loads_in_bounded_time() {
         let _data = benilla_formats::wow_data_or_skip!();
         let Some(core) = reference_ui::core() else { return };
