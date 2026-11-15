@@ -794,6 +794,12 @@ mod tests {
             world.resource_mut::<GuidIndex>().0.insert(ME, me);
             crate::net::handlers::dispatch(world, crate::net::wire(vec![create(MOB)]));
             let mob = world.resource::<GuidIndex>().0[&MOB];
+            // The harness runs no visibility propagation, so the create's body keeps the default
+            // hidden verdict. Give it the verdict a live frame's propagation writes, or the scan's
+            // scene gate (the reference's scene-node test, `0x6704c0`) refuses the control unit.
+            world
+                .entity_mut(mob)
+                .insert(InheritedVisibility::VISIBLE);
             *world.resource_mut::<Selection>() = Selection {
                 target: Some(mob),
                 guid: Some(MOB),

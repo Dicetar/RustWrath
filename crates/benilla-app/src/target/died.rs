@@ -618,7 +618,7 @@ mod tests {
             let mut want = vec![
                 "SetSelection { guid: 0 }".to_string(),
                 format!("LootRelease {{ guid: {OTHER} }}"),
-                format!("CancelCast {{ spell_id: {FIREBALL} }}"),
+                format!("CancelCast {{ spell_id: {FIREBALL}, trace: None }}"),
             ];
             if flagged {
                 want.push("RepopRequest".to_string());
