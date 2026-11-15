@@ -20,6 +20,7 @@ build followed it. This branch is the build-and-repair pass over that batch.
 | `crates/benilla-ui/src/loader/widgets.rs` | The named `<ButtonText/>` label no longer re-sets its Lua global after `CreateFontString`; comments now state the region is always built, as `LoadXML_String` does (`CSimpleButton.cpp:939`), and `SetText("")` alone would not (`:650`) | The extra `globals().set` overwrote `_G`'s first holder, against `0x701c8a`, and disagreed with the named state-texture path two functions above, which publishes through the name lookup alone |
 | `crates/benilla-ui/src/loader/regions.rs`, `widgets.rs` | `.last()` → `.next_back()` on the `parentKey` lookup | `clippy::double_ended_iterator_last`; first match and last match are the same element |
 | `crates/benilla-ui/src/loader/tests.rs` | Two new cases: `unnamed_button_text_is_available_during_onload_on_1_12`, `a_same_named_instance_button_text_keeps_its_name` | The label build is not target-gated, so the 1.12 VM needed its own case; the second pins the `_G` first-holder rule the removed `globals().set` violated |
+| `crates/benilla-app/src/target/gate_tests.rs` | `greeted` and `steps` also read `QuestgiverOpenTracked { gossip: true }` as a greeting | A traced Wrath world sends the gossip open as the tracked command (`click.rs`), so five talk-leg cases were red against helpers that only knew `GossipHello`. Test-only; no production behaviour changed |
 
 ## Checks actually run
 
@@ -35,16 +36,15 @@ Logs are under `F:/AI/tmp/opencode/overseer/` on the workstation and are not com
 | `cargo test -p benilla-ui --lib a_same_named_instance_button_text_keeps_its_name` | 1 passed |
 | `cargo test -p benilla-app --lib wrath_gate` | 8 passed |
 | `cargo test -p benilla-app --lib vplates::gate_tests` | 3 passed (the 1.12 gate is unchanged) |
-| `cargo test -p benilla-app gate_tests` (the broad filter) | 36 passed, 10 failed, none in this diff — see below |
+| `cargo test -p benilla-app --lib target::gate_tests` | 12 passed, after the `greeted`/`steps` change; 5 of these were red before it |
+| `cargo test -p benilla-app gate_tests` (the broad filter) | 41 passed, 5 failed, all five in `ui_script::protected_gate_tests` — see below |
 | `cargo clippy --no-deps -p benilla-app --all-targets` | Exit 0, no diagnostics in `vplates.rs` or `manifest.rs`, no `nonminimal_bool` |
 
-`cargo test -p benilla-app gate_tests` also selects two other modules. Five
-`target::gate_tests` cases fail on the talk leg of a unit right-click — a plain right-click on a
-gossip NPC sends no `GossipHello` (`:355`, `:476`, and the plate-right-click, shapeshifted and
-unavailable-quest-giver cases). Five `ui_script::protected_gate_tests` cases fail on the installed
-3.3.5a FrameXML loaded into a 1.12 VM, the same environment condition the nameplate work recorded.
-Both modules are outside this diff and were red before it; the talk leg is the next task, not a
-hunk for this branch.
+`cargo test -p benilla-app gate_tests` also selects `ui_script::protected_gate_tests`. Its five
+cases load the installed 3.3.5a FrameXML into a 1.12 VM and die on 3.3.5 scripts that index `self`
+in OnLoad, plus `MoneyFrame.lua:233`. That is the environment condition the nameplate work already
+recorded; on a 1.12 install, or under a target-aware harness, it is a different result. Nothing in
+this branch reaches it.
 
 ## Not done, not proven
 
