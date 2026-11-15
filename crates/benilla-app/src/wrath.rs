@@ -850,40 +850,13 @@ fn extract_login_refusal(err: &anyhow::Error) -> Option<benilla_protocol::LoginR
     None
 }
 
-/// Map a 12340 `SMSG_CHARACTER_LOGIN_FAILED` `ResponseCodes` byte (`SharedDefines.h:3625-3637`)
-/// onto the 1-based `CHAR_LOGIN_*` index `GlueMgr::char_login_status` consumes.
-fn char_login_failed_result(raw: u8) -> u8 {
-    match raw {
-        // Already a 1..=6 index.
-        1..=6 => raw,
-        // CHAR_LOGIN_IN_PROGRESS (0x3B) -> 1
-        0x3B => 1,
-        // CHAR_LOGIN_DISABLED (0x41) -> 2
-        0x41 => 2,
-        // CHAR_LOGIN_NO_WORLD (0x3D) -> 3
-        0x3D => 3,
-        // CHAR_LOGIN_DUPLICATE_CHARACTER (0x3E) -> 4
-        0x3E => 4,
-        // CHAR_LOGIN_NO_INSTANCES (0x3F) -> 5
-        0x3F => 5,
-        // CHAR_LOGIN_LOCKED_FOR_TRANSFER (0x3C) / LOCKED_BY_BILLING (0x43) / LOCKED_BY_MOBILE_AH (0x44) -> 6
-        0x3C | 0x43 | 0x44 => 6,
-        // CHAR_LOGIN_FAILED (0x40) or any unmapped code -> 0 ("CHAR_LOGIN_FAILED").
-        _ => 0,
-    }
-}
-
 /// Map a 12340 `SMSG_CHAR_RENAME` `ResponseCodes` byte onto the status table `GlueMgr::char_rename_status`
 /// reads (`0` = success, `0x31` = `CHAR_CREATE_NAME_IN_USE`, anything else = `CHAR_RENAME_FAILED`).
 fn char_rename_status(raw: u8) -> u8 {
     match raw {
-        // RESPONSE_SUCCESS (0x00), CHAR_CREATE_SUCCESS (0x2F), or CHAR_NAME_SUCCESS (0x57).
-        0x00 | 0x2F | 0x57 => 0,
-        // 12340 CHAR_CREATE_NAME_IN_USE (0x32) -> glue table's 0x31.
+        0x00 => 0, // RESPONSE_SUCCESS, the sole reply carrying an identity
         0x32 => 0x31,
-        // Preserve already-mapped 0x31 if a test or custom handler emits it, otherwise non-zero failure.
-        0x31 => 0x31,
-        other => other,
+        _ => 1,
     }
 }
 
@@ -904,16 +877,15 @@ fn parse_char_rename(payload: &[u8]) -> anyhow::Result<(u8, Option<(u64, String)
         .first()
         .ok_or_else(|| anyhow::anyhow!("empty SMSG_CHAR_RENAME payload"))?;
     let status = char_rename_status(raw);
-    if status == 0 && payload.len() >= 10 {
-        let guid = u64::from_le_bytes(payload[1..9].try_into()?);
-        let rest = &payload[9..];
-        let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
-        let name = String::from_utf8_lossy(&rest[..end]).into_owned();
-        if !name.is_empty() {
-            return Ok((0, Some((guid, name))));
-        }
+    if status != 0 {
+        return Ok((status, None));
     }
-    Ok((status, None))
+    let guid = payload
+        .get(1..9)
+        .ok_or_else(|| anyhow::anyhow!("truncated SMSG_CHAR_RENAME guid"))?;
+    let name = std::ffi::CStr::from_bytes_with_nul(&payload[9..])?.to_str()?;
+    anyhow::ensure!(!name.is_empty(), "empty SMSG_CHAR_RENAME name");
+    Ok((0, Some((u64::from_le_bytes(guid.try_into()?), name.to_owned()))))
 }
 
 impl WrathSessionConfig {
@@ -11677,7 +11649,13 @@ pub fn run_session_with_cancel(
                     }
                     Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHAR_RENAME => {
                         mutation_deadline = None;
-                        let (result, renamed) = parse_char_rename(&p.payload)?;
+                        let (result, renamed) = match parse_char_rename(&p.payload) {
+                            Ok(reply) => reply,
+                            Err(error) => {
+                                warn!("invalid Wrath character rename reply: {error:#}");
+                                (1, None)
+                            }
+                        };
                         if let Some((renamed_guid, ref new_name)) = renamed {
                             if let Some(rec) =
                                 records.iter_mut().find(|r| r.guid == renamed_guid)
@@ -12151,8 +12129,10 @@ pub fn run_session_with_cancel(
                 multiclass.as_ref().expect("enabled multiclass").receive(&p.payload)?;
             }
             Ok(p) if p.opcode == benilla_protocol_wrath::opcode::SMSG_CHARACTER_LOGIN_FAILED => {
-                let raw = p.payload.first().copied().unwrap_or(0x40);
-                let result = char_login_failed_result(raw);
+                // AzerothCore sends LoginFailureReason, not ResponseCodes. The 12340
+                // ClientConnection::HandleCharacterLoginFailed (0x006B2070) uses the
+                // same 1–6 indices as the donor glue, with 7–8 handled separately there.
+                let result = p.payload.first().copied().unwrap_or(0);
                 if let Some(trace) = &feed.trace {
                     trace.observe(
                         Some((session.epoch(), session.world_generation())),
@@ -14463,19 +14443,6 @@ mod scoped_delivery_tests {
     }
 
     #[test]
-    fn char_login_failed_result_maps_12340_response_codes_to_glue_indices() {
-        assert_eq!(char_login_failed_result(0x3B), 1); // CHAR_LOGIN_IN_PROGRESS
-        assert_eq!(char_login_failed_result(0x41), 2); // CHAR_LOGIN_DISABLED
-        assert_eq!(char_login_failed_result(0x3D), 3); // CHAR_LOGIN_NO_WORLD
-        assert_eq!(char_login_failed_result(0x3E), 4); // CHAR_LOGIN_DUPLICATE_CHARACTER
-        assert_eq!(char_login_failed_result(0x3F), 5); // CHAR_LOGIN_NO_INSTANCES
-        assert_eq!(char_login_failed_result(0x3C), 6); // CHAR_LOGIN_LOCKED_FOR_TRANSFER
-        assert_eq!(char_login_failed_result(0x43), 6); // CHAR_LOGIN_LOCKED_BY_BILLING
-        assert_eq!(char_login_failed_result(0x44), 6); // CHAR_LOGIN_LOCKED_BY_MOBILE_AH
-        assert_eq!(char_login_failed_result(0x40), 0); // CHAR_LOGIN_FAILED
-    }
-
-    #[test]
     fn char_rename_codec_round_trips_and_maps_status_codes() {
         let wire = encode_char_rename(0x1122_3344_5566_7788, "Firna");
         assert_eq!(&wire[..8], &0x1122_3344_5566_7788u64.to_le_bytes());
@@ -14494,11 +14461,9 @@ mod scoped_delivery_tests {
             (0x31, None)
         );
         assert_eq!(
-            parse_char_rename(&[0x4A]).expect("generic rename failure"),
-            (0x4A, None)
+            parse_char_rename(&[0x31]).expect("generic rename failure"),
+            (1, None)
         );
+        assert!(parse_char_rename(&[0]).is_err());
     }
 }
-
-
-
