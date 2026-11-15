@@ -1,6 +1,6 @@
 # Wrath stock interface, controls and movement gaps (matrix F04, F14, F15)
 
-Status: in progress
+Status: ready to merge
 Owner: Claude Code (Opus 5.5)
 Branch: fix/wrath-stock-ui-errors
 Issue: none
