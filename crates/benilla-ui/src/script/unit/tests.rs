@@ -2302,3 +2302,17 @@ fn unit_name_hands_a_no_object_miss_back_to_ask() {
     };
     assert_eq!(read(&mut s, named), Vec::<u64>::new());
 }
+
+/// 12340's `GetRestState` (`0x0051B8B0`) indexes Exhaustion.dbc by `PLAYER_BYTES_2` byte 3 and
+/// answers three nils for a byte with no row, as 1.12 does: no invented "Normal" state on Wrath.
+#[test]
+fn wrath_rest_state_reads_the_server_byte_and_fails_to_nils() {
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.set_rest_state(1, 700, true);
+    let (id, name, factor): (i64, String, f64) = s.eval("return GetRestState()").unwrap();
+    assert_eq!((id, name.as_str(), factor), (1, "Rested", 2.0));
+    s.set_rest_state(0, 0, false);
+    assert!(s
+        .eval::<bool>("local a, b, c = GetRestState() return a == nil and b == nil and c == nil")
+        .unwrap());
+}
