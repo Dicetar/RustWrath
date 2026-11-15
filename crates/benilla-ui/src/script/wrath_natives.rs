@@ -10,6 +10,33 @@ use mlua::{Lua, MultiValue, Value};
 
 use super::{CursorPayload, Model};
 
+// VehicleSeatRec::m_flags, as read by the 12340 input and unit queries.
+const SEAT_CONTROLS_VEHICLE: u32 = 0x0000_0800;
+const SEAT_CAN_EXIT: u32 = 0x0200_0000;
+const SEAT_CAN_SWITCH: u32 = 0x0400_0000;
+const SEAT_HAS_UI: u32 = 0x2000_0000;
+
+fn vehicle_seat_flag(model: &Model, flag: u32) -> bool {
+    model.vehicle_guid.is_some()
+        && model.vehicle_seat_flags.is_some_and(|flags| flags & flag != 0)
+}
+
+fn local_vehicle_unit(model: &Model, token: Option<&str>) -> bool {
+    token.is_some_and(|token| {
+        token.eq_ignore_ascii_case("player")
+            || (model.unit_guids.player != 0
+                && model.unit_guids.resolve(token) == Ok(Some(model.unit_guids.player)))
+    })
+}
+
+fn lua_seat_permission(allowed: bool) -> Value {
+    if allowed {
+        Value::Number(1.0)
+    } else {
+        Value::Nil
+    }
+}
+
 /// `GetCursorInfo()` (`0x00515200`): the held payload in the shape the 3.3.5a FrameXML reads it.
 ///
 /// - `"item"`, entry id, hyperlink: a picked-up item, and a bar item, which the reference answers
@@ -607,6 +634,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "VehicleExit",
         lua.create_function(|lua, _args: mlua::MultiValue| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if !vehicle_seat_flag(&model, SEAT_CAN_EXIT) {
+                return Ok(());
+            }
             if let Some((session_epoch, world_generation)) = model.wrath_scope {
                 if model.wrath_scoped_commands.len() < 16 {
                     model.wrath_scoped_commands.push_back(
@@ -624,6 +654,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "VehiclePrevSeat",
         lua.create_function(|lua, _args: mlua::MultiValue| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if !vehicle_seat_flag(&model, SEAT_CAN_SWITCH) {
+                return Ok(());
+            }
             if let Some((session_epoch, world_generation)) = model.wrath_scope {
                 if model.wrath_scoped_commands.len() < 16 {
                     model.wrath_scoped_commands.push_back(
@@ -641,6 +674,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "VehicleNextSeat",
         lua.create_function(|lua, _args: mlua::MultiValue| {
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if !vehicle_seat_flag(&model, SEAT_CAN_SWITCH) {
+                return Ok(());
+            }
             if let Some((session_epoch, world_generation)) = model.wrath_scope {
                 if model.wrath_scoped_commands.len() < 16 {
                     model.wrath_scoped_commands.push_back(
@@ -662,6 +698,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .and_then(|v| lua.coerce_integer(v.clone()).ok().flatten())
                 .unwrap_or(1) as i8;
             let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+            if !vehicle_seat_flag(&model, SEAT_CAN_SWITCH) {
+                return Ok(());
+            }
             if let (Some((session_epoch, world_generation)), Some(vehicle)) =
                 (model.wrath_scope, model.vehicle_guid)
             {
@@ -683,10 +722,21 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "CanExitVehicle",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            // `InputControl_Scripts.cpp:500`: the number 1 with an active vehicle seat, else nil.
-            Ok(model
-                .vehicle_guid
-                .map_or(mlua::Value::Nil, |_| mlua::Value::Integer(1)))
+            Ok(lua_seat_permission(vehicle_seat_flag(&model, SEAT_CAN_EXIT)))
+        })?,
+    )?;
+    lua.globals().set(
+        "CanSwitchVehicleSeat",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(vehicle_seat_flag(&model, SEAT_CAN_SWITCH))
+        })?,
+    )?;
+    lua.globals().set(
+        "CanSwitchVehicleSeats",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(lua_seat_permission(vehicle_seat_flag(&model, SEAT_CAN_SWITCH)))
         })?,
     )?;
     // The pitch controls are the other vehicle-only named handlers in VehicleMenuBar.xml. With
@@ -711,13 +761,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "UnitInVehicle",
         lua.create_function(|lua, unit: Option<String>| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let in_veh = unit.as_deref() == Some("player") && model.vehicle_guid.is_some();
+            let in_veh = local_vehicle_unit(&model, unit.as_deref()) && model.vehicle_guid.is_some();
             Ok(in_veh)
         })?,
     )?;
     lua.globals().set(
         "UnitHasVehicleUI",
-        lua.create_function(|_, _unit: Option<String>| Ok(false))?,
+        lua.create_function(|lua, unit: Option<String>| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(local_vehicle_unit(&model, unit.as_deref())
+                && vehicle_seat_flag(&model, SEAT_HAS_UI))
+        })?,
     )?;
     lua.globals().set(
         "UnitTargetsVehicleInRaidUI",
@@ -725,7 +779,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     lua.globals().set(
         "UnitInVehicleControlSeat",
-        lua.create_function(|_, _unit: Option<String>| Ok(false))?,
+        lua.create_function(|lua, unit: Option<String>| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(local_vehicle_unit(&model, unit.as_deref())
+                && vehicle_seat_flag(&model, SEAT_CONTROLS_VEHICLE))
+        })?,
     )?;
 
     // Character PaperDoll, spell bonus, inventory equipment manager, and stable natives
@@ -1220,12 +1278,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, ()| Ok(true))?,
     )?;
 
-    // `UnitHasVehicleUI` (`PlayerFrame.lua:433`, the vehicle swap): whether the unit's vehicle UI
-    // is up. benilla has no vehicles, so the answer is the un-vehicled one.
-    lua.globals().set(
-        "UnitHasVehicleUI",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(false))?,
-    )?;
     // `InCombatLockdown` (`GameUI_Scripts.cpp`): 1.0 when protected actions are not allowed, nil
     // otherwise. Project B has no secure/taint lockdown; the player's `in_combat` is the practical
     // lockdown signal (approximation, documented).
@@ -2204,6 +2256,8 @@ impl super::UiScript {
             model.wrath_scope = scope;
             model.calendar_fetches.clear();
             model.wrath_scoped_commands.clear();
+            model.vehicle_guid = None;
+            model.vehicle_seat_flags = None;
         }
     }
 
@@ -2293,6 +2347,7 @@ impl super::UiScript {
         model.wrath_lfg = super::model::WrathLfgState::default();
         model.wrath_scoped_commands.clear();
         model.vehicle_guid = None;
+        model.vehicle_seat_flags = None;
     }
 
     /// Drain `OpenCalendar()` requests as `(session_epoch, world_generation)`; the app sends each
@@ -2334,7 +2389,15 @@ impl super::UiScript {
 
     /// Set the replicated vehicle transport GUID for the local player.
     pub fn set_wrath_vehicle_guid(&mut self, guid: Option<u64>) {
-        self.model_mut().vehicle_guid = guid;
+        let mut model = self.model_mut();
+        if model.vehicle_guid != guid {
+            model.vehicle_seat_flags = None;
+            model.vehicle_guid = guid;
+        }
+    }
+
+    pub fn set_wrath_vehicle_seat_flags(&mut self, flags: Option<u32>) {
+        self.model_mut().vehicle_seat_flags = flags;
     }
 
     /// Drain queued 12340 LFG and vehicle commands from the VM.
@@ -2345,6 +2408,7 @@ impl super::UiScript {
 
 #[cfg(test)]
 mod tests {
+    use super::{SEAT_CAN_EXIT, SEAT_CAN_SWITCH, SEAT_HAS_UI};
     use crate::script::{PetActionView, PetStats, UiScript, UiTarget, UnitState};
 
     #[test]
@@ -2378,7 +2442,7 @@ mod tests {
         s.set_known_languages(vec!["Common".into(), "Dwarvish".into()]);
         assert_eq!(s.eval::<u32>("return GetNumLanguages()").unwrap(), 2);
         assert_eq!(s.eval::<u32>("return GetNumLaguages()").unwrap(), 2);
-        assert_eq!(s.eval::<bool>("return CanExitVehicle() == nil").unwrap(), true);
+        assert!(s.eval::<bool>("return CanExitVehicle() == nil").unwrap());
 
         // `IsPetAttackAction` reads the server's packed command word, not a guess from the slot.
         s.set_pet_stats(true, PetStats::default());
@@ -3664,7 +3728,17 @@ mod tests {
         let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
         s.set_wrath_scope(3, 5);
         s.set_wrath_vehicle_guid(Some(0xF130_0001_0000_0042));
+        assert!(s.eval::<bool>("return CanExitVehicle() == nil").unwrap());
+        s.set_wrath_vehicle_seat_flags(Some(SEAT_CAN_EXIT | SEAT_CAN_SWITCH | SEAT_HAS_UI));
         assert!(s.eval::<bool>("return CanExitVehicle()").unwrap());
+        assert!(s
+            .eval::<bool>("return CanSwitchVehicleSeat() and UnitHasVehicleUI('player')")
+            .unwrap());
+        assert!(!s
+            .eval::<bool>(
+                "return UnitInVehicleControlSeat('player') or UnitHasVehicleUI('target')"
+            )
+            .unwrap());
 
         s.set_wrath_lfg_server_state(
             true,
@@ -4028,6 +4102,10 @@ mod tests {
         s.set_wrath_scope(9, 12);
         s.set_wrath_vehicle_guid(Some(0xF130_0002_0000_0099));
         assert!(s.eval::<bool>("return UnitInVehicle('player')").unwrap());
+        s.set_wrath_vehicle_seat_flags(Some(SEAT_HAS_UI));
+        s.run("VehicleExit()").unwrap();
+        assert!(s.take_wrath_scoped_commands().is_empty());
+        s.set_wrath_vehicle_seat_flags(Some(SEAT_CAN_EXIT));
         s.run("VehicleExit()").unwrap();
         assert_eq!(
             s.take_wrath_scoped_commands(),

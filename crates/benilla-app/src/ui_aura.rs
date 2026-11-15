@@ -533,6 +533,7 @@ struct AuraUnits<'w> {
     // anyone.
     group: Option<Res<'w, crate::ui_party::GroupState>>,
     interact: Option<Res<'w, crate::ui_session::InteractNpc>>,
+    wrath_world: Option<Res<'w, crate::wrath::WrathWorldView>>,
 }
 
 fn feed_auras(
@@ -561,6 +562,11 @@ fn feed_auras(
             return;
         };
         let Ok((me_entity, store, self_guid)) = self_q.single() else {
+            let mut guids = script.unit_guids_view();
+            if guids.vehicle != 0 {
+                guids.vehicle = 0;
+                script.set_unit_guids(&guids);
+            }
             // No avatar does not end the aura state: a worldport re-streams the avatar mid-session,
             // and vmangos sends a duration where one is set (an apply, a refresh, a pushback), at
             // the character's load (`Player::_LoadAuras`) and at a relog
@@ -682,6 +688,10 @@ fn feed_auras(
                 target: target_guid,
                 mouseover,
                 npc: units.interact.as_deref().and_then(|i| i.1).unwrap_or(0),
+                vehicle: units
+                    .wrath_world
+                    .as_deref()
+                    .and_then(|view| view.seated_vehicle(self_guid.0)),
                 held,
                 buffs_visible,
                 catalog,
