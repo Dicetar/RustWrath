@@ -28,20 +28,22 @@ pub struct FilterPattern {
     pub pattern: String,
 }
 
-fn schema(name: &str) -> Schema {
+fn schema(name: &str, fields: Option<usize>) -> Schema {
     let mut s = Schema::new(name);
     s.add_field(SchemaField::new("ID", FieldType::UInt32));
     s.add_field(SchemaField::new("Pattern", FieldType::String));
-    s.add_field(SchemaField::new("Language", FieldType::UInt32));
+    // 1.12 (and Wrath's profanity/name lists) carry a trailing Language uint32; Wrath 3.3.5a's
+    // `SpamMessages.dbc` dropped it and has 2 fields (`[ID, Pattern]`).
+    if fields != Some(2) {
+        s.add_field(SchemaField::new("Language", FieldType::UInt32));
+    }
     s.set_key_field("ID");
     s
 }
 
-fn load(chain: &mut Chain, path: &str, name: &str) -> Result<Vec<FilterPattern>> {
-    let bytes = chain
-        .read_file(path)
-        .with_context(|| format!("reading {name}.dbc"))?;
-    let rs = parse(&bytes, schema(name), name)?;
+fn parse_rows(bytes: &[u8], name: &str) -> Result<Vec<FilterPattern>> {
+    let fields = crate::dbc::field_count(bytes);
+    let rs = parse(bytes, schema(name, fields), name)?;
     let mut out = Vec::with_capacity(rs.records().len());
     for r in rs.records() {
         // File order is the list order, which masking depends on: patterns apply in list order,
@@ -55,6 +57,13 @@ fn load(chain: &mut Chain, path: &str, name: &str) -> Result<Vec<FilterPattern>>
         out.push(FilterPattern { id, pattern });
     }
     Ok(out)
+}
+
+fn load(chain: &mut Chain, path: &str, name: &str) -> Result<Vec<FilterPattern>> {
+    let bytes = chain
+        .read_file(path)
+        .with_context(|| format!("reading {name}.dbc"))?;
+    parse_rows(&bytes, name)
 }
 
 /// `ChatProfanity.dbc`, the masker's list, in file order.
@@ -82,18 +91,69 @@ pub fn load_names_reserved(chain: &mut Chain) -> Result<Vec<FilterPattern>> {
 mod tests {
     use super::*;
 
+    fn synthetic_filter_dbc(rows: &[(u32, &str, Option<u32>)], three_fields: bool) -> Vec<u8> {
+        let field_count = if three_fields { 3u32 } else { 2u32 };
+        let mut strings = vec![0u8];
+        let mut records = Vec::new();
+        for (id, pattern, lang) in rows {
+            let str_off = if pattern.is_empty() {
+                0u32
+            } else {
+                let off = strings.len() as u32;
+                strings.extend_from_slice(pattern.as_bytes());
+                strings.push(0);
+                off
+            };
+            records.extend_from_slice(&id.to_le_bytes());
+            records.extend_from_slice(&str_off.to_le_bytes());
+            if three_fields {
+                records.extend_from_slice(&lang.unwrap_or(0).to_le_bytes());
+            }
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(b"WDBC");
+        out.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        out.extend_from_slice(&field_count.to_le_bytes());
+        out.extend_from_slice(&(field_count * 4).to_le_bytes());
+        out.extend_from_slice(&(strings.len() as u32).to_le_bytes());
+        out.extend_from_slice(&records);
+        out.extend_from_slice(&strings);
+        out
+    }
+
+    #[test]
+    fn two_field_wrath_and_three_field_donor_filter_dbcs_both_parse() {
+        let two_field = synthetic_filter_dbc(&[(10, r"gold\s*4\s*u", None), (11, "", None)], false);
+        let parsed_two = parse_rows(&two_field, "SpamMessages").expect("2-field SpamMessages");
+        assert_eq!(parsed_two.len(), 1);
+        assert_eq!(parsed_two[0].id, 10);
+        assert_eq!(parsed_two[0].pattern, r"gold\s*4\s*u");
+
+        let three_field =
+            synthetic_filter_dbc(&[(42, r"\<twat\>", Some(0))], true);
+        let parsed_three = parse_rows(&three_field, "SpamMessages").expect("3-field SpamMessages");
+        assert_eq!(parsed_three.len(), 1);
+        assert_eq!(parsed_three[0].id, 42);
+        assert_eq!(parsed_three[0].pattern, r"\<twat\>");
+    }
+
     /// The row counts the reference's PCRE compiles, which only the patched archives give.
     #[test]
     fn the_lists_come_off_the_priority_walk_at_their_patched_sizes() {
         let data = crate::wow_data_or_skip!();
         let mut chain = crate::open_chain(&data).expect("open chain");
+        let is_donor = crate::is_donor_install(&data);
 
         let profanity = load_chat_profanity(&mut chain).expect("load ChatProfanity");
-        assert_eq!(
-            profanity.len(),
-            2289,
-            "2289 is patch.MPQ's copy; 1512 would mean we read dbc.MPQ"
-        );
+        if is_donor {
+            assert_eq!(
+                profanity.len(),
+                2289,
+                "2289 is patch.MPQ's copy; 1512 would mean we read dbc.MPQ"
+            );
+        } else {
+            assert!(!profanity.is_empty(), "Wrath ChatProfanity has rows");
+        }
         assert!(
             profanity.iter().any(|p| p.pattern == r"\<twat\>"),
             "the ASCII half uses the \\< \\> word-boundary anchors"
@@ -104,19 +164,24 @@ mod tests {
         );
 
         let names = load_names_profanity(&mut chain).expect("load NamesProfanity");
-        assert_eq!(
-            names.len(),
-            1535,
-            "1535 is patch-2.MPQ's copy; 943 would mean we read dbc.MPQ"
-        );
         let reserved = load_names_reserved(&mut chain).expect("load NamesReserved");
-        assert_eq!(reserved.len(), 2288, "patch.MPQ's copy");
-
         let spam = load_spam_messages(&mut chain).expect("load SpamMessages");
-        assert_eq!(spam.len(), 28, "dbc.MPQ has no SpamMessages at all");
-        assert!(
-            spam.iter().all(|p| p.pattern.contains(r"\s*")),
-            "every shipped spam row spaces its letters to defeat spacing"
-        );
+        if is_donor {
+            assert_eq!(
+                names.len(),
+                1535,
+                "1535 is patch-2.MPQ's copy; 943 would mean we read dbc.MPQ"
+            );
+            assert_eq!(reserved.len(), 2288, "patch.MPQ's copy");
+            assert_eq!(spam.len(), 28, "dbc.MPQ has no SpamMessages at all");
+            assert!(
+                spam.iter().all(|p| p.pattern.contains(r"\s*")),
+                "every shipped spam row spaces its letters to defeat spacing"
+            );
+        } else {
+            assert!(!names.is_empty(), "Wrath NamesProfanity has rows");
+            assert!(!reserved.is_empty(), "Wrath NamesReserved has rows");
+            assert!(!spam.is_empty(), "Wrath SpamMessages has rows");
+        }
     }
 }
