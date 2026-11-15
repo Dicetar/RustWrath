@@ -1448,6 +1448,13 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         "GetRuneType",
         lua.create_function(|lua, slot: Value| -> mlua::Result<MultiValue> {
+            // The active player is tested before the argument
+            // (`ScriptEvents_Scripts.cpp:3035`-`:3038`): with no rune owner here, no values come
+            // back even for a slot that is not a number.
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let Some(runes) = model.runes.as_deref() else {
+                return Ok(MultiValue::new());
+            };
             let slot = crate::script::binding_abi::number_arg(
                 lua,
                 slot,
@@ -1457,10 +1464,6 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             if !(0..=7).contains(&index) {
                 return Ok(MultiValue::new());
             }
-            let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let Some(runes) = model.runes.as_deref() else {
-                return Ok(MultiValue::new());
-            };
             let Some(rune) = runes.get(index as usize) else {
                 return Ok(MultiValue::new());
             };
@@ -2876,6 +2879,9 @@ mod tests {
         assert_eq!(s.eval::<i64>("return GetNumTrackedAchievements(false)").unwrap(), 0);
         // No rune state has arrived: the reference answers no values, not a guessed class layout.
         assert_eq!(s.arity("GetRuneType(1)").unwrap(), 0);
+        // The owner test comes before the argument (`ScriptEvents_Scripts.cpp:3035`-`:3038`), so a
+        // non-numeric slot is no error either while no player owns runes.
+        assert_eq!(s.arity("GetRuneType('x')").unwrap(), 0);
         assert_eq!(s.arity("GetRuneCooldown(1)").unwrap(), 0);
         assert_eq!(s.eval::<bool>("return IsXPUserDisabled()").unwrap(), false);
         assert_eq!(s.eval::<bool>("return IsLoggedIn()").unwrap(), true);
