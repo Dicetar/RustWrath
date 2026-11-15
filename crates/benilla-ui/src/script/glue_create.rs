@@ -979,7 +979,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, _: MultiValue| {
             let mut m = model(lua);
             let selected = m.glue.create.selected;
-            m.glue.create.select_race(selected);
+            let wrath = m.target == super::UiTarget::Wrath335;
+            m.glue.create.select_race(selected, wrath);
             Ok(())
         })?,
     )?;

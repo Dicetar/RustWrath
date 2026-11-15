@@ -276,14 +276,18 @@ pub(super) fn install_get_text(lua: &Lua) -> mlua::Result<()> {
                 0 => String::new(),
                 n => format!("_P{n}"),
             };
+            // The token's own bytes, not a UTF-8 decode: the native joins C strings, so a
+            // non-UTF-8 token still finds its global.
+            let token = token.as_bytes().to_vec();
+            let (plural, female) = (plural.as_bytes(), female.as_bytes());
             let globals = lua.globals();
             for name in [
-                format!("{token}{plural}{female}"),
-                format!("{token}{plural}"),
-                format!("{token}{female}"),
-                token,
+                [&token[..], plural, female].concat(),
+                [&token[..], plural].concat(),
+                [&token[..], female].concat(),
+                token.clone(),
             ] {
-                if let Ok(Value::String(text)) = globals.get::<Value>(name) {
+                if let Ok(Value::String(text)) = globals.get::<Value>(&name[..]) {
                     return Ok(text);
                 }
             }
