@@ -941,6 +941,7 @@ pub struct WorldDigest {
     pub map_id: u32,
     pub phase: Phase,
     pub player_guid: u64,
+    pub vehicle_guid: Option<u64>,
     pub self_observation: Option<benilla_protocol_wrath::session::SelfObservation>,
     pub entities: BTreeMap<u64, WrathEntity>,
 }
@@ -1974,6 +1975,7 @@ pub struct WrathWorldView {
     pub map_id: u32,
     pub phase: Option<Phase>,
     pub player_guid: u64,
+    pub(crate) vehicle_guid: Option<u64>,
     pub self_observation: Option<benilla_protocol_wrath::session::SelfObservation>,
     pub entities: BTreeMap<u64, WrathEntity>,
     pub last_changes: WrathChanges,
@@ -2044,6 +2046,7 @@ impl Default for WrathWorldView {
             map_id: 0,
             phase: None,
             player_guid: 0,
+            vehicle_guid: None,
             self_observation: None,
             entities: BTreeMap::new(),
             last_changes: WrathChanges::default(),
@@ -2078,6 +2081,14 @@ impl Default for WrathWorldView {
 }
 
 impl WrathWorldView {
+    pub(crate) fn seated_vehicle(&self, player_guid: u64) -> Option<u64> {
+        if player_guid == 0 || player_guid != self.player_guid || self.phase != Some(Phase::InWorld)
+        {
+            return None;
+        }
+        self.vehicle_guid
+    }
+
     /// The mirrored active native cast for `unit`, if the authority's last resolved edge left
     /// one. `None` after the authoritative launch/failure/interruption edge, even though
     /// `last_cast_end` keeps its identity for diagnostics.
@@ -7961,6 +7972,7 @@ fn wrath_net_drain(
                 view.map_id = map_id;
                 view.self_observation = None;
                 view.player_guid = 0;
+                view.vehicle_guid = None;
                 view.entered_world = false;
                 view.vendor = None;
                 view.last_inventory_failure = None;
@@ -8297,6 +8309,7 @@ fn wrath_net_drain(
                 view.entities.clear();
                 view.self_observation = None;
                 view.player_guid = 0;
+                view.vehicle_guid = None;
                 view.entered_world = false;
                 view.gossip_menu = None;
                 view.vendor = None;
@@ -8500,6 +8513,7 @@ fn wrath_net_drain(
         view.entities.clear();
         view.self_observation = None;
         view.player_guid = 0;
+        view.vehicle_guid = None;
         view.entered_world = false;
         view.gossip_menu = None;
         view.vendor = None;
@@ -8592,6 +8606,7 @@ fn wrath_net_drain(
     view.map_id = digest.map_id;
     view.phase = Some(digest.phase);
     view.player_guid = digest.player_guid;
+    view.vehicle_guid = digest.vehicle_guid;
     view.self_observation = digest.self_observation.clone();
 
     let mut changes = WrathChanges {
@@ -12154,6 +12169,9 @@ fn build_digest(session: &SessionState) -> WorldDigest {
         map_id: session.map_id().unwrap_or(0),
         phase: session.phase(),
         player_guid: session.player_guid().unwrap_or(0),
+        vehicle_guid: session
+            .player_guid()
+            .and_then(|guid| session.world().seated_vehicle(guid)),
         self_observation: session.current_self_snapshot(),
         entities,
     }

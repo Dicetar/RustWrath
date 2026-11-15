@@ -37,6 +37,7 @@ pub(crate) fn feed(
 
         let ui_now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         script.set_wrath_scope(world.session_epoch, world.world_generation);
+        script.set_wrath_vehicle_guid(world.seated_vehicle(world.player_guid));
 
         if world.runes.is_empty() {
             script.clear_runes();
