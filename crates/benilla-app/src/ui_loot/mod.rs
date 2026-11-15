@@ -1658,10 +1658,19 @@ pub(crate) fn seat_loot_steps(world: &mut World) {
 
 /// Whether a take must raise `LOOT_BIND_CONFIRM` first (`0x4c28f2`/`0x4c28fb`): bind on pickup
 /// and uncommon or better. An unresolved template answers false, as the reference's cache peek.
-fn bind_confirm_required(items: &Items, item_id: u32) -> bool {
+fn bind_confirm_required(items: &Items, item_id: u32, slot_type: u8, wrath: bool) -> bool {
+    // 12340 LootSlot/DoAutoLoot allow owner rows and multi-drop items without a bind prompt.
+    const MULTI_DROP: u32 = 0x800;
+    if wrath && slot_type == benilla_protocol::messages::slot_type::OWNER {
+        return false;
+    }
     items
         .template(item_id, 0, Ask::Read)
-        .is_some_and(|t| t.bonding == BIND_WHEN_PICKED_UP && t.quality >= BIND_CONFIRM_MIN_QUALITY)
+        .is_some_and(|t| {
+            t.bonding == BIND_WHEN_PICKED_UP
+                && t.quality >= BIND_CONFIRM_MIN_QUALITY
+                && (!wrath || t.flags & MULTI_DROP == 0)
+        })
 }
 
 /// `CloseInteraction 0x48f200` past its early returns, the one close every loot close shares: the
