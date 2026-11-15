@@ -1,8 +1,9 @@
 # Wrath Login, Realm List, Character Select, and World Entry — ZAEBAL Audit & Repair
 
-- Branch: `fix/wrath-login-glue-world-entry`
-- Base: `origin/main` (`9dc36e48`)
-- Status: ready to merge
+Branch: fix/wrath-login-glue-world-entry
+Base: origin/main (9dc36e48)
+Status: ready to merge
+Next: source review, then manual Wrath build and login/realm/char-select/world-entry verification
 - Scope:
   - `crates/benilla-protocol-wrath/src/opcode.rs`
   - `crates/benilla-protocol-wrath/src/auth.rs`
