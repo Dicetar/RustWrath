@@ -215,7 +215,7 @@ pub use quest::{
 };
 pub use reputation::{
     set_faction_at_war, set_faction_inactive, set_watched_faction, FACTION_LIST_LEN,
-    WATCHED_FACTION_NONE,
+    WATCHED_FACTION_NONE, WRATH_FACTION_LIST_LEN,
 };
 pub use roster::{
     CharCreateReq, CharEnumItem, Character, CHARACTER_FLAG_GHOST, CHARACTER_FLAG_HIDE_CLOAK,

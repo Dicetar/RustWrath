@@ -4,9 +4,12 @@
 //! inactive bit returns only at the next login, the at-war bit there or in the server's own
 //! `SMSG_SET_FACTION_ATWAR`, and the watched index as a descriptor update.
 
-/// Length of the reputation list `SMSG_INITIALIZE_FACTIONS` is positional in (vmangos `Misc.h:607`,
-/// `MAX_FACTION_COUNT`); every `repListId` on this wire indexes it.
+/// Length of the 1.12 reputation list `SMSG_INITIALIZE_FACTIONS` is positional in (vmangos
+/// `Misc.h:607`, `MAX_FACTION_COUNT`); every `repListId` on the 1.12 wire indexes it.
 pub const FACTION_LIST_LEN: usize = 64;
+
+/// Length of the Wrath 3.3.5a reputation list (`SMSG_INITIALIZE_FACTIONS` sends 128 slots).
+pub const WRATH_FACTION_LIST_LEN: usize = 128;
 
 /// "Watch no faction" for `CMSG_SET_WATCHED_FACTION` and `PLAYER_FIELD_WATCHED_FACTION_INDEX`. Not
 /// 0: slot 0 is a real faction (Bloodsail Buccaneers) and vmangos stores the value as sent

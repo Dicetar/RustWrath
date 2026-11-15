@@ -145,10 +145,18 @@ pub(crate) fn store_of(u: &RelUnit) -> ObjectStore {
 /// `ReputationMgr::Initialize`): every slot at standing 0 with its `ReputationFlags` seed, which
 /// puts the other side's factions at war.
 pub(crate) fn new_human_reputations(catalog: &FactionCatalog) -> Reputations {
-    let mut slots = vec![(0u8, 0i32); 64];
+    let len = catalog
+        .reputation_factions()
+        .filter_map(|(_, info)| usize::try_from(info.rep_index).ok())
+        .filter(|&i| i < benilla_protocol::messages::WRATH_FACTION_LIST_LEN)
+        .max()
+        .map_or(64, |max| (max + 1).max(64));
+    let mut slots = vec![(0u8, 0i32); len];
     for (_, info) in catalog.reputation_factions() {
         if let Ok(i) = usize::try_from(info.rep_index) {
-            slots[i].0 = info.default_flags_for(1, 1) as u8;
+            if let Some(slot) = slots.get_mut(i) {
+                slot.0 = info.default_flags_for(1, 1) as u8;
+            }
         }
     }
     Reputations::from_slots(slots)
@@ -213,5 +221,18 @@ impl Scene {
             roster: Some(&self.roster),
             units: &self.units,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_human_reputations_handles_wrath_slots_past_64() {
+        let catalog = FactionCatalog::from_rows(Default::default(), Default::default())
+            .with_reputation(1090, 80, 1, 0);
+        let reps = new_human_reputations(&catalog);
+        assert_eq!(reps.slot(80), (0, 0));
     }
 }
