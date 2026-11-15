@@ -2746,6 +2746,8 @@ fn wrath_pick_admission(
                         if let Some(feed) = control.feed.as_ref() {
                             feed.login_generation.store(generation, Ordering::SeqCst);
                         }
+                        // The id outlives the realm's move into the parked link's command.
+                        let realm_id = realm.id;
                         let sent_to_parked = control.worker.is_some()
                             && !control.cancel.load(Ordering::SeqCst)
                             && control
@@ -2754,7 +2756,7 @@ fn wrath_pick_admission(
                                 .is_some_and(|tx| tx.send(WrathParkedCommand::Realm(realm)).is_ok());
                         if !sent_to_parked {
                             if let Some(mut config) = control.config.clone() {
-                                config.preferred_realm = Some(realm.id);
+                                config.preferred_realm = Some(realm_id);
                                 config.login_generation = Some(generation);
                                 if !config.account.is_empty() {
                                     login.pending = Some(config);
@@ -10280,7 +10282,7 @@ fn wrath_apply_world(world: &mut World) {
 
     if !entered && entities.contains_key(&player_guid) {
         let seeded_name = world
-            .get_resource::<crate::glue_session::Roster>()
+            .get_resource::<crate::glue_session::roster::Roster>()
             .and_then(|roster| {
                 roster
                     .chars
@@ -11256,7 +11258,7 @@ pub fn run_session_with_cancel(
                 send_glue(SessionEvent::LoginFailed {
                     refusal: None,
                     reason: format!("{e:#}"),
-                    dial: Some(benilla_protocol::DialLeg::World),
+                    dial: e.downcast_ref::<benilla_protocol::DialFailure>().cloned(),
                 });
                 continue 'realm;
             }
@@ -11307,7 +11309,7 @@ pub fn run_session_with_cancel(
                     send_glue(SessionEvent::LoginFailed {
                         refusal: None,
                         reason: "timeout waiting for world authentication".to_owned(),
-                        dial: Some(benilla_protocol::DialLeg::World),
+                        dial: None,
                     });
                     continue 'realm;
                 }
@@ -11358,7 +11360,7 @@ pub fn run_session_with_cancel(
                     send_glue(SessionEvent::LoginFailed {
                         refusal: None,
                         reason: format!("{e:#}"),
-                        dial: Some(benilla_protocol::DialLeg::World),
+                        dial: None,
                     });
                     continue 'realm;
                 }
