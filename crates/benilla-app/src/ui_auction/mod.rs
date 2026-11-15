@@ -50,8 +50,8 @@ pub(super) const QUERY_THROTTLE_SECS: f64 = 5.0;
 /// `ItemSubClass.dbc` `DisplayFlags` bit 1: left out of the auction category filter (`0x4cf9c0`).
 const SUBCLASS_HIDDEN_FROM_AUCTIONS: u32 = 0x2;
 
-/// The reference's `0x807060` rows `{itemClassId, hasSubclassFilter}` in menu order; a class with
-/// the flag clear offers no subclass or slot rows. The names come from `ItemClass.dbc`.
+/// The 1.12 reference's `0x807060` rows `{itemClassId, hasSubclassFilter}` in menu order; a class
+/// with the flag clear offers no subclass or slot rows. The names come from `ItemClass.dbc`.
 const AUCTION_CLASSES: [(u32, bool); 10] = [
     (2, true),   // Weapon
     (4, true),   // Armor
@@ -64,6 +64,33 @@ const AUCTION_CLASSES: [(u32, bool); 10] = [
     (5, false),  // Reagent
     (15, false), // Miscellaneous
 ];
+
+/// 12340's `s_auctionClasses` (`0x00A14F70`, read by `0x0059C420`-`0x0059C590`): twelve rows,
+/// adding Glyph, Gem and Quest and dropping Reagent, with every subclass flag set but Quest's.
+/// Addons index this list by position: Bagnon's quest-item search reads the twelfth name.
+const WRATH_AUCTION_CLASSES: [(u32, bool); 12] = [
+    (2, true),   // Weapon
+    (4, true),   // Armor
+    (1, true),   // Container
+    (0, true),   // Consumable
+    (16, true),  // Glyph
+    (7, true),   // Trade Goods
+    (6, true),   // Projectile
+    (11, true),  // Quiver
+    (9, true),   // Recipe
+    (3, true),   // Gem
+    (15, true),  // Miscellaneous
+    (12, false), // Quest
+];
+
+/// The class table the VM's target reads.
+fn auction_classes(target: benilla_ui::script::UiTarget) -> &'static [(u32, bool)] {
+    if target == benilla_ui::script::UiTarget::Wrath335 {
+        &WRATH_AUCTION_CLASSES
+    } else {
+        &AUCTION_CLASSES
+    }
+}
 
 /// `ItemSubClass.dbc` `Flags` bit `0x200`: the subclass offers the inventory-slot rows beneath it
 /// (`GetAuctionInvTypes`, `0x4cfb63`). Set on Armor 0 to 4 only, not Shield, Libram, Idol or Totem.
@@ -781,15 +808,17 @@ fn row_bid(
     }
 }
 
-/// The Browse tab's category tree from the player's own DBCs; the addon-corpus survey reuses it.
+/// The Browse tab's category tree for the VM's target from the player's own DBCs; the addon-corpus
+/// survey reuses it.
 pub(crate) fn categories(
+    target: benilla_ui::script::UiTarget,
     classes: Option<&crate::ui_items::ItemClasses>,
     subclasses: Option<&crate::ui_items::ItemSubClasses>,
 ) -> Vec<AuctionCategory> {
     let (Some(classes), Some(subclasses)) = (classes, subclasses) else {
         return Vec::new();
     };
-    AUCTION_CLASSES
+    auction_classes(target)
         .iter()
         .filter_map(|&(class_id, has_subclass_filter)| {
             let name = classes.0.name(class_id)?.to_string();
@@ -864,7 +893,8 @@ fn feed_auction(
 
         // The class tree needs no session: the stock `AuctionFrameBrowse_OnLoad` reads
         // `GetAuctionItemClasses()` when the addon loads (`Blizzard_AuctionUI.lua:174`).
-        let classes_now = categories(catalogs.0.as_deref(), catalogs.1.as_deref());
+        let classes_now =
+            categories(script.target(), catalogs.0.as_deref(), catalogs.1.as_deref());
         let last_classes = last_classes.get(script);
         if *last_classes != classes_now {
             *last_classes = classes_now.clone();
@@ -1019,7 +1049,11 @@ mod tests {
         let subclasses = crate::ui_items::ItemSubClasses(
             benilla_formats::load_item_sub_classes(&mut chain).unwrap(),
         );
-        let tree = categories(Some(&classes), Some(&subclasses));
+        let tree = categories(
+            benilla_ui::script::UiTarget::Vanilla112,
+            Some(&classes),
+            Some(&subclasses),
+        );
         let ids: Vec<(u32, bool)> = tree
             .iter()
             .map(|c| (c.class_id, c.has_subclass_filter))
@@ -1053,6 +1087,32 @@ mod tests {
         // Consumable's flag is 0, yet its subclass list stays for the query's own scan.
         assert!(!tree[3].has_subclass_filter);
         assert!(!tree[3].subclasses.is_empty());
+    }
+
+    /// A Wrath VM reads 12340's twelve rows (`0x00A14F70`), so a position-indexed reader such as
+    /// Bagnon's `select(12, GetAuctionItemClasses())` finds Quest. Every class in the table has an
+    /// `ItemClass.dbc` row in a 3.3.5a install, so none drops out of the list.
+    #[test]
+    fn a_wrath_vm_gets_the_twelve_12340_classes() {
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_formats::open_chain(&data).unwrap();
+        let classes =
+            crate::ui_items::ItemClasses(benilla_formats::load_item_classes(&mut chain).unwrap());
+        let subclasses = crate::ui_items::ItemSubClasses(
+            benilla_formats::load_item_sub_classes(&mut chain).unwrap(),
+        );
+        let tree = categories(
+            benilla_ui::script::UiTarget::Wrath335,
+            Some(&classes),
+            Some(&subclasses),
+        );
+        let ids: Vec<(u32, bool)> = tree
+            .iter()
+            .map(|c| (c.class_id, c.has_subclass_filter))
+            .collect();
+        assert_eq!(ids, WRATH_AUCTION_CLASSES.to_vec());
+        assert!(tree[3].has_subclass_filter, "12340 offers Consumable's subclasses");
+        assert!(!tree[4].subclasses.is_empty(), "Glyph lists its classes");
     }
 
     /// Every result runs its sort tail, which signals with no test (`0x4cd8b0`): the Browse pane

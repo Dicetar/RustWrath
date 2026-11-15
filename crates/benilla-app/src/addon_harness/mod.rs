@@ -1340,7 +1340,11 @@ fn auction_item_classes() -> Vec<benilla_ui::script::AuctionCategory> {
         let subclasses = benilla_formats::load_item_sub_classes(&mut chain)
             .ok()
             .map(crate::ui_items::ItemSubClasses);
-        crate::ui_auction::categories(classes.as_ref(), subclasses.as_ref())
+        crate::ui_auction::categories(
+            benilla_ui::script::UiTarget::Vanilla112,
+            classes.as_ref(),
+            subclasses.as_ref(),
+        )
     })
     .clone()
 }
