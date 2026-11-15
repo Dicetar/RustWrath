@@ -180,6 +180,14 @@ impl ObjectEntry {
     }
 }
 
+/// A passenger's replicated seat in a held vehicle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VehicleAttachment {
+    pub base_guid: u64,
+    pub vehicle_id: u32,
+    pub seat_index: u8,
+}
+
 /// The replicated world: GUID-keyed, iteration-ordered for deterministic snapshots.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorldState {
@@ -200,13 +208,17 @@ impl WorldState {
         self.objects.get(&guid)
     }
 
-    /// A seated passenger's vehicle base. A seat on a map transport is not a vehicle token.
-    pub fn seated_vehicle(&self, passenger: u64) -> Option<u64> {
+    /// A passenger's seat and kit. An ordinary map transport has no vehicle kit.
+    pub fn seated_vehicle(&self, passenger: u64) -> Option<VehicleAttachment> {
         let (base, seat) = self.get(passenger)?.transport?;
-        if seat < 0 || base == 0 || base == passenger {
+        if !(0..8).contains(&seat) || base == 0 || base == passenger {
             return None;
         }
-        self.get(base)?.vehicle_id.map(|_| base)
+        Some(VehicleAttachment {
+            base_guid: base,
+            vehicle_id: self.get(base)?.vehicle_id?,
+            seat_index: seat as u8,
+        })
     }
 
     pub(crate) fn apply_vehicle_id(&mut self, guid: u64, id: u32) -> bool {

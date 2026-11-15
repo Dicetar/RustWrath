@@ -722,6 +722,7 @@ pub(crate) struct Model {
     pub(crate) wrath_scoped_commands: std::collections::VecDeque<WrathScopedCommand>,
     /// Replicated vehicle transport GUID for the local player when riding a vehicle.
     pub(crate) vehicle_guid: Option<u64>,
+    pub(crate) vehicle_seat_flags: Option<u32>,
     /// Frames created with a native secure-handler template, keyed by
     /// [`crate::widget::FrameHandle::fingerprint_bits`]. `WrapScript` refuses an owner outside it.
     pub(crate) secure_frames: HashSet<u64>,
@@ -1790,6 +1791,7 @@ impl Model {
             wrath_lfg: WrathLfgState::default(),
             wrath_scoped_commands: std::collections::VecDeque::new(),
             vehicle_guid: None,
+            vehicle_seat_flags: None,
             secure_frames: HashSet::new(),
             secure_drivers: HashMap::new(),
             secure_wraps: HashMap::new(),

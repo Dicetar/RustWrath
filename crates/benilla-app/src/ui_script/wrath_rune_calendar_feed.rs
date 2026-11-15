@@ -9,16 +9,17 @@ use benilla_ui::script::UiTarget;
 use crate::net::{ClientCommand, NetCommands};
 use crate::script_calls::VmWith;
 use crate::ui_script::UiClock;
-use crate::wrath::WrathWorldView;
+use crate::wrath::{WrathVehicleSeats, WrathWorldView};
 
 pub(crate) fn feed(
     mut vm: VmWith<(
         Option<Res<'static, WrathWorldView>>,
         Option<Res<'static, UiClock>>,
         Option<Res<'static, NetCommands>>,
+        Option<Res<'static, WrathVehicleSeats>>,
     )>,
 ) {
-    vm.turn(|script, (world, clock, net)| {
+    vm.turn(|script, (world, clock, net, seats)| {
         let Some(script) = script else {
             return;
         };
@@ -37,7 +38,12 @@ pub(crate) fn feed(
 
         let ui_now = clock.as_deref().map_or(0.0, |clock| clock.ui_now);
         script.set_wrath_scope(world.session_epoch, world.world_generation);
-        script.set_wrath_vehicle_guid(world.seated_vehicle(world.player_guid));
+        let vehicle = world.local_vehicle(world.player_guid);
+        let flags = vehicle.and_then(|seat| {
+            seats.as_deref()?.0.flags(seat.vehicle_id, seat.seat_index)
+        });
+        script.set_wrath_vehicle_guid(vehicle.map(|seat| seat.base_guid));
+        script.set_wrath_vehicle_seat_flags(flags);
 
         if world.runes.is_empty() {
             script.clear_runes();

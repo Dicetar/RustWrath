@@ -56,6 +56,8 @@ pub use itemsets::{load_item_sets, ItemSetCatalog, ItemSetInfo};
 mod gm_survey;
 mod lfg_dungeons;
 pub use lfg_dungeons::{load_lfg_dungeons, LfgDungeon};
+mod vehicles;
+pub use vehicles::VehicleSeats;
 mod skill_tiers;
 pub use gm_survey::{load_gm_survey, GmSurvey};
 pub use skill_tiers::{load_skill_tiers, SkillTiers};

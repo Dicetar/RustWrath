@@ -839,6 +839,12 @@ fn setup_entities(
         return;
     };
     let mut chain = world_assets.chain.lock_recover();
+    if crate::wrath::selected_from_env() {
+        match benilla_formats::VehicleSeats::load(&mut chain) {
+            Ok(seats) => commands.insert_resource(crate::wrath::WrathVehicleSeats(seats)),
+            Err(error) => warn!("Wrath vehicle seat permissions unavailable: {error:#}"),
+        }
+    }
     match load_creature_catalog(&mut chain) {
         Ok(catalog) => {
             info!(
