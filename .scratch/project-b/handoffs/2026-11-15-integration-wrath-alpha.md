@@ -6,9 +6,11 @@ Branch: integration/wrath-alpha
 Issue: none
 Next: Build and run the candidate against the existing Northshire run card; preserve the first failure and its exact revision.
 
-This isolated branch assembles the reviewed source paths for the private alpha.
-The owner’s current checkout and `main` are separate. Build and launch remain
-the owner's steps. The candidate is not evidence of a completed playthrough.
+This isolated branch now includes the mainline batch through `b700d540`.
+Outside this note, its tree differs by the character-login refusal and rename
+fix, published for mainline review as `fix/wrath-character-refusal-codes`.
+The owner’s current checkout is separate. Build and launch remain the owner's
+steps. The candidate is not evidence of a completed playthrough.
 
 The integration includes login and world entry, movement and mover orders,
 transfer recovery, quest log seating and watch changes, solo and group loot,
