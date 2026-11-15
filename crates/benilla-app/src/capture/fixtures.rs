@@ -212,6 +212,7 @@ pub(super) fn seed_ui_fixture(
             area: 0,
             map: 0,
             bag_family: 0,
+            wrath_roll: None,
         };
 
         match fixture {

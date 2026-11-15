@@ -3966,6 +3966,11 @@ fn translate_gameplay(
                     area: i.area,
                     map: i.map,
                     bag_family: i.bag_family,
+                    wrath_roll: Some(benilla_protocol::messages::WrathRollItemInfo {
+                        greed_only: i.flags2 & 0x100 != 0,
+                        required_disenchant_skill: i.required_disenchant_skill,
+                        item_limit_category: i.item_limit_category,
+                    }),
                 })
             }),
         }],
@@ -4404,9 +4409,6 @@ fn translate_gameplay(
             vec![SessionEvent::LootMoneyNotify { amount }]
         }
         WrathGameplayEvent::LootClearMoney => vec![SessionEvent::LootClearMoney],
-        // 12340's map id, stack count and vote mask have no donor field. They stay on the
-        // protocol event for the owner extension recorded in the group-loot checkpoint; the
-        // donor roll owner consumes the identity, item, countdown and both property words.
         WrathGameplayEvent::LootStartRoll {
             guid,
             map_id: _,
@@ -4414,9 +4416,9 @@ fn translate_gameplay(
             item_id,
             suffix_factor,
             random_property_id,
-            item_count: _,
+            item_count,
             countdown_ms,
-            vote_mask: _,
+            vote_mask,
         } => vec![SessionEvent::LootStartRoll(ProtocolLootStartRoll {
             looted_target: guid,
             item_slot,
@@ -4424,9 +4426,8 @@ fn translate_gameplay(
             random_property_id,
             suffix_factor,
             countdown_ms,
+            wrath_options: Some((item_count, vote_mask)),
         })],
-        // `auto_pass` has no donor field; it is retained on the protocol event for the chat-line
-        // extension recorded in the checkpoint.
         WrathGameplayEvent::LootRoll {
             guid,
             item_slot,
@@ -4436,7 +4437,7 @@ fn translate_gameplay(
             random_property_id,
             roll_number,
             roll_type,
-            auto_pass: _,
+            auto_pass,
         } => vec![SessionEvent::LootRoll(ProtocolLootRoll {
             looted_target: guid,
             item_slot,
@@ -4446,6 +4447,7 @@ fn translate_gameplay(
             suffix_factor,
             roll_number,
             roll_type,
+            auto_pass: Some(auto_pass),
         })],
         WrathGameplayEvent::LootRollWon {
             guid,

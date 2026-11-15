@@ -562,6 +562,7 @@ fn a_loot_vote_sends_ahead_of_its_cancel_inside_its_call() {
                 random_property_id: 0,
                 suffix_factor: 0,
                 countdown_ms: 60_000,
+                wrath_options: None,
             });
         vm(&mut app).set_loot_rolls(LootRollsState {
             rolls: vec![LootRollEntry {

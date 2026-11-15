@@ -105,6 +105,7 @@ pub mod roll_vote {
     pub const PASS: u8 = 0;
     pub const NEED: u8 = 1;
     pub const GREED: u8 = 2;
+    pub const DISENCHANT: u8 = 3;
 }
 
 /// `CMSG_LOOT_ROLL` (`Loot.cpp:18-23`): `u64 lootedTarget, u32 itemSlot, u8 rollType`. The
@@ -140,6 +141,8 @@ pub struct LootStartRoll {
     pub suffix_factor: u32,
     /// How long the roll stays open, in ms (vmangos: `60_000`, `Group.cpp:67`).
     pub countdown_ms: u32,
+    /// Wrath supplies a stack count and a per-recipient mask (pass, need, greed, disenchant).
+    pub wrath_options: Option<(u32, u8)>,
 }
 
 /// `SMSG_LOOT_ROLL` (`Loot.cpp:53-63`): one player's vote or dice roll, sent to every roller.
@@ -157,6 +160,8 @@ pub struct LootRoll {
     pub suffix_factor: u32,
     pub roll_number: u8,
     pub roll_type: u8,
+    /// Wrath's auto-pass indicator; absent on 1.12.
+    pub auto_pass: Option<bool>,
 }
 
 impl LootRoll {
@@ -222,6 +227,7 @@ pub(super) fn read_loot_start_roll(r: &mut &[u8]) -> io::Result<LootStartRoll> {
         random_property_id,
         suffix_factor,
         countdown_ms,
+        wrath_options: None,
     })
 }
 
@@ -244,6 +250,7 @@ pub(super) fn read_loot_roll(r: &mut &[u8]) -> io::Result<LootRoll> {
         suffix_factor,
         roll_number,
         roll_type,
+        auto_pass: None,
     })
 }
 
@@ -504,6 +511,7 @@ mod tests {
                     random_property_id: 0,
                     suffix_factor: 0,
                     countdown_ms: 60_000,
+                    wrath_options: None,
                 }
             ),
             other => panic!("expected LootStartRoll, got {}", other.name()),
@@ -585,6 +593,7 @@ mod tests {
                 suffix_factor: 0,
                 roll_number: 0,
                 roll_type: 0,
+                auto_pass: None,
             }
         );
 

@@ -106,6 +106,8 @@ fn rolls() -> LootRollsState {
                 item_id: 17182,
                 link: Some(STAFF_LINK.into()),
                 random_property_id: 0,
+                wrath_options: None,
+                wrath_tooltip: None,
             },
             LootRollEntry {
                 roll_id: 8,
@@ -117,6 +119,8 @@ fn rolls() -> LootRollsState {
                 item_id: 25,
                 link: Some(SWORD_LINK.into()),
                 random_property_id: 0,
+                wrath_options: None,
+                wrath_tooltip: None,
             },
             // No template yet: name, texture, quality and link (which embeds the name) are nil.
             LootRollEntry {
@@ -129,6 +133,8 @@ fn rolls() -> LootRollsState {
                 item_id: 4306,
                 link: None,
                 random_property_id: 0,
+                wrath_options: None,
+                wrath_tooltip: None,
             },
         ],
     }

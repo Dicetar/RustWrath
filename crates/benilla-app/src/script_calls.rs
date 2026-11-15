@@ -529,6 +529,10 @@ impl CallHost for ScriptCallHost<'_, '_> {
         self.appliers.items().item_count(id, bank, uses)
     }
 
+    fn item_category_would_exceed(&mut self, category: u32, incoming: u32) -> Option<bool> {
+        self.appliers.items().item_category_would_exceed(category, incoming)
+    }
+
     fn item_family(&mut self, id: u32) -> Option<u32> {
         self.appliers.items().item_family(id)
     }
