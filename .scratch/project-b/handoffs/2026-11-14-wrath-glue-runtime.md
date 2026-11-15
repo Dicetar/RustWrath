@@ -1,12 +1,13 @@
 # Wrath glue and runtime repairs: button label, load timing, 12340 nameplate gate
 
-Status: parked
-Owner: Claude Code / Opus 5.5 (stopped 2026-11-14)
+Status: ready to merge
+Owner: Codex
 Branch: fix/wrath-glue-runtime
 Issue: none
-Next: take the Cargo slot, build `benilla-ui` and `benilla-app` tests, run the focused cases listed below
+Next: land the source follow-up and check the clock, plates and startup time during the owner's manual launch
 
-Based on `main` `f1a86931`. Pushed to `origin` on 2026-11-15 after a source review; not merged.
+Claude Code's original branch was based on `f1a86931` and landed as `e29b55d5`.
+The source follow-up below is based on `9dc36e48`.
 
 ## What exists now
 
@@ -46,10 +47,28 @@ To look at when building:
 
 - `benilla-ui`: `unnamed_button_text_is_available_during_onload` and the loader's button-label cases.
 - `benilla-app`: the 8 cases in `vplates::wrath_gate_tests`, the existing `vplates::gate_tests`.
-- With the install, and `--nocapture` to see the timings: `each_wrath_core_file_loads_in_bounded_time`
-  (prints `CORE_FILE_TIME` for any file of 250 ms or more) and
-  `the_chat_face_shapes_a_line_in_bounded_time` (prints `FRIENDS_OPEN`, `FRIENDS_SHAPE`,
-  `FRIENDS_RASTER`). A slow core file points at the VM or layout; a slow face points at the fonts.
+- With Wrath data and `BENILLA_REQUIRE_DATA=1`, run the two timing probes by name with
+  `-- --ignored --nocapture`. Compare the `fixed` and `atlas` times for `FloatingChatFrame.xml`
+  from `each_wrath_core_file_loads_in_bounded_time`, and check any `CORE_FILE_ERRORS` before
+  interpreting the timings. Use `the_chat_face_shapes_a_line_in_bounded_time` to isolate the
+  face open, metrics and rasterization stages. The test atlas uses the auto-discovered client
+  font archives. Record the live asset profile when comparing probe and client results.
+
+## Source follow-up, 2026-11-15
+
+- The XML loader preserves the 1.12 unnamed button label's existing overlay layer. Wrath
+  creates the label before applying text, matching the preserved 12340
+  `CSimpleButton::LoadXML` and `LoadXML_String` (`0x00815FA0`).
+- The Wrath driver retires plates until the active player is available, as in
+  `CGUnit_C::ShouldShowNamePlate` (`0x0072B060`). The six CVar names and defaults agree with
+  `GameUI_CVar.cpp:589`–`:595`. Reference checkout pin
+  `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`.
+- The timing probes now run on demand. The FrameXML probe compares two fresh VMs with
+  fixed-width and atlas measurement. The face probe checks that `FRIENDS.TTF` actually opened
+  and applies its time limit to all three stages. The logged 153 s stall still needs a
+  reproduction before changing startup behavior.
+- The prior button-label log records 5 passing cases for `408df3ad`. The saved core timing log
+  has compiler warnings and no test output. This follow-up was reviewed in source only.
 
 ## Not done, not proven
 

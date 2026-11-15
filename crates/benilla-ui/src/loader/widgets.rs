@@ -181,7 +181,6 @@ impl Loader<'_> {
             } else {
                 FontAttrs::Own
             };
-            // `SetText` creates the label even with no text, so its layout lands on a real region;
             // `text=` is each level's, a global-string key (`0x703bf0`), an empty one skipped
             // (`0x77101b`).
             let label_levels = self.fontstring_levels(bt);
@@ -191,22 +190,18 @@ impl Loader<'_> {
                     label = self.resolve_text(raw, dbg);
                 }
             }
-            // A named label is created as a named region, not aliased after `SetText`, so its
-            // `GetName()` answers.
+            // Create named regions before SetText so GetName() answers. Wrath's XML loader
+            // also creates unnamed labels (CSimpleButton::LoadXML); SetText("") would leave
+            // them absent during OnLoad. The 1.12 unnamed label takes SetText's overlay layer.
             let bt_name = bt.name().map(|raw| framexml::resolve_name(raw, self_name));
-            // `SetText("")` does not lazily create a label in Wrath (`CSimpleButton::SetText`
-            // returns when the value is empty and no label exists). XML still creates the
-            // unnamed ButtonText region before applying its empty/default text, because stock
-            // OnLoad handlers call `GetFontString()` even when the node has no name or text.
-            match wrapper.call_method::<Table>(
-                "CreateFontString",
-                (bt_name.clone(), Option::<String>::None),
-            ) {
-                Ok(fs) => self.call(wrapper, "SetFontString", fs, dbg),
-                Err(e) => self
-                    .report
-                    .warnings
-                    .push(format!("{dbg}: ButtonText CreateFontString: {e}")),
+            if bt_name.is_some() || self.model().target == crate::script::UiTarget::Wrath335 {
+                match wrapper.call_method::<Table>("CreateFontString", bt_name.as_deref()) {
+                    Ok(fs) => self.call(wrapper, "SetFontString", fs, dbg),
+                    Err(e) => self
+                        .report
+                        .warnings
+                        .push(format!("{dbg}: ButtonText CreateFontString: {e}")),
+                }
             }
             self.call(wrapper, "SetText", label, dbg);
             if let Ok(region) = wrapper.call_method::<Table>("GetFontString", ()) {
