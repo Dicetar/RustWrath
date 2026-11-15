@@ -1385,6 +1385,10 @@ pub fn auction_place_bid(auctioneer: u64, auction_id: u32, price: u32) -> Vec<u8
 }
 
 /// Write a 3.3.5a (`MovementStructures.cpp`) client `MovementInfo` block into `out`.
+///
+/// The transport and falling bits follow `transport` and `jump`, whatever `flags` says: the
+/// server reads the tail each bit announces, so a bit without its tail shifts every later field.
+/// An ack built from a pose that carries no jump tail is the case that would otherwise do it.
 #[allow(clippy::too_many_arguments)]
 pub fn write_movement_info(
     out: &mut Vec<u8>,
@@ -1397,7 +1401,7 @@ pub fn write_movement_info(
     jump: Option<(f32, f32, f32, f32)>,
     transport: Option<(u64, [f32; 3], f32, u32)>,
 ) {
-    let mut wrath_flags = flags;
+    let mut wrath_flags = flags & !(0x0000_0200 | 0x0000_1000);
     if transport.is_some() {
         wrath_flags |= 0x0000_0200; // MOVEMENTFLAG_ONTRANSPORT
     }
@@ -5135,6 +5139,18 @@ mod tests {
             parse(crate::opcode::SMSG_ATTACKSTOP, &b).unwrap().unwrap(),
             ServerEvent::AttackStop { attacker: 0x11, victim: 0x22 }
         );
+    }
+
+    /// A mode ack carries no jump tail and no deck pose, so it may not announce one: a hover or
+    /// water-walk ack answered mid-air would otherwise shift the server's read of `apply`.
+    #[test]
+    fn an_ack_without_a_tail_does_not_announce_one() {
+        // 12340 FORWARD | ONTRANSPORT | FALLING.
+        let p = move_mode_ack(0x11, 7, true, 0x1 | 0x200 | 0x1000, 1000, [1.0, 2.0, 3.0], 0.5);
+        // Packed guid 2, counter 4, then the 30-byte `MovementInfo` with no tail, then `apply`.
+        assert_eq!(u32::from_le_bytes(le::<4>(&p[6..10])), 0x1);
+        assert_eq!(p.len(), 2 + 4 + 30 + 4);
+        assert_eq!(u32::from_le_bytes(le::<4>(&p[36..])), 1);
     }
 
     #[test]
