@@ -165,8 +165,9 @@ pub struct AuctionCategory {
     /// The wire's `mainCategory`: an item class id, not the menu position.
     pub class_id: u32,
     pub name: String,
-    /// The `0x807060` table's second column. False (Consumable, Trade Goods, Reagent,
-    /// Miscellaneous) empties `GetAuctionItemSubClasses` and `GetAuctionInvTypes`, but
+    /// The class table's second column: 1.12's `0x807060`, 12340's `s_auctionClasses`
+    /// (`0x00A14F70`). False (1.12: Consumable, Trade Goods, Reagent, Miscellaneous; 12340: Quest
+    /// only) empties `GetAuctionItemSubClasses` and `GetAuctionInvTypes`, but
     /// `QueryAuctionItems` never reads it.
     pub has_subclass_filter: bool,
     /// The class's `ItemSubClass.dbc` rows with `DisplayFlags & 2` clear, in file order: what both
@@ -1071,8 +1072,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetAuctionItemClasses() → the ten auctionable class names in the reference's menu order, off
-    // the player's ItemClass.dbc; pushed at login, no session needed.
+    // GetAuctionItemClasses() → the auctionable class names in the reference's menu order (ten in
+    // 1.12, twelve in 12340, `0x0059C420`), off the player's ItemClass.dbc; the host picks the
+    // table by target and pushes it at login, no session needed.
     g.set(
         "GetAuctionItemClasses",
         lua.create_function(|lua, ()| {
@@ -1121,7 +1123,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     // GetAuctionInvTypes(classIndex, subclassIndex) → the fixed 14 inventory-slot GlobalString
     // keys, or nothing (`0x4cfab0`): nothing without a class (or with its `0x807060` flag 0); a
     // found subclass needs `Flags & 0x200`, but an index the scan runs past skips that gate (the
-    // exhaust edge at `0x4cfb61` lands past the test at `0x4cfb63`).
+    // exhaust edge at `0x4cfb61` lands past the test at `0x4cfb63`). 12340 (`0x0059C590`) keeps
+    // those gates and returns 28 values instead: each key followed by 1 when the row is offered
+    // or nil when it is greyed out, which the stock 3.3.5a Browse filter reads in pairs
+    // (`AuctionFrameFilters_UpdateInvTypes`). Only Armor withholds rows; see
+    // [`armor_offers_slot`].
     g.set(
         "GetAuctionInvTypes",
         lua.create_function(|lua, (class_index, sub_index): (Value, Value)| {
@@ -1137,25 +1143,33 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 sub_index,
                 "Usage: GetAuctionInvTypes(classIndex, subClassIndex)",
             )?;
-            let offers = {
+            let (offers, wrath, armor) = {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
-                class_index
+                let category = class_index
                     .checked_sub(1)
                     .and_then(|i| model.auction_item_classes.get(i))
-                    .filter(|c| c.has_subclass_filter)
-                    .is_some_and(|c| {
-                        sub_index
-                            .checked_sub(1)
-                            .and_then(|i| c.subclasses.get(i))
-                            .is_none_or(|s| s.has_inv_types)
-                    })
+                    .filter(|c| c.has_subclass_filter);
+                let offers = category.is_some_and(|c| {
+                    sub_index
+                        .checked_sub(1)
+                        .and_then(|i| c.subclasses.get(i))
+                        .is_none_or(|s| s.has_inv_types)
+                });
+                let armor = category.is_some_and(|c| c.class_id == ITEM_CLASS_ARMOR);
+                (offers, model.is_wrath(), armor)
             };
             if !offers {
                 return Ok(MultiValue::new());
             }
-            let mut out = Vec::with_capacity(AUCTION_INV_TYPES.len());
-            for (_, key) in AUCTION_INV_TYPES {
-                out.push(Value::String(lua.create_string(key)?));
+            // The 0-based menu position as the reference holds it, signed: index 0 is -1.
+            let sub_position = (sub_index as u32).wrapping_sub(1) as i32;
+            let mut out = Vec::with_capacity(AUCTION_INV_TYPES.len() * 2);
+            for row in &AUCTION_INV_TYPES {
+                out.push(Value::String(lua.create_string(row.token)?));
+                if wrath {
+                    let offered = !armor || armor_offers_slot(sub_position, row);
+                    out.push(if offered { Value::Number(1.0) } else { Value::Nil });
+                }
             }
             Ok(MultiValue::from_vec(out))
         })?,
@@ -1195,7 +1209,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 let model = lua.app_data_ref::<Model>().expect("model app_data");
                 let inv_type = position(3)
                     .and_then(|i| AUCTION_INV_TYPES.get(i))
-                    .map(|&(id, _)| id);
+                    .map(|row| row.inv_type);
                 let category = position(4).and_then(|i| model.auction_item_classes.get(i));
                 let class = category.map(|c| c.class_id);
                 let sub_class = category.and_then(|c| {
@@ -1476,24 +1490,70 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
-/// The `0x8070b0` table's fourteen `{u32 invTypeId; char name[0x20]}` rows, in its order: the id
-/// goes on the wire, the name is a GlobalString key.
-const AUCTION_INV_TYPES: [(u32, &str); 14] = [
-    (1, "INVTYPE_HEAD"),
-    (2, "INVTYPE_NECK"),
-    (3, "INVTYPE_SHOULDER"),
-    (4, "INVTYPE_BODY"),
-    (5, "INVTYPE_CHEST"),
-    (6, "INVTYPE_WAIST"),
-    (7, "INVTYPE_LEGS"),
-    (8, "INVTYPE_FEET"),
-    (9, "INVTYPE_WRIST"),
-    (10, "INVTYPE_HAND"),
-    (11, "INVTYPE_FINGER"),
-    (12, "INVTYPE_TRINKET"),
-    (16, "INVTYPE_CLOAK"),
-    (23, "INVTYPE_HOLDABLE"),
+/// `ItemClass.dbc` id of Armor, the one class whose slot rows 12340 greys out.
+const ITEM_CLASS_ARMOR: u32 = 4;
+
+/// `INVTYPE_CLOAK`, the row Cloth keeps although other worn armor withholds it.
+const INV_TYPE_CLOAK: u32 = 16;
+
+/// One row of the Browse tab's inventory-slot filter.
+struct AuctionInvType {
+    /// The wire's `inventoryType`.
+    inv_type: u32,
+    /// The GlobalString key the menu shows.
+    token: &'static str,
+    /// 12340 only: offered under the first armor subclass, Miscellaneous (the accessory slots).
+    offered_under_miscellaneous: bool,
+    /// 12340 only: withheld under every other armor subclass (no plate necklaces).
+    withheld_under_worn_armor: bool,
+}
+
+const fn slot_row(
+    inv_type: u32,
+    token: &'static str,
+    offered_under_miscellaneous: bool,
+    withheld_under_worn_armor: bool,
+) -> AuctionInvType {
+    AuctionInvType {
+        inv_type,
+        token,
+        offered_under_miscellaneous,
+        withheld_under_worn_armor,
+    }
+}
+
+/// The fourteen rows in menu order: 1.12's `0x8070b0` `{u32 invTypeId; char name[0x20]}` table,
+/// which 12340's `s_auctionInvTypes` (`0x00A14FD0`) keeps in the same order with the two armor
+/// columns added. The id goes on the wire, the name is a GlobalString key, and a menu position
+/// (`QueryAuctionItems`' fourth argument, the stock filter's pair index on 12340) indexes this.
+const AUCTION_INV_TYPES: [AuctionInvType; 14] = [
+    slot_row(1, "INVTYPE_HEAD", true, false),
+    slot_row(2, "INVTYPE_NECK", true, true),
+    slot_row(3, "INVTYPE_SHOULDER", false, false),
+    slot_row(4, "INVTYPE_BODY", true, true),
+    slot_row(5, "INVTYPE_CHEST", false, false),
+    slot_row(6, "INVTYPE_WAIST", false, false),
+    slot_row(7, "INVTYPE_LEGS", false, false),
+    slot_row(8, "INVTYPE_FEET", false, false),
+    slot_row(9, "INVTYPE_WRIST", false, false),
+    slot_row(10, "INVTYPE_HAND", false, false),
+    slot_row(11, "INVTYPE_FINGER", true, true),
+    slot_row(12, "INVTYPE_TRINKET", true, true),
+    slot_row(INV_TYPE_CLOAK, "INVTYPE_CLOAK", false, true),
+    slot_row(23, "INVTYPE_HOLDABLE", true, true),
 ];
+
+/// 12340's armor rule (`0x0059C590`), keyed on the 0-based menu position of the subclass and not
+/// its id: position 0 (Miscellaneous) offers only its own rows; any other position withholds the
+/// accessory rows, except that position 1 (Cloth) keeps Back. A position past the list, and the
+/// -1 of a zero index, count as "any other".
+fn armor_offers_slot(sub_position: i32, row: &AuctionInvType) -> bool {
+    match sub_position {
+        0 => row.offered_under_miscellaneous,
+        1 if row.inv_type == INV_TYPE_CLOAK => true,
+        _ => !row.withheld_under_worn_armor,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2084,6 +2144,62 @@ mod tests {
             s.arity("GetAuctionInvTypes(1, 9)").unwrap(),
             14,
             "an exhausted scan skips the gate"
+        );
+    }
+
+    /// 12340 (`0x0059C590`) returns each slot key followed by 1 or nil, keeps the 1.12 gates, and
+    /// greys rows out for Armor only, by the subclass's menu position.
+    #[test]
+    fn wrath_inv_types_pair_each_key_with_the_armor_rule() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let sub = |sub_id: u32, name: &str, has_inv_types: bool| AuctionSubCategory {
+            sub_id,
+            name: name.into(),
+            has_inv_types,
+        };
+        s.set_auction_item_classes(vec![
+            AuctionCategory {
+                class_id: 2,
+                name: "Weapon".into(),
+                has_subclass_filter: true,
+                subclasses: vec![sub(0, "Axe", false)],
+            },
+            AuctionCategory {
+                class_id: 4,
+                name: "Armor".into(),
+                has_subclass_filter: true,
+                subclasses: vec![
+                    sub(0, "Miscellaneous", true),
+                    sub(1, "Cloth", true),
+                    sub(2, "Leather", true),
+                    sub(6, "Shields", false),
+                ],
+            },
+        ]);
+        // The count, then one mark per row: 1 offered, - nil, ? anything else.
+        let marks = |s: &UiScript, call: &str| -> String {
+            s.eval::<String>(&format!(
+                "local n = select('#', {call}) local t = {{{call}}} local o = {{}} \
+                 for i = 2, n, 2 do o[#o + 1] = t[i] == 1 and '1' or (t[i] == nil and '-' or '?') end \
+                 return n .. ':' .. table.concat(o)"
+            ))
+            .unwrap()
+        };
+        // Rows: head neck shoulder body chest waist legs feet wrist hand finger trinket back held.
+        assert_eq!(marks(&s, "GetAuctionInvTypes(2, 1)"), "28:11-1------11-1", "Miscellaneous");
+        assert_eq!(marks(&s, "GetAuctionInvTypes(2, 2)"), "28:1-1-111111--1-", "Cloth keeps Back");
+        assert_eq!(marks(&s, "GetAuctionInvTypes(2, 3)"), "28:1-1-111111----", "Leather");
+        assert_eq!(s.arity("GetAuctionInvTypes(2, 4)").unwrap(), 0, "Shields: no 0x200");
+        assert_eq!(
+            marks(&s, "GetAuctionInvTypes(1, 9)"),
+            "28:11111111111111",
+            "another class offers every row"
+        );
+        assert_eq!(
+            s.eval::<(String, String)>("local t = {GetAuctionInvTypes(2, 2)} return t[1], t[27]")
+                .unwrap(),
+            ("INVTYPE_HEAD".into(), "INVTYPE_HOLDABLE".into()),
+            "keys sit at the odd positions, in the 1.12 order"
         );
     }
 
