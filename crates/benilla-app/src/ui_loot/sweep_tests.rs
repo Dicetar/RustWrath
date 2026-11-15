@@ -105,6 +105,7 @@ fn a_sweep_runs_its_money_lines_listeners_before_its_rows() {
     assert_eq!(money_lines(&mut l), ["You loot 5 Silver"]);
     let wire: Vec<&str> =
         l.rx.try_iter()
+            .map(ClientCommand::into_inner)
             .filter_map(|c| match c {
                 ClientCommand::LootMoney => Some("LootMoney"),
                 ClientCommand::RandomRoll { .. } => Some("RandomRoll"),
