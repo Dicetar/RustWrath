@@ -662,6 +662,15 @@ fn snapshot(
                 item_id: r.item_id,
                 random_property_id: r.random_property_id,
                 wrath_options: r.wrath_options,
+                wrath_tooltip: t.and_then(|t| {
+                    let info = t.wrath_roll?;
+                    Some(benilla_ui::script::WrathLootRollTooltip {
+                        max_count: t.max_count,
+                        greed_only: info.greed_only,
+                        required_disenchant_skill: info.required_disenchant_skill,
+                        item_limit_category: info.item_limit_category,
+                    })
+                }),
                 // `GetLootRollItemLink`, the chat lines' link; `None` until the template answers.
                 link: t.map(|t| {
                     crate::ui_items::item_link_full_in_target(

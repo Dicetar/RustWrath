@@ -17,8 +17,14 @@ continues to use its own result and confirmation shape.
 
 12340 reference: `LootFrame_Scripts.cpp::Script_GetLootRollItemInfo` at
 `0x005889D0`, and `Object/ObjectClient/LootRoll.cpp::LootRoll` at `0x006FBC70`.
-The stock query's trailing four tooltip values (three local refusal reasons and
-the required enchanting skill) are outside this slice.
+
+The query also returns the three refusal reasons and the enchanting requirement
+from the 12340 item query and the live inventory. Need's possession checks use
+the item maximum and the installed `ItemLimitCategory.dbc` quantity for shared
+limits. If the relevant record, inventory, or item metadata is missing, Lua
+receives nil for that reason rather than a fabricated value. See
+`LootRollCalculateReasons` (`0x006FA7A0`) and `CGBag_C::ItemCountValid`
+(`0x00754DD0`).
 
 The loot chat path now keeps the Wrath auto-pass flag, displays disenchant votes,
 dice, and winners using their distinct strings, and formats Wrath's strings with

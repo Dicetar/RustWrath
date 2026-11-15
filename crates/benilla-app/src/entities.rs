@@ -839,6 +839,12 @@ fn setup_entities(
         return;
     };
     let mut chain = world_assets.chain.lock_recover();
+    if crate::wrath::selected_from_env() {
+        match benilla_formats::load_item_limit_quantities(&mut chain) {
+            Ok(limits) => commands.insert_resource(crate::ui_items::ItemLimitQuantities(limits)),
+            Err(error) => warn!("Wrath item limit quantities unavailable: {error:#}"),
+        }
+    }
     match load_creature_catalog(&mut chain) {
         Ok(catalog) => {
             info!(

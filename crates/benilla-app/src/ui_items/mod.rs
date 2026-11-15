@@ -442,6 +442,10 @@ fn walk_inventory_filtered<T>(
     None
 }
 
+/// Wrath's DBC limits for groups of items that share a possession cap.
+#[derive(Resource)]
+pub(crate) struct ItemLimitQuantities(pub(crate) std::collections::HashMap<u32, u32>);
+
 /// The Wrath possession query includes broken items; donor action/reagent walks keep their
 /// whole-item gate. Charge reads use the same template and instance facts as action_count.
 fn possession_count(

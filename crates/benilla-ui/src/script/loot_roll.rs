@@ -46,6 +46,16 @@ pub struct LootRollEntry {
     pub random_property_id: u32,
     /// The 12340 stack count and pass/need/greed/disenchant mask.
     pub wrath_options: Option<(u32, u8)>,
+    pub wrath_tooltip: Option<WrathLootRollTooltip>,
+}
+
+/// Item-template inputs for the Wrath eligibility tooltip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WrathLootRollTooltip {
+    pub max_count: u32,
+    pub greed_only: bool,
+    pub required_disenchant_skill: Option<i32>,
+    pub item_limit_category: Option<u32>,
 }
 
 /// Every open group loot roll, in the order the app opened them.
@@ -168,19 +178,62 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     mlua::Value::Nil,
                 ));
             };
-            // 12340 GetLootRollItemInfo, 0x005889D0. The wire supplies the first three
-            // eligibility values; the locally derived disabled reasons aren't available yet.
+            // 12340 GetLootRollItemInfo, 0x005889D0; refusal reasons from 0x006FA7A0.
             if let Some((count, mask)) = r.wrath_options {
-                return lua.pack_multi((
+                let can_need = mask & 0x02 != 0;
+                let can_greed = mask & 0x04 != 0;
+                let can_disenchant = mask & 0x08 != 0;
+                let tooltip = r.wrath_tooltip;
+                let item_id = r.item_id;
+                let first = (
                     r.texture.clone(),
                     r.name.clone(),
                     count,
                     r.quality.map_or(CACHE_MISS_QUALITY, i64::from),
                     flag(r.bind_on_pickup),
-                    flag(mask & 0x02 != 0),
-                    flag(mask & 0x04 != 0),
-                    flag(mask & 0x08 != 0),
-                ));
+                    flag(can_need),
+                    flag(can_greed),
+                    flag(can_disenchant),
+                );
+                drop(model);
+                let reason_need = if can_need {
+                    Some(0)
+                } else {
+                    tooltip.and_then(|item| {
+                        if item.max_count != 0 {
+                            let owned = super::host::with_host(lua, |host| {
+                                host.item_count(item_id, true, false)
+                            })
+                            .flatten()?;
+                            if owned.saturating_add(count) > item.max_count {
+                                return Some(2);
+                            }
+                        }
+                        let category = item.item_limit_category?;
+                        if category != 0 {
+                            let exceeds = super::host::with_host(lua, |host| {
+                                host.item_category_would_exceed(category, count)
+                            })
+                            .flatten()?;
+                            if exceeds {
+                                return Some(2);
+                            }
+                        }
+                        Some(if item.greed_only { 5 } else { 1 })
+                    })
+                };
+                let skill = tooltip.and_then(|item| item.required_disenchant_skill);
+                let reason_disenchant = if can_disenchant {
+                    Some(0)
+                } else {
+                    skill.map(|skill| if skill < 0 { 3 } else { 4 })
+                };
+                let mut values = lua.pack_multi(first)?;
+                values.extend(
+                    [reason_need, Some(if can_greed { 0 } else { 2 }), reason_disenchant, skill]
+                        .map(|value| value.map_or(Value::Nil, |x| Value::Integer(i64::from(x)))),
+                );
+                return Ok(values);
             }
             let vals = (
                 r.texture.clone(),
@@ -269,6 +322,7 @@ mod tests {
                     link: Some("|cffa335ee|Hitem:17182:0:0:0|h[Staff of Jordan]|h|r".into()),
                     random_property_id: 0,
                     wrath_options: None,
+                    wrath_tooltip: None,
                 },
                 // In flight: the roll opened, the item template has not landed.
                 LootRollEntry {
@@ -282,6 +336,7 @@ mod tests {
                     link: None,
                     random_property_id: 0,
                     wrath_options: None,
+                    wrath_tooltip: None,
                 },
             ],
         }

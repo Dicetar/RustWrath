@@ -3757,6 +3757,11 @@ fn translate_gameplay(
                     area: i.area,
                     map: i.map,
                     bag_family: i.bag_family,
+                    wrath_roll: Some(benilla_protocol::messages::WrathRollItemInfo {
+                        greed_only: i.flags2 & 0x100 != 0,
+                        required_disenchant_skill: i.required_disenchant_skill,
+                        item_limit_category: i.item_limit_category,
+                    }),
                 })
             }),
         }],
