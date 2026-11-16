@@ -263,4 +263,10 @@ Prerequisite: the overseer merges `origin/main` into this branch and the batch b
    (the reference's handler clears it while the ghost flag is set). If a battleground is
    available, check the spirit healer's wave countdown.
 
-Status: ready to merge
+Status: in progress
+
+
+## Verification state (2026-11-16)
+
+Not compiled and not run. Cargo runs were stopped at the owner's instruction; the owner's batch
+build is the first execution of this source. Source-only at this commit.
