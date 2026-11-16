@@ -1523,15 +1523,19 @@ pub fn knock_back_ack(
     p
 }
 
-/// `CMSG_MOVE_SPLINE_DONE` (`MovementHandler.cpp:644`): `MovementInfo, u32 spline_id`.
+/// `CMSG_MOVE_SPLINE_DONE` (`TaxiHandler.cpp:199`): `packed_guid, MovementInfo, u32 spline_id`.
+/// The guid leads, as for every movement message 12340 builds (`BuildMovementUpdate`,
+/// `0x71EF80`, called by `SendSplineDone`, `0x71F210`); AzerothCore reads it first and ignores an
+/// ack whose guid is not its mover.
 pub fn move_spline_done(
+    guid: u64,
     flags: u32,
     time_ms: u32,
     pos: [f32; 3],
     orientation: f32,
     spline_id: u32,
 ) -> Vec<u8> {
-    let mut p = Vec::with_capacity(36);
+    let mut p = pack_guid(guid);
     write_movement_info(&mut p, flags, time_ms, pos, orientation, 0.0, 0, None, None);
     p.extend_from_slice(&spline_id.to_le_bytes());
     p
