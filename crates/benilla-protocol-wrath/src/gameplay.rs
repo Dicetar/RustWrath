@@ -2246,6 +2246,7 @@ pub enum ServerEvent {
         quests: Vec<QuestListEntry>,
     },
     GossipComplete,
+    /// `status` is the raw 3.3.5 `QuestGiverStatus` (0-10), not the 1.12 `dialog_status`.
     QuestGiverStatus { npc: u64, status: u32 },
     QuestGiverStatusMultiple(Vec<(u64, u32)>),
     QuestGreeting {
@@ -4422,31 +4423,19 @@ fn read_gossip(b: &[u8]) -> Result<ServerEvent> {
     Ok(ServerEvent::Gossip { npc, menu_id, text_id, options, quests })
 }
 
-/// 3.3.5 `QuestGiverStatus` (`QuestDef.h:110-126`) to 1.12 `dialog_status`
-/// (`quest/giver.rs:13-22`). The numeric values shifted: 3.3.5 puts INCOMPLETE at 5 and
-/// AVAILABLE at 8, while 1.12 puts them at 3 and 5. Unknown/scripted values have no marker.
-pub fn vanilla_quest_giver_status(wrath: u32) -> Option<u32> {
-    Some(match wrath {
-        0 => 0,             // NONE
-        1 => 1,             // UNAVAILABLE
-        2 | 4 | 7 | 8 => 5, // LOW_LEVEL_AVAILABLE, ..._AVAILABLE_REP, AVAILABLE_REP, AVAILABLE
-        3 | 6 => 4,         // LOW_LEVEL_REWARD_REP, REWARD_REP
-        5 => 3,             // INCOMPLETE
-        9 => 7,             // REWARD2 (no minimap dot)
-        10 => 6,            // REWARD (yellow minimap dot)
-        _ => return None,
-    })
-}
-
 fn read_questgiver_status(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let (npc, status) = read_questgiver_status_row(&mut r)?;
     Ok(ServerEvent::QuestGiverStatus { npc, status })
 }
 
+/// One `u64` GUID and the 3.3.5 `QuestGiverStatus` byte (AzerothCore `QuestDef.h`, 0-10),
+/// passed through unmapped. 12340 `OnQuestGiverStatus` (`0x006D11C0`) stores the raw byte
+/// (`SetQuestStatus`), and the marker table and minimap read it as such. Mapping it to the
+/// 1.12 `dialog_status` numbering made AVAILABLE (8) draw the grey `?` of 3.3.5's INCOMPLETE (5).
 fn read_questgiver_status_row(r: &mut Reader<'_>) -> Result<(u64, u32)> {
     let npc = r.u64()?;
-    let status = vanilla_quest_giver_status(r.u8()? as u32).unwrap_or(0);
+    let status = u32::from(r.u8()?);
     Ok((npc, status))
 }
 
@@ -5096,6 +5085,19 @@ mod tests {
             .expect("the opcode is translated")
             .expect("the 16-byte body is valid");
         assert_eq!(event, ServerEvent::PartyKillLog { killer, victim });
+    }
+
+    /// The marker table indexes the raw 3.3.5 status; a 1.12 remap turned AVAILABLE (8) into 5,
+    /// the grey `?`, so no NPC showed a gold `!`.
+    #[test]
+    fn wrath_questgiver_status_keeps_the_3_3_5_value() {
+        let npc = 0xF130_0000_0000_0042u64;
+        let mut body = npc.to_le_bytes().to_vec();
+        body.push(8);
+        let event = parse(crate::opcode::SMSG_QUESTGIVER_STATUS, &body)
+            .expect("the opcode is translated")
+            .expect("the 9-byte body is valid");
+        assert_eq!(event, ServerEvent::QuestGiverStatus { npc, status: 8 });
     }
 
     #[test]

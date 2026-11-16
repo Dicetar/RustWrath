@@ -856,7 +856,9 @@ pub enum SessionEvent {
         options: Vec<GossipOption>,
         quests: Vec<(u32, u32, u32, String)>,
     },
-    /// An NPC's `!`/`?` marker (`SMSG_QUESTGIVER_STATUS`), a [`crate::messages::dialog_status`].
+    /// An NPC's `!`/`?` marker (`SMSG_QUESTGIVER_STATUS`): the raw 3.3.5 `QuestGiverStatus` (0-10)
+    /// on the Wrath path, which the app's markers and minimap read; a
+    /// [`crate::messages::dialog_status`] on the donor 1.12 path.
     QuestGiverStatus { npc: u64, status: u32 },
     /// The greeting panel: an NPC's offered/active quest rows (`SMSG_QUESTGIVER_QUEST_LIST`).
     QuestGreeting(QuestGiverList),
