@@ -882,6 +882,16 @@ pub enum SessionEvent {
     },
     /// An item-collection objective toast (`SMSG_QUESTUPDATE_ADD_ITEM`).
     QuestObjectiveItem { item_id: u32, count: u32 },
+    /// 12340's item-collection toast source: `SMSG_ITEM_PUSH_RESULT`'s trailing count, read by
+    /// `CheckForQuestItemLoot` (`0x6d7de0`). AzerothCore sends `SMSG_QUESTUPDATE_ADD_ITEM` empty,
+    /// so a Wrath session reports item progress only through this. `total_count` is the item's
+    /// count held after the push.
+    QuestItemLooted {
+        player_guid: u64,
+        item_id: u32,
+        count: u32,
+        total_count: u32,
+    },
     /// All objectives done (`SMSG_QUESTUPDATE_COMPLETE`), a line only; the slot state is durable.
     QuestObjectivesComplete { quest_id: u32 },
     /// The quest failed (`SMSG_QUESTUPDATE_FAILED`, or `_FAILEDTIMER` when `timed`).

@@ -4519,18 +4519,27 @@ fn translate_gameplay(
             random_property_id,
             suffix_factor,
         })],
-        WrathGameplayEvent::ItemPush(p) => vec![SessionEvent::ItemPushResult(ItemPushResult {
-            player_guid: p.player,
-            from_npc: p.from_npc,
-            created: p.created,
-            show_in_chat: p.show_in_chat,
-            bag_slot: p.bag_slot,
-            item_slot: p.item_slot,
-            item_entry: p.item_entry,
-            suffix_factor: p.suffix_factor,
-            random_property_id: p.random_property_id as u32,
-            count: p.count,
-        })],
+        // 12340 runs `OnItemPushResult` and then `CheckForQuestItemLoot` on the same packet.
+        WrathGameplayEvent::ItemPush(p) => vec![
+            SessionEvent::ItemPushResult(ItemPushResult {
+                player_guid: p.player,
+                from_npc: p.from_npc,
+                created: p.created,
+                show_in_chat: p.show_in_chat,
+                bag_slot: p.bag_slot,
+                item_slot: p.item_slot,
+                item_entry: p.item_entry,
+                suffix_factor: p.suffix_factor,
+                random_property_id: p.random_property_id as u32,
+                count: p.count,
+            }),
+            SessionEvent::QuestItemLooted {
+                player_guid: p.player,
+                item_id: p.item_entry,
+                count: p.count,
+                total_count: p.total_count,
+            },
+        ],
         WrathGameplayEvent::PetSpells(spells) => {
             let spells = *spells;
             vec![SessionEvent::PetSpells(Box::new(
