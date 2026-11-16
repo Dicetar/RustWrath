@@ -32,12 +32,19 @@ const TRACKED_UNIT_CELL: [f32; 4] = [0.25, 0.5, 0.0, 0.25];
 /// `UNIT_DYNAMIC_FLAGS` bit 0x2, set per viewer on a Hunter's Mark victim for its caster; one of
 /// `0x5ed210`'s two always-show clauses (`+0x224 & 0x2`).
 const UNIT_DYNFLAG_TRACK_UNIT: u32 = 0x2;
-/// Only DIALOG_STATUS 7 draws a quest dot, the gold cell 3 (`cmp [obj+0xcb8],7` at `0x4eac31`).
+/// The status that draws the gold quest dot: 3.3.5 `DIALOG_STATUS_REWARD` (10), the quest ready to
+/// turn in. The store holds the server's raw 3.3.5 `QuestGiverStatus`; the 1.12 client's
+/// `cmp [obj+0xcb8],7` (`0x4eac31`) tested the same "yellow minimap dot" meaning under the old
+/// numbering, and 12340's minimap (`MINIMAP_QUEST_COMPLETE`) tests 10. The 12340 available (8) and
+/// repeatable (7) minimap icons are not built.
+const QUEST_DOT_STATUS: u32 = 10;
+
+/// Only [`QUEST_DOT_STATUS`] draws a quest dot, the gold cell 3.
 fn quest_dot_cell(status: u32) -> Option<[f32; 4]> {
-    (status == 7).then_some([0.75, 1.0, 0.0, 0.25])
+    (status == QUEST_DOT_STATUS).then_some([0.75, 1.0, 0.0, 0.25])
 }
 
-/// The three gates `0x4eaa90` applies to a unit or player ahead of the status-7 compare at
+/// The three gates `0x4eaa90` applies to a unit or player ahead of the quest-dot compare at
 /// `0x4eac31`, so they bar the quest dot and the tracking dot alike, never a GameObject or party
 /// dot. A unit with no descriptor yet fails, as a zeroed health field does in the reference.
 fn unit_dot_eligible(store: Option<&ObjectStore>, me: Option<u64>) -> bool {
@@ -61,8 +68,8 @@ fn unit_dot_eligible(store: Option<&ObjectStore>, me: Option<u64>) -> bool {
     !f.unit_is_untrackable()
 }
 
-/// Draw a gold dot per quest giver at status 7, culled at the view radius in 3-D distance with
-/// no rim arrow, in the map's own layer, under the arrow children.
+/// Draw a gold dot per quest giver at [`QUEST_DOT_STATUS`], culled at the view radius in 3-D
+/// distance with no rim arrow, in the map's own layer, under the arrow children.
 pub(in crate::minimap) fn emit_quest_dots(
     ctx: &BlipCtx,
     statuses: &HashMap<u64, u32>,
@@ -77,7 +84,7 @@ pub(in crate::minimap) fn emit_quest_dots(
     for (guid, net, tf, store) in candidates.iter() {
         let npc = guid.0;
         if !matches!(net.kind, EntityKind::Unit | EntityKind::Player) {
-            continue; // the GameObject leg (`0x4eab43`) never reaches the status-7 compare
+            continue; // the GameObject leg (`0x4eab43`) never reaches the quest-dot compare
         }
         let Some(cell) = statuses.get(&npc).copied().and_then(quest_dot_cell) else {
             continue;
@@ -162,8 +169,8 @@ fn tracked_creature(
 }
 
 /// Draw the tracking dots, gold cell 0 per GameObject then red cell 1 per unit not at quest
-/// status 7 (`0x4eac31` tests that first). Drawn before the quest and party dots, as the cell
-/// lists draw in order.
+/// [`QUEST_DOT_STATUS`] (`0x4eac31` tests that first). Drawn before the quest and party dots, as
+/// the cell lists draw in order.
 pub(in crate::minimap) fn emit_tracking_dots(
     ctx: &BlipCtx,
     tracking: SelfTracking,
@@ -216,7 +223,7 @@ pub(in crate::minimap) fn emit_tracking_dots(
             }
         };
     // Cell 0, GameObjects. No quest-status check: the GameObject leg (`0x4eab43`) goes straight
-    // to `0x5ed2b0` and never reaches the status-7 compare.
+    // to `0x5ed2b0` and never reaches the quest-dot compare.
     if tracking.resources != 0 {
         if let Some(locks) = locks {
             for (guid, net, tf, store) in candidates.iter() {
@@ -250,8 +257,8 @@ pub(in crate::minimap) fn emit_tracking_dots(
         if !unit_dot_eligible(store, self_guid) {
             continue;
         }
-        if statuses.get(&guid.0).copied() == Some(7) {
-            continue; // the ==7 branch already drew the quest dot
+        if statuses.get(&guid.0).copied() == Some(QUEST_DOT_STATUS) {
+            continue; // the quest-dot branch already drew this unit
         }
         let (dyn_flags, creeping) = store
             .map(|s| (s.0.unit_dynamic_flags(), s.0.unit_is_stealthed()))
@@ -484,11 +491,11 @@ mod tests {
         assert!(dots(&mut world, None).is_empty(), "no pet");
     }
 
-    /// Status 6 draws nothing on the 1.12 client despite vmangos's "red dot" comment (`0x4eac31`).
+    /// Only the 3.3.5 REWARD (10) dots; REWARD2 (9), "no yellow dot", does not.
     #[test]
-    fn quest_dot_is_status_seven_only_gold_cell_three() {
-        assert_eq!(quest_dot_cell(7), Some([0.75, 1.0, 0.0, 0.25]));
-        for s in [0, 1, 2, 3, 4, 5, 6, 8] {
+    fn quest_dot_is_reward_only_gold_cell_three() {
+        assert_eq!(quest_dot_cell(10), Some([0.75, 1.0, 0.0, 0.25]));
+        for s in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] {
             assert_eq!(quest_dot_cell(s), None, "status {s} must not dot");
         }
     }

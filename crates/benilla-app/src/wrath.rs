@@ -3496,8 +3496,22 @@ fn translate_gameplay(
             // `0x4000` is `OrientationFixed`, `0x40000` is `Catmullrom` (already expanded into
             // uncompressed waypoints in `gameplay/movement.rs`), and `0x80000` is `Cyclic`.
             // Only exclude `Falling` (`0x200`), `Parabolic` (`0x800`), and `Frozen` (`0x400000`).
-            let unsupported = m.flags & (0x200 | 0x800 | 0x400000);
-            if m.guid == self_guid || unsupported != 0 {
+            //
+            // Our own guid always passes (bar `Frozen`): 12340 runs a spline on the active mover
+            // through the same `OnMonsterMove` (`0x73C8E0`) as any unit, and the donor self-ride
+            // (`player::server_ride`) yields input to it and acks `CMSG_MOVE_SPLINE_DONE`. Dropping
+            // it left Charge, Intervene and every other server move on the player unplayed: the
+            // body stayed put (or snapped on the next pose snapshot) while AzerothCore moved us
+            // and refused our movement until its spline ended (`VerifyMovementInfo`). A falling or
+            // parabolic self-spline (a leap, a jump) has no arc evaluator yet, so it rides its
+            // points as a grounded path to the right endpoint over the server's duration, which
+            // is closer to the server than leaving the body behind.
+            let unsupported = if m.guid == self_guid {
+                m.flags & 0x400000
+            } else {
+                m.flags & (0x200 | 0x800 | 0x400000)
+            };
+            if unsupported != 0 {
                 debug!(guid = m.guid, flags = m.flags, "Wrath spline needs unsupported evaluator");
                 return Vec::new();
             }
@@ -7433,7 +7447,14 @@ fn wrath_tap_commands(
                 spline_id,
             } => Some((
                 u32::from(benilla_protocol_wrath::opcode::CMSG_MOVE_SPLINE_DONE),
-                gameplay::move_spline_done(wrath_move_flags(flags), now_ms, pos, orientation, spline_id),
+                gameplay::move_spline_done(
+                    view.player_guid,
+                    wrath_move_flags(flags),
+                    now_ms,
+                    pos,
+                    orientation,
+                    spline_id,
+                ),
             )),
             ClientCommand::NotActiveMover {
                 guid,
@@ -12907,6 +12928,38 @@ mod tests {
         let remote = translate_gameplay(go(0x99), 0x1522, Instant::now());
         assert_eq!(remote.len(), 1);
         assert!(matches!(remote[0], SessionEvent::SpellGo { caster: 0x99, .. }));
+    }
+
+    /// A Charge spline naming our own guid reaches the self-ride, even with a parabolic flag; it
+    /// was dropped, so the warrior never travelled the path.
+    #[test]
+    fn a_wrath_self_spline_reaches_the_self_ride() {
+        let mv = |flags| {
+            WrathGameplayEvent::MonsterMove(gameplay::MonsterMove {
+                guid: 0x1522,
+                transport: None,
+                movement_byte: 0,
+                start: [0.0; 3],
+                spline_id: 9,
+                facing: gameplay::MonsterFacing::None,
+                stop: false,
+                flags,
+                duration_ms: 400,
+                animation: None,
+                parabolic: None,
+                path: vec![[0.0; 3], [10.0, 0.0, 0.0]],
+            })
+        };
+        for flags in [0, 0x800] {
+            let events = translate_gameplay(mv(flags), 0x1522, Instant::now());
+            assert!(
+                matches!(
+                    events.as_slice(),
+                    [SessionEvent::MonsterMove { guid: 0x1522, spline_id: 9, .. }]
+                ),
+                "flags {flags:#x}: {events:?}"
+            );
+        }
     }
 
     /// All twenty-five 12340 slots survive the mapping, not just the 1.12 twenty.

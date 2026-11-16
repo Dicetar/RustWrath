@@ -304,8 +304,32 @@ impl ParticleEmitter {
     /// stops emission; the draw admits by live-particle count (`emitter+0x64`, `0x7b4b46`), so the
     /// survivors age out, and `0x61f680` frees the node once `CM2Model+0x3d8` reads zero. An
     /// attached instance spawns `Free`, since a model dtor frees its emitters at once.
+    ///
+    /// Divergence: a geometry-particle pool at rest ([`Self::parked_shards`]) is freed with the
+    /// instance instead. Draining it could only leave its shards hanging where the effect stood.
+    /// The reference drains it too, but no stock 12340 model authors one. The HD pack's
+    /// `BloodSpurt.m2` (`patch-b.mpq`) adds a 45 s `Splats\BloodSplatRed01.m2` emitter with no
+    /// speed, no gravity and no ground snap (file flag `0x2000`), attached at the victim's chest:
+    /// its ground decals hung there as a red cloud over a corpse.
     pub fn drain_on_owner_loss(&mut self) {
-        self.on_owner_loss = OwnerLoss::Drain;
+        self.on_owner_loss = if self.parked_shards() {
+            OwnerLoss::Free
+        } else {
+            OwnerLoss::Drain
+        };
+    }
+
+    /// A geometry-particle pool whose shards will not move again: every live particle is at rest,
+    /// and gravity at the emitter's own clock is zero. Quad clouds never qualify.
+    fn parked_shards(&self) -> bool {
+        self.geometry.is_some()
+            && self.particles.iter().all(|p| p.vel == Vec3::ZERO)
+            && self
+                .def
+                .params
+                .sample(self.seq, self.age, f64::from(self.age))
+                .gravity
+                == 0.0
     }
 
     /// The cloud's live world anchor, the census probe's distance subject.
@@ -802,6 +826,55 @@ pub(crate) mod tests {
             OwnerLoss::Drain,
             "the ending instance's particles finish instead of popping",
         );
+    }
+
+    /// The HD `BloodSpurt.m2` splat emitter (45 s `BloodSplatRed01.m2` shards, no speed, no
+    /// gravity), ended through the shared teardown, goes with its instance rather than draining:
+    /// drained, its shards hung at the victim's chest as a red cloud over the corpse.
+    #[test]
+    fn an_ending_instance_frees_its_parked_blood_splats() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut emitter = model_emitter(0);
+        emitter.def.params = benilla_formats::EmitParams::constant(benilla_formats::ParamsNow {
+            emission_speed: 0.0,
+            gravity: 0.0,
+            lifespan: 45.0,
+            ..crate::testing::particle_params_now()
+        });
+        emitter.geometry = Some(Handle::default());
+        let mut app = App::new();
+        let e = app
+            .world_mut()
+            .run_system_once(move |mut c: Commands| {
+                spawn_emitter(
+                    &mut c,
+                    &emitter,
+                    Transform::IDENTITY,
+                    EmitterFrames {
+                        anchor: Some(Entity::from_raw_u32(7).unwrap()),
+                        on_owner_loss: OwnerLoss::Free,
+                        ..default()
+                    },
+                    EmitClock::Pinned,
+                )
+            })
+            .unwrap()
+            .expect("the emitter spawns");
+        let mut em = app.world_mut().get_mut::<ParticleEmitter>(e).unwrap();
+        em.particles = (0..4)
+            .map(|_| Particle {
+                pos: Vec3::ZERO,
+                vel: Vec3::ZERO,
+                age: 0.2,
+                life: 45.0,
+                phase: 0,
+                fresh: false,
+                quat: Quat::IDENTITY,
+                angvel: Vec3::ZERO,
+            })
+            .collect();
+        em.drain_on_owner_loss();
+        assert_eq!(em.on_owner_loss, OwnerLoss::Free);
     }
 
     /// The camera at the origin looking down −Z, the owner sphere `depth` yd straight ahead.
