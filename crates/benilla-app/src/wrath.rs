@@ -3469,6 +3469,19 @@ fn translate_gameplay(
     self_guid: u64,
     received_at: Instant,
 ) -> Vec<SessionEvent> {
+    translate_gameplay_with_native(event, self_guid, received_at, true)
+}
+
+/// [`translate_gameplay`] for an event whose native resolution is already known. `native_edge`
+/// is false when the native authority resolved no new terminal for this event, so a duplicate
+/// broadcast (12340 sends `SendCastResult` and `SendInterrupted` for one cancel) cannot
+/// synthesize a second 1.12 failure result.
+fn translate_gameplay_with_native(
+    event: WrathGameplayEvent,
+    self_guid: u64,
+    received_at: Instant,
+    native_edge: bool,
+) -> Vec<SessionEvent> {
     match event {
         WrathGameplayEvent::InspectHonor(d) => vec![SessionEvent::InspectHonorStats(
             benilla_protocol::messages::InspectHonorStats {
@@ -3758,7 +3771,13 @@ fn translate_gameplay(
             ..
         } => {
             let mut out = Vec::with_capacity(2);
-            if caster == self_guid {
+            // `Spell::SendInterrupted` (`Spell.cpp:5126-5141`) writes zero when the real
+            // failure was already sent by `SendCastResult` (`:3808`, `:3828`, `:3851`).
+            // Zero is the success sentinel, never a failure reason, so it must not synthesize a
+            // second `CAST_RESULT` (which would report the same cast as failed twice, the
+            // second time as `SPELL_FAILED_ERROR`). A non-zero interruption reason still
+            // becomes the 1.12 failure the stock handler expects before `SPELL_FAILED_OTHER`.
+            if caster == self_guid && raw_reason != 0 && native_edge {
                 let reason = match cast_failure::reason(raw_reason) {
                     cast_failure::Reason::Vanilla(r) => Some(r),
                     cast_failure::Reason::Unsupported(_) => Some(0x1c),
@@ -12473,7 +12492,7 @@ pub fn run_session_with_cancel(
                                 );
                             }
                             let observed_at_unix_ms = now_ms();
-                            if let Some(update) = crate::wrath_native::update_from_gameplay(
+                            let native_result = crate::wrath_native::update_from_gameplay(
                                 &event,
                                 crate::wrath_native::WrathScope {
                                     session_epoch: session.epoch(),
@@ -12482,22 +12501,27 @@ pub fn run_session_with_cancel(
                                 },
                                 observed_at_unix_ms,
                                 session.player_guid().unwrap_or(0),
-                            ) {
-                                if let Some(resolved) = native.apply(update) {
-                                    // One source-change revision covers replicated-world and
-                                    // native-state edges alike: the export fires on its own,
-                                    // and position provenance stays untouched.
-                                    session.note_native_state_change(observed_at_unix_ms);
-                                    feed.push_native(
-                                        crate::wrath_native::WrathNativeFeedEvent::Cast(resolved),
-                                    );
-                                }
+                            )
+                            .map(|update| native.apply(update));
+                            // Whether this event produced a new native terminal. A duplicate
+                            // broadcast resolves none and must not synthesize a second 1.12
+                            // failure result for the same attempt.
+                            let native_edge = matches!(&native_result, Some(Some(_)));
+                            if let Some(Some(resolved)) = native_result {
+                                // One source-change revision covers replicated-world and
+                                // native-state edges alike: the export fires on its own,
+                                // and position provenance stays untouched.
+                                session.note_native_state_change(observed_at_unix_ms);
+                                feed.push_native(
+                                    crate::wrath_native::WrathNativeFeedEvent::Cast(resolved),
+                                );
                             }
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_gameplay_with_native(
                                     event,
                                     session.player_guid().unwrap_or(0),
                                     received_at,
+                                    native_edge,
                                 ) {
                                     push_session_event(&events_out, &session, event);
                                 }
@@ -12899,6 +12923,67 @@ mod tests {
         let remote = translate_gameplay(go(0x99), 0x1522, Instant::now());
         assert_eq!(remote.len(), 1);
         assert!(matches!(remote[0], SessionEvent::SpellGo { caster: 0x99, .. }));
+    }
+
+    /// One cast terminates once. 12340's `Spell::SendInterrupted(0)` follows the real
+    /// `SMSG_CAST_FAILED` (`Spell.cpp:3808/3828/3851`); zero is the success sentinel, never a
+    /// failure reason, so it must not synthesize a second `CAST_RESULT` (which would report the
+    /// same cast as failed twice, the second time as `SPELL_FAILED_ERROR`). A non-zero
+    /// interruption reason still becomes the 1.12 interrupted failure.
+    #[test]
+    fn an_interrupt_with_zero_reason_does_not_fail_the_same_cast_twice() {
+        const SELF: u64 = 0x1522;
+        const FIREBALL: u32 = 133;
+        let failure = |raw_reason: u8| WrathGameplayEvent::SpellFailure {
+            caster: SELF,
+            spell_id: FIREBALL,
+            cast_count: 4,
+            raw_reason,
+        };
+
+        let silent = translate_gameplay(failure(0), SELF, Instant::now());
+        assert_eq!(
+            silent.len(),
+            1,
+            "reason 0 only ends the observed cast: {silent:?}"
+        );
+        assert!(
+            matches!(silent[0], SessionEvent::SpellFailedOther { caster: SELF, spell_id: FIREBALL }),
+            "no second failure result: {silent:?}"
+        );
+
+        // 12340 SPELL_FAILED_INTERRUPTED (40) still crosses to the 1.12 0x23 interrupted result.
+        let interrupted = translate_gameplay(failure(40), SELF, Instant::now());
+        assert!(
+            matches!(
+                interrupted.first(),
+                Some(SessionEvent::CastResult {
+                    spell_id: FIREBALL,
+                    success: false,
+                    reason: Some(0x23),
+                    arg: None,
+                })
+            ),
+            "the interruption is a failure for the stock handler: {interrupted:?}"
+        );
+        assert!(
+            matches!(interrupted.get(1), Some(SessionEvent::SpellFailedOther { .. })),
+            "and the observed failure follows: {interrupted:?}"
+        );
+        assert_eq!(interrupted.len(), 2);
+
+        // The native authority resolves the same (spell, count) terminal only once; the
+        // broadcast that repeats it must not fail the cast a second time.
+        let duplicate = translate_gameplay_with_native(failure(40), SELF, Instant::now(), false);
+        assert_eq!(
+            duplicate.len(),
+            1,
+            "a repeated terminal only ends the observed cast: {duplicate:?}"
+        );
+        assert!(matches!(
+            duplicate[0],
+            SessionEvent::SpellFailedOther { caster: SELF, spell_id: FIREBALL }
+        ));
     }
 
     /// All twenty-five 12340 slots survive the mapping, not just the 1.12 twenty.
