@@ -183,7 +183,19 @@ impl super::UiScript {
 /// each non-zero one as `"%d %s%s"` (`0x847ffc`) with its word read now from the `GOLD`, `SILVER`
 /// or `COPPER` global (`0x6c6230`, `0x703bf0`, `""` when missing) and `"\n"` (`0x835144`) after
 /// gold and silver, `""` (`0x882748`) after copper.
+///
+/// 3.3.5 builds the row's text with `GetCurrencyText` (`0x00588430` → `0x007E7D80`) over the
+/// `*_AMOUNT` templates, `"
+"` between coins ([`crate::strings::currency_text`]).
 fn coin_row_name(lua: &Lua, copper: u32) -> String {
+    let wrath =
+        lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335;
+    if wrath {
+        return crate::strings::currency_text(copper, "
+", &|key| {
+            super::glue_core::global_text(lua, key)
+        });
+    }
     let mut name = String::new();
     for (count, key, tail) in [
         (copper / 10_000, "GOLD", "\n"),
@@ -517,6 +529,23 @@ mod tests {
         );
         let err = s.run("SetLootPortrait()").unwrap_err().to_string();
         assert!(err.contains("non-table object"), "{err}");
+    }
+
+    /// 3.3.5 names the coin slot through `GetCurrencyText` (`0x007E7D80`) over the
+    /// `*_AMOUNT` templates, "\n"-joined (`0x00588430`); the 1.12 GOLD/SILVER/COPPER words
+    /// are absent there, so the donor path left "3 ".
+    #[test]
+    fn wrath_coin_row_is_named_from_the_amount_templates() {
+        let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        s.run(r#"GOLD_AMOUNT = "%d Gold" SILVER_AMOUNT = "%d Silver" COPPER_AMOUNT = "%d Copper""#)
+            .unwrap();
+        let mut state = loot();
+        state.rows[0].as_mut().unwrap().money = 3;
+        s.set_loot(Some(state));
+        let (_, name) = s
+            .eval::<(String, String)>("return GetLootSlotInfo(1)")
+            .unwrap();
+        assert_eq!(name, "3 Copper");
     }
 
     fn loot() -> LootState {

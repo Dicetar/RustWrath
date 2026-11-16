@@ -300,6 +300,22 @@ pub fn plural(
     get(token).filter(|s| !s.is_empty())
 }
 
+/// 12340 `GetCurrencyText` (`0x007E7D80`): each non-zero coin, gold first, through its
+/// `GOLD_AMOUNT`, `SILVER_AMOUNT` or `COPPER_AMOUNT` template (`"%d Copper"`), joined by
+/// `separator`: `"
+"` for the loot window's coin row (`0x00588430`), `", "` for the money lines.
+/// `get` reads a global string, `""` when missing. Empty for no coins. The 1.12 client instead
+/// wrote `"%d %s"` over the `GOLD`, `SILVER` and `COPPER` words, which the 3.3.5 strings lack.
+pub fn currency_text(copper: u32, separator: &str, get: &dyn Fn(&str) -> String) -> String {
+    let (g, s, c) = (copper / 10_000, copper / 100 % 100, copper % 100);
+    [(g, "GOLD_AMOUNT"), (s, "SILVER_AMOUNT"), (c, "COPPER_AMOUNT")]
+        .into_iter()
+        .filter(|&(n, _)| n != 0)
+        .map(|(n, key)| fill(&get(key), &[Arg::D(i64::from(n))]))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
 /// Fill a reference template, by the rules in the module doc.
 pub fn fill(template: &str, args: &[Arg<'_>]) -> String {
     run(template, args, false).unwrap_or_default()
