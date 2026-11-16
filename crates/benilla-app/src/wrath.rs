@@ -9065,6 +9065,89 @@ fn wrath_quest_slots(raw: &crate::wrath_inventory::WrathFieldWindow) -> [QuestSl
     })
 }
 
+/// The player's header (duel, flags, guild, `PLAYER_BYTES*`) and the unit combat/stat block
+/// carried in its `0..148` unit prefix, from 3.3.5 indices to the 1.12 slots the donor owners
+/// read. Only delivered dwords are copied.
+fn push_player_unit_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    pairs: &mut Vec<(u16, u32)>,
+) {
+    // `PLAYER_FLAGS` (3.3.5 150 -> 1.12 190), guild/duel header (`148..=157` -> `188..=197`).
+    // Powers, `UNIT_FIELD_BYTES_0` (3.3.5 23) and the mount display are projected
+    // for every unit by `wrath_apply_world` from the parsed digest; they must not be re-mapped here
+    // (3.3.5 36 is `UNIT_FIELD_MAXPOWER4`, not the 1.12 `BYTES_0` slot 36).
+    for (src, dst) in [
+        (148u16, 188u16), // PLAYER_DUEL_ARBITER low
+        (149, 189),       // PLAYER_DUEL_ARBITER high
+        (150, benilla_protocol::field::FIELD_PLAYER_FLAGS),
+        (151, 191),       // PLAYER_GUILDID
+        (152, 192),       // PLAYER_GUILDRANK
+        (153, 193),       // PLAYER_BYTES: skin, face, hairStyle, hairColor
+        (154, 194),       // PLAYER_BYTES_2: facialHair, bank bags, rest
+        (155, 195),       // PLAYER_BYTES_3
+        (156, 196),       // PLAYER_DUEL_TEAM
+        (157, 197),       // PLAYER_GUILD_TIMESTAMP
+    ] {
+        if let Some(value) = raw.get(src) {
+            pairs.push((dst, value));
+        }
+    }
+    // Unit combat & stat block carried in the player's `0..148` unit prefix:
+    // channel object/spell (`20..=22` -> `20..=21`, `144`), cast speed (`80` -> `145`),
+    // aura state (`61` -> `125`), attack times (`62..=64` -> `126..=128`),
+    // min/max/offhand damage (`70..=73` -> `134..=137`),
+    // base stats (`84..=88` -> `150..=154`), pos/neg stat buffs (`89..=98` -> `1177..=1186`),
+    // resistances (`99..=105` -> `155..=161`), resistance buffs (`106..=119` -> `1187..=1200`),
+    // base mana/health (`120..=121` -> `162..=163`), AP and ranged damage (`123..=130` -> `165..=172`).
+    for (src, dst) in [
+        (20u16, 20u16),
+        (21, 21),
+        (22, 144),
+        (61, 125), // UNIT_FIELD_AURASTATE
+        (62, 126), // UNIT_FIELD_BASEATTACKTIME main hand
+        (63, 127), // UNIT_FIELD_BASEATTACKTIME off hand
+        (64, 128), // UNIT_FIELD_RANGEDATTACKTIME
+        (70, 134), // UNIT_FIELD_MINDAMAGE
+        (71, 135), // UNIT_FIELD_MAXDAMAGE
+        (72, 136), // UNIT_FIELD_MINOFFHANDDAMAGE
+        (73, 137), // UNIT_FIELD_MAXOFFHANDDAMAGE
+        (80, 145),
+        (120, 162),
+        (121, 163),
+    ] {
+        if let Some(value) = raw.get(src) {
+            pairs.push((dst, value));
+        }
+    }
+    for i in 0..5u16 {
+        if let Some(v) = raw.get(84 + i) {
+            pairs.push((150 + i, v));
+        }
+        if let Some(v) = raw.get(89 + i) {
+            pairs.push((1177 + i, v));
+        }
+        if let Some(v) = raw.get(94 + i) {
+            pairs.push((1182 + i, v));
+        }
+    }
+    for i in 0..7u16 {
+        if let Some(v) = raw.get(99 + i) {
+            pairs.push((155 + i, v));
+        }
+        if let Some(v) = raw.get(106 + i) {
+            pairs.push((1187 + i, v));
+        }
+        if let Some(v) = raw.get(113 + i) {
+            pairs.push((1194 + i, v));
+        }
+    }
+    for i in 0..8u16 {
+        if let Some(v) = raw.get(123 + i) {
+            pairs.push((165 + i, v));
+        }
+    }
+}
+
 /// Copy the player inventory bands the 1.12 item owners walk. The 3.3.5 arrays are wider in the
 /// bank (28 -> 24 slots), bank bags (7 -> 6) and otherwise use a different base; every array here
 /// is copied explicitly, with the extra 3.3.5 tail dropped rather than folded into a neighbour.
@@ -9697,82 +9780,7 @@ fn wrath_apply_world(world: &mut World) {
                     .filter(|i| raw.word_or_zero(daily_start + i) != 0)
                     .count() as u32;
                 wrath_slots = Some(WrathQuestSlots(slots, max_level, daily));
-                // `PLAYER_FLAGS` (3.3.5 150 -> 1.12 190), guild/duel header (`148..=157` -> `188..=197`).
-                for (src, dst) in [
-                    (25u16, 23u16),
-                    (26, 24),
-                    (27, 25),
-                    (33, 29),
-                    (34, 30),
-                    (35, 31),
-                    (36u16, 36u16),   // UNIT_FIELD_BYTES_0: race, class, gender, power
-                    (148u16, 188u16), // PLAYER_DUEL_ARBITER low
-                    (149, 189),       // PLAYER_DUEL_ARBITER high
-                    (150, benilla_protocol::field::FIELD_PLAYER_FLAGS),
-                    (151, 191),       // PLAYER_GUILDID
-                    (152, 192),       // PLAYER_GUILDRANK
-                    (153, 193),       // PLAYER_BYTES: skin, face, hairStyle, hairColor
-                    (154, 194),       // PLAYER_BYTES_2: facialHair, bank bags, rest
-                    (155, 195),       // PLAYER_BYTES_3
-                    (156, 196),       // PLAYER_DUEL_TEAM
-                    (157, 197),       // PLAYER_GUILD_TIMESTAMP
-                ] {
-                    if let Some(value) = raw.get(src) {
-                        pairs.push((dst, value));
-                    }
-                }
-                // Unit combat & stat block carried in the player's `0..148` unit prefix:
-                // channel object/spell (`20..=22` -> `20..=21`, `144`), cast speed (`80` -> `145`),
-                // attack times (`61..=63` -> `126..=128`), min/max/offhand damage (`69..=72` -> `134..=137`),
-                // base stats (`84..=88` -> `150..=154`), pos/neg stat buffs (`89..=98` -> `1177..=1186`),
-                // resistances (`99..=105` -> `155..=161`), resistance buffs (`106..=119` -> `1187..=1200`),
-                // base mana/health (`120..=121` -> `162..=163`), AP and ranged damage (`123..=130` -> `165..=172`).
-                for (src, dst) in [
-                    (20u16, 20u16),
-                    (21, 21),
-                    (22, 144),
-                    (61, 126),
-                    (62, 127),
-                    (63, 128),
-                    (69, 134),
-                    (70, 135),
-                    (71, 136),
-                    (72, 137),
-                    (80, 145),
-                    (120, 162),
-                    (121, 163),
-                ] {
-                    if let Some(value) = raw.get(src) {
-                        pairs.push((dst, value));
-                    }
-                }
-                for i in 0..5u16 {
-                    if let Some(v) = raw.get(84 + i) {
-                        pairs.push((150 + i, v));
-                    }
-                    if let Some(v) = raw.get(89 + i) {
-                        pairs.push((1177 + i, v));
-                    }
-                    if let Some(v) = raw.get(94 + i) {
-                        pairs.push((1182 + i, v));
-                    }
-                }
-                for i in 0..7u16 {
-                    if let Some(v) = raw.get(99 + i) {
-                        pairs.push((155 + i, v));
-                    }
-                    if let Some(v) = raw.get(106 + i) {
-                        pairs.push((1187 + i, v));
-                    }
-                    if let Some(v) = raw.get(113 + i) {
-                        pairs.push((1194 + i, v));
-                    }
-                }
-                for i in 0..8u16 {
-                    if let Some(v) = raw.get(123 + i) {
-                        pairs.push((165 + i, v));
-                    }
-                }
+                push_player_unit_fields(raw, &mut pairs);
                 push_player_inventory_fields(raw, &mut pairs);
                 push_visible_item_fields(raw, &mut pairs);
                 if let Some(value) = raw.get(634) {
@@ -12947,6 +12955,40 @@ mod tests {
         assert!(pairs.contains(&(at(0) + 3, 1)));
         assert!(pairs.contains(&(at(0) + 4, 2)));
         assert!(pairs.contains(&(at(18) + 2, 5976)));
+    }
+
+    /// The player unit-prefix table must not write 3.3.5 `UNIT_FIELD_MAXPOWER4` (36) over the 1.12
+    /// `UNIT_FIELD_BYTES_0` slot (36): a delivered max energy of 100 read back as race 100 and left
+    /// the local player's body and hair untextured. Attack times and damage keep their own slots.
+    #[test]
+    fn wrath_player_unit_fields_keep_bytes_0_and_land_combat_slots() {
+        use benilla_protocol_wrath::fields as w;
+        let window = item_window(
+            &[
+                (w::UNIT_FIELD_MAXPOWER4, 100),
+                (w::UNIT_FIELD_AURASTATE, 0x20),
+                (w::UNIT_FIELD_BASEATTACKTIME, 2000),
+                (w::UNIT_FIELD_BASEATTACKTIME + 1, 1500),
+                (w::UNIT_FIELD_RANGEDATTACKTIME, 2800),
+                (w::UNIT_FIELD_MOUNTDISPLAYID, 14_000),
+                (w::UNIT_FIELD_MINDAMAGE, 7.0f32.to_bits()),
+                (w::UNIT_FIELD_MAXOFFHANDDAMAGE, 9.0f32.to_bits()),
+                (w::PLAYER_BYTES, 0x0102_0304),
+            ],
+            crate::wrath_inventory::PLAYER_WINDOW_END,
+        );
+        let mut pairs = Vec::new();
+        push_player_unit_fields(&window, &mut pairs);
+        let at = |dst: u16| pairs.iter().filter(|(i, _)| *i == dst).map(|(_, v)| *v).collect::<Vec<_>>();
+        assert!(at(36).is_empty(), "BYTES_0 comes from the digest, not the raw table: {:?}", at(36));
+        assert!(at(133).is_empty(), "mount display comes from the digest");
+        assert_eq!(at(125), [0x20], "aura state");
+        assert_eq!(at(126), [2000], "main-hand attack time");
+        assert_eq!(at(127), [1500], "off-hand attack time");
+        assert_eq!(at(128), [2800], "ranged attack time");
+        assert_eq!(at(134), [7.0f32.to_bits()], "min damage");
+        assert_eq!(at(137), [9.0f32.to_bits()], "max off-hand damage");
+        assert_eq!(at(193), [0x0102_0304], "PLAYER_BYTES");
     }
 
     /// A window where only the supplied `(index, value)` dwords count as delivered.
