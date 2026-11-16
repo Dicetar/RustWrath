@@ -1029,28 +1029,10 @@ pub struct WrathEntity {
     /// it, identical deltas included) and the packet-arrival wall clock. Presentation stamps a
     /// GetTime anchor once per revision; nothing here is a UI clock.
     pub aura_receipts: BTreeMap<u8, benilla_protocol_wrath::reducer::AuraReceipt>,
-    /// The 3.3.5 GameObject window; `None` for every other type. A GameObject's display id rides
-    /// in `display_id` (`GAMEOBJECT_DISPLAYID`), so the spawn and the live swap read one place.
-    pub gameobject: Option<WrathGameObjectFields>,
-}
-
-/// `CGGameObjectData` (12340): the delivered words of `OBJECT_END..GAMEOBJECT_END` that the 1.12
-/// GameObject descriptor has a slot for. The parent rotation (`10..13`) and path progress are not
-/// carried: 1.12 has no slot for either.
-#[derive(Clone, Debug, PartialEq)]
-pub struct WrathGameObjectFields {
-    /// `OBJECT_FIELD_CREATED_BY` (`6..7`).
-    pub created_by: Option<u64>,
-    /// `GAMEOBJECT_FLAGS` (`9`).
-    pub flags: Option<u32>,
-    /// `GAMEOBJECT_DYNAMIC` (`14`): `u16` dynamic flags, then `u16` path progress.
-    pub dynamic: Option<u32>,
-    /// `GAMEOBJECT_FACTION` (`15`).
-    pub faction: Option<u32>,
-    /// `GAMEOBJECT_LEVEL` (`16`).
-    pub level: Option<u32>,
-    /// `GAMEOBJECT_BYTES_1` (`17`): state, type, art kit, anim progress.
-    pub bytes_1: Option<u32>,
+    /// The raw 3.3.5 window of a creature, GameObject, DynamicObject or corpse with the
+    /// delivered mask, read by the live field table (`wrath_field_map`). A player uses
+    /// `player_fields`; every other type carries `None`.
+    pub raw_fields: Option<crate::wrath_inventory::WrathFieldWindow>,
 }
 
 /// A full-world digest: the replicated world at one `state_revision`.
@@ -2576,9 +2558,11 @@ impl Plugin for WrathNetPlugin {
                 )
                     .chain(),
             );
+            app.init_resource::<crate::wrath_field_map::WrathFieldMap>();
             app.add_systems(
                 Update,
                 (
+                    crate::wrath_field_map::poll_overlay,
                     wrath_net_drain,
                     wrath_apply_world,
                     wrath_wm_action_intake,
@@ -9505,7 +9489,7 @@ fn apply_item_world(
 /// Translate the drained digest into the established `GuidIndex`/`NetEntity`/`ObjectStore` path.
 /// Exclusive, so creates/removals are live before `WorldStage::Input`.
 fn wrath_apply_world(world: &mut World) {
-    let (changes, entities, entered, phase, player_guid, map_id) = {
+    let (mut changes, entities, entered, phase, player_guid, map_id) = {
         let mut view = world.resource_mut::<WrathWorldView>();
         (
             std::mem::take(&mut view.last_changes),
@@ -9516,6 +9500,13 @@ fn wrath_apply_world(world: &mut World) {
             view.map_id,
         )
     };
+    // A reloaded field table re-projects every streamed object through the update path below.
+    if world
+        .get_resource_mut::<crate::wrath_field_map::WrathFieldMap>()
+        .is_some_and(|mut map| std::mem::take(&mut map.reapply))
+    {
+        crate::wrath_field_map::queue_reapply(&mut changes, &entities);
+    }
     let mut index = std::mem::take(&mut *world.resource_mut::<GuidIndex>());
     if changes.world_transferred {
         // Scope loss is cleanup-first: it does not depend on a following digest, a player guid,
@@ -9803,34 +9794,12 @@ fn wrath_apply_world(world: &mut World) {
                 pairs.push((41 + 2 * slot, row.sheath & 0xff));
             }
         }
-        if let Some(go) = remote.gameobject.as_ref() {
-            // `CGGameObjectData` onto the 1.12 GameObject descriptor: display 8, flags 9, state
-            // 14, dynamic flags 19, faction 20, type 21, level 22. Without these every 3.3.5
-            // GameObject spawned with no model and read as a type-0 door.
-            if let Some(created_by) = go.created_by {
-                pairs.push((6, created_by as u32));
-                pairs.push((7, (created_by >> 32) as u32));
-            }
-            if let Some(display) = remote.display_id {
-                pairs.push((8, display));
-            }
-            if let Some(flags) = go.flags {
-                pairs.push((9, flags));
-            }
-            if let Some(bytes) = go.bytes_1 {
-                pairs.push((14, bytes & 0xff));
-                pairs.push((21, (bytes >> 8) & 0xff));
-            }
-            if let Some(dynamic) = go.dynamic {
-                pairs.push((19, dynamic & 0xffff));
-            }
-            if let Some(faction) = go.faction {
-                pairs.push((20, faction));
-            }
-            if let Some(level) = go.level {
-                pairs.push((22, level));
-            }
-        } else if let Some(display) = remote.display_id.filter(|&display| display != 0) {
+        // A GameObject's descriptor, display included, comes from the field table; 131/132 are
+        // unit display slots.
+        if let Some(display) = remote
+            .display_id
+            .filter(|&display| display != 0 && kind != EntityKind::GameObject)
+        {
             pairs.push((131, display));
             pairs.push((132, display));
         } else if kind == EntityKind::Player {
@@ -9982,6 +9951,10 @@ fn wrath_apply_world(world: &mut World) {
         }
         if matches!(kind, EntityKind::Unit | EntityKind::Player) && !remote.auras.is_empty() {
             push_aura_fields(&remote.auras, &mut pairs);
+        }
+        // The live field table runs last so a data rule can add or override any 1.12 word.
+        if let Some(map) = world.get_resource::<crate::wrath_field_map::WrathFieldMap>() {
+            map.push_pairs(remote, &mut pairs);
         }
         let fields = ObjectFields::from_pairs(&pairs).into_created(object_type);
         let transform = remote.position.map(|p| Transform {
@@ -13003,16 +12976,23 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 auras: entry.auras.clone(),
                 auras_observed: entry.auras_observed,
                 aura_receipts: entry.aura_receipts.clone(),
-                gameobject: game_object.then(|| WrathGameObjectFields {
-                    created_by: entry
-                        .self_guid(fields::OBJECT_FIELD_CREATED_BY)
-                        .filter(|&guid| guid != 0),
-                    flags: observed(fields::GAMEOBJECT_FLAGS),
-                    dynamic: observed(fields::GAMEOBJECT_DYNAMIC),
-                    faction: observed(fields::GAMEOBJECT_FACTION),
-                    level: observed(fields::GAMEOBJECT_LEVEL),
-                    bytes_1: observed(fields::GAMEOBJECT_BYTES_1),
-                }),
+                raw_fields: {
+                    use benilla_protocol_wrath::updates::type_id;
+                    let end = match entry.type_id {
+                        type_id::UNIT => Some(fields::UNIT_END),
+                        type_id::GAMEOBJECT => Some(fields::GAMEOBJECT_END),
+                        type_id::DYNAMICOBJECT => Some(fields::DYNAMICOBJECT_END),
+                        type_id::CORPSE => Some(fields::CORPSE_END),
+                        _ => None,
+                    };
+                    end.map(|end| {
+                        crate::wrath_inventory::WrathFieldWindow::from_fields(
+                            end,
+                            |index| entry.field(index),
+                            |index| entry.field_delivered(index),
+                        )
+                    })
+                },
             },
         );
     }
@@ -13680,7 +13660,7 @@ mod command_tap_tests {
                 auras: Vec::new(),
                 auras_observed: false,
                 aura_receipts: BTreeMap::new(),
-                gameobject: None,
+                raw_fields: None,
             },
         );
         WrathWorldView {
