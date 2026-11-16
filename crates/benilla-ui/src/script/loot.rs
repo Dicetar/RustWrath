@@ -185,14 +185,12 @@ impl super::UiScript {
 /// gold and silver, `""` (`0x882748`) after copper.
 ///
 /// 3.3.5 builds the row's text with `GetCurrencyText` (`0x00588430` → `0x007E7D80`) over the
-/// `*_AMOUNT` templates, `"
-"` between coins ([`crate::strings::currency_text`]).
+/// `*_AMOUNT` templates, `"\n"` between coins ([`crate::strings::currency_text`]).
 fn coin_row_name(lua: &Lua, copper: u32) -> String {
     let wrath =
         lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335;
     if wrath {
-        return crate::strings::currency_text(copper, "
-", &|key| {
+        return crate::strings::currency_text(copper, "\n", &|key| {
             super::glue_core::global_text(lua, key)
         });
     }
