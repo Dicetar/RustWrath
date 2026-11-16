@@ -3377,6 +3377,22 @@ fn chat_type_112(chat_type: u8) -> Option<u8> {
     })
 }
 
+/// 12340 `SMSG_MESSAGECHAT`'s `chat_tag` is a bitmask (`0x01` AFK, `0x02` DND, `0x04` GM, `0x08`
+/// COM, `0x10` DEV) whereas the 1.12 donor protocol uses the `chat_tag` enum (`NONE=0, AFK=1,
+/// DND=2, GM=3`, prioritizing GM > DND > AFK).
+fn chat_tag_112(tag: u8) -> u8 {
+    use benilla_protocol::messages::chat_tag as t;
+    if tag & 0x04 != 0 {
+        t::GM
+    } else if tag & 0x02 != 0 {
+        t::DND
+    } else if tag & 0x01 != 0 {
+        t::AFK
+    } else {
+        t::NONE
+    }
+}
+
 /// Map the stock item-use target block onto the 12340 writer. A trade-item target needs the real
 /// item guid, which the stock command carries only as a slot, so it is left unsupported rather
 /// than encoded against a guessed guid.
@@ -4249,7 +4265,7 @@ fn translate_gameplay(
                 sender_name: line.sender_name,
                 channel: line.channel,
                 text: line.text,
-                chat_tag: line.chat_tag,
+                chat_tag: chat_tag_112(line.chat_tag),
             })],
             None => {
                 debug!("wrath: chat type 0x{:X} has no 1.12 owner", line.chat_type);
