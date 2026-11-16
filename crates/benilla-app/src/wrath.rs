@@ -1001,6 +1001,8 @@ pub struct WrathEntity {
     pub move_flags: Option<u32>,
     /// Active spline carried by the create/movement update block (`SPLINE_ENABLED`).
     pub create_spline: Option<benilla_protocol_wrath::updates::CreateSplineSnapshot>,
+    /// The melee victim the last movement block carried (`HAS_TARGET`), read once at spawn.
+    pub attack_target: Option<u64>,
     pub generation: u32,
     /// The player's raw Wrath field window, needed where 1.12 and 3.3.5 pack different field
     /// indices (quest log, inventory, coinage), with the server's delivered mask. Only a player
@@ -3787,27 +3789,16 @@ fn translate_gameplay(
         WrathGameplayEvent::TransferAborted { map_id, reason, argument } => {
             vec![SessionEvent::TransferAborted { reason, map_id: Some(map_id), argument }]
         }
-        WrathGameplayEvent::SpellFailure {
-            caster,
-            spell_id,
-            raw_reason,
-            ..
-        } => {
-            let mut out = Vec::with_capacity(2);
-            if caster == self_guid {
-                let reason = match cast_failure::reason(raw_reason) {
-                    cast_failure::Reason::Vanilla(r) => Some(r),
-                    cast_failure::Reason::Unsupported(_) => Some(0x1c),
-                };
-                out.push(SessionEvent::CastResult {
-                    spell_id,
-                    success: false,
-                    reason,
-                    arg: None,
-                });
-            }
-            out.push(SessionEvent::SpellFailedOther { caster, spell_id });
-            out
+        // Our own failure is reported once, by `SMSG_CAST_FAILED` (the CastFailed arm). 12340's
+        // 0x133/0x2A6 handlers (`Packet_SMSG_SPELL_FAILURE` 0x809C70, `_FAILED_OTHER` 0x806AD0)
+        // never print a line. They end the cast (fizzle, `HandleSpellFailedOrGo`,
+        // `FinishPendingSpellCast`), which `SpellFailedOther` does for any caster, us included.
+        // AzerothCore sends `SendCastResult(r)` and then `SendInterrupted(0)` (`Spell.cpp`
+        // 3807-3808, `cancel` 3669/3678). Turning the self copy into a second failed
+        // `CastResult` put a second red line under every server refusal. Reason 0 (SUCCESS)
+        // has no 1.12 key, so that line read "Internal error".
+        WrathGameplayEvent::SpellFailure { caster, spell_id, .. } => {
+            vec![SessionEvent::SpellFailedOther { caster, spell_id }]
         }
         WrathGameplayEvent::SpellGo {
             caster,
@@ -4519,18 +4510,27 @@ fn translate_gameplay(
             random_property_id,
             suffix_factor,
         })],
-        WrathGameplayEvent::ItemPush(p) => vec![SessionEvent::ItemPushResult(ItemPushResult {
-            player_guid: p.player,
-            from_npc: p.from_npc,
-            created: p.created,
-            show_in_chat: p.show_in_chat,
-            bag_slot: p.bag_slot,
-            item_slot: p.item_slot,
-            item_entry: p.item_entry,
-            suffix_factor: p.suffix_factor,
-            random_property_id: p.random_property_id as u32,
-            count: p.count,
-        })],
+        // 12340 runs `OnItemPushResult` and then `CheckForQuestItemLoot` on the same packet.
+        WrathGameplayEvent::ItemPush(p) => vec![
+            SessionEvent::ItemPushResult(ItemPushResult {
+                player_guid: p.player,
+                from_npc: p.from_npc,
+                created: p.created,
+                show_in_chat: p.show_in_chat,
+                bag_slot: p.bag_slot,
+                item_slot: p.item_slot,
+                item_entry: p.item_entry,
+                suffix_factor: p.suffix_factor,
+                random_property_id: p.random_property_id as u32,
+                count: p.count,
+            }),
+            SessionEvent::QuestItemLooted {
+                player_guid: p.player,
+                item_id: p.item_entry,
+                count: p.count,
+                total_count: p.total_count,
+            },
+        ],
         WrathGameplayEvent::PetSpells(spells) => {
             let spells = *spells;
             vec![SessionEvent::PetSpells(Box::new(
@@ -10305,6 +10305,16 @@ fn wrath_apply_world(world: &mut World) {
                 if let Some(position) = remote.position {
                     entity.insert(WrathAppliedPosition(position));
                 }
+                // A unit created while it already swings (`HAS_TARGET`) gets no fresh
+                // `SMSG_ATTACKSTART`: the 12340 client seeds its attack target from the create
+                // block (`CCombat::SetClientInitData`), which the Ready idle gates on. A recreate
+                // (a new generation) passes here too, so a respawned fighter keeps its stance.
+                if let Some(victim) = remote
+                    .attack_target
+                    .filter(|_| matches!(kind, EntityKind::Unit | EntityKind::Player))
+                {
+                    entity.insert(crate::creature_anim::Engaged(victim));
+                }
                 if *guid != player_guid {
                     if let Some(cs) = &remote.create_spline {
                         let create = benilla_protocol::CreateSpline {
@@ -12862,6 +12872,7 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                     .movement
                     .as_ref()
                     .and_then(|m| m.create_spline.clone()),
+                attack_target: entry.movement.as_ref().and_then(|m| m.attack_target),
                 generation: entry.generation,
                 player_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
                     .then(|| {
@@ -12980,6 +12991,27 @@ mod tests {
         let remote = translate_gameplay(go(0x99), 0x1522, Instant::now());
         assert_eq!(remote.len(), 1);
         assert!(matches!(remote[0], SessionEvent::SpellGo { caster: 0x99, .. }));
+    }
+
+    /// AzerothCore follows a refusal's `SMSG_CAST_FAILED` with `SendInterrupted(0)`. The self
+    /// copy only ends the cast. A failed `CastResult` from it was a second red line,
+    /// "Internal error", under "Not enough rage".
+    #[test]
+    fn a_wrath_self_spell_failure_reports_no_second_line() {
+        let failure = WrathGameplayEvent::SpellFailure {
+            caster: 0x1522,
+            spell_id: 772,
+            cast_count: 3,
+            raw_reason: 0,
+        };
+        let events = translate_gameplay(failure, 0x1522, Instant::now());
+        assert!(
+            matches!(
+                events.as_slice(),
+                [SessionEvent::SpellFailedOther { caster: 0x1522, spell_id: 772 }]
+            ),
+            "{events:?}"
+        );
     }
 
     /// A Charge spline naming our own guid reaches the self-ride, even with a parabolic flag; it
@@ -13530,6 +13562,7 @@ mod command_tap_tests {
                 position: None,
                 move_flags: None,
                 create_spline: None,
+                attack_target: None,
                 generation: 1,
                 player_fields: None,
                 item_fields: None,

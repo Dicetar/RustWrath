@@ -505,6 +505,10 @@ pub(crate) struct Model {
     /// the release; `None` once that frame left the mouse index (hide or mouse disable emptied
     /// the capture), so the release has no target but the button still counts as held.
     pub(crate) mouse_down_on: HashMap<String, Option<FrameHandle>>,
+    /// Every mouse button physically held, by WoW name, whatever its press hit (world, nothing,
+    /// a hidden frame): the state `IsMouseButtonDown` reads. Unlike [`Self::mouse_down_on`],
+    /// which keeps only presses the UI took a target for.
+    pub(crate) buttons_held: HashSet<String>,
     /// The client's one mouse-capture slot (`root+0x80`), read by the mouse-down raise. Set at
     /// `0x7663e6` to the capture, else the hovered frame, so a chorded press keeps the capture;
     /// cleared at `0x7664bb` once no button is down. A title-region press captures nothing.
@@ -1699,6 +1703,7 @@ impl Model {
             world_mouseover: None,
             minimap_blip: None,
             mouse_down_on: HashMap::new(),
+            buttons_held: HashSet::new(),
             mouse_capture: None,
             last_click: HashMap::new(),
             last_ui_hit: None,

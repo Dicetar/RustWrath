@@ -137,6 +137,10 @@ pub struct MovementSnapshot {
     pub speeds: Option<[f32; 9]>,
     /// Active spline from a create/movement block when `SPLINE_ENABLED` is set.
     pub create_spline: Option<CreateSplineSnapshot>,
+    /// The unit's melee victim from the `HAS_TARGET` packed guid (AC sets the flag on a create
+    /// while the unit has a victim); `None` when the flag is clear or the guid is zero. The
+    /// 12340 client seeds its attack target from it at creation (`CCombat::SetClientInitData`).
+    pub attack_target: Option<u64>,
 }
 
 impl MovementSnapshot {
@@ -166,6 +170,7 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         vehicle_id: None,
         speeds: None,
         create_spline: None,
+        attack_target: None,
     };
     if flags & update_flags::LIVING != 0 {
         // `Unit::BuildMovementPacket`
@@ -259,7 +264,7 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         r.u32()?;
     }
     if flags & update_flags::HAS_TARGET != 0 {
-        r.packed_guid()?;
+        snap.attack_target = Some(r.packed_guid()?).filter(|&guid| guid != 0);
     }
     if flags & update_flags::TRANSPORT != 0 {
         r.u32()?; // path progress
@@ -302,6 +307,7 @@ pub fn standalone_movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         vehicle_id: None,
         speeds: None,
         create_spline: None,
+        attack_target: None,
     };
     let (x, y, z, o) = (r.f32()?, r.f32()?, r.f32()?, r.f32()?);
     snap.position = Some(PositionSnapshot { x, y, z, o });
