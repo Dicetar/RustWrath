@@ -204,6 +204,7 @@ mod world_console;
 mod world_state;
 mod wrath;
 mod wrath_field_map;
+mod wrath_translate;
 mod multiclass;
 mod quest_trace;
 mod wrath_native;

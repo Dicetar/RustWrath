@@ -12,6 +12,9 @@
 # Live overlay: put a file with the same format at <benilla-config>/wrath-field-map.toml. It is
 # re-read within a second of saving and applied after these rules (or instead of them with
 # `replace_defaults = true` at the top). A file that does not parse is logged and ignored.
+#
+# A translation that needs a lookup or computed value belongs in the live translation script
+# (wrath_translate.lua, overlay <benilla-config>/wrath-translate.lua), which runs after this table.
 
 # CGGameObjectData (Wrath 6..17) -> 1.12 GameObject descriptor.
 [[gameobject]] # OBJECT_FIELD_CREATED_BY
@@ -78,3 +81,74 @@ count = 19
 from = 30
 to = 32
 count = 5
+
+# Unit block (Wrath 6..147) -> 1.12 unit descriptor, for creatures and players. Health, power,
+# level, faction, flags, bytes, displays, npc flags and the guid fields are projected in Rust;
+# these are the direct copies. Players already get most of them from the player projection; the
+# values are the same.
+[[unit]] # UNIT_FIELD_CHARM, UNIT_FIELD_SUMMON
+from = 6
+to = 6
+count = 4
+
+[[unit]] # UNIT_FIELD_CHANNEL_OBJECT
+from = 20
+to = 20
+count = 2
+
+[[unit]] # UNIT_CHANNEL_SPELL
+from = 22
+to = 144
+
+[[unit]] # AURASTATE, BASEATTACKTIME[2], RANGEDATTACKTIME, BOUNDINGRADIUS, COMBATREACH
+from = 61
+to = 125
+count = 6
+
+[[unit]] # UNIT_FIELD_NATIVEDISPLAYID (the Rust projection writes DISPLAYID there first)
+from = 68
+to = 132
+
+[[unit]] # MINDAMAGE, MAXDAMAGE, MINOFFHANDDAMAGE, MAXOFFHANDDAMAGE
+from = 70
+to = 134
+count = 4
+
+[[unit]] # PETNUMBER, PET_NAME_TIMESTAMP, PETEXPERIENCE, PETNEXTLEVELEXP
+from = 75
+to = 139
+count = 4
+
+[[unit]] # UNIT_MOD_CAST_SPEED, UNIT_CREATED_BY_SPELL
+from = 80
+to = 145
+count = 2
+
+[[unit]] # UNIT_NPC_EMOTESTATE
+from = 83
+to = 148
+
+[[unit]] # UNIT_FIELD_STAT0..4
+from = 84
+to = 150
+count = 5
+
+[[unit]] # UNIT_FIELD_RESISTANCES 0..6
+from = 99
+to = 155
+count = 7
+
+[[unit]] # UNIT_FIELD_BASE_MANA, UNIT_FIELD_BASE_HEALTH
+from = 120
+to = 162
+count = 2
+
+[[unit]] # ATTACK_POWER .. MAXRANGEDDAMAGE
+from = 123
+to = 165
+count = 8
+
+[[unit]] # POWER_COST_MODIFIER 0..6, POWER_COST_MULTIPLIER 0..6
+from = 131
+to = 173
+count = 14

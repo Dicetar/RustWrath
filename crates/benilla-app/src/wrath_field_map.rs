@@ -2,7 +2,8 @@
 //! 1.12 descriptor indices, so a translation fix is a text edit instead of a rebuild.
 //!
 //! The shipped table (`wrath_field_map.toml`, compiled in) holds the direct copies for GameObjects,
-//! DynamicObjects and corpses. An optional overlay, `<benilla-config>/wrath-field-map.toml`, is
+//! DynamicObjects and corpses, and the creature unit words the projection does not copy. Logic
+//! that needs a lookup lives in the translation script (`wrath_translate`), which runs after it. An optional overlay, `<benilla-config>/wrath-field-map.toml`, is
 //! polled once a second; its rules run after the shipped ones, so a later rule for the same 1.12
 //! index wins (and both run after the hand-written projection in `wrath.rs`, so a table rule also
 //! overrides that). `replace_defaults = true` in the overlay drops the shipped rules instead.
@@ -150,8 +151,7 @@ impl FieldTable {
 pub(crate) struct WrathFieldMap {
     shipped: FieldTable,
     overlay: Option<FieldTable>,
-    stamp: Option<(u64, Option<SystemTime>)>,
-    next_poll: Option<Instant>,
+    file: WatchedFile,
     pub(crate) reapply: bool,
 }
 
@@ -164,8 +164,7 @@ impl Default for WrathFieldMap {
         Self {
             shipped,
             overlay: None,
-            stamp: None,
-            next_poll: None,
+            file: WatchedFile::new(OVERLAY_FILE),
             reapply: false,
         }
     }
@@ -184,39 +183,70 @@ impl WrathFieldMap {
     }
 }
 
-fn overlay_path() -> Option<PathBuf> {
-    crate::config_dir().map(|dir| dir.join(OVERLAY_FILE))
+/// A file in the config folder, polled at most once a second by size and modification time.
+pub(crate) struct WatchedFile {
+    name: &'static str,
+    stamp: Option<(u64, Option<SystemTime>)>,
+    next_poll: Option<Instant>,
 }
 
-/// Once a second: stat the overlay, re-read it when its size or mtime moved, and ask for a
+/// What a [`WatchedFile::poll`] saw.
+pub(crate) enum FileChange {
+    Unchanged,
+    /// The file existed and is gone.
+    Removed(PathBuf),
+    /// The file is new or moved; its text, or why it could not be read.
+    Changed(PathBuf, Result<String, String>),
+}
+
+impl WatchedFile {
+    pub(crate) const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            stamp: None,
+            next_poll: None,
+        }
+    }
+
+    pub(crate) fn poll(&mut self) -> FileChange {
+        let now = Instant::now();
+        if self.next_poll.is_some_and(|at| now < at) {
+            return FileChange::Unchanged;
+        }
+        self.next_poll = Some(now + POLL);
+        let Some(path) = crate::config_dir().map(|dir| dir.join(self.name)) else {
+            return FileChange::Unchanged;
+        };
+        let stamp = std::fs::metadata(&path)
+            .ok()
+            .map(|meta| (meta.len(), meta.modified().ok()));
+        if stamp == self.stamp {
+            return FileChange::Unchanged;
+        }
+        self.stamp = stamp;
+        if stamp.is_none() {
+            return FileChange::Removed(path);
+        }
+        let text = std::fs::read_to_string(&path).map_err(|error| error.to_string());
+        FileChange::Changed(path, text)
+    }
+}
+
+/// Once a second: re-read the overlay when its size or mtime moved, and ask for a
 /// re-projection. A file that does not parse is reported and the previous table stays.
 pub(crate) fn poll_overlay(mut map: ResMut<WrathFieldMap>) {
-    let now = Instant::now();
-    if map.next_poll.is_some_and(|at| now < at) {
-        return;
-    }
-    map.next_poll = Some(now + POLL);
-    let Some(path) = overlay_path() else {
-        return;
-    };
-    let stamp = std::fs::metadata(&path)
-        .ok()
-        .map(|meta| (meta.len(), meta.modified().ok()));
-    if stamp == map.stamp {
-        return;
-    }
-    map.stamp = stamp;
-    if stamp.is_none() {
-        if map.overlay.take().is_some() {
-            info!("wrath field map: {} removed; shipped table only", path.display());
-            map.reapply = true;
+    let (path, text) = match map.file.poll() {
+        FileChange::Unchanged => return,
+        FileChange::Removed(path) => {
+            if map.overlay.take().is_some() {
+                info!("wrath field map: {} removed; shipped table only", path.display());
+                map.reapply = true;
+            }
+            return;
         }
-        return;
-    }
-    let loaded = std::fs::read_to_string(&path)
-        .map_err(|error| error.to_string())
-        .and_then(|text| FieldTable::parse(&text));
-    match loaded {
+        FileChange::Changed(path, text) => (path, text),
+    };
+    match text.and_then(|text| FieldTable::parse(&text)) {
         Ok(table) => {
             info!(
                 "wrath field map: loaded {} ({} rules{})",
