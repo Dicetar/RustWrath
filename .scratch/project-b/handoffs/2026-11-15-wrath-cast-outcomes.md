@@ -89,5 +89,5 @@ ingress ring before draining, so the native edge was dropped before the assertio
 3. Get hit during a cast: "Interrupted" once.
 4. A channelled spell: start, ticks, stop on cancel and on being interrupted (one terminal).
 5. A cooldown spell twice: the cooldown start and the second press's refusal.
-6. Auto Shot: start it, deselect/let the target die — no red "Interrupted" line; a真 interrupt of
+6. Auto Shot: start it, deselect/let the target die — no red "Interrupted" line; a genuine interrupt of
    the shot still shows it.
