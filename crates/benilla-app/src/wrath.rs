@@ -1001,6 +1001,8 @@ pub struct WrathEntity {
     pub move_flags: Option<u32>,
     /// Active spline carried by the create/movement update block (`SPLINE_ENABLED`).
     pub create_spline: Option<benilla_protocol_wrath::updates::CreateSplineSnapshot>,
+    /// The melee victim the last movement block carried (`HAS_TARGET`), read once at spawn.
+    pub attack_target: Option<u64>,
     pub generation: u32,
     /// The player's raw Wrath field window, needed where 1.12 and 3.3.5 pack different field
     /// indices (quest log, inventory, coinage), with the server's delivered mask. Only a player
@@ -10296,6 +10298,16 @@ fn wrath_apply_world(world: &mut World) {
                 if let Some(position) = remote.position {
                     entity.insert(WrathAppliedPosition(position));
                 }
+                // A unit created while it already swings (`HAS_TARGET`) gets no fresh
+                // `SMSG_ATTACKSTART`: the 12340 client seeds its attack target from the create
+                // block (`CCombat::SetClientInitData`), which the Ready idle gates on. A recreate
+                // (a new generation) passes here too, so a respawned fighter keeps its stance.
+                if let Some(victim) = remote
+                    .attack_target
+                    .filter(|_| matches!(kind, EntityKind::Unit | EntityKind::Player))
+                {
+                    entity.insert(crate::creature_anim::Engaged(victim));
+                }
                 if *guid != player_guid {
                     if let Some(cs) = &remote.create_spline {
                         let create = benilla_protocol::CreateSpline {
@@ -12850,6 +12862,7 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                     .movement
                     .as_ref()
                     .and_then(|m| m.create_spline.clone()),
+                attack_target: entry.movement.as_ref().and_then(|m| m.attack_target),
                 generation: entry.generation,
                 player_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
                     .then(|| {
@@ -13518,6 +13531,7 @@ mod command_tap_tests {
                 position: None,
                 move_flags: None,
                 create_spline: None,
+                attack_target: None,
                 generation: 1,
                 player_fields: None,
                 item_fields: None,
