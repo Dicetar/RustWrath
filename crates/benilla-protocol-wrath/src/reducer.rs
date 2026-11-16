@@ -570,6 +570,7 @@ impl WorldState {
                     vehicle_id: None,
                     speeds: None,
                     create_spline: None,
+                    attack_target: None,
                 });
                 true
             }

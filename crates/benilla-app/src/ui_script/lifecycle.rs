@@ -47,6 +47,9 @@ pub(super) const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("Sound_VoiceChatOutputDriverIndex", "0"),
     ("VoiceChatMode", "0"),
     ("rotateMinimap", "0"),
+    // 12340 GameUI_CVar.cpp:659: the tracking-menu row active last session, written by
+    // `SetTracking` ([`benilla_ui::script::minimap_tracking`]).
+    ("minimapTrackedInfo", ""),
     ("chatStyle", "im"),
     ("playerStatusText", "0"),
     // Provisional defaults for optional displays; the selected FrameXML reads all four.

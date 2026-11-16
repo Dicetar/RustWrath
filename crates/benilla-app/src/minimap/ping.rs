@@ -13,10 +13,11 @@
 //!
 //! The reference keeps the world point in two statics nothing clears (`0xbc787c`/`0xbc7880`),
 //! across a `ReloadUI` too, so [`MinimapPing`] keeps the process's copy for each new VM. The stock
-//! `Minimap.lua` owns everything visible: it shows the `MiniMapPing` `<Model>`
-//! (`Interface\MiniMap\Ping\MinimapPing.mdx`, rendered by `crate::ui_models`), holds it 5 s and
-//! fades it 0.5 s (`MINIMAPPING_TIMER`, `MINIMAPPING_FADE_TIMER`). `WorldMapPing` is the same model
-//! on the world map.
+//! `Minimap.lua` owns everything visible. 1.12 shows the `MiniMapPing` `<Model>`
+//! (`Interface\MiniMap\Ping\MinimapPing.mdx`, rendered by `crate::ui_models`). 3.3.5's
+//! `MinimapPing` is three textures its `OnUpdate` animates (the spinner's Texture `SetRotation`,
+//! the expander's size), for 5.5 s with a 0.5 s fade (`MINIMAPPING_TIMER`,
+//! `MINIMAPPING_FADE_TIMER`).
 //!
 //! Reaching a ping does not clear it: the reference's 10-yd `d² < 100` auto-clear belongs to the
 //! `SMSG_GOSSIP_POI` marker (`0x6d99aa`–`0x6d9a4c`).
