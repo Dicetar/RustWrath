@@ -377,6 +377,10 @@ impl WidgetArena {
     /// `0x76a400`: set or clear the scroll membership (`0x2000`) on `h` and its whole subtree, and
     /// when `root` is given, the scroll child mark (`0x4000`) on `h` alone. `SetScrollChild`
     /// clears both on the old child and sets both on the new one (`0x786cf4`, `0x786d0a`).
+    ///
+    /// The walk stops at a descendant that is itself a scroll child (`0x4000`): it keeps the
+    /// membership its own ScrollFrame gave it. So re-parenting a ScrollFrame, as stock
+    /// `QuestLogFrame.lua` does with `QuestLogDetailScrollFrame`, leaves its child clipped.
     pub fn set_scroll_flags(&mut self, h: FrameHandle, member: bool, root: Option<bool>) {
         let Some(f) = self.frame_mut(h) else {
             return;
@@ -388,6 +392,9 @@ impl WidgetArena {
         let mut stack = f.children.clone();
         while let Some(c) = stack.pop() {
             if let Some(cf) = self.frame_mut(c) {
+                if cf.scroll_root {
+                    continue;
+                }
                 cf.scroll_member = member;
                 stack.extend_from_slice(&cf.children);
             }
