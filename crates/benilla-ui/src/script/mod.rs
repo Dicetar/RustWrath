@@ -873,6 +873,8 @@ fn install_in_game(lua: &Lua) -> mlua::Result<()> {
         wrath_spell::install(lua)?;
         wrath_unit::install(lua)?;
         wrath_aura::install(lua)?;
+        // The DEATH and RESURRECT dialogs' own 3.3.5 natives (StaticPopup.lua).
+        death::install_wrath(lua)?;
     }
     Ok(())
 }
