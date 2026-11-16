@@ -26,10 +26,12 @@ read-only unless the owner assigns the batch.
   and only `SMSG_ATTACKSTART` (or create data) sets it (`UnitCombat_C.cpp:753`,
   `Unit_C.cpp:2608`). The stock client would show the same idle stance. RustWrath mirrors that
   through `Engaged` (`creature_anim/net.rs` `attack_start`), so no client change is needed.
-- **Fix:** take upstream AzerothCore's version. `SmartAI::AttackStart` passes
-  `mCanAutoAttack && !_currentRangeMode`, and `SmartAI::UpdateMeleeStance()` (called from
-  `UpdateAI` before `DoMeleeAttackIfReady`) re-calls `Attack(victim, canMelee)` when a ranged
-  creature enters or leaves melee reach. It needs `SetCurrentRangeMode` to match upstream too.
+- **Fix (in server source, not built yet):** the shared melee path, so SmartAI, CombatAI and
+  scripted creatures all get it. `UnitAI::DoMeleeAttackIfReady` (`UnitAI.cpp`, +8 lines) calls
+  `me->Attack(victim, true)` once in reach when the unit has no `UNIT_STATE_MELEE_ATTACKING`.
+  `Unit::Attack` then adds the melee state and sends `SMSG_ATTACKSTART` once. The 2026-11-16
+  rebuild compiled `game.lib` with it cleanly, but the worldserver was not linked or deployed
+  because ALE (item 4) broke the modules build.
 - **Check after the rebuild:** fight a Northshire bandit pulled from range. The log should show
   `net: attack start 0xf130… → <player>` and the bandit should hold the ready stance between
   swings.
@@ -49,3 +51,22 @@ still an open owner decision; the client slices come first.
 `docs/live-rules/B-001B-1-contract.md` §5 (a): an exported `SpellmakingV3::SubmitCommand(Player*,
 std::string)` and a `mod-wm-bridge` verb wrapping it. Status not rechecked since the contract;
 confirm it is still wanted before adding it to a batch.
+
+### 4. ALE (Eluna) server Lua, with auto-reload
+
+Owner-approved 2026-11-16, for server-side Lua that can be hotpatched.
+
+- Clone at `D:\WOW\WM_BridgeLab\src\modules\mod-ale` (azerothcore/mod-eluna `84b85cc5`). The
+  folder **must** be named `mod-ale`: core `modules/CMakeLists.txt` wires up `lualib` only for a
+  module matching `mod-ale` (named `mod-eluna`, it fails with "cannot open lua.h").
+- Runtime is already prepared: `run\configs\modules\mod_ale.conf` (`ALE.AutoReload = true`) and
+  `run\lua_scripts\project_b_hello.lua` (prints `[ALE] Project B lua_scripts loaded`).
+- **Blocker:** `84b85cc5` is newer than this core and its playerbots fork. 33 errors, all in
+  ALE: `PlayerScript::OnPlayerResurrect` signature, `WorldSession::IsHeadless`, and many
+  `PlayerbotAI`/`PlayerbotFactory`/`PlayerbotAIConfig` members (`ALE_SC.cpp`,
+  `methods/Playerbots/*`). Log: `state\ale-melee-build2.log`.
+- **Next:** check out an ALE commit from the core's era (date of core `5e741c3` and the
+  playerbots fork), or build with ALE's playerbots bindings off if it has a switch. Then
+  re-create the junction `src\azerothcore\modules\mod-ale` → `src\modules\mod-ale` and run
+  `cmake .` in `build` before the incremental build (its reconfigure check ignores new modules).
+  The junction is currently removed so the next build does not fail.
