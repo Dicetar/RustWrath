@@ -2151,7 +2151,9 @@ pub enum ServerEvent {
         cast_count: u8,
         raw_reason: u8,
     },
-    /// `SMSG_ATTACKERSTATEUPDATE` mapped onto the 1.12 swing shape.
+    /// `SMSG_ATTACKERSTATEUPDATE` mapped onto the 1.12 swing shape. `hit_info` and `school`
+    /// stay in 12340's own bit layout and mask form; the app seam translates both for the 1.12
+    /// consumers.
     AttackerState {
         attacker: u64,
         victim: u64,
@@ -2171,7 +2173,8 @@ pub enum ServerEvent {
     AiReaction { unit: u64, reaction: u32 },
     CancelAutoRepeat,
     PlaySpellVisual { unit: u64, kit_id: u32 },
-    /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word.
+    /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word. `school` is 12340's
+    /// mask; the app seam turns it into the 1.12 index.
     SpellDamage {
         target: u64,
         attacker: u64,
@@ -3503,9 +3506,10 @@ const HITINFO_BLOCK: u32 = 0x0000_2000;
 const HITINFO_RAGE_GAIN: u32 = 0x0080_0000;
 
 /// `SMSG_ATTACKERSTATEUPDATE` (`Unit.cpp:6870-6960`): 12340 writes `Overkill` after the total,
-/// keeps absorb/resist in blocks gated by `HitInfo` rather than inside every sub-block, and sends
-/// `TargetState` as a byte. The `HITINFO_UNK1` debug tail is left unread; nothing re-parses the
-/// payload, and guessing its width would be fabrication.
+/// keeps absorb/resist in blocks gated by `HitInfo` rather than inside every sub-block, sends
+/// `TargetState` as a byte, and writes a spell-school *mask* per damage block where the 1.12 seam
+/// carries an index. The `HITINFO_UNK1` debug tail is left unread; nothing re-parses the payload,
+/// and guessing its width would be fabrication.
 fn read_attacker_state(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let hit_info = r.u32()?;
@@ -5082,6 +5086,34 @@ pub fn parse_char_enum(payload: &[u8]) -> Result<Vec<CharEnumRecord>> {
 mod tests {
     use super::*;
 
+    /// `SMSG_LOG_XPGAIN`: victim, total, the kill/non-kill type, then the base XP and group rate
+    /// only for a kill, and 12340's trailing recruit-a-friend byte. The seam's rested bonus is the
+    /// difference between the total and the base.
+    #[test]
+    fn wrath_log_xp_gain_reads_the_kill_base_and_rested_bonus() {
+        let victim = 0xF130_0000_0000_0022u64;
+        let mut body = Vec::new();
+        body.extend_from_slice(&victim.to_le_bytes());
+        body.extend_from_slice(&60u32.to_le_bytes()); // total
+        body.push(0); // kill_xp
+        body.extend_from_slice(&40u32.to_le_bytes()); // base
+        body.extend_from_slice(&1.0f32.to_le_bytes()); // group rate
+        body.push(0); // RaF bonus
+        let event = parse(crate::opcode::SMSG_LOG_XPGAIN, &body)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ServerEvent::XpGain {
+                victim,
+                total_xp: 60,
+                kill_xp: true,
+                rested_bonus: 20,
+                group_rate: 1.0,
+            }
+        );
+    }
+
     #[test]
     fn wrath_party_kill_log_reads_the_killer_then_the_victim() {
         let killer = 0x0000_0000_0000_0011u64;
@@ -5249,6 +5281,148 @@ mod tests {
             parse(crate::opcode::SMSG_ATTACKSTOP, &b).unwrap().unwrap(),
             ServerEvent::AttackStop { attacker: 0x11, victim: 0x22 }
         );
+    }
+
+    /// 12340's swing: TotalDamage then Overkill, a school mask per damage block, and the
+    /// TargetState byte. The decoder keeps the mask and hit word as sent; the app seam normalises
+    /// them for the 1.12 consumers.
+    #[test]
+    fn attacker_state_reads_the_12340_overkill_and_conditional_blocks() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x202u32.to_le_bytes()); // normal hit | critical
+        b.extend_from_slice(&pack_guid(0x11));
+        b.extend_from_slice(&pack_guid(0x22));
+        b.extend_from_slice(&30u32.to_le_bytes()); // TotalDamage
+        b.extend_from_slice(&5u32.to_le_bytes()); // Overkill
+        b.push(1); // sub-damage count
+        b.extend_from_slice(&1u32.to_le_bytes()); // school mask (physical)
+        b.extend_from_slice(&30.0f32.to_le_bytes());
+        b.extend_from_slice(&30u32.to_le_bytes());
+        b.push(1); // TargetState: hit
+        b.extend_from_slice(&0u32.to_le_bytes()); // attackerState
+        b.extend_from_slice(&0u32.to_le_bytes()); // meleeSpellId
+        let event = parse(crate::opcode::SMSG_ATTACKERSTATEUPDATE, &b)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ServerEvent::AttackerState {
+                attacker: 0x11,
+                victim: 0x22,
+                hit_info: 0x202,
+                damage: 30,
+                victim_state: 1,
+                absorb: 0,
+                resist: 0,
+                blocked: 0,
+                melee_spell_id: 0,
+                school: 1,
+            }
+        );
+    }
+
+    /// A blocked swing sets 0x2000 and carries the trailing blocked word; without the bit the
+    /// decoder reads no word, so the following byte is not mistaken for one.
+    #[test]
+    fn attacker_state_reads_blocked_only_with_the_block_bit() {
+        let swing = |hit_info: u32, blocked: Option<u32>| {
+            let mut b = Vec::new();
+            b.extend_from_slice(&hit_info.to_le_bytes());
+            b.extend_from_slice(&pack_guid(0x11));
+            b.extend_from_slice(&pack_guid(0x22));
+            b.extend_from_slice(&0u32.to_le_bytes()); // TotalDamage
+            b.extend_from_slice(&0u32.to_le_bytes()); // Overkill
+            b.push(1);
+            b.extend_from_slice(&1u32.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.push(5); // TargetState: blocks
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            if let Some(blocked) = blocked {
+                b.extend_from_slice(&blocked.to_le_bytes());
+            }
+            parse(crate::opcode::SMSG_ATTACKERSTATEUPDATE, &b)
+                .unwrap()
+                .unwrap()
+        };
+        assert!(matches!(
+            swing(0x2002, Some(30)),
+            ServerEvent::AttackerState { blocked: 30, victim_state: 5, .. }
+        ));
+        assert!(matches!(
+            swing(0x2, None),
+            ServerEvent::AttackerState { blocked: 0, victim_state: 5, .. }
+        ));
+    }
+
+    /// Absorb and resist words follow all damage blocks, in that order; the seam keeps their
+    /// sums because the 1.12 line and portrait flash read one amount per kind.
+    #[test]
+    fn attacker_state_sums_the_conditional_absorb_and_resist_blocks() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x1E0u32.to_le_bytes()); // full+partial absorb, full+partial resist
+        b.extend_from_slice(&pack_guid(0x11));
+        b.extend_from_slice(&pack_guid(0x22));
+        b.extend_from_slice(&0u32.to_le_bytes()); // TotalDamage
+        b.extend_from_slice(&0u32.to_le_bytes()); // Overkill
+        b.push(2);
+        for school in [1u32, 4] {
+            b.extend_from_slice(&school.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for absorb in [7u32, 5] {
+            b.extend_from_slice(&absorb.to_le_bytes());
+        }
+        for resist in [3u32, 2] {
+            b.extend_from_slice(&resist.to_le_bytes());
+        }
+        b.push(1); // TargetState: hit
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        let event = parse(crate::opcode::SMSG_ATTACKERSTATEUPDATE, &b)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ServerEvent::AttackerState {
+                attacker: 0x11,
+                victim: 0x22,
+                hit_info: 0x1E0,
+                damage: 0,
+                victim_state: 1,
+                absorb: 12,
+                resist: 5,
+                blocked: 0,
+                melee_spell_id: 0,
+                school: 1,
+            }
+        );
+    }
+
+    /// The four empty swing refusals: 0x145/0x146 latch their own messages, while 0x148 and 0x149
+    /// both mean the server stopped the attack (12340's shared `SetCombatMode` arm).
+    #[test]
+    fn wrath_attack_swing_refusals_read_as_their_variants() {
+        for (opcode, expected) in [
+            (crate::opcode::SMSG_ATTACKSWING_NOTINRANGE, AttackSwingError::NotInRange),
+            (crate::opcode::SMSG_ATTACKSWING_BADFACING, AttackSwingError::BadFacing),
+            (
+                crate::opcode::SMSG_ATTACKSWING_DEADTARGET,
+                AttackSwingError::DeadOrUnattackable,
+            ),
+            (
+                crate::opcode::SMSG_ATTACKSWING_CANT_ATTACK,
+                AttackSwingError::DeadOrUnattackable,
+            ),
+        ] {
+            assert_eq!(
+                parse(opcode, &[]).unwrap().unwrap(),
+                ServerEvent::AttackSwingError(expected),
+                "opcode {opcode:#x}"
+            );
+        }
     }
 
     /// A mode ack carries no jump tail and no deck pose, so it may not announce one: a hover or
