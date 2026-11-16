@@ -401,6 +401,9 @@ pub(crate) struct Model {
     pub(crate) layout_scope: super::layout::LayoutScope,
     /// The epoch the last converged resolve closed on; `None` sends the next one past tier 1.
     pub(crate) layout_epoch_resolved: Option<u64>,
+    /// Tier 1 was closed by a cycle bail, not a convergence: its rects are no fixpoint and no
+    /// fingerprint vouches for them, so verify has nothing to re-check until the next write.
+    pub(crate) layout_bailed: bool,
     /// Resolves the gate let through, counted at its decision, so verify mode reads the same.
     pub(crate) layout_solves: u64,
     /// Resolves that got past tier 1, including those that then skipped: the whole-roster walk's
@@ -1655,6 +1658,7 @@ impl Model {
             layout_scope: super::layout::LayoutScope::default(),
             layout_last_scope: (0, 0),
             layout_epoch_resolved: None,
+            layout_bailed: false,
             layout_solves: 0,
             layout_gate_walks: 0,
             layout_rounds: 0,
