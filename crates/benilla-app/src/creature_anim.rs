@@ -38,8 +38,9 @@ pub(crate) struct Wielded {
     pub(crate) off: Option<(u8, u8)>,
     /// The ranged-slot item's `(class, subclass)`, the auto-repeat idle's selector (`0x5fd530`).
     pub(crate) ranged: Option<(u8, u8)>,
-    /// The hand items' sheath types (0 none, 1 back 2H, 2 back staff, 3 hip, 4 shield); each picks
-    /// its arm's draw/stow clip, HipSheath 90 for types 3 and 7, else Sheath 89 (`0x611930`).
+    /// The hand items' `Item.dbc` `SheatheType` (0 none, 1 mainhand, 2 back, 3 hip, 4 shield).
+    /// Each picks its arm's draw/stow clip, HipSheath 90 for types 3 and 7, else Sheath 89
+    /// (`0x611930`).
     pub(crate) main_sheath: u8,
     pub(crate) off_sheath: u8,
     /// The ranged sheath type: it picks the draw clip (`0x6118a0`), but the stow is always

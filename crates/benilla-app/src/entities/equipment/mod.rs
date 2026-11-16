@@ -25,8 +25,13 @@ const HELD_SLOTS: usize = 3;
 /// The held items' equipment slots, which index the `PLAYER_VISIBLE_ITEM_*` blocks.
 const PLAYER_HELD_SLOTS: [u8; HELD_SLOTS] = [15, 16, 17];
 
-/// M2 attachment ids. A stowed item's is `0x47a070`'s: K - 1 for the mainhand and K for the
-/// offhand, K = 27 two-hander, 31 staff, 33 one-hander; 28 for a shield.
+/// M2 attachment ids, the 3.3.5 client's `GEOCOMPONENTLINKS` (`Common/ComponentCore/Types.h`):
+/// shield 0, hands 1/2, helm 11, the stowed mainhand/offhand 26/27, the stowed shield 28, the
+/// back pair 30/31 and the hip pair 32/33. `CCharacterComponent::GetSheatheLink` (`0x4E7940`)
+/// picks a stowed pair from `Item.dbc`'s `SheatheType`: 1 mainhand → 26/27, 2 back → 30/31,
+/// 3 hip → 32/33, 4 shield → 28, the mainhand taking the lower id; `AddHandItem` (`0x4EACD0`)
+/// hangs a drawn mainhand at 1, an offhand at 2 (a shield at 0) and a drawn ranged weapon at 1
+/// or 2 by inventory type. The donor's constant names below are kept; the values are 12340's.
 pub(crate) mod attach_id {
     /// Left forearm: a drawn shield.
     pub(crate) const SHIELD: u16 = 0;
