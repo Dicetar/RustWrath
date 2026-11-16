@@ -1,6 +1,6 @@
 # Wrath melee loop: target, auto-attack, kill
 
-Status: ready to merge
+Status: in progress
 Owner: OpenCode / DeepSeek V4.1 Flash
 Branch: fix/wrath-melee-loop
 Issue: none
@@ -140,4 +140,14 @@ The owner's live Northshire run is the first receiver/gameplay evidence.
 4. Pull a wolf and run until it evades/resets: the attack stops, combat ends, and the evade
    line/word appears without a stale target or combat state.
 
-Status: ready to merge
+Status: in progress
+
+
+## Verification state (2026-11-16)
+
+Not verified. One `cargo check -p benilla --features hotpatch` run reported an error in the
+`benilla-app` lib that was not captured before Cargo runs stopped, so the branch may not build.
+The `benilla-app` test build did compile and the app-side filter groups passed
+(`wrath_melee` 3, `wrath_spell_damage` 1, `wrath_kill_xp` 1); `benilla-protocol-wrath` was
+133 passed / 1 failed (`forced_speeds_carry_the_run_only_byte_and_all_nine_kinds`, untouched by
+this branch). Treat the branch as source review only until the owner's build.
