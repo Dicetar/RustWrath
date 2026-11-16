@@ -488,3 +488,41 @@ fn a_retargeted_anchor_follows_its_new_target() {
         "the plate must not follow its OLD target any more (310), got {plate_now}"
     );
 }
+
+/// A NaN offset (FrameXML's `FCFDockScrollFrame_JumpToTab` stores `0 * (0/0)` as the dock's
+/// horizontal scroll while its scroll frame is still 0 wide) leaves a NaN edge, which stays
+/// put. The fixpoint must see it as settled: a NaN that "changed" every round ran the round
+/// cap over the whole UI and re-ran it on every geometry read, hanging world entry.
+#[test]
+fn a_nan_offset_settles_instead_of_running_the_round_cap() {
+    let mut s = script();
+    s.set_screen_size(800.0, 600.0);
+    s.run(
+        r#"
+        dock = CreateFrame("Frame", "Dock", nil)
+        dock:SetWidth(1); dock:SetHeight(26)
+        dock:SetPoint("TOPLEFT", nil, "TOPLEFT", 0/0, 0)
+        tab = CreateFrame("Frame", "Tab", dock)
+        tab:SetWidth(82); tab:SetHeight(32)
+        tab:SetPoint("LEFT", dock, "LEFT", 0, 0)
+        tex = tab:CreateTexture("TabLeft")
+        tex:SetWidth(16); tex:SetHeight(32)
+        tex:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, 0)
+        "#,
+    )
+    .expect("setup");
+
+    s.resolve();
+    let (rounds, solved) = {
+        let m = s.lua().app_data_ref::<Model>().expect("model app_data");
+        assert!(
+            !m.warnings.iter().any(|w| w.contains("did not converge")),
+            "a NaN edge bailed as a cycle: {:?}",
+            m.warnings
+        );
+        (m.layout_rounds, m.layout_solves)
+    };
+    assert!(rounds <= 4, "a NaN edge must settle in a few rounds, took {rounds}");
+    s.resolve();
+    assert_eq!(solves(&s), solved, "a settled NaN layout must close the gate");
+}
