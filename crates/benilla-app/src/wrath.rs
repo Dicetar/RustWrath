@@ -9119,6 +9119,82 @@ fn wrath_quest_slots(raw: &crate::wrath_inventory::WrathFieldWindow) -> [QuestSl
     })
 }
 
+/// Project the 3.3.5 unit combat/stat/pet/channel block (`0..UNIT_END` = `0..148`) into 1.12
+/// `FIELD_UNIT_*` indices (`0..188`). Shared by both `Unit` and `Player` entities; only delivered
+/// dwords are copied.
+fn push_unit_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    pairs: &mut Vec<(u16, u32)>,
+) {
+    for (src, dst) in [
+        (6u16, 6u16), // UNIT_FIELD_CHARM low -> FIELD_UNIT_CHARM low
+        (7, 7),       // UNIT_FIELD_CHARM high -> FIELD_UNIT_CHARM high
+        (8, 8),       // UNIT_FIELD_SUMMON low -> FIELD_UNIT_SUMMON low
+        (9, 9),       // UNIT_FIELD_SUMMON high -> FIELD_UNIT_SUMMON high
+        (20, 20),     // UNIT_FIELD_CHANNEL_OBJECT low -> FIELD_UNIT_CHANNEL_OBJECT low
+        (21, 21),     // UNIT_FIELD_CHANNEL_OBJECT high -> FIELD_UNIT_CHANNEL_OBJECT high
+        (22, 144),    // UNIT_CHANNEL_SPELL -> FIELD_UNIT_CHANNEL_SPELL
+        (61, 125),    // UNIT_FIELD_AURASTATE -> FIELD_UNIT_AURASTATE
+        (62, 126),    // UNIT_FIELD_BASEATTACKTIME[0] (main hand) -> FIELD_UNIT_BASEATTACKTIME[0]
+        (63, 127),    // UNIT_FIELD_BASEATTACKTIME[1] (off hand) -> FIELD_UNIT_BASEATTACKTIME[1]
+        (64, 128),    // UNIT_FIELD_RANGEDATTACKTIME -> FIELD_UNIT_RANGEDATTACKTIME
+        (65, 129),    // UNIT_FIELD_BOUNDINGRADIUS -> FIELD_UNIT_BOUNDINGRADIUS
+        (66, 130),    // UNIT_FIELD_COMBATREACH -> FIELD_UNIT_COMBATREACH
+        (70, 134),    // UNIT_FIELD_MINDAMAGE -> FIELD_UNIT_MINDAMAGE
+        (71, 135),    // UNIT_FIELD_MAXDAMAGE -> FIELD_UNIT_MAXDAMAGE
+        (72, 136),    // UNIT_FIELD_MINOFFHANDDAMAGE -> FIELD_UNIT_MINOFFHANDDAMAGE
+        (73, 137),    // UNIT_FIELD_MAXOFFHANDDAMAGE -> FIELD_UNIT_MAXOFFHANDDAMAGE
+        (75, 139),    // UNIT_FIELD_PETNUMBER -> FIELD_UNIT_PETNUMBER
+        (76, 140),    // UNIT_FIELD_PET_NAME_TIMESTAMP -> FIELD_UNIT_PET_NAME_TIMESTAMP
+        (77, 141),    // UNIT_FIELD_PETEXPERIENCE -> FIELD_UNIT_PETEXPERIENCE
+        (78, 142),    // UNIT_FIELD_PETNEXTLEVELEXP -> FIELD_UNIT_PETNEXTLEVELEXP
+        (80, 145),    // UNIT_MOD_CAST_SPEED -> FIELD_UNIT_MOD_CAST_SPEED
+        (81, 146),    // UNIT_CREATED_BY_SPELL -> FIELD_UNIT_CREATED_BY_SPELL
+        (83, 148),    // UNIT_NPC_EMOTESTATE -> FIELD_UNIT_NPC_EMOTESTATE
+        (120, 162),   // UNIT_FIELD_BASE_MANA -> FIELD_UNIT_BASE_MANA
+        (121, 163),   // UNIT_FIELD_BASE_HEALTH -> FIELD_UNIT_BASE_HEALTH
+    ] {
+        if let Some(value) = raw.get(src) {
+            pairs.push((dst, value));
+        }
+    }
+    // UNIT_FIELD_NATIVEDISPLAYID (68) -> FIELD_UNIT_NATIVEDISPLAYID (132); when delivered and
+    // non-zero, overrides the fallback copy of UNIT_FIELD_DISPLAYID so shapeshifts preserve the
+    // native collision box and corpse display.
+    if let Some(native_display) = raw.get(68).filter(|&d| d != 0) {
+        pairs.push((132, native_display)); // UNIT_FIELD_NATIVEDISPLAYID -> FIELD_UNIT_NATIVEDISPLAYID
+    }
+    for i in 0..5u16 {
+        // UNIT_FIELD_STAT0..=UNIT_FIELD_STAT4 (84..89) -> FIELD_UNIT_STAT0..=4 (150..155)
+        if let Some(v) = raw.get(84 + i) {
+            pairs.push((150 + i, v));
+        }
+    }
+    for i in 0..7u16 {
+        // UNIT_FIELD_RESISTANCES[0..7] (99..106) -> FIELD_UNIT_RESISTANCES[0..7] (155..162)
+        if let Some(v) = raw.get(99 + i) {
+            pairs.push((155 + i, v));
+        }
+    }
+    // UNIT_FIELD_ATTACK_POWER (123) ..= UNIT_FIELD_MAXRANGEDDAMAGE (130) ->
+    // FIELD_UNIT_ATTACK_POWER (165) ..= FIELD_UNIT_MAXRANGEDDAMAGE (172)
+    for i in 0..8u16 {
+        if let Some(v) = raw.get(123 + i) {
+            pairs.push((165 + i, v));
+        }
+    }
+    for i in 0..7u16 {
+        // UNIT_FIELD_POWER_COST_MODIFIER[0..7] (131..138) -> FIELD_UNIT_POWER_COST_MODIFIER[0..7] (173..180)
+        if let Some(v) = raw.get(131 + i) {
+            pairs.push((173 + i, v));
+        }
+        // UNIT_FIELD_POWER_COST_MULTIPLIER[0..7] (138..145) -> FIELD_UNIT_POWER_COST_MULTIPLIER[0..7] (180..187)
+        if let Some(v) = raw.get(138 + i) {
+            pairs.push((180 + i, v));
+        }
+    }
+}
+
 /// The player's header (duel, flags, guild, `PLAYER_BYTES*`) and the unit combat/stat block
 /// carried in its `0..148` unit prefix, from 3.3.5 indices to the 1.12 slots the donor owners
 /// read. Only delivered dwords are copied.
@@ -9131,73 +9207,145 @@ fn push_player_unit_fields(
     // for every unit by `wrath_apply_world` from the parsed digest; they must not be re-mapped here
     // (3.3.5 36 is `UNIT_FIELD_MAXPOWER4`, not the 1.12 `BYTES_0` slot 36).
     for (src, dst) in [
-        (148u16, 188u16), // PLAYER_DUEL_ARBITER low
-        (149, 189),       // PLAYER_DUEL_ARBITER high
-        (150, benilla_protocol::field::FIELD_PLAYER_FLAGS),
-        (151, 191),       // PLAYER_GUILDID
-        (152, 192),       // PLAYER_GUILDRANK
-        (153, 193),       // PLAYER_BYTES: skin, face, hairStyle, hairColor
-        (154, 194),       // PLAYER_BYTES_2: facialHair, bank bags, rest
-        (155, 195),       // PLAYER_BYTES_3
-        (156, 196),       // PLAYER_DUEL_TEAM
-        (157, 197),       // PLAYER_GUILD_TIMESTAMP
+        (148u16, 188u16), // PLAYER_DUEL_ARBITER low -> FIELD_PLAYER_DUEL_ARBITER low
+        (149, 189),       // PLAYER_DUEL_ARBITER high -> FIELD_PLAYER_DUEL_ARBITER high
+        (150, benilla_protocol::field::FIELD_PLAYER_FLAGS), // PLAYER_FLAGS -> FIELD_PLAYER_FLAGS
+        (151, 191),       // PLAYER_GUILDID -> FIELD_PLAYER_GUILDID
+        (152, 192),       // PLAYER_GUILDRANK -> FIELD_PLAYER_GUILDRANK
+        (153, 193),       // PLAYER_BYTES -> FIELD_PLAYER_BYTES (skin, face, hairStyle, hairColor)
+        (154, 194),       // PLAYER_BYTES_2 -> FIELD_PLAYER_BYTES_2 (facialHair, bank bags, rest)
+        (155, 195),       // PLAYER_BYTES_3 -> FIELD_PLAYER_BYTES_3
+        (156, 196),       // PLAYER_DUEL_TEAM -> FIELD_PLAYER_DUEL_TEAM
+        (157, 197),       // PLAYER_GUILD_TIMESTAMP -> FIELD_PLAYER_GUILD_TIMESTAMP
     ] {
         if let Some(value) = raw.get(src) {
             pairs.push((dst, value));
         }
     }
-    // Unit combat & stat block carried in the player's `0..148` unit prefix:
-    // channel object/spell (`20..=22` -> `20..=21`, `144`), cast speed (`80` -> `145`),
-    // aura state (`61` -> `125`), attack times (`62..=64` -> `126..=128`),
-    // min/max/offhand damage (`70..=73` -> `134..=137`),
-    // base stats (`84..=88` -> `150..=154`), pos/neg stat buffs (`89..=98` -> `1177..=1186`),
-    // resistances (`99..=105` -> `155..=161`), resistance buffs (`106..=119` -> `1187..=1200`),
-    // base mana/health (`120..=121` -> `162..=163`), AP and ranged damage (`123..=130` -> `165..=172`).
-    for (src, dst) in [
-        (20u16, 20u16),
-        (21, 21),
-        (22, 144),
-        (61, 125), // UNIT_FIELD_AURASTATE
-        (62, 126), // UNIT_FIELD_BASEATTACKTIME main hand
-        (63, 127), // UNIT_FIELD_BASEATTACKTIME off hand
-        (64, 128), // UNIT_FIELD_RANGEDATTACKTIME
-        (70, 134), // UNIT_FIELD_MINDAMAGE
-        (71, 135), // UNIT_FIELD_MAXDAMAGE
-        (72, 136), // UNIT_FIELD_MINOFFHANDDAMAGE
-        (73, 137), // UNIT_FIELD_MAXOFFHANDDAMAGE
-        (80, 145),
-        (120, 162),
-        (121, 163),
-    ] {
-        if let Some(value) = raw.get(src) {
-            pairs.push((dst, value));
-        }
-    }
+    push_unit_fields(raw, pairs);
+    // In 3.3.5, positive/negative stat and resistance buff modifiers sit in the Unit block
+    // (`89..=98` and `106..=119`); in 1.12 they sit in the Player block (`1177..=1200`).
     for i in 0..5u16 {
-        if let Some(v) = raw.get(84 + i) {
-            pairs.push((150 + i, v));
-        }
+        // UNIT_FIELD_POSSTAT0..=4 (89..94) -> FIELD_PLAYER_POSSTAT0..=4 (1177..1182)
         if let Some(v) = raw.get(89 + i) {
             pairs.push((1177 + i, v));
         }
+        // UNIT_FIELD_NEGSTAT0..=4 (94..99) -> FIELD_PLAYER_NEGSTAT0..=4 (1182..1187)
         if let Some(v) = raw.get(94 + i) {
             pairs.push((1182 + i, v));
         }
     }
     for i in 0..7u16 {
-        if let Some(v) = raw.get(99 + i) {
-            pairs.push((155 + i, v));
-        }
+        // UNIT_FIELD_RESISTANCEBUFFMODSPOSITIVE[0..7] (106..113) -> FIELD_PLAYER_RESISTANCEBUFFMODSPOSITIVE[0..7] (1187..1194)
         if let Some(v) = raw.get(106 + i) {
             pairs.push((1187 + i, v));
         }
+        // UNIT_FIELD_RESISTANCEBUFFMODSNEGATIVE[0..7] (113..120) -> FIELD_PLAYER_RESISTANCEBUFFMODSNEGATIVE[0..7] (1194..1201)
         if let Some(v) = raw.get(113 + i) {
             pairs.push((1194 + i, v));
         }
     }
-    for i in 0..8u16 {
-        if let Some(v) = raw.get(123 + i) {
-            pairs.push((165 + i, v));
+}
+
+/// Project a 3.3.5 `GameObject` (`0..GAMEOBJECT_END` = `0..18`) and its movement position into the
+/// 1.12 `FIELD_GAMEOBJECT_*` descriptor (`0..26`).
+fn push_gameobject_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    position: Option<benilla_protocol_wrath::updates::PositionSnapshot>,
+    pairs: &mut Vec<(u16, u32)>,
+) {
+    for (src, dst) in [
+        (6u16, 6u16), // OBJECT_FIELD_CREATED_BY low -> FIELD_GAMEOBJECT_CREATED_BY low
+        (7, 7),       // OBJECT_FIELD_CREATED_BY high -> FIELD_GAMEOBJECT_CREATED_BY high
+        (8, 8),       // GAMEOBJECT_DISPLAYID -> FIELD_GAMEOBJECT_DISPLAYID
+        (9, 9),       // GAMEOBJECT_FLAGS -> FIELD_GAMEOBJECT_FLAGS
+        (10, 10),     // GAMEOBJECT_PARENTROTATION[0] -> FIELD_GAMEOBJECT_ROTATION[0]
+        (11, 11),     // GAMEOBJECT_PARENTROTATION[1] -> FIELD_GAMEOBJECT_ROTATION[1]
+        (12, 12),     // GAMEOBJECT_PARENTROTATION[2] -> FIELD_GAMEOBJECT_ROTATION[2]
+        (13, 13),     // GAMEOBJECT_PARENTROTATION[3] -> FIELD_GAMEOBJECT_ROTATION[3]
+        (15, 20),     // GAMEOBJECT_FACTION -> FIELD_GAMEOBJECT_FACTION
+        (16, 22),     // GAMEOBJECT_LEVEL -> FIELD_GAMEOBJECT_LEVEL
+    ] {
+        if let Some(value) = raw.get(src) {
+            pairs.push((dst, value));
+        }
+    }
+    // GAMEOBJECT_DYNAMIC (14, low u16 dynamic flags) -> FIELD_GAMEOBJECT_DYN_FLAGS (19)
+    if let Some(dyn_val) = raw.get(14) {
+        pairs.push((19, dyn_val & 0xffff));
+    }
+    // GAMEOBJECT_BYTES_1 (17: [state, type_id, art_kit, anim_progress]) -> split 1.12 fields
+    if let Some(bytes_1) = raw.get(17) {
+        pairs.push((14, bytes_1 & 0xff));          // GAMEOBJECT_BYTES_1[0] -> FIELD_GAMEOBJECT_STATE (14)
+        pairs.push((21, (bytes_1 >> 8) & 0xff));   // GAMEOBJECT_BYTES_1[1] -> FIELD_GAMEOBJECT_TYPE_ID (21)
+        pairs.push((23, (bytes_1 >> 16) & 0xff));  // GAMEOBJECT_BYTES_1[2] -> GAMEOBJECT_ARTKIT (23)
+        pairs.push((24, (bytes_1 >> 24) & 0xff));  // GAMEOBJECT_BYTES_1[3] -> GAMEOBJECT_ANIMPROGRESS (24)
+    }
+    if let Some(pos) = position {
+        pairs.push((15, pos.x.to_bits())); // movement.x -> FIELD_GAMEOBJECT_POS_X (15)
+        pairs.push((16, pos.y.to_bits())); // movement.y -> FIELD_GAMEOBJECT_POS_Y (16)
+        pairs.push((17, pos.z.to_bits())); // movement.z -> FIELD_GAMEOBJECT_POS_Z (17)
+        pairs.push((18, pos.o.to_bits())); // movement.o -> FIELD_GAMEOBJECT_FACING (18)
+    }
+}
+
+/// Project a 3.3.5 `DynamicObject` (`0..DYNAMICOBJECT_END` = `0..12`) and its movement position
+/// into the 1.12 `DYNAMICOBJECT_*` descriptor (`0..16`).
+fn push_dynamicobject_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    position: Option<benilla_protocol_wrath::updates::PositionSnapshot>,
+    pairs: &mut Vec<(u16, u32)>,
+) {
+    for (src, dst) in [
+        (6u16, 6u16), // DYNAMICOBJECT_CASTER low -> DYNAMICOBJECT_CASTER low
+        (7, 7),       // DYNAMICOBJECT_CASTER high -> DYNAMICOBJECT_CASTER high
+        (8, 8),       // DYNAMICOBJECT_BYTES -> DYNAMICOBJECT_BYTES
+        (9, 9),       // DYNAMICOBJECT_SPELLID -> DYNAMICOBJECT_SPELLID
+        (10, 10),     // DYNAMICOBJECT_RADIUS -> DYNAMICOBJECT_RADIUS
+    ] {
+        if let Some(value) = raw.get(src) {
+            pairs.push((dst, value));
+        }
+    }
+    if let Some(pos) = position {
+        pairs.push((11, pos.x.to_bits())); // movement.x -> DYNAMICOBJECT_POS_X (11)
+        pairs.push((12, pos.y.to_bits())); // movement.y -> DYNAMICOBJECT_POS_Y (12)
+        pairs.push((13, pos.z.to_bits())); // movement.z -> DYNAMICOBJECT_POS_Z (13)
+        pairs.push((14, pos.o.to_bits())); // movement.o -> DYNAMICOBJECT_FACING (14)
+    }
+}
+
+/// Project a 3.3.5 `Corpse` (`0..CORPSE_END` = `0..36`) and its movement position into the 1.12
+/// `CORPSE_FIELD_*` descriptor (`0..38`).
+fn push_corpse_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    position: Option<benilla_protocol_wrath::updates::PositionSnapshot>,
+    pairs: &mut Vec<(u16, u32)>,
+) {
+    if let Some(pos) = position {
+        pairs.push((8, pos.o.to_bits()));  // movement.o -> CORPSE_FIELD_FACING (8)
+        pairs.push((9, pos.x.to_bits()));  // movement.x -> CORPSE_FIELD_POS_X (9)
+        pairs.push((10, pos.y.to_bits())); // movement.y -> CORPSE_FIELD_POS_Y (10)
+        pairs.push((11, pos.z.to_bits())); // movement.z -> CORPSE_FIELD_POS_Z (11)
+    }
+    for (src, dst) in [
+        (6u16, 6u16), // CORPSE_FIELD_OWNER low -> CORPSE_FIELD_OWNER low
+        (7, 7),       // CORPSE_FIELD_OWNER high -> CORPSE_FIELD_OWNER high
+        (10, 12),     // CORPSE_FIELD_DISPLAY_ID -> CORPSE_FIELD_DISPLAY_ID
+        (30, 32),     // CORPSE_FIELD_BYTES_1 -> CORPSE_FIELD_BYTES_1
+        (31, 33),     // CORPSE_FIELD_BYTES_2 -> CORPSE_FIELD_BYTES_2
+        (32, 34),     // CORPSE_FIELD_GUILD -> CORPSE_FIELD_GUILD
+        (33, 35),     // CORPSE_FIELD_FLAGS -> CORPSE_FIELD_FLAGS
+        (34, 36),     // CORPSE_FIELD_DYNAMIC_FLAGS -> FIELD_CORPSE_DYNAMIC_FLAGS
+    ] {
+        if let Some(value) = raw.get(src) {
+            pairs.push((dst, value));
+        }
+    }
+    // CORPSE_FIELD_ITEM[0..19] (11..30) -> CORPSE_FIELD_ITEM[0..19] (13..32)
+    for i in 0..19u16 {
+        if let Some(value) = raw.get(11 + i) {
+            pairs.push((13 + i, value));
         }
     }
 }
@@ -9212,13 +9360,13 @@ fn push_player_inventory_fields(
 ) {
     // (3.3.5 base, 1.12 base, dwords copied)
     const BANDS: [(usize, u16, usize); 7] = [
-        (324, 486, 46), // equipment + four equipped bags
-        (370, 532, 32), // backpack, 16 slots
-        (402, 564, 48), // bank, first 24 of 28 slots
-        (458, 612, 12), // bank bags, first six of seven slots
-        (472, 624, 24), // vendor buyback, 12 slots
-        (496, 648, 64), // keyring, 32 slots
-        (624, 712, 2),  // farsight guid
+        (324, 486, 46), // PLAYER_FIELD_INV_SLOT_HEAD (324..370) -> FIELD_PLAYER_INV_SLOT_HEAD (486..532, 23 slots: 19 equip + 4 bags)
+        (370, 532, 32), // PLAYER_FIELD_PACK_SLOT_1 (370..402) -> FIELD_PLAYER_PACK_SLOT_1 (532..564, 16 slots)
+        (402, 564, 48), // PLAYER_FIELD_BANK_SLOT_1 (402..450) -> FIELD_PLAYER_BANK_SLOT_1 (564..612, first 24 of 28 slots)
+        (458, 612, 12), // PLAYER_FIELD_BANKBAG_SLOT_1 (458..470) -> FIELD_PLAYER_BANK_BAG_SLOT_1 (612..624, first 6 of 7 slots)
+        (472, 624, 24), // PLAYER_FIELD_VENDORBUYBACK_SLOT_1 (472..496) -> FIELD_PLAYER_VENDORBUYBACK_SLOT_1 (624..648, 12 slots)
+        (496, 648, 64), // PLAYER_FIELD_KEYRING_SLOT_1 (496..560) -> FIELD_PLAYER_KEYRING_SLOT_1 (648..712, 32 slots)
+        (624, 712, 2),  // PLAYER_FARSIGHT (624..626) -> FIELD_PLAYER_FARSIGHT (712..714)
     ];
     for (src, dst, count) in BANDS {
         for i in 0..count {
@@ -9250,9 +9398,9 @@ fn push_visible_item_fields(
         };
         let ench = raw.word_or_zero((src + 1) as u16);
         let dst = benilla_protocol::field::FIELD_PLAYER_VISIBLE_ITEM_1_CREATOR + 12 * slot;
-        pairs.push((dst + 2, entry));
-        pairs.push((dst + 3, ench & 0xffff));
-        pairs.push((dst + 4, ench >> 16));
+        pairs.push((dst + 2, entry));         // PLAYER_VISIBLE_ITEM_<slot>_ENTRYID -> FIELD_PLAYER_VISIBLE_ITEM_<slot>_0 (+2)
+        pairs.push((dst + 3, ench & 0xffff)); // PLAYER_VISIBLE_ITEM_<slot>_ENCHANTMENT low u16 -> FIELD_PLAYER_VISIBLE_ITEM_<slot>_0 (+3, perm)
+        pairs.push((dst + 4, ench >> 16));    // PLAYER_VISIBLE_ITEM_<slot>_ENCHANTMENT high u16 -> FIELD_PLAYER_VISIBLE_ITEM_<slot>_0 (+4, temp)
     }
 }
 
@@ -9270,12 +9418,15 @@ fn push_item_fields(
     container: bool,
     pairs: &mut Vec<(u16, u32)>,
 ) {
+    // ITEM_FIELD_OWNER (6..8), ITEM_FIELD_CONTAINED (8..10), ITEM_FIELD_CREATOR (10..12),
+    // ITEM_FIELD_GIFTCREATOR (12..14), ITEM_FIELD_STACK_COUNT (14), ITEM_FIELD_DURATION (15),
+    // ITEM_FIELD_SPELL_CHARGES (16..21), ITEM_FIELD_FLAGS (21) -> identical 1.12 ITEM_FIELD_* (6..=21).
     for src in 6..=21u16 {
         if let Some(value) = raw.get(src) {
             pairs.push((src, value));
         }
     }
-    // The seven donor enchant slots: Wrath 22..42, unchanged.
+    // ITEM_FIELD_ENCHANTMENT_1_1..=ITEM_FIELD_ENCHANTMENT_7_3 (22..43) -> FIELD_ITEM_ENCHANTMENT (22..43, 7 slots * 3 dwords).
     for i in 0..21u16 {
         if let Some(value) = raw.get(22 + i) {
             pairs.push((22 + i, value));
@@ -9283,15 +9434,22 @@ fn push_item_fields(
     }
     // Property seed, random properties id, durability and max durability. Donor 45 stays unwritten:
     // 1.12 spells it `ITEM_FIELD_ITEM_TEXT_ID`, which 3.3.5 carries on the item-text query instead.
-    for (src, dst) in [(58u16, 43u16), (59, 44), (60, 46), (61, 47)] {
+    for (src, dst) in [
+        (58u16, 43u16), // ITEM_FIELD_PROPERTY_SEED -> ITEM_FIELD_PROPERTY_SEED
+        (59, 44),       // ITEM_FIELD_RANDOM_PROPERTIES_ID -> ITEM_FIELD_RANDOM_PROPERTIES_ID
+        (60, 46),       // ITEM_FIELD_DURABILITY -> ITEM_FIELD_DURABILITY
+        (61, 47),       // ITEM_FIELD_MAXDURABILITY -> ITEM_FIELD_MAXDURABILITY
+    ] {
         if let Some(value) = raw.get(src) {
             pairs.push((dst, value));
         }
     }
     if container {
+        // CONTAINER_FIELD_NUM_SLOTS (64) -> FIELD_CONTAINER_NUM_SLOTS (48)
         if let Some(value) = raw.get(64) {
             pairs.push((48, value));
         }
+        // CONTAINER_FIELD_SLOT_1 (66..138, 36 slots * 2 dwords) -> FIELD_CONTAINER_SLOT_1 (50..122)
         for i in 0..36u16 {
             if let Some(value) = raw.get(66 + 2 * i) {
                 pairs.push((50 + 2 * i, value));
@@ -9643,7 +9801,9 @@ fn wrath_apply_world(world: &mut World) {
         // The 3.3.5 player window keeps fields whose 1.12 equivalent has no slot (combat
         // ratings, known titles, chosen title). The projection reads this component beside the
         // translated 1.12 descriptor rather than inventing 1.12 indices for them.
-        let player_raw = remote.player_fields.clone();
+        let player_raw = (remote.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
+            .then(|| remote.player_fields.clone())
+            .flatten();
         // One writer for the typed owner: the self player's delivered inventory window. The
         // donor projection below stays its existing 24/6/7 shape.
         if *guid == player_guid
@@ -9696,118 +9856,135 @@ fn wrath_apply_world(world: &mut World) {
             EntityKind::Corpse => ObjectType::Corpse,
             _ => ObjectType::Unit,
         };
-        let mut pairs = vec![(2u16, object_type_mask(object_type))];
+        let mut pairs = vec![(2u16, object_type_mask(object_type))]; // OBJECT_FIELD_TYPE (2) -> FIELD_OBJECT_TYPE (2)
         if let Some(entry) = remote.entry {
-            pairs.push((3, entry));
+            pairs.push((3, entry)); // OBJECT_FIELD_ENTRY (3) -> FIELD_OBJECT_ENTRY (3)
         }
         if let Some(scale) = remote.scale {
-            pairs.push((4, scale.to_bits()));
+            pairs.push((4, scale.to_bits())); // OBJECT_FIELD_SCALE_X (4) -> FIELD_OBJECT_SCALE_X (4)
         }
-        if let Some(health) = remote.health {
-            pairs.push((22, health));
-            pairs.push((28, remote.max_health.unwrap_or(health)));
-        } else if let Some(max_health) = remote.max_health {
-            pairs.push((28, max_health));
-        }
-        // Project all five 1.12 power slots (Mana, Rage, Focus, Energy, Happiness) for both
-        // Unit and Player entities so target/focus/pet power bars and rogue/cat/hunter energy
-        // and focus consumers see live values from `ObjectStore`.
         if matches!(kind, EntityKind::Unit | EntityKind::Player) {
+            if let Some(health) = remote.health {
+                pairs.push((22, health)); // UNIT_FIELD_HEALTH (24) -> FIELD_UNIT_HEALTH (22)
+                pairs.push((28, remote.max_health.unwrap_or(health))); // UNIT_FIELD_MAXHEALTH (32) -> FIELD_UNIT_MAXHEALTH (28)
+            } else if let Some(max_health) = remote.max_health {
+                pairs.push((28, max_health)); // UNIT_FIELD_MAXHEALTH (32) -> FIELD_UNIT_MAXHEALTH (28)
+            }
+            // Project all five 1.12 power slots (Mana, Rage, Focus, Energy, Happiness) for both
+            // Unit and Player entities so target/focus/pet power bars and rogue/cat/hunter energy
+            // and focus consumers see live values from `ObjectStore`.
             for i in 0..5usize {
                 if let Some(power) = remote.powers[i] {
-                    pairs.push((23 + i as u16, power));
+                    pairs.push((23 + i as u16, power)); // UNIT_FIELD_POWER1..=5 (25..=29) -> FIELD_UNIT_POWER1..=5 (23..=27)
                 }
                 if let Some(max_power) = remote.max_powers[i] {
-                    pairs.push((29 + i as u16, max_power));
+                    pairs.push((29 + i as u16, max_power)); // UNIT_FIELD_MAXPOWER1..=5 (33..=37) -> FIELD_UNIT_MAXPOWER1..=5 (29..=33)
                 }
             }
-        }
-        if let Some(level) = remote.level {
-            pairs.push((34, level));
-        }
-        if let Some(faction) = remote.faction {
-            pairs.push((35, faction));
-        }
-        if let Some(flags) = remote.unit_flags {
-            pairs.push((46, flags));
-        }
-        if let Some(mount) = remote.mount_display_id {
-            pairs.push((133, mount));
-        }
-        // 12340 moves `ShapeshiftForm` to `UNIT_FIELD_BYTES_2[3]` (`Unit_C.cpp:6652`) and shifts
-        // `VisFlags` to `UNIT_FIELD_BYTES_1[2]` (`Unit_C.cpp:5128`). Synthesize the 1.12
-        // `FIELD_UNIT_BYTES_1` (`138`: `[stand_state, pet_talents, shapeshift_form, vis_flags]`)
-        // and project `UNIT_FIELD_BYTES_2` onto `FIELD_UNIT_BYTES_2` (`164`: `[sheath_state, ...]`).
-        if remote.bytes_1.is_some() || remote.bytes_2.is_some() {
-            let b1 = remote.bytes_1.unwrap_or(0);
-            let b2 = remote.bytes_2.unwrap_or(0);
-            let vanilla_bytes_1 =
-                (b1 & 0x0000_ffff) | ((b2 >> 24) << 16) | (((b1 >> 16) & 0xff) << 24);
-            pairs.push((138, vanilla_bytes_1));
-        }
-        if let Some(bytes_2) = remote.bytes_2 {
-            pairs.push((164, bytes_2));
-        }
-        if let Some(flags) = remote.npc_flags {
-            pairs.push((147, vanilla_npc_flags(flags)));
-        }
-        if let Some(flags) = remote.dynamic_flags {
-            pairs.push((143, flags));
-        }
-        if let Some(display) = remote.display_id.filter(|&display| display != 0) {
-            pairs.push((131, display));
-            pairs.push((132, display));
-        } else if kind == EntityKind::Player {
-            // A self player's create mask can omit `UNIT_FIELD_DISPLAYID`; the race/sex body
-            // display is authoritative (`ChrRaces` cols 4/5), and both the glue preview and the
-            // reference's `InitDisplayIds` derive the body from it. Without this fallback the
-            // undelivered field reaches `live_display_id` as zero and no avatar is built.
+            if let Some(level) = remote.level {
+                pairs.push((34, level)); // UNIT_FIELD_LEVEL (54) -> FIELD_UNIT_LEVEL (34)
+            }
+            if let Some(faction) = remote.faction {
+                pairs.push((35, faction)); // UNIT_FIELD_FACTIONTEMPLATE (55) -> FIELD_UNIT_FACTIONTEMPLATE (35)
+            }
+            if let Some(flags) = remote.unit_flags {
+                pairs.push((46, flags)); // UNIT_FIELD_FLAGS (59) -> FIELD_UNIT_FLAGS (46)
+            }
+            if let Some(mount) = remote.mount_display_id {
+                pairs.push((133, mount)); // UNIT_FIELD_MOUNTDISPLAYID (69) -> FIELD_UNIT_MOUNTDISPLAYID (133)
+            }
+            // 12340 moves `ShapeshiftForm` to `UNIT_FIELD_BYTES_2[3]` (`Unit_C.cpp:6652`) and shifts
+            // `VisFlags` to `UNIT_FIELD_BYTES_1[2]` (`Unit_C.cpp:5128`). Synthesize the 1.12
+            // `FIELD_UNIT_BYTES_1` (`138`: `[stand_state, pet_talents, shapeshift_form, vis_flags]`)
+            // and project `UNIT_FIELD_BYTES_2` onto `FIELD_UNIT_BYTES_2` (`164`: `[sheath_state, ...]`).
+            if remote.bytes_1.is_some() || remote.bytes_2.is_some() {
+                let b1 = remote.bytes_1.unwrap_or(0);
+                let b2 = remote.bytes_2.unwrap_or(0);
+                let vanilla_bytes_1 =
+                    (b1 & 0x0000_ffff) | ((b2 >> 24) << 16) | (((b1 >> 16) & 0xff) << 24);
+                pairs.push((138, vanilla_bytes_1)); // UNIT_FIELD_BYTES_1 (74) + UNIT_FIELD_BYTES_2[3] (122) -> FIELD_UNIT_BYTES_1 (138)
+            }
+            if let Some(bytes_2) = remote.bytes_2 {
+                pairs.push((164, bytes_2)); // UNIT_FIELD_BYTES_2 (122) -> FIELD_UNIT_BYTES_2 (164)
+            }
+            if let Some(flags) = remote.npc_flags {
+                pairs.push((147, vanilla_npc_flags(flags))); // UNIT_NPC_FLAGS (82) -> FIELD_UNIT_NPC_FLAGS (147)
+            }
+            if let Some(flags) = remote.dynamic_flags {
+                pairs.push((143, flags)); // UNIT_DYNAMIC_FLAGS (79) -> FIELD_UNIT_DYNAMIC_FLAGS (143)
+            }
+            if let Some(display) = remote.display_id.filter(|&display| display != 0) {
+                pairs.push((131, display)); // UNIT_FIELD_DISPLAYID (67) -> FIELD_UNIT_DISPLAYID (131)
+                pairs.push((132, display)); // UNIT_FIELD_DISPLAYID (67) -> FIELD_UNIT_NATIVEDISPLAYID (132, fallback)
+            } else if kind == EntityKind::Player {
+                // A self player's create mask can omit `UNIT_FIELD_DISPLAYID`; the race/sex body
+                // display is authoritative (`ChrRaces` cols 4/5), and both the glue preview and the
+                // reference's `InitDisplayIds` derive the body from it. Without this fallback the
+                // undelivered field reaches `live_display_id` as zero and no avatar is built.
+                if let Some(bytes) = remote.bytes_0 {
+                    let race = (bytes & 0xff) as u8;
+                    let sex = ((bytes >> 16) & 0xff) as u8;
+                    if let Some(display) = world
+                        .get_resource::<crate::entities::CharCreate>()
+                        .and_then(|create| create.0.body_display(race, sex))
+                    {
+                        pairs.push((131, display));
+                        pairs.push((132, display));
+                        debug!(
+                            "wrath: player {guid:#x} has no delivered display id; using the ChrRaces body display (race {race}, sex {sex})",
+                            guid = remote.guid
+                        );
+                    }
+                }
+            }
             if let Some(bytes) = remote.bytes_0 {
-                let race = (bytes & 0xff) as u8;
-                let sex = ((bytes >> 16) & 0xff) as u8;
-                if let Some(display) = world
-                    .get_resource::<crate::entities::CharCreate>()
-                    .and_then(|create| create.0.body_display(race, sex))
-                {
-                    pairs.push((131, display));
-                    pairs.push((132, display));
-                    debug!(
-                        "wrath: player {guid:#x} has no delivered display id; using the ChrRaces body display (race {race}, sex {sex})",
-                        guid = remote.guid
-                    );
+                pairs.push((36, bytes)); // UNIT_FIELD_BYTES_0 (23) -> FIELD_UNIT_BYTES_0 (36)
+            }
+            if let Some(target) = remote.target {
+                pairs.push((16, target as u32));         // UNIT_FIELD_TARGET low (18) -> FIELD_UNIT_TARGET low (16)
+                pairs.push((17, (target >> 32) as u32)); // UNIT_FIELD_TARGET high (19) -> FIELD_UNIT_TARGET high (17)
+            }
+            // Project 12340 ownership guids onto the 1.12 descriptor slots the reaction, UI and minimap
+            // consumers read (`CHARMEDBY` 10/11, `SUMMONEDBY` 12/13, `CREATEDBY` 14/15). Without these
+            // a hunter pet streams in with no owner, so it reads as neutral/attackable even though the
+            // server refuses the swing.
+            if let Some(charmed_by) = remote.charmed_by {
+                pairs.push((10, charmed_by as u32));         // UNIT_FIELD_CHARMEDBY low (12) -> FIELD_UNIT_CHARMEDBY low (10)
+                pairs.push((11, (charmed_by >> 32) as u32)); // UNIT_FIELD_CHARMEDBY high (13) -> FIELD_UNIT_CHARMEDBY high (11)
+            }
+            if let Some(summoned_by) = remote.summoned_by {
+                pairs.push((12, summoned_by as u32));         // UNIT_FIELD_SUMMONEDBY low (14) -> FIELD_UNIT_SUMMONEDBY low (12)
+                pairs.push((13, (summoned_by >> 32) as u32)); // UNIT_FIELD_SUMMONEDBY high (15) -> FIELD_UNIT_SUMMONEDBY high (13)
+            }
+            if let Some(created_by) = remote.created_by {
+                pairs.push((14, created_by as u32));         // UNIT_FIELD_CREATEDBY low (16) -> FIELD_UNIT_CREATEDBY low (14)
+                pairs.push((15, (created_by >> 32) as u32)); // UNIT_FIELD_CREATEDBY high (17) -> FIELD_UNIT_CREATEDBY high (15)
+            }
+            if kind == EntityKind::Unit {
+                if let Some(raw) = remote.player_fields.as_ref() {
+                    push_unit_fields(raw, &mut pairs);
                 }
             }
-        }
-        if let Some(bytes) = remote.bytes_0 {
-            pairs.push((36, bytes));
-        }
-        if let Some(target) = remote.target {
-            pairs.push((16, target as u32));
-            pairs.push((17, (target >> 32) as u32));
-        }
-        // Project 12340 ownership guids onto the 1.12 descriptor slots the reaction, UI and minimap
-        // consumers read (`CHARMEDBY` 10/11, `SUMMONEDBY` 12/13, `CREATEDBY` 14/15). Without these
-        // a hunter pet streams in with no owner, so it reads as neutral/attackable even though the
-        // server refuses the swing.
-        if let Some(charmed_by) = remote.charmed_by {
-            pairs.push((10, charmed_by as u32));
-            pairs.push((11, (charmed_by >> 32) as u32));
-        }
-        if let Some(summoned_by) = remote.summoned_by {
-            pairs.push((12, summoned_by as u32));
-            pairs.push((13, (summoned_by >> 32) as u32));
-        }
-        if let Some(created_by) = remote.created_by {
-            pairs.push((14, created_by as u32));
-            pairs.push((15, (created_by >> 32) as u32));
+        } else if kind == EntityKind::GameObject {
+            if let Some(raw) = remote.player_fields.as_ref() {
+                push_gameobject_fields(raw, remote.position, &mut pairs);
+            }
+        } else if kind == EntityKind::DynamicObject {
+            if let Some(raw) = remote.player_fields.as_ref() {
+                push_dynamicobject_fields(raw, remote.position, &mut pairs);
+            }
+        } else if kind == EntityKind::Corpse {
+            if let Some(raw) = remote.player_fields.as_ref() {
+                push_corpse_fields(raw, remote.position, &mut pairs);
+            }
         }
         let mut wrath_slots: Option<WrathQuestSlots> = None;
         if kind == EntityKind::Player {
             if let Some(bytes) = remote.player_bytes {
-                pairs.push((193, bytes));
+                pairs.push((193, bytes)); // PLAYER_BYTES (153) -> FIELD_PLAYER_BYTES (193)
             }
             if let Some(bytes) = remote.player_bytes_2 {
-                pairs.push((194, bytes));
+                pairs.push((194, bytes)); // PLAYER_BYTES_2 (154) -> FIELD_PLAYER_BYTES_2 (194)
             }
             if let Some(raw) = remote.player_fields.as_ref() {
                 // 3.3.5 uses 148 as UNIT_END; 1.12 uses a different player layout. Map the
@@ -9824,9 +10001,9 @@ fn wrath_apply_world(world: &mut World) {
                         packed |= u32::from(*count) << (i * 6);
                     }
                     let dst = 198 + slot * 3;
-                    pairs.push((dst as u16, s.quest_id));
-                    pairs.push(((dst + 1) as u16, packed));
-                    pairs.push(((dst + 2) as u16, s.timer));
+                    pairs.push((dst as u16, s.quest_id));     // PLAYER_QUEST_LOG_<slot>_1 (158+5*slot) -> FIELD_PLAYER_QUEST_LOG_<slot>_1 (198+3*slot)
+                    pairs.push(((dst + 1) as u16, packed));   // PLAYER_QUEST_LOG_<slot>_2/3/4 -> FIELD_PLAYER_QUEST_LOG_<slot>_2 (packed counters + state)
+                    pairs.push(((dst + 2) as u16, s.timer));  // PLAYER_QUEST_LOG_<slot>_5 -> FIELD_PLAYER_QUEST_LOG_<slot>_3 (timer)
                 }
                 let max_level = raw.word_or_zero(benilla_protocol_wrath::fields::PLAYER_FIELD_MAX_LEVEL);
                 let daily_start = benilla_protocol_wrath::fields::PLAYER_FIELD_DAILY_QUESTS_1;
@@ -9838,13 +10015,13 @@ fn wrath_apply_world(world: &mut World) {
                 push_player_inventory_fields(raw, &mut pairs);
                 push_visible_item_fields(raw, &mut pairs);
                 if let Some(value) = raw.get(634) {
-                    pairs.push((716, value));
+                    pairs.push((716, value)); // PLAYER_XP (634) -> FIELD_PLAYER_XP (716)
                 }
                 if let Some(value) = raw.get(635) {
-                    pairs.push((717, value));
+                    pairs.push((717, value)); // PLAYER_NEXT_LEVEL_XP (635) -> FIELD_PLAYER_NEXT_LEVEL_XP (717)
                 }
-                // `PLAYER_SKILL_INFO_1_1` (`636..1020` -> `718..1102`, 128 * 3 dwords): identical
-                // 3-dword per skill line layout (`id | step`, `value | max`, `pos | neg`).
+                // `PLAYER_SKILL_INFO_1_1` (`636..1020` -> `FIELD_PLAYER_SKILL_INFO_1_1` `718..1102`, 128 * 3 dwords):
+                // identical 3-dword per skill line layout (`id | step`, `value | max`, `pos | neg`).
                 for i in 0..384u16 {
                     if let Some(v) = raw.get(636 + i) {
                         pairs.push((718 + i, v));
@@ -9852,51 +10029,59 @@ fn wrath_apply_world(world: &mut World) {
                 }
                 // Character points (talent/profession), creature/resource tracking, and block/dodge/parry/crit.
                 for (src, dst) in [
-                    (1020u16, 1102u16), // PLAYER_CHARACTER_POINTS1 (talents)
-                    (1021, 1103),       // PLAYER_CHARACTER_POINTS2 (professions)
-                    (1022, 1104),       // PLAYER_TRACK_CREATURES
-                    (1023, 1105),       // PLAYER_TRACK_RESOURCES
-                    (1024, 1106),       // PLAYER_BLOCK_PERCENTAGE
-                    (1025, 1107),       // PLAYER_DODGE_PERCENTAGE
-                    (1026, 1108),       // PLAYER_PARRY_PERCENTAGE
-                    (1029, 1109),       // PLAYER_CRIT_PERCENTAGE
-                    (1030, 1110),       // PLAYER_RANGED_CRIT_PERCENTAGE
+                    (1020u16, 1102u16), // PLAYER_CHARACTER_POINTS1 -> FIELD_PLAYER_CHARACTER_POINTS1 (talents)
+                    (1021, 1103),       // PLAYER_CHARACTER_POINTS2 -> FIELD_PLAYER_CHARACTER_POINTS2 (professions)
+                    (1022, 1104),       // PLAYER_TRACK_CREATURES -> FIELD_PLAYER_TRACK_CREATURES
+                    (1023, 1105),       // PLAYER_TRACK_RESOURCES -> FIELD_PLAYER_TRACK_RESOURCES
+                    (1024, 1106),       // PLAYER_BLOCK_PERCENTAGE -> FIELD_PLAYER_BLOCK_PERCENTAGE
+                    (1025, 1107),       // PLAYER_DODGE_PERCENTAGE -> FIELD_PLAYER_DODGE_PERCENTAGE
+                    (1026, 1108),       // PLAYER_PARRY_PERCENTAGE -> FIELD_PLAYER_PARRY_PERCENTAGE
+                    (1029, 1109),       // PLAYER_CRIT_PERCENTAGE -> FIELD_PLAYER_CRIT_PERCENTAGE
+                    (1030, 1110),       // PLAYER_RANGED_CRIT_PERCENTAGE -> FIELD_PLAYER_RANGED_CRIT_PERCENTAGE
                 ] {
                     if let Some(v) = raw.get(src) {
                         pairs.push((dst, v));
                     }
                 }
-                // First 64 words of `PLAYER_EXPLORED_ZONES_1` (`1041..1105` -> `1111..1175`).
+                // First 64 words of `PLAYER_EXPLORED_ZONES_1` (`1041..1105` -> `FIELD_PLAYER_EXPLORED_ZONES_1` `1111..1175`).
                 for i in 0..64u16 {
                     if let Some(v) = raw.get(1041 + i) {
                         pairs.push((1111 + i, v));
                     }
                 }
                 if let Some(value) = raw.get(benilla_protocol_wrath::fields::PLAYER_REST_STATE_EXPERIENCE) {
-                    pairs.push((1175, value));
+                    pairs.push((1175, value)); // PLAYER_REST_STATE_EXPERIENCE (1169) -> FIELD_PLAYER_REST_STATE_EXPERIENCE (1175)
                 }
                 if let Some(value) = raw.get(1170) {
-                    pairs.push((1176, value));
+                    pairs.push((1176, value)); // PLAYER_FIELD_COINAGE (1170) -> FIELD_PLAYER_FIELD_COINAGE (1176)
                 }
-                // `PLAYER_FIELD_MOD_DAMAGE_DONE_POS/NEG/PCT` (`1171..1192` -> `1201..1222`, 21 words).
+                // `PLAYER_FIELD_MOD_DAMAGE_DONE_POS/NEG/PCT` (`1171..1192` -> `FIELD_PLAYER_MOD_DAMAGE_DONE_POS/NEG/PCT` `1201..1222`, 21 words).
                 for i in 0..21u16 {
                     if let Some(v) = raw.get(1171 + i) {
                         pairs.push((1201 + i, v));
                     }
                 }
                 // `PLAYER_FIELD_BYTES` (combo points in byte 1), ammo, self-res, PvP medals,
-                // buyback prices/timestamps (`1201..1225` -> `1226..1250`), and watched faction (`1230` -> `1261`).
+                // buyback prices/timestamps (`1201..1225` -> `1226..1250`), honor counters (`1225..1230`),
+                // and watched faction (`1230` -> `1261`).
                 for (src, dst) in [
-                    (1197u16, 1222u16), // PLAYER_FIELD_BYTES
-                    (1198, 1223),       // PLAYER_AMMO_ID
-                    (1199, 1224),       // PLAYER_SELF_RES_SPELL
-                    (1200, 1225),       // PLAYER_FIELD_PVP_MEDALS
-                    (1230, 1261),       // PLAYER_FIELD_WATCHED_FACTION_INDEX
+                    (1197u16, 1222u16), // PLAYER_FIELD_BYTES -> FIELD_PLAYER_FIELD_BYTES
+                    (1198, 1223),       // PLAYER_AMMO_ID -> FIELD_PLAYER_AMMO_ID
+                    (1199, 1224),       // PLAYER_SELF_RES_SPELL -> FIELD_PLAYER_SELF_RES_SPELL
+                    (1200, 1225),       // PLAYER_FIELD_PVP_MEDALS -> FIELD_PLAYER_PVP_MEDALS
+                    (1225, 1250),       // PLAYER_FIELD_KILLS -> FIELD_PLAYER_FIELD_SESSION_KILLS
+                    (1226, 1254),       // PLAYER_FIELD_TODAY_CONTRIBUTION -> FIELD_PLAYER_FIELD_THIS_WEEK_CONTRIBUTION
+                    (1227, 1257),       // PLAYER_FIELD_YESTERDAY_CONTRIBUTION -> FIELD_PLAYER_FIELD_YESTERDAY_CONTRIBUTION
+                    (1228, 1255),       // PLAYER_FIELD_LIFETIME_HONORABLE_KILLS -> FIELD_PLAYER_FIELD_LIFETIME_HONORABLE_KILLS
+                    (1229, 1260),       // PLAYER_FIELD_BYTES2 -> FIELD_PLAYER_FIELD_BYTES2
+                    (1230, 1261),       // PLAYER_FIELD_WATCHED_FACTION_INDEX -> FIELD_PLAYER_WATCHED_FACTION_INDEX
                 ] {
                     if let Some(v) = raw.get(src) {
                         pairs.push((dst, v));
                     }
                 }
+                // PLAYER_FIELD_BUYBACK_PRICE_1 (1201..1213) -> FIELD_PLAYER_BUYBACK_PRICE_1 (1226..1238),
+                // PLAYER_FIELD_BUYBACK_TIMESTAMP_1 (1213..1225) -> FIELD_PLAYER_BUYBACK_TIMESTAMP_1 (1238..1250).
                 for i in 0..24u16 {
                     if let Some(v) = raw.get(1201 + i) {
                         pairs.push((1226 + i, v));
@@ -10664,6 +10849,26 @@ fn wrath_apply_world(world: &mut World) {
                     {
                         let entity = world.resource::<GuidIndex>().0.get(guid).copied();
                         if let Some(entity) = entity {
+                            let _ = world.write_message(FieldChanged {
+                                at: crate::lanes::stamp(),
+                                entity,
+                                guid: *guid,
+                                kind: *kind,
+                                index,
+                                old,
+                                new,
+                            });
+                        }
+                    }
+                }
+            } else if *kind == ObjectType::GameObject || *kind == ObjectType::Corpse {
+                for &(index, old, new) in moved {
+                    if (*kind == ObjectType::GameObject
+                        && index == benilla_protocol::field::FIELD_GAMEOBJECT_STATE)
+                        || (*kind == ObjectType::Corpse
+                            && index == benilla_protocol::field::FIELD_CORPSE_DYNAMIC_FLAGS)
+                    {
+                        if let Some(entity) = world.resource::<GuidIndex>().0.get(guid).copied() {
                             let _ = world.write_message(FieldChanged {
                                 at: crate::lanes::stamp(),
                                 entity,
@@ -12827,45 +13032,89 @@ fn build_digest(session: &SessionState) -> WorldDigest {
     use benilla_protocol_wrath::fields;
     let mut entities = BTreeMap::new();
     for (guid, entry) in session.world().iter() {
+        use benilla_protocol_wrath::updates::type_id;
         let observed = |index: u16| {
             entry
                 .field_delivered(index)
                 .then(|| entry.field(index))
                 .flatten()
         };
+        let is_unit = matches!(entry.type_id, type_id::UNIT | type_id::PLAYER);
         let mut powers = [None; 7];
         let mut max_powers = [None; 7];
-        for i in 0..7u16 {
-            powers[usize::from(i)] = observed(fields::UNIT_FIELD_POWER1 + i);
-            max_powers[usize::from(i)] = observed(fields::UNIT_FIELD_MAXPOWER1 + i);
+        if is_unit {
+            for i in 0..7u16 {
+                powers[usize::from(i)] = observed(fields::UNIT_FIELD_POWER1 + i);
+                max_powers[usize::from(i)] = observed(fields::UNIT_FIELD_MAXPOWER1 + i);
+            }
         }
+        let display_id = match entry.type_id {
+            type_id::UNIT | type_id::PLAYER => observed(fields::UNIT_FIELD_DISPLAYID),
+            type_id::GAMEOBJECT => observed(fields::GAMEOBJECT_DISPLAYID),
+            type_id::CORPSE => observed(fields::CORPSE_FIELD_DISPLAY_ID),
+            _ => None,
+        };
+        let window_end = match entry.type_id {
+            type_id::PLAYER => Some(crate::wrath_inventory::PLAYER_WINDOW_END),
+            type_id::UNIT => Some(fields::UNIT_END),
+            type_id::GAMEOBJECT => Some(fields::GAMEOBJECT_END),
+            type_id::DYNAMICOBJECT => Some(fields::DYNAMICOBJECT_END),
+            type_id::CORPSE => Some(fields::CORPSE_END),
+            _ => None,
+        };
         entities.insert(
             *guid,
             WrathEntity {
                 guid: *guid,
                 type_id: entry.type_id,
                 entry: observed(fields::OBJECT_FIELD_ENTRY),
-                display_id: observed(fields::UNIT_FIELD_DISPLAYID),
+                display_id,
                 scale: observed(fields::OBJECT_FIELD_SCALE_X).map(f32::from_bits),
-                health: observed(fields::UNIT_FIELD_HEALTH),
-                max_health: observed(fields::UNIT_FIELD_MAXHEALTH),
+                health: is_unit.then(|| observed(fields::UNIT_FIELD_HEALTH)).flatten(),
+                max_health: is_unit.then(|| observed(fields::UNIT_FIELD_MAXHEALTH)).flatten(),
                 powers,
                 max_powers,
-                level: observed(fields::UNIT_FIELD_LEVEL),
-                bytes_0: observed(fields::UNIT_FIELD_BYTES_0),
-                faction: observed(fields::UNIT_FIELD_FACTIONTEMPLATE),
-                unit_flags: observed(fields::UNIT_FIELD_FLAGS),
-                mount_display_id: observed(fields::UNIT_FIELD_MOUNTDISPLAYID),
-                bytes_1: observed(fields::UNIT_FIELD_BYTES_1),
-                bytes_2: observed(fields::UNIT_FIELD_BYTES_2),
-                npc_flags: observed(fields::UNIT_NPC_FLAGS),
-                dynamic_flags: observed(fields::UNIT_DYNAMIC_FLAGS),
-                target: entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0),
-                charmed_by: entry.self_guid(fields::UNIT_FIELD_CHARMEDBY).filter(|&guid| guid != 0),
-                summoned_by: entry.self_guid(fields::UNIT_FIELD_SUMMONEDBY).filter(|&guid| guid != 0),
-                created_by: entry.self_guid(fields::UNIT_FIELD_CREATEDBY).filter(|&guid| guid != 0),
-                player_bytes: observed(fields::PLAYER_BYTES),
-                player_bytes_2: observed(fields::PLAYER_BYTES_2),
+                level: is_unit.then(|| observed(fields::UNIT_FIELD_LEVEL)).flatten(),
+                bytes_0: is_unit.then(|| observed(fields::UNIT_FIELD_BYTES_0)).flatten(),
+                faction: is_unit.then(|| observed(fields::UNIT_FIELD_FACTIONTEMPLATE)).flatten(),
+                unit_flags: is_unit.then(|| observed(fields::UNIT_FIELD_FLAGS)).flatten(),
+                mount_display_id: is_unit
+                    .then(|| observed(fields::UNIT_FIELD_MOUNTDISPLAYID))
+                    .flatten(),
+                bytes_1: is_unit.then(|| observed(fields::UNIT_FIELD_BYTES_1)).flatten(),
+                bytes_2: is_unit.then(|| observed(fields::UNIT_FIELD_BYTES_2)).flatten(),
+                npc_flags: is_unit.then(|| observed(fields::UNIT_NPC_FLAGS)).flatten(),
+                dynamic_flags: is_unit.then(|| observed(fields::UNIT_DYNAMIC_FLAGS)).flatten(),
+                target: is_unit
+                    .then(|| entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0))
+                    .flatten(),
+                charmed_by: is_unit
+                    .then(|| {
+                        entry
+                            .self_guid(fields::UNIT_FIELD_CHARMEDBY)
+                            .filter(|&guid| guid != 0)
+                    })
+                    .flatten(),
+                summoned_by: is_unit
+                    .then(|| {
+                        entry
+                            .self_guid(fields::UNIT_FIELD_SUMMONEDBY)
+                            .filter(|&guid| guid != 0)
+                    })
+                    .flatten(),
+                created_by: is_unit
+                    .then(|| {
+                        entry
+                            .self_guid(fields::UNIT_FIELD_CREATEDBY)
+                            .filter(|&guid| guid != 0)
+                    })
+                    .flatten(),
+                player_bytes: (entry.type_id == type_id::PLAYER)
+                    .then(|| observed(fields::PLAYER_BYTES))
+                    .flatten(),
+                player_bytes_2: (entry.type_id == type_id::PLAYER)
+                    .then(|| observed(fields::PLAYER_BYTES_2))
+                    .flatten(),
                 position: entry.movement.as_ref().and_then(|m| m.position),
                 move_flags: entry.movement.as_ref().map(|m| m.move_flags),
                 create_spline: entry
@@ -12874,22 +13123,19 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                     .and_then(|m| m.create_spline.clone()),
                 attack_target: entry.movement.as_ref().and_then(|m| m.attack_target),
                 generation: entry.generation,
-                player_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::PLAYER)
-                    .then(|| {
-                        crate::wrath_inventory::WrathFieldWindow::from_fields(
-                            crate::wrath_inventory::PLAYER_WINDOW_END,
-                            |index| entry.field(index),
-                            |index| entry.field_delivered(index),
-                        )
-                    }),
+                player_fields: window_end.map(|end| {
+                    crate::wrath_inventory::WrathFieldWindow::from_fields(
+                        end,
+                        |index| entry.field(index),
+                        |index| entry.field_delivered(index),
+                    )
+                }),
                 item_fields: matches!(
                     entry.type_id,
-                    benilla_protocol_wrath::updates::type_id::ITEM
-                        | benilla_protocol_wrath::updates::type_id::CONTAINER
+                    type_id::ITEM | type_id::CONTAINER
                 )
                 .then(|| {
-                    let container = entry.type_id
-                        == benilla_protocol_wrath::updates::type_id::CONTAINER;
+                    let container = entry.type_id == type_id::CONTAINER;
                     crate::wrath_inventory::WrathFieldWindow::from_fields(
                         if container {
                             fields::CONTAINER_END
@@ -13126,6 +13372,93 @@ mod tests {
         assert_eq!(at(134), [7.0f32.to_bits()], "min damage");
         assert_eq!(at(137), [9.0f32.to_bits()], "max off-hand damage");
         assert_eq!(at(193), [0x0102_0304], "PLAYER_BYTES");
+    }
+
+    #[test]
+    fn wrath_non_unit_and_extended_unit_projections_match_donor_slots() {
+        use benilla_protocol_wrath::fields as w;
+        use benilla_protocol_wrath::updates::PositionSnapshot;
+
+        let pose = Some(PositionSnapshot {
+            x: 10.0,
+            y: 20.0,
+            z: 30.0,
+            o: 1.5,
+        });
+
+        // GameObject: display_id (8 -> 8), dynamic low u16 (14 -> 19), faction (15 -> 20),
+        // level (16 -> 22), and BYTES_1 [state, type_id, art_kit, anim_progress] (17 -> 14, 21, 23, 24).
+        let go_win = item_window(
+            &[
+                (w::GAMEOBJECT_DISPLAYID, 411),
+                (w::GAMEOBJECT_FLAGS, 0x04),
+                (w::GAMEOBJECT_DYNAMIC, 0xABCD_0001),
+                (w::GAMEOBJECT_FACTION, 35),
+                (w::GAMEOBJECT_LEVEL, 12),
+                (w::GAMEOBJECT_BYTES_1, 0x64_02_03_01),
+            ],
+            w::GAMEOBJECT_END,
+        );
+        let mut go_pairs = Vec::new();
+        push_gameobject_fields(&go_win, pose, &mut go_pairs);
+        let go_fields = ObjectFields::from_pairs(&go_pairs).into_created(ObjectType::GameObject);
+        assert_eq!(go_fields.gameobject_displayid(), Some(411));
+        assert_eq!(go_fields.gameobject_flags(), 0x04);
+        assert_eq!(go_fields.gameobject_dynamic_flags(), 0x0001);
+        assert_eq!(go_fields.gameobject_faction(), 35);
+        assert_eq!(go_fields.gameobject_level(), 12);
+        assert_eq!(go_fields.gameobject_state(), Some(1));
+        assert_eq!(go_fields.gameobject_type_id(), 3);
+
+        // DynamicObject: caster (6..=7 -> 6..=7), spell_id (9 -> 9), radius (10 -> 10), pos (11..=14).
+        let dyn_win = item_window(
+            &[
+                (w::DYNAMICOBJECT_CASTER, 0x44),
+                (w::DYNAMICOBJECT_CASTER + 1, 0),
+                (w::DYNAMICOBJECT_SPELLID, 2120),
+                (w::DYNAMICOBJECT_RADIUS, 8.0f32.to_bits()),
+            ],
+            w::DYNAMICOBJECT_END,
+        );
+        let mut dyn_pairs = Vec::new();
+        push_dynamicobject_fields(&dyn_win, pose, &mut dyn_pairs);
+        let dyn_fields =
+            ObjectFields::from_pairs(&dyn_pairs).into_created(ObjectType::DynamicObject);
+        assert_eq!(dyn_fields.dynamicobject_caster(), Some(0x44));
+        assert_eq!(dyn_fields.dynamicobject_spell_id(), Some(2120));
+        assert_eq!(dyn_fields.dynamicobject_radius(), Some(8.0));
+        assert_eq!(
+            dyn_fields.dynamicobject_position(),
+            Some(([10.0, 20.0, 30.0], 1.5))
+        );
+
+        // Corpse: owner (6..=7 -> 6..=7), display_id (10 -> 12), items (11..30 -> 13..32),
+        // bytes_1/2 (30..=31 -> 32..=33), guild (32 -> 34), flags (33 -> 35), dyn_flags (34 -> 36).
+        let corpse_win = item_window(
+            &[
+                (w::CORPSE_FIELD_OWNER, 0x77),
+                (w::CORPSE_FIELD_OWNER + 1, 0),
+                (w::CORPSE_FIELD_DISPLAY_ID, 50),
+                (w::CORPSE_FIELD_ITEM, 1234 | (5 << 24)),
+                (w::CORPSE_FIELD_BYTES_1, (1 << 8) | (1 << 16) | (2 << 24)),
+                (w::CORPSE_FIELD_BYTES_2, 0x0403_0201),
+                (w::CORPSE_FIELD_GUILD, 9),
+                (w::CORPSE_FIELD_FLAGS, 0x08),
+                (w::CORPSE_FIELD_DYNAMIC_FLAGS, 0x01),
+            ],
+            w::CORPSE_END,
+        );
+        let mut corpse_pairs = Vec::new();
+        push_corpse_fields(&corpse_win, pose, &mut corpse_pairs);
+        let corpse_fields =
+            ObjectFields::from_pairs(&corpse_pairs).into_created(ObjectType::Corpse);
+        assert_eq!(corpse_fields.corpse_owner(), Some(0x77));
+        assert_eq!(corpse_fields.corpse_display_id(), Some(50));
+        assert_eq!(corpse_fields.corpse_item(0), Some((1234, 5)));
+        assert_eq!(corpse_fields.corpse_race(), 1);
+        assert_eq!(corpse_fields.corpse_guild(), 9);
+        assert!(corpse_fields.corpse_hides_helm());
+        assert!(corpse_fields.corpse_lootable());
     }
 
     /// A window where only the supplied `(index, value)` dwords count as delivered.
