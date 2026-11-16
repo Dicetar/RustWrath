@@ -2007,6 +2007,9 @@ pub struct ItemPush {
     pub suffix_factor: u32,
     pub random_property_id: i32,
     pub count: u32,
+    /// The pushed item's count held after the push (`GetItemCount`, `PlayerStorage.cpp:4855`), the
+    /// field 12340's `CheckForQuestItemLoot` reads for the quest progress line.
+    pub total_count: u32,
 }
 
 /// One `SpellCastTargets` as 12340 writes it (`SpellCastTargets::Write`, `Spell.cpp:180-215`).
@@ -4889,6 +4892,7 @@ fn read_item_push(b: &[u8]) -> Result<ServerEvent> {
         suffix_factor: r.u32()?,
         random_property_id: r.i32()?,
         count: r.u32()?,
+        total_count: r.u32()?,
     }))
 }
 
