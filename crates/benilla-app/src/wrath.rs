@@ -1029,6 +1029,28 @@ pub struct WrathEntity {
     /// it, identical deltas included) and the packet-arrival wall clock. Presentation stamps a
     /// GetTime anchor once per revision; nothing here is a UI clock.
     pub aura_receipts: BTreeMap<u8, benilla_protocol_wrath::reducer::AuraReceipt>,
+    /// The 3.3.5 GameObject window; `None` for every other type. A GameObject's display id rides
+    /// in `display_id` (`GAMEOBJECT_DISPLAYID`), so the spawn and the live swap read one place.
+    pub gameobject: Option<WrathGameObjectFields>,
+}
+
+/// `CGGameObjectData` (12340): the delivered words of `OBJECT_END..GAMEOBJECT_END` that the 1.12
+/// GameObject descriptor has a slot for. The parent rotation (`10..13`) and path progress are not
+/// carried: 1.12 has no slot for either.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrathGameObjectFields {
+    /// `OBJECT_FIELD_CREATED_BY` (`6..7`).
+    pub created_by: Option<u64>,
+    /// `GAMEOBJECT_FLAGS` (`9`).
+    pub flags: Option<u32>,
+    /// `GAMEOBJECT_DYNAMIC` (`14`): `u16` dynamic flags, then `u16` path progress.
+    pub dynamic: Option<u32>,
+    /// `GAMEOBJECT_FACTION` (`15`).
+    pub faction: Option<u32>,
+    /// `GAMEOBJECT_LEVEL` (`16`).
+    pub level: Option<u32>,
+    /// `GAMEOBJECT_BYTES_1` (`17`): state, type, art kit, anim progress.
+    pub bytes_1: Option<u32>,
 }
 
 /// A full-world digest: the replicated world at one `state_revision`.
@@ -9781,7 +9803,34 @@ fn wrath_apply_world(world: &mut World) {
                 pairs.push((41 + 2 * slot, row.sheath & 0xff));
             }
         }
-        if let Some(display) = remote.display_id.filter(|&display| display != 0) {
+        if let Some(go) = remote.gameobject.as_ref() {
+            // `CGGameObjectData` onto the 1.12 GameObject descriptor: display 8, flags 9, state
+            // 14, dynamic flags 19, faction 20, type 21, level 22. Without these every 3.3.5
+            // GameObject spawned with no model and read as a type-0 door.
+            if let Some(created_by) = go.created_by {
+                pairs.push((6, created_by as u32));
+                pairs.push((7, (created_by >> 32) as u32));
+            }
+            if let Some(display) = remote.display_id {
+                pairs.push((8, display));
+            }
+            if let Some(flags) = go.flags {
+                pairs.push((9, flags));
+            }
+            if let Some(bytes) = go.bytes_1 {
+                pairs.push((14, bytes & 0xff));
+                pairs.push((21, (bytes >> 8) & 0xff));
+            }
+            if let Some(dynamic) = go.dynamic {
+                pairs.push((19, dynamic & 0xffff));
+            }
+            if let Some(faction) = go.faction {
+                pairs.push((20, faction));
+            }
+            if let Some(level) = go.level {
+                pairs.push((22, level));
+            }
+        } else if let Some(display) = remote.display_id.filter(|&display| display != 0) {
             pairs.push((131, display));
             pairs.push((132, display));
         } else if kind == EntityKind::Player {
@@ -12860,11 +12909,28 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 .then(|| entry.field(index))
                 .flatten()
         };
+        // Unit indices name other words on every other type: on a GameObject `CHARMEDBY`,
+        // `SUMMONEDBY` and `CREATEDBY` (`12..17`) are its parent rotation, dynamic, faction, level
+        // and bytes, which the projection would write into the 1.12 rotation, state and position.
+        let unit_layout = matches!(
+            entry.type_id,
+            benilla_protocol_wrath::updates::type_id::UNIT
+                | benilla_protocol_wrath::updates::type_id::PLAYER
+        );
+        let game_object = entry.type_id == benilla_protocol_wrath::updates::type_id::GAMEOBJECT;
+        let unit = |index: u16| if unit_layout { observed(index) } else { None };
+        let unit_guid = |index: u16| {
+            if unit_layout {
+                entry.self_guid(index).filter(|&guid| guid != 0)
+            } else {
+                None
+            }
+        };
         let mut powers = [None; 7];
         let mut max_powers = [None; 7];
         for i in 0..7u16 {
-            powers[usize::from(i)] = observed(fields::UNIT_FIELD_POWER1 + i);
-            max_powers[usize::from(i)] = observed(fields::UNIT_FIELD_MAXPOWER1 + i);
+            powers[usize::from(i)] = unit(fields::UNIT_FIELD_POWER1 + i);
+            max_powers[usize::from(i)] = unit(fields::UNIT_FIELD_MAXPOWER1 + i);
         }
         entities.insert(
             *guid,
@@ -12872,30 +12938,34 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 guid: *guid,
                 type_id: entry.type_id,
                 entry: observed(fields::OBJECT_FIELD_ENTRY),
-                display_id: observed(fields::UNIT_FIELD_DISPLAYID),
+                display_id: if game_object {
+                    observed(fields::GAMEOBJECT_DISPLAYID)
+                } else {
+                    unit(fields::UNIT_FIELD_DISPLAYID)
+                },
                 scale: observed(fields::OBJECT_FIELD_SCALE_X).map(f32::from_bits),
-                health: observed(fields::UNIT_FIELD_HEALTH),
-                max_health: observed(fields::UNIT_FIELD_MAXHEALTH),
+                health: unit(fields::UNIT_FIELD_HEALTH),
+                max_health: unit(fields::UNIT_FIELD_MAXHEALTH),
                 powers,
                 max_powers,
-                level: observed(fields::UNIT_FIELD_LEVEL),
-                bytes_0: observed(fields::UNIT_FIELD_BYTES_0),
-                faction: observed(fields::UNIT_FIELD_FACTIONTEMPLATE),
-                unit_flags: observed(fields::UNIT_FIELD_FLAGS),
-                mount_display_id: observed(fields::UNIT_FIELD_MOUNTDISPLAYID),
-                bytes_1: observed(fields::UNIT_FIELD_BYTES_1),
-                bytes_2: observed(fields::UNIT_FIELD_BYTES_2),
-                npc_flags: observed(fields::UNIT_NPC_FLAGS),
-                dynamic_flags: observed(fields::UNIT_DYNAMIC_FLAGS),
+                level: unit(fields::UNIT_FIELD_LEVEL),
+                bytes_0: unit(fields::UNIT_FIELD_BYTES_0),
+                faction: unit(fields::UNIT_FIELD_FACTIONTEMPLATE),
+                unit_flags: unit(fields::UNIT_FIELD_FLAGS),
+                mount_display_id: unit(fields::UNIT_FIELD_MOUNTDISPLAYID),
+                bytes_1: unit(fields::UNIT_FIELD_BYTES_1),
+                bytes_2: unit(fields::UNIT_FIELD_BYTES_2),
+                npc_flags: unit(fields::UNIT_NPC_FLAGS),
+                dynamic_flags: unit(fields::UNIT_DYNAMIC_FLAGS),
                 virtual_items: std::array::from_fn(|slot| {
-                    observed(fields::UNIT_VIRTUAL_ITEM_SLOT_ID + slot as u16)
+                    unit(fields::UNIT_VIRTUAL_ITEM_SLOT_ID + slot as u16)
                 }),
-                target: entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0),
-                charmed_by: entry.self_guid(fields::UNIT_FIELD_CHARMEDBY).filter(|&guid| guid != 0),
-                summoned_by: entry.self_guid(fields::UNIT_FIELD_SUMMONEDBY).filter(|&guid| guid != 0),
-                created_by: entry.self_guid(fields::UNIT_FIELD_CREATEDBY).filter(|&guid| guid != 0),
-                player_bytes: observed(fields::PLAYER_BYTES),
-                player_bytes_2: observed(fields::PLAYER_BYTES_2),
+                target: unit_guid(fields::UNIT_FIELD_TARGET),
+                charmed_by: unit_guid(fields::UNIT_FIELD_CHARMEDBY),
+                summoned_by: unit_guid(fields::UNIT_FIELD_SUMMONEDBY),
+                created_by: unit_guid(fields::UNIT_FIELD_CREATEDBY),
+                player_bytes: unit(fields::PLAYER_BYTES),
+                player_bytes_2: unit(fields::PLAYER_BYTES_2),
                 position: entry.movement.as_ref().and_then(|m| m.position),
                 move_flags: entry.movement.as_ref().map(|m| m.move_flags),
                 create_spline: entry
@@ -12933,6 +13003,16 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 auras: entry.auras.clone(),
                 auras_observed: entry.auras_observed,
                 aura_receipts: entry.aura_receipts.clone(),
+                gameobject: game_object.then(|| WrathGameObjectFields {
+                    created_by: entry
+                        .self_guid(fields::OBJECT_FIELD_CREATED_BY)
+                        .filter(|&guid| guid != 0),
+                    flags: observed(fields::GAMEOBJECT_FLAGS),
+                    dynamic: observed(fields::GAMEOBJECT_DYNAMIC),
+                    faction: observed(fields::GAMEOBJECT_FACTION),
+                    level: observed(fields::GAMEOBJECT_LEVEL),
+                    bytes_1: observed(fields::GAMEOBJECT_BYTES_1),
+                }),
             },
         );
     }
@@ -13600,6 +13680,7 @@ mod command_tap_tests {
                 auras: Vec::new(),
                 auras_observed: false,
                 aura_receipts: BTreeMap::new(),
+                gameobject: None,
             },
         );
         WrathWorldView {
