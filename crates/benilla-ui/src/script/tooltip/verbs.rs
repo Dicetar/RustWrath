@@ -1,6 +1,6 @@
 //! The GameTooltip Lua methods over the parent module's line pool, plus the content builders'.
 
-use mlua::{Lua, Table, Value, Variadic};
+use mlua::{Lua, ObjectLike, Table, Value, Variadic};
 
 use crate::script::binding_abi::{self, optional_string, string_arg};
 use crate::script::object::frame_handle_of;
