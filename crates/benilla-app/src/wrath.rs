@@ -300,6 +300,14 @@ pub(crate) struct SessionReplyStats {
     pub delivered: u64,
 }
 
+/// Evidence for an item that shows no name: an item template reply dropped before dispatch leaves
+/// its ask pending until the item cache's re-ask clock ([`crate::items::TEMPLATE_REASK_AFTER`]).
+fn warn_item_reply_dropped(event: &WrathSessionEvent, why: &str) {
+    if let SessionEvent::ItemTemplate { entry, .. } = &event.event {
+        warn!("wrath: item template reply for item {entry} dropped ({why})");
+    }
+}
+
 /// Bounded, non-blocking delivery queue for translated replies (R04).
 ///
 /// The producer never waits: `push` is O(1) for replies and a small scan for observations. The
@@ -339,11 +347,13 @@ impl SessionReplies {
         let class = session_class(&event.event);
         if self.retired && !event.force && class != SessionClass::Terminal {
             // The session that produced this reply has ended; its state can no longer be applied.
+            warn_item_reply_dropped(&event, "session retired");
             self.dropped += 1;
             return;
         }
         if let Some(scope) = self.adopted {
             if class != SessionClass::Terminal && SessionReplies::superseded(scope, &event) {
+                warn_item_reply_dropped(&event, "superseded scope");
                 self.dropped += 1;
                 return;
             }
@@ -388,6 +398,7 @@ impl SessionReplies {
         if self.fifo.len() >= WRATH_SESSION_REPLY_CAP {
             // Bound the memory first; the worker turns the sticky flag into a controlled
             // terminal through the existing error path rather than dropping silently.
+            warn_item_reply_dropped(&event, "reply backlog full");
             self.overflowed += 1;
             self.dropped += 1;
             return;
@@ -405,6 +416,9 @@ impl SessionReplies {
         if !self.terminal.is_empty() {
             let out: Vec<_> = self.terminal.drain(..).collect();
             self.dropped += self.fifo.len() as u64;
+            for event in &self.fifo {
+                warn_item_reply_dropped(event, "session ended");
+            }
             self.fifo.clear();
             self.throttled = false;
             self.delivered += out.len() as u64;
@@ -455,6 +469,9 @@ impl SessionReplies {
     /// A terminal is a session barrier: queued replies are stale once the session ends.
     fn clear_backlog(&mut self) {
         self.dropped += self.fifo.len() as u64;
+        for event in &self.fifo {
+            warn_item_reply_dropped(event, "backlog cleared");
+        }
         self.fifo.clear();
         self.throttled = false;
     }
@@ -474,8 +491,13 @@ impl SessionReplies {
         let scope = (session_epoch, world_generation);
         self.adopted = Some(scope);
         let before = self.fifo.len();
-        self.fifo
-            .retain(|queued| !SessionReplies::superseded(scope, queued));
+        self.fifo.retain(|queued| {
+            let stale = SessionReplies::superseded(scope, queued);
+            if stale {
+                warn_item_reply_dropped(queued, "superseded scope");
+            }
+            !stale
+        });
         let dropped = (before - self.fifo.len()) as u64;
         self.dropped += dropped;
         dropped
@@ -7559,6 +7581,11 @@ fn wrath_tap_commands(
                         "wrath: outbox full ({}), refusing client opcode {opcode:#x}",
                         WRATH_OUTBOX_CAP
                     );
+                    if opcode == benilla_protocol_wrath::opcode::CMSG_ITEM_QUERY_SINGLE {
+                        // The ask stays pending until the item cache's re-ask clock runs out.
+                        let item = payload.get(..4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                        warn!("wrath: item template ask for item {item:?} dropped (outbox full)");
+                    }
                     if let Some(receipt) = receipt.as_ref() {
                         receipt.report(crate::net::CommandDelivery::Rejected(
                             crate::net::CommandRefusal::OutboxFull,
@@ -12531,6 +12558,19 @@ pub fn run_session_with_cancel(
                                     push_session_event(&events_out, &session, event);
                                 }
                             }
+                        }
+                        Err(e) if p.opcode
+                            == benilla_protocol_wrath::opcode::SMSG_ITEM_QUERY_SINGLE_RESPONSE =>
+                        {
+                            // The ask stays pending until the item cache's re-ask clock runs out.
+                            let item = p
+                                .payload
+                                .get(..4)
+                                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0x7FFF_FFFF);
+                            warn!(
+                                "wrath: dropped undecodable item template reply for item {item:?} ({} bytes): {e}",
+                                p.payload.len()
+                            );
                         }
                         Err(e) => {
                             debug!("wrath: ignored malformed 0x{:X} gameplay reply: {e}", p.opcode);

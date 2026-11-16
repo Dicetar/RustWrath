@@ -1458,7 +1458,10 @@ fn feed_loot(mut vm: VmWith<(LootSteps<'static, 'static>, ())>, reads: LootReads
             return;
         }
         script.set_loot_type(loot.window.loot_type);
-        let snap = reads.view(&loot.window, Ask::Read, script.target());
+        // Deviation: the reference's `GetLootSlotInfo` only reads (`0x00588570`); a row shown
+        // without its record asks here, so one whose answer went nowhere is asked again on the
+        // item cache's clock ([`crate::items::TEMPLATE_REASK_AFTER`]) and repaints when it lands.
+        let snap = reads.view(&loot.window, Ask::New(&reads.commands), script.target());
         show(script, snap);
     });
 }
