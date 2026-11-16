@@ -1560,6 +1560,8 @@ impl UiScript {
         let held: Vec<crate::widget::FrameHandle> =
             model.mouse_down_on.values().copied().flatten().collect();
         model.mouse_down_on.clear();
+        // No release will be fed, so nothing counts as held for `IsMouseButtonDown` either.
+        model.buttons_held.clear();
         // Every held button gets the release edge never fed (`0x7793de`), else it stays pushed.
         for h in held {
             button::edge(&mut model, h, crate::widget::ButtonState::on_mouse_up);
