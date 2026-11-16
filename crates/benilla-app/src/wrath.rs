@@ -984,6 +984,9 @@ pub struct WrathEntity {
     pub bytes_2: Option<u32>,
     pub npc_flags: Option<u32>,
     pub dynamic_flags: Option<u32>,
+    /// `UNIT_VIRTUAL_ITEM_SLOT_ID + slot` (main hand, off hand, ranged): the item ids a creature
+    /// holds, which 12340 resolves through `Item.dbc`; absent until delivered.
+    pub virtual_items: [Option<u32>; 3],
     /// `UNIT_FIELD_TARGET`; absent when the reducer has not observed both GUID words.
     pub target: Option<u64>,
     /// `UNIT_FIELD_CHARMEDBY`: whoever is charming this unit; feeds ownership/reaction consumers.
@@ -9754,6 +9757,30 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(flags) = remote.dynamic_flags {
             pairs.push((143, flags));
         }
+        // 12340 sends a creature's weapons as item ids (`UNIT_VIRTUAL_ITEM_SLOT_ID`) and looks each
+        // up in `Item.dbc` on create and change (`CGUnit_C::OnVirtualItemChanged`); 1.12 carries
+        // the resolved display (`37 + slot`), the class/subclass/material/inventory-type bytes
+        // (`40 + 2*slot`) and the sheath (`41 + 2*slot`). A missing row is all zeros there, an
+        // empty hand. Players arm from their visible-item fields instead.
+        if kind == EntityKind::Unit {
+            let records = world.get_resource::<crate::ui_items::ItemRecords>();
+            for (slot, id) in remote.virtual_items.iter().enumerate() {
+                let Some(id) = *id else { continue };
+                let row = records
+                    .and_then(|records| records.0.get(id))
+                    .unwrap_or_default();
+                let slot = slot as u16;
+                pairs.push((37 + slot, row.display));
+                pairs.push((
+                    40 + 2 * slot,
+                    (row.class & 0xff)
+                        | (row.subclass & 0xff) << 8
+                        | (row.material & 0xff) << 16
+                        | (row.inventory_type & 0xff) << 24,
+                ));
+                pairs.push((41 + 2 * slot, row.sheath & 0xff));
+            }
+        }
         if let Some(display) = remote.display_id.filter(|&display| display != 0) {
             pairs.push((131, display));
             pairs.push((132, display));
@@ -12860,6 +12887,9 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 bytes_2: observed(fields::UNIT_FIELD_BYTES_2),
                 npc_flags: observed(fields::UNIT_NPC_FLAGS),
                 dynamic_flags: observed(fields::UNIT_DYNAMIC_FLAGS),
+                virtual_items: std::array::from_fn(|slot| {
+                    observed(fields::UNIT_VIRTUAL_ITEM_SLOT_ID + slot as u16)
+                }),
                 target: entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0),
                 charmed_by: entry.self_guid(fields::UNIT_FIELD_CHARMEDBY).filter(|&guid| guid != 0),
                 summoned_by: entry.self_guid(fields::UNIT_FIELD_SUMMONEDBY).filter(|&guid| guid != 0),
@@ -13553,6 +13583,7 @@ mod command_tap_tests {
                 bytes_2: None,
                 npc_flags: None,
                 dynamic_flags: None,
+                virtual_items: [None; 3],
                 target: None,
                 charmed_by: None,
                 summoned_by: None,

@@ -1385,6 +1385,11 @@ pub(crate) struct ItemBagFamilies(pub(crate) benilla_formats::ItemBagFamilyCatal
 #[derive(Resource)]
 pub(crate) struct ItemClasses(pub(crate) benilla_formats::ItemClassCatalog);
 
+/// `Item.dbc`: an item id's class, subclass, material, display, inventory type and sheath, which
+/// 12340 reads to arm a creature from its `UNIT_VIRTUAL_ITEM_SLOT_ID` words.
+#[derive(Resource)]
+pub(crate) struct ItemRecords(pub(crate) benilla_formats::ItemRecordCatalog);
+
 /// Startup: the item-tooltip DBCs; one that fails to load leaves its resource absent.
 fn load_item_dbcs(mut commands: Commands, world_assets: Option<Res<benilla_assets::WorldAssets>>) {
     use benilla_assets::LockRecover;
@@ -1429,6 +1434,13 @@ fn load_item_dbcs(mut commands: Commands, world_assets: Option<Res<benilla_asset
             commands.insert_resource(ItemBagFamilies(cat));
         }
         Err(e) => warn!("ui_items: ItemBagFamily.dbc failed to load: {e:#}"),
+    }
+    match benilla_formats::load_item_record_catalog(&mut chain) {
+        Ok(cat) => {
+            info!("ui_items: Item.dbc loaded ({} items)", cat.len());
+            commands.insert_resource(ItemRecords(cat));
+        }
+        Err(e) => warn!("ui_items: Item.dbc failed to load: {e:#}"),
     }
 }
 
