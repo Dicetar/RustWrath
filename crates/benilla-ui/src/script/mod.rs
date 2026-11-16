@@ -164,6 +164,7 @@ mod measure;
 mod merchant;
 mod messageframe;
 mod minimap;
+pub mod minimap_tracking;
 mod movieframe;
 pub mod nameplate;
 pub use nameplate::{PlateBitWrites, PlateGeometry, PlateState, PLATE_BIT_ENEMY, PLATE_BIT_FRIEND};

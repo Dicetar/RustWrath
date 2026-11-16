@@ -491,7 +491,8 @@ pub(crate) struct RegionData {
     /// flag scales the drawn rect by the coordinates' spans (`0x770570`, the extract's
     /// `modified_rect`).
     pub(crate) tex_coord_modifies_rect: bool,
-    /// Rotation about the centre, radians counterclockwise; always 0: 1.12 has no Texture setter.
+    /// Rotation about the centre, radians counterclockwise: 3.3.5's Texture `SetRotation`; always
+    /// 0 under 1.12, which has no Texture setter.
     pub(crate) rotation: f32,
     /// The font object this FontString follows (a FontString's `+0xd0`), a live link written only
     /// by [`script::font::link_region`](super::font::link_region): the font's groups land below

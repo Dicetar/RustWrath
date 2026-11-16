@@ -9088,6 +9088,12 @@ pub(crate) struct WrathQuestSlots(
 #[derive(Component, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WrathPlayerRaw(pub(crate) crate::wrath_inventory::WrathFieldWindow);
 
+/// A unit's raw 3.3.5 `UNIT_NPC_FLAGS`, beside the store's 1.12 projection, which
+/// [`vanilla_npc_flags`] folds the vendor kinds into one bit of. The minimap's town-service
+/// tracking (`minimapTrackedInfo`) matches the 3.3.5 bits.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct WrathNpcFlags(pub(crate) u32);
+
 /// Map 12340's `PLAYER_QUEST_LOG_*` block: id, state, two count dwords (four 16-bit counts) and
 /// the deadline, five dwords a slot for twenty-five slots.
 fn wrath_quest_slots(raw: &crate::wrath_inventory::WrathFieldWindow) -> [QuestSlotView; QUEST_LOG_SLOTS] {
@@ -10034,6 +10040,9 @@ fn wrath_apply_world(world: &mut World) {
                 if let Some(raw) = player_raw {
                     world.entity_mut(entity).insert(WrathPlayerRaw(raw));
                 }
+                if let Some(flags) = remote.npc_flags {
+                    world.entity_mut(entity).insert(WrathNpcFlags(flags));
+                }
                 if quest_slots_changed && *guid == player_guid {
                     // The same two signals the 1.12 values block raises: the rebuild notice and
                     // the event the stock log frame listens for.
@@ -10319,6 +10328,9 @@ fn wrath_apply_world(world: &mut World) {
                 }
                 if let Some(raw) = player_raw {
                     entity.insert(WrathPlayerRaw(raw));
+                }
+                if let Some(flags) = remote.npc_flags {
+                    entity.insert(WrathNpcFlags(flags));
                 }
                 if *guid == player_guid {
                     entity.insert((

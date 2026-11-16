@@ -1072,18 +1072,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // `GetNumTrackingTypes`/`GetTrackingInfo` (`Minimap.lua:427`, `:430`): the tracking types come
-    // from the player's known tracking spells (aura TRACK_CREATURES/TRACK_RESOURCES); the host has
-    // not pushed those masks with the spellbook yet, so the catalogue the dropdown enumerates is
-    // the empty one a character without tracking spells sees.
-    lua.globals().set(
-        "GetNumTrackingTypes",
-        lua.create_function(|_, ()| Ok(0))?,
-    )?;
-    lua.globals().set(
-        "GetTrackingInfo",
-        lua.create_function(|_, _: mlua::MultiValue| Ok(mlua::MultiValue::new()))?,
-    )?;
+    // `GetNumTrackingTypes`/`GetTrackingInfo`/`SetTracking` (`Minimap.lua:427`, `:430`, `:421`):
+    // the tracking spells, then the class's town-service rows.
+    super::minimap_tracking::install(lua)?;
 
     // `GetWorldPVPQueueStatus(index)` (`BattlefieldFrame.lua:696`): the world-PvP queue's state per
     // slot, `"none"`/`"queued"`/`"confirm"`. benilla has no world-PvP queue, so every slot answers

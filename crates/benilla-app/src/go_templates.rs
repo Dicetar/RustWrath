@@ -21,6 +21,9 @@ pub(crate) struct LockTypes(pub(crate) LockTypeCatalog);
 /// A cached GameObject template, as the interact routing and the hover tooltip need it.
 #[derive(Clone)]
 pub(crate) struct GoTemplate {
+    /// The query response's `GAMEOBJECT_TYPE` (19 mailbox); the Wrath feed's store carries no
+    /// type field, so the minimap's mailbox tracking reads it here.
+    pub(crate) type_id: u32,
     /// The `Lock.dbc` id; `0` is no lock.
     pub(crate) lock_id: u32,
     /// The hover tooltip's first line.
@@ -232,6 +235,7 @@ impl GameObjectTemplates {
         self.templates.insert(
             entry,
             GoTemplate {
+                type_id,
                 lock_id,
                 name,
                 highlight_column,

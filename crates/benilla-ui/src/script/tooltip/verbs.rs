@@ -270,9 +270,26 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
+    // SetTracking() (12340 `Script_TooltipSetTracking`), the 3.3.5 tracking button's hover: the
+    // active menu row's name, else the tracking spell's aura tooltip, else
+    // `MINIMAP_TRACKING_TOOLTIP_NONE`, as a title line.
     m.set(
         "SetTracking",
-        lua.create_function(|_lua, (_this, _id): (Table, mlua::Value)| Ok(()))?,
+        lua.create_function(|lua, (this, _rest): (Table, mlua::MultiValue)| {
+            let (info, spell) = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                (
+                    crate::script::minimap_tracking::active_info(&model),
+                    model.tracking.as_ref().is_some_and(|t| t.spell_id != 0),
+                )
+            };
+            if info.is_none() && spell {
+                return this.call_method::<()>("SetTrackingSpell", ());
+            }
+            let key = info.map_or("MINIMAP_TRACKING_TOOLTIP_NONE", |t| t.name);
+            let text = crate::script::glue_core::global_text(lua, key);
+            this.call_method::<()>("SetText", text)
+        })?,
     )?;
     m.set(
         "SetLFGDungeonReward",

@@ -574,6 +574,9 @@ pub(crate) struct Model {
     pub(crate) unit_guids: super::UnitGuids,
     /// The player's active tracking aura, behind `GetTrackingTexture`.
     pub(crate) tracking: Option<super::aura::TrackingState>,
+    /// The spellbook's tracking spells in book order, heading the 3.3.5 tracking menu
+    /// ([`super::minimap_tracking`]).
+    pub(crate) tracking_spells: Vec<u32>,
     /// What waits for the host, in the order made: the calls that touch the selection, the cast
     /// or the targeting cursor made while it was out, and the handlers an engine step fired then
     /// ([`super::host::holding`]), for it to run as soon as it is back.
@@ -1733,6 +1736,7 @@ impl Model {
             unit_auras: HashMap::new(),
             unit_guids: Default::default(),
             tracking: None,
+            tracking_spells: Vec::new(),
             script_calls: Vec::new(),
             parked: HashMap::new(),
             next_parked: 0,
