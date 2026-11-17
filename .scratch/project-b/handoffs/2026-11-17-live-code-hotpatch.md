@@ -45,8 +45,13 @@ wants any code fix applied to the running client.
 Run 44150560624 (156c6c0c): fmt fails on the same 415-file set as `main` 78166894 (no file new
 on this branch), which stops the Linux job before clippy and the live-code step. Windows: compiles;
 0 new failures (the same 53 failing tests as `main` run 44120374606); both new tests pass. The
-live-code step now runs even after an earlier gate fails; see the next run for the feature's first
-compile.
+live-code step now runs even after an earlier gate fails.
+
+Run 44158383817 (007cc798): the live-code clippy step compiled `subsecond` 0.7.10,
+`dioxus-devtools` 0.7.10 and `bevy_ecs`/`bevy_app` 0.18.1 with hotpatching, then stopped on 15
+clippy errors in `benilla-formats` (lint debt on `main` under the toolchain's newer clippy; no
+file this branch touches), before `benilla-app`. The step is now `cargo check`. The `dx` to
+install is 0.7.10.
 
 ## Unverified
 

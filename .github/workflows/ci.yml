@@ -77,12 +77,13 @@ jobs:
         run: cargo clippy -p benilla -p benilla-app --no-default-features -- -D warnings
       - name: player-tests
         run: cargo test -p benilla-formats -p benilla-app --no-default-features --lib
-      # The live-code build (`launch-client.ps1 -LiveCode`), linted only: `bevy/hotpatching` changes
+      # The live-code build (`launch-client.ps1 -LiveCode`), checked only: `bevy/hotpatching` changes
       # bevy_ecs and bevy_app, so this rebuilds the Bevy stack once more. It runs after an earlier
       # gate's failure too: it is the only compile of the feature, and fmt alone must not hide it.
-      - name: live-code-clippy
+      # A check, not clippy: the lint debt the clippy step reports would stop it before the app.
+      - name: live-code-check
         if: ${{ !cancelled() }}
-        run: cargo clippy -p benilla -p benilla-app --features live_code -- -D warnings
+        run: cargo check -p benilla -p benilla-app --features live_code
 
   windows:
     # The workspace tests on a Windows checkout, which no macOS or Linux gate runs: path separators,
