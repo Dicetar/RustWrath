@@ -4,7 +4,7 @@ Source implementation in `content.rs` and `content_allocation.rs`, under the act
 
 ## Existing owners
 
-The adapter follows the inspected `D:/WOW/wm-project/src/wm/items/models.py` ManagedItemDraft/ItemStatLine, item validator/publisher, workbench DraftEnvelope, reserved/models.py and ReservedSlotDbAllocator. The native field meanings and column types were inspected in the BridgeLab AzerothCore ItemTemplate.h and base db_world/item_template.sql. No WM/server source is changed and no allocator/publisher is implemented here.
+The adapter follows the inspected `D:/Projects/wow/server/wm-project/src/wm/items/models.py` ManagedItemDraft/ItemStatLine, item validator/publisher, workbench DraftEnvelope, reserved/models.py and ReservedSlotDbAllocator. The native field meanings and column types were inspected in the BridgeLab AzerothCore ItemTemplate.h and base db_world/item_template.sql. No WM/server source is changed and no allocator/publisher is implemented here.
 
 ## Item plan and conversion policy
 
