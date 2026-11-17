@@ -3500,6 +3500,64 @@ fn vanilla_target_mask(mask: u32) -> u16 {
     vanilla
 }
 
+/// 12340's melee `HitInfo` onto the 1.12 seam's bit layout. The bit positions moved between the
+/// builds: 12340's 0x20/0x40 absorb, 0x80/0x100 resist, 0x200 crit, 0x2000 block,
+/// 0x10000/0x20000 glancing/crushing, 0x40000 no-animation and 0x200000 swing-no-hit-sound are
+/// the 1.12 seam's 0x20, 0x40, 0x80, 0x800, 0x4000, 0x8000, 0x10000 and 0x80000. 12340's
+/// 0x4000/0x8000 words are not glancing/crushing, and its 0x800000 rage-gain bit has no 1.12
+/// word, so all three are dropped explicitly rather than leaking into the 1.12 consumers as false
+/// outcomes.
+fn vanilla_hit_info(wrath: u32) -> u32 {
+    const AFFECTS_VICTIM: u32 = 0x0000_0002;
+    const OFFHAND: u32 = 0x0000_0004;
+    const MISS: u32 = 0x0000_0010;
+    const ABSORB: u32 = 0x0000_0020;
+    const RESIST: u32 = 0x0000_0040;
+    const CRITICAL: u32 = 0x0000_0080;
+    const BLOCK: u32 = 0x0000_0800;
+    const GLANCING: u32 = 0x0000_4000;
+    const CRUSHING: u32 = 0x0000_8000;
+    const NO_ANIMATION: u32 = 0x0001_0000;
+    const SWING_NO_HIT_SOUND: u32 = 0x0008_0000;
+
+    let mut vanilla = wrath & (AFFECTS_VICTIM | OFFHAND | MISS);
+    if wrath & (0x0000_0020 | 0x0000_0040) != 0 {
+        vanilla |= ABSORB;
+    }
+    if wrath & (0x0000_0080 | 0x0000_0100) != 0 {
+        vanilla |= RESIST;
+    }
+    if wrath & 0x0000_0200 != 0 {
+        vanilla |= CRITICAL;
+    }
+    if wrath & 0x0000_2000 != 0 {
+        vanilla |= BLOCK;
+    }
+    if wrath & 0x0001_0000 != 0 {
+        vanilla |= GLANCING;
+    }
+    if wrath & 0x0002_0000 != 0 {
+        vanilla |= CRUSHING;
+    }
+    if wrath & 0x0004_0000 != 0 {
+        vanilla |= NO_ANIMATION;
+    }
+    if wrath & 0x0020_0000 != 0 {
+        vanilla |= SWING_NO_HIT_SOUND;
+    }
+    vanilla
+}
+
+/// 12340 sends a spell-school *mask* where the 1.12 seam carries the 0-6 school *index*. A normal
+/// melee swing's mask is 1, which the 1.12 line would otherwise read as a non-physical Holy hit.
+fn vanilla_school(mask: u32) -> u32 {
+    if mask == 0 {
+        0
+    } else {
+        mask.trailing_zeros().min(6)
+    }
+}
+
 /// Map a typed 3.3.5 reply onto the established 1.12 event seam. Fields with no 1.12 equivalent
 /// are left empty; nothing is invented from local state. `self_guid` gates the edges the 1.12
 /// seam only ever has for the player (channel timers), because 12340 broadcasts them for every
@@ -3607,14 +3665,14 @@ fn translate_gameplay(
         } => vec![SessionEvent::AttackerState(ProtocolAttackerState {
             attacker,
             victim,
-            hit_info,
+            hit_info: vanilla_hit_info(hit_info),
             damage,
             victim_state,
             absorb,
             resist,
             blocked,
             melee_spell_id,
-            school,
+            school: vanilla_school(school),
         })],
         WrathGameplayEvent::CancelCombat => vec![SessionEvent::CancelCombat],
         WrathGameplayEvent::AiReaction { unit, reaction } => {
@@ -3639,7 +3697,7 @@ fn translate_gameplay(
             attacker,
             spell_id,
             damage,
-            school,
+            school: vanilla_school(u32::from(school)) as u8,
             absorb,
             resist,
             // 12340's byte is `physicalLog`; periodic damage rides `SMSG_PERIODICAURALOG`.
@@ -3663,7 +3721,7 @@ fn translate_gameplay(
                         resist,
                     } => ProtocolPeriodicTick::Damage {
                         amount,
-                        school,
+                        school: vanilla_school(school),
                         absorb,
                         resist,
                     },
@@ -10731,8 +10789,8 @@ fn wrath_apply_world(world: &mut World) {
                 for &(index, old, new) in moved {
                     use benilla_protocol::field::{
                         FIELD_UNIT_BYTES_0, FIELD_UNIT_DYNAMIC_FLAGS, FIELD_UNIT_FACTIONTEMPLATE,
-                        FIELD_UNIT_HEALTH, FIELD_UNIT_LEVEL, FIELD_UNIT_MAXHEALTH,
-                        FIELD_UNIT_MAXPOWER1, FIELD_UNIT_POWER1,
+                        FIELD_UNIT_FLAGS, FIELD_UNIT_HEALTH, FIELD_UNIT_LEVEL,
+                        FIELD_UNIT_MAXHEALTH, FIELD_UNIT_MAXPOWER1, FIELD_UNIT_POWER1,
                     };
                     // The snapshot adapter bypasses the normal values-block watches. Feed
                     // the UI explicitly; FieldChanged alone only reaches ECS consumers.
@@ -10745,6 +10803,7 @@ fn wrath_apply_world(world: &mut World) {
                         i if (FIELD_UNIT_MAXPOWER1..FIELD_UNIT_MAXPOWER1 + 5).contains(&i) => {
                             Some(crate::field_watch::id::MAX_POWER + (i - FIELD_UNIT_MAXPOWER1))
                         }
+                        FIELD_UNIT_FLAGS => Some(crate::field_watch::id::UNIT_FLAGS),
                         FIELD_UNIT_LEVEL => Some(crate::field_watch::id::UNIT_LEVEL),
                         FIELD_UNIT_FACTIONTEMPLATE => Some(crate::field_watch::id::UNIT_FACTION),
                         FIELD_UNIT_BYTES_0 if (old >> 24) != (new >> 24) => {
@@ -10760,6 +10819,33 @@ fn wrath_apply_world(world: &mut World) {
                                 guid: *guid,
                                 id,
                             });
+                        }
+                    }
+                    // The normal values-block watcher signals the dynamic-flags event on any
+                    // bit, plus the tap's `UNIT_FACTION` and the dead look's `UNIT_HEALTH`. The
+                    // snapshot adapter bypasses it, so the target frame's tapped/lootable state
+                    // would otherwise keep its old icon after a Wrath kill.
+                    if index == FIELD_UNIT_DYNAMIC_FLAGS {
+                        if let Some(mut notices) =
+                            world.get_resource_mut::<crate::field_watch::NoticeLane>()
+                        {
+                            notices.write(crate::field_watch::FieldNotice::Signal {
+                                guid: *guid,
+                                id: crate::field_watch::id::UNIT_DYNAMIC_FLAGS,
+                            });
+                            let flipped = old ^ new;
+                            if flipped & 0x4 != 0 {
+                                notices.write(crate::field_watch::FieldNotice::Signal {
+                                    guid: *guid,
+                                    id: crate::field_watch::id::UNIT_FACTION,
+                                });
+                            }
+                            if flipped & 0x20 != 0 {
+                                notices.write(crate::field_watch::FieldNotice::Signal {
+                                    guid: *guid,
+                                    id: crate::field_watch::id::UNIT_HEALTH,
+                                });
+                            }
                         }
                     }
                     // Loot FX rescan on this edge, including when LOOTABLE is cleared, plus
@@ -13105,6 +13191,177 @@ mod tests {
         // A replacement entity must not inherit the previous entity's receipt.
         let replacement = world.spawn_empty().id();
         assert!(consume_wrath_position(&mut world, replacement, pose));
+    }
+
+    fn wrath_swing(hit_info: u32, school: u32) -> WrathGameplayEvent {
+        WrathGameplayEvent::AttackerState {
+            attacker: 0x11,
+            victim: 0xf130_0000_0000_0022,
+            hit_info,
+            damage: 30,
+            victim_state: 1,
+            absorb: 0,
+            resist: 0,
+            blocked: 0,
+            melee_spell_id: 0,
+            school,
+        }
+    }
+
+    fn translated_swing(hit_info: u32, school: u32) -> ProtocolAttackerState {
+        match translate_gameplay(wrath_swing(hit_info, school), 0x11, Instant::now())
+            .as_slice()
+        {
+            [SessionEvent::AttackerState(s)] => *s,
+            other => panic!("one swing expected, got {other:?}"),
+        }
+    }
+
+    /// 12340 sends a school mask; a normal swing is mask 1. The 1.12 consumers read school 0 as
+    /// physical, so passing the mask through made every wolf hit a Holy `…SCHOOL` line.
+    #[test]
+    fn wrath_melee_school_masks_become_vanilla_school_indices() {
+        for (mask, index) in [
+            (0, 0),
+            (1, 0),
+            (2, 1),
+            (4, 2),
+            (8, 3),
+            (16, 4),
+            (32, 5),
+            (64, 6),
+        ] {
+            assert_eq!(vanilla_school(mask), index, "mask {mask:#x}");
+            assert_eq!(
+                translated_swing(0x2, mask).school,
+                index,
+                "the seam carries the index"
+            );
+        }
+    }
+
+    /// The melee HitInfo bit positions moved. A crit, full absorb/resist, block, glance, crush and
+    /// the no-animation bit must arrive at the 1.12 seam as its own bits, and 12340's 0x4000/0x8000
+    /// words must not masquerade as vanilla glancing/crushing.
+    #[test]
+    fn wrath_melee_hit_info_becomes_the_vanilla_bit_layout() {
+        assert_eq!(vanilla_hit_info(0x0000_0002), 0x0000_0002, "a plain hit");
+        assert_eq!(vanilla_hit_info(0x0000_0004), 0x0000_0004, "offhand");
+        assert_eq!(vanilla_hit_info(0x0000_0010), 0x0000_0010, "miss");
+        assert_eq!(vanilla_hit_info(0x0000_0020), 0x0000_0020, "full absorb");
+        assert_eq!(vanilla_hit_info(0x0000_0040), 0x0000_0020, "partial absorb");
+        assert_eq!(vanilla_hit_info(0x0000_0080), 0x0000_0040, "full resist");
+        assert_eq!(vanilla_hit_info(0x0000_0100), 0x0000_0040, "partial resist");
+        assert_eq!(vanilla_hit_info(0x0000_0200), 0x0000_0080, "crit");
+        assert_eq!(vanilla_hit_info(0x0000_2000), 0x0000_0800, "block");
+        assert_eq!(vanilla_hit_info(0x0001_0000), 0x0000_4000, "glancing");
+        assert_eq!(vanilla_hit_info(0x0002_0000), 0x0000_8000, "crushing");
+        assert_eq!(vanilla_hit_info(0x0004_0000), 0x0001_0000, "no animation");
+        assert_eq!(
+            vanilla_hit_info(0x0020_0000),
+            0x0008_0000,
+            "swing no-hit-sound"
+        );
+        assert_eq!(
+            vanilla_hit_info(0x0000_4000 | 0x0000_8000),
+            0,
+            "12340's unknown words are not 1.12 glancing/crushing"
+        );
+        assert_eq!(
+            vanilla_hit_info(0x0080_0000),
+            0,
+            "12340's rage-gain bit has no 1.12 word"
+        );
+    }
+
+    /// The translated crit and full resist reach the shared line/feedback classifier as such,
+    /// instead of as an ordinary hit and no line.
+    #[test]
+    fn wrath_melee_crit_and_full_resist_reach_the_vanilla_classifier() {
+        let crit = translated_swing(0x0000_0202, 1);
+        let (family, word) =
+            crate::ui_chat::combat::melee_outcome(&crit).expect("a crit has a line");
+        assert_eq!(family.stem, "COMBATHITCRIT");
+        assert_eq!(word.message_type, "DAMAGE_CRIT");
+
+        let mut full_resist = translated_swing(0x0000_0080, 1);
+        full_resist.damage = 0;
+        let (family, word) =
+            crate::ui_chat::combat::melee_outcome(&full_resist).expect("a full resist has a line");
+        assert_eq!(family.stem, "VSRESIST");
+        assert_eq!(word.message_type, "RESIST");
+    }
+
+    /// 12340's spell damage and periodic ticks carry the same school mask; both become the index
+    /// the 1.12 line and portrait flash read.
+    #[test]
+    fn wrath_spell_damage_and_periodic_school_masks_become_indices() {
+        let spell = translate_gameplay(
+            WrathGameplayEvent::SpellDamage {
+                target: 0x22,
+                attacker: 0x11,
+                spell_id: 133,
+                damage: 40,
+                school: 4,
+                absorb: 0,
+                resist: 0,
+                blocked: 0,
+                hit_info: 0,
+            },
+            0x11,
+            Instant::now(),
+        );
+        assert!(matches!(
+            spell.as_slice(),
+            [SessionEvent::SpellDamageLog(s)] if s.school == 2
+        ));
+
+        let periodic = translate_gameplay(
+            WrathGameplayEvent::PeriodicAura {
+                target: 0x22,
+                caster: 0x11,
+                spell_id: 172,
+                ticks: vec![gameplay::PeriodicAuraTick::Damage {
+                    amount: 5,
+                    school: 16,
+                    absorb: 0,
+                    resist: 0,
+                }],
+            },
+            0x11,
+            Instant::now(),
+        );
+        assert!(matches!(
+            periodic.as_slice(),
+            [SessionEvent::PeriodicAuraLog(p)]
+                if matches!(p.ticks.as_slice(), [ProtocolPeriodicTick::Damage { school: 4, .. }])
+        ));
+    }
+
+    /// A kill's XP keeps its victim so the chat line and the corpse's XP mark can name it; the
+    /// base recovers the un-rested award, which the 1.12 line formats separately.
+    #[test]
+    fn wrath_kill_xp_keeps_its_victim_and_base_award() {
+        let events = translate_gameplay(
+            WrathGameplayEvent::XpGain {
+                victim: 0xf130_0000_0000_0022,
+                total_xp: 60,
+                kill_xp: true,
+                rested_bonus: 20,
+                group_rate: 1.0,
+            },
+            0x11,
+            Instant::now(),
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [SessionEvent::XpGain(x)]
+                if x.victim == 0xf130_0000_0000_0022
+                    && x.total == 60
+                    && x.base == 40
+                    && x.kill
+                    && x.group == 1.0
+        ));
     }
 
     /// A self `SMSG_SPELL_GO` is 3.3.5's success answer: it must emit the 1.12 success result
