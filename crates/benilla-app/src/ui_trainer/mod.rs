@@ -653,6 +653,7 @@ pub(crate) fn feed_trainer(
                 &spells.catalog,
                 &skill_lines.catalog,
                 &player,
+                script.target() == benilla_ui::script::UiTarget::Wrath335,
             );
             // `0x4d82b2`-`0x4d82c1`: a row the pass leaves known takes the -1 key at type 1.
             if *trainer_type == TRAINER_TYPE_MOUNT {
