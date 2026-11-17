@@ -1,6 +1,6 @@
 # Wrath trainers, chest and ore use
 
-Status: in progress
+Status: awaiting owner check
 Owner: Claude Code (Opus 5.5)
 Branch: fix/wrath-trainer-gameobject-use
 Issue: none (owner report 2026-11-17: four in-game failures)
@@ -13,7 +13,10 @@ Date 2026-11-17. Worktree `D:/Projects/wow/worktrees/fix-wrath-trainer-go-use`, 
 `e67b6ffef23655dc7da061cb2d36b7963f6ef71a` (HEAD checked). No Cargo check, test or build was
 run, and the client was not started.
 
-Verification: CI: not run yet (filled in after the push).
+Verification: CI 44138182667 (commit `40d45edd`): compiles; tests 0 new failures. The windows
+`test` job has the same 53 failing tests as main run 44120374606. `gates` stops at `fmt` as on
+main, with the same 2520 hunks (only shifted by the added lines), so its clippy and test steps
+did not run on either. Not compiled locally and not run in game.
 
 ## 3 and 4 · A chest cannot be opened; ore cannot be mined (cause confirmed)
 
@@ -168,7 +171,7 @@ The fixes above also apply here:
 
 ## Not done
 
-- Not compiled, not run, no tests. CI is the first compile.
+- Not compiled locally, not run in game. CI compiled it; clippy did not run (gates stops at fmt).
 - `spell_opens_lock` (`target/lock.rs`, the cursor predicate when targeting a spell at an
   object) still knows only skill and key slots, not the Wrath type-3 slot. This affects the
   cursor only, not right-click opening.
