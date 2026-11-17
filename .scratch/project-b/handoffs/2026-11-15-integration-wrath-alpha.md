@@ -15,6 +15,11 @@ remaining difference is this note; there is no candidate-only source to land or 
 In particular, the automatic merge of `crates/benilla-app/src/wrath.rs` equals main.
 Source review is complete for this integration delta, not a fresh certification of all main.
 
+Follow-up fetch: merged main `78166894` with another merge commit. Reviewed its
+`game_plugins.rs` sync-point ceiling change (54 -> 55) and retained it unchanged: A1's
+queued missile despawn needs the barrier before movement. Compared the resulting tree
+against main again; only this handoff differs. No conflicts or candidate-only source.
+
 Dropped the old candidate-only character-login refusal/rename patch claim and the old
 instruction to build an isolated candidate. Main already contains that work and the newer
 B4 cast outcomes, A1 death cycle, A2 melee loop and B3 world-fidelity integrations.
