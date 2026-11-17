@@ -14,7 +14,10 @@ param(
     [scriptblock]$HealthPredicate = $null,
     [switch]$WithMulticlass,
     [string]$MulticlassGluePath = 'D:\Projects\wow\server\wm-project\client_extensions\multiclass\multiclass_glue.lua',
-    [bool]$WithMovementHotpatch = $true
+    [bool]$WithMovementHotpatch = $true,
+    # Whole-client live code (ADR-0002): dx builds the dev client with `live_code` and patches
+    # every saved source edit into it. Runs in this window; close the game or Ctrl+C to stop.
+    [switch]$LiveCode
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -81,7 +84,13 @@ if ($releaseRequested) {
 $isRelease = Test-Path -LiteralPath (Join-Path $repo 'release-manifest.json') -PathType Leaf
 if ($isRelease -and $releaseRequested) { throw 'Choose an assembled release or a release set, not both' }
 if ($isRelease) { $binary = Join-Path $repo 'bin\benilla.exe' }
-if ($BuildLatest -and !$isRelease -and !$releaseRequested) {
+if ($LiveCode -and ($isRelease -or $releaseRequested)) {
+    throw 'Live code patches a source build; it cannot run an assembled release or a release set.'
+}
+if ($LiveCode -and $BuildLatest) {
+    Write-Host 'Live code builds through dx; -BuildLatest is skipped.'
+}
+if ($BuildLatest -and !$LiveCode -and !$isRelease -and !$releaseRequested) {
     if (Get-Process benilla,cargo,rustc -ErrorAction SilentlyContinue) {
         throw 'Close the running client or wait for the active build before rebuilding.'
     }
@@ -134,7 +143,7 @@ if ($BuildLatest -and !$isRelease -and !$releaseRequested) {
         $env:CARGO_INCREMENTAL = $previousIncremental
     }
 }
-if (!(Test-Path -LiteralPath $binary)) {
+if (!$LiveCode -and !(Test-Path -LiteralPath $binary)) {
     if ($releaseContext) {
         throw "Release executable is missing: $binary"
     }
@@ -260,6 +269,44 @@ foreach ($old in @($previousRuns | Select-Object -Skip 2)) {
 $run = Join-Path $logs (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
 New-Item -ItemType Directory -Path $run | Out-Null
 Set-Location -LiteralPath $workingDirectory
+if ($LiveCode) {
+    # dx's build goes through Cargo, which the repo config points at sccache.
+    $cache = Get-Command sccache -ErrorAction SilentlyContinue
+    if (!$cache) {
+        $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin\sccache.exe'
+        if (Test-Path -LiteralPath $cargoBin -PathType Leaf) { $cache = Get-Command $cargoBin -ErrorAction SilentlyContinue }
+    }
+    if (!$cache) {
+        throw "sccache is required by .cargo/config.toml, but was not found in PATH or at $env:USERPROFILE\.cargo\bin\sccache.exe.`nInstall it by running:`n  `$env:RUSTC_WRAPPER=''; cargo install sccache --locked"
+    }
+    $env:RUSTC_WRAPPER = $cache.Source
+    # dx patches only a client whose subsecond matches it exactly; the lock names the client's.
+    $lock = Get-Content -LiteralPath (Join-Path $repo 'Cargo.lock') -Raw
+    $subsecond = [regex]::Match($lock, 'name = "subsecond"\r?\nversion = "([^"]+)"')
+    $wanted = if ($subsecond.Success) { $subsecond.Groups[1].Value } else { $null }
+    $dx = Get-Command dx -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (!$dx) {
+        $dxBin = Join-Path $env:USERPROFILE '.cargo\bin\dx.exe'
+        if (Test-Path -LiteralPath $dxBin -PathType Leaf) { $dx = Get-Command $dxBin -ErrorAction SilentlyContinue }
+    }
+    $install = if ($wanted) { "cargo install dioxus-cli --version $wanted --locked" } else { 'cargo install dioxus-cli --locked' }
+    if (!$dx) {
+        throw "Live code needs the dioxus CLI (dx). Install it by running:`n  `$env:RUSTC_WRAPPER=''; $install"
+    }
+    $dxVersion = [regex]::Match((& $dx.Source --version | Out-String), '\d+\.\d+\.\d+[^\s)]*').Value
+    if ($wanted -and $dxVersion -ne $wanted) {
+        throw "dx $dxVersion cannot patch a client built with subsecond $wanted. Install the matching CLI:`n  `$env:RUSTC_WRAPPER=''; $install"
+    }
+    if (!$wanted) {
+        Write-Warning 'Cargo.lock has no subsecond yet: the first live-code build adds it. If dx then refuses to patch, install the CLI the lock names and launch again.'
+    }
+    @('mode=live_code', "dx=$($dx.Source)", "dx_version=$dxVersion", "subsecond=$wanted") |
+        Set-Content -LiteralPath (Join-Path $run 'launch.txt')
+    Write-Host 'Live code: dx builds the dev client and starts it here. Save a source file to patch the running client.'
+    Write-Host 'A changed struct layout, static, or system/plugin registration still needs a restart (ADR-0002, "Live code").'
+    & $dx.Source serve --hot-patch --package benilla --bin benilla --features 'hotpatch,live_code'
+    exit $LASTEXITCODE
+}
 $client = Start-Process -FilePath $binary -WorkingDirectory $workingDirectory -PassThru `
     -RedirectStandardOutput (Join-Path $run 'stdout.log') `
     -RedirectStandardError (Join-Path $run 'stderr.log')

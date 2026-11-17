@@ -11,6 +11,12 @@ The owner explicitly approved the initial host rebuild/restart. In-game acceptan
 This promotes native presentation reload from the optional last stage in owner-decisions row 6
 to an immediate implementation target. It does not declare arbitrary native code reloadable.
 
+2026-11-17: the owner set "hotpatch anything" as a target feature. The developer client now
+has a second, separate path for that, [Live code](#live-code): Bevy's subsecond hotpatching under
+`dx serve`, which patches any workspace crate's function bodies into the running dev process.
+That path is a developer tool with no ABI, digest or rollback contract. The module ABI below
+remains the contract for patches delivered outside a developer's `dx` session.
+
 The 2026-11-03 H02 additions below specify the **Proposed** revision manifest (`PatchRevisionV1`),
 pre-load capability and trust gates, activation decision table, failure/rollback sequences, and
 trust boundaries that `H03` ("Add patch health and last-good rollback"), `H04` (UI overlay reload),
@@ -1126,10 +1132,63 @@ proposed above so `H03` is not blocked):
 | Texture/material/tuning | Dependency-aware content revision | Next stage; not delivered by the DLL loader |
 | M2/SKIN/animation import | Reimport affected model family and rebind visuals | Next stage; current live caches do not implement this |
 | Terrain/WMO/ADT/collision | Staged affected-cell rebuild at a safe boundary | Planned; must coordinate render and collision revisions |
+| Any function body in a workspace crate (systems, decoders, encoders, formats, rules) | Live code: `dx` patch on save | Implemented, not compiled or run; acceptance pending |
+| Struct/enum layout, static or thread-local initializer, new/reordered system or plugin, new dependency | Restart (live code reports the patch but cannot apply it safely) | By design |
 | New host interface, Bevy/wgpu upgrade, core component/schema changes | Declared maintenance rebuild/restart | Outside ABI 1 |
 
 An unchanged old executable cannot acquire this interface through `/reload`; the approved
 bootstrap restart is required. It is not necessary for later ABI-compatible pose publications.
+
+## Live code
+
+**Current behavior (branch `feat/live-code-hotpatch`, not compiled, not run).** The `live_code`
+feature (`benilla` → `benilla-app` → `bevy/hotpatching`) builds the dev client with Bevy's
+`HotPatchPlugin`, which joins `DefaultPlugins` and connects to the `dx` CLI that started the
+process. `tools/launch-client.ps1 -LiveCode` runs `dx serve --hot-patch --package benilla
+--features hotpatch,live_code` in its own window, with the launcher's usual environment. On each
+saved edit dx rebuilds the edited workspace crates and the crates above them, and the running
+client takes the new code's jump table at the end of the frame. Patches reach new code only
+through the table:
+
+- Every Bevy system and observer, on its next run.
+- The network threads, through `live_code::call`: each packet's read and decode, and each
+  command's encode (`net::io::stream`, `net::io::writer_loop`). The loops' own bodies stay the
+  code they entered.
+- Whatever those call: a patched function calls its callees' patched versions.
+
+Patches apply only in a build with debug assertions, so on the `dev` profile, never `play` or
+`ship` (subsecond's `call` returns straight to the closure without them). The feature must not be
+combined with `bevy_dynamic_linking`.
+
+**Re-derive.** Data built before a patch is the old code's output. On the frame after a patch,
+`live_code::LiveCodePatched` runs the `live_code::Rederive` set in `First`:
+
+- The eight saved template stores (`wdb`) decode every held record again from the answer bytes
+  they keep, so a decoder fix reaches records answered before the patch, with no query.
+- The spell catalog reloads from `Spell.dbc` (`ui_action::load_spells`), including the
+  learn-spell hop the trainer reads.
+
+A deriver whose output a code fix can change joins the set with `live_code::rederive`. What is
+not re-derived: entity components built at spawn, window contents built at open (a trainer list:
+close and reopen it), and server state, which the server owns. Logging out to character
+select and back re-runs each world-entry deriver without a restart.
+
+**Restart.** Changes that cannot be patched safely still need a restart: a changed struct or
+enum layout (the old values in memory keep the old layout), a changed static or thread-local
+initializer, a new or reordered system, set, observer or plugin (the schedule is built once), a
+new dependency, and a Bevy upgrade. dx reports a failed patch build in its window; the running
+client keeps the last code that loaded.
+
+**Owner setup.** Install the `dx` CLI whose version matches the `subsecond` crate in
+`Cargo.lock` (the launcher checks, and prints the install command). The first `-LiveCode` build
+adds `subsecond` and `dioxus-devtools` to `Cargo.lock`; commit that lock change. Whether dx's
+build cooperates with the sccache wrapper the repo config requires is unverified; a wrapper
+failure is a build failure to report, not a reason to drop sccache.
+
+**Acceptance.** Same PID and session before and after a patch: edit a decoder (the Wrath
+game-object query response) and see a re-decoded template take effect without logout; edit a
+system's body and see the change on the next frame; make a layout change and see dx refuse or
+the client keep running the old code, not crash. Not yet run.
 
 ## Developer workflow (first slice)
 
