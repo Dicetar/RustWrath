@@ -2,11 +2,19 @@
 # workspace tests on Windows, for development pushes, pull requests or a dispatch: a red one is seen
 # before anyone builds it. The data-gated tests, the engine boot checks and a live run happen on
 # the maintainer's machine before it lands.
+#
+# Agents do not run Cargo locally, so every pushed branch runs here: this is where their focused
+# tests are first compiled and run. Pushes that only touch notes and docs are skipped. How to read
+# a run is in docs/agents/sync.md ("Reading CI").
 name: CI
 
 on:
   push:
-    branches: [wotlk]
+    branches: ['**']
+    paths-ignore:
+      - '.scratch/**'
+      - 'docs/**'
+      - '**/*.md'
   pull_request:
   workflow_dispatch:
 
