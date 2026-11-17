@@ -323,4 +323,31 @@ pub(super) const INERT: &[Registered] = &[
     ours("fctDamageReduction", "0", "Floating combat text damage reduction"),
     ours("threatShowNumeric", "0", "Numeric threat display"),
     ours("targetStatusText", "0", "Target frame status text"),
+    // 3.3.5a options rows the runtime logs showed missing (`Couldn't find CVar named`). The
+    // reference's registered defaults; no benilla consumer reads them yet, so they are inert.
+    ours(
+        "timeMgrUseMilitaryTime",
+        "0",
+        "GameUI_CVar.cpp:628; enUS/koKR/esMX register 12-hour, others 24-hour",
+    ),
+    ours(
+        "fctRepChanges",
+        "0",
+        "GameUI_CVar.cpp:539; InterfaceOptionsPanels.lua:1235",
+    ),
+    ours(
+        "fctFriendlyHealers",
+        "0",
+        "GameUI_CVar.cpp:541; InterfaceOptionsPanels.lua:1237",
+    ),
+    ours(
+        "showArenaEnemyPets",
+        "1",
+        "GameUI_CVar.cpp:564; InterfaceOptionsPanels.lua:1414",
+    ),
+    ours(
+        "UnitNameEnemyPlayerName",
+        "1",
+        "PlayerName_CVar.cpp:35; object-name callback, not projected",
+    ),
 ];

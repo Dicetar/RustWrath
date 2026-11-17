@@ -494,6 +494,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             })?,
         )?;
     }
+    // `IsPVPTimerRunning()` (`GameUI_Scripts.cpp:1001`): 1 while the active player's
+    // `PLAYER_FLAGS` carries `PLAYER_FLAGS_PVP_TIMER` (0x40000), nil otherwise; nil with no
+    // player, as the reference's missing-object arm pushes.
+    lua.globals().set(
+        "IsPVPTimerRunning",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(match model.unit("player") {
+                Some(unit) if unit.player_flags & 0x0004_0000 != 0 => Value::Number(1.0),
+                _ => Value::Nil,
+            })
+        })?,
+    )?;
     // `UnitIsTalking(unit)` (`ComSatClient_Scripts.cpp` 0x007DF0B0): non-string -> no values;
     // a string -> 1.0 if the unit is in the voice talking set, else nil. Voice chat is permanently
     // absent, so every string answers nil; non-string preserves the zero-return arity.
@@ -2428,6 +2441,19 @@ mod tests {
         assert_eq!(s.eval::<bool>("return IsTitleKnown(2) == 0").unwrap(), true);
         assert_eq!(s.eval::<bool>("return UnitIsAFK('player') == 1").unwrap(), true);
         assert_eq!(s.eval::<bool>("return UnitIsDND('player') == 1").unwrap(), true);
+        assert!(s.eval::<bool>("return IsPVPTimerRunning() == nil").unwrap());
+        s.set_unit(
+            "player",
+            Some(UnitState {
+                exists: true,
+                player_flags: 0x0004_0006,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            s.eval::<bool>("return IsPVPTimerRunning() == 1").unwrap(),
+            true
+        );
         s.set_title_count(193);
         assert_eq!(s.eval::<u32>("return GetNumTitles()").unwrap(), 193);
         s.set_known_languages(vec!["Common".into(), "Dwarvish".into()]);

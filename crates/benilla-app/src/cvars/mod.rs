@@ -1331,6 +1331,23 @@ mod tests {
         }
     }
 
+    /// The 3.3.5a options rows the runtime logged as missing (`Couldn't find CVar named`) are
+    /// script-visible at the reference's registered defaults, even though no knob reads them.
+    #[test]
+    fn the_wrath_options_rows_logged_missing_are_registered() {
+        let cvars = Cvars::for_locale(0);
+        for (name, default) in [
+            ("timeMgrUseMilitaryTime", "0"),
+            ("fctRepChanges", "0"),
+            ("fctFriendlyHealers", "0"),
+            ("showArenaEnemyPets", "1"),
+            ("UnitNameEnemyPlayerName", "1"),
+        ] {
+            assert_eq!(cvars.get(name), Some(default), "{name}");
+            assert_eq!(cvars.default_of(name), Some(default), "{name}");
+        }
+    }
+
     /// The three register sites that pick their default by locale (`0x603368`, `0x63a738`), at
     /// all eight indices: AutoInteract is "1" on koKR (1) alone, gxWindow and gxMaximize "1" on
     /// zhCN (4) alone, and every other row boots the same on every locale. The table and `Cvars`
