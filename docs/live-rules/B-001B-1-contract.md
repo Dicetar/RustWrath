@@ -1,6 +1,6 @@
 # B-001B-1 — Live-rule source contract (Spellwright v3 A/B)
 
-2026-10-24. Status: **PARTIAL — contract complete; graphs authored and statically checked against source; server-side Parse/Validate/Purchase execution pending (ticket 10)**. Every claim cites `SpellmakingV3.cpp` (S) or `SpellmakingV3Graph.cpp` (G) in `D:/WOW/wm-project/native_modules/mod-multiclass/src/`.
+2026-10-24. Status: **PARTIAL — contract complete; graphs authored and statically checked against source; server-side Parse/Validate/Purchase execution pending (ticket 10)**. Every claim cites `SpellmakingV3.cpp` (S) or `SpellmakingV3Graph.cpp` (G) in `D:/Projects/wow/server/wm-project/native_modules/mod-multiclass/src/`.
 
 ## 1. Scenario
 

@@ -10,7 +10,7 @@ interface PreppedTicket {
   prompt: string;
 }
 
-const AUTO_CATCHER_WORKFLOW = `# From D:\\Projects\\project-b-client:
+const AUTO_CATCHER_WORKFLOW = `# From D:\\Projects\\wow\\client:
 # 1. Pull latest auto-catcher & exit-snapshot updates:
 git pull origin main
 
@@ -29,7 +29,7 @@ powershell -ExecutionPolicy Bypass -File tools\\launch-client.ps1
 #     * benilla-config\\Logs\\Launcher\\latest-diagnostics.json
 # - Or double-click "Collect Diagnostics.cmd" at any time while the game is still open!`;
 
-const TARGETED_TEST_COMMANDS = `# Run from D:\\Projects\\project-b-client (13 total test cases — strictly within 20-case ceiling)
+const TARGETED_TEST_COMMANDS = `# Run from D:\\Projects\\wow\\client (13 total test cases — strictly within 20-case ceiling)
 
 # 1. G03: Build 12340 ItemStats_C count bounds (0, 10, >10 rejection without cursor desync, truncated) [1 test]
 cargo test -p benilla-protocol-wrath --lib gameplay::tests::item_info_rejects_oversized_stat_count_without_cursor_desync

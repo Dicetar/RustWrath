@@ -1,6 +1,6 @@
 # B-001A — Extension seam maps (movement / building / generated spaces)
 
-2026-10-24. One page per feature: existing owners, what the server actually does, missing hooks, restart needs. All file:line source-observed this session unless [TV]. Companion facts: server DataDir = `D:\WOW\Azerothcore_WoTLK_Rebuild\run\data` → Repack (has `maps/ vmaps/ mmaps/ dbc/` — mmap meshes precomputed offline); full native verb registry = `wm-project/src/wm/sources/native_bridge/action_kinds.py` (94 verbs).
+2026-10-24. One page per feature: existing owners, what the server actually does, missing hooks, restart needs. All file:line source-observed this session unless [TV]. Companion facts: server DataDir = `D:\Projects\wow\server\Azerothcore_WoTLK_Rebuild\run\data` → Repack (has `maps/ vmaps/ mmaps/ dbc/` — mmap meshes precomputed offline); full native verb registry = `wm-project/src/wm/sources/native_bridge/action_kinds.py` (94 verbs).
 
 ## 1. Movement
 

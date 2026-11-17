@@ -361,7 +361,7 @@ pub(crate) fn roots() -> Vec<PathBuf> {
                 }
             }
         }
-        let win_default = PathBuf::from(r"D:\WOW\world of warcraft 3.3.5a hd\Interface\AddOns");
+        let win_default = PathBuf::from(r"D:\Projects\wow\server\world of warcraft 3.3.5a hd\Interface\AddOns");
         if win_default.is_dir() && !out.contains(&win_default) {
             out.push(win_default);
         }

@@ -68,7 +68,7 @@ do not authorize broad test runs, builds or live sessions.
 
 ## Reference and documentation routing
 
-- Wrath reference: D:/Projects/wowdecomp-reference, pin
+- Wrath reference: D:/Projects/wow/reference/wowdecomp-reference, pin
   e67b6ffef23655dc7da061cb2d36b7963f6ef71a. Investigate behavior; do not copy implementation.
 - Donor research: samwhosung/benilla-re establishes 1.12 behavior, not Wrath layouts.
 - Read the installed project-b-12340-reference skill before target-specific repairs when
