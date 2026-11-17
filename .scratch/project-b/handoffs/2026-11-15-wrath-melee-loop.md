@@ -191,17 +191,6 @@ Not checked: no Cargo build, no test execution, no `cargo fmt`, no client launch
 interaction in this session. The dynamic-flags/`UNIT_FLAGS` event edges are source-reviewed
 only. The owner's live Northshire run is the first receiver/gameplay evidence.
 
-Status: ready to merge
-
-## Owner check list
-
-1. Target a Northshire wolf and auto-attack it to death.
-2. Read the misses/dodges in the combat log.
-3. Check the XP gain line and the XP bar.
-4. Check combat ends (leaves combat, no stale target).
-5. Check the bandits keep their combat stance between swings.
-
-
 ## Verification state (2026-11-16, before the merge)
 
 Not verified at that commit. One `cargo check -p benilla --features hotpatch` run reported an
@@ -213,3 +202,13 @@ this branch).
 
 The 2026-11-17 review merged `origin/main` and changed the hit-info mapping; no Cargo build,
 test or client run was made afterwards. Compile and tests are not run.
+
+Status: ready to merge
+
+## Owner check list
+
+1. Target a Northshire wolf and auto-attack it to death.
+2. Read the misses/dodges in the combat log.
+3. Check the XP gain line and the XP bar.
+4. Check combat ends (leaves combat, no stale target).
+5. Check the bandits keep their combat stance between swings.
