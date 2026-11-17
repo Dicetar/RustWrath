@@ -6,7 +6,9 @@ Branch: fix/wrath-action-bars
 Issue: none
 Next: the owner's batch build and the numbered checks below; source review is complete and no Cargo, test or client run was made.
 
-Started from origin/main `7ef93503` after B4 landed at `b13c163d`; A2 also landed at `58e98b0d`.
+Started from origin/main `7ef93503` after B4 landed at `b13c163d`; A2 also landed at
+`58e98b0d`. The completion checkpoint merges `origin/main` `7114694f` (2026-11-17) without
+conflicts.
 Worktree: `D:\Projects\wow\worktrees\fix-wrath-action-bars`. Shared dirty checkout
 `D:\Projects\wow\client` is untouched. Server/AC under `D:\Projects\wow\server`, reference
 `D:\Projects\wow\reference\wowdecomp-reference` and installed Data are read-only.
