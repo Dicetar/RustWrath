@@ -57,6 +57,23 @@ update it in place rather than adding a new file per session.
 - A cloud agent has no game data, no client and no local Cargo slot. It works on source and
   focused tests that need no install, and reports data-gated checks as unrun.
 
+## Reading CI
+
+Every push of code to any branch runs [CI](../../.github/workflows/ci.yml) on GitHub: `fmt`,
+clippy and the workspace tests on Linux (`gates`), and the workspace tests on Windows
+(`windows`). Pushes that change only `.scratch/`, `docs/` or Markdown are skipped. This is the
+first place an agent's tests are compiled and run, and it uses no local Cargo slot.
+
+- After pushing code, read the run: `gh run list --branch <branch> -L 1`, then
+  `gh run view <id> --log-failed`. A cloud agent without `gh` reads the branch's Actions page.
+- `main` is not green yet: on 2026-11-15 about 95 workspace tests and `fmt` failed. Compare your run's
+  failing test names with the latest `main` run. A failure that `main` does not have is yours.
+  So is any compile error.
+- Write the result in the note's verification line: `CI <run id>: compiles; tests N new
+  failures` or `CI: not run yet`. Do not write "tests pass" from CI while `main`'s baseline is
+  red; say "no new failures".
+- A branch whose code does not compile in CI is not `ready to merge`.
+
 ## Taking over a branch
 
 Fetch, read the note, check the issue for a newer claim, then comment that you are taking it and
