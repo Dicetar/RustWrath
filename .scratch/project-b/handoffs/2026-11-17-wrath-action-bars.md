@@ -16,10 +16,13 @@ B4 owns spell; consume its outcomes without rewriting it. No combat_log/combat_t
 Data behaviors must remain editable by the live hotpatch/Lua translation route.
 
 Compilation: not run. Tests: not run (focused-case ceiling 20). Client: not run.
-Earlier AutoSwarm availability inspections timed out; this continuation connected OpenCode
-successfully and assigned two read-only reviews (macro ownership and bar ownership).
+Earlier AutoSwarm availability inspections timed out; this continuation detected OpenCode
+v2.3.0 and assigned two read-only reviews (macro ownership and bar ownership).
 Calls: `call_724d3769f52d46b2b2e6669803ef44d7`, `call_d2c82347145844f6af9332ce9bf426ee`.
-No child has permission to edit, compile, test or launch.
+Both reached native ACP execution but returned no findings after repeated waits and wrap-up
+messages. Inspected handles/logs (empty) and cancelled both after about eleven minutes;
+collected final cancelled outcomes, no artifacts. No child had permission to edit, compile,
+test or launch. No successful review or callable-model verification is claimed.
 
 ## Pushed source checkpoint
 
@@ -79,7 +82,10 @@ full Wrath paging/security acceptance. No reference implementation was copied.
 
 Direct rustfmt ran; `git diff --check` passed. Model formatting unrelated to the new field was
 kept as main has it. Compilation: not run. Tests: not run. Client: not run.
-`gh run list --branch fix/wrath-action-bars -L 1` returned no runs at this inspection.
+`gh run list --branch fix/wrath-action-bars -L 1` returned no runs before and after the
+`4012c29d` push. CI: not run yet. Child reviews did not complete; installed page-policy
+confirmation and the owner gaps below remain open. This is a pushed WIP checkpoint,
+not the requested completed B5 delivery.
 
 ## Known gaps — not ready to merge
 
