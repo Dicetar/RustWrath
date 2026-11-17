@@ -15,7 +15,7 @@ other agents, so the owner should never have to carry it between them by hand.
    agent and the branch; the commands are in the [issue tracker](issue-tracker.md). A sandbox
    without `gh` skips the issue; the pushed branch and its note are the claim.
 3. **Branch.** Start from `origin/main` in your own worktree or clone:
-   `git worktree add -b <type>/<slug> <path> origin/main`. `D:/Projects/project-b-client` is the
+   `git worktree add -b <type>/<slug> <path> origin/main`. `D:/Projects/wow/client` is the
    integration checkout; do not edit, build or switch branches in it.
 4. **Write the task note first.** `.scratch/project-b/handoffs/<date>-<slug>.md`, committed on
    the branch, starting with the header below. Push it with the first commit.

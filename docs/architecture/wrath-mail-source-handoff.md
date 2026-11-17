@@ -17,7 +17,7 @@ It addresses part of D11 in the [replacement inventory](../../.scratch/project-b
   is passed through the normal read-time text filter without inventing a text-query id.
   Body-copy uses the server's result and the existing copied flag.
 
-Local evidence: `D:/WOW/WM_BridgeLab/src/azerothcore/src/server/game/Handlers/MailHandler.cpp`
+Local evidence: `D:/Projects/wow/server/WM_BridgeLab/src/azerothcore/src/server/game/Handlers/MailHandler.cpp`
 `HandleSendMail`, `HandleGetMailList`, `HandleMailMarkAsRead`, `HandleMailCreateTextItem` and
 `HandleQueryNextMailTime`; the client reference at pin
 `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`,

@@ -231,6 +231,8 @@ mod weapon_swing;
 pub use weapon_swing::{load_weapon_swing_catalog, WeaponSwingCatalog};
 mod material;
 pub use material::{load_material_catalog, MaterialCatalog};
+mod item_records;
+pub use item_records::{load_item_record_catalog, ItemRecord, ItemRecordCatalog};
 mod wmo_area;
 pub use wmo_area::{load_wmo_area_catalog, WmoArea, WmoAreaCatalog};
 mod spells;

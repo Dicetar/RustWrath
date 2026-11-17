@@ -6,7 +6,7 @@ Date: 2026-10-26, Europe/Moscow. Author: Astra. Status: concrete design proposal
 
 ## Existing owners and selected approach
 
-Inspected read-only in `D:/WOW/wm-project`:
+Inspected read-only in `D:/Projects/wow/server/wm-project`:
 
 | Existing owner | Actual source behavior | Consequence for this proposal |
 |---|---|---|

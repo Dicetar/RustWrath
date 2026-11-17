@@ -1026,6 +1026,10 @@ pub struct WrathEntity {
     /// it, identical deltas included) and the packet-arrival wall clock. Presentation stamps a
     /// GetTime anchor once per revision; nothing here is a UI clock.
     pub aura_receipts: BTreeMap<u8, benilla_protocol_wrath::reducer::AuraReceipt>,
+    /// The raw 3.3.5 window of a creature, GameObject, DynamicObject or corpse with the
+    /// delivered mask, read by the live field table (`wrath_field_map`). A player uses
+    /// `player_fields`; every other type carries `None`.
+    pub raw_fields: Option<crate::wrath_inventory::WrathFieldWindow>,
 }
 
 /// A full-world digest: the replicated world at one `state_revision`.
@@ -2551,9 +2555,13 @@ impl Plugin for WrathNetPlugin {
                 )
                     .chain(),
             );
+            app.init_resource::<crate::wrath_field_map::WrathFieldMap>();
+            app.insert_non_send_resource(crate::wrath_translate::WrathTranslateScript::new());
             app.add_systems(
                 Update,
                 (
+                    crate::wrath_field_map::poll_overlay,
+                    crate::wrath_translate::poll_script,
                     wrath_net_drain,
                     wrath_apply_world,
                     wrath_wm_action_intake,
@@ -9534,7 +9542,7 @@ fn apply_item_world(
 /// Translate the drained digest into the established `GuidIndex`/`NetEntity`/`ObjectStore` path.
 /// Exclusive, so creates/removals are live before `WorldStage::Input`.
 fn wrath_apply_world(world: &mut World) {
-    let (changes, entities, entered, phase, player_guid, map_id) = {
+    let (mut changes, entities, entered, phase, player_guid, map_id) = {
         let mut view = world.resource_mut::<WrathWorldView>();
         (
             std::mem::take(&mut view.last_changes),
@@ -9545,6 +9553,13 @@ fn wrath_apply_world(world: &mut World) {
             view.map_id,
         )
     };
+    // A reloaded field table re-projects every streamed object through the update path below.
+    if world
+        .get_resource_mut::<crate::wrath_field_map::WrathFieldMap>()
+        .is_some_and(|mut map| std::mem::take(&mut map.reapply))
+    {
+        crate::wrath_field_map::queue_reapply(&mut changes, &entities);
+    }
     let mut index = std::mem::take(&mut *world.resource_mut::<GuidIndex>());
     if changes.world_transferred {
         // Scope loss is cleanup-first: it does not depend on a following digest, a player guid,
@@ -9808,7 +9823,12 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(flags) = remote.dynamic_flags {
             pairs.push((143, flags));
         }
-        if let Some(display) = remote.display_id.filter(|&display| display != 0) {
+        // A GameObject's descriptor, display included, comes from the field table; 131/132 are
+        // unit display slots.
+        if let Some(display) = remote
+            .display_id
+            .filter(|&display| display != 0 && kind != EntityKind::GameObject)
+        {
             pairs.push((131, display));
             pairs.push((132, display));
         } else if kind == EntityKind::Player {
@@ -9960,6 +9980,16 @@ fn wrath_apply_world(world: &mut World) {
         }
         if matches!(kind, EntityKind::Unit | EntityKind::Player) && !remote.auras.is_empty() {
             push_aura_fields(&remote.auras, &mut pairs);
+        }
+        // The live field table, then the live translation script, run last so a data rule or
+        // the script can add or override any 1.12 word.
+        if let Some(map) = world.get_resource::<crate::wrath_field_map::WrathFieldMap>() {
+            map.push_pairs(remote, &mut pairs);
+        }
+        if let Some(script) =
+            world.get_non_send_resource::<crate::wrath_translate::WrathTranslateScript>()
+        {
+            script.translate(remote, &mut pairs);
         }
         let fields = ObjectFields::from_pairs(&pairs).into_created(object_type);
         let transform = remote.position.map(|p| Transform {
@@ -12915,11 +12945,28 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 .then(|| entry.field(index))
                 .flatten()
         };
+        // Unit indices name other words on every other type: on a GameObject `CHARMEDBY`,
+        // `SUMMONEDBY` and `CREATEDBY` (`12..17`) are its parent rotation, dynamic, faction, level
+        // and bytes, which the projection would write into the 1.12 rotation, state and position.
+        let unit_layout = matches!(
+            entry.type_id,
+            benilla_protocol_wrath::updates::type_id::UNIT
+                | benilla_protocol_wrath::updates::type_id::PLAYER
+        );
+        let game_object = entry.type_id == benilla_protocol_wrath::updates::type_id::GAMEOBJECT;
+        let unit = |index: u16| if unit_layout { observed(index) } else { None };
+        let unit_guid = |index: u16| {
+            if unit_layout {
+                entry.self_guid(index).filter(|&guid| guid != 0)
+            } else {
+                None
+            }
+        };
         let mut powers = [None; 7];
         let mut max_powers = [None; 7];
         for i in 0..7u16 {
-            powers[usize::from(i)] = observed(fields::UNIT_FIELD_POWER1 + i);
-            max_powers[usize::from(i)] = observed(fields::UNIT_FIELD_MAXPOWER1 + i);
+            powers[usize::from(i)] = unit(fields::UNIT_FIELD_POWER1 + i);
+            max_powers[usize::from(i)] = unit(fields::UNIT_FIELD_MAXPOWER1 + i);
         }
         entities.insert(
             *guid,
@@ -12927,27 +12974,31 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 guid: *guid,
                 type_id: entry.type_id,
                 entry: observed(fields::OBJECT_FIELD_ENTRY),
-                display_id: observed(fields::UNIT_FIELD_DISPLAYID),
+                display_id: if game_object {
+                    observed(fields::GAMEOBJECT_DISPLAYID)
+                } else {
+                    unit(fields::UNIT_FIELD_DISPLAYID)
+                },
                 scale: observed(fields::OBJECT_FIELD_SCALE_X).map(f32::from_bits),
-                health: observed(fields::UNIT_FIELD_HEALTH),
-                max_health: observed(fields::UNIT_FIELD_MAXHEALTH),
+                health: unit(fields::UNIT_FIELD_HEALTH),
+                max_health: unit(fields::UNIT_FIELD_MAXHEALTH),
                 powers,
                 max_powers,
-                level: observed(fields::UNIT_FIELD_LEVEL),
-                bytes_0: observed(fields::UNIT_FIELD_BYTES_0),
-                faction: observed(fields::UNIT_FIELD_FACTIONTEMPLATE),
-                unit_flags: observed(fields::UNIT_FIELD_FLAGS),
-                mount_display_id: observed(fields::UNIT_FIELD_MOUNTDISPLAYID),
-                bytes_1: observed(fields::UNIT_FIELD_BYTES_1),
-                bytes_2: observed(fields::UNIT_FIELD_BYTES_2),
-                npc_flags: observed(fields::UNIT_NPC_FLAGS),
-                dynamic_flags: observed(fields::UNIT_DYNAMIC_FLAGS),
-                target: entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0),
-                charmed_by: entry.self_guid(fields::UNIT_FIELD_CHARMEDBY).filter(|&guid| guid != 0),
-                summoned_by: entry.self_guid(fields::UNIT_FIELD_SUMMONEDBY).filter(|&guid| guid != 0),
-                created_by: entry.self_guid(fields::UNIT_FIELD_CREATEDBY).filter(|&guid| guid != 0),
-                player_bytes: observed(fields::PLAYER_BYTES),
-                player_bytes_2: observed(fields::PLAYER_BYTES_2),
+                level: unit(fields::UNIT_FIELD_LEVEL),
+                bytes_0: unit(fields::UNIT_FIELD_BYTES_0),
+                faction: unit(fields::UNIT_FIELD_FACTIONTEMPLATE),
+                unit_flags: unit(fields::UNIT_FIELD_FLAGS),
+                mount_display_id: unit(fields::UNIT_FIELD_MOUNTDISPLAYID),
+                bytes_1: unit(fields::UNIT_FIELD_BYTES_1),
+                bytes_2: unit(fields::UNIT_FIELD_BYTES_2),
+                npc_flags: unit(fields::UNIT_NPC_FLAGS),
+                dynamic_flags: unit(fields::UNIT_DYNAMIC_FLAGS),
+                target: unit_guid(fields::UNIT_FIELD_TARGET),
+                charmed_by: unit_guid(fields::UNIT_FIELD_CHARMEDBY),
+                summoned_by: unit_guid(fields::UNIT_FIELD_SUMMONEDBY),
+                created_by: unit_guid(fields::UNIT_FIELD_CREATEDBY),
+                player_bytes: unit(fields::PLAYER_BYTES),
+                player_bytes_2: unit(fields::PLAYER_BYTES_2),
                 position: entry.movement.as_ref().and_then(|m| m.position),
                 move_flags: entry.movement.as_ref().map(|m| m.move_flags),
                 create_spline: entry
@@ -12985,6 +13036,23 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 auras: entry.auras.clone(),
                 auras_observed: entry.auras_observed,
                 aura_receipts: entry.aura_receipts.clone(),
+                raw_fields: {
+                    use benilla_protocol_wrath::updates::type_id;
+                    let end = match entry.type_id {
+                        type_id::UNIT => Some(fields::UNIT_END),
+                        type_id::GAMEOBJECT => Some(fields::GAMEOBJECT_END),
+                        type_id::DYNAMICOBJECT => Some(fields::DYNAMICOBJECT_END),
+                        type_id::CORPSE => Some(fields::CORPSE_END),
+                        _ => None,
+                    };
+                    end.map(|end| {
+                        crate::wrath_inventory::WrathFieldWindow::from_fields(
+                            end,
+                            |index| entry.field(index),
+                            |index| entry.field_delivered(index),
+                        )
+                    })
+                },
             },
         );
     }
@@ -13812,6 +13880,7 @@ mod command_tap_tests {
                 auras: Vec::new(),
                 auras_observed: false,
                 aura_receipts: BTreeMap::new(),
+                raw_fields: None,
             },
         );
         WrathWorldView {
