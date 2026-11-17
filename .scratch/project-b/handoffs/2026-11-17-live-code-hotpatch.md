@@ -40,6 +40,14 @@ wants any code fix applied to the running client.
 - CI: `live-code-clippy` step on the Linux job.
 - Docs: ADR-0002 "Live code" section and reload-class rows; `docs/agents/local-launch.md`.
 
+## CI
+
+Run 44150560624 (156c6c0c): fmt fails on the same 415-file set as `main` 78166894 (no file new
+on this branch), which stops the Linux job before clippy and the live-code step. Windows: compiles;
+0 new failures (the same 53 failing tests as `main` run 44120374606); both new tests pass. The
+live-code step now runs even after an earlier gate fails; see the next run for the feature's first
+compile.
+
 ## Unverified
 
 - `dx` flag spellings (`--package`, `--bin`, `--features`) for dioxus-cli 0.7.x.

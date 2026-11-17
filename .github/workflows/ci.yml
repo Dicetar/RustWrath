@@ -78,8 +78,10 @@ jobs:
       - name: player-tests
         run: cargo test -p benilla-formats -p benilla-app --no-default-features --lib
       # The live-code build (`launch-client.ps1 -LiveCode`), linted only: `bevy/hotpatching` changes
-      # bevy_ecs and bevy_app, so this rebuilds the Bevy stack once more.
+      # bevy_ecs and bevy_app, so this rebuilds the Bevy stack once more. It runs after an earlier
+      # gate's failure too: it is the only compile of the feature, and fmt alone must not hide it.
       - name: live-code-clippy
+        if: ${{ !cancelled() }}
         run: cargo clippy -p benilla -p benilla-app --features live_code -- -D warnings
 
   windows:
