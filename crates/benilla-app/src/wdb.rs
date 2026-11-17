@@ -302,6 +302,7 @@ fn saved<T: SavedCache>(app: &mut App) {
     app.init_resource::<T>()
         .init_resource::<WdbFile<T>>()
         .add_systems(PreUpdate, (load::<T>, save::<T>).chain());
+    crate::live_code::rederive(app, redecode::<T>);
     // The exit write catches the last burst, which the debounce would not.
     crate::shutdown::on_app_exit(app, save_on_exit::<T>.into_configs());
 }
@@ -456,6 +457,29 @@ fn load<T: SavedCache>(roster: Res<Roster>, mut file: ResMut<WdbFile<T>>, mut ca
     }
     file.saved = cache.store().generation();
     debug!("wdb: loaded {n} {} records for {realm}", T::FILE);
+}
+
+/// A live-code patch's re-derive ([`crate::live_code::Rederive`]): every record the store holds is
+/// decoded again from the answer bytes it came in, by the decoder now running, and filed over the
+/// old one. A decoder fix then reaches the records answered before the patch with no query, as a
+/// load's decode reaches the records on disk. A body whose record the store no longer holds stays
+/// dropped.
+fn redecode<T: SavedCache>(file: Res<WdbFile<T>>, mut cache: ResMut<T>) {
+    let mut n = 0usize;
+    for (&key, body) in &file.bodies {
+        if cache.store().get(key).is_none() {
+            continue;
+        }
+        if let Ok(packet) = benilla_protocol::messages::parse_server(T::ANSWER, body) {
+            for ev in benilla_protocol::decode(packet) {
+                cache.install(ev);
+            }
+            n += 1;
+        }
+    }
+    if n > 0 {
+        info!("wdb: live code re-decoded {n} {} records", T::FILE);
+    }
 }
 
 /// Writes the store when its records have changed and the debounce has elapsed.
