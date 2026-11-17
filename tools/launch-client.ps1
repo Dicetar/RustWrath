@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$DataPath = 'D:\WOW\world of warcraft 3.3.5a hd\data',
+    [string]$DataPath = 'D:\Projects\wow\server\world of warcraft 3.3.5a hd\data',
     [string]$AuthServer = '127.0.0.1:3724',
     [string]$WorldServer = '127.0.0.1:8095',
     [bool]$WithAddons = $true,
@@ -13,7 +13,7 @@ param(
     [switch]$SkipHealthCheck,
     [scriptblock]$HealthPredicate = $null,
     [switch]$WithMulticlass,
-    [string]$MulticlassGluePath = 'D:\WOW\wm-project\client_extensions\multiclass\multiclass_glue.lua',
+    [string]$MulticlassGluePath = 'D:\Projects\wow\server\wm-project\client_extensions\multiclass\multiclass_glue.lua',
     [bool]$WithMovementHotpatch = $true
 )
 $ErrorActionPreference = 'Stop'
