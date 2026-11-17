@@ -30,7 +30,7 @@ use mlua::{Lua, MultiValue, Value};
 
 use super::binding_abi;
 use super::cursor::{set_cursor, CursorMacro, CursorPayload};
-use super::Model;
+use super::{Model, ScriptValue};
 
 /// The donor's macros per scope (`0x4f1010` refuses the 19th, `cmp edx,0x12`), and so the
 /// donor character tab's base.
@@ -721,6 +721,41 @@ fn flag(v: Option<&Value>) -> bool {
     super::binding_abi::bool_or_default(v, false)
 }
 
+/// Clear the running latch; the runner checks it before each line, so `StopMacro` from a line's
+/// handler drops the rest.
+fn stop_running_macro(model: &mut Model) {
+    model.running_macro = None;
+    model.running_macro_button = None;
+}
+
+/// `CGUIMacros::RunMacro` (`0x4f1460`): fire one `EXECUTE_CHAT_LINE` per non-empty body line,
+/// stopping when a handler calls `StopMacro`. `id` 0 is `RunMacroText`'s anonymous body.
+fn run_macro_body(lua: &Lua, id: u32, body: &str, button: Option<String>) {
+    let lines: Vec<String> = macro_lines(body).map(str::to_string).collect();
+    if lines.is_empty() {
+        return;
+    }
+    {
+        let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+        model.running_macro = Some(id);
+        model.running_macro_button = button;
+    }
+    for line in lines {
+        let running = {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            model.running_macro == Some(id)
+        };
+        if !running {
+            break;
+        }
+        super::tick::fire_event_into(lua, "EXECUTE_CHAT_LINE", vec![ScriptValue::Str(line)]);
+    }
+    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+    if model.running_macro == Some(id) {
+        stop_running_macro(&mut model);
+    }
+}
+
 /// Register the macro globals.
 pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     let g = lua.globals();
@@ -935,6 +970,106 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
+
+    if lua.app_data_ref::<Model>().expect("model app_data").target == super::UiTarget::Wrath335 {
+        // `RunMacro(indexOrName [, button])` (`0x566490`): the runner fires one
+        // `EXECUTE_CHAT_LINE` per body line; `StopMacro` from a line's handler drops the rest.
+        g.set(
+            "RunMacro",
+            lua.create_function(|lua, args: MultiValue| {
+                refresh_macro_limits(lua);
+                let a: Vec<Value> = args.into_iter().collect();
+                let index = macro_index_arg(
+                    lua,
+                    a.first().cloned().unwrap_or(Value::Nil),
+                    "Usage: RunMacro(macro [, button])",
+                )?;
+                let button = a
+                    .get(1)
+                    .and_then(|v| super::binding_abi::optional_string(lua, v));
+                let found = {
+                    let model = lua.app_data_ref::<Model>().expect("model app_data");
+                    model.macros.get(index).map(|m| (m.id, m.body.clone()))
+                };
+                if let Some((id, body)) = found {
+                    run_macro_body(lua, id, &body, button);
+                }
+                Ok(())
+            })?,
+        )?;
+
+        // `RunMacroText("text" [, button])` (`0x566390`): an anonymous body, no macro record.
+        g.set(
+            "RunMacroText",
+            lua.create_function(|lua, args: MultiValue| {
+                let a: Vec<Value> = args.into_iter().collect();
+                let text = super::binding_abi::string_arg(
+                    lua,
+                    a.first().cloned().unwrap_or(Value::Nil),
+                    "Usage: RunMacroText(\"text\" [, \"button\"])",
+                )?;
+                let button = a
+                    .get(1)
+                    .and_then(|v| super::binding_abi::optional_string(lua, v));
+                let text = cut_body(&text);
+                run_macro_body(lua, 0, &text, button);
+                Ok(())
+            })?,
+        )?;
+
+        // `StopMacro()` (`0x564B90`): clear the running latch.
+        g.set(
+            "StopMacro",
+            lua.create_function(|lua, ()| {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                stop_running_macro(&mut model);
+                Ok(())
+            })?,
+        )?;
+
+        // `GetRunningMacro()` (`0x564C10`): the running macro's index, nil for none or a text run.
+        g.set(
+            "GetRunningMacro",
+            lua.create_function(|lua, ()| {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                Ok(match model.running_macro.filter(|&id| id != 0) {
+                    Some(id) => model
+                        .macros
+                        .index_of_id(id)
+                        .map_or(Value::Nil, |i| Value::Integer(i as i64)),
+                    None => Value::Nil,
+                })
+            })?,
+        )?;
+
+        // `GetRunningMacroButton()` (`0x564C70`): the button argument the runner was given.
+        g.set(
+            "GetRunningMacroButton",
+            lua.create_function(|lua, ()| {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                match &model.running_macro_button {
+                    Some(button) => Ok(Value::String(lua.create_string(button)?)),
+                    None => Ok(Value::Nil),
+                }
+            })?,
+        )?;
+
+        // `GetMacroBody(indexOrName)` (`0x566F40`): the body, or no values on a miss.
+        g.set(
+            "GetMacroBody",
+            lua.create_function(|lua, index: Value| -> mlua::Result<MultiValue> {
+                refresh_macro_limits(lua);
+                let index = macro_index_arg(lua, index, "Usage: GetMacroBody(index)")?;
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                match model.macros.get(index) {
+                    Some(m) => Ok(MultiValue::from_vec(vec![Value::String(
+                        lua.create_string(&m.body)?,
+                    )])),
+                    None => Ok(MultiValue::new()),
+                }
+            })?,
+        )?;
+    }
 
     Ok(())
 }

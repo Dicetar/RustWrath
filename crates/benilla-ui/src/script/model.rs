@@ -858,6 +858,11 @@ pub(crate) struct Model {
     pub(crate) macro_icons: Vec<String>,
     /// What builds `macro_icons` while it is empty; `None` builds nothing.
     pub(crate) macro_icon_source: Option<MacroIconSource>,
+    /// The macro id `RunMacro` is firing (`Some(0)` for `RunMacroText`), and the optional
+    /// button argument `GetRunningMacroButton` reports. `StopMacro` clears both, which stops
+    /// the remaining lines.
+    pub(crate) running_macro: Option<u32>,
+    pub(crate) running_macro_button: Option<String>,
     /// The player's cast state, which `IsCurrentAction`, `IsAutoRepeatAction` and
     /// `SpellStopCasting()` (`0x6e6e80`) read: the last's 1 or nil matters, as the ESC chain
     /// (`UIParent.lua:1489`) reaches `CloseAllWindows()` on nil.
@@ -1863,6 +1868,8 @@ impl Model {
             macro_bindings: HashMap::new(),
             macro_icons: Vec::new(),
             macro_icon_source: None,
+            running_macro: None,
+            running_macro_button: None,
             cast_view: Default::default(),
             spell_targeting: false,
             spell_targetable_units: HashSet::new(),

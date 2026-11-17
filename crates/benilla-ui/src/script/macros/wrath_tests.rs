@@ -78,6 +78,51 @@ fn wrath_edit_pickup_and_delete_resolve_the_same_macro_name() {
     );
 }
 
+/// `RunMacro` fires one `EXECUTE_CHAT_LINE` per body line and `StopMacro` from a line's
+/// handler drops the rest; the running id/button are visible while it runs and nil after.
+#[test]
+fn wrath_run_macro_fires_lines_and_stop_drops_the_rest() {
+    let script = script();
+    script
+        .run("CreateMacro('Talk', 1, '/say one\\n/say two')")
+        .unwrap();
+    assert_eq!(
+        script
+            .eval::<String>("return GetMacroBody('Talk')")
+            .unwrap(),
+        "/say one\n/say two"
+    );
+    script
+        .run(
+            "seen = {}; running = nil; button = nil
+             local f = CreateFrame('Frame'); f:RegisterEvent('EXECUTE_CHAT_LINE')
+             f:SetScript('OnEvent', function(_, line)
+                 table.insert(seen, line)
+                 running = GetRunningMacro()
+                 button = GetRunningMacroButton()
+                 if line == '/say one' then StopMacro() end
+             end)
+             RunMacro('Talk', 'ActionButton1')",
+        )
+        .unwrap();
+    assert_eq!(script.eval::<i64>("return #seen").unwrap(), 1);
+    assert_eq!(script.eval::<i64>("return running").unwrap(), 1);
+    assert_eq!(
+        script.eval::<String>("return button").unwrap(),
+        "ActionButton1"
+    );
+    assert_eq!(
+        script
+            .eval::<i64>("return GetRunningMacro() == nil and 1 or 0")
+            .unwrap(),
+        1
+    );
+    script
+        .run("seen = {}; RunMacroText('/say a\\n/say b')")
+        .unwrap();
+    assert_eq!(script.eval::<i64>("return #seen").unwrap(), 2);
+}
+
 /// 12340's sorted table is 36 account entries then 36 character entries (`m_sortedMacros[72]`),
 /// with the character scope capped at 18: the stock MacroFrame reads account 1..=36 and character
 /// at `MAX_ACCOUNT_MACROS + i` (37..=54).

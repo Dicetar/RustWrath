@@ -261,6 +261,9 @@ impl DeathView<'_, '_> {
             }),
             out_of_bounds: store.0.player_flags() & PLAYER_FLAGS_IS_OUT_OF_BOUNDS != 0,
             controlling: store.0.unit_charm().is_some() || store.0.unit_summon().is_some(),
+            // CGPetInfo::m_possessSpell in the reference; the player's charm field is the owner
+            // we have, and the native gates the vehicle leg out.
+            possess_bar: store.0.unit_charm().is_some(),
             // `HasSoulstone()`; the dead gate is first, so the inventory walk runs only while dead.
             self_res_label: resolve_self_res(
                 &store.0,
@@ -299,7 +302,16 @@ fn feed_death(
 
         // ── The snapshot, set before the events fire so their handlers read current values ──
         let snapshot = view.snapshot(script, store, self_t, feed.died_at);
+        let had_possess = script.possess_bar_active();
         script.set_death(snapshot);
+        if script.possess_bar_active() != had_possess {
+            // The possess bar is the temporary action page: entering or leaving it re-pages the
+            // bar and closes it on the leave leg (UpdateBonusBar 0x5A83C0's wasTemp branch).
+            script.fire_event("UPDATE_BONUS_ACTIONBAR", Vec::new());
+            if had_possess {
+                script.fire_event("ACTIONBAR_PAGE_CHANGED", Vec::new());
+            }
+        }
 
         // ── The world edges: the release window and the corpse asks, which a `/reload` must not
         // repeat.

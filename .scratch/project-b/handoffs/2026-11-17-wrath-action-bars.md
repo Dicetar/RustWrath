@@ -1,10 +1,10 @@
 # B5 — Wrath action bars, spellbook and macros
 
-Status: in progress
+Status: ready to merge
 Owner: OpenCode / DeepSeek V4.1 Flash (took over from Pi / OpenAI)
 Branch: fix/wrath-action-bars
 Issue: none
-Next: finish the temporary/vehicle bar and the Lua RunMacro/secure-button owner, then complete the installed-stock-caller audit; do not land this checkpoint as completed B5.
+Next: the owner's batch build and the numbered checks below; source review is complete and no Cargo, test or client run was made.
 
 Started from origin/main `7ef93503` after B4 landed at `b13c163d`; A2 also landed at `58e98b0d`.
 Worktree: `D:\Projects\wow\worktrees\fix-wrath-action-bars`. Shared dirty checkout
@@ -132,32 +132,74 @@ Audit of the other requested areas, no code change needed:
   `ui_macro/store.rs`, one in `ui_action/feed.rs`); total B5 additions now 12. Direct rustfmt
   ran on the touched files; `git diff --check` passed. Compilation, tests and CI are not run.
 
-## Known gaps — not ready to merge
+## Completion checkpoint — temporary bar, macros, audit (2026-11-17)
 
-1. ~~MacroState and file parser still use donor 18-per-scope limits/indexing.~~ **Closed** by the
-   `MacroLimits` checkpoint above: 12340's 36+18 caps and 36-entry stride, with the stock globals
-   as the live policy. The donor's 18+18 path is unchanged.
-2. Wrath mutation security **reviewed**: `CreateMacro`/`EditMacro`/`DeleteMacro` use
-   `CanPerformAction(12)` and `PickupMacro` uses 14, tags past the 0x494a50 table that pass every
-   context; no extra gate is missing. The action bar's macro press reaches the app's real
-   `run_macro` through `UseAction`. The Lua `RunMacro`/`RunMacroText` globals (stock
-   `SecureTemplates.lua:373/378`) and the remaining macro-frame query setters are still absent;
-   they are an addon/secure-button surface, not the default bar path.
-3. The secure `[vehicleui]` key now reads the real `UnitHasVehicleUI("player")`; there is no
-   12340 `HasVehicleActionBar` global. `IsPossessBarVisible` is still constant false and the
-   vehicle temporary action spell table, visibility, slot contents and execution are unbuilt.
-4. Preset forms **closed**: `FormHasActionBar` (`0x005A7C50`) now selects offset 5 through
-   `ShapeshiftForm::has_action_bar`. The temporary flag branch of `UpdateBonusBar`
-   (`m_tempPageActiveFlags`, vehicle/possess) and `GetActionBarPage`'s forced page 1 while that
-   flag is active remain unbuilt.
-5. Ordinary page validation/native state is repaired as above. Temporary override/restoration
-   and the Wrath protected-action gate remain unimplemented.
-6. Installed stock FrameXML call-site enumeration, positive/empty owner audit and hotpatch policy
-   integration are unfinished. No extracted FrameXML/GlueXML was written or committed.
+The remaining B5 owners are now in source:
 
-Do not mark ready from the macro tests alone. The temporary/vehicle bar, the secure Lua
-`RunMacro` surface and the installed-stock-caller audit remain open; the total focused-case
-budget is 20 (12 used).
+- **Temporary/vehicle page.** `GetActionBarPage` returns 1 and `GetBonusBarOffset` returns 5
+  while a vehicle with `SEAT_HAS_UI` or a possess charm is active
+  (`temporary_page_active`, `UpdateBonusBar 0x5A83C0`, `Script_GetActionBarPage 0x5A7FD0`).
+  The stock `VehicleMenuBar` then reads page 11, actions 121..132. The action table already
+  carries 12340's 144 `SMSG_ACTION_BUTTONS` words; the identity/state feeds walk every stored
+  slot, and the item recount now uses 1..=144 on Wrath (120 on the donor).
+- **Vehicle/possess events.** A vehicle UI edge fires `UNIT_ENTERING_VEHICLE`,
+  `UNIT_ENTERED_VEHICLE`, `UPDATE_BONUS_ACTIONBAR` and, on the leave leg,
+  `ACTIONBAR_PAGE_CHANGED`; the possess edge does the same from the death snapshot. Both match
+  `MainMenuBar_UpdateArt` and `UpdateBonusBar`'s `wasTemp` branch.
+- **`IsPossessBarVisible`** is no longer constant false: it reads the player's charm owner
+  (`DeathUiState::possess_bar`) and hides a vehicle's leg, as `PossessBar_Update` does with
+  `UnitHasVehicleUI`.
+- **Macros.** Wrath now installs `RunMacro`, `RunMacroText`, `StopMacro`,
+  `GetRunningMacro`, `GetRunningMacroButton` and `GetMacroBody`. The runner fires
+  `EXECUTE_CHAT_LINE` per non-empty line; `StopMacro` from a line's handler drops the rest.
+  The stock `SecureTemplates` macro buttons and `ChatFrame`'s `StopMacro` have their owners.
+- **Temporary-bar edge data.** `GetVehicleUIIndicator`/`_Seat`, `IsVehicleAimAngleAdjustable`
+  and `VehicleAimRequestNormAngle` answer the no-vehicle/no-pitch arm instead of raising; the
+  vehicle template's aim flag and the seat-indicator DBCs are not projected, so a vehicle with
+  a pitch slider or seat indicator stays visually empty. Named, not invented.
+- **Installed-stock audit.** Checked the stock 3.3.5 `ActionButton.lua`,
+  `BonusActionBarFrame.lua`, `VehicleMenuBar.lua`, `MainMenuBar.lua`, `SpellBookFrame.lua`,
+  `Blizzard_MacroUI.lua` and `SecureTemplates.lua` calls. Cooldowns
+  (`GetActionCooldown`/`GetSpellCooldown`), the usable/range/count queries, spellbook
+  `GetSpellTabInfo`/`GetSpellLink`/`PickupSpell`/`GetSpellTexture` and the macro frame's
+  Create/Edit/Delete/GetMacroInfo/GetNumMacros paths all have owners. The named unsupported
+  surface is the shaman multicast totem bar (`GetMultiCastTotemSpells`,
+  `SetMultiCastSpell`; `GetMultiCastBarOffset` stays 0 because no multicast bar is installed)
+  and addon-only macro setters (`GetMacroSpell`/`GetMacroItem`/`SetMacroSpell`/
+  `SetMacroItem`, item icons), none called by the stock 3.3.5 UI.
+- Four focused cases were added in this checkpoint (RunMacro/StopMacro, temporary page,
+  possess bar, surface gate); the macro capacity, preset-form, file-parser and feed cases
+  above bring the total to 16 of the 20-case budget. Direct rustfmt and `git diff --check`
+  ran on the touched files. **Compilation, tests and CI are not run.**
+
+## Named unsupported surfaces
+
+1. **Macro table/indexing — closed.** 12340's 36 account + 18 character caps over the
+   36-entry stride, stock globals as the live policy, and 36-record file parsing.
+2. **Macro security and runner — closed.** Mutation tags 12/14 pass every context; the action
+   bar's macro press reaches the app's `run_macro` through `UseAction`; `RunMacro`,
+   `RunMacroText`, `StopMacro`, `GetRunningMacro`, `GetRunningMacroButton` and
+   `GetMacroBody` are installed for Wrath.
+3. **Vehicle/possess action bar — closed in source.** Temporary page/offset, visibility, the
+   vehicle event edges, the 144-slot action table and the item recount range are bound.
+4. **Preset forms and temporary paging — closed.** `FormHasActionBar` selects 5;
+   `m_tempPageActiveFlags`' equivalent forces page 1/offset 5.
+5. **Ordinary page and stock caller audit — closed** for the default 3.3.5 UI; the named
+   exceptions below are the multicast totem bar and addon-only macro setters.
+6. **Named unsupported, not blockers for the default UI:**
+   - shaman multicast totem bar: `GetMultiCastTotemSpells`/`SetMultiCastSpell` are not
+     installed and `GetMultiCastBarOffset` answers 0 where 12340 answers 6, because no
+     multicast bar is built;
+   - a vehicle with a seat indicator or pitch slider: `VehicleUIIndicator`/`_Seat` DBCs and
+     the vehicle template's aim flag are not projected; the indicator stays empty and the
+     pitch slider hidden;
+   - addon-only macro setters/queries (`GetMacroSpell`, `GetMacroItem`, `SetMacroSpell`,
+     `SetMacroItem`, item icons), which the stock 3.3.5 MacroUI does not call;
+   - `HasVehicleActionBar` is not a 12340 global; the secure `[vehicleui]` key uses
+     `UnitHasVehicleUI("player")`;
+   - no extracted FrameXML/GlueXML is committed.
+
+The total focused-case budget is 20 (16 used).
 
 ## Owner check list — after the next batch build
 
@@ -167,4 +209,7 @@ budget is 20 (12 used).
 4. make and run a /cast macro;
 5. open the macro frame: the account tab lists 36 slots, the character tab starts at 37, the 37th
    account macro is refused;
-6. switch spec, if available.
+6. enter a vehicle with a UI: the vehicle bar shows and its actions sit on page 11; leave it and
+   the normal bar and page return;
+7. mind-control or possess a unit: the possess bar shows and the temporary page/offset applies;
+8. switch spec, if available.

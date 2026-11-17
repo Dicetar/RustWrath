@@ -1,4 +1,4 @@
-//! The action bar's identity feed: each of the 120 slots' icon and count, pushed to the VM with
+//! The action bar's identity feed: each of the target's 120/144 slots' icon and count, pushed to the VM with
 //! `ACTIONBAR_SLOT_CHANGED` per changed slot; between resolves an item slot's count moves by the
 //! item watchers' recount ([`super::recount`]). [`feed_actions`] also drains the UI error queues
 //! (a refused cast's line rides the cast's reports, [`crate::ui_cast`]) and feeds the stance page
