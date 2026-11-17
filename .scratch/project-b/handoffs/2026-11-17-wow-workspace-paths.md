@@ -1,6 +1,6 @@
 # Workstation paths moved under D:/Projects/wow
 
-Status: committed on the task branch, not pushed, not landed; not compiled, not run
+Status: pushed on the task branch, not landed; not compiled, not run
 Owner: Claude Code (Fable 5.2)
 Branch: docs/wow-workspace-paths
 Issue: none (owner request 2026-11-17: move all WoW work into `D:/Projects/wow`)
