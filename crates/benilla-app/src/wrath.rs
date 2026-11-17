@@ -3494,10 +3494,11 @@ fn vanilla_target_mask(mask: u32) -> u16 {
 
 /// 12340's melee `HitInfo` onto the 1.12 seam's bit layout. The bit positions moved between the
 /// builds: 12340's 0x20/0x40 absorb, 0x80/0x100 resist, 0x200 crit, 0x2000 block,
-/// 0x10000/0x20000 glancing/crushing and 0x40000 no-animation are the 1.12 seam's 0x20, 0x40,
-/// 0x80, 0x800, 0x4000, 0x8000 and 0x10000. 12340's 0x4000/0x8000 words are not
-/// glancing/crushing, so they are dropped explicitly rather than leaking into the 1.12 consumers
-/// as false outcomes.
+/// 0x10000/0x20000 glancing/crushing, 0x40000 no-animation and 0x200000 swing-no-hit-sound are
+/// the 1.12 seam's 0x20, 0x40, 0x80, 0x800, 0x4000, 0x8000, 0x10000 and 0x80000. 12340's
+/// 0x4000/0x8000 words are not glancing/crushing, and its 0x800000 rage-gain bit has no 1.12
+/// word, so all three are dropped explicitly rather than leaking into the 1.12 consumers as false
+/// outcomes.
 fn vanilla_hit_info(wrath: u32) -> u32 {
     const AFFECTS_VICTIM: u32 = 0x0000_0002;
     const OFFHAND: u32 = 0x0000_0004;
@@ -3509,9 +3510,9 @@ fn vanilla_hit_info(wrath: u32) -> u32 {
     const GLANCING: u32 = 0x0000_4000;
     const CRUSHING: u32 = 0x0000_8000;
     const NO_ANIMATION: u32 = 0x0001_0000;
-    const RAGE_GAIN: u32 = 0x0080_0000;
+    const SWING_NO_HIT_SOUND: u32 = 0x0008_0000;
 
-    let mut vanilla = wrath & (AFFECTS_VICTIM | OFFHAND | MISS | RAGE_GAIN);
+    let mut vanilla = wrath & (AFFECTS_VICTIM | OFFHAND | MISS);
     if wrath & (0x0000_0020 | 0x0000_0040) != 0 {
         vanilla |= ABSORB;
     }
@@ -3532,6 +3533,9 @@ fn vanilla_hit_info(wrath: u32) -> u32 {
     }
     if wrath & 0x0004_0000 != 0 {
         vanilla |= NO_ANIMATION;
+    }
+    if wrath & 0x0020_0000 != 0 {
+        vanilla |= SWING_NO_HIT_SOUND;
     }
     vanilla
 }
@@ -13167,9 +13171,19 @@ mod tests {
         assert_eq!(vanilla_hit_info(0x0002_0000), 0x0000_8000, "crushing");
         assert_eq!(vanilla_hit_info(0x0004_0000), 0x0001_0000, "no animation");
         assert_eq!(
+            vanilla_hit_info(0x0020_0000),
+            0x0008_0000,
+            "swing no-hit-sound"
+        );
+        assert_eq!(
             vanilla_hit_info(0x0000_4000 | 0x0000_8000),
             0,
             "12340's unknown words are not 1.12 glancing/crushing"
+        );
+        assert_eq!(
+            vanilla_hit_info(0x0080_0000),
+            0,
+            "12340's rage-gain bit has no 1.12 word"
         );
     }
 
