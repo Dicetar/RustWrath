@@ -16,7 +16,10 @@ B4 owns spell; consume its outcomes without rewriting it. No combat_log/combat_t
 Data behaviors must remain editable by the live hotpatch/Lua translation route.
 
 Compilation: not run. Tests: not run (focused-case ceiling 20). Client: not run.
-AutoSwarm availability inspection timed out twice; no child assignment was issued.
+Earlier AutoSwarm availability inspections timed out; this continuation connected OpenCode
+successfully and assigned two read-only reviews (macro ownership and bar ownership).
+Calls: `call_724d3769f52d46b2b2e6669803ef44d7`, `call_d2c82347145844f6af9332ce9bf426ee`.
+No child has permission to edit, compile, test or launch.
 
 ## Pushed source checkpoint
 
@@ -55,6 +58,29 @@ HandleSetActionButtonOpcode reads button u8 + packed u32 and validates macro/spe
 IsActionButtonDataValid validates the slot, kind and learned spell. Relog/spec source path exists;
 no server, database or live receiver was exercised.
 
+## Ordinary paging checkpoint — continuation
+
+Merged main `78166894` without conflicts. Part 1 is pushed at `beb86564`, still a
+handoff-only delta against main, with the numbered owner run card and source review complete.
+
+`script/action.rs` now keeps the ordinary Wrath page in its native model, rather than treating
+writable `CURRENT_ACTIONBAR_PAGE` as authority. Invalid/nonfinite/missing inputs are refused
+without state changes; numeric strings and fractional numbers use Lua numeric coercion and
+truncation. Re-selecting the same page is a no-op; the change event sees the committed page.
+The page-count policy is read from stock Lua `NUM_ACTIONBAR_PAGES` at each write, not fixed
+in Rust; installed-caller confirmation is still pending the read-only review. Donor behavior
+is unchanged. Three focused source cases added (six total B5 additions), not run.
+
+Reference: `ActionBarFrame_Scripts.cpp` ChangeActionBarPage `0x005A7F60` and GetActionBarPage
+`0x005A7FD0`. Also investigated `GameUI.cpp` CanPerformAction `0x005191C0`: Wrath action 14
+checks taint and protected-action permission, not the donor gate's numeric tag 14. That gate
+and the temporary-page flags are NOT implemented by this ordinary-page repair; do not claim
+full Wrath paging/security acceptance. No reference implementation was copied.
+
+Direct rustfmt ran; `git diff --check` passed. Model formatting unrelated to the new field was
+kept as main has it. Compilation: not run. Tests: not run. Client: not run.
+`gh run list --branch fix/wrath-action-bars -L 1` returned no runs at this inspection.
+
 ## Known gaps — not ready to merge
 
 1. MacroState and file parser still use donor 18-per-scope limits/indexing. The reference uses
@@ -68,8 +94,8 @@ no server, database or live receiver was exercised.
 4. Reference `ActionBarFrame.cpp` UpdateBonusBar `0x005A83C0` selects offset 5 for temporary
    flags or form preset spells; feed.rs only reads the form bonus_bar column. GetActionBarPage
    `0x005A7FD0` also forces page 1 while temporary flags are active. This is not yet implemented.
-5. ChangeActionBarPage currently accepts arbitrary pages; reference `0x005A7F60` validates 1..6.
-   Ordinary page changes exist, but temporary override/restoration remains unimplemented.
+5. Ordinary page validation/native state is repaired as above. Temporary override/restoration
+   and the Wrath protected-action gate remain unimplemented.
 6. Installed stock FrameXML call-site enumeration, positive/empty owner audit and hotpatch policy
    integration are unfinished. No extracted FrameXML/GlueXML was written or committed.
 

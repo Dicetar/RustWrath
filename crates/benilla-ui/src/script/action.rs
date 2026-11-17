@@ -452,7 +452,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     };
                     // No displayed/all-learned book slot: the ID is the key, which the Wrath
                     // spell queries accept with a book type for a spell on the action bar.
-                    slots.iter().position(|slot| slot.spell_id == id)
+                    slots
+                        .iter()
+                        .position(|slot| slot.spell_id == id)
                         .map_or(id, |index| index as u32 + 1)
                 } else {
                     id
@@ -517,12 +519,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 // mouse button; `button != nil` (from a click, not a keybind) places a held cursor
                 // payload unless the slot is a possession slot (`121..=132`).
                 let clicked = !matches!(rest.get(1), None | Some(Value::Nil));
-                let check_cursor =
-                    (clicked || !model.protected.events().binding) && !(121..=132).contains(&action);
+                let check_cursor = (clicked || !model.protected.events().binding)
+                    && !(121..=132).contains(&action);
                 let on_self = match rest.front() {
-                    Some(Value::String(s)) => s
-                        .to_str()
-                        .is_ok_and(|u| u.eq_ignore_ascii_case("player")),
+                    Some(Value::String(s)) => {
+                        s.to_str().is_ok_and(|u| u.eq_ignore_ascii_case("player"))
+                    }
                     _ => false,
                 };
                 (check_cursor, on_self)
@@ -542,9 +544,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 lua.coerce_string(rest.front().cloned().unwrap_or(Value::Nil))?
                     .map(|value| value.to_string_lossy())
                     .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"))
-            } else { None };
+            } else {
+                None
+            };
             let target_guid = match target_token.as_deref() {
-                Some(token) => match model.unit(token).filter(|unit| unit.exists && unit.guid != 0) {
+                Some(token) => match model
+                    .unit(token)
+                    .filter(|unit| unit.exists && unit.guid != 0)
+                {
                     Some(unit) => Some(unit.guid),
                     None => return Ok(()),
                 },
@@ -607,15 +614,31 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
-        // 3.3.5a moves the page in the interpreter: `ActionBar_PageUp` passes the next page
-        // (`ActionButton.lua:52`) and the buttons read it back with `GetActionBarPage`
-        // (`ActionButton.lua:138`). The page stays FrameXML's `CURRENT_ACTIONBAR_PAGE`, which the
-        // wrath scripts declare (`ActionButton.lua:1`) and the 1.12 scripts already own.
+        // 12340 `0x005A7F60`: validate before changing native state; only a changed page signals.
+        // Keep the page bound in stock Lua's live-editable NUM_ACTIONBAR_PAGES policy, not a
+        // second Rust mapping. Temporary-bar override/restoration belongs to its separate owner.
         g.set(
             "ChangeActionBarPage",
-            lua.create_function(|lua, page: Option<i64>| {
-                if let Some(page) = page {
-                    lua.globals().set("CURRENT_ACTIONBAR_PAGE", page)?;
+            lua.create_function(|lua, page: Value| {
+                let pages: i64 = lua.globals().get("NUM_ACTIONBAR_PAGES")?;
+                if pages < 1 {
+                    return Err(mlua::Error::runtime("NUM_ACTIONBAR_PAGES must be positive"));
+                }
+                let page = binding_abi::is_number(lua, page)
+                    .filter(|n| n.is_finite())
+                    .map(|n| n.trunc() as i64)
+                    .filter(|n| (1..=pages).contains(n))
+                    .ok_or_else(|| {
+                        mlua::Error::runtime(format!(
+                            "ChangeActionBarPage() needs a page in the range 1 to {pages}"
+                        ))
+                    })?;
+                {
+                    let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                    if model.action_bar_page == page {
+                        return Ok(());
+                    }
+                    model.action_bar_page = page;
                 }
                 super::tick::fire_event_into(lua, "ACTIONBAR_PAGE_CHANGED", Vec::new());
                 Ok(())
@@ -625,9 +648,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             "GetActionBarPage",
             lua.create_function(|lua, ()| {
                 Ok(lua
-                    .globals()
-                    .get::<Option<i64>>("CURRENT_ACTIONBAR_PAGE")?
-                    .unwrap_or(1))
+                    .app_data_ref::<Model>()
+                    .expect("model app_data")
+                    .action_bar_page)
             })?,
         )?;
     }
@@ -873,19 +896,23 @@ mod tests {
         s.set_action(3, Some(slot(super::ACTION_KIND_MACRO, 5)));
         s.set_action(4, Some(slot(super::ACTION_KIND_SPELL, 3009)));
         assert_eq!(
-            s.eval::<(String, i64, String)>("return GetActionInfo(1)").unwrap(),
+            s.eval::<(String, i64, String)>("return GetActionInfo(1)")
+                .unwrap(),
             ("spell".into(), 133, "spell".into())
         );
         assert_eq!(
-            s.eval::<(String, i64, String)>("return GetActionInfo(2)").unwrap(),
+            s.eval::<(String, i64, String)>("return GetActionInfo(2)")
+                .unwrap(),
             ("item".into(), 117, "".into())
         );
         assert_eq!(
-            s.eval::<(String, i64, String)>("return GetActionInfo(3)").unwrap(),
+            s.eval::<(String, i64, String)>("return GetActionInfo(3)")
+                .unwrap(),
             ("macro".into(), 5, "".into())
         );
         assert_eq!(
-            s.eval::<(String, i64, String)>("return GetActionInfo(4)").unwrap(),
+            s.eval::<(String, i64, String)>("return GetActionInfo(4)")
+                .unwrap(),
             ("spell".into(), 3009, "pet".into())
         );
         assert_eq!(
@@ -1055,6 +1082,57 @@ mod tests {
             "the event fires synchronously, and the page is whatever FrameXML wrote"
         );
         assert_eq!(s.eval::<i64>("return N").unwrap(), 0, "zero return values");
+    }
+
+    #[test]
+    fn wrath_page_is_native_and_signals_only_after_a_change() {
+        let s = UiScript::with_target(super::super::UiTarget::Wrath335).unwrap();
+        s.run(
+            "NUM_ACTIONBAR_PAGES = 6; CURRENT_ACTIONBAR_PAGE = 99
+             seen = {}; local f = CreateFrame('Frame')
+             f:RegisterEvent('ACTIONBAR_PAGE_CHANGED')
+             f:SetScript('OnEvent', function() table.insert(seen, GetActionBarPage()) end)
+             assert(GetActionBarPage() == 1)
+             assert(select('#', ChangeActionBarPage(3)) == 0)
+             ChangeActionBarPage(3)
+             assert(GetActionBarPage() == 3 and #seen == 1 and seen[1] == 3)
+             CURRENT_ACTIONBAR_PAGE = 88
+             assert(GetActionBarPage() == 3)",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn wrath_page_rejects_invalid_inputs_without_mutation_or_events() {
+        let s = UiScript::with_target(super::super::UiTarget::Wrath335).unwrap();
+        s.run(
+            "NUM_ACTIONBAR_PAGES = 6; seen = 0
+             local f = CreateFrame('Frame'); f:RegisterEvent('ACTIONBAR_PAGE_CHANGED')
+             f:SetScript('OnEvent', function() seen = seen + 1 end)
+             for _, page in ipairs({0, -1, 7, 'bad', false, math.huge}) do
+                 assert(not pcall(ChangeActionBarPage, page))
+             end
+             assert(not pcall(ChangeActionBarPage))
+             assert(GetActionBarPage() == 1 and seen == 0)
+             ChangeActionBarPage('2.9')
+             assert(GetActionBarPage() == 2 and seen == 1)",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn wrath_page_limits_follow_live_lua_policy() {
+        let s = UiScript::with_target(super::super::UiTarget::Wrath335).unwrap();
+        s.run(
+            "NUM_ACTIONBAR_PAGES = 6; ChangeActionBarPage(6)
+             NUM_ACTIONBAR_PAGES = 4
+             assert(not pcall(ChangeActionBarPage, 5))
+             assert(GetActionBarPage() == 6)
+             ChangeActionBarPage(4); assert(GetActionBarPage() == 4)
+             NUM_ACTIONBAR_PAGES = 8
+             ChangeActionBarPage(8); assert(GetActionBarPage() == 8)",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1255,8 +1333,9 @@ mod tests {
                 ..Default::default()
             }),
         );
-        let (start, duration, enabled) =
-            s.eval::<(f64, f64, i64)>("return GetActionCooldown(1)").unwrap();
+        let (start, duration, enabled) = s
+            .eval::<(f64, f64, i64)>("return GetActionCooldown(1)")
+            .unwrap();
         assert!((start - 100.0).abs() < 1e-3);
         assert_eq!(duration, 15.0);
         assert_eq!(enabled, 1);
@@ -1273,8 +1352,9 @@ mod tests {
                 ..Default::default()
             }),
         );
-        let (start, duration, enabled) =
-            s.eval::<(f64, f64, i64)>("return GetActionCooldown(1)").unwrap();
+        let (start, duration, enabled) = s
+            .eval::<(f64, f64, i64)>("return GetActionCooldown(1)")
+            .unwrap();
         assert_eq!((start, duration, enabled), (0.0, 0.0, 0));
     }
 }

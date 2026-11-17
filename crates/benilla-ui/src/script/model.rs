@@ -827,6 +827,8 @@ pub(crate) struct Model {
     /// Per action, its usable, range, current and cooldown state; an absent one reads cold.
     pub(crate) action_states: HashMap<u32, super::action::StoredActionState>,
     pub(crate) bonus_bar_offset: u8,
+    /// The ordinary bar page, independent of FrameXML globals (12340 `0x005A7FD0`).
+    pub(crate) action_bar_page: i64,
     /// GlobalStrings keys of refusals this crate raises, fired by the app as `UI_ERROR_MESSAGE`
     /// (the reference's `DisplayError` `0x496720`), each a literal from `0xb4b498` (stride `0x14`).
     pub(crate) ui_errors: Vec<(&'static str, super::InputEvents)>,
@@ -1848,6 +1850,7 @@ impl Model {
             actions: HashMap::new(),
             action_states: HashMap::new(),
             bonus_bar_offset: 0,
+            action_bar_page: 1,
             ui_errors: Vec::new(),
             spellbook: spellbook::SpellBookState::default(),
             spell_list: Vec::new(),
