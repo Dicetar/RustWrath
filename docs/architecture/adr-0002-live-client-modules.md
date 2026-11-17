@@ -1188,7 +1188,7 @@ captured no rustc arguments for those, so the replay failed (`Missing rustc args
 An edit in `benilla-app` that used a new item from `benilla-formats` failed to build, because
 only `benilla-app` was replayed.
 
-`tools/live-code/dx-0.7.10-workspace-crates.patch` changes five things:
+`tools/live-code/dx-0.7.10-workspace-crates.patch` changes six things:
 
 - The watch list follows dependencies transitively (`local_dependencies` in `serve/runner.rs`),
   so every workspace crate the client links is watched.
@@ -1208,6 +1208,12 @@ only `benilla-app` was replayed.
   constant that did not exist yet.
 - Changes queued during a failed build are replayed (`serve/mod.rs`). Stock dx replays them
   only after a successful build, so the files that would have fixed the failure were dropped.
+- The replay runs dependencies first, including a dependency that a crate's own feature enables
+  (`workspace_dependents_of` in `build/request.rs` walks feature nodes;
+  `compile_workspace_hotpatch` then orders by each crate's captured `--extern` arguments).
+  Stock dx asks krates for direct dependents, which misses `benilla-app`'s
+  `hotpatch = ["dep:benilla-hotpatch-bevy"]` edge, so it replayed `benilla_app` first and the
+  build failed with `can't find crate for benilla_hotpatch_bevy`.
 
 The launcher passes `--log-to-file`, so the run folder's `dx.log` records which files and crates
 each patch saw.

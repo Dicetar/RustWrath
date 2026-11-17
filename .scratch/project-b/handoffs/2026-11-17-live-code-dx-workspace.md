@@ -1,9 +1,10 @@
 # Live code: patch every workspace crate the client links
 
-Status: landed on `main`; the patched dx built and ran, the batch fix is not compiled
+Status: landed on `main`; the batch fix compiled and worked, the replay-order fix is not
+compiled
 Owner: Claude Code (Opus 5.5)
 Branch: fix/live-code-dx-workspace (landed `fa707857`), fix/live-code-dx-chkstk (landed
-`84ef7600`), then live-dx3
+`84ef7600`), then live-dx3, live-dx4, live-dx5
 Issue: none. Owner session 2026-11-17: the trainer/game-object fix did not patch into the
 running client, and the first patch that did land crashed it.
 Next: the owner reruns `tools/install-live-dx.ps1` and relaunches `-LiveCode`. Then the
@@ -71,9 +72,28 @@ The third commit adds two hunks to the dx patch:
 `launch-client.ps1` now passes `--log-to-file <run>\dx.log`. dx traces its own modules for
 `serve`, so the log shows each patch's `changed_crates` and `modified_crates`.
 
-Also read, not a cause here: krates 0.17.5 `direct_dependents` shadows `nid` in its loop, so it
-misses a dependent reached only through a chain of feature nodes. `benilla-app` has a plain
-edge to `benilla-formats`, so the ordering edge exists.
+## The replay put benilla_app before its optional dependency
+
+With the settle and failed-build hunks installed, the owner relaunched and the fix was
+applied. dx.log showed one patch with all three changed crates, so the batching worked. The
+replay then compiled `benilla_app` before `benilla_hotpatch_bevy` and failed with `E0463 can't
+find crate for benilla_hotpatch_bevy` (`crates/benilla-app/src/hotpatch.rs:3`).
+
+`benilla-app` reaches that crate only through its own feature, `hotpatch =
+["dep:benilla-hotpatch-bevy"]`. In the krates graph that is the edge
+`Feature(benilla-app, hotpatch)` → `benilla-hotpatch-bevy`. krates 0.17.5 `direct_dependents`
+follows feature nodes only when they belong to the target crate, so it never reports
+`benilla-app`. dx builds both the cascade and the replay order from that call, and with no
+edge the lexicographic tie-break put `benilla_app` first.
+
+The fifth commit changes two things in the dx patch:
+
+- `workspace_dependents_of` (`build/request.rs`) walks the incoming graph edges itself. A
+  crate node, or a feature node of another crate, counts as a dependent; the target's own
+  feature nodes are followed further.
+- `compile_workspace_hotpatch` (`build/link.rs`) re-sorts the replay by each crate's captured
+  `--extern` arguments, which are what the fat build actually linked. Ties keep the earlier
+  order.
 
 ## What changed
 
@@ -98,7 +118,6 @@ edge to `benilla-formats`, so the ordering edge exists.
 
 ## Unverified
 
-- The settle and failed-build hunks have not been compiled. The rest of the patch built and ran.
+- The replay-order hunks (`request.rs` walk, `link.rs` `--extern` sort) have not been compiled.
+  The rest of the patch built and ran.
 - No cross-crate patch has yet landed in a running client.
-- `benilla-app`'s hotpatched build pulls in optional dependencies (`bevy/hotpatching`). If the
-  krates graph from `cargo metadata` lacks an edge the build uses, that crate stays unwatched.

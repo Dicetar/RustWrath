@@ -1,8 +1,8 @@
 diff --git a/src/build/link.rs b/src/build/link.rs
-index e3edd5c..8ca4684 100644
+index e3edd5c..3812897 100644
 --- a/src/build/link.rs
 +++ b/src/build/link.rs
-@@ -146,7 +146,20 @@ impl BuildRequest {
+@@ -146,7 +146,22 @@ impl BuildRequest {
          // Replay the rustcs for all modified workspace crates. This is not the final tip binary.
          // Note that the final tip might include itself as a lib (lib.rs + main.rs) which gets covered here.
          ctx.profile_phase("Workspace hotpatch replay");
@@ -21,9 +21,85 @@ index e3edd5c..8ca4684 100644
 +            }
 +            in_build
 +        });
++        let replayed_crates =
++            self.workspace_hotpatch_order_by_externs(workspace_rustc_args, replayed_crates)?;
          tracing::debug!("replaying crates: {replayed_crates:?}");
          for crate_name in &replayed_crates {
              let rustc_args = self
+@@ -602,6 +617,73 @@ impl BuildRequest {
+         })
+     }
+ 
++    /// RustWrath patch: order the replay by what each crate's captured rustc command actually
++    /// links (`--extern name=path`). This is the ground truth of the fat build, so it backs up the
++    /// cargo-metadata walk in `workspace_hotpatch_replay_order`, which once put benilla_app before
++    /// the optional dependency its `hotpatch` feature enables. Ties keep the incoming order.
++    fn workspace_hotpatch_order_by_externs(
++        &self,
++        workspace_rustc_args: &WorkspaceRustcArgs,
++        crates: Vec<String>,
++    ) -> Result<Vec<String>> {
++        let externs_of = |crate_name: &str| -> HashSet<String> {
++            let mut externs = HashSet::new();
++            let Some(args) = self.workspace_hotpatch_replay_args(workspace_rustc_args, crate_name)
++            else {
++                return externs;
++            };
++            let mut after_extern_flag = false;
++            for arg in &args.args {
++                let spec = if after_extern_flag {
++                    Some(arg.as_str())
++                } else {
++                    arg.strip_prefix("--extern=")
++                };
++                after_extern_flag = arg == "--extern";
++                if let Some(spec) = spec {
++                    // `[opts:]name[=path]`
++                    let name = spec.split('=').next().unwrap_or(spec);
++                    let name = name.rsplit(':').next().unwrap_or(name);
++                    externs.insert(name.replace('-', "_"));
++                }
++            }
++            externs
++        };
++
++        let position: HashMap<&String, usize> =
++            crates.iter().enumerate().map(|(i, name)| (name, i)).collect();
++        let mut indegree = vec![0usize; crates.len()];
++        let mut dependents: Vec<Vec<usize>> = vec![vec![]; crates.len()];
++        for (i, crate_name) in crates.iter().enumerate() {
++            for dep in externs_of(crate_name) {
++                if let Some(&j) = position.get(&dep) {
++                    if j != i {
++                        indegree[i] += 1;
++                        dependents[j].push(i);
++                    }
++                }
++            }
++        }
++
++        let mut ready: BTreeSet<usize> = (0..crates.len()).filter(|&i| indegree[i] == 0).collect();
++        let mut ordered = Vec::with_capacity(crates.len());
++        while let Some(i) = ready.pop_first() {
++            ordered.push(crates[i].clone());
++            for &d in &dependents[i] {
++                indegree[d] -= 1;
++                if indegree[d] == 0 {
++                    ready.insert(d);
++                }
++            }
++        }
++
++        ensure!(
++            ordered.len() == crates.len(),
++            "Cycle in captured --extern arguments — cannot determine replay order"
++        );
++        Ok(ordered)
++    }
++
+     /// Topological sort of modified workspace crates for rustc replay.
+     ///
+     /// The caller (builder) already guarantees that every crate in `modified_crates`
 diff --git a/src/build/patch.rs b/src/build/patch.rs
 index ce60a5a..acf66ad 100644
 --- a/src/build/patch.rs
@@ -49,6 +125,62 @@ index ce60a5a..acf66ad 100644
                              code
                          }
                          Architecture::X86_32(_) => {
+diff --git a/src/build/request.rs b/src/build/request.rs
+index 2a41545..3a867a2 100644
+--- a/src/build/request.rs
++++ b/src/build/request.rs
+@@ -2887,18 +2887,40 @@ impl BuildRequest {
+             })
+             .collect();
+ 
+-        krates
+-            .direct_dependents(target_nid)
+-            .into_iter()
+-            .filter_map(|dep| {
+-                let name = dep.krate.name.replace('-', "_");
+-                if workspace_names.contains(&name) {
+-                    Some(name)
+-                } else {
+-                    None
++        // RustWrath patch: krates' `direct_dependents` skips a dependent that reaches this crate
++        // through one of its own features (`hotpatch = ["dep:benilla-hotpatch-bevy"]` makes the
++        // edge `benilla-app/hotpatch` -> `benilla-hotpatch-bevy`). Without that edge the replay
++        // compiled benilla_app before benilla_hotpatch_bevy and failed. Walk the incoming edges
++        // here instead: a crate node, or a feature node of another crate, is a dependent; a
++        // feature node of this crate is followed further.
++        use krates::petgraph::{visit::EdgeRef, Direction};
++        let graph = krates.graph();
++        let mut dependents: Vec<String> = vec![];
++        let mut stack = vec![target_nid];
++        let mut visited = HashSet::new();
++        while let Some(nid) = stack.pop() {
++            for edge in graph.edges_directed(nid, Direction::Incoming) {
++                let source = edge.source();
++                if source == target_nid || !visited.insert(source) {
++                    continue;
+                 }
+-            })
+-            .collect()
++                let krate = match &graph[source] {
++                    krates::Node::Krate { krate, .. } => krate,
++                    krates::Node::Feature { krate_index, .. } => {
++                        if *krate_index == target_nid {
++                            stack.push(source);
++                            continue;
++                        }
++                        &krates[*krate_index]
++                    }
++                };
++                let name = krate.name.replace('-', "_");
++                if workspace_names.contains(&name) && !dependents.contains(&name) {
++                    dependents.push(name);
++                }
++            }
++        }
++        dependents
+     }
+ 
+     /// Get the folder where Apple Widget Extensions (.appex bundles) are installed.
 diff --git a/src/serve/mod.rs b/src/serve/mod.rs
 index b1c5613..9ef0e22 100644
 --- a/src/serve/mod.rs
