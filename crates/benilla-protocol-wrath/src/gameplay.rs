@@ -3928,19 +3928,25 @@ fn read_gameobject(b: &[u8]) -> Result<ServerEvent> {
     let _icon = r.cstring()?;
     let _cast_bar = r.cstring()?;
     let _unk = r.cstring()?;
-    // 3.3.5 has a wider, differently indexed data block than the 24-dword 1.12 record. The
-    // columns cannot be copied by position: the 1.12 consumer resolves lock/page/meeting-stone
-    // fields by type, and wrong numbers would misroute interaction. Keep the name and display,
-    // but report the columns as absent so the 1.12 owners do not read a foreign layout.
-    for _ in 0..24 {
-        let _ = r.i32()?;
+    // The 3.3.5 data block is 24 dwords, and for every column the 1.12 consumer reads it
+    // has the 1.12 index: 12340 `CGameObjectDef::GetPropNum` (0x746190, tables at
+    // 0xADAD30..) puts lockId (prop 4) at DOOR/BUTTON data[1], CHEST/QUESTGIVER/TRAP/GOOBER/
+    // AREADAMAGE/CAMERA/FLAGSTAND/FLAGDROP data[0], FISHINGHOLE data[4]; pageId (prop 15)
+    // at TEXT data[0] and GOOBER data[7]; quest background (prop 17) at QUESTGIVER/TEXT
+    // data[2] and GOOBER data[9]; the meeting-stone, MO-transport, GENERIC and
+    // CAPTURE_POINT columns likewise. Wrath only appends props past the 1.12 ones. Dropping
+    // the block left every lockId 0, so locked chests and ore/herb nodes were "used"
+    // instead of opened by the lock's spell.
+    let mut data = [0i32; 24];
+    for slot in &mut data {
+        *slot = r.i32()?;
     }
     Ok(ServerEvent::GameObjectInfo {
         entry,
         type_id,
         display_id,
         name,
-        data: [0; 24],
+        data,
     })
 }
 
