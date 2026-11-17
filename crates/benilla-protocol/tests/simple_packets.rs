@@ -168,22 +168,21 @@ fn server_sound_trio_parse_and_decode() {
     ));
 }
 
-/// Body per vmangos `Weather::SendWeatherForPlayersInZone`; 8534 is the RainMedium sound loop.
+/// Body per AzerothCore/TrinityCore 3.3.5 `Weather::SendWeatherUpdateToPlayer`: a `Weather.dbc`
+/// id, the grade and one abrupt byte. The row (not the packet) names the ambience kit.
 #[test]
 fn weather_parses_and_decodes() {
-    let mut body = 1u32.to_le_bytes().to_vec(); // WEATHER_TYPE_RAIN
+    let mut body = 1u32.to_le_bytes().to_vec(); // Weather.dbc 1, rain
     body.extend_from_slice(&0.7f32.to_le_bytes());
-    body.extend_from_slice(&8534u32.to_le_bytes());
-    body.push(0);
+    body.push(0); // smooth
     let p = messages::parse_server(messages::opcode::SMSG_WEATHER, &body).unwrap();
     match decode(p).as_slice() {
         [SessionEvent::Weather {
-            weather_type,
+            weather_id,
             grade,
-            sound_id,
             instant,
         }] => {
-            assert_eq!((*weather_type, *sound_id, *instant), (1, 8534, false));
+            assert_eq!((*weather_id, *instant), (1, false));
             assert!((grade - 0.7).abs() < 1e-6);
         }
         other => panic!("weather decode: {} events", other.len()),

@@ -172,6 +172,7 @@ const PUBLISHED: &[(&str, &str)] = &[
     ("water_fx::WaterRipples", "record"),
     ("weather::WeatherMessage", "record"),
     ("weather::WeatherState", "record"),
+    ("weather::WeatherTable", "record"),
     ("wmo_portal::EntityOutdoors", "record"),
     ("wmo_portal::room_pvs_visible", "record"),
     ("world_census::CensusReport", "record"),
