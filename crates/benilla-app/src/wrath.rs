@@ -15175,4 +15175,18 @@ mod scoped_delivery_tests {
         );
         assert!(parse_char_rename(&[0]).is_err());
     }
+
+    /// 12340's `SMSG_MESSAGECHAT` chat tag is a bitmask; the donor tag is an enum with GM first,
+    /// then DND, then AFK. COM/DEV have no donor spelling and read NONE.
+    #[test]
+    fn wrath_chat_tag_bitmask_becomes_the_vanilla_enum() {
+        use benilla_protocol::messages::chat_tag as t;
+        assert_eq!(chat_tag_112(0), t::NONE);
+        assert_eq!(chat_tag_112(0x01), t::AFK);
+        assert_eq!(chat_tag_112(0x02), t::DND);
+        assert_eq!(chat_tag_112(0x04), t::GM);
+        assert_eq!(chat_tag_112(0x03), t::DND, "DND wins over AFK");
+        assert_eq!(chat_tag_112(0x07), t::GM, "GM wins over DND and AFK");
+        assert_eq!(chat_tag_112(0x08 | 0x10), t::NONE, "COM/DEV have no donor tag");
+    }
 }
