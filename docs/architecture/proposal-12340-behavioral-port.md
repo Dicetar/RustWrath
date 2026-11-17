@@ -16,7 +16,7 @@ The intended outcome is a complete usable client. A translated function, compili
 
 RustWrath is a benilla-derived Rust and Bevy client targeting the owner's AzerothCore server. Its donor targets 1.12.1. Existing implementations are reusable when their behavior matches the Wrath contract; shared names and numeric similarities are insufficient evidence.
 
-The preserved reference is `D:/Projects/wowdecomp-reference`, pinned to `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`. It is reconstructed source and may contain incomplete or uncertain behavior. Selected client assets and original runtime behavior settle ambiguities; matching server source helps establish packet contracts.
+The preserved reference is `D:/Projects/wow/reference/wowdecomp-reference`, pinned to `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`. It is reconstructed source and may contain incomplete or uncertain behavior. Selected client assets and original runtime behavior settle ambiguities; matching server source helps establish packet contracts.
 
 The server owns authoritative gameplay state. The resident client owns received state, session and entity identity, clocks, input and GPU resources. Existing ADR-0002 defines presentation replacement through explicit interfaces; it does not make arbitrary client code safely reloadable.
 

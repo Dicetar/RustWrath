@@ -1,7 +1,7 @@
 //! The session-state producer: owns the replicated [`WorldState`] for one live client session
 //! and exports typed self-state snapshots for OpenCode's `benilla_wm_native` v2 bridge
 //! (`wm.native.observation.v2`, contract:
-//! `D:/Projects/project-b-opencode/docs/opencode/convergence-consumer.md`).
+//! `D:/Projects/wow/worktrees-legacy/project-b-opencode/docs/opencode/convergence-consumer.md`).
 //!
 //! Time semantics (the core of the v2 contract):
 //! - The driver stamps every reduced packet with its arrival wall-clock

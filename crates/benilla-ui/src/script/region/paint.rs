@@ -343,8 +343,24 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
         })?,
     )?;
 
-    // No Texture `SetRotation`: 1.12 registers it only on PlayerModel (`0x505f00`, table
-    // `0x84f1fc`), in neither region map (`0x87c128`, `0xcf5400`).
+    // No Texture `SetRotation` in 1.12: it registers it only on PlayerModel (`0x505f00`, table
+    // `0x84f1fc`), in neither region map (`0x87c128`, `0xcf5400`). 3.3.5's Texture has it: the
+    // stock `MinimapPing_OnUpdate` (`Minimap.lua:108`) spins `MinimapPingSpinner` with it, and
+    // without it that handler raised before counting the ping down, so the ping sat frozen.
+    // Radians counter-clockwise about the centre; [`crate::script::region::install`] publishes
+    // it to the Texture leaf alone.
+    if lua.app_data_ref::<Model>().expect("model").target == crate::script::UiTarget::Wrath335 {
+        m.set(
+            "SetRotation",
+            lua.create_function(|lua, (this, radians): (Table, Value)| {
+                let angle = tonumber_f32(lua, &radians);
+                let rh = region_handle_of(lua, &this)?;
+                let mut model = lua.app_data_mut::<Model>().expect("model");
+                model.region_data.entry(rh).or_default().rotation = angle;
+                Ok(())
+            })?,
+        )?;
+    }
 
     // SetTexCoord(left, right, top, bottom), XML `<TexCoords>`: a UV sub-rect in 0..1, origin top
     // left. SetTexCoord(ULx, ULy, LLx, LLy, URx, URy, LRx, LRy): any UV quad, as stock

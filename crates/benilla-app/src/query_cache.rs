@@ -71,6 +71,15 @@ pub(crate) enum Refused {
     Record,
 }
 
+/// What [`QueryCache::release`] forgot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Released {
+    /// An ask still in flight.
+    Pending,
+    /// A refusal.
+    Refused,
+}
+
 /// The ask-once cache.
 pub(crate) struct QueryCache<K, V> {
     answered: HashMap<K, V>,
@@ -177,6 +186,20 @@ impl<K: Copy + Eq + Hash + Default, V> QueryCache<K, V> {
         self.answered.contains_key(&key)
             || self.answered_unknown(key)
             || self.pending.lock_recover().contains(&key)
+    }
+
+    /// Benilla's own release of an ask that went nowhere, for an owner that re-asks on a clock: a
+    /// pending ask whose answer never landed (a reply lost to a decode error, a retired scope or
+    /// a full outbox) or a refusal is forgotten, so the next read that asks sends again. A record
+    /// stays. Says which it found.
+    pub(crate) fn release(&self, key: K) -> Option<Released> {
+        if self.pending.lock_recover().remove(&key) {
+            Some(Released::Pending)
+        } else if self.refused.lock_recover().remove(&key) {
+            Some(Released::Refused)
+        } else {
+            None
+        }
     }
 
     #[cfg(test)]

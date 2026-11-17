@@ -35,10 +35,19 @@ const REASON_NEED_AMMO: u8 = 0x2f;
 /// The edge a failure signals: `SPELLCAST_INTERRUPTED` (340) for `SPELL_FAILED_INTERRUPTED` and
 /// `_INTERRUPTED_COMBAT`, `SPELLCAST_FAILED` (339) for every other (`0x6e2238`, `0x6e4a24`).
 fn failure_edge(reason: u8) -> CastBarEdge {
-    match reason {
-        0x23 | 0x24 => CastBarEdge::Interrupted,
-        _ => CastBarEdge::Failed,
+    if is_interrupt_reason(reason) {
+        CastBarEdge::Interrupted
+    } else {
+        CastBarEdge::Failed
     }
+}
+
+/// Whether a 1.12 cast-failure reason is one of the two interruptions (0x23
+/// `SPELL_FAILED_INTERRUPTED`, 0x24 `_INTERRUPTED_COMBAT`; the 3.3.5 values 40/41 cross through
+/// `cast_failure::reason`). The auto-repeat stop uses the same reason, so its terminal must be
+/// told apart from a real cast interruption.
+pub(crate) fn is_interrupt_reason(reason: u8) -> bool {
+    matches!(reason, 0x23 | 0x24)
 }
 
 /// What the attempt pushes into the in-flight slot (`0x6e5026`), by where benilla holds it.

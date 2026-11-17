@@ -611,6 +611,24 @@ impl NativeCastState {
                 reason,
                 observed_at_unix_ms,
             } => {
+                // AC's `Spell::cancel` sends `SendCastResult(SPELL_FAILED_INTERRUPTED)` and then
+                // `SendInterrupted(SPELL_FAILED_INTERRUPTED)` for the same cast count in the same
+                // instant (`Spell.cpp:3678-3692`). The failed packet already resolved that
+                // attempt's one terminal (and, for a self cast, the 1.12 failure result), so the
+                // broadcast interruption is the same fact and must not resolve a second terminal.
+                // The cast count is monotonic within a session, so the same (caster, spell,
+                // count) in the same scope is the same attempt even if the two packets land in
+                // different milliseconds.
+                if self.last_cast_end.as_ref().is_some_and(|ended| {
+                    ended.scope.session_epoch == scope.session_epoch
+                        && ended.scope.world_generation == scope.world_generation
+                        && ended.identity.caster == caster
+                        && ended.identity.spell_id == spell_id
+                        && ended.identity.cast_count == Some(cast_count)
+                        && matches!(ended.outcome, WrathCastEnd::Failed)
+                }) {
+                    return None;
+                }
                 let ended = self.take_matching_cast(caster, spell_id, cast_count);
                 let (identity, target, targets, attempt_serial, start_ui_now_seconds) = match ended
                 {
@@ -856,6 +874,11 @@ pub(crate) fn update_from_gameplay(
             reason: *raw_reason,
             observed_at_unix_ms,
         },
+        // 12340's `Spell::SendInterrupted(0)` accompanies the real `SMSG_CAST_FAILED`
+        // (`Spell.cpp:3808`, `:3828`, `:3851`); zero is the success sentinel, never a
+        // failure reason (`cast_failure::reason`). The attempt's terminal already arrived as
+        // `CastFailed`, so a second `CastInterrupted` would terminate one cast twice.
+        WrathGameplayEvent::SpellFailure { raw_reason: 0, .. } => return None,
         WrathGameplayEvent::SpellFailure {
             caster,
             spell_id,
@@ -1152,6 +1175,78 @@ mod tests {
             last_cast_end_observation(&state, guid, 7, 4).state,
             benilla_wm_native::TerminalState::Unknown,
             "an edge from a retired world scope is never presented as current"
+        );
+    }
+
+    /// AC's `Spell::cancel` sends the failed result and then the broadcast interruption for the
+    /// same cast count in the same instant (`Spell.cpp:3678-3692`); one attempt terminates once.
+    #[test]
+    fn a_cancel_resolves_one_terminal_not_a_failed_and_an_interrupted_pair() {
+        let guid = 0xA11CE;
+        let mut state = NativeCastState::default();
+        let failed = state
+            .apply(WrathNativeUpdate::CastFailed {
+                scope: scope(),
+                caster: guid,
+                spell_id: 75,
+                cast_count: 1,
+                reason: 40,
+                observed_at_unix_ms: 20_000,
+            })
+            .expect("the failed packet resolves");
+        assert_eq!(failed.event.kind, WrathCastEventKind::Failed { reason: 40 });
+
+        assert!(
+            state
+                .apply(WrathNativeUpdate::CastInterrupted {
+                    scope: scope(),
+                    caster: guid,
+                    spell_id: 75,
+                    cast_count: 1,
+                    reason: 40,
+                    observed_at_unix_ms: 20_000,
+                })
+                .is_none(),
+            "the broadcast interruption names the terminal the failed packet just resolved"
+        );
+        assert!(
+            state
+                .apply(WrathNativeUpdate::CastInterrupted {
+                    scope: scope(),
+                    caster: guid,
+                    spell_id: 75,
+                    cast_count: 2,
+                    reason: 40,
+                    observed_at_unix_ms: 20_500,
+                })
+                .is_some(),
+            "a different attempt still resolves its own interruption"
+        );
+    }
+
+    /// 12340's `Spell::SendInterrupted(0)` follows the real `SMSG_CAST_FAILED`
+    /// (`Spell.cpp:3808/3828/3851`); zero is the success sentinel. The attempt already
+    /// terminated on the failed packet, so the authority must not resolve a second interruption
+    /// edge for it. A non-zero interruption reason still resolves one.
+    #[test]
+    fn a_zero_reason_interrupt_is_not_a_second_native_terminal() {
+        const SELF: u64 = 0xA11CE;
+        let failure = |raw_reason: u8| WrathGameplayEvent::SpellFailure {
+            caster: SELF,
+            spell_id: 133,
+            cast_count: 4,
+            raw_reason,
+        };
+        assert!(
+            update_from_gameplay(&failure(0), scope(), 10_000, SELF).is_none(),
+            "reason 0 is not an interruption of a fresh attempt"
+        );
+        assert!(
+            matches!(
+                update_from_gameplay(&failure(40), scope(), 10_000, SELF),
+                Some(WrathNativeUpdate::CastInterrupted { reason: 40, .. })
+            ),
+            "12340 SPELL_FAILED_INTERRUPTED (40) is a real interruption edge"
         );
     }
 

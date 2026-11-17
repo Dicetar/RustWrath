@@ -488,3 +488,98 @@ fn a_retargeted_anchor_follows_its_new_target() {
         "the plate must not follow its OLD target any more (310), got {plate_now}"
     );
 }
+
+/// A NaN offset (FrameXML's `FCFDockScrollFrame_JumpToTab` stores `0 * (0/0)` as the dock's
+/// horizontal scroll while its scroll frame is still 0 wide) leaves a NaN edge, which stays
+/// put. The fixpoint must see it as settled: a NaN that "changed" every round ran the round
+/// cap over the whole UI and re-ran it on every geometry read, hanging world entry.
+#[test]
+fn a_nan_offset_settles_instead_of_running_the_round_cap() {
+    let mut s = script();
+    s.set_screen_size(800.0, 600.0);
+    s.run(
+        r#"
+        dock = CreateFrame("Frame", "Dock", nil)
+        dock:SetWidth(1); dock:SetHeight(26)
+        dock:SetPoint("TOPLEFT", nil, "TOPLEFT", 0/0, 0)
+        tab = CreateFrame("Frame", "Tab", dock)
+        tab:SetWidth(82); tab:SetHeight(32)
+        tab:SetPoint("LEFT", dock, "LEFT", 0, 0)
+        tex = tab:CreateTexture("TabLeft")
+        tex:SetWidth(16); tex:SetHeight(32)
+        tex:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, 0)
+        "#,
+    )
+    .expect("setup");
+
+    s.resolve();
+    let (rounds, solved) = {
+        let m = s.lua().app_data_ref::<Model>().expect("model app_data");
+        assert!(
+            !m.warnings.iter().any(|w| w.contains("did not converge")),
+            "a NaN edge bailed as a cycle: {:?}",
+            m.warnings
+        );
+        (m.layout_rounds, m.layout_solves)
+    };
+    assert!(rounds <= 4, "a NaN edge must settle in a few rounds, took {rounds}");
+    s.resolve();
+    assert_eq!(solves(&s), solved, "a settled NaN layout must close the gate");
+}
+
+/// 12340's `SetPoint` refuses no anchor cycle, so an addon can close one over nodes that already
+/// have rects. A frame anchored to its own texture drifts: the frame reads the texture's last
+/// rect, the texture then follows the frame, and each round carries both further. The solver
+/// names the cycle and stops once the same rects keep moving, rather than running the round cap,
+/// and the bailed rects stand until a write instead of every read re-running the cycle.
+#[test]
+fn an_anchor_cycle_bails_early_and_stays_bailed_until_a_write() {
+    let mut s = script();
+    s.set_screen_size(800.0, 600.0);
+    s.run(
+        r#"
+        for i = 1, 120 do
+            local f = CreateFrame("Frame", "Filler" .. i, nil)
+            f:SetWidth(4); f:SetHeight(4)
+            f:SetPoint("TOPLEFT", nil, "TOPLEFT", i, -i)
+        end
+        a = CreateFrame("Frame", "CycleA", nil)
+        a:SetWidth(20); a:SetHeight(20)
+        a:SetPoint("LEFT", nil, "LEFT", 0, 0)
+        b = a:CreateTexture("CycleB")
+        b:SetWidth(20); b:SetHeight(20)
+        b:SetPoint("LEFT", a, "RIGHT", 10, 0)
+        "#,
+    )
+    .expect("setup");
+    s.resolve();
+    s.run(
+        r#"
+        a:ClearAllPoints()
+        a:SetPoint("LEFT", b, "RIGHT", 10, 0)
+        "#,
+    )
+    .expect("close the cycle");
+
+    let rounds_before = s.lua().app_data_ref::<Model>().expect("model").layout_rounds;
+    s.resolve();
+    let (rounds, solved) = {
+        let m = s.lua().app_data_ref::<Model>().expect("model app_data");
+        assert!(
+            m.warnings
+                .iter()
+                .any(|w| w.contains("did not converge") && w.contains("CycleA")),
+            "the cycle must be named: {:?}",
+            m.warnings
+        );
+        (m.layout_rounds - rounds_before, m.layout_solves)
+    };
+    assert!(rounds <= 70, "a cycle must bail on repetition, took {rounds} rounds");
+
+    s.resolve();
+    assert_eq!(solves(&s), solved, "a bailed cycle must not re-run on an unmutated read");
+
+    s.run("b:SetWidth(30)").expect("write");
+    s.resolve();
+    assert_eq!(solves(&s), solved + 1, "a write must re-open the gate on a bailed cycle");
+}

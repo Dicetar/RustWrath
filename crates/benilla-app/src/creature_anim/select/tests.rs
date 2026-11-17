@@ -544,7 +544,7 @@ fn a_set_state_outranks_the_idle_fallbacks_and_nothing_before_them() {
     };
     assert_eq!(claimed(&swim_forward, None, None, Some(234)), [42, 41, 0]);
     assert_eq!(claimed(&moving_forward(3.0), None, None, Some(234)), [4, 0]);
-    // The turn shuffle, the Ready idle (a swimmer's is the swim idle), the ranged idle and the
+    // The Ready idle (a swimmer's is the swim idle), the turn shuffle, the ranged idle and the
     // chair loops all come first.
     let turning = MovementState {
         flags: move_flags::TURN_LEFT,
@@ -552,6 +552,8 @@ fn a_set_state_outranks_the_idle_fallbacks_and_nothing_before_them() {
     };
     assert_eq!(claimed(&turning, None, None, Some(234)), [11, 0]);
     assert_eq!(claimed(&still, Some(26), None, Some(234)), [26, 25, 0]);
+    // Engaged and turning in place: `ChooseCombatAnim` runs before `ChooseShuffleAnim`.
+    assert_eq!(claimed(&turning, Some(26), None, Some(234)), [26, 25, 0]);
     assert_eq!(claimed(&swimming, Some(26), None, Some(234)), [41, 0]);
     assert_eq!(claimed(&still, None, Some(105), Some(234)), [105, 25, 0]);
     // `0x5fd460` has no swim gate: a swimmer takes it too.

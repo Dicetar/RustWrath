@@ -83,6 +83,24 @@ fn marker_model(status: u32) -> Option<&'static str> {
     ICONS.get(icon as usize).copied().flatten()
 }
 
+/// The low-level statuses 2-4 (`LOW_LEVEL_AVAILABLE`, `LOW_LEVEL_REWARD_REP`,
+/// `LOW_LEVEL_AVAILABLE_REP`) draw a marker only while the minimap tracks trivial quests
+/// (`UpdateInteractIcon`, `status - 2 > 2 || IsTrackingTrivialQuests()`), the minimap tracking
+/// menu's "Low Level Quests" row (`minimapTrackedInfo`). Off by default, so they draw none, and
+/// a flight master's own icon shows.
+fn hidden_trivial(status: u32, trivial: bool) -> bool {
+    !trivial && (2..=4).contains(&status)
+}
+
+/// Whether the tracking menu's active row is "Low Level Quests".
+fn tracking_trivial(cvars: Option<&crate::cvars::Cvars>) -> bool {
+    use benilla_ui::script::minimap_tracking::{tracked_info, TrackingKind, TRACKED_INFO_CVAR};
+    cvars
+        .and_then(|c| c.get(TRACKED_INFO_CVAR))
+        .and_then(tracked_info)
+        .is_some_and(|t| t.kind == TrackingKind::TrivialQuests)
+}
+
 /// One live marker's root and model; a status change swaps the whole instance (`0x607480`).
 struct MarkerInst {
     root: Entity,
@@ -146,6 +164,7 @@ fn sync_markers(
     seats: Query<(), With<MarkerSeat>>,
     anchors: Query<&BoneAttach>,
     mounts: Query<(), With<crate::entities::mount::MountChild>>,
+    cvars: Option<Res<crate::cvars::Cvars>>,
     mut live: Local<HashMap<u64, MarkerInst>>,
 ) {
     if assets.is_none() {
@@ -174,8 +193,9 @@ fn sync_markers(
         }
     }
     let mut desired_by_npc: HashMap<u64, &'static str> = HashMap::new();
+    let trivial = tracking_trivial(cvars.as_deref());
     for (&npc, &status) in quest.statuses() {
-        if index.0.contains_key(&npc) {
+        if index.0.contains_key(&npc) && !hidden_trivial(status, trivial) {
             if let Some(path) = marker_model(status) {
                 desired_by_npc.insert(npc, path);
             }

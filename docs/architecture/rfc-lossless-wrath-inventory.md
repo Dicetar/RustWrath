@@ -30,7 +30,7 @@ Reference anchors (read-only, pin `e67b6ffe`): `WoW/Common/ComponentCore/Types.h
 `WoW/Source/Ui/ContainerFrame.cpp:122` (11 total bags), `WoW/Source/Ui/
 PaperDollInfoFrame.cpp:172-181` (`ResolveInventorySlotArg` bands 39..66 / 67..73 / 86..117),
 `WoW/Source/Object/ObjectClient/Item_C.cpp:374-395` and `:1950-1962` (12 enchant slots).
-Server anchors: `D:/WOW/Azerothcore_WoTLK_Rebuild/source/azerothcore/src/server/game/Entities/
+Server anchors: `D:/Projects/wow/server/Azerothcore_WoTLK_Rebuild/source/azerothcore/src/server/game/Entities/
 Player/Player.h:697-717` and `.../Entities/Object/Updates/UpdateFields.h:66-81,329-332`.
 
 ## 2. Typed owner
