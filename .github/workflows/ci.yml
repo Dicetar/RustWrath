@@ -2,11 +2,19 @@
 # workspace tests on Windows, for development pushes, pull requests or a dispatch: a red one is seen
 # before anyone builds it. The data-gated tests, the engine boot checks and a live run happen on
 # the maintainer's machine before it lands.
+#
+# Agents do not run Cargo locally, so every pushed branch runs here: this is where their focused
+# tests are first compiled and run. Pushes that only touch notes and docs are skipped. How to read
+# a run is in docs/agents/sync.md ("Reading CI").
 name: CI
 
 on:
   push:
-    branches: [wotlk]
+    branches: ['**']
+    paths-ignore:
+      - '.scratch/**'
+      - 'docs/**'
+      - '**/*.md'
   pull_request:
   workflow_dispatch:
 
@@ -41,14 +49,22 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config libasound2-dev libudev-dev
       - name: Toolchain
         run: rustup toolchain install && rustc -V
+      # Saved on failure too: main carries known failing gates, and a cache saved only on green
+      # was never saved, so every run compiled all ~490 crates from nothing.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
       - name: sccache
         uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test-build
+        run: cargo test --workspace --no-run
+      # The owner's budget for running the tests: three minutes.
       - name: test
+        timeout-minutes: 3
         run: cargo test --workspace
       - name: doc-links
         run: scripts/doc-links.py
@@ -69,6 +85,13 @@ jobs:
         run: cargo clippy -p benilla -p benilla-app --no-default-features -- -D warnings
       - name: player-tests
         run: cargo test -p benilla-formats -p benilla-app --no-default-features --lib
+      # The live-code build (`launch-client.ps1 -LiveCode`), checked only: `bevy/hotpatching` changes
+      # bevy_ecs and bevy_app, so this rebuilds the Bevy stack once more. It runs after an earlier
+      # gate's failure too: it is the only compile of the feature, and fmt alone must not hide it.
+      # A check, not clippy: the lint debt the clippy step reports would stop it before the app.
+      - name: live-code-check
+        if: ${{ !cancelled() }}
+        run: cargo check -p benilla -p benilla-app --features live_code
 
   windows:
     # The workspace tests on a Windows checkout, which no macOS or Linux gate runs: path separators,
@@ -89,13 +112,18 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install && rustc -V
+      # Saved on failure too, as on the Linux job.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
       - name: sccache
         uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      # Every crate runs, so one binary's crash does not hide the rest of the workspace.
+      - name: test-build
+        run: cargo test --workspace --no-run
+      # Every crate runs, so one binary's crash does not hide the rest of the workspace. The owner's
+      # budget for running the tests: three minutes. A binary that dies whole is named by the
+      # `Running` line before it; the single-threaded rerun that used to follow every failure is
+      # gone (main always has failures, so it ran every time).
       - name: test
+        timeout-minutes: 3
         run: cargo test --workspace --no-fail-fast
-      # A binary that dies whole names no test; on one thread each test's name prints before it runs.
-      - name: name the test a crash took down
-        if: failure()
-        run: cargo test --workspace --no-fail-fast -- --test-threads=1

@@ -992,6 +992,14 @@ pub struct WrathEntity {
     pub summoned_by: Option<u64>,
     /// `UNIT_FIELD_CREATEDBY`: the creator of a totem or created object; for a hunter pet, its owner.
     pub created_by: Option<u64>,
+    /// `UNIT_FIELD_CHARM`: the unit this one controls, a pet or the vehicle seat it rides. The
+    /// donor slots 6/7 the 1.12 owners read; 12340 keeps the same two indices.
+    pub charm: Option<u64>,
+    /// `UNIT_FIELD_SUMMON`: the guardian this one controls, at donor slots 8/9 on both layouts.
+    pub summon: Option<u64>,
+    /// A corpse's own block (`CORPSE_END` 36): 12340's corpse layout is the 1.12 one shifted by
+    /// two after `PARTY`, so the projection cannot copy it by index.
+    pub corpse_fields: Option<crate::wrath_inventory::WrathFieldWindow>,
     /// Wrath `PLAYER_BYTES`: skin, face, hair style, hair colour.
     pub player_bytes: Option<u32>,
     /// Wrath `PLAYER_BYTES_2`: facial hair, bank slots, rest state, arena faction.
@@ -1026,6 +1034,10 @@ pub struct WrathEntity {
     /// it, identical deltas included) and the packet-arrival wall clock. Presentation stamps a
     /// GetTime anchor once per revision; nothing here is a UI clock.
     pub aura_receipts: BTreeMap<u8, benilla_protocol_wrath::reducer::AuraReceipt>,
+    /// The raw 3.3.5 window of a creature, GameObject, DynamicObject or corpse with the
+    /// delivered mask, read by the live field table (`wrath_field_map`). A player uses
+    /// `player_fields`; every other type carries `None`.
+    pub raw_fields: Option<crate::wrath_inventory::WrathFieldWindow>,
 }
 
 /// A full-world digest: the replicated world at one `state_revision`.
@@ -2551,9 +2563,13 @@ impl Plugin for WrathNetPlugin {
                 )
                     .chain(),
             );
+            app.init_resource::<crate::wrath_field_map::WrathFieldMap>();
+            app.insert_non_send_resource(crate::wrath_translate::WrathTranslateScript::new());
             app.add_systems(
                 Update,
                 (
+                    crate::wrath_field_map::poll_overlay,
+                    crate::wrath_translate::poll_script,
                     wrath_net_drain,
                     wrath_apply_world,
                     wrath_wm_action_intake,
@@ -3500,6 +3516,64 @@ fn vanilla_target_mask(mask: u32) -> u16 {
     vanilla
 }
 
+/// 12340's melee `HitInfo` onto the 1.12 seam's bit layout. The bit positions moved between the
+/// builds: 12340's 0x20/0x40 absorb, 0x80/0x100 resist, 0x200 crit, 0x2000 block,
+/// 0x10000/0x20000 glancing/crushing, 0x40000 no-animation and 0x200000 swing-no-hit-sound are
+/// the 1.12 seam's 0x20, 0x40, 0x80, 0x800, 0x4000, 0x8000, 0x10000 and 0x80000. 12340's
+/// 0x4000/0x8000 words are not glancing/crushing, and its 0x800000 rage-gain bit has no 1.12
+/// word, so all three are dropped explicitly rather than leaking into the 1.12 consumers as false
+/// outcomes.
+fn vanilla_hit_info(wrath: u32) -> u32 {
+    const AFFECTS_VICTIM: u32 = 0x0000_0002;
+    const OFFHAND: u32 = 0x0000_0004;
+    const MISS: u32 = 0x0000_0010;
+    const ABSORB: u32 = 0x0000_0020;
+    const RESIST: u32 = 0x0000_0040;
+    const CRITICAL: u32 = 0x0000_0080;
+    const BLOCK: u32 = 0x0000_0800;
+    const GLANCING: u32 = 0x0000_4000;
+    const CRUSHING: u32 = 0x0000_8000;
+    const NO_ANIMATION: u32 = 0x0001_0000;
+    const SWING_NO_HIT_SOUND: u32 = 0x0008_0000;
+
+    let mut vanilla = wrath & (AFFECTS_VICTIM | OFFHAND | MISS);
+    if wrath & (0x0000_0020 | 0x0000_0040) != 0 {
+        vanilla |= ABSORB;
+    }
+    if wrath & (0x0000_0080 | 0x0000_0100) != 0 {
+        vanilla |= RESIST;
+    }
+    if wrath & 0x0000_0200 != 0 {
+        vanilla |= CRITICAL;
+    }
+    if wrath & 0x0000_2000 != 0 {
+        vanilla |= BLOCK;
+    }
+    if wrath & 0x0001_0000 != 0 {
+        vanilla |= GLANCING;
+    }
+    if wrath & 0x0002_0000 != 0 {
+        vanilla |= CRUSHING;
+    }
+    if wrath & 0x0004_0000 != 0 {
+        vanilla |= NO_ANIMATION;
+    }
+    if wrath & 0x0020_0000 != 0 {
+        vanilla |= SWING_NO_HIT_SOUND;
+    }
+    vanilla
+}
+
+/// 12340 sends a spell-school *mask* where the 1.12 seam carries the 0-6 school *index*. A normal
+/// melee swing's mask is 1, which the 1.12 line would otherwise read as a non-physical Holy hit.
+fn vanilla_school(mask: u32) -> u32 {
+    if mask == 0 {
+        0
+    } else {
+        mask.trailing_zeros().min(6)
+    }
+}
+
 /// Map a typed 3.3.5 reply onto the established 1.12 event seam. Fields with no 1.12 equivalent
 /// are left empty; nothing is invented from local state. `self_guid` gates the edges the 1.12
 /// seam only ever has for the player (channel timers), because 12340 broadcasts them for every
@@ -3607,14 +3681,14 @@ fn translate_gameplay(
         } => vec![SessionEvent::AttackerState(ProtocolAttackerState {
             attacker,
             victim,
-            hit_info,
+            hit_info: vanilla_hit_info(hit_info),
             damage,
             victim_state,
             absorb,
             resist,
             blocked,
             melee_spell_id,
-            school,
+            school: vanilla_school(school),
         })],
         WrathGameplayEvent::CancelCombat => vec![SessionEvent::CancelCombat],
         WrathGameplayEvent::AiReaction { unit, reaction } => {
@@ -3639,7 +3713,7 @@ fn translate_gameplay(
             attacker,
             spell_id,
             damage,
-            school,
+            school: vanilla_school(u32::from(school)) as u8,
             absorb,
             resist,
             // 12340's byte is `physicalLog`; periodic damage rides `SMSG_PERIODICAURALOG`.
@@ -3663,7 +3737,7 @@ fn translate_gameplay(
                         resist,
                     } => ProtocolPeriodicTick::Damage {
                         amount,
-                        school,
+                        school: vanilla_school(school),
                         absorb,
                         resist,
                     },
@@ -3797,6 +3871,16 @@ fn translate_gameplay(
         WrathGameplayEvent::SpiritHealerConfirm { npc } => {
             vec![SessionEvent::SpiritHealerConfirm { npc }]
         }
+        WrathGameplayEvent::DeathReleaseLoc { map_id, position } => {
+            vec![SessionEvent::DeathReleaseLoc { map_id, position }]
+        }
+        WrathGameplayEvent::PreResurrect { guid } => {
+            vec![SessionEvent::PreResurrect { guid }]
+        }
+        WrathGameplayEvent::AreaSpiritHealerTime { healer, ms } => {
+            vec![SessionEvent::AreaSpiritHealerTime { healer, ms }]
+        }
+        WrathGameplayEvent::CorpseNotInInstance => vec![SessionEvent::CorpseNotInInstance],
         WrathGameplayEvent::LogoutResponse { reason, instant } => {
             vec![SessionEvent::LogoutResponse { reason, instant }]
         }
@@ -3813,6 +3897,11 @@ fn translate_gameplay(
         // 3807-3808, `cancel` 3669/3678). Turning the self copy into a second failed
         // `CastResult` put a second red line under every server refusal. Reason 0 (SUCCESS)
         // has no 1.12 key, so that line read "Internal error".
+        // A non-zero reason is no different: `Spell::cancel` sends `SendInterrupted(40)` after
+        // `SendCastResult(40)` while preparing, and alone for a delayed spell or a channel
+        // interrupted by someone else, where 12340 shows the interrupted cast bar and no line.
+        // Not applied: 0x809C70 also stops the local auto-repeat for reasons 52-54 (the
+        // need-ammo family), which AzerothCore never sends through this message.
         WrathGameplayEvent::SpellFailure { caster, spell_id, .. } => {
             vec![SessionEvent::SpellFailedOther { caster, spell_id }]
         }
@@ -9218,6 +9307,23 @@ fn push_player_unit_fields(
     }
 }
 
+/// Translate one 3.3.5 corpse block into the 1.12 corpse layout. Owner and party (6..=9) keep
+/// their indices; display, the nineteen item slots, both appearance bytes, guild, flags and the
+/// dynamic flags start two dwords earlier (`CORPSE_FIELD_DISPLAY_ID` 10 against the 1.12 slot
+/// 12; `Player.cpp:4809-4822`), so everything from 10 on shifts by two. Only delivered dwords
+/// are copied: an absent field leaves the create-shaped donor descriptor at 0.
+fn push_corpse_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    pairs: &mut Vec<(u16, u32)>,
+) {
+    for index in 6..benilla_protocol_wrath::fields::CORPSE_END {
+        if let Some(value) = raw.get(index) {
+            let dst = if index < 10 { index } else { index + 2 };
+            pairs.push((dst, value));
+        }
+    }
+}
+
 /// Copy the player inventory bands the 1.12 item owners walk. The 3.3.5 arrays are wider in the
 /// bank (28 -> 24 slots), bank bags (7 -> 6) and otherwise use a different base; every array here
 /// is copied explicitly, with the extra 3.3.5 tail dropped rather than folded into a neighbour.
@@ -9496,7 +9602,7 @@ fn apply_item_world(
 /// Translate the drained digest into the established `GuidIndex`/`NetEntity`/`ObjectStore` path.
 /// Exclusive, so creates/removals are live before `WorldStage::Input`.
 fn wrath_apply_world(world: &mut World) {
-    let (changes, entities, entered, phase, player_guid, map_id) = {
+    let (mut changes, entities, entered, phase, player_guid, map_id) = {
         let mut view = world.resource_mut::<WrathWorldView>();
         (
             std::mem::take(&mut view.last_changes),
@@ -9507,6 +9613,13 @@ fn wrath_apply_world(world: &mut World) {
             view.map_id,
         )
     };
+    // A reloaded field table re-projects every streamed object through the update path below.
+    if world
+        .get_resource_mut::<crate::wrath_field_map::WrathFieldMap>()
+        .is_some_and(|mut map| std::mem::take(&mut map.reapply))
+    {
+        crate::wrath_field_map::queue_reapply(&mut changes, &entities);
+    }
     let mut index = std::mem::take(&mut *world.resource_mut::<GuidIndex>());
     if changes.world_transferred {
         // Scope loss is cleanup-first: it does not depend on a following digest, a player guid,
@@ -9637,6 +9750,10 @@ fn wrath_apply_world(world: &mut World) {
     for guid in &changes.removed {
         if let Some(entity) = index.0.remove(guid) {
             world.despawn(entity);
+        }
+        // A corpse-to-bones swap destroys the object; the latch must not ride a later reclaim.
+        if let Some(mut death) = world.get_resource_mut::<crate::death::DeathNet>() {
+            crate::death::net::forget_corpse(*guid, &mut death);
         }
     }
 
@@ -9770,7 +9887,12 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(flags) = remote.dynamic_flags {
             pairs.push((143, flags));
         }
-        if let Some(display) = remote.display_id.filter(|&display| display != 0) {
+        // A GameObject's descriptor, display included, comes from the field table; 131/132 are
+        // unit display slots.
+        if let Some(display) = remote
+            .display_id
+            .filter(|&display| display != 0 && kind != EntityKind::GameObject)
+        {
             pairs.push((131, display));
             pairs.push((132, display));
         } else if kind == EntityKind::Player {
@@ -9816,6 +9938,21 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(created_by) = remote.created_by {
             pairs.push((14, created_by as u32));
             pairs.push((15, (created_by >> 32) as u32));
+        }
+        // `UNIT_FIELD_CHARM`/`UNIT_FIELD_SUMMON` share the 1.12 indices (6/7, 8/9): a controlled
+        // pet or vehicle seat on us is what `UnitIsControlling` and the attack-charm refusal read.
+        if let Some(charm) = remote.charm {
+            pairs.push((6, charm as u32));
+            pairs.push((7, (charm >> 32) as u32));
+        }
+        if let Some(summon) = remote.summon {
+            pairs.push((8, summon as u32));
+            pairs.push((9, (summon >> 32) as u32));
+        }
+        if kind == EntityKind::Corpse {
+            if let Some(raw) = remote.corpse_fields.as_ref() {
+                push_corpse_fields(raw, &mut pairs);
+            }
         }
         let mut wrath_slots: Option<WrathQuestSlots> = None;
         if kind == EntityKind::Player {
@@ -9923,7 +10060,35 @@ fn wrath_apply_world(world: &mut World) {
         if matches!(kind, EntityKind::Unit | EntityKind::Player) && !remote.auras.is_empty() {
             push_aura_fields(&remote.auras, &mut pairs);
         }
+        // The live field table, then the live translation script, run last so a data rule or
+        // the script can add or override any 1.12 word.
+        if let Some(map) = world.get_resource::<crate::wrath_field_map::WrathFieldMap>() {
+            map.push_pairs(remote, &mut pairs);
+        }
+        if let Some(script) =
+            world.get_non_send_resource::<crate::wrath_translate::WrathTranslateScript>()
+        {
+            script.translate(remote, &mut pairs);
+        }
         let fields = ObjectFields::from_pairs(&pairs).into_created(object_type);
+        // A 12340 corpse keeps its body display in its own block (`CORPSE_FIELD_DISPLAY_ID`,
+        // `Player.cpp:4820`), not in `UNIT_FIELD_DISPLAYID`: the display build would otherwise
+        // draw nothing for our own corpse. A bone pile keeps the id and builds its skeleton from
+        // the appearance bytes instead (`crate::entities::corpse`).
+        let display_id = if kind == EntityKind::Corpse {
+            fields.corpse_display_id()
+        } else {
+            remote.display_id
+        };
+        // The corpse-guid latch `RetrieveCorpse` sends has one writer in the reference
+        // (`0x4920d0`, gated on `CORPSE_FIELD_OWNER == me` and a clear `CORPSE_FIELD_FLAGS`
+        // bit 0); the 12340 digest path feeds it here, where the translated block exists.
+        if kind == EntityKind::Corpse {
+            let me = crate::net::SelfGuid(Some(player_guid));
+            if let Some(mut death) = world.get_resource_mut::<crate::death::DeathNet>() {
+                crate::death::net::note_corpse(*guid, kind, &fields, &me, &mut death);
+            }
+        }
         let transform = remote.position.map(|p| Transform {
             translation: wow_to_bevy([p.x, p.y, p.z]),
             rotation: Quat::from_rotation_y(p.o),
@@ -10045,7 +10210,7 @@ fn wrath_apply_world(world: &mut World) {
                 world.entity_mut(entity).insert((
                     NetEntity {
                         kind,
-                        display_id: remote.display_id,
+                        display_id,
                         scale: remote.scale.unwrap_or(1.0),
                     },
                     ObjectStore(fields),
@@ -10306,7 +10471,7 @@ fn wrath_apply_world(world: &mut World) {
                     Guid(*guid),
                     NetEntity {
                         kind,
-                        display_id: remote.display_id,
+                        display_id,
                         scale: remote.scale.unwrap_or(1.0),
                     },
                     ObjectStore(fields),
@@ -10640,8 +10805,8 @@ fn wrath_apply_world(world: &mut World) {
                 for &(index, old, new) in moved {
                     use benilla_protocol::field::{
                         FIELD_UNIT_BYTES_0, FIELD_UNIT_DYNAMIC_FLAGS, FIELD_UNIT_FACTIONTEMPLATE,
-                        FIELD_UNIT_HEALTH, FIELD_UNIT_LEVEL, FIELD_UNIT_MAXHEALTH,
-                        FIELD_UNIT_MAXPOWER1, FIELD_UNIT_POWER1,
+                        FIELD_UNIT_FLAGS, FIELD_UNIT_HEALTH, FIELD_UNIT_LEVEL,
+                        FIELD_UNIT_MAXHEALTH, FIELD_UNIT_MAXPOWER1, FIELD_UNIT_POWER1,
                     };
                     // The snapshot adapter bypasses the normal values-block watches. Feed
                     // the UI explicitly; FieldChanged alone only reaches ECS consumers.
@@ -10654,6 +10819,7 @@ fn wrath_apply_world(world: &mut World) {
                         i if (FIELD_UNIT_MAXPOWER1..FIELD_UNIT_MAXPOWER1 + 5).contains(&i) => {
                             Some(crate::field_watch::id::MAX_POWER + (i - FIELD_UNIT_MAXPOWER1))
                         }
+                        FIELD_UNIT_FLAGS => Some(crate::field_watch::id::UNIT_FLAGS),
                         FIELD_UNIT_LEVEL => Some(crate::field_watch::id::UNIT_LEVEL),
                         FIELD_UNIT_FACTIONTEMPLATE => Some(crate::field_watch::id::UNIT_FACTION),
                         FIELD_UNIT_BYTES_0 if (old >> 24) != (new >> 24) => {
@@ -10669,6 +10835,33 @@ fn wrath_apply_world(world: &mut World) {
                                 guid: *guid,
                                 id,
                             });
+                        }
+                    }
+                    // The normal values-block watcher signals the dynamic-flags event on any
+                    // bit, plus the tap's `UNIT_FACTION` and the dead look's `UNIT_HEALTH`. The
+                    // snapshot adapter bypasses it, so the target frame's tapped/lootable state
+                    // would otherwise keep its old icon after a Wrath kill.
+                    if index == FIELD_UNIT_DYNAMIC_FLAGS {
+                        if let Some(mut notices) =
+                            world.get_resource_mut::<crate::field_watch::NoticeLane>()
+                        {
+                            notices.write(crate::field_watch::FieldNotice::Signal {
+                                guid: *guid,
+                                id: crate::field_watch::id::UNIT_DYNAMIC_FLAGS,
+                            });
+                            let flipped = old ^ new;
+                            if flipped & 0x4 != 0 {
+                                notices.write(crate::field_watch::FieldNotice::Signal {
+                                    guid: *guid,
+                                    id: crate::field_watch::id::UNIT_FACTION,
+                                });
+                            }
+                            if flipped & 0x20 != 0 {
+                                notices.write(crate::field_watch::FieldNotice::Signal {
+                                    guid: *guid,
+                                    id: crate::field_watch::id::UNIT_HEALTH,
+                                });
+                            }
                         }
                     }
                     // Loot FX rescan on this edge, including when LOOTABLE is cleared, plus
@@ -12849,11 +13042,28 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 .then(|| entry.field(index))
                 .flatten()
         };
+        // Unit indices name other words on every other type: on a GameObject `CHARMEDBY`,
+        // `SUMMONEDBY` and `CREATEDBY` (`12..17`) are its parent rotation, dynamic, faction, level
+        // and bytes, which the projection would write into the 1.12 rotation, state and position.
+        let unit_layout = matches!(
+            entry.type_id,
+            benilla_protocol_wrath::updates::type_id::UNIT
+                | benilla_protocol_wrath::updates::type_id::PLAYER
+        );
+        let game_object = entry.type_id == benilla_protocol_wrath::updates::type_id::GAMEOBJECT;
+        let unit = |index: u16| if unit_layout { observed(index) } else { None };
+        let unit_guid = |index: u16| {
+            if unit_layout {
+                entry.self_guid(index).filter(|&guid| guid != 0)
+            } else {
+                None
+            }
+        };
         let mut powers = [None; 7];
         let mut max_powers = [None; 7];
         for i in 0..7u16 {
-            powers[usize::from(i)] = observed(fields::UNIT_FIELD_POWER1 + i);
-            max_powers[usize::from(i)] = observed(fields::UNIT_FIELD_MAXPOWER1 + i);
+            powers[usize::from(i)] = unit(fields::UNIT_FIELD_POWER1 + i);
+            max_powers[usize::from(i)] = unit(fields::UNIT_FIELD_MAXPOWER1 + i);
         }
         entities.insert(
             *guid,
@@ -12861,27 +13071,41 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 guid: *guid,
                 type_id: entry.type_id,
                 entry: observed(fields::OBJECT_FIELD_ENTRY),
-                display_id: observed(fields::UNIT_FIELD_DISPLAYID),
+                display_id: if game_object {
+                    observed(fields::GAMEOBJECT_DISPLAYID)
+                } else {
+                    unit(fields::UNIT_FIELD_DISPLAYID)
+                },
                 scale: observed(fields::OBJECT_FIELD_SCALE_X).map(f32::from_bits),
-                health: observed(fields::UNIT_FIELD_HEALTH),
-                max_health: observed(fields::UNIT_FIELD_MAXHEALTH),
+                health: unit(fields::UNIT_FIELD_HEALTH),
+                max_health: unit(fields::UNIT_FIELD_MAXHEALTH),
                 powers,
                 max_powers,
-                level: observed(fields::UNIT_FIELD_LEVEL),
-                bytes_0: observed(fields::UNIT_FIELD_BYTES_0),
-                faction: observed(fields::UNIT_FIELD_FACTIONTEMPLATE),
-                unit_flags: observed(fields::UNIT_FIELD_FLAGS),
-                mount_display_id: observed(fields::UNIT_FIELD_MOUNTDISPLAYID),
-                bytes_1: observed(fields::UNIT_FIELD_BYTES_1),
-                bytes_2: observed(fields::UNIT_FIELD_BYTES_2),
-                npc_flags: observed(fields::UNIT_NPC_FLAGS),
-                dynamic_flags: observed(fields::UNIT_DYNAMIC_FLAGS),
-                target: entry.self_guid(fields::UNIT_FIELD_TARGET).filter(|&guid| guid != 0),
-                charmed_by: entry.self_guid(fields::UNIT_FIELD_CHARMEDBY).filter(|&guid| guid != 0),
-                summoned_by: entry.self_guid(fields::UNIT_FIELD_SUMMONEDBY).filter(|&guid| guid != 0),
-                created_by: entry.self_guid(fields::UNIT_FIELD_CREATEDBY).filter(|&guid| guid != 0),
-                player_bytes: observed(fields::PLAYER_BYTES),
-                player_bytes_2: observed(fields::PLAYER_BYTES_2),
+                level: unit(fields::UNIT_FIELD_LEVEL),
+                bytes_0: unit(fields::UNIT_FIELD_BYTES_0),
+                faction: unit(fields::UNIT_FIELD_FACTIONTEMPLATE),
+                unit_flags: unit(fields::UNIT_FIELD_FLAGS),
+                mount_display_id: unit(fields::UNIT_FIELD_MOUNTDISPLAYID),
+                bytes_1: unit(fields::UNIT_FIELD_BYTES_1),
+                bytes_2: unit(fields::UNIT_FIELD_BYTES_2),
+                npc_flags: unit(fields::UNIT_NPC_FLAGS),
+                dynamic_flags: unit(fields::UNIT_DYNAMIC_FLAGS),
+                target: unit_guid(fields::UNIT_FIELD_TARGET),
+                charmed_by: unit_guid(fields::UNIT_FIELD_CHARMEDBY),
+                summoned_by: unit_guid(fields::UNIT_FIELD_SUMMONEDBY),
+                created_by: unit_guid(fields::UNIT_FIELD_CREATEDBY),
+                charm: unit_guid(fields::UNIT_FIELD_CHARM),
+                summon: unit_guid(fields::UNIT_FIELD_SUMMON),
+                corpse_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::CORPSE)
+                    .then(|| {
+                        crate::wrath_inventory::WrathFieldWindow::from_fields(
+                            fields::CORPSE_END,
+                            |index| entry.field(index),
+                            |index| entry.field_delivered(index),
+                        )
+                    }),
+                player_bytes: unit(fields::PLAYER_BYTES),
+                player_bytes_2: unit(fields::PLAYER_BYTES_2),
                 position: entry.movement.as_ref().and_then(|m| m.position),
                 move_flags: entry.movement.as_ref().map(|m| m.move_flags),
                 create_spline: entry
@@ -12919,6 +13143,23 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 auras: entry.auras.clone(),
                 auras_observed: entry.auras_observed,
                 aura_receipts: entry.aura_receipts.clone(),
+                raw_fields: {
+                    use benilla_protocol_wrath::updates::type_id;
+                    let end = match entry.type_id {
+                        type_id::UNIT => Some(fields::UNIT_END),
+                        type_id::GAMEOBJECT => Some(fields::GAMEOBJECT_END),
+                        type_id::DYNAMICOBJECT => Some(fields::DYNAMICOBJECT_END),
+                        type_id::CORPSE => Some(fields::CORPSE_END),
+                        _ => None,
+                    };
+                    end.map(|end| {
+                        crate::wrath_inventory::WrathFieldWindow::from_fields(
+                            end,
+                            |index| entry.field(index),
+                            |index| entry.field_delivered(index),
+                        )
+                    })
+                },
             },
         );
     }
@@ -12966,6 +13207,177 @@ mod tests {
         // A replacement entity must not inherit the previous entity's receipt.
         let replacement = world.spawn_empty().id();
         assert!(consume_wrath_position(&mut world, replacement, pose));
+    }
+
+    fn wrath_swing(hit_info: u32, school: u32) -> WrathGameplayEvent {
+        WrathGameplayEvent::AttackerState {
+            attacker: 0x11,
+            victim: 0xf130_0000_0000_0022,
+            hit_info,
+            damage: 30,
+            victim_state: 1,
+            absorb: 0,
+            resist: 0,
+            blocked: 0,
+            melee_spell_id: 0,
+            school,
+        }
+    }
+
+    fn translated_swing(hit_info: u32, school: u32) -> ProtocolAttackerState {
+        match translate_gameplay(wrath_swing(hit_info, school), 0x11, Instant::now())
+            .as_slice()
+        {
+            [SessionEvent::AttackerState(s)] => *s,
+            other => panic!("one swing expected, got {other:?}"),
+        }
+    }
+
+    /// 12340 sends a school mask; a normal swing is mask 1. The 1.12 consumers read school 0 as
+    /// physical, so passing the mask through made every wolf hit a Holy `…SCHOOL` line.
+    #[test]
+    fn wrath_melee_school_masks_become_vanilla_school_indices() {
+        for (mask, index) in [
+            (0, 0),
+            (1, 0),
+            (2, 1),
+            (4, 2),
+            (8, 3),
+            (16, 4),
+            (32, 5),
+            (64, 6),
+        ] {
+            assert_eq!(vanilla_school(mask), index, "mask {mask:#x}");
+            assert_eq!(
+                translated_swing(0x2, mask).school,
+                index,
+                "the seam carries the index"
+            );
+        }
+    }
+
+    /// The melee HitInfo bit positions moved. A crit, full absorb/resist, block, glance, crush and
+    /// the no-animation bit must arrive at the 1.12 seam as its own bits, and 12340's 0x4000/0x8000
+    /// words must not masquerade as vanilla glancing/crushing.
+    #[test]
+    fn wrath_melee_hit_info_becomes_the_vanilla_bit_layout() {
+        assert_eq!(vanilla_hit_info(0x0000_0002), 0x0000_0002, "a plain hit");
+        assert_eq!(vanilla_hit_info(0x0000_0004), 0x0000_0004, "offhand");
+        assert_eq!(vanilla_hit_info(0x0000_0010), 0x0000_0010, "miss");
+        assert_eq!(vanilla_hit_info(0x0000_0020), 0x0000_0020, "full absorb");
+        assert_eq!(vanilla_hit_info(0x0000_0040), 0x0000_0020, "partial absorb");
+        assert_eq!(vanilla_hit_info(0x0000_0080), 0x0000_0040, "full resist");
+        assert_eq!(vanilla_hit_info(0x0000_0100), 0x0000_0040, "partial resist");
+        assert_eq!(vanilla_hit_info(0x0000_0200), 0x0000_0080, "crit");
+        assert_eq!(vanilla_hit_info(0x0000_2000), 0x0000_0800, "block");
+        assert_eq!(vanilla_hit_info(0x0001_0000), 0x0000_4000, "glancing");
+        assert_eq!(vanilla_hit_info(0x0002_0000), 0x0000_8000, "crushing");
+        assert_eq!(vanilla_hit_info(0x0004_0000), 0x0001_0000, "no animation");
+        assert_eq!(
+            vanilla_hit_info(0x0020_0000),
+            0x0008_0000,
+            "swing no-hit-sound"
+        );
+        assert_eq!(
+            vanilla_hit_info(0x0000_4000 | 0x0000_8000),
+            0,
+            "12340's unknown words are not 1.12 glancing/crushing"
+        );
+        assert_eq!(
+            vanilla_hit_info(0x0080_0000),
+            0,
+            "12340's rage-gain bit has no 1.12 word"
+        );
+    }
+
+    /// The translated crit and full resist reach the shared line/feedback classifier as such,
+    /// instead of as an ordinary hit and no line.
+    #[test]
+    fn wrath_melee_crit_and_full_resist_reach_the_vanilla_classifier() {
+        let crit = translated_swing(0x0000_0202, 1);
+        let (family, word) =
+            crate::ui_chat::combat::melee_outcome(&crit).expect("a crit has a line");
+        assert_eq!(family.stem, "COMBATHITCRIT");
+        assert_eq!(word.message_type, "DAMAGE_CRIT");
+
+        let mut full_resist = translated_swing(0x0000_0080, 1);
+        full_resist.damage = 0;
+        let (family, word) =
+            crate::ui_chat::combat::melee_outcome(&full_resist).expect("a full resist has a line");
+        assert_eq!(family.stem, "VSRESIST");
+        assert_eq!(word.message_type, "RESIST");
+    }
+
+    /// 12340's spell damage and periodic ticks carry the same school mask; both become the index
+    /// the 1.12 line and portrait flash read.
+    #[test]
+    fn wrath_spell_damage_and_periodic_school_masks_become_indices() {
+        let spell = translate_gameplay(
+            WrathGameplayEvent::SpellDamage {
+                target: 0x22,
+                attacker: 0x11,
+                spell_id: 133,
+                damage: 40,
+                school: 4,
+                absorb: 0,
+                resist: 0,
+                blocked: 0,
+                hit_info: 0,
+            },
+            0x11,
+            Instant::now(),
+        );
+        assert!(matches!(
+            spell.as_slice(),
+            [SessionEvent::SpellDamageLog(s)] if s.school == 2
+        ));
+
+        let periodic = translate_gameplay(
+            WrathGameplayEvent::PeriodicAura {
+                target: 0x22,
+                caster: 0x11,
+                spell_id: 172,
+                ticks: vec![gameplay::PeriodicAuraTick::Damage {
+                    amount: 5,
+                    school: 16,
+                    absorb: 0,
+                    resist: 0,
+                }],
+            },
+            0x11,
+            Instant::now(),
+        );
+        assert!(matches!(
+            periodic.as_slice(),
+            [SessionEvent::PeriodicAuraLog(p)]
+                if matches!(p.ticks.as_slice(), [ProtocolPeriodicTick::Damage { school: 4, .. }])
+        ));
+    }
+
+    /// A kill's XP keeps its victim so the chat line and the corpse's XP mark can name it; the
+    /// base recovers the un-rested award, which the 1.12 line formats separately.
+    #[test]
+    fn wrath_kill_xp_keeps_its_victim_and_base_award() {
+        let events = translate_gameplay(
+            WrathGameplayEvent::XpGain {
+                victim: 0xf130_0000_0000_0022,
+                total_xp: 60,
+                kill_xp: true,
+                rested_bonus: 20,
+                group_rate: 1.0,
+            },
+            0x11,
+            Instant::now(),
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [SessionEvent::XpGain(x)]
+                if x.victim == 0xf130_0000_0000_0022
+                    && x.total == 60
+                    && x.base == 40
+                    && x.kill
+                    && x.group == 1.0
+        ));
     }
 
     /// A self `SMSG_SPELL_GO` is 3.3.5's success answer: it must emit the 1.12 success result
@@ -13025,6 +13437,28 @@ mod tests {
             matches!(
                 events.as_slice(),
                 [SessionEvent::SpellFailedOther { caster: 0x1522, spell_id: 772 }]
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// One cast terminates once. `Spell::cancel` sends `SendCastResult(40)` and then
+    /// `SendInterrupted(40)` for the same attempt. Our own `SMSG_SPELL_FAILURE` with 12340
+    /// SPELL_FAILED_INTERRUPTED (40) only ends the observed cast, like reason 0; the failure
+    /// line comes from `SMSG_CAST_FAILED` alone.
+    #[test]
+    fn an_interrupt_does_not_fail_the_same_cast_twice() {
+        let failure = WrathGameplayEvent::SpellFailure {
+            caster: 0x1522,
+            spell_id: 133,
+            cast_count: 4,
+            raw_reason: 40,
+        };
+        let events = translate_gameplay(failure, 0x1522, Instant::now());
+        assert!(
+            matches!(
+                events.as_slice(),
+                [SessionEvent::SpellFailedOther { caster: 0x1522, spell_id: 133 }]
             ),
             "{events:?}"
         );
@@ -13232,6 +13666,48 @@ mod tests {
         let mut item_pairs = Vec::new();
         push_item_fields(&window, false, &mut item_pairs);
         assert!(!item_pairs.iter().any(|&(index, _)| index >= 48));
+    }
+
+    /// A 3.3.5 corpse block shifts by two after PARTY: `CORPSE_FIELD_DISPLAY_ID` 10 lands on the
+    /// 1.12 display slot 12, item 0 at 11 on 13, the appearance at 30/31 on 32/33 and the dynamic
+    /// flags at 34 on 36. Owner and party keep their indices. The display drives the corpse's
+    /// body model; `CORPSE_FIELD_FLAGS` drives the bone-pile fork.
+    #[test]
+    fn a_corpse_block_shifts_by_two_after_party() {
+        let window = item_window(
+            &[
+                (fields::CORPSE_FIELD_OWNER, 0x11),
+                (fields::CORPSE_FIELD_DISPLAY_ID, 49),
+                (fields::CORPSE_FIELD_ITEM, 902 | (5 << 24)),
+                (fields::CORPSE_FIELD_BYTES_1, 0x0600_0000),
+                (fields::CORPSE_FIELD_FLAGS, 0x08),
+                (fields::CORPSE_FIELD_DYNAMIC_FLAGS, 1),
+            ],
+            fields::CORPSE_END,
+        );
+        let mut pairs = Vec::new();
+        push_corpse_fields(&window, &mut pairs);
+        assert_eq!(
+            pairs,
+            vec![
+                (6, 0x11),
+                (12, 49),
+                (13, 902 | (5 << 24)),
+                (32, 0x0600_0000),
+                (35, 0x08),
+                (36, 1),
+            ]
+        );
+        // The shifted block is what the corpse renderer and the reclaim latch read: display 12
+        // is the body model, owner 6 arms note_corpse, and flags 0x08 is not the bone bit.
+        let corpse = ObjectFields::from_pairs(&pairs).into_created(ObjectType::Corpse);
+        assert_eq!(corpse.corpse_owner(), Some(0x11));
+        assert_eq!(
+            corpse.corpse_display_id(),
+            Some(49),
+            "the 1.12 display slot 12 is read, not 12340's 10"
+        );
+        assert!(!corpse.corpse_is_bones());
     }
 
     /// The typed row rides the existing container entity: same guid keeps the same entity and
@@ -13573,6 +14049,9 @@ mod command_tap_tests {
                 charmed_by: None,
                 summoned_by: None,
                 created_by: None,
+                charm: None,
+                summon: None,
+                corpse_fields: None,
                 player_bytes: None,
                 player_bytes_2: None,
                 position: None,
@@ -13585,6 +14064,7 @@ mod command_tap_tests {
                 auras: Vec::new(),
                 auras_observed: false,
                 aura_receipts: BTreeMap::new(),
+                raw_fields: None,
             },
         );
         WrathWorldView {

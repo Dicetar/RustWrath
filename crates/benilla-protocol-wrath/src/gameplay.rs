@@ -2151,7 +2151,9 @@ pub enum ServerEvent {
         cast_count: u8,
         raw_reason: u8,
     },
-    /// `SMSG_ATTACKERSTATEUPDATE` mapped onto the 1.12 swing shape.
+    /// `SMSG_ATTACKERSTATEUPDATE` mapped onto the 1.12 swing shape. `hit_info` and `school`
+    /// stay in 12340's own bit layout and mask form; the app seam translates both for the 1.12
+    /// consumers.
     AttackerState {
         attacker: u64,
         victim: u64,
@@ -2171,7 +2173,8 @@ pub enum ServerEvent {
     AiReaction { unit: u64, reaction: u32 },
     CancelAutoRepeat,
     PlaySpellVisual { unit: u64, kit_id: u32 },
-    /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word.
+    /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word. `school` is 12340's
+    /// mask; the app seam turns it into the 1.12 index.
     SpellDamage {
         target: u64,
         attacker: u64,
@@ -2207,6 +2210,20 @@ pub enum ServerEvent {
         has_timer: bool,
     },
     SpiritHealerConfirm { npc: u64 },
+    /// `SMSG_DEATH_RELEASE_LOC`: the graveyard the release teleports to (`Player.cpp:4860-4872`),
+    /// and the `-1` map `ResurrectPlayer` clears it with (`Player.cpp:4380-4385`). `position` is
+    /// all zeroes on the clear.
+    DeathReleaseLoc {
+        map_id: i32,
+        position: [f32; 3],
+    },
+    /// `SMSG_PRE_RESURRECT`: the packed guid of the body turning ghost (`Player.cpp:4327-4331`).
+    PreResurrect { guid: u64 },
+    /// `SMSG_AREA_SPIRIT_HEALER_TIME`: the area healer's raw guid and the ms until its next wave
+    /// (`BattlegroundMgr.cpp:667-674`).
+    AreaSpiritHealerTime { healer: u64, ms: u32 },
+    /// `SMSG_AREA_TRIGGER_NO_CORPSE`: the instance entrance refused the ghost (`MapMgr.cpp:207`).
+    CorpseNotInInstance,
     LogoutResponse { reason: u32, instant: bool },
     LoggedOut,
     LogoutCancelled,
@@ -2739,6 +2756,10 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_CORPSE_RECLAIM_DELAY => read_corpse_reclaim_delay(body),
         SMSG_RESURRECT_REQUEST => read_resurrect_request(body),
         SMSG_SPIRIT_HEALER_CONFIRM => read_spirit_healer_confirm(body),
+        SMSG_DEATH_RELEASE_LOC => read_death_release_loc(body),
+        SMSG_PRE_RESURRECT => read_pre_resurrect(body),
+        SMSG_AREA_SPIRIT_HEALER_TIME => read_area_spirit_healer_time(body),
+        SMSG_AREA_TRIGGER_NO_CORPSE => Ok(ServerEvent::CorpseNotInInstance),
         SMSG_CAST_FAILED => read_cast_failed(body),
         SMSG_SPELL_START => read_spell_start(body),
         SMSG_SPELL_GO => read_spell_go(body),
@@ -3503,9 +3524,10 @@ const HITINFO_BLOCK: u32 = 0x0000_2000;
 const HITINFO_RAGE_GAIN: u32 = 0x0080_0000;
 
 /// `SMSG_ATTACKERSTATEUPDATE` (`Unit.cpp:6870-6960`): 12340 writes `Overkill` after the total,
-/// keeps absorb/resist in blocks gated by `HitInfo` rather than inside every sub-block, and sends
-/// `TargetState` as a byte. The `HITINFO_UNK1` debug tail is left unread; nothing re-parses the
-/// payload, and guessing its width would be fabrication.
+/// keeps absorb/resist in blocks gated by `HitInfo` rather than inside every sub-block, sends
+/// `TargetState` as a byte, and writes a spell-school *mask* per damage block where the 1.12 seam
+/// carries an index. The `HITINFO_UNK1` debug tail is left unread; nothing re-parses the payload,
+/// and guessing its width would be fabrication.
 fn read_attacker_state(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let hit_info = r.u32()?;
@@ -3906,19 +3928,25 @@ fn read_gameobject(b: &[u8]) -> Result<ServerEvent> {
     let _icon = r.cstring()?;
     let _cast_bar = r.cstring()?;
     let _unk = r.cstring()?;
-    // 3.3.5 has a wider, differently indexed data block than the 24-dword 1.12 record. The
-    // columns cannot be copied by position: the 1.12 consumer resolves lock/page/meeting-stone
-    // fields by type, and wrong numbers would misroute interaction. Keep the name and display,
-    // but report the columns as absent so the 1.12 owners do not read a foreign layout.
-    for _ in 0..24 {
-        let _ = r.i32()?;
+    // The 3.3.5 data block is 24 dwords, and for every column the 1.12 consumer reads it
+    // has the 1.12 index: 12340 `CGameObjectDef::GetPropNum` (0x746190, tables at
+    // 0xADAD30..) puts lockId (prop 4) at DOOR/BUTTON data[1], CHEST/QUESTGIVER/TRAP/GOOBER/
+    // AREADAMAGE/CAMERA/FLAGSTAND/FLAGDROP data[0], FISHINGHOLE data[4]; pageId (prop 15)
+    // at TEXT data[0] and GOOBER data[7]; quest background (prop 17) at QUESTGIVER/TEXT
+    // data[2] and GOOBER data[9]; the meeting-stone, MO-transport, GENERIC and
+    // CAPTURE_POINT columns likewise. Wrath only appends props past the 1.12 ones. Dropping
+    // the block left every lockId 0, so locked chests and ore/herb nodes were "used"
+    // instead of opened by the lock's spell.
+    let mut data = [0i32; 24];
+    for slot in &mut data {
+        *slot = r.i32()?;
     }
     Ok(ServerEvent::GameObjectInfo {
         entry,
         type_id,
         display_id,
         name,
-        data: [0; 24],
+        data,
     })
 }
 
@@ -4267,6 +4295,38 @@ fn read_resurrect_request(b: &[u8]) -> Result<ServerEvent> {
 fn read_spirit_healer_confirm(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     Ok(ServerEvent::SpiritHealerConfirm { npc: r.u64()? })
+}
+
+/// `SMSG_DEATH_RELEASE_LOC` (`Player.cpp:4864-4870`): the map as a signed dword `-1` on the
+/// clear, then the three floats. `ResurrectPlayer` (`Player.cpp:4380-4385`) sends map `-1` with a
+/// zero position, which `CGPlayer_C`'s handler reads as "clear" (`Player_C.cpp:9720-9736`).
+fn read_death_release_loc(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let map_id = r.u32()? as i32;
+    let x = r.f32()?;
+    let y = r.f32()?;
+    let z = r.f32()?;
+    Ok(ServerEvent::DeathReleaseLoc {
+        map_id,
+        position: [x, y, z],
+    })
+}
+
+/// `SMSG_PRE_RESURRECT` (`Player.cpp:4329-4331`): one packed guid, the body becoming a ghost.
+fn read_pre_resurrect(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::PreResurrect {
+        guid: r.packed_guid()?,
+    })
+}
+
+/// `SMSG_AREA_SPIRIT_HEALER_TIME` (`BattlegroundMgr.cpp:667-674`): raw healer guid, then the
+/// milliseconds until the next resurrection wave (`RESURRECTION_INTERVAL - last`).
+fn read_area_spirit_healer_time(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let healer = r.u64()?;
+    let ms = r.u32()?;
+    Ok(ServerEvent::AreaSpiritHealerTime { healer, ms })
 }
 
 /// `SMSG_COOLDOWN_EVENT` / `SMSG_CLEAR_COOLDOWN` (`Player.cpp:11052-11055`,
@@ -5082,6 +5142,34 @@ pub fn parse_char_enum(payload: &[u8]) -> Result<Vec<CharEnumRecord>> {
 mod tests {
     use super::*;
 
+    /// `SMSG_LOG_XPGAIN`: victim, total, the kill/non-kill type, then the base XP and group rate
+    /// only for a kill, and 12340's trailing recruit-a-friend byte. The seam's rested bonus is the
+    /// difference between the total and the base.
+    #[test]
+    fn wrath_log_xp_gain_reads_the_kill_base_and_rested_bonus() {
+        let victim = 0xF130_0000_0000_0022u64;
+        let mut body = Vec::new();
+        body.extend_from_slice(&victim.to_le_bytes());
+        body.extend_from_slice(&60u32.to_le_bytes()); // total
+        body.push(0); // kill_xp
+        body.extend_from_slice(&40u32.to_le_bytes()); // base
+        body.extend_from_slice(&1.0f32.to_le_bytes()); // group rate
+        body.push(0); // RaF bonus
+        let event = parse(crate::opcode::SMSG_LOG_XPGAIN, &body)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ServerEvent::XpGain {
+                victim,
+                total_xp: 60,
+                kill_xp: true,
+                rested_bonus: 20,
+                group_rate: 1.0,
+            }
+        );
+    }
+
     #[test]
     fn wrath_party_kill_log_reads_the_killer_then_the_victim() {
         let killer = 0x0000_0000_0000_0011u64;
@@ -5126,6 +5214,123 @@ mod tests {
 
     fn le<const N: usize>(v: &[u8]) -> [u8; N] {
         v.try_into().unwrap()
+    }
+
+    /// `Player.cpp:4860-4872`: map, x, y, z. The `-1` map at resurrection (`Player.cpp:4380`)
+    /// keeps the same four dwords, so one shape covers the store and the clear.
+    #[test]
+    fn wrath_death_release_loc_reads_the_graveyard_and_the_clear() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&(-1i32).to_le_bytes());
+        for value in [0.0f32, 0.0, 0.0] {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        let event = parse(crate::opcode::SMSG_DEATH_RELEASE_LOC, &body)
+            .expect("the opcode is translated")
+            .expect("the 16-byte clear body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::DeathReleaseLoc {
+                map_id: -1,
+                position: [0.0, 0.0, 0.0],
+            }
+        );
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&0i32.to_le_bytes());
+        for value in [-8943.5f32, 132.25, 61.5] {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        let event = parse(crate::opcode::SMSG_DEATH_RELEASE_LOC, &body)
+            .expect("the opcode is translated")
+            .expect("the 16-byte graveyard body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::DeathReleaseLoc {
+                map_id: 0,
+                position: [-8943.5, 132.25, 61.5],
+            }
+        );
+    }
+
+    /// `Player.cpp:4327-4331` packs the guid it also writes beside `SMSG_FORCE_*_SPEED_CHANGE`.
+    #[test]
+    fn wrath_pre_resurrect_reads_the_packed_ghost_guid() {
+        let guid = 0x0000_0000_0000_0152u64;
+        let event = parse(crate::opcode::SMSG_PRE_RESURRECT, &[0x03, 0x52, 0x01])
+            .expect("the opcode is translated")
+            .expect("mask, low byte, second byte");
+        assert_eq!(event, ServerEvent::PreResurrect { guid });
+    }
+
+    /// `BattlegroundMgr.cpp:667-674`: raw guid then the milliseconds until the next wave.
+    #[test]
+    fn wrath_area_spirit_healer_time_reads_guid_and_wave() {
+        let healer = 0xF130_0000_0000_00ABu64;
+        let mut body = healer.to_le_bytes().to_vec();
+        body.extend_from_slice(&23_000u32.to_le_bytes());
+        let event = parse(crate::opcode::SMSG_AREA_SPIRIT_HEALER_TIME, &body)
+            .expect("the opcode is translated")
+            .expect("the 12-byte body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::AreaSpiritHealerTime {
+                healer,
+                ms: 23_000,
+            }
+        );
+    }
+
+    /// `MapMgr.cpp:207` sends the empty body the client shows as
+    /// `ERR_CORPSE_IS_NOT_IN_INSTANCE` (`GameUI.cpp:6821`).
+    #[test]
+    fn wrath_corpse_not_in_instance_is_an_empty_body() {
+        let event = parse(crate::opcode::SMSG_AREA_TRIGGER_NO_CORPSE, &[])
+            .expect("the opcode is translated")
+            .expect("an empty body is valid");
+        assert_eq!(event, ServerEvent::CorpseNotInInstance);
+    }
+
+    /// `Spell.cpp:5182-5202`: raw caster, a u32 name length, the name and its NUL, the sickness
+    /// byte and, only for `SPELL_ATTR3_NO_RES_TIMER`, a u32 override. A player's name is empty
+    /// and the packet carries no timer word, so the absence means the delay still holds.
+    #[test]
+    fn wrath_resurrect_request_reads_sickness_and_the_timer_override() {
+        let caster = 0xF130_0000_0000_00ABu64;
+        let mut body = caster.to_le_bytes().to_vec();
+        body.extend_from_slice(&5u32.to_le_bytes());
+        body.extend_from_slice(b"Icon\0");
+        body.push(1);
+        let event = parse(crate::opcode::SMSG_RESURRECT_REQUEST, &body)
+            .expect("the opcode is translated")
+            .expect("a named creature offer is valid");
+        assert_eq!(
+            event,
+            ServerEvent::ResurrectRequest {
+                caster,
+                name: "Icon".into(),
+                sickness: true,
+                has_timer: true,
+            }
+        );
+
+        let mut body = caster.to_le_bytes().to_vec();
+        body.extend_from_slice(&1u32.to_le_bytes());
+        body.push(0); // the empty name's NUL
+        body.push(0); // a player caster: no sickness
+        body.extend_from_slice(&0u32.to_le_bytes()); // the no-timer override
+        let event = parse(crate::opcode::SMSG_RESURRECT_REQUEST, &body)
+            .expect("the opcode is translated")
+            .expect("a player offer is valid");
+        assert_eq!(
+            event,
+            ServerEvent::ResurrectRequest {
+                caster,
+                name: String::new(),
+                sickness: false,
+                has_timer: false,
+            }
+        );
     }
 
     /// One whole record in the exact `Player::BuildEnumData` order
@@ -5249,6 +5454,148 @@ mod tests {
             parse(crate::opcode::SMSG_ATTACKSTOP, &b).unwrap().unwrap(),
             ServerEvent::AttackStop { attacker: 0x11, victim: 0x22 }
         );
+    }
+
+    /// 12340's swing: TotalDamage then Overkill, a school mask per damage block, and the
+    /// TargetState byte. The decoder keeps the mask and hit word as sent; the app seam normalises
+    /// them for the 1.12 consumers.
+    #[test]
+    fn attacker_state_reads_the_12340_overkill_and_conditional_blocks() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x202u32.to_le_bytes()); // normal hit | critical
+        b.extend_from_slice(&pack_guid(0x11));
+        b.extend_from_slice(&pack_guid(0x22));
+        b.extend_from_slice(&30u32.to_le_bytes()); // TotalDamage
+        b.extend_from_slice(&5u32.to_le_bytes()); // Overkill
+        b.push(1); // sub-damage count
+        b.extend_from_slice(&1u32.to_le_bytes()); // school mask (physical)
+        b.extend_from_slice(&30.0f32.to_le_bytes());
+        b.extend_from_slice(&30u32.to_le_bytes());
+        b.push(1); // TargetState: hit
+        b.extend_from_slice(&0u32.to_le_bytes()); // attackerState
+        b.extend_from_slice(&0u32.to_le_bytes()); // meleeSpellId
+        let event = parse(crate::opcode::SMSG_ATTACKERSTATEUPDATE, &b)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ServerEvent::AttackerState {
+                attacker: 0x11,
+                victim: 0x22,
+                hit_info: 0x202,
+                damage: 30,
+                victim_state: 1,
+                absorb: 0,
+                resist: 0,
+                blocked: 0,
+                melee_spell_id: 0,
+                school: 1,
+            }
+        );
+    }
+
+    /// A blocked swing sets 0x2000 and carries the trailing blocked word; without the bit the
+    /// decoder reads no word, so the following byte is not mistaken for one.
+    #[test]
+    fn attacker_state_reads_blocked_only_with_the_block_bit() {
+        let swing = |hit_info: u32, blocked: Option<u32>| {
+            let mut b = Vec::new();
+            b.extend_from_slice(&hit_info.to_le_bytes());
+            b.extend_from_slice(&pack_guid(0x11));
+            b.extend_from_slice(&pack_guid(0x22));
+            b.extend_from_slice(&0u32.to_le_bytes()); // TotalDamage
+            b.extend_from_slice(&0u32.to_le_bytes()); // Overkill
+            b.push(1);
+            b.extend_from_slice(&1u32.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.push(5); // TargetState: blocks
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            if let Some(blocked) = blocked {
+                b.extend_from_slice(&blocked.to_le_bytes());
+            }
+            parse(crate::opcode::SMSG_ATTACKERSTATEUPDATE, &b)
+                .unwrap()
+                .unwrap()
+        };
+        assert!(matches!(
+            swing(0x2002, Some(30)),
+            ServerEvent::AttackerState { blocked: 30, victim_state: 5, .. }
+        ));
+        assert!(matches!(
+            swing(0x2, None),
+            ServerEvent::AttackerState { blocked: 0, victim_state: 5, .. }
+        ));
+    }
+
+    /// Absorb and resist words follow all damage blocks, in that order; the seam keeps their
+    /// sums because the 1.12 line and portrait flash read one amount per kind.
+    #[test]
+    fn attacker_state_sums_the_conditional_absorb_and_resist_blocks() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x1E0u32.to_le_bytes()); // full+partial absorb, full+partial resist
+        b.extend_from_slice(&pack_guid(0x11));
+        b.extend_from_slice(&pack_guid(0x22));
+        b.extend_from_slice(&0u32.to_le_bytes()); // TotalDamage
+        b.extend_from_slice(&0u32.to_le_bytes()); // Overkill
+        b.push(2);
+        for school in [1u32, 4] {
+            b.extend_from_slice(&school.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for absorb in [7u32, 5] {
+            b.extend_from_slice(&absorb.to_le_bytes());
+        }
+        for resist in [3u32, 2] {
+            b.extend_from_slice(&resist.to_le_bytes());
+        }
+        b.push(1); // TargetState: hit
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        let event = parse(crate::opcode::SMSG_ATTACKERSTATEUPDATE, &b)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ServerEvent::AttackerState {
+                attacker: 0x11,
+                victim: 0x22,
+                hit_info: 0x1E0,
+                damage: 0,
+                victim_state: 1,
+                absorb: 12,
+                resist: 5,
+                blocked: 0,
+                melee_spell_id: 0,
+                school: 1,
+            }
+        );
+    }
+
+    /// The four empty swing refusals: 0x145/0x146 latch their own messages, while 0x148 and 0x149
+    /// both mean the server stopped the attack (12340's shared `SetCombatMode` arm).
+    #[test]
+    fn wrath_attack_swing_refusals_read_as_their_variants() {
+        for (opcode, expected) in [
+            (crate::opcode::SMSG_ATTACKSWING_NOTINRANGE, AttackSwingError::NotInRange),
+            (crate::opcode::SMSG_ATTACKSWING_BADFACING, AttackSwingError::BadFacing),
+            (
+                crate::opcode::SMSG_ATTACKSWING_DEADTARGET,
+                AttackSwingError::DeadOrUnattackable,
+            ),
+            (
+                crate::opcode::SMSG_ATTACKSWING_CANT_ATTACK,
+                AttackSwingError::DeadOrUnattackable,
+            ),
+        ] {
+            assert_eq!(
+                parse(opcode, &[]).unwrap().unwrap(),
+                ServerEvent::AttackSwingError(expected),
+                "opcode {opcode:#x}"
+            );
+        }
     }
 
     /// A mode ack carries no jump tail and no deck pose, so it may not announce one: a hover or

@@ -16,8 +16,8 @@
 //! app's owners. It rejects truncation, counts the client or server cannot hold, values a
 //! record's own contract forbids, and trailing bytes instead of skipping or clamping them.
 //!
-//! Source anchors (pinned `D:/WOW/WM_BridgeLab/src/azerothcore` at
-//! `5e741c37364f4ec5e3bc2860bcf21f13812fb66d` and `D:/Projects/wowdecomp-reference` at
+//! Source anchors (pinned `D:/Projects/wow/server/WM_BridgeLab/src/azerothcore` at
+//! `5e741c37364f4ec5e3bc2860bcf21f13812fb66d` and `D:/Projects/wow/reference/wowdecomp-reference` at
 //! `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`):
 //!
 //! * LFG client packets: `src/server/game/Server/Packets/LFGPackets.cpp:20-34`,

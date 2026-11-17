@@ -27,6 +27,9 @@ pub const LOCK_KEY_ITEM: u32 = 1;
 /// A skill slot; `LockSlot::index` is the `LockType.dbc` index the opening spell's
 /// `EffectMiscValue` must match, `LockSlot::skill` the skill value it needs.
 pub const LOCK_KEY_SKILL: u32 = 2;
+/// A Wrath spell slot; `LockSlot::index` is a `Spell.dbc` id that opens the lock itself when it
+/// has an `OPEN_LOCK` effect (12340 `CGGameObject_C::IsLocked` 0x70F160, type 3 arm).
+pub const LOCK_KEY_SPELL: u32 = 3;
 
 /// One requirement slot; an all-zero slot is empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

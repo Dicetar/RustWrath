@@ -10,8 +10,15 @@
 //! The wire's last byte is 0 for smooth, nonzero for instant: the net handler (`0x48fa5f`) inverts
 //! it for `SetWeather`, whose flag is 1 for smooth; vmangos always sends 0. The channels run on
 //! real time, like the reference's ms tick (`0x42c010`), so a ramp continues through loading.
+//!
+//! 3.3.5's `SMSG_WEATHER` is `u32 weatherId, f32 grade, u8 abrupt`: `weatherId` names a
+//! `Weather.dbc` row, and the row supplies the effect type the state machine selects and the
+//! `SoundEntries` loop the ambience channel plays (`m_effectType`, `m_ambienceID`). The wire has
+//! no sound id; the 1.12 layout's fourth `u32` does not exist here.
 
 use bevy::prelude::*;
+
+use benilla_assets::{AssetSet, LockRecover, WorldAssets};
 
 use crate::dev_state::DebugState;
 
@@ -20,7 +27,8 @@ mod precip;
 /// Rain's forced-fog window, read by the effect lane's `EffectFog::Rain` row.
 pub(crate) use precip::{RAIN_FOG_END, RAIN_FOG_START};
 
-/// Wire weather types (`SMSG_WEATHER` / vmangos `WeatherType`).
+/// A weather effect kind: `Weather.dbc`'s `EffectType` column, not the wire's row id (the ids run
+/// 1 fog, 2 drizzle, 3-5 rain, 6-8 snow, 22/41/42 sandstorm; several rows share one effect).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum WeatherKind {
     #[default]
@@ -31,13 +39,57 @@ pub enum WeatherKind {
 }
 
 impl WeatherKind {
-    pub(crate) fn from_wire(v: u32) -> Self {
+    /// The kind a `Weather.dbc` `EffectType` names (0 none, 1 rain, 2 snow, 3 sandstorm).
+    pub(crate) fn from_effect_type(v: u32) -> Self {
         match v {
             1 => WeatherKind::Rain,
             2 => WeatherKind::Snow,
             3 => WeatherKind::Sand,
             _ => WeatherKind::Fine,
         }
+    }
+}
+
+/// `Weather.dbc`, the row a wire weather id names; absent when the table could not be read, in
+/// which case no state resolves (the table ships with the client).
+#[derive(Resource, Default)]
+pub struct WeatherTable(pub Option<benilla_formats::WeatherCatalog>);
+
+impl WeatherTable {
+    /// The row's `EffectType` as a kind. A wire id the table does not name draws nothing: the ids
+    /// are `Weather.dbc` row numbers (3 light rain, 6 light snow, 22 light sandstorm...), so the
+    /// id itself is not an effect type and is never used as one.
+    fn kind(&self, weather_id: u32) -> WeatherKind {
+        self.0
+            .as_ref()
+            .and_then(|cat| cat.get(weather_id))
+            .map_or(WeatherKind::Fine, |row| {
+                WeatherKind::from_effect_type(row.effect_type)
+            })
+    }
+
+    /// The row's `SoundEntries` ambience loop, 0 for a state the table does not name or a row
+    /// with no ambience: clear skies and unknown ids are silent.
+    pub fn ambience(&self, weather_id: u32) -> u32 {
+        self.0
+            .as_ref()
+            .and_then(|cat| cat.get(weather_id))
+            .map_or(0, |row| row.ambience)
+    }
+}
+
+fn load_weather_table(mut commands: Commands, assets: Option<Res<WorldAssets>>) {
+    let Some(assets) = assets else { return };
+    let loaded = {
+        let mut chain = assets.chain.lock_recover();
+        benilla_formats::load_weather_catalog(&mut chain)
+    };
+    match loaded {
+        Ok(cat) => {
+            info!("weather: {} Weather.dbc states", cat.len());
+            commands.insert_resource(WeatherTable(Some(cat)));
+        }
+        Err(e) => warn!("weather: Weather.dbc failed to load: {e:#}"),
     }
 }
 
@@ -219,6 +271,7 @@ fn parse_env_script(v: &str) -> Vec<EnvStep> {
 fn weather_tick(
     time: Res<Time<Real>>,
     mut msgs: MessageReader<WeatherMessage>,
+    table: Res<WeatherTable>,
     mut state: ResMut<WeatherState>,
     mut debug: ResMut<DebugState>,
     mut env_script: Local<Option<Vec<EnvStep>>>,
@@ -247,7 +300,7 @@ fn weather_tick(
         if debug.weather.dirty {
             debug.weather.dirty = false;
             state.apply(
-                WeatherKind::from_wire(debug.weather.kind),
+                WeatherKind::from_effect_type(debug.weather.kind),
                 debug.weather.grade,
                 debug.weather.instant,
                 now,
@@ -256,12 +309,7 @@ fn weather_tick(
         msgs.clear();
     } else {
         for m in msgs.read() {
-            state.apply(
-                WeatherKind::from_wire(m.weather_type),
-                m.grade,
-                m.instant,
-                now,
-            );
+            state.apply(table.kind(m.weather_id), m.grade, m.instant, now);
         }
     }
     state.resolve(now);
@@ -291,22 +339,24 @@ fn weather_tick(
 /// lighting's, read after [`WeatherTick`].
 pub(crate) struct WeatherPlugin;
 
-/// The zone's weather command: type, grade and `instant` drive the state machine, and `sound_id`
-/// names the sound loop kit. Owned here, so the world runs without a network stack.
+/// The zone's weather command: a `Weather.dbc` row id, its grade and `instant` drive the state
+/// machine; the row's ambience kit is read through [`WeatherTable`]. Owned here, so the world runs
+/// without a network stack.
 #[derive(Message, Clone, Copy)]
 pub struct WeatherMessage {
-    pub weather_type: u32,
+    /// The wire's `Weather.dbc` id, not a `SoundEntries` kit.
+    pub weather_id: u32,
     pub grade: f32,
-    /// A SoundEntries loop kit (8533..8558), 0 = clear skies.
-    pub sound_id: u32,
     pub instant: bool,
 }
 
 impl Plugin for WeatherPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeatherState>()
+            .init_resource::<WeatherTable>()
             // Registered where the command is owned.
             .add_message::<WeatherMessage>()
+            .add_systems(Startup, load_weather_table.after(AssetSet::Open))
             .add_systems(Update, weather_tick.in_set(WeatherTick));
         precip::register(app);
     }
@@ -315,6 +365,31 @@ impl Plugin for WeatherPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wire id is a `Weather.dbc` row, never an effect type: the row names both the kind and
+    /// the ambience kit. Without the table nothing is claimed, and an unknown id is silent.
+    #[test]
+    fn the_weather_row_names_the_effect_and_the_kit() {
+        let table = WeatherTable(Some(benilla_formats::WeatherCatalog::from_rows([
+            (1, 0, 0), // fog: no precipitation effect in this state's column
+            (3, 100, 1), // light rain
+            (6, 200, 2), // light snow
+            (22, 300, 3), // light sandstorm
+        ])));
+        assert_eq!(table.kind(3), WeatherKind::Rain);
+        assert_eq!(table.kind(6), WeatherKind::Snow);
+        assert_eq!(table.kind(22), WeatherKind::Sand);
+        assert_eq!(table.kind(1), WeatherKind::Fine, "the row's own effect type wins");
+        assert_eq!(table.kind(0), WeatherKind::Fine);
+        assert_eq!(table.kind(999), WeatherKind::Fine, "an unknown row draws nothing");
+        assert_eq!(table.ambience(3), 100);
+        assert_eq!(table.ambience(1), 0);
+        assert_eq!(table.ambience(999), 0);
+
+        let absent = WeatherTable::default();
+        assert_eq!(absent.kind(3), WeatherKind::Fine);
+        assert_eq!(absent.ambience(3), 0);
+    }
 
     #[test]
     fn env_script_parses_steps() {

@@ -136,6 +136,17 @@ pub const CMSG_RECLAIM_CORPSE: u32 = 0x1D2;
 pub const MSG_CORPSE_QUERY: u16 = 0x216;
 /// The spirit healer's confirm guid (`NPCHandler.cpp:233-253`, `spell_generic.cpp:2735`).
 pub const SMSG_SPIRIT_HEALER_CONFIRM: u16 = 0x222;
+/// `(i32 map, f32 x, f32 y, f32 z)` (`Player.cpp:4860-4872`): the graveyard the release
+/// teleports to, shown as the minimap spirit healer; `Player::ResurrectPlayer` clears it with
+/// map `-1` and a zero position (`Player.cpp:4380-4385`).
+pub const SMSG_DEATH_RELEASE_LOC: u16 = 0x378;
+/// Packed guid of the body turning ghost (`Player.cpp:4327-4331`).
+pub const SMSG_PRE_RESURRECT: u16 = 0x494;
+/// Empty body: the instance entrance refused a ghost whose corpse lies elsewhere
+/// (`MapMgr.cpp:207`; the client shows `ERR_CORPSE_IS_NOT_IN_INSTANCE`, `GameUI.cpp:6821`).
+pub const SMSG_AREA_TRIGGER_NO_CORPSE: u16 = 0x506;
+/// `(u64 healer, u32 ms)` (`Battlefield.cpp:617-625`, `BattlegroundMgr.cpp:667-674`).
+pub const SMSG_AREA_SPIRIT_HEALER_TIME: u16 = 0x2E4;
 /// The healer's raw guid (`NPCHandler.cpp:233-252`).
 pub const CMSG_SPIRIT_HEALER_ACTIVATE: u32 = 0x21C;
 /// Empty body (`SpellHandler.cpp:705-719`).

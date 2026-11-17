@@ -9,7 +9,7 @@ follows from builds, implemented APIs or the web preview.
 Start with [AGENTS.md](AGENTS.md), [the workflow](docs/agents/workflow.md) and
 [active ownership](docs/agents/active-ownership.md). Current continuation work is recorded
 in .scratch/project-b/handoffs; dated baselines there require revalidation.
-Earlier planning in D:/WOW/PROJECT_B_ASTRA_PLAN_DRAFT.md and PROJECT_B_GLM_RESPONSE_02.md
+Earlier planning in D:/Projects/wow/server/PROJECT_B_ASTRA_PLAN_DRAFT.md and PROJECT_B_GLM_RESPONSE_02.md
 is historical input; adopted decisions and ADRs in this repository guide current work.
 
 ## Domain language
@@ -20,9 +20,9 @@ is historical input; adopted decisions and ADRs in this repository guide current
 - **WM-enhanced / Experimental modes** — owned carriers/addons; souls/building/custom geometry after capability negotiation.
 - **Reducer** — the time-free wire→typed-state decode layer (H2 replay depends on its purity).
 - **Oracle** — the pin-verified known-original client executable used for targeted RE questions (narrow, budgeted, artifact-preserved).
-- **12340 decomp reference** — preserved full-history Git checkout at `D:/Projects/wowdecomp-reference`, pin `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`; reconstructed source used to investigate Wrath mechanisms before implementing. Distinct from the original-binary Oracle. Workflow: `docs/agents/12340-reference.md`.
+- **12340 decomp reference** — preserved full-history Git checkout at `D:/Projects/wow/reference/wowdecomp-reference`, pin `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`; reconstructed source used to investigate Wrath mechanisms before implementing. Distinct from the original-binary Oracle. Workflow: `docs/agents/12340-reference.md`.
 - **Profiles** — asset patch chains: `base` (stock archives) vs `wm-hd` (owner's lettered patches); loader is manifest-defined, provenance-tagged.
-- **WM** — the owner's Python orchestration service (D:/WOW/wm-project); one brain, two transports (existing DB/SOAP bus; future native client channel).
+- **WM** — the owner's Python orchestration service (D:/Projects/wow/server/wm-project); one brain, two transports (existing DB/SOAP bus; future native client channel).
 - **Spellwright v3** — deployed composable-spell system (wm_spellforge_* tables, WM_FORGE3 addon channel); the first live-change proof candidate.
 - **Live change** — behavior relation change on a running server, no rebuild, no restart (owner requirement).
 - **Seam maps** — one-page owner/hook/gap tables for movement, building, generated spaces.
@@ -37,7 +37,7 @@ is historical input; adopted decisions and ADRs in this repository guide current
   see `docs/agents/repository.md` for branch and collaboration rules.
 - Owner decisions and their adopted defaults: `docs/baseline/owner-decisions.md`.
 - ADRs live in docs/architecture; documentation responsibilities are mapped in docs/agents/domain.md.
-- Server trees under D:/WOW are read-only unless a ticket says otherwise; WM source owner is wm-project.
+- Server trees under D:/Projects/wow/server are read-only unless a ticket says otherwise; WM source owner is wm-project.
 - Estimates only with assumptions; no schedules derived from commit counts.
 - Distinguish observed, reported and proposed behavior, and identify the verification level:
   source, compilation, focused case, receiver/runtime or visible gameplay.

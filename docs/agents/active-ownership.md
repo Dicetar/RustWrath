@@ -54,7 +54,7 @@ newer reservation or kill another owner's process to acquire the slot.
 ## Current evidence and continuation
 
 - 2026-11-15 Souls kit and Elden Ring converter (Claude, branch `feat/souls-er-kit`, worktree
-  `D:/Projects/rw-worktrees/feat-souls-er-kit`): `benilla-combat-core` gains per-input action
+  `D:/Projects/wow/worktrees/feat-souls-er-kit`): `benilla-combat-core` gains per-input action
   timing (`InputWindows`), the `Kit` record and text format, `import_kit`, and the `import_kit`
   binary. Cargo slot used for one focused run of 19 combat-core cases (all passed) plus the
   binary build, and released; log `.scratch/project-b/test-2026-11-15-claude-souls-er-kit.log`.

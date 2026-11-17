@@ -926,6 +926,35 @@ mod tests {
         assert_eq!(placement(0, 21, 3, 1), Some(attach_id::HAND_RIGHT));
     }
 
+    /// The 3.3.5 attach table, pinned per weapon class: `GEOCOMPONENTLINKS` `Types.h` and
+    /// `CCharacterComponent::GetSheatheLink` `0x4E7940` / `AddHandItem` `0x4EACD0`. Drawn: mainhand
+    /// 1, offhand 2, a shield 0, a bow 2 and every other ranged weapon 1. Stowed by `Item.dbc`
+    /// `SheatheType` 1 mainhand 26/27, 2 back 30/31, 3 hip 32/33, 4 shield 28; a stowed ranged
+    /// weapon is removed, never placed.
+    #[test]
+    fn the_wrath_attach_table_covers_every_weapon_class() {
+        use attach_id::*;
+        // Drawn (weapon mode 1 for melee, 2 for ranged).
+        assert_eq!(placement(0, 17, 2, 1), Some(HAND_RIGHT), "2H sword drawn");
+        assert_eq!(placement(0, 21, 3, 1), Some(HAND_RIGHT), "one-hander mainhand");
+        assert_eq!(placement(1, 22, 3, 1), Some(HAND_LEFT), "one-hander offhand");
+        assert_eq!(placement(1, 14, 4, 1), Some(SHIELD), "shield drawn");
+        assert_eq!(placement(2, 15, 1, 2), Some(HAND_LEFT), "bow drawn, left hand");
+        assert_eq!(placement(2, 26, 1, 2), Some(HAND_RIGHT), "gun drawn, right hand");
+        assert_eq!(placement(2, 25, 1, 2), Some(HAND_RIGHT), "thrown drawn, right hand");
+        // Stowed: SheatheType → (mainhand link, offhand link).
+        for (sheath, main, off) in [(1u8, 26u16, 27u16), (2, 30, 31), (3, 32, 33)] {
+            assert_eq!(placement(0, 17, sheath, 0), Some(main), "sheath {sheath} main");
+            assert_eq!(placement(1, 22, sheath, 0), Some(off), "sheath {sheath} off");
+        }
+        assert_eq!(placement(1, 14, 4, 0), Some(SHIELD_BACK), "stowed shield");
+        // A ranged weapon has no stowed model: `AddHandItem`'s hand-2 arm removes it.
+        for state in [0u8, 1] {
+            assert_eq!(placement(2, 15, 1, state), None, "bow stowed in state {state}");
+            assert_eq!(placement(2, 26, 1, state), None, "gun stowed in state {state}");
+        }
+    }
+
     #[test]
     fn ammo_attach_hands_the_volleying_bow_arrow_and_nothing_else() {
         assert_eq!(ammo_attach(Some(0x0f), true), Some(attach_id::HAND_ARROW)); // bow, nocked

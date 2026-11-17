@@ -9,7 +9,7 @@ Started 2026-10-24. Status: PARTIAL — first full inventory pass done this sess
 | Wow.exe.multiclass-original | 3e27e6e5c79a6689877c9c680811de07d553d9311c8335c98cb2e6b1e091a411 | matches client-pin.json original_exe_sha256 |
 | installed wow.exe | 537df9fc60dd946c3f1f3c65c37b586f3da99c6d9b58a783349d1c39431d3556 | matches client-pin.json exe_sha256; PE FileVersion 3,3,5,12340; 7,705,600 bytes |
 
-Client pin: D:/WOW/wm-project/client_extensions/multiclass/client-pin.json. Stock authenticity of the "original": NOT independently established — blocks only conclusions that need it. Locale: **enUS confirmed** (WTF/Config.wtf `SET locale "enUS"` + Data/enus).
+Client pin: D:/Projects/wow/server/wm-project/client_extensions/multiclass/client-pin.json. Stock authenticity of the "original": NOT independently established — blocks only conclusions that need it. Locale: **enUS confirmed** (WTF/Config.wtf `SET locale "enUS"` + Data/enus).
 
 ## Server deployment identity
 

@@ -1,0 +1,154 @@
+# Wrath (3.3.5a, 12340) -> 1.12 descriptor field table.
+#
+# Each rule copies a delivered Wrath word onto a 1.12 index:
+#   for i in 0..count: if Wrath word `from + i` was delivered,
+#     1.12 word `to + i` = (word >> shift) & mask
+# `shift` defaults to 0, `mask` to 0xFFFFFFFF, `count` to 1.
+#
+# Sections: [[unit]] (creatures and players), [[player]] (players only, read from the full
+# player window), [[gameobject]], [[dynamicobject]], [[corpse]]. Rules run after the
+# hand-written projection in wrath.rs, in file order, so the last rule for an index wins.
+#
+# Live overlay: put a file with the same format at <benilla-config>/wrath-field-map.toml. It is
+# re-read within a second of saving and applied after these rules (or instead of them with
+# `replace_defaults = true` at the top). A file that does not parse is logged and ignored.
+#
+# A translation that needs a lookup or computed value belongs in the live translation script
+# (wrath_translate.lua, overlay <benilla-config>/wrath-translate.lua), which runs after this table.
+
+# CGGameObjectData (Wrath 6..17) -> 1.12 GameObject descriptor.
+[[gameobject]] # OBJECT_FIELD_CREATED_BY
+from = 6
+to = 6
+count = 2
+
+[[gameobject]] # GAMEOBJECT_DISPLAYID
+from = 8
+to = 8
+
+[[gameobject]] # GAMEOBJECT_FLAGS
+from = 9
+to = 9
+
+[[gameobject]] # GAMEOBJECT_BYTES_1 byte 0 (state) -> GAMEOBJECT_STATE
+from = 17
+to = 14
+mask = 0xFF
+
+[[gameobject]] # GAMEOBJECT_BYTES_1 byte 1 (type) -> GAMEOBJECT_TYPE_ID
+from = 17
+to = 21
+shift = 8
+mask = 0xFF
+
+[[gameobject]] # GAMEOBJECT_DYNAMIC low u16 (dynamic flags) -> GAMEOBJECT_DYN_FLAGS
+from = 14
+to = 19
+mask = 0xFFFF
+
+[[gameobject]] # GAMEOBJECT_FACTION
+from = 15
+to = 20
+
+[[gameobject]] # GAMEOBJECT_LEVEL
+from = 16
+to = 22
+
+# CGDynamicObjectData: caster, bytes, spell, radius share the 1.12 indices. Wrath CASTTIME (11)
+# has no 1.12 slot (1.12 keeps position there).
+[[dynamicobject]]
+from = 6
+to = 6
+count = 5
+
+# CGCorpseData -> 1.12 corpse descriptor. Wrath carries no position words; 1.12 owner, display,
+# items and bytes sit two words later after its position block.
+[[corpse]] # CORPSE_FIELD_OWNER
+from = 6
+to = 6
+count = 2
+
+[[corpse]] # CORPSE_FIELD_DISPLAY_ID
+from = 10
+to = 12
+
+[[corpse]] # CORPSE_FIELD_ITEM 0..18: display | inventory type << 24
+from = 11
+to = 13
+count = 19
+
+[[corpse]] # BYTES_1, BYTES_2, GUILD, FLAGS, DYNAMIC_FLAGS
+from = 30
+to = 32
+count = 5
+
+# Unit block (Wrath 6..147) -> 1.12 unit descriptor, for creatures and players. Health, power,
+# level, faction, flags, bytes, displays, npc flags and the guid fields are projected in Rust;
+# these are the direct copies. Players already get most of them from the player projection; the
+# values are the same.
+[[unit]] # UNIT_FIELD_CHARM, UNIT_FIELD_SUMMON
+from = 6
+to = 6
+count = 4
+
+[[unit]] # UNIT_FIELD_CHANNEL_OBJECT
+from = 20
+to = 20
+count = 2
+
+[[unit]] # UNIT_CHANNEL_SPELL
+from = 22
+to = 144
+
+[[unit]] # AURASTATE, BASEATTACKTIME[2], RANGEDATTACKTIME, BOUNDINGRADIUS, COMBATREACH
+from = 61
+to = 125
+count = 6
+
+[[unit]] # UNIT_FIELD_NATIVEDISPLAYID (the Rust projection writes DISPLAYID there first)
+from = 68
+to = 132
+
+[[unit]] # MINDAMAGE, MAXDAMAGE, MINOFFHANDDAMAGE, MAXOFFHANDDAMAGE
+from = 70
+to = 134
+count = 4
+
+[[unit]] # PETNUMBER, PET_NAME_TIMESTAMP, PETEXPERIENCE, PETNEXTLEVELEXP
+from = 75
+to = 139
+count = 4
+
+[[unit]] # UNIT_MOD_CAST_SPEED, UNIT_CREATED_BY_SPELL
+from = 80
+to = 145
+count = 2
+
+[[unit]] # UNIT_NPC_EMOTESTATE
+from = 83
+to = 148
+
+[[unit]] # UNIT_FIELD_STAT0..4
+from = 84
+to = 150
+count = 5
+
+[[unit]] # UNIT_FIELD_RESISTANCES 0..6
+from = 99
+to = 155
+count = 7
+
+[[unit]] # UNIT_FIELD_BASE_MANA, UNIT_FIELD_BASE_HEALTH
+from = 120
+to = 162
+count = 2
+
+[[unit]] # ATTACK_POWER .. MAXRANGEDDAMAGE
+from = 123
+to = 165
+count = 8
+
+[[unit]] # POWER_COST_MODIFIER 0..6, POWER_COST_MULTIPLIER 0..6
+from = 131
+to = 173
+count = 14

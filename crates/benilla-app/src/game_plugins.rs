@@ -243,6 +243,7 @@ impl PluginGroup for GamePlugins {
             .add(UiItemTextPlugin)
             .add(UiSavedPlugin)
             .add(crate::item_names::ItemNamesPlugin)
+            .add(crate::live_code::LiveCodePlugin)
             .add(crate::wdb::WdbPlugin)
             .add(UiStablePlugin)
             .add(TabardUiPlugin)
@@ -1102,7 +1103,11 @@ pub(crate) mod schedule_tests {
     /// ([`crate::vm_pass::order_the_pass`]), so a link's commands wait for the first barrier past
     /// the chain. The count may not rise past the ceiling, and the ceiling follows it down. Read
     /// on the dev build, whose schedule holds every system the player build does.
-    const UPDATE_SYNC_POINT_CEILING: usize = 54;
+    ///
+    /// 55: the release's missile clear (`entities::missile::clear_missiles_at`) despawns through
+    /// commands and is chained before `move_missiles`; the despawn has to land before the
+    /// frame's flight, or a missile still homing on the released ghost arrives.
+    const UPDATE_SYNC_POINT_CEILING: usize = 55;
     const UPDATE_SYNC_POINT_SLACK: usize = 4;
 
     #[test]

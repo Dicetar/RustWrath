@@ -91,7 +91,7 @@ pub fn init_world_point_resources(world: &mut bevy::prelude::World) {
     world.init_resource::<CurrentAreaInterior>();
 }
 
-/// The nearest wet point of one liquid sound class ([`WorldPoint::nearest_liquid_per_class`]).
+/// The nearest wet point the water ambient loop tracks ([`WorldPoint::nearest_liquid`]).
 pub struct NearestLiquid {
     /// Squared distance from the query point, in WoW yards.
     pub(crate) dist_sq: f32,
@@ -242,26 +242,22 @@ impl WorldPoint<'_, '_> {
         self.area_interior.0
     }
 
-    /// The nearest wet point to `wow` within `radius` for each liquid sound class (`nibble & 3`),
-    /// the scan behind the ambient liquid loops (reference: `0x6723f0` → `0x68af10` →
-    /// `0x68b0d0`). The class split and the AABB-clamped nearest point are the world's; priority,
-    /// the voice cap and the slew are the sound system's.
-    pub fn nearest_liquid_per_class(
-        &self,
-        wow: [f32; 3],
-        radius: f32,
-    ) -> [Option<NearestLiquid>; 4] {
-        let mut best: [Option<NearestLiquid>; 4] = [None, None, None, None];
+    /// The nearest wet point to `wow` within `radius`, across every liquid class: 3.3.5's water
+    /// ambient loop keeps one record only (`SI2::HandleWaterSounds`, `0x4D2390`, the single
+    /// `s_nearestWaterSounds[1]`), so the 1.12 driver's class split does not apply. The
+    /// AABB-clamped nearest point is the world's; the kit, the throttle and the fade are the
+    /// sound system's.
+    pub fn nearest_liquid(&self, wow: [f32; 3], radius: f32) -> Option<NearestLiquid> {
+        let mut best: Option<NearestLiquid> = None;
         for (src, info) in &self.sound_sources {
             let point = info.nearest_point_wow(wow[0], wow[1]);
             let dist_sq = (point[0] - wow[0]).powi(2)
                 + (point[1] - wow[1]).powi(2)
                 + (point[2] - wow[2]).powi(2);
-            let class = (src.nibble & 3) as usize;
             if dist_sq <= radius * radius
-                && best[class].as_ref().is_none_or(|b| dist_sq < b.dist_sq)
+                && best.as_ref().is_none_or(|b| dist_sq < b.dist_sq)
             {
-                best[class] = Some(NearestLiquid {
+                best = Some(NearestLiquid {
                     dist_sq,
                     point,
                     nibble: src.nibble,
