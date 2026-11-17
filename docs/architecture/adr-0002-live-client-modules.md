@@ -1132,7 +1132,7 @@ proposed above so `H03` is not blocked):
 | Texture/material/tuning | Dependency-aware content revision | Next stage; not delivered by the DLL loader |
 | M2/SKIN/animation import | Reimport affected model family and rebind visuals | Next stage; current live caches do not implement this |
 | Terrain/WMO/ADT/collision | Staged affected-cell rebuild at a safe boundary | Planned; must coordinate render and collision revisions |
-| Any function body in a workspace crate the client links (systems, decoders, encoders, formats, rules) | Live code: patched `dx` patch on save | First build and launch ran. With stock dx, a patch below `benilla-app` failed to build, and the first patch that landed crashed the client (`__chkstk` stub). The dx patch is not compiled or run; acceptance pending |
+| Any function body in a workspace crate the client links (systems, decoders, encoders, formats, rules) | Live code: patched `dx` patch on save | First build and launch ran. With stock dx, a patch below `benilla-app` failed to build, and the first patch that landed crashed the client (`__chkstk` stub). The next cross-crate patch landed and crashed on a thread-local (Windows TLS and exe-static reach). The latest dx patch is not compiled or run; acceptance pending |
 | Struct/enum layout, static or thread-local initializer, new/reordered system or plugin, new dependency | Restart (live code reports the patch but cannot apply it safely) | By design |
 | New host interface, Bevy/wgpu upgrade, core component/schema changes | Declared maintenance rebuild/restart | Outside ABI 1 |
 
@@ -1188,7 +1188,7 @@ captured no rustc arguments for those, so the replay failed (`Missing rustc args
 An edit in `benilla-app` that used a new item from `benilla-formats` failed to build, because
 only `benilla-app` was replayed.
 
-`tools/live-code/dx-0.7.10-workspace-crates.patch` changes six things:
+`tools/live-code/dx-0.7.10-workspace-crates.patch` changes seven things:
 
 - The watch list follows dependencies transitively (`local_dependencies` in `serve/runner.rs`),
   so every workspace crate the client links is watched.
@@ -1214,6 +1214,21 @@ only `benilla-app` was replayed.
   Stock dx asks krates for direct dependents, which misses `benilla-app`'s
   `hotpatch = ["dep:benilla-hotpatch-bevy"]` edge, so it replayed `benilla_app` first and the
   build failed with `can't find crate for benilla_hotpatch_bevy`.
+- On Windows, a patch DLL keeps its own thread-locals and is linked at a fixed base near the
+  exe (`create_undefined_symbol_stub` and `windows_patch_image_base` in `build/patch.rs`, the
+  link in `build/link.rs`). Stock dx resolves `_tls_index` and every exe static the patch reads
+  to an absolute address in the exe. x64 code reads those through 32-bit RIP-relative
+  displacements. link.exe computes these against the DLL's default base, 0x180000000, and the
+  loader never relocates them, so they cannot reach an exe mapped at 0x7FF7…. The patch that
+  crashed the owner's client had 29 such `_tls_index` loads and 42 loads of other exe statics.
+  The CRT's TLS symbols now come from `msvcrt.lib`, so the DLL gets its own TLS directory and
+  slot. Each patch is linked with `/BASE` just past the exe image, after the patches already
+  loaded, and with `/DYNAMICBASE:NO`. A patch whose image would end more than 2 GiB past the exe
+  fails to build and asks for a restart. Two limits follow:
+  - A `thread_local!` in replayed code starts from its initial value in each patch and is not
+    shared with the exe's copy. dx does the same on Linux and macOS.
+  - If something else already occupies the chosen base, the loader relocates the DLL and those
+    reads fault again.
 
 The launcher passes `--log-to-file`, so the run folder's `dx.log` records which files and crates
 each patch saw.

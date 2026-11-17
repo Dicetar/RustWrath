@@ -1,5 +1,5 @@
 diff --git a/src/build/link.rs b/src/build/link.rs
-index e3edd5c..3812897 100644
+index e3edd5c..fea6427 100644
 --- a/src/build/link.rs
 +++ b/src/build/link.rs
 @@ -146,7 +146,22 @@ impl BuildRequest {
@@ -26,7 +26,46 @@ index e3edd5c..3812897 100644
          tracing::debug!("replaying crates: {replayed_crates:?}");
          for crate_name in &replayed_crates {
              let rustc_args = self
-@@ -602,6 +617,73 @@ impl BuildRequest {
+@@ -259,6 +274,23 @@ impl BuildRequest {
+                 .iter()
+                 .map(Into::into),
+         );
++
++        // RustWrath patch: a Windows patch DLL gets its own TLS directory (from the CRT's
++        // `tlssup.obj`) and a fixed base just past the exe, so the 32-bit RIP-relative references
++        // to exe data that the stub resolves to absolute addresses still reach. See
++        // `windows_patch_image_base`.
++        let windows_patch_base = match (self.linker_flavor(), self.triple.operating_system) {
++            (LinkerFlavor::Msvc, OperatingSystem::Windows) => {
++                let base =
++                    crate::build::windows_patch_image_base(cache, &self.triple, *aslr_reference)?;
++                tracing::debug!("patch image base: {base:#x}");
++                out_args.push(format!("/BASE:{base:#x}").into());
++                out_args.push("/DYNAMICBASE:NO".into());
++                out_args.push("/INCLUDE:_tls_used".into());
++                Some(base)
++            }
++            _ => None,
++        };
+         out_args.extend(out_arg.iter().map(Into::into));
+ 
+         if cfg!(windows) {
+@@ -304,6 +336,14 @@ impl BuildRequest {
+             }
+         }
+ 
++        // RustWrath patch: fail a patch that ends out of the exe's reach, and put the next one
++        // past this one.
++        if let Some(base) = windows_patch_base {
++            if res.status.success() && out_exe.exists() {
++                crate::build::windows_patch_linked(&out_exe, base)?;
++            }
++        }
++
+         // For some really weird reason that I think is because of dlopen caching, future loads of the
+         // jump library will fail if we don't remove the original fat file. I think this could be
+         // because of library versioning and namespaces, but really unsure.
+@@ -602,6 +642,73 @@ impl BuildRequest {
          })
      }
  
@@ -101,10 +140,29 @@ index e3edd5c..3812897 100644
      ///
      /// The caller (builder) already guarantees that every crate in `modified_crates`
 diff --git a/src/build/patch.rs b/src/build/patch.rs
-index ce60a5a..acf66ad 100644
+index ce60a5a..9650085 100644
 --- a/src/build/patch.rs
 +++ b/src/build/patch.rs
-@@ -1014,14 +1014,13 @@ pub fn create_undefined_symbol_stub(
+@@ -942,6 +942,18 @@ pub fn create_undefined_symbol_stub(
+     // for each symbol we either write the address directly (as a symbol) or create a PLT/GOT entry
+     let text_section = obj.section_id(StandardSection::Text);
+     for name in undefined_symbols {
++        // RustWrath patch: a Windows patch DLL keeps its own thread-locals. Patched code reaches a
++        // thread-local through `_tls_index` and a SECREL offset into the DLL's own `.tls` layout.
++        // Resolving `_tls_index` to the exe's copy (an absolute data symbol, below) paired the exe's
++        // TLS slot with the DLL's offsets, and its 32-bit RIP-relative load did not reach the exe.
++        // Leaving the CRT's TLS symbols to `tlssup.obj` in `msvcrt.lib` gives the DLL its own TLS
++        // directory and slot, like the ELF and Mach-O path below gives each patch its own copy.
++        if matches!(triple.operating_system, OperatingSystem::Windows)
++            && WINDOWS_CRT_TLS_SYMBOLS.contains(&name.as_str())
++        {
++            continue;
++        }
++
+         let Some(sym) = cache
+             .symbol_table
+             .get(name.as_str().trim_start_matches("__imp_"))
+@@ -1014,14 +1026,13 @@ pub fn create_undefined_symbol_stub(
                      // The windows ABI and calling convention is different than the SystemV ABI.
                      OperatingSystem::Windows => match triple.architecture {
                          Architecture::X86_64 => {
@@ -125,6 +183,149 @@ index ce60a5a..acf66ad 100644
                              code
                          }
                          Architecture::X86_32(_) => {
+@@ -1259,6 +1270,142 @@ pub fn create_undefined_symbol_stub(
+     Ok(obj.write()?)
+ }
+ 
++/// RustWrath patch: the symbols `tlssup.obj` (in `msvcrt.lib`) defines for a module's own TLS
++/// directory. The patch link must take them from the CRT, not from the exe.
++const WINDOWS_CRT_TLS_SYMBOLS: &[&str] = &[
++    "_tls_index",
++    "_tls_used",
++    "_tls_start",
++    "_tls_end",
++    "__xl_a",
++    "__xl_z",
++];
++
++/// RustWrath patch: alignment of a Windows patch DLL's preferred base.
++const WINDOWS_PATCH_ALIGN: u64 = 0x1_0000;
++
++/// RustWrath patch: space left between the exe image and the first patch DLL.
++const WINDOWS_PATCH_GAP: u64 = 0x100_0000;
++
++/// RustWrath patch: how far an x64 RIP-relative displacement reaches.
++const WINDOWS_REL32_REACH: u64 = 0x8000_0000;
++
++/// RustWrath patch: where the next Windows patch DLL goes, for the exe that is running.
++struct WindowsPatchPlacement {
++    exe_base: u64,
++    exe_modified: Option<std::time::SystemTime>,
++    next_base: u64,
++}
++
++static WINDOWS_PATCH_PLACEMENT: std::sync::Mutex<Option<WindowsPatchPlacement>> =
++    std::sync::Mutex::new(None);
++
++/// RustWrath patch: the preferred base for the next Windows patch DLL.
++///
++/// The stub defines every exe data symbol the patch uses as an absolute address. x64 code reaches
++/// data through 32-bit RIP-relative displacements, which link.exe computes against the DLL's
++/// preferred base and the loader never relocates. With ASLR the DLL lands somewhere else, and with
++/// the default base (0x180000000) the exe (at 0x7FF6... or above) is out of reach either way.
++///
++/// So each patch is linked with `/DYNAMICBASE:NO` at a base just past the exe image, after the
++/// patches already loaded (subsecond keeps them). A rebuilt exe, or the same exe at another base,
++/// starts over from its own image end.
++pub fn windows_patch_image_base(
++    cache: &HotpatchModuleCache,
++    triple: &Triple,
++    aslr_reference: u64,
++) -> Result<u64> {
++    let main_rva = cache
++        .symbol_table
++        .get(main_sentinel(triple))
++        .context("failed to find 'main' symbol in the exe")?
++        .address;
++    let exe_base = aslr_reference.checked_sub(main_rva).ok_or_else(|| {
++        PatchError::InvalidModule(format!(
++            "ASLR reference {aslr_reference:x} is below main's RVA {main_rva:x}"
++        ))
++    })?;
++    let exe_modified = std::fs::metadata(&cache.path)
++        .and_then(|meta| meta.modified())
++        .ok();
++
++    let mut placement = WINDOWS_PATCH_PLACEMENT
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner());
++    let current = placement
++        .as_ref()
++        .is_some_and(|p| p.exe_base == exe_base && p.exe_modified == exe_modified);
++    if !current {
++        let exe_end = exe_base + pe_size_of_image(&cache.path)?;
++        *placement = Some(WindowsPatchPlacement {
++            exe_base,
++            exe_modified,
++            next_base: align_up(exe_end + WINDOWS_PATCH_GAP, WINDOWS_PATCH_ALIGN),
++        });
++    }
++
++    let next_base = placement.as_ref().map(|p| p.next_base).unwrap_or_default();
++    if next_base - exe_base >= WINDOWS_REL32_REACH {
++        return Err(PatchError::InvalidModule(
++            "no address within 2 GiB of the exe is left for another patch; restart the app with a full rebuild".to_string(),
++        ));
++    }
++
++    Ok(next_base)
++}
++
++/// RustWrath patch: check a linked Windows patch DLL against the exe's RIP-relative reach and
++/// move the next patch's base past it.
++pub fn windows_patch_linked(patch: &Path, base: u64) -> Result<()> {
++    let end = base + pe_size_of_image(patch)?;
++    let mut placement = WINDOWS_PATCH_PLACEMENT
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner());
++    let Some(placement) = placement.as_mut() else {
++        return Ok(());
++    };
++
++    if end - placement.exe_base > WINDOWS_REL32_REACH {
++        return Err(PatchError::InvalidModule(format!(
++            "patch image ends at {end:x}, more than 2 GiB past the exe at {:x}; restart the app with a full rebuild",
++            placement.exe_base
++        )));
++    }
++
++    placement.next_base = placement
++        .next_base
++        .max(align_up(end, WINDOWS_PATCH_ALIGN));
++    Ok(())
++}
++
++/// RustWrath patch: `SizeOfImage` from a PE32+ file's optional header.
++fn pe_size_of_image(path: &Path) -> Result<u64> {
++    let mut header = Vec::with_capacity(4096);
++    std::fs::File::open(path)?
++        .take(4096)
++        .read_to_end(&mut header)?;
++
++    let bad = || PatchError::InvalidModule(format!("{} is not a PE32+ image", path.display()));
++    let bytes = |at: usize, len: usize| header.get(at..at + len).ok_or_else(bad);
++
++    let pe = u32::from_le_bytes(bytes(0x3C, 4)?.try_into().unwrap()) as usize;
++    if bytes(pe, 4)? != b"PE\0\0" {
++        return Err(bad());
++    }
++
++    // The optional header follows the 4-byte signature and the 20-byte file header.
++    let optional = pe + 24;
++    if u16::from_le_bytes(bytes(optional, 2)?.try_into().unwrap()) != 0x20B {
++        return Err(bad());
++    }
++
++    Ok(u32::from_le_bytes(bytes(optional + 56, 4)?.try_into().unwrap()) as u64)
++}
++
++fn align_up(value: u64, align: u64) -> u64 {
++    value.div_ceil(align) * align
++}
++
+ fn collect_stub_symbols_from_path(
+     path: &Path,
+     undefined_symbols: &mut HashSet<String>,
 diff --git a/src/build/request.rs b/src/build/request.rs
 index 2a41545..3a867a2 100644
 --- a/src/build/request.rs

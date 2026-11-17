@@ -1,15 +1,15 @@
 # Live code: patch every workspace crate the client links
 
-Status: landed on `main`; the replay order now compiles and works. A patch that replays a crate
-with `thread_local!` crashes the client (Windows TLS, below), so that is still open
+Status: landed on `main`. The sixth dx commit (Windows TLS and exe-static reach) is not
+compiled or run.
 Owner: Claude Code (Opus 5.5)
 Branch: fix/live-code-dx-workspace (landed `fa707857`), fix/live-code-dx-chkstk (landed
-`84ef7600`), then live-dx3, live-dx4, live-dx5
+`84ef7600`), then live-dx3, live-dx4, live-dx5, fix/live-code-dx-windows-tls
 Issue: none. Owner session 2026-11-17: the trainer/game-object fix did not patch into the
 running client, and the first patch that did land crashed it.
-Next: make thread-locals in patched code use the exe's TLS on Windows (dx stub and replayed
-objects), or keep unchanged crates out of the replay. Until then a live patch is safe only
-when no replayed code touches a `thread_local!`.
+Next: the owner reinstalls dx (`tools/install-live-dx.ps1`) and relaunches with `-LiveCode`;
+apply `eb410dd7` live and check that the patch lands and the client keeps running. dx.log
+records `patch image base: 0x…` for each patch.
 
 Date 2026-11-17. Worktree `D:/Projects/wow/worktrees/live-dx`, cut from `origin/main` `7114694f`.
 
@@ -127,6 +127,43 @@ mixer, lanes, quest trace, loot UI), so a patch can reach this crash through the
 The trainer/game-object fix stays applied in the live worktree. A full rebuild (`r` in dx, or a
 relaunch) includes it without a live patch.
 
+## Patch DLLs get their own TLS and a base near the exe
+
+The wrapped `_tls_index` load is one case of a wider fault. `dumpbin /disasm` of the crashed DLL
+(image `0x180000000`–`0x18564C000`) finds 71 RIP-relative loads whose target is outside the
+image and below the exe: 29 are `_tls_index` and 42 are other exe statics. Every exe data symbol
+the stub resolves is an absolute address. link.exe computes the 32-bit displacement against the
+DLL's preferred base, the DLL is linked with ASLR, and the loader never relocates a
+RIP-relative displacement. Upstream's comment on `/HIGHENTROPYVA:NO` ("prevent aslr from
+overflowing 32 bits") assumes the exe stays low. This exe ran at `0x7FF7…`.
+
+The sixth commit changes two things in the dx patch:
+
+- `create_undefined_symbol_stub` (`build/patch.rs`) no longer resolves `_tls_index`, `_tls_used`,
+  `_tls_start`, `_tls_end`, `__xl_a` and `__xl_z` from the exe. link.exe takes them from
+  `tlssup.obj` in `msvcrt.lib`; `dumpbin /linkermember` shows the MSVC 14.36 `msvcrt.lib`
+  defines all six. The link adds `/INCLUDE:_tls_used`, so the DLL has a TLS directory. Windows
+  allocates a `LoadLibrary`'d DLL's TLS for threads that already exist. The patch's
+  thread-locals start from their initial values and are separate from the exe's copies. This
+  is how dx already treats TLS on Linux and macOS ("each patch gets its own TLS copy").
+- `compile_workspace_hotpatch` (`build/link.rs`) links each Windows patch with
+  `/BASE:<addr> /DYNAMICBASE:NO`.
+  - `windows_patch_image_base` puts the first patch 16 MiB past the exe image. It reads
+    `SizeOfImage` from the exe's PE header and finds the runtime base from the ASLR reference
+    minus `main`'s RVA.
+  - Each later patch goes past the one before, because subsecond keeps them loaded.
+  - A patch whose image would end more than 2 GiB past the exe base fails with a message to
+    restart. At this patch's size (86 MiB) and this exe's (194 MiB), that leaves about 20 patches
+    per client run.
+  - The placement resets when the exe's base or modification time changes.
+
+Not covered:
+
+- If something else occupies the chosen base, the loader relocates the DLL and the exe-static
+  loads fault again. dx cannot see the client's address space to check.
+- A `thread_local!` that patched and unpatched code must share (for example `benilla_mlua`'s
+  `RUNNING` flag) has two copies while a patch is loaded. That gives wrong values, not a crash.
+
 ## What changed
 
 - `tools/live-code/dx-0.7.10-workspace-crates.patch` (the Windows stub fix is above):
@@ -152,4 +189,6 @@ relaunch) includes it without a live patch.
 
 - A cross-crate patch landed (23:24:27) but crashed 11 s later on Windows TLS. No patch has
   yet run to completion.
+- The sixth dx commit is not compiled. Whether the loader honours the chosen base in the
+  client, and whether link.exe accepts the TLS objects without warnings, are unverified.
 - The trainer, chest and ore-vein behaviour of `eb410dd7` has not been checked in game.
