@@ -1,6 +1,6 @@
 # Live code: patch any client code into the running process
 
-Status: pushed on the task branch, not landed; not compiled locally, not run
+Status: pushed on the task branch, not landed; CI compiles the live-code build; not run
 Owner: Claude Code (Opus 5.5)
 Branch: feat/live-code-hotpatch
 Issue: none (owner request 2026-11-17: "be able to hotpatch anything")
@@ -52,6 +52,11 @@ Run 44158383817 (007cc798): the live-code clippy step compiled `subsecond` 0.7.1
 clippy errors in `benilla-formats` (lint debt on `main` under the toolchain's newer clippy; no
 file this branch touches), before `benilla-app`. The step is now `cargo check`. The `dx` to
 install is 0.7.10.
+
+Run 44160363053 (4e568513): `live-code-check` succeeds. `cargo check -p benilla -p benilla-app
+--features live_code` compiles through `benilla`; none of its warnings point at code this branch
+added. fmt fails as on `main`. The Windows job of this run repeats run 44150560624's build, with
+which nothing on the default-feature path changed.
 
 ## Unverified
 
