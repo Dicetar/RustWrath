@@ -335,15 +335,21 @@ pub(in crate::script) fn build_item(
     // The sell price, after the lines (`0x52e376`): `OnTooltipAddMoney` with the amount, or
     // ITEM_UNSELLABLE at price 0 (`0x854a74`, pushed at `0x52e4a3`).
     if let Some((price, amount)) = sell {
-        let (merchant_open, repairing) = {
+        let (merchant_open, repairing, wrath) = {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            (model.merchant.is_some(), model.repair_mode)
+            (
+                model.merchant.is_some(),
+                model.repair_mode,
+                model.target == crate::script::UiTarget::Wrath335,
+            )
         };
-        if merchant_open && !repairing {
+        if (merchant_open || wrath) && !repairing {
             if price > 0 {
                 fire_add_money(lua, h, amount);
-            } else if let Some(t) = crate::strings::global(lua, "ITEM_UNSELLABLE") {
-                append_line(lua, this, (t, WHITE), None, false)?;
+            } else if merchant_open {
+                if let Some(t) = crate::strings::global(lua, "ITEM_UNSELLABLE") {
+                    append_line(lua, this, (t, WHITE), None, false)?;
+                }
             }
         }
     }

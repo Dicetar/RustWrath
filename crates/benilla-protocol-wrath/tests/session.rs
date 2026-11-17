@@ -355,6 +355,12 @@ fn far_transfer_follows_the_real_server_sequence() {
     assert_eq!(s.phase(), benilla_protocol_wrath::session::Phase::Loading);
     assert_eq!(s.world_generation(), 2);
 
+    let mut refused = 7u32.to_le_bytes().to_vec();
+    refused.push(2);
+    s.reduce(opcode::SMSG_TRANSFER_ABORTED, &refused, 1_310).unwrap();
+    assert_eq!(s.phase(), benilla_protocol_wrath::session::Phase::Loading);
+    assert_eq!(s.world_generation(), 2);
+
     // 3. Old-world in-flight tail between NEW_WORLD and the worldport ack is discarded.
     s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::values_update(PLAYER, &[(fields::UNIT_FIELD_HEALTH, 10)]), 1_350).unwrap();
     s.reduce(opcode::SMSG_DESTROY_OBJECT, &enc::destroy(OTHER), 1_360).unwrap();
@@ -376,6 +382,54 @@ fn far_transfer_follows_the_real_server_sequence() {
         s.take_lifecycle(),
         vec![benilla_protocol_wrath::session::LifeEvent::WorldTransfer { world_generation: 2, map_id: 7 }]
     );
+}
+
+#[test]
+fn refusing_the_pending_destination_preserves_the_established_world() {
+    use benilla_protocol_wrath::session::Phase;
+
+    let mut s = SessionState::new();
+    s.start_session(PLAYER);
+    s.note_player_login();
+    s.reduce(opcode::SMSG_LOGIN_VERIFY_WORLD, &enc::verify_world(0, 1.0), 1_000)
+        .unwrap();
+    s.reduce(opcode::SMSG_UPDATE_OBJECT, &enc::stationary_other(OTHER, 5.0), 1_050)
+        .unwrap();
+    let initial = s.export(1_100, 10).unwrap().unwrap();
+    s.mark_published();
+
+    s.reduce(opcode::SMSG_TRANSFER_PENDING, &7u32.to_le_bytes(), 1_200)
+        .unwrap();
+    let mut other_map = 8u32.to_le_bytes().to_vec();
+    other_map.push(2);
+    s.reduce(opcode::SMSG_TRANSFER_ABORTED, &other_map, 1_210)
+        .unwrap();
+    let mut refused = 7u32.to_le_bytes().to_vec();
+    refused.push(8);
+    s.reduce(opcode::SMSG_TRANSFER_ABORTED, &refused, 1_220)
+        .unwrap();
+    assert_eq!(s.phase(), Phase::TransferPending);
+
+    refused.push(1);
+    s.reduce(opcode::SMSG_TRANSFER_ABORTED, &refused, 1_230)
+        .unwrap();
+    assert_eq!(s.phase(), Phase::InWorld);
+    assert!(s.take_lifecycle().is_empty());
+    let retained = s.export(1_240, 10).unwrap().unwrap();
+    assert_eq!(retained.world_generation, initial.world_generation);
+    assert_eq!(retained.map_id, initial.map_id);
+    assert_eq!(retained.position, initial.position);
+    assert_eq!(retained.visibility.guids, initial.visibility.guids);
+
+    s.finish_session();
+    s.start_session(PLAYER);
+    s.note_player_login();
+    s.reduce(opcode::SMSG_TRANSFER_PENDING, &7u32.to_le_bytes(), 1_300)
+        .unwrap();
+    s.reduce(opcode::SMSG_TRANSFER_ABORTED, &refused, 1_310)
+        .unwrap();
+    assert_eq!(s.phase(), Phase::EnteringWorld);
+    assert!(!s.world_established());
 }
 
 #[test]

@@ -2716,6 +2716,7 @@ mod tests {
             .init_resource::<crate::target::AssistAttack>()
             .init_resource::<LootConfig>()
             .init_resource::<NameConfig>()
+            .init_resource::<crate::vplates::VPlateMode>()
             .init_resource::<ClutterConfig>()
             .init_resource::<MinimapZoom>()
             .init_resource::<BubbleConfig>()
@@ -2783,6 +2784,9 @@ mod tests {
         },
         |app| {
             app.add_observer(crate::nameplates::on_cvar);
+        },
+        |app| {
+            app.add_observer(crate::vplates::on_cvar);
         },
         |app| {
             app.add_observer(crate::game_tip::on_cvar);

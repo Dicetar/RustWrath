@@ -1,0 +1,5 @@
+-- Stand-in for the 1.12.1 `FrameXML\LocaleProperties.lua`, which a 3.3.5a chain does not carry:
+-- in 3.3.5a `GetText` is the engine function (`FrameScript_GetText 0x00819D40`), which the host
+-- registers natively (`crates/benilla-ui/src/script/client.rs`). The 1.12-era UI kits still list
+-- the 1.12 path, so this file exists for them to load; defining nothing keeps the host's GetText
+-- answering in either target. It is not listed in `layer.toc`, so production never runs it.

@@ -54,6 +54,7 @@ pub(super) struct Inputs<'g, 'a, H, V> {
     pub(super) target: u64,
     pub(super) mouseover: u64,
     pub(super) npc: u64,
+    pub(super) vehicle: Option<u64>,
     /// The object manager's lookup (`0x468460`).
     pub(super) held: H,
     /// `UnitBuff`'s unit gate on a live unit, by guid.
@@ -116,6 +117,7 @@ impl UnitAuras {
             target,
             mouseover,
             npc,
+            vehicle,
             held,
             buffs_visible,
             catalog,
@@ -134,13 +136,13 @@ impl UnitAuras {
         let mut g = std::mem::take(&mut self.guids);
         let mut walk = std::mem::take(&mut self.walk);
         (g.player, g.pet, g.target, g.mouseover, g.npc) = (me, pet, target, mouseover, npc);
-        // `focus`, `vehicle` and `bossN` are Wrath tokens; the vanilla resolver must keep
-        // rejecting them. Their guids stay 0 until their host sources exist.
-        g.wrath = crate::wrath::selected_from_env();
+        // Vanilla must reject the Wrath-only tokens.
+        g.wrath = script.target() == benilla_ui::script::UiTarget::Wrath335;
+        g.vehicle = if g.wrath { vehicle.unwrap_or(0) } else { 0 };
         fill_group(&mut g, group, &held);
         g.held.clear();
         walk.clear();
-        walk.extend([me, pet, target, mouseover, npc].map(|g| (g, false)));
+        walk.extend([me, pet, target, mouseover, npc, g.vehicle].map(|g| (g, false)));
         walk.extend(g.party.iter().chain(&g.party_pets).map(|&g| (g, true)));
         walk.extend(g.raid.iter().chain(&g.raid_pets).map(|&g| (g, true)));
         while let Some((guid, record_ok)) = walk.pop() {

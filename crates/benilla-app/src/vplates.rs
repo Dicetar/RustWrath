@@ -8,6 +8,10 @@
 //!   subject must also pass `CanCooperate` (equal faction-group masks); no friendly totem
 //!   (`0x60f757`); 20 yd from the camera's unit (`0x60f7b8`); no occlusion; a unit not projected
 //!   into view loses its plate.
+//! - 12340 gate (`ShouldShowNamePlate`, `Unit_C.cpp:20408`), on a Wrath VM: a player's category
+//!   is `CanCooperate` alone; no critter or non-combat pet; a dead-looking unit only for a raid
+//!   member or pet; a player-owned totem, guardian or pet under its own CVar row
+//!   ([`wrath_plate_gate`]); 41 yd, unbounded in an arena.
 //! - Anchor: the overhead head point (`0x608640`) plus 2/3 yd (`[0x80abfc]`), projected every
 //!   frame (`0x483ee0`), the plate's top centre on it (`0x509ec0`), sized in gx units of the
 //!   screen diagonal (`0x41ad10`), outside uiScale. Deviation: the basis is damped past
@@ -41,8 +45,9 @@ use benilla_world::view::WorldCamera;
 pub(crate) mod border;
 
 /// The two script bits of `[0xc4da34]`, bit `0x1` enemy plates and bit `0x8` friendly: engine
-/// state, written only by the four plate verbs ([`apply_plate_verbs`]) and cleared at every world
-/// entry ([`clear_at_world_entry`]). Nothing persists it: FrameXML replays its own
+/// state, written by the four 1.12 plate verbs ([`apply_plate_verbs`]) and by the two 12340
+/// CVars ([`on_cvar`]), and reseated at every world entry ([`clear_at_world_entry`]). The 1.12
+/// kit persists nothing here: FrameXML replays its own
 /// `NAMEPLATES_ON`/`FRIENDNAMEPLATES_ON` saved variables through the verbs
 /// (`UIOptionsFrame.lua:768-780`, `UIParent.lua:234`, `:367`).
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -123,6 +128,137 @@ const PLATE_LIFT: f32 = 2.0 / 3.0;
 const MAX_DIST_SQ: f32 = 20.0 * 20.0;
 /// `CreatureType.dbc` id 11, Totem: a friendly one gets no plate (`0x60f757` `cmp eax,0xb`).
 const CREATURE_TYPE_TOTEM: u32 = 11;
+/// 12340's range, `MAX_NAMEPLATE_DIST_SQUARED` (`Unit_C.cpp:163`): 41 yd squared, measured from
+/// the camera's unit like the 1.12 one (`:20514`).
+const WRATH_MAX_DIST_SQ: f32 = 1681.0;
+/// `Map.dbc` `InstanceType` 4, an arena: 12340 skips the range test there (`Unit_C.cpp:20513`).
+const INSTANCE_TYPE_ARENA: u32 = 4;
+/// `CreatureType.dbc` ids 8 (Critter) and 12 (Non-combat Pet): never a plate in 12340
+/// (`Unit_C.cpp:20467`, `:20471`).
+const CREATURE_TYPE_CRITTER: u32 = 8;
+const CREATURE_TYPE_NON_COMBAT_PET: u32 = 12;
+/// The creature record's `type_flags` bit `0x100000`, which 12340 tests before either toggle
+/// (`Unit_C.cpp:20455`): a template carrying it never gets a plate.
+const TYPE_FLAG_NO_PLATE: u32 = 0x10_0000;
+/// The visibility byte's `0x2` (12340 `UNIT_FIELD_BYTES_1[2]`, the translated 1.12 byte 3): only
+/// a unit on the enemy side loses its plate to it (`Unit_C.cpp:20451`).
+const VIS_FLAG_CREEP: u8 = 0x2;
+
+/// The eight 12340 plate rows the gate reads (`GameUI_CVar.cpp:588`-`:595`). The two category
+/// toggles arrive through [`VPlateMode`]; the six owner rows are read here each frame, defaulting
+/// to their registered "1" when the table has no row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WrathPlateRows {
+    pub(crate) enemy_pets: bool,
+    pub(crate) enemy_guardians: bool,
+    pub(crate) enemy_totems: bool,
+    pub(crate) friendly_pets: bool,
+    pub(crate) friendly_guardians: bool,
+    pub(crate) friendly_totems: bool,
+}
+
+impl Default for WrathPlateRows {
+    fn default() -> Self {
+        Self {
+            enemy_pets: true,
+            enemy_guardians: true,
+            enemy_totems: true,
+            friendly_pets: true,
+            friendly_guardians: true,
+            friendly_totems: true,
+        }
+    }
+}
+
+impl WrathPlateRows {
+    pub(crate) fn read(cvars: &crate::cvars::Cvars) -> Self {
+        let row = |name: &str| cvars.flag(name).unwrap_or(true);
+        Self {
+            enemy_pets: row("nameplateShowEnemyPets"),
+            enemy_guardians: row("nameplateShowEnemyGuardians"),
+            enemy_totems: row("nameplateShowEnemyTotems"),
+            friendly_pets: row("nameplateShowFriendlyPets"),
+            friendly_guardians: row("nameplateShowFriendlyGuardians"),
+            friendly_totems: row("nameplateShowFriendlyTotems"),
+        }
+    }
+}
+
+/// What 12340's `ShouldShowNamePlate` (`Unit_C.cpp:20408`) tests of one unit between the
+/// category and the screen, resolved by the driver. The health, `NOT_SELECTABLE`, camera-unit,
+/// projection and range tests stay in [`drive_vplates`], shared with the 1.12 gate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct WrathPlateUnit {
+    /// `CanCooperate` from the active player for a player, else not `CanAttack` (`:20445`).
+    pub(crate) friendly: bool,
+    pub(crate) is_player: bool,
+    /// `CanAttack` from the active player, for the unattackable enemy player (`:20503`).
+    pub(crate) attackable: bool,
+    /// The visibility byte's [`VIS_FLAG_CREEP`].
+    pub(crate) creep: bool,
+    /// The creature record carries [`TYPE_FLAG_NO_PLATE`]; false for a player or before the
+    /// record lands, as the reference's absent cache entry reads.
+    pub(crate) record_hides_plate: bool,
+    /// The creature type as `GetCreatureType` answers it.
+    pub(crate) creature_type: u32,
+    /// `UNIT_DYNAMIC_FLAGS` `0x20`, reads as dead.
+    pub(crate) dynflag_dead: bool,
+    /// `IsRaidMemberOrPet` on the unit's guid; consulted only while `dynflag_dead` is set.
+    pub(crate) raid_member_or_pet: bool,
+    /// The charmer, else the creator, is a held unit of player type (`:20483`-`:20485`).
+    pub(crate) owner_is_player: bool,
+    pub(crate) has_charmer: bool,
+    pub(crate) has_creator: bool,
+    pub(crate) has_summoner: bool,
+    /// `UNIT_FIELD_FLAGS`.
+    pub(crate) unit_flags: u32,
+}
+
+/// 12340's plate gate from the category on (`Unit_C.cpp:20451`-`:20505`), in its order: whether
+/// `unit` keeps a plate under the two category toggles in `mode` and the six owner rows.
+pub(crate) fn wrath_plate_gate(
+    unit: &WrathPlateUnit,
+    mode: VPlateMode,
+    rows: WrathPlateRows,
+) -> bool {
+    let friendly = unit.friendly;
+    if !friendly && unit.creep {
+        return false;
+    }
+    if unit.record_hides_plate {
+        return false;
+    }
+    if !mode.enemies && !friendly || !mode.friends && friendly {
+        return false;
+    }
+    if matches!(unit.creature_type, CREATURE_TYPE_CRITTER | CREATURE_TYPE_NON_COMBAT_PET) {
+        return false;
+    }
+    if unit.dynflag_dead && !unit.raid_member_or_pet {
+        return false;
+    }
+    if unit.owner_is_player {
+        if unit.has_creator && !unit.has_summoner && unit.unit_flags & 0x200 != 0 {
+            return false;
+        }
+        // `GetCreatorGuid` answers 0 while a charmer or summoner is set (`Unit_C.cpp:6686`).
+        let creator = unit.has_creator && !unit.has_charmer && !unit.has_summoner;
+        let side = |friend: bool, enemy: bool| if friendly { friend } else { enemy };
+        let row = if unit.creature_type == CREATURE_TYPE_TOTEM {
+            side(rows.friendly_totems, rows.enemy_totems)
+        } else if creator {
+            side(rows.friendly_guardians, rows.enemy_guardians)
+        } else {
+            side(rows.friendly_pets, rows.enemy_pets)
+        };
+        if !row {
+            return false;
+        }
+    }
+    // `:20503`: a player on the enemy side that cannot be attacked has no plate.
+    friendly || !unit.is_player || unit.attackable
+}
+
 /// Deviation: the reference dims non-target plates to `0x7F`; raised because that fades them too
 /// far to read.
 const DIM_ALPHA: u8 = 178;
@@ -251,8 +387,43 @@ pub(crate) fn clear_at_world_entry(world: &mut World) {
     if let Some(mut script) = world.get_non_send_resource_mut::<benilla_ui::script::UiScript>() {
         let _ = script.take_nameplate_bit_writes();
     }
+    // 12340 keeps the two toggles in CVars the gate reads directly, so they survive a world
+    // entry; the 1.12 kit leaves both rows at their default and its FrameXML replays the verbs.
+    let seeded = world
+        .get_resource::<crate::cvars::Cvars>()
+        .map(|cvars| VPlateMode {
+            enemies: cvars.flag("nameplateShowEnemies").unwrap_or(false),
+            friends: cvars.flag("nameplateShowFriends").unwrap_or(false),
+        })
+        .unwrap_or_default();
     if let Some(mut mode) = world.get_resource_mut::<VPlateMode>() {
-        *mode = VPlateMode::default();
+        *mode = seeded;
+    }
+}
+
+/// The 12340 plate toggles: `nameplateShowEnemies` and `nameplateShowFriends`, which the 3.3.5a
+/// gate reads directly (`Unit_C.cpp:20459`, `:20463` in the pinned reference). The stock Wrath
+/// interface writes these CVars and never calls the 1.12 plate verbs, so without this observer
+/// the V-key plates could not be switched on in a Wrath session.
+pub(crate) fn on_cvar(ev: On<crate::cvars::CvarChanged>, mut mode: ResMut<VPlateMode>) {
+    let now = match ev.key().as_str() {
+        "nameplateshowenemies" => VPlateMode {
+            enemies: ev.flag(),
+            ..*mode
+        },
+        "nameplateshowfriends" => VPlateMode {
+            friends: ev.flag(),
+            ..*mode
+        },
+        _ => return,
+    };
+    if *mode != now {
+        info!(
+            "nameplates: enemy {}, friendly {} (cvar)",
+            if now.enemies { "ON" } else { "OFF" },
+            if now.friends { "ON" } else { "OFF" }
+        );
+        *mode = now;
     }
 }
 
@@ -324,6 +495,11 @@ struct PlateWorld<'w, 's> {
     window: Query<'w, 's, &'static Window, With<bevy::window::PrimaryWindow>>,
     // The pending ground-target cast, for the plate's hit-test veto (`0x7cba30`).
     targeting: Res<'w, crate::spell::SpellTargeting>,
+    // 12340 only: the six owner rows, and the current map's `InstanceType` for the arena's
+    // unbounded range.
+    cvars: Option<Res<'w, crate::cvars::Cvars>>,
+    maps: Option<Res<'w, benilla_assets::MapCatalogRes>>,
+    current_map: Option<Res<'w, benilla_world::world_map::CurrentMap>>,
 }
 
 /// Every frame: gate the units, seat each plate and hand the result to the widget layer as
@@ -371,6 +547,12 @@ fn drive_vplates(
         let Some(script) = script else {
             return PlateStep::Retire;
         };
+        // 12340 requires an active player before deciding the unit's category (0x0072B060).
+        let wrath = script.target() == benilla_ui::script::UiTarget::Wrath335;
+        let (rel, me) = (world.relations.get(), world.relations.me());
+        if wrath && me.is_none() {
+            return PlateStep::Retire;
+        }
         let cam_tf = GlobalTransform::from(*cam_pose);
         let Some(viewport) = cam.logical_viewport_size() else {
             return PlateStep::Retire;
@@ -396,7 +578,6 @@ fn drive_vplates(
         let hovered_key = script.hovered_nameplate();
         let clicked = script.take_nameplate_clicks();
         let my_level = self_store.and_then(|s| s.0.unit_level()).unwrap_or(1);
-        let (rel, me) = (world.relations.get(), world.relations.me());
         let types = crate::creature_type::CreatureTypeSources {
             names: Some(&names),
             forms: spells.as_deref().map(|s| &s.forms),
@@ -404,6 +585,23 @@ fn drive_vplates(
         };
         // `GetUnitName`'s miss (`0x609324`): the `UNKNOWNOBJECT` text, read once a frame.
         let unknown = script.unknown_object_text();
+        let rows = world
+            .cvars
+            .as_deref()
+            .map_or_else(WrathPlateRows::default, WrathPlateRows::read);
+        // A map with no row reads type 0 (`MapCatalog::instance_type`), so the range holds.
+        let arena = world
+            .current_map
+            .as_deref()
+            .zip(world.maps.as_deref())
+            .and_then(|(here, maps)| maps.0.instance_type(here.0))
+            == Some(INSTANCE_TYPE_ARENA);
+        let max_dist_sq = match (wrath, arena) {
+            (false, _) => Some(MAX_DIST_SQ),
+            (true, false) => Some(WRATH_MAX_DIST_SQ),
+            (true, true) => None,
+        };
+        let me_guid = world.relations.me_guid();
 
         let (pw, ph) = (gx(PLATE_W), gx(PLATE_H));
         let scale = window.map_or(1.0, |w| w.scale_factor());
@@ -435,48 +633,104 @@ fn drive_vplates(
             if store.is_none_or(|s| s.0.unit_health().unwrap_or(0) == 0) {
                 continue;
             }
-            // `0x60f62e`: `bytes_1` byte 3 `& 3` (ghost or creep) has no plate.
-            if store.is_some_and(|s| s.0.unit_is_ghost_visual()) {
+            // Health passed, so the descriptor has streamed.
+            let Some(store) = store else {
+                continue;
+            };
+            // `0x60f62e`: `bytes_1` byte 3 `& 3` (ghost or creep) has no plate; this reads the
+            // ghost bit alone, so a stealthed unit keeps its plate — a 1.12-only gap against the
+            // recorded `& 3`. 12340 has no ghost test, and only an enemy loses its plate to the
+            // creep bit ([`wrath_plate_gate`]).
+            if !wrath && store.0.unit_is_ghost_visual() {
                 continue;
             }
-            // Measured from the camera's unit (`0x60f780`-`0x60f7b8`).
-            if (tf.translation - centre_tf.translation).length_squared() > MAX_DIST_SQ {
+            // Measured from the camera's unit (`0x60f780`-`0x60f7b8`; 12340 `Unit_C.cpp:20514`,
+            // skipped in an arena).
+            if max_dist_sq
+                .is_some_and(|max| (tf.translation - centre_tf.translation).length_squared() > max)
+            {
                 continue;
             }
             // A CREATEDBY owner, no SUMMONEDBY owner and flags bit 9 (`0x200`): no plate in either
-            // category (`0x60f70b`-`0x60f72d`); the bit's 1.12 name is unknown.
-            if store.is_some_and(|s| {
-                s.0.unit_created_by().is_some_and(|g| g != 0)
-                    && s.0.unit_summoned_by().is_none_or(|g| g == 0)
-                    && s.0.unit_flags() & 0x200 != 0
-            }) {
+            // category (`0x60f70b`-`0x60f72d`); the bit's 1.12 name is unknown. 12340 applies it
+            // only to a player-owned unit ([`wrath_plate_gate`]).
+            if !wrath
+                && store.0.unit_created_by().is_some_and(|g| g != 0)
+                && store.0.unit_summoned_by().is_none_or(|g| g == 0)
+                && store.0.unit_flags() & 0x200 != 0
+            {
                 continue;
             }
             // The category is `CanAttack` from the player (a rep faction answers by its at-war
             // bit); the bar colour is the unit's reaction toward us (by standing). A not-at-war
             // neutral NPC is a friendly plate with a yellow bar.
             let is_player = net.kind == EntityKind::Player;
-            let pair = store
-                .map(|s| world.relations.unit_of(guid.0, s))
-                .zip(me.as_ref());
+            let unit = world.relations.unit_of(guid.0, store);
+            let pair = me.as_ref().map(|me| (unit, me));
             let rank = pair.map_or(Reaction::Neutral as u8, |(u, me)| rel.reaction(&u, me));
-            // A unit whose descriptor has not streamed is attackable by nobody, so friendly unless
-            // a player, whom `CanCooperate` cannot pass.
-            let friendly = pair.map_or(!is_player, |(u, me)| {
-                crate::target::ring::plate_is_friendly(&rel, &u, me, is_player)
-            });
-            if friendly && !mode.friends || !friendly && !mode.enemies {
-                continue;
-            }
-            // Only on the hostile side, a dead-looking unit has no plate (`0x60f733`): a feigning
-            // hunter's plate hides from enemies and stays for friends.
-            if !friendly && store.is_some_and(|s| s.0.unit_reads_dead()) {
-                continue;
-            }
-            // Only on the friendly side, a totem has no plate (`0x60f750`-`0x60f75a`, the type
-            // `0x605570` resolves); an enemy totem keeps its plate.
-            if friendly && store.is_some_and(|s| types.of(s) == CREATURE_TYPE_TOTEM) {
-                continue;
+            if wrath {
+                let attackable = pair.is_some_and(|(u, me)| rel.can_attack(me, &u));
+                // 12340 takes `CanCooperate` alone for a player (`Unit_C.cpp:20446`); a player that
+                // is also attackable stays friendly here, unlike the 1.12 category.
+                let friendly = match pair {
+                    Some((u, me)) if is_player => rel.can_cooperate(me, &u),
+                    Some(_) => !attackable,
+                    None => !is_player,
+                };
+                let fields = &store.0;
+                let dynflag_dead = fields.unit_dynflag_dead();
+                let charmer = fields.unit_charmed_by();
+                let owner = charmer.or_else(|| fields.unit_created_by());
+                let facts = WrathPlateUnit {
+                    friendly,
+                    is_player,
+                    attackable,
+                    creep: fields
+                        .unit_bytes_1()
+                        .is_some_and(|b| (b >> 24) as u8 & VIS_FLAG_CREEP != 0),
+                    record_hides_plate: !is_player
+                        && fields
+                            .object_entry()
+                            .and_then(|entry| names.creature_record(entry))
+                            .is_some_and(|r| r.type_flags & TYPE_FLAG_NO_PLATE != 0),
+                    creature_type: types.of(store),
+                    dynflag_dead,
+                    raid_member_or_pet: dynflag_dead
+                        && group.member_or_pet(
+                            guid.0,
+                            me_guid.map(|g| (g, self_store.map(|s| &s.0))),
+                            |g| world.relations.unit_and_store(g).map(|(_, s)| &s.0),
+                        ),
+                    owner_is_player: owner
+                        .and_then(|g| world.relations.unit(g))
+                        .is_some_and(|o| o.is_player),
+                    has_charmer: charmer.is_some(),
+                    has_creator: fields.unit_created_by().is_some(),
+                    has_summoner: fields.unit_summoned_by().is_some(),
+                    unit_flags: fields.unit_flags(),
+                };
+                if !wrath_plate_gate(&facts, *mode, rows) {
+                    continue;
+                }
+            } else {
+                // A unit whose descriptor has not streamed is attackable by nobody, so friendly
+                // unless a player, whom `CanCooperate` cannot pass.
+                let friendly = pair.map_or(!is_player, |(u, me)| {
+                    crate::target::ring::plate_is_friendly(&rel, &u, me, is_player)
+                });
+                if friendly && !mode.friends || !friendly && !mode.enemies {
+                    continue;
+                }
+                // Only on the hostile side, a dead-looking unit has no plate (`0x60f733`): a
+                // feigning hunter's plate hides from enemies and stays for friends.
+                if !friendly && store.0.unit_reads_dead() {
+                    continue;
+                }
+                // Only on the friendly side, a totem has no plate (`0x60f750`-`0x60f75a`, the type
+                // `0x605570` resolves); an enemy totem keeps its plate.
+                if friendly && types.of(store) == CREATURE_TYPE_TOTEM {
+                    continue;
+                }
             }
             // Behind the camera or outside the viewport there is no plate: `0x60f600` destroys it
             // before the seat, never clamping it in from off-screen.
@@ -505,7 +759,7 @@ fn drive_vplates(
                 is_player,
                 entity,
                 guid,
-                store,
+                Some(store),
             ));
         }
         cands.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -702,6 +956,7 @@ impl Plugin for VPlatesPlugin {
             .init_resource::<VPlates>()
             .init_resource::<PlateHover>()
             .init_resource::<PlateClicks>()
+            .add_observer(on_cvar)
             .add_systems(
                 Update,
                 (
@@ -722,6 +977,8 @@ impl Plugin for VPlatesPlugin {
 mod gate_tests;
 #[cfg(test)]
 mod unheld_tests;
+#[cfg(test)]
+mod wrath_gate_tests;
 
 #[cfg(test)]
 mod tests {
@@ -848,6 +1105,58 @@ mod tests {
             mode(&app),
             (false, true),
             "and the next verb moves them again"
+        );
+    }
+
+    /// The registry's accepted moves, triggered as the frame's flush does.
+    fn set_cvar(app: &mut App, name: &str, value: &str) {
+        let events = {
+            let mut cvars = app.world_mut().resource_mut::<crate::cvars::Cvars>();
+            let _ = cvars.set(name, value);
+            cvars.take_events()
+        };
+        for event in events {
+            app.world_mut().trigger(event);
+        }
+    }
+
+    /// The 12340 route: a write of either plate CVar moves its own bit and leaves the other,
+    /// with no verb called; the name matches as the registry does, case-blind, and a CVar that
+    /// is no plate toggle moves nothing.
+    #[test]
+    fn the_wrath_plate_cvars_move_their_own_bits() {
+        let mut app = verb_app();
+        app.init_resource::<crate::cvars::Cvars>()
+            .add_observer(on_cvar);
+        app.update();
+        assert_eq!(mode(&app), (false, false), "boot: both clear");
+        set_cvar(&mut app, "nameplateShowEnemies", "1");
+        assert_eq!(mode(&app), (true, false), "enemy plates on");
+        set_cvar(&mut app, "NAMEPLATESHOWFRIENDS", "1");
+        assert_eq!(mode(&app), (true, true), "friendly on, enemy untouched");
+        set_cvar(&mut app, "unitNameNPC", "1");
+        assert_eq!(mode(&app), (true, true), "another CVar moves neither");
+        set_cvar(&mut app, "nameplateShowEnemies", "0");
+        assert_eq!(mode(&app), (false, true), "enemy off, friendly untouched");
+    }
+
+    /// 12340 keeps the toggles in CVars the gate reads directly, so a world entry seats the bits
+    /// from them: plates a past session switched on are on after the entry, and a row at its
+    /// default still clears its bit.
+    #[test]
+    fn world_entry_seats_the_bits_from_the_wrath_cvars() {
+        let mut app = verb_app();
+        app.insert_resource(crate::cvars::Cvars::with_value("nameplateShowEnemies", "1"))
+            .insert_resource(VPlateMode {
+                enemies: false,
+                friends: true,
+            });
+        clear_at_world_entry(app.world_mut());
+        app.update();
+        assert_eq!(
+            mode(&app),
+            (true, false),
+            "enemy from its CVar, friendly cleared"
         );
     }
 

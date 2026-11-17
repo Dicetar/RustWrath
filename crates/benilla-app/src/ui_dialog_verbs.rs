@@ -1400,6 +1400,30 @@ mod tests {
         assert!(queries(&rx).is_empty());
     }
 
+    /// `UpdateGhostStatus`'s `SetAreaSpiritHealer(0)` (`Player_C.cpp:13143`) is more than a
+    /// cache clear: an armed wave also cancels the aura (`0x4921c0`), which fires
+    /// `AREA_SPIRIT_HEALER_OUT_OF_RANGE` and closes the area dialog. Clearing only the guid would
+    /// leave the wave and its dialog running.
+    #[test]
+    fn an_armed_area_wave_is_cancelled_when_the_ghost_state_clears() {
+        let mut spirit = AreaSpiritHealer::default();
+        let now = Instant::now();
+        assert_eq!(spirit.set_healer(Some(GUIDE)).query, Some(GUIDE));
+        assert!(
+            spirit.on_time(GUIDE, 10_000, now),
+            "the cached healer's wave arms"
+        );
+        assert!(spirit.armed());
+        let cleared = spirit.set_healer(None);
+        assert_eq!(cleared.query, None);
+        assert!(
+            cleared.cancel_aura,
+            "the unghost cancels the wave and its dialog"
+        );
+        assert_eq!(spirit.healer(), None);
+        assert!(!spirit.armed());
+    }
+
     #[test]
     fn losing_the_ghost_state_drops_the_guide() {
         let catalog = catalog_or_skip!();

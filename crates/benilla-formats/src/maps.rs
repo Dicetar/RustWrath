@@ -8,9 +8,10 @@ use crate::Chain;
 use anyhow::{Context, Result};
 use benilla_dbc::{FieldType, Schema, SchemaField};
 
-use crate::dbc::{f32_at, loc_str, parse_with_trailing_fields, str_at, u32_at};
+use crate::dbc::{f32_at, loc_str, loc_str_index, parse, parse_with_trailing_fields, str_at, u32_at};
 
 const MAP: &str = "DBFilesClient\\Map.dbc";
+const MAP_DIFFICULTY: &str = "DBFilesClient\\MapDifficulty.dbc";
 
 /// Field index of `LoadingScreenID`, a `LoadingScreens.dbc` id; 0 on the dev and test maps.
 const LOADING_SCREEN_FIELD: usize = 38;
@@ -21,6 +22,8 @@ pub struct MapCatalog {
     /// `MapName_Lang[locale]` (field 4, `+0x10`, read by `0x4a65a0`). The continent dropdown shows
     /// this ("Eastern Kingdoms"), not the art folder ("Azeroth") (`GetMapContinents` `0x4a7ce0`).
     names: HashMap<u32, String>,
+    /// Localized transfer refusal text for a 12340 map and difficulty pair.
+    difficulty_messages: HashMap<(u32, u32), String>,
     /// `LoadingScreenID`, for maps with a non-zero one.
     loading_screens: HashMap<u32, u32>,
     /// `InstanceType` (field 2, `+0x8`, read at `0x48a772`, `0x495cb9`, `0x495d33`): 0 none,
@@ -79,6 +82,7 @@ impl MapCatalog {
         let mut c = Self {
             dirs: HashMap::new(),
             names: HashMap::new(),
+            difficulty_messages: HashMap::new(),
             loading_screens: HashMap::new(),
             instance_types: HashMap::new(),
             battleground: HashMap::new(),
@@ -107,6 +111,14 @@ impl MapCatalog {
     /// The display name (`MapName_Lang`) for `map_id`, "Eastern Kingdoms".
     pub fn name(&self, map_id: u32) -> Option<&str> {
         self.names.get(&map_id).map(String::as_str)
+    }
+
+    /// MapDifficultyRec's localized message for a Wrath transfer refusal.
+    pub fn difficulty_message(&self, map_id: u32, difficulty: u32) -> Option<&str> {
+        self.difficulty_messages
+            .get(&(map_id, difficulty))
+            .map(String::as_str)
+            .filter(|text| !text.is_empty())
     }
 
     /// `LoadingScreenID` for `map_id`, to resolve against [`crate::LoadingScreenCatalog`].
@@ -230,6 +242,25 @@ fn wrath_map_schema() -> Schema {
     s
 }
 
+/// MapDifficultyRec::Read (0x008B44A0) uses 23 dwords, with 16 localized offsets at column 3.
+fn difficulty_messages(bytes: &[u8], locale: usize) -> Result<HashMap<(u32, u32), String>> {
+    let mut schema = Schema::new("MapDifficulty");
+    for column in 0..23 {
+        schema.add_field(SchemaField::new(format!("Column{column}"), FieldType::UInt32));
+    }
+    let records = parse(bytes, schema, "MapDifficulty.dbc")?;
+    let mut messages = HashMap::new();
+    for row in records.records() {
+        if let (Some(map), Some(difficulty)) = (u32_at(row, 1), u32_at(row, 2)) {
+            // The client uses the first matching record, even when its message is empty.
+            messages.entry((map, difficulty)).or_insert_with(|| {
+                loc_str_index(&records, row, 3, locale).unwrap_or_default()
+            });
+        }
+    }
+    Ok(messages)
+}
+
 /// Read Map.dbc off the patch chain into a [`MapCatalog`].
 pub fn load_map_catalog(chain: &mut Chain) -> Result<MapCatalog> {
     let bytes = chain
@@ -325,12 +356,12 @@ pub fn load_map_catalog(chain: &mut Chain) -> Result<MapCatalog> {
         if let Some(dir) = str_at(&rs, r, 1) {
             dirs.insert(id, dir);
         }
-        let name_field = if is_wrath {
-            WRATH_MAP_NAME_FIELD
+        let name = if is_wrath {
+            loc_str_index(&rs, r, WRATH_MAP_NAME_FIELD, locale.wrath_index())
         } else {
-            MAP_NAME_FIELD
+            loc_str(&rs, r, MAP_NAME_FIELD, locale)
         };
-        if let Some(name) = loc_str(&rs, r, name_field, locale).filter(|n| !n.is_empty()) {
+        if let Some(name) = name.filter(|name| !name.is_empty()) {
             names.insert(id, name);
         }
         // Type 0 is recorded too, so `None` means only that no such map exists.
@@ -346,9 +377,20 @@ pub fn load_map_catalog(chain: &mut Chain) -> Result<MapCatalog> {
             loading_screens.insert(id, ls);
         }
     }
+    // Missing or unreadable optional difficulty data still allows the stock global fallback.
+    let difficulty_messages = if is_wrath {
+        chain
+            .read_file(MAP_DIFFICULTY)
+            .ok()
+            .and_then(|bytes| difficulty_messages(&bytes, locale.wrath_index()).ok())
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
     Ok(MapCatalog {
         dirs,
         names,
+        difficulty_messages,
         loading_screens,
         instance_types,
         battleground,
@@ -359,6 +401,34 @@ pub fn load_map_catalog(chain: &mut Chain) -> Result<MapCatalog> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrath_map_difficulty_messages_read_the_active_locale_and_first_row() {
+        let strings = b"\0English\0Russian\0";
+        let mut bytes = b"WDBC".to_vec();
+        for word in [2u32, 23, 92, strings.len() as u32] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        let mut row = [0u32; 23];
+        row[0] = 1;
+        row[1] = 36;
+        row[2] = 1;
+        row[3] = 1;
+        row[11] = 9;
+        for word in row {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        row[0] = 2;
+        row[11] = 1;
+        for word in row {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes.extend_from_slice(strings);
+        let messages = difficulty_messages(&bytes, 8).unwrap();
+        assert_eq!(messages.get(&(36, 1)).map(String::as_str), Some("Russian"));
+        let messages = difficulty_messages(&bytes, 0).unwrap();
+        assert_eq!(messages.get(&(36, 1)).map(String::as_str), Some("English"));
+    }
 
     #[test]
     fn the_battleground_columns_read_the_shipped_rows() {

@@ -25,6 +25,15 @@ impl FrameHandle {
     pub(crate) fn fingerprint_bits(self) -> u64 {
         (u64::from(self.generation) << 32) | u64::from(self.index)
     }
+
+    /// Reconstruct a [`FrameHandle`] from its [`Self::fingerprint_bits`] encoding.
+    #[inline]
+    pub(crate) fn from_fingerprint_bits(bits: u64) -> Self {
+        Self {
+            index: bits as u32,
+            generation: (bits >> 32) as u32,
+        }
+    }
 }
 
 /// A generational handle to a [`Region`] (a texture or fontstring leaf).
@@ -254,6 +263,9 @@ pub struct Frame {
     /// `GetID`/`SetID` and XML `id`, at `+0xb0` (`0x77531f`, `0x7753e7`): data for handlers, such
     /// as a tab index, not the script model's frame id. Default 0.
     pub wow_id: i64,
+    /// `protected="true"` in XML or created via a secure template: explicitly protected (`IsProtected`
+    /// answers `(true, true)`, and any descendant inherits `(true, false)`).
+    pub protected_explicit: bool,
     /// The link position in the `(strata, level)` bucket, re-stamped at the tail on each relink.
     /// Drawing puts the later-linked frame on top; the hit test probes the earlier-linked first.
     pub insertion_seq: u32,
@@ -607,6 +619,7 @@ impl WidgetArena {
             effective_scale: parent_scale * scale,
             ignore_parent_scale: false,
             wow_id: 0,
+            protected_explicit: false,
             insertion_seq,
             created,
             kind_state: match kind {

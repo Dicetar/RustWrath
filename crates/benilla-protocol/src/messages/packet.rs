@@ -410,11 +410,12 @@ pub enum ServerPacket {
         sound_id: u32,
         guid: u64,
     },
-    /// `SMSG_WEATHER`: `u32 type, f32 grade, u32 soundId, u8 instant`; sounds 8533..8558, 0 clear.
+    /// `SMSG_WEATHER`: `u32 weatherId, f32 grade, u8 abrupt`; `weatherId` names a `Weather.dbc` row
+    /// carrying the effect type and its ambience kit, not a sound id (the 12340 handler reads the
+    /// row: `m_effectType`, `m_transitionSkyBox`, `m_ambienceID`). `abrupt` nonzero is instant.
     Weather {
-        weather_type: u32,
+        weather_id: u32,
         grade: f32,
-        sound_id: u32,
         instant: bool,
     },
     /// `SMSG_TEXT_EMOTE`: `u64 guid, u32 textEmote, u32 emoteNum, u32 namelen, char name[namelen]`
@@ -634,8 +635,9 @@ pub enum ServerPacket {
         /// `true`: `0x266`, the flat table (summed, added). `false`: `0x267`, the percent table
         /// (summed, plus 100, clamped at 0, then a raw multiplier).
         flat: bool,
-        /// The row: a `SpellFamilyFlags` bit index, 0..=63, unbounded on the wire. Deviation: the
-        /// consumer refuses 64 and up, because there the reference's store overruns its table.
+        /// The row: a `SpellFamilyFlags` bit index, 0..=95, unbounded on the wire. The modifier
+        /// table is 96 bits (3×u32 family flags in Wrath); the consumer drops a bit out of range
+        /// rather than storing it where the reference's unchecked write would overrun.
         mask_bit: u8,
         /// The column: a SpellModOp, 0..=28, also unbounded on the wire.
         op: u8,

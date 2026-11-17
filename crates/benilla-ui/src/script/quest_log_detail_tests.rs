@@ -37,9 +37,16 @@ fn a_selected_quest_answers_its_own_detail_text_not_a_placeholder_or_another_row
         1,
         "the creature objective is the selected quest's"
     );
-    // The header row above the quest is not a quest: no detail, exactly as the reference's miss.
+    // A header row is not a quest and never becomes the selection; the reference's check
+    // (`0x4def55`) leaves `0xbb7480` alone, so the old selection's detail still answers.
+    s.run("SelectQuestLogEntry(1)").unwrap();
+    assert_eq!(
+        s.eval::<i64>("return GetQuestLogSelection()").unwrap(),
+        2,
+        "a header click does not move the selection"
+    );
     assert!(s
-        .eval::<bool>("SelectQuestLogEntry(1); local d = GetQuestLogQuestText(); return d == nil")
+        .eval::<bool>("local d = GetQuestLogQuestText(); return d ~= nil")
         .unwrap());
 }
 
@@ -177,7 +184,7 @@ fn a_reward_list_answers_each_reward_once_in_index_order() {
 #[test]
 fn the_wrath_watch_list_adds_removes_and_holds_twenty_five() {
     let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
-    let log: Vec<_> = (1..=26u32)
+    let log: Vec<_> = (1..=25u32)
         .map(|q| {
             (
                 q,
@@ -204,6 +211,76 @@ fn the_wrath_watch_list_adds_removes_and_holds_twenty_five() {
     s.run("AddQuestWatch(2)").unwrap();
     assert_eq!(s.eval::<i64>("return GetNumQuestWatches()").unwrap(), 25);
     assert!(s.eval::<bool>("return IsQuestWatched(2)").unwrap());
+}
+
+/// Issue #2995: one tracked quest was drawn twice in the objective tracker. The tracker draws a
+/// block per watch (`WatchFrame.lua:799`-`:846`, `GetQuestIndexForWatch` then that row's title and
+/// leaderboards), and the stock 3.3.5 log arms a watch from **both** `QUEST_ACCEPTED`
+/// (`QuestLogFrame.lua:260`-`:264`) and `QUEST_WATCH_UPDATE` (`:265`-`:271`). 12340's
+/// `CGQuestLog::AddQuestWatch` (`QuestLog.cpp:545`-`:553`) refreshes an existing watch, so the
+/// same quest must stay one entry however often the handlers arm it; the 1.12 binding appends,
+/// which is why its stock Lua checks `IsQuestWatched` itself.
+#[test]
+fn the_wrath_watch_list_holds_a_quest_once_however_often_it_is_armed() {
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    seat(
+        &mut s,
+        &[(145, record("The Gnoll's Paw", 12, 12, "Westfall"), slot(145, 0, 0))],
+    );
+    // Row 1 is the zone header and row 2 the quest; the stock handlers pass the row.
+    assert_eq!(
+        s.eval::<String>("return GetQuestLogTitle(2)").unwrap(),
+        "The Gnoll's Paw"
+    );
+    s.run("AddQuestWatch(2)").unwrap(); // QUEST_ACCEPTED
+    s.run("AddQuestWatch(2, 300)").unwrap(); // QUEST_WATCH_UPDATE, MAX_QUEST_WATCH_TIME
+    s.run("AddQuestWatch(2)").unwrap(); // a second accept or progress edge
+    assert_eq!(
+        s.eval::<i64>("return GetNumQuestWatches()").unwrap(),
+        1,
+        "one watch means one tracker block"
+    );
+    assert_eq!(s.quest_log_watched(), vec![145]);
+    assert_eq!(s.eval::<i64>("return GetQuestIndexForWatch(1)").unwrap(), 2);
+    assert!(
+        s.eval::<bool>("return GetQuestIndexForWatch(2) == nil").unwrap(),
+        "no second watch resolves to the row"
+    );
+    assert!(s.eval::<bool>("return IsQuestWatched(2)").unwrap());
+}
+
+/// A header row, or an index past the log, names no quest: `Script_AddQuestWatch`
+/// (`QuestLog_Scripts.cpp:999`-`:1014`) maps both to 0 and its `if (questId)` refuses, on either
+/// target. Kept out, 0 cannot sit in the list as a watch — `GetQuestIndexForWatch` would then hand
+/// the tracker the first header row, which it would draw as a quest block.
+#[test]
+fn a_header_row_is_never_watched_on_either_target() {
+    for target in [
+        crate::script::UiTarget::Wrath335,
+        crate::script::UiTarget::Vanilla112,
+    ] {
+        let mut s = UiScript::with_target(target).unwrap();
+        seat(
+            &mut s,
+            &[(145, record("The Gnoll's Paw", 12, 12, "Westfall"), slot(145, 0, 0))],
+        );
+        s.run("AddQuestWatch(1) AddQuestWatch(99)").unwrap();
+        assert_eq!(
+            s.eval::<i64>("return GetNumQuestWatches()").unwrap(),
+            0,
+            "{target:?}"
+        );
+        assert!(
+            s.eval::<bool>("return IsQuestWatched(1) == nil").unwrap(),
+            "{target:?}"
+        );
+        assert!(
+            s.eval::<bool>("return GetQuestIndexForWatch(1) == nil")
+                .unwrap(),
+            "{target:?}"
+        );
+        assert!(s.quest_log_watched().is_empty(), "{target:?}");
+    }
 }
 
 

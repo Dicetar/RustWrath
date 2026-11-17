@@ -84,6 +84,7 @@ struct ActiveRoll {
     suffix_factor: u32,
     /// The wire's `countdownTime`, kept whole: `START_LOOT_ROLL`'s `arg2` and the bar's maximum.
     countdown_ms: u32,
+    wrath_options: Option<(u32, u8)>,
     /// Milliseconds left, saturating at 0; the server's resolution closes the roll, not the tick.
     remaining_ms: u32,
     /// How long the roll has waited for its item template.
@@ -144,6 +145,7 @@ impl LootRolls {
             random_property_id: p.random_property_id,
             suffix_factor: p.suffix_factor,
             countdown_ms: p.countdown_ms,
+            wrath_options: p.wrath_options,
             remaining_ms: p.countdown_ms,
             held_ms: 0,
             phase: Phase::Waiting,
@@ -436,6 +438,83 @@ fn is_dice(p: &LootRoll) -> bool {
     p.roll_number as i8 >= 0 && p.roll_type != 0
 }
 
+/// Wrath's localized strings accept a complete item link where the donor's strings take pieces.
+fn format_wrath_line(
+    line: &RollLine,
+    name: Option<&str>,
+    is_self: bool,
+    item: &RollItem,
+    detailed: bool,
+    get: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    use benilla_ui::strings::{fill_exact, Arg};
+    let link = crate::ui_items::item_link_full_in_target(
+        benilla_ui::script::UiTarget::Wrath335,
+        item.item_id,
+        0,
+        item.random_property_id,
+        item.suffix_factor,
+        &item.name,
+        item.quality,
+    );
+    let link = Arg::S(&link);
+    let name = Arg::S(name.unwrap_or_default());
+    let vote = |own, other| {
+        if is_self {
+            (own, vec![link])
+        } else {
+            (other, vec![name, link])
+        }
+    };
+    let (key, args) = match line {
+        RollLine::Announce(p) if is_dice(p) => {
+            let key = match p.roll_type {
+                roll_vote::NEED => "LOOT_ROLL_ROLLED_NEED",
+                roll_vote::GREED => "LOOT_ROLL_ROLLED_GREED",
+                roll_vote::DISENCHANT => "LOOT_ROLL_ROLLED_DE",
+                _ => return None,
+            };
+            (key, vec![Arg::D(i64::from(p.roll_number)), link, name])
+        }
+        RollLine::Announce(p) if p.roll_number as i8 >= 0 => {
+            vote("LOOT_ROLL_NEED_SELF", "LOOT_ROLL_NEED")
+        }
+        RollLine::Announce(p) => match p.roll_type {
+            roll_vote::GREED => vote("LOOT_ROLL_GREED_SELF", "LOOT_ROLL_GREED"),
+            roll_vote::DISENCHANT => vote("LOOT_ROLL_DISENCHANT_SELF", "LOOT_ROLL_DISENCHANT"),
+            _ if p.auto_pass == Some(true) => {
+                vote("LOOT_ROLL_PASSED_SELF_AUTO", "LOOT_ROLL_PASSED_AUTO")
+            }
+            _ => vote("LOOT_ROLL_PASSED_SELF", "LOOT_ROLL_PASSED"),
+        },
+        RollLine::Won(_) if detailed => vote("LOOT_ROLL_YOU_WON", "LOOT_ROLL_WON"),
+        RollLine::Won(p) => {
+            let kind = match p.roll_type {
+                roll_vote::NEED => "NEED",
+                roll_vote::GREED => "GREED",
+                roll_vote::DISENCHANT => "DE",
+                _ => return None,
+            };
+            let key = if is_self {
+                format!("LOOT_ROLL_YOU_WON_NO_SPAM_{kind}")
+            } else {
+                format!("LOOT_ROLL_WON_NO_SPAM_{kind}")
+            };
+            let number = Arg::D(i64::from(p.roll_number));
+            let args = if is_self {
+                vec![number, link]
+            } else {
+                vec![name, number, link]
+            };
+            let text = fill_exact(&get(&key)?, &args)?;
+            return (!text.is_empty()).then_some(text);
+        }
+        RollLine::AllPassed(_) => ("LOOT_ROLL_ALL_PASSED", vec![link]),
+    };
+    let text = fill_exact(&get(key)?, &args)?;
+    (!text.is_empty()).then_some(text)
+}
+
 /// The item pieces every roll line's template carries after its names: the quality's colour
 /// escape (`0x52ad90`, at `0x61c116`), the item id, 0, the roll's two property words (`+0x20`,
 /// then `+0x24`, `0x61c16e`-`0x61c171`), the item's
@@ -458,6 +537,7 @@ fn render(
     ask: Ask<'_>,
     rolls: crate::items::RollCatalogs,
     detailed: bool,
+    wrath: bool,
     get: &dyn Fn(&str) -> Option<String>,
 ) -> Option<Option<String>> {
     // Every line embeds the item link, so the template comes first.
@@ -499,7 +579,8 @@ fn render(
         _ => None,
     };
 
-    Some(format_line(
+    let format = if wrath { format_wrath_line } else { format_line };
+    Some(format(
         line,
         name.as_deref(),
         is_self,
@@ -519,14 +600,19 @@ fn drain_lines(
     chat: &ChatLog,
     catalogs: crate::items::RollCatalogs,
     detailed: bool,
+    wrath: bool,
     get: &dyn Fn(&str) -> Option<String>,
 ) {
     let pending = std::mem::take(&mut rolls.pending);
     let mut still = Vec::new();
     for mut p in pending {
-        // Detail off drops vote and dice lines here, never through `render`'s retrying `None`.
-        if !detailed && matches!(p.line, RollLine::Announce(_)) {
-            continue;
+        // Wrath keeps our auto-pass visible even with normal vote and dice chat disabled.
+        if let RollLine::Announce(roll) = &p.line {
+            let own_auto_pass = wrath && self_guid == Some(roll.roller)
+                && roll.auto_pass == Some(true);
+            if !detailed && !own_auto_pass {
+                continue;
+            }
         }
         // The packet's lookups pass callbacks (`0x61c047`, `0x61c08e`, `0x61b96a`, `0x61b5c0`):
         // a line's first render asks as they do, and its retries ask only what the cache holds
@@ -535,7 +621,7 @@ fn drain_lines(
         // `0x61c08e`).
         let ask = Ask::at(p.tries == 0, commands);
         match render(
-            &p.line, self_guid, items, names, ask, catalogs, detailed, get,
+            &p.line, self_guid, items, names, ask, catalogs, detailed, wrath, get,
         ) {
             Some(Some(text)) => chat.push_event(ChatEvent::text_only(ChatEventKind::Loot, text)),
             Some(None) => {}
@@ -575,6 +661,16 @@ fn snapshot(
                 time_left_ms: r.remaining_ms,
                 item_id: r.item_id,
                 random_property_id: r.random_property_id,
+                wrath_options: r.wrath_options,
+                wrath_tooltip: t.and_then(|t| {
+                    let info = t.wrath_roll?;
+                    Some(benilla_ui::script::WrathLootRollTooltip {
+                        max_count: t.max_count,
+                        greed_only: info.greed_only,
+                        required_disenchant_skill: info.required_disenchant_skill,
+                        item_limit_category: info.item_limit_category,
+                    })
+                }),
                 // `GetLootRollItemLink`, the chat lines' link; `None` until the template answers.
                 link: t.map(|t| {
                     crate::ui_items::item_link_full_in_target(
@@ -636,6 +732,7 @@ fn feed_loot_rolls(
             &chat,
             catalogs,
             loot.show_loot_spam,
+            script.target() == benilla_ui::script::UiTarget::Wrath335,
             &|key| benilla_ui::strings::global(script.lua(), key),
         );
 
@@ -712,7 +809,18 @@ impl LootRollSteps<'_> {
     /// the roll closed with the next one promoted (`0x61bf32`-`0x61bf46`); the VM signals the
     /// vote's `CANCEL_LOOT_ROLL` after this returns (`0x61bf2a`). A stale id is dropped.
     pub(crate) fn vote(&mut self, roll_id: u32, roll_type: u8) {
-        match self.rolls.as_deref_mut().and_then(|r| r.vote(roll_id)) {
+        let Some(rolls) = self.rolls.as_deref_mut() else {
+            return;
+        };
+        if rolls.active.iter().any(|roll| {
+            roll.roll_id == roll_id
+                && roll.wrath_options.is_some_and(|(_, mask)| {
+                    roll_type > 3 || mask & (1 << roll_type) == 0
+                })
+        }) {
+            return;
+        }
+        match rolls.vote(roll_id) {
             Some((looted_target, item_slot)) => {
                 debug!("ui_loot_roll: vote {roll_type} on roll {roll_id}");
                 let _ = self.net.0.send(ClientCommand::LootRoll {
@@ -742,6 +850,7 @@ mod tests {
             random_property_id: 0,
             suffix_factor: 0,
             countdown_ms: 60_000,
+            wrath_options: None,
         }
     }
 
@@ -755,6 +864,7 @@ mod tests {
             suffix_factor: 0,
             roll_number,
             roll_type,
+            auto_pass: None,
         }
     }
 

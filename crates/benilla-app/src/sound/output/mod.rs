@@ -173,6 +173,8 @@ pub(super) enum Event {
         realtime_latency_frames: u32,
     },
     Lost(&'static str),
+    /// A requested restart closed the stream; the reopen follows as `Opened` or `OpenFailed`.
+    Restarted,
     OpenFailed(String),
     /// The stream is gone for good: the ring's consumer never came back, a bug, not a device.
     Dead(String),
@@ -281,6 +283,8 @@ pub(super) struct OutputBackend {
     overloads_seen: u64,
     /// Errors the report counts: stream lost / open failed, since launch.
     stream_errors: u64,
+    /// A script asked for the sound system to restart ([`Self::request_restart`]).
+    restart: bool,
 }
 
 impl Backend for OutputBackend {
@@ -303,6 +307,7 @@ impl Backend for OutputBackend {
                 pending: Vec::new(),
                 overloads_seen: 0,
                 stream_errors: 0,
+                restart: false,
             },
             sample_rate,
         ))
@@ -358,10 +363,26 @@ impl OutputBackend {
         self.stream_errors
     }
 
-    /// Main-thread service: rebuild the stream on a device notice, retry an unopened device, and
-    /// drain the window's meters.
+    /// Ask the next [`Self::service`] to close the stream and reopen it on the current default
+    /// device, the reference's sound restart (12340 `0x00985D30`). An idle backend is already
+    /// reopening, so the ask is spent there too.
+    pub(super) fn request_restart(&mut self) {
+        self.restart = true;
+    }
+
+    /// Main-thread service: rebuild the stream on a device notice or a requested restart, retry an
+    /// unopened device, and drain the window's meters.
     pub(super) fn service(&mut self) -> (Window, Vec<Event>) {
         let mut events = std::mem::take(&mut self.pending);
+        if std::mem::take(&mut self.restart) && matches!(self.stage, Stage::Running { .. }) {
+            // Asked for, so not counted among the stream errors; `close` leaves the retry clock
+            // expired and the Idle arm below reopens in this same call.
+            events.push(Event::Restarted);
+            if let Err(e) = self.close() {
+                self.stage = Stage::Dead;
+                events.push(Event::Dead(format!("{e:#}")));
+            }
+        }
         let notices = &self.shared.notices;
         let lost = if notices.device_died.swap(false, Ordering::AcqRel) {
             Some("the output device went away")

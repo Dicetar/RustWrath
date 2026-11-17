@@ -192,10 +192,11 @@ impl Plugin for UiUnitPlugin {
         )
         .add_systems(Update, feed_default_language.in_set(UnitFeed))
         .add_systems(Update, feed_known_languages.in_set(UnitFeed))
-        // `load_exhaustion_rows` pushes into the VM, so it runs per VM; the rest are one-shots.
+        // `load_exhaustion_rows` and `load_combat_ratings` push into the VM, so they run per VM;
+        // the rest are one-shots.
         .add_systems(
             Update,
-            load_exhaustion_rows.in_set(crate::ui_script::UiFeed),
+            (load_exhaustion_rows, load_combat_ratings).in_set(crate::ui_script::UiFeed),
         )
         .add_systems(PostStartup, (load_default_languages, load_languages));
     }
@@ -416,6 +417,36 @@ fn load_exhaustion_rows(
             }
             Err(e) => {
                 error!("ui_unit: Exhaustion.dbc failed — shipped-table fallback holds: {e:#}")
+            }
+        }
+    })
+}
+
+/// Seed each VM's `gtCombatRatings.dbc` table for `GetCombatRatingBonus`.
+fn load_combat_ratings(
+    mut hosted_vm: crate::script_calls::HostedVm,
+    assets: Option<Res<benilla_assets::WorldAssets>>,
+    mut seeded: Local<crate::ui_script::VmMemo<bool>>,
+) {
+    hosted_vm.run(|script| {
+        let (Some(script), Some(assets)) = (script, assets) else {
+            return;
+        };
+        if !seeded.claim(script) {
+            return;
+        }
+        let loaded = {
+            use benilla_assets::LockRecover;
+            let mut chain = assets.chain.lock_recover();
+            benilla_formats::load_gt_combat_ratings(&mut chain)
+        };
+        match loaded {
+            Ok(scalers) => {
+                info!("ui_unit: {} gtCombatRatings.dbc rows", scalers.len());
+                script.set_combat_rating_scalers(scalers);
+            }
+            Err(e) => {
+                warn!("ui_unit: gtCombatRatings.dbc unavailable: {e:#}");
             }
         }
     })
@@ -686,8 +717,8 @@ pub(crate) fn pet_token_guid(me: Option<&ObjectStore>) -> u64 {
 }
 
 /// Wrath-only unit identities for the target/assist resolver. These are client or encounter
-/// state, not object-store snapshots; zero is nobody. The producers are not wired yet, but the
-/// target path has the same fields as the UI resolver instead of silently rejecting the tokens.
+/// state, not object-store snapshots; zero is nobody. The live vehicle comes from the Wrath
+/// world view; the fallback here lets standalone resolver harnesses supply it.
 #[derive(Resource, Default, Clone, Copy, Debug)]
 pub(crate) struct WrathUnitTokens {
     pub(crate) active: bool,
@@ -708,6 +739,7 @@ pub(crate) struct UnitTokens<'w, 's> {
     interact: Option<Res<'w, crate::ui_session::InteractNpc>>,
     group: Res<'w, crate::ui_party::GroupState>,
     wrath: Option<Res<'w, WrathUnitTokens>>,
+    wrath_world: Option<Res<'w, crate::wrath::WrathWorldView>>,
     /// The stores as of the drain's place, so a verb a listener calls reads its packet's.
     pub(crate) stores: views::ViewStores<'w, 's>,
     me: Query<'w, 's, (Entity, &'static Guid), With<SelfPlayer>>,
@@ -781,7 +813,13 @@ impl UnitTokens<'_, '_> {
             // The interaction NPC's guid, `[0xb4e2d0]` (`0x515c00`).
             UnitBase::Npc => self.interact.as_ref()?.1,
             UnitBase::Focus => wrath.and_then(|w| (w.focus != 0).then_some(w.focus)),
-            UnitBase::Vehicle => wrath.and_then(|w| (w.vehicle != 0).then_some(w.vehicle)),
+            UnitBase::Vehicle => {
+                let wrath = wrath?;
+                match self.wrath_world.as_deref() {
+                    Some(view) => view.seated_vehicle(self.me()?.1),
+                    None => (wrath.vehicle != 0).then_some(wrath.vehicle),
+                }
+            }
             UnitBase::Boss(row) => usize::try_from(row)
                 .ok()
                 .and_then(|row| wrath.and_then(|w| w.boss.get(row).copied()))
@@ -1320,6 +1358,10 @@ fn player_snapshot(
             field(benilla_protocol_wrath::fields::PLAYER__FIELD_KNOWN_TITLES2),
         ];
         s.chosen_title = field(benilla_protocol_wrath::fields::PLAYER_CHOSEN_TITLE);
+        s.max_health_modifier = raw
+            .0
+            .get(benilla_protocol_wrath::fields::UNIT_FIELD_MAXHEALTHMODIFIER)
+            .map(f32::from_bits);
     }
     s
 }

@@ -19,8 +19,8 @@ pub use tga::{tga_texture_size, tga_to_rgba, TGA_GATE_PREFIX};
 /// Where the WoW install is; [`Chain`] opens it.
 mod install;
 pub use install::{
-    addon_corpus, addon_corpus_candidates, candidates, project_folder, set_project_folder, skipped,
-    wow_data,
+    addon_corpus, addon_corpus_candidates, candidates, is_donor_install, project_folder,
+    set_project_folder, skipped, wow_data,
 };
 /// The install's loose files, asked before the archives by the opens that set the loose flag.
 mod loose;
@@ -56,6 +56,8 @@ pub use itemsets::{load_item_sets, ItemSetCatalog, ItemSetInfo};
 mod gm_survey;
 mod lfg_dungeons;
 pub use lfg_dungeons::{load_lfg_dungeons, LfgDungeon};
+mod vehicles;
+pub use vehicles::VehicleSeats;
 mod skill_tiers;
 pub use gm_survey::{load_gm_survey, GmSurvey};
 pub use skill_tiers::{load_skill_tiers, SkillTiers};
@@ -78,6 +80,8 @@ mod locale_routing;
 pub use itembagfamily::{load_item_bag_families, ItemBagFamilyCatalog};
 mod itemclass;
 pub use itemclass::{load_item_classes, ItemClassCatalog};
+mod item_limit_categories;
+pub use item_limit_categories::load_item_limit_quantities;
 mod auction_house;
 pub use auction_house::{load_auction_houses, AuctionHouseCatalog, AuctionHouseInfo};
 mod itemsubclass;
@@ -114,6 +118,8 @@ mod durability;
 pub use durability::{load_durability_tables, DurabilityTables};
 mod exhaustion;
 pub use exhaustion::{load_exhaustion, ExhaustionRow};
+mod gt_combat_ratings;
+pub use gt_combat_ratings::{load_gt_combat_ratings, parse_gt_combat_ratings_bytes};
 mod bank_bag_slot_prices;
 pub use bank_bag_slot_prices::{load_bank_bag_slot_prices, BankBagSlotPrices};
 mod stable_slot_prices;
@@ -131,7 +137,7 @@ pub use stationery::{
 mod lock;
 pub use lock::{
     load_lock_catalog, LockCatalog, LockSlot, GO_STATE_ACTIVE, GO_STATE_ACTIVE_ALTERNATIVE,
-    GO_STATE_READY, LOCK_KEY_ITEM, LOCK_KEY_NONE, LOCK_KEY_SKILL, MAX_LOCK_SLOTS,
+    GO_STATE_READY, LOCK_KEY_ITEM, LOCK_KEY_NONE, LOCK_KEY_SKILL, LOCK_KEY_SPELL, MAX_LOCK_SLOTS,
 };
 mod lock_type;
 pub use lock_type::{load_lock_type_catalog, LockTypeCatalog};
@@ -211,6 +217,8 @@ mod sound_provider;
 pub use sound_provider::{load_sound_provider_catalog, SoundProvider, SoundProviderCatalog};
 mod sound_water;
 pub use sound_water::{load_water_sound_catalog, WaterSoundCatalog};
+mod weather;
+pub use weather::{load_weather_catalog, WeatherCatalog, WeatherEntry};
 mod vocal_ui_sounds;
 pub use vocal_ui_sounds::{
     load_vocal_ui_sounds, VocalUiSound, VocalUiSoundCatalog, VOCAL_UI_LINES,
@@ -225,6 +233,8 @@ mod weapon_swing;
 pub use weapon_swing::{load_weapon_swing_catalog, WeaponSwingCatalog};
 mod material;
 pub use material::{load_material_catalog, MaterialCatalog};
+mod item_records;
+pub use item_records::{load_item_record_catalog, ItemRecord, ItemRecordCatalog};
 mod wmo_area;
 pub use wmo_area::{load_wmo_area_catalog, WmoArea, WmoAreaCatalog};
 mod spells;

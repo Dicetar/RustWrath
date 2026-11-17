@@ -308,6 +308,18 @@ fn feed_spellbook(
                     fresh.tabs.len(),
                     fresh.slots.len()
                 );
+                // The tracking menu's spell rows (`GetTrackingInfo`, `Minimap.lua:430`): the
+                // book's spells whose effect is a tracking aura.
+                script.set_tracking_spells(
+                    fresh
+                        .slots
+                        .iter()
+                        .filter(|s| {
+                            spells.catalog.get(s.spell_id).is_some_and(|d| d.tracking_aura())
+                        })
+                        .map(|s| s.spell_id)
+                        .collect(),
+                );
                 script.set_spellbook(fresh.clone());
                 memory.pushed = fresh;
                 changed = book_changed;

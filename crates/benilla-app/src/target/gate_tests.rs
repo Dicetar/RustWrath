@@ -234,9 +234,17 @@ fn swung_at(sent: &[ClientCommand], guid: u64) -> bool {
         .any(|c| matches!(c, ClientCommand::AttackSwing { guid: g } if *g == guid))
 }
 
+/// Whether the click greeted `guid`. A Wrath world carries a quest trace, and there the plain
+/// `GossipHello` leaves as `QuestgiverOpenTracked { gossip: true }` with the same guid in its
+/// receipt (`click.rs`); the greeting is the same request on the wire.
 fn greeted(sent: &[ClientCommand], guid: u64) -> bool {
-    sent.iter()
-        .any(|c| matches!(c, ClientCommand::GossipHello { guid: g } if *g == guid))
+    sent.iter().any(|c| match c {
+        ClientCommand::GossipHello { guid: g } => *g == guid,
+        ClientCommand::QuestgiverOpenTracked { receipt, gossip } => {
+            *gossip && receipt.npc == guid
+        }
+        _ => false,
+    })
 }
 
 /// `CGPlayer_C::InteractWithNpc` (`0x5f0130`) opens with `IsShapeShifted` (`0x60e9f0`, at
@@ -399,6 +407,9 @@ fn steps(sent: &[ClientCommand]) -> Vec<&'static str> {
             ClientCommand::SetSelection { .. } => Some("select"),
             ClientCommand::AttackSwing { .. } => Some("swing"),
             ClientCommand::GossipHello { .. } => Some("gossip"),
+            // A traced world sends the same greeting as `QuestgiverOpenTracked` (`click.rs`); the
+            // wire step is the gossip open either way.
+            ClientCommand::QuestgiverOpenTracked { gossip: true, .. } => Some("gossip"),
             _ => None,
         })
         .collect()

@@ -48,6 +48,7 @@ pub(crate) fn read_swing(
 #[derive(SystemParam)]
 pub(crate) struct Ctx<'w> {
     self_guid: Res<'w, SelfGuid>,
+    wrath_tokens: Option<Res<'w, crate::ui_unit::WrathUnitTokens>>,
     group: Res<'w, crate::ui_party::GroupState>,
     index: Res<'w, GuidIndex>,
     factions: Option<Res<'w, crate::target::ring::Factions>>,
@@ -66,6 +67,7 @@ impl Ctx<'_> {
     fn ctx(&self) -> chat::ChatCtx<'_> {
         chat::ChatCtx {
             self_guid: &self.self_guid,
+            wrath: self.wrath_tokens.as_ref().is_some_and(|tokens| tokens.active),
             group: Some(&self.group),
             index: &self.index,
             factions: self.factions.as_deref(),

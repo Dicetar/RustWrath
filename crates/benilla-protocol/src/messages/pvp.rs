@@ -19,6 +19,8 @@ pub struct InspectHonorStats {
     pub highest_rank: u8,
     /// Today's kills, the packed `PLAYER_FIELD_SESSION_KILLS` dword (`MiscHandler.cpp:988`).
     pub session_kills: u32,
+    /// Wrath today's contribution; absent from the donor reply.
+    pub today_honor: u32,
     /// Yesterday's honorable kills, the low half of `PLAYER_FIELD_YESTERDAY_KILLS`.
     pub yesterday_hk: u16,
     /// Always 0 from vmangos (`MiscHandler.cpp:994`); decoded, not skipped.
@@ -62,6 +64,7 @@ pub(super) fn read_inspect_honor_stats(r: &mut &[u8]) -> io::Result<InspectHonor
         player_guid: read_u64_le(r)?,
         highest_rank: read_u8(r)?,
         session_kills: read_u32_le(r)?,
+        today_honor: 0,
         yesterday_hk: read_u16_le(r)?,
         unknown_old1: read_u16_le(r)?,
         last_week_hk: read_u16_le(r)?,
@@ -160,6 +163,7 @@ mod tests {
                 player_guid: 0x0000_0001_0000_2AB3,
                 highest_rank: 11,
                 session_kills: 0x0002_0011,
+                today_honor: 0,
                 yesterday_hk: 41,
                 unknown_old1: 0,
                 last_week_hk: 420,

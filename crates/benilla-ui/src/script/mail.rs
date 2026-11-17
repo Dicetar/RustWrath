@@ -1929,6 +1929,8 @@ mod tests {
         let mut empty = row(0);
         empty.money = 0;
         empty.item_text_id = 0;
+        empty.mail_template_id = 0;
+        empty.body = None;
         let mut cod = row(2589);
         cod.cod = 100;
         let mut copied = row(0);
@@ -2445,6 +2447,8 @@ mod tests {
         (gm.stationery, gm.is_gm) = (61, true);
         let mut neither = row(0);
         neither.item_text_id = 0;
+        neither.mail_template_id = 0;
+        neither.body = None;
         s.set_mail(Some(MailState {
             inbox: vec![row(0), template, copied, gm, neither],
             open: true,

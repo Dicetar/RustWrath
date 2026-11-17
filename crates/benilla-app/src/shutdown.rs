@@ -160,7 +160,9 @@ mod tests {
         );
     }
 
-    /// A `/quit`, the logout edge and the capture harness announce from `Update`.
+    /// A chat/Exit Game `/quit`, the logout edge and Update-announcing capture probes announce from
+    /// `Update`; this test covers that schedule. Window close and console `quit` go through
+    /// `WindowCloseRequested`/`exit_on_all_closed` in `PostUpdate`.
     #[test]
     fn on_app_exit_also_sees_an_exit_announced_from_update() {
         let mut app = App::new();

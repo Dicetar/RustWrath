@@ -50,9 +50,10 @@ pub(crate) struct QuestLog {
     folds: benilla_ui::script::QuestLogCarry,
     /// The quest-update toasts the handlers resolved, shown by the next feed.
     toasts: Vec<Toast>,
-    /// `(quest id, item id, count)` pairs of an added item whose quest record was not cached, held
-    /// until it lands (`0x5dd180`).
-    deferred_item_adds: Vec<(u32, u32, u32)>,
+    /// `(quest id, item id, count, held before)` of an added item whose quest record was not
+    /// cached, held until it lands (`0x5dd180`). The held count is the packet's when it carried one
+    /// (12340's `QuestItemLoot::m_totalCount`), else read from the bags at the record's arrival.
+    deferred_item_adds: Vec<(u32, u32, u32, Option<u32>)>,
     /// The creature entries the engine's leaderboard asked for and the cache has not answered.
     creature_waits: HashSet<u32>,
     /// The `SMSG_SET_FACTION_STANDING` packets that moved a rank since the feed last ran.
@@ -274,7 +275,7 @@ mod net {
     use super::{item_added_to_quest, kill_line, ItemAdd, QuestLog, Toast, ToastLine};
     use crate::items::Items;
     use crate::names::NameCache;
-    use crate::net::{NetCommands, NetHandlerApp, ObjectStore, Objects, SelfPlayer};
+    use crate::net::{NetCommands, NetHandlerApp, ObjectStore, Objects, SelfGuid, SelfPlayer};
     use crate::query_cache::Ask;
     use crate::ui_items::{count_of_in_player, InventoryScope};
 
@@ -284,6 +285,7 @@ mod net {
         app.net_handler(K::QuestTemplate, on_template)
             .net_handler(K::QuestTemplate, on_template_deferred_item_adds)
             .net_handler(K::QuestObjectiveItem, on_item_added)
+            .net_handler(K::QuestItemLooted, on_item_looted)
             .net_handler(K::QuestObjectiveKill, on_kill)
             .net_handler(K::QuestObjectivesComplete, on_complete)
             .net_handler(K::Disconnected, on_session_end);
@@ -340,6 +342,45 @@ mod net {
         let SessionEvent::QuestObjectiveItem { item_id, count } = ev else {
             return;
         };
+        item_add_walk(item_id, count, None, &book, &mut quest_log, script.as_deref());
+    }
+
+    /// 12340's `SMSG_ITEM_PUSH_RESULT` arm (`Player_C.cpp`, case `0x166`): after the push's own
+    /// line, `CheckForQuestItemLoot` (`0x6d7de0`) for a push to the active player only, the same
+    /// walk with the count held before the push taken from the packet (`totalCount - count`).
+    fn on_item_looted(
+        In(ev): In<SessionEvent>,
+        self_guid: Res<SelfGuid>,
+        book: ItemBook,
+        mut quest_log: ResMut<QuestLog>,
+        script: Option<NonSend<UiScript>>,
+    ) {
+        let SessionEvent::QuestItemLooted {
+            player_guid,
+            item_id,
+            count,
+            total_count,
+        } = ev
+        else {
+            return;
+        };
+        if self_guid.0 != Some(player_guid) {
+            return;
+        }
+        let held_before = Some(total_count.saturating_sub(count));
+        item_add_walk(item_id, count, held_before, &book, &mut quest_log, script.as_deref());
+    }
+
+    /// The walk both arms share; `held_before` is the packet's count held before the add, or
+    /// `None` to read the bags now.
+    fn item_add_walk(
+        item_id: u32,
+        count: u32,
+        held_before: Option<u32>,
+        book: &ItemBook,
+        quest_log: &mut QuestLog,
+        script: Option<&UiScript>,
+    ) {
         let Some(store) = book.store() else {
             return;
         };
@@ -348,7 +389,7 @@ mod net {
                 .player_quest_log(slot)
                 .map(|s| s.quest_id)
                 .filter(|&id| (id as i32) > 0)
-                .filter(|&id| !script.as_ref().is_some_and(|s| s.quest_log_latched(id)))
+                .filter(|&id| !script.is_some_and(|s| s.quest_log_latched(id)))
             else {
                 continue;
             };
@@ -357,7 +398,7 @@ mod net {
                 if !quest_log.template_answered_unknown(quest_id) {
                     quest_log
                         .deferred_item_adds
-                        .push((quest_id, item_id, count));
+                        .push((quest_id, item_id, count, held_before));
                 }
                 continue;
             };
@@ -365,7 +406,7 @@ mod net {
                 template,
                 item_id,
                 count,
-                || book.held(item_id),
+                || held_before.unwrap_or_else(|| book.held(item_id)),
                 || book.name(item_id),
             ) {
                 ItemAdd::NotNeeded => {}
@@ -407,14 +448,14 @@ mod net {
         let refused = t.title.is_empty();
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut quest_log.deferred_item_adds)
             .into_iter()
-            .partition(|&(quest_id, _, _)| quest_id == t.quest_id);
+            .partition(|&(quest_id, _, _, _)| quest_id == t.quest_id);
         quest_log.deferred_item_adds = rest;
-        for (_, item_id, count) in mine.into_iter().filter(|_| !refused) {
+        for (_, item_id, count, held_before) in mine.into_iter().filter(|_| !refused) {
             if let ItemAdd::Toast(toast) = item_added_to_quest(
                 &t,
                 item_id,
                 count,
-                || book.held(item_id),
+                || held_before.unwrap_or_else(|| book.held(item_id)),
                 || book.name(item_id),
             ) {
                 quest_log.toasts.push(toast);
@@ -758,6 +799,8 @@ pub(crate) struct FeedMemo {
     /// Quests whose slot watcher saw them accepted, waiting for the field watcher's rebuild (which
     /// runs after this feed) to give them a row, so `QUEST_ACCEPTED` carries the right index.
     accept_events: Vec<u32>,
+    /// Whether `JournalRowInModel` has been observed for this VM's post-seat world-entry rows.
+    rows_traced: bool,
 }
 
 /// What the feed reads of the player and the caches.
@@ -892,17 +935,19 @@ pub(crate) fn feed_quest_log(
                 script.set_quest_creature_name(entry, name.to_string());
             }
             memo.creatures_seen = reads.names.creatures_landed_since(usize::MAX).1;
-            // The seat's descriptor commit is the field watcher's input, not a later notice: the
-            // create can land before this VM's player flag, and that notice would then rebuild
-            // nothing. Seat the slots through the watcher's own entry so it rebuilds and fires
-            // `QUEST_LOG_UPDATE` once.
+            // Seat the slots silently ahead of `feed_units`'s world-enter cascade
+            // (`quest_log_enter_world`), which runs the single initial `rebuild` and fires
+            // `QUEST_LOG_UPDATE` once (`0x4de430`). Rebuilding inside the seat would fire ahead of
+            // `PLAYER_LOGIN`/`PLAYER_ENTERING_WORLD`, double-count `record_waits` across the two
+            // rebuilds, and cause the world-entry rebuild to run the `0x4de5b0` fold snapshot
+            // against an already-populated header list (collapsing group 0).
             let slot_views = current_slots;
             debug!(
                 "ui_quest_log: seat {:#x} with {} quests",
                 guid.0,
                 slot_views.iter().filter(|s| s.quest_id != 0).count()
             );
-            script.quest_log_changed(slot_views);
+            script.set_quest_slots(slot_views);
             if let Some(trace) = &reads.quest_trace {
                 let scope = reads.wrath_view.as_ref()
                     .map(|v| (v.session_epoch, v.world_generation));
@@ -918,20 +963,41 @@ pub(crate) fn feed_quest_log(
             }
             memo.prior = None;
             memo.accept_events.clear();
+            memo.rows_traced = false;
             memo.subject = key;
-        } else if (subject.is_some() && memo.subject != key)
-            || (reads.states.is_changed()
-                && quest_log.templates.iter().any(|(_, t)| {
-                    has_world_state_token(&t.details) || has_world_state_token(&t.objectives_text)
-                }))
-        {
-            // The text expands against the player: a name that lands, or a world state a quest's
-            // text reads, expands the held records again, with nothing waiting on them.
-            if subject.is_some() {
-                memo.subject = key;
+        } else {
+            if !memo.rows_traced {
+                if let Some(trace) = &reads.quest_trace {
+                    let scope = reads
+                        .wrath_view
+                        .as_ref()
+                        .map(|v| (v.session_epoch, v.world_generation));
+                    for slot in current_slots.iter().filter(|slot| slot.quest_id != 0) {
+                        if script.quest_log_index(slot.quest_id) != 0 {
+                            trace.observe(
+                                scope,
+                                Some(slot.quest_id),
+                                crate::quest_trace::Stage::JournalRowInModel,
+                            );
+                        }
+                    }
+                }
+                memo.rows_traced = true;
             }
-            for (&id, t) in quest_log.templates.iter() {
-                script.seed_quest_record(id, record_view(t, &tables));
+            if (subject.is_some() && memo.subject != key)
+                || (reads.states.is_changed()
+                    && quest_log.templates.iter().any(|(_, t)| {
+                        has_world_state_token(&t.details) || has_world_state_token(&t.objectives_text)
+                    }))
+            {
+                // The text expands against the player: a name that lands, or a world state a quest's
+                // text reads, expands the held records again, with nothing waiting on them.
+                if subject.is_some() {
+                    memo.subject = key;
+                }
+                for (&id, t) in quest_log.templates.iter() {
+                    script.seed_quest_record(id, record_view(t, &tables));
+                }
             }
         }
 
@@ -2136,6 +2202,34 @@ mod tests {
         assert_eq!(rig.frame(), Vec::<String>::new());
     }
 
+    /// AzerothCore's `SMSG_QUESTUPDATE_ADD_ITEM` is empty, so 12340 toasts a loot from
+    /// `SMSG_ITEM_PUSH_RESULT`'s trailing count (`CheckForQuestItemLoot`, `0x6d7de0`): the line
+    /// shows the packet's total even before the bags hold the item, and only for our own push.
+    #[test]
+    fn a_looted_quest_item_toasts_from_the_push_total() {
+        let mut rig = Rig::new(vec![pelt_quest()], &[7]);
+        rig.cache_pelt();
+        rig.app
+            .world_mut()
+            .insert_resource(crate::net::SelfGuid(Some(0x2A)));
+        rig.frame();
+        rig.enter_world();
+        rig.frame();
+        let looted = |player_guid| SessionEvent::QuestItemLooted {
+            player_guid,
+            item_id: WOLF_PELT,
+            count: 1,
+            total_count: 5,
+        };
+        rig.packet(looted(0x99));
+        assert_eq!(rig.frame(), Vec::<String>::new(), "another member's push");
+        rig.packet(looted(0x2A));
+        assert_eq!(
+            rig.frame(),
+            ["UI_INFO_MESSAGE:Wolf Pelt: 5/5", "QUEST_WATCH_UPDATE:2"]
+        );
+    }
+
     /// An added item for a quest whose record is not cached waits for it (`0x5dd180`), a
     /// callback registered after the rebuild's: the landing rebuilds, then toasts.
     #[test]
@@ -2475,6 +2569,24 @@ mod tests {
             rig.script().take_sounds().is_empty(),
             "the sound is the accept row's, played with its line"
         );
+    }
+
+    /// On the Wrath target as well, seating a mixed log (group 0 + a named zone) is silent and
+    /// leaves every group expanded for `quest_log_enter_world`'s single initial rebuild.
+    #[test]
+    fn wrath_seat_is_silent_and_keeps_zone_zero_rows_expanded_at_world_entry() {
+        let mut q0 = quest_template(101, none());
+        q0.zone_or_sort = 0;
+        q0.title = "Zone Zero".into();
+        let mut q7 = quest_template(201, none());
+        q7.zone_or_sort = 7;
+        q7.title = "Zone Seven".into();
+        let mut rig = Rig::wrath(vec![q0, q7], &[101, 201]);
+        assert_eq!(rig.frame(), Vec::<String>::new());
+        assert_eq!(rig.enter_world(), [QLU]);
+        assert_eq!(rig.eval("return tostring(GetNumQuestLogEntries())"), "4");
+        assert_eq!(rig.eval("return (GetQuestLogTitle(2))"), "Zone Zero");
+        assert_eq!(rig.eval("return (GetQuestLogTitle(4))"), "Zone Seven");
     }
 }
 

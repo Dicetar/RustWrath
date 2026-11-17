@@ -424,6 +424,7 @@ impl Mixer {
                     f64::from(realtime_latency_frames) / f64::from(sample_rate) * 1000.0,
                 ),
                 Event::Lost(why) => warn!("audio: output stream dropped — {why}; reopening"),
+                Event::Restarted => info!("audio: sound system restart — reopening the output"),
                 Event::OpenFailed(what) => warn!("audio: output device refused — {what}; retrying"),
                 Event::Dead(what) => error!("audio: output is gone for good — {what}"),
             }
@@ -435,6 +436,12 @@ impl Mixer {
         self.health.overruns += window.underruns;
         self.window.merge(window);
         self.health
+    }
+
+    /// Rebuild the output stream on the current default device at the next
+    /// [`Self::poll_health`], the reference's `Sound_GameSystem_RestartSoundSystem`.
+    pub(crate) fn restart_output(&mut self) {
+        self.manager.backend_mut().request_restart();
     }
 
     /// Read and reset the peak load, so a report covers only its own window.

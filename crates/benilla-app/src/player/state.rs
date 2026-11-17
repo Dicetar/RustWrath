@@ -131,8 +131,8 @@ pub(crate) struct PlayerCapsule(pub(crate) Collider);
 /// The run-speed fallback, the stock 7.0 until the server's speeds stream in, or the
 /// `$WOW_MOVE_SPEED` dev override (`env_override`), which replaces the server's speeds outright.
 #[derive(Resource)]
-pub(super) struct MoveSpeed {
-    pub(super) value: f32,
+pub(crate) struct MoveSpeed {
+    pub(crate) value: f32,
     pub(super) env_override: bool,
 }
 
@@ -591,6 +591,16 @@ impl Player {
     /// listener faces it, not the camera (`0x483430`).
     pub(crate) fn facing(&self) -> f32 {
         self.face_yaw
+    }
+
+    /// The body's velocity in Bevy axes, which the movement hotpatch frame reports.
+    pub(crate) fn velocity(&self) -> Vec3 {
+        Vec3::new(self.horiz_vel.x, self.vel_y, self.horiz_vel.z)
+    }
+
+    /// The mouselook pitch (positive up), which the movement hotpatch frame reports.
+    pub(crate) fn pitch(&self) -> f32 {
+        self.mover_pitch
     }
 
     /// End the settle hold, called by the terrain streamer: `resident` is false when

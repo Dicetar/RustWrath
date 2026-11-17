@@ -1666,6 +1666,7 @@ fn the_modifier_diff_names_the_family_flag_bit_of_a_changed_cell() {
                 now.diff(&base),
                 ModsDiff {
                     bits: 1 << bit,
+                    high_bits: 0,
                     class_family: false
                 },
                 "bit {bit} op {op} flat {flat}"
@@ -1678,6 +1679,7 @@ fn the_modifier_diff_names_the_family_flag_bit_of_a_changed_cell() {
         now.diff(&base),
         ModsDiff {
             bits: 0,
+            high_bits: 0,
             class_family: true
         }
     );

@@ -128,6 +128,114 @@ pub(crate) struct CalendarState {
     pub(crate) revision: u64,
 }
 
+/// The decoded `SMSG_LFG_QUEUE_STATUS` facts exposed to 3.3.5a Dungeon Finder natives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WrathLfgQueueStatusState {
+    pub dungeon_id: u32,
+    pub wait_time_avg: i32,
+    pub wait_time: i32,
+    pub wait_time_tank: i32,
+    pub wait_time_healer: i32,
+    pub wait_time_dps: i32,
+    pub tanks_needed: u8,
+    pub healers_needed: u8,
+    pub dps_needed: u8,
+    pub queued_time: u32,
+}
+
+/// One member row of `SMSG_LFG_PROPOSAL_UPDATE`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WrathLfgProposalMemberState {
+    pub role: u32,
+    pub is_local: bool,
+    pub in_dungeon: bool,
+    pub in_same_group: bool,
+    pub responded: bool,
+    pub accepted: bool,
+}
+
+/// The decoded `SMSG_LFG_PROPOSAL_UPDATE` snapshot exposed to `GetLFGProposal`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WrathLfgProposalState {
+    pub proposal_id: u32,
+    pub dungeon_id: u32,
+    pub state: u8,
+    pub completed_mask: u32,
+    pub silent: bool,
+    pub players: Vec<WrathLfgProposalMemberState>,
+}
+
+/// The 3.3.5a Dungeon Finder state held on [`Model`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WrathLfgState {
+    /// `PLAYER_ROLE_*` bitmask (`0x01` leader, `0x02` tank, `0x04` healer, `0x08` damage).
+    pub roles: u8,
+    pub comment: String,
+    pub selected_slots: Vec<u32>,
+    pub joined: bool,
+    pub queued: bool,
+    pub lfg_joined: bool,
+    pub no_partial_clear: bool,
+    pub achievements: bool,
+    pub queued_dungeons: Vec<u32>,
+    pub last_join_result: Option<(u32, u32)>,
+    pub queue_status: Option<WrathLfgQueueStatusState>,
+    pub proposal: Option<WrathLfgProposalState>,
+}
+
+/// Outbound 12340 LFG and vehicle commands queued from Lua and drained by `wrath_rune_calendar_feed`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WrathScopedCommand {
+    LfgJoin {
+        slots: Vec<u32>,
+        comment: String,
+        roles: u8,
+        no_partial_clear: bool,
+        achievements: bool,
+        needs: [u8; 3],
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    LfgLeave {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    LfgProposalResult {
+        proposal_id: u32,
+        accept: bool,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    SetLfgComment {
+        comment: String,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    LfgSetRoles {
+        roles: u8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    VehicleExit {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    VehiclePrevSeat {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    VehicleNextSeat {
+        session_epoch: u64,
+        world_generation: u64,
+    },
+    VehicleSwitchSeat {
+        vehicle: u64,
+        seat: i8,
+        session_epoch: u64,
+        world_generation: u64,
+    },
+}
+
 /// One stored `WrapScript` body. The host keeps it for a future secure boundary but never runs it
 /// from Lua: the execution sandbox is not implemented (`secure::install` documents the refusal).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -293,6 +401,9 @@ pub(crate) struct Model {
     pub(crate) layout_scope: super::layout::LayoutScope,
     /// The epoch the last converged resolve closed on; `None` sends the next one past tier 1.
     pub(crate) layout_epoch_resolved: Option<u64>,
+    /// Tier 1 was closed by a cycle bail, not a convergence: its rects are no fixpoint and no
+    /// fingerprint vouches for them, so verify has nothing to re-check until the next write.
+    pub(crate) layout_bailed: bool,
     /// Resolves the gate let through, counted at its decision, so verify mode reads the same.
     pub(crate) layout_solves: u64,
     /// Resolves that got past tier 1, including those that then skipped: the whole-roster walk's
@@ -394,6 +505,10 @@ pub(crate) struct Model {
     /// the release; `None` once that frame left the mouse index (hide or mouse disable emptied
     /// the capture), so the release has no target but the button still counts as held.
     pub(crate) mouse_down_on: HashMap<String, Option<FrameHandle>>,
+    /// Every mouse button physically held, by WoW name, whatever its press hit (world, nothing,
+    /// a hidden frame): the state `IsMouseButtonDown` reads. Unlike [`Self::mouse_down_on`],
+    /// which keeps only presses the UI took a target for.
+    pub(crate) buttons_held: HashSet<String>,
     /// The client's one mouse-capture slot (`root+0x80`), read by the mouse-down raise. Set at
     /// `0x7663e6` to the capture, else the hovered frame, so a chorded press keeps the capture;
     /// cleared at `0x7664bb` once no button is down. A title-region press captures nothing.
@@ -463,6 +578,9 @@ pub(crate) struct Model {
     pub(crate) unit_guids: super::UnitGuids,
     /// The player's active tracking aura, behind `GetTrackingTexture`.
     pub(crate) tracking: Option<super::aura::TrackingState>,
+    /// The spellbook's tracking spells in book order, heading the 3.3.5 tracking menu
+    /// ([`super::minimap_tracking`]).
+    pub(crate) tracking_spells: Vec<u32>,
     /// What waits for the host, in the order made: the calls that touch the selection, the cast
     /// or the targeting cursor made while it was out, and the handlers an engine step fired then
     /// ([`super::host::holding`]), for it to run as soon as it is back.
@@ -580,6 +698,10 @@ pub(crate) struct Model {
     pub(crate) logging_chat: bool,
     pub(crate) logging_combat: bool,
     pub(crate) logging_changed: bool,
+    /// The 3.3.5a combat log's filter list and retention fallback (`UnitCombatLog_C_Scripts.cpp`);
+    /// the registered `combatLogRetentionTime` CVar is authoritative when it exists. The raw-entry
+    /// history is empty until a `CombatLogEntry` producer is wired; see [`super::combat_log`].
+    pub(crate) combat_log: super::combat_log::CombatLogState,
     /// A user-placed frame moved or resized, or `SetUserPlaced` ran: the layout cache's save cue.
     pub(crate) user_placed_changed: bool,
     /// The default chat language; `None` is no player, so `GetDefaultLanguage()` returns nothing.
@@ -605,6 +727,12 @@ pub(crate) struct Model {
     pub(crate) wrath_scope: Option<(u64, u64)>,
     /// `OpenCalendar()` fetch requests, carrying the scope they were written under.
     pub(crate) calendar_fetches: std::collections::VecDeque<(u64, u64)>,
+    /// 3.3.5a Dungeon Finder state and outbound scoped LFG/vehicle command queue.
+    pub(crate) wrath_lfg: WrathLfgState,
+    pub(crate) wrath_scoped_commands: std::collections::VecDeque<WrathScopedCommand>,
+    /// Replicated vehicle transport GUID for the local player when riding a vehicle.
+    pub(crate) vehicle_guid: Option<u64>,
+    pub(crate) vehicle_seat_flags: Option<u32>,
     /// Frames created with a native secure-handler template, keyed by
     /// [`crate::widget::FrameHandle::fingerprint_bits`]. `WrapScript` refuses an owner outside it.
     pub(crate) secure_frames: HashSet<u64>,
@@ -679,6 +807,9 @@ pub(crate) struct Model {
     pub(crate) video_caps: super::cvars::VideoCaps,
     /// `RestartGx()` calls, the video window's apply button.
     pub(crate) restart_gx_asks: u32,
+    /// `Sound_GameSystem_RestartSoundSystem()` calls, the sound panel's apply after a control
+    /// marked `restart` changed (`AudioOptionsFrame.lua:29`).
+    pub(crate) restart_sound_asks: u32,
 
     /// Globals `RegisterForSave` declared, in order: written at logout and read back at load.
     pub(crate) saved_names: Vec<String>,
@@ -738,6 +869,7 @@ pub(crate) struct Model {
     pub(crate) spell_targetable_units: HashSet<u64>,
 
     pub(crate) talents: super::talent::TalentUiState,
+    pub(crate) wrath_talents: super::talent::WrathTalentUiState,
     /// `CheckTalentMasterDist()`: the respec question is live and in range; false hides its dialog.
     pub(crate) talent_master_pending: bool,
     // ── The dialog engine's verbs (`0x48dca0` is the first below) ──
@@ -1185,6 +1317,9 @@ pub(crate) struct Model {
     /// `Exhaustion.dbc` by rest byte, `(name, factor)`: `GetRestState` indexes it and row 1 scales
     /// `GetXPExhaustion` (`0x48d3f0`). enUS rows seed it until the app loads the install's own.
     pub(crate) exhaustion: HashMap<u8, (String, f64)>,
+    /// `gtCombatRatings.dbc` scalers in row order (`rating_idx * 100 + (level - 1)`), pushed by
+    /// the host when `WorldAssets` loads; `GetCombatRatingBonus` divides the rating by it.
+    pub(crate) combat_rating_scalers: Vec<f32>,
 
     /// The paper doll's combat stats, `None` until the first push.
     pub(crate) player_combat_stats: Option<char_stats::UnitCombatStats>,
@@ -1323,6 +1458,14 @@ pub(crate) struct Model {
     pub(crate) framerate: f64,
     /// `(shift, ctrl, alt)` for `Is*KeyDown`, pushed before the frame's mouse events.
     pub(crate) modifiers: (bool, bool, bool),
+    /// The mouse button of the click whose script is running, `CSimpleTop::m_mouseButtonName`
+    /// ([`super::keybind::clicks::with_click_button`]); `None` outside one.
+    pub(crate) click_button: Option<String>,
+    /// Unsupported 3.3.5 native names that have already emitted a one-time diagnostic warning in this VM.
+    pub(crate) warned_unsupported_wrath_natives: HashSet<&'static str>,
+    /// Frames a Wrath geometry getter answered `0` for, having no resolved rect: each is named once
+    /// (`object::layout_methods::note_unresolved_rect`).
+    pub(crate) warned_unresolved_rects: HashSet<FrameHandle>,
 }
 
 impl Model {
@@ -1404,6 +1547,15 @@ impl Model {
     /// A warning for the host's terminal only, for a message already retained under another kind.
     pub(crate) fn warn_host_only(&mut self, msg: String) {
         self.warnings.push(msg);
+    }
+
+    /// Records a once-per-VM diagnostic warning when Lua calls an unimplemented 3.3.5 native.
+    pub(crate) fn record_unsupported_native_once(&mut self, name: &'static str, detail: &str) {
+        if self.warned_unsupported_wrath_natives.insert(name) {
+            self.record_warning(format!(
+                "wrath native `{name}` is unsupported in this build: {detail}"
+            ));
+        }
     }
 
     /// Whether this VM is the 3.3.5 client, whose resolver adds `focus`, `vehicle` and `bossN`.
@@ -1513,6 +1665,7 @@ impl Model {
             layout_scope: super::layout::LayoutScope::default(),
             layout_last_scope: (0, 0),
             layout_epoch_resolved: None,
+            layout_bailed: false,
             layout_solves: 0,
             layout_gate_walks: 0,
             layout_rounds: 0,
@@ -1550,6 +1703,7 @@ impl Model {
             world_mouseover: None,
             minimap_blip: None,
             mouse_down_on: HashMap::new(),
+            buttons_held: HashSet::new(),
             mouse_capture: None,
             last_click: HashMap::new(),
             last_ui_hit: None,
@@ -1587,6 +1741,7 @@ impl Model {
             unit_auras: HashMap::new(),
             unit_guids: Default::default(),
             tracking: None,
+            tracking_spells: Vec::new(),
             script_calls: Vec::new(),
             parked: HashMap::new(),
             next_parked: 0,
@@ -1642,6 +1797,7 @@ impl Model {
             logging_chat: false,
             logging_combat: false,
             logging_changed: false,
+            combat_log: Default::default(),
             user_placed_changed: false,
             default_language: None,
             follow_requests: Vec::new(),
@@ -1654,6 +1810,10 @@ impl Model {
             calendar: None,
             wrath_scope: None,
             calendar_fetches: std::collections::VecDeque::new(),
+            wrath_lfg: WrathLfgState::default(),
+            wrath_scoped_commands: std::collections::VecDeque::new(),
+            vehicle_guid: None,
+            vehicle_seat_flags: None,
             secure_frames: HashSet::new(),
             secure_drivers: HashMap::new(),
             secure_wraps: HashMap::new(),
@@ -1680,6 +1840,7 @@ impl Model {
             current_resolution: None,
             video_caps: super::cvars::VideoCaps::default(),
             restart_gx_asks: 0,
+            restart_sound_asks: 0,
             saved_names: Vec::new(),
             held_saved_files: Vec::new(),
             loaded_saved_files: Vec::new(),
@@ -1703,6 +1864,7 @@ impl Model {
             spell_targeting: false,
             spell_targetable_units: HashSet::new(),
             talents: super::talent::TalentUiState::default(),
+            wrath_talents: super::talent::WrathTalentUiState::default(),
             talent_master_pending: false,
             pet_untrainer_pending: false,
             instance_boot_secs: 0,
@@ -1886,6 +2048,7 @@ impl Model {
             summon_summoner_lookups: 0,
             framerate: 1000.0,
             modifiers: (false, false, false),
+            click_button: None,
             money: 0,
             net_latency_ms: 0,
             net_bandwidth_kbps: (0.0, 0.0),
@@ -1909,6 +2072,7 @@ impl Model {
             ]
             .into_iter()
             .collect(),
+            combat_rating_scalers: Vec::new(),
             player_combat_stats: None,
             player_crit_percentage: 0.0,
             ammo_record_asks: Vec::new(),
@@ -1942,6 +2106,8 @@ impl Model {
             reputation_headers: Vec::new(),
             reputation_selected: 0,
             faction_standings: HashMap::new(),
+            warned_unsupported_wrath_natives: HashSet::new(),
+            warned_unresolved_rects: HashSet::new(),
         }
     }
 

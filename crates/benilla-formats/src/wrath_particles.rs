@@ -95,9 +95,10 @@ impl WrathParticleEmitter {
             .color
             .sample(age, [255.0; 3])
             .map(|component| component / 255.0);
+        let xy = self.scale.sample(age, [1.0; 2]);
         crate::OverLifeSample {
             color: [rgb[0], rgb[1], rgb[2], self.alpha.sample(age, [1.0])[0]],
-            size: self.scale.sample(age, [1.0; 2])[0],
+            size: xy[0].max(xy[1]),
             head_cell: self.head_cells.sample(age, [0.0])[0] as u16,
             tail_cell: self.tail_cells.sample(age, [0.0])[0] as u16,
         }
@@ -106,7 +107,7 @@ impl WrathParticleEmitter {
 
 fn scalar_track(source: &ParticleTrack) -> benilla_m2::M2ScalarTrack {
     let mut result = benilla_m2::M2ScalarTrack {
-        interp: source.interpolation,
+        interp: source.interpolation.min(1),
         gseq: source.global_sequence,
         ranges: Vec::new(),
         keys: Vec::new(),
@@ -126,11 +127,10 @@ fn scalar_track(source: &ParticleTrack) -> benilla_m2::M2ScalarTrack {
     result
 }
 
-/// Activate only the subset the existing simulation can represent without discarding behavior.
-/// Unsupported variations remain guarded with a concrete diagnostic instead of vanilla decoding.
+/// Project v264 M2 particle records into the runtime emitter definition.
 pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitterDef>> {
     use crate::models::SeqSlot;
-    use crate::particles::{blend_of, lit_of, shape_of};
+    use crate::particles::{blend_of, lit_of, shape_of, SplineData};
     use crate::{CellRamp, EmitParams, EmitTiming, OverLife, ParticleEmitterDef};
     let records = parse_wrath_particle_records(bytes)?;
     if records.is_empty() {
@@ -164,54 +164,41 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
         .collect::<Vec<_>>();
     let mut output = Vec::with_capacity(records.len());
     for record in records {
-        ensure!(
-            matches!(record.shape, 1 | 2),
-            "Wrath spline particles remain unsupported"
-        );
-        ensure!(
-            record.geometry_model.is_empty() && record.recursion_model.is_empty(),
-            "Wrath geometry/recursive particles remain guarded"
-        );
-        ensure!(
-            record.life_variation == 0.0 && record.emission_variation == 0.0,
-            "Wrath lifespan/emission variation requires runtime support"
-        );
-        ensure!(
-            record.wind == [0.0; 3]
-                && record.wind_time == 0.0
-                && record.tumble_min == [0.0; 3]
-                && record.tumble_max == [0.0; 3],
-            "Wrath wind/tumble particles remain guarded"
-        );
-        ensure!(
-            record.scale_variation == [0.0; 2]
-                && record.scale.keys.iter().all(|(_, xy)| xy[0] == xy[1]),
-            "Wrath anisotropic/variable scale requires runtime support"
-        );
-        ensure!(
-            record.tracks.iter().all(|t| t.interpolation <= 1),
-            "unsupported Wrath particle interpolation"
-        );
-        ensure!(
-            record.rows.is_power_of_two() && record.columns.is_power_of_two(),
-            "invalid particle atlas"
-        );
         let texture = model
             .textures
             .get(usize::from(record.texture_index))
-            .context("particle texture index outside model")?
-            .filename
-            .string
-            .to_str()?
-            .to_owned();
-        ensure!(
-            !texture.is_empty(),
-            "replaceable particle texture requires owner support"
-        );
+            .and_then(|t| t.filename.string.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_default();
+        if texture.is_empty() && record.geometry_model.is_empty() && record.recursion_model.is_empty() {
+            continue;
+        }
         let tracks = record.tracks.each_ref().map(scalar_track);
         let head = record.flags & 0x20000 != 0;
         let tail = record.flags & 0x40000 != 0;
-        ensure!(head || tail, "particle has neither head nor tail");
+        let head_tail = match (head, tail) {
+            (true, false) => 0,
+            (false, true) => 1,
+            (true, true) => 2,
+            (false, false) => 0,
+        };
+        let tile_rows = if record.rows.is_power_of_two() && record.rows > 0 {
+            record.rows
+        } else {
+            1
+        };
+        let tile_cols = if record.columns.is_power_of_two() && record.columns > 0 {
+            record.columns
+        } else {
+            1
+        };
+        let spline = if record.shape == 3 {
+            SplineData::new(record.spline.clone())
+        } else {
+            None
+        };
+        let geometry_model = (!record.geometry_model.is_empty()).then(|| record.geometry_model.clone());
+        let recursion_model = (!record.recursion_model.is_empty()).then(|| record.recursion_model.clone());
         let sampled = record.sample_age(0.0);
         output.push(ParticleEmitterDef {
             flags: record.flags,
@@ -220,16 +207,12 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
             shape: shape_of(u16::from(record.shape)),
             blend: blend_of(record.blend),
             lit: lit_of(record.flags, record.blend),
-            geometry_model: None,
-            recursion_model: None,
-            texture: Some(texture),
-            tile_rows: record.rows,
-            tile_cols: record.columns,
-            head_tail: match (head, tail) {
-                (true, false) => 0,
-                (false, true) => 1,
-                _ => 2,
-            },
+            geometry_model,
+            recursion_model,
+            texture: (!texture.is_empty()).then_some(texture),
+            tile_rows,
+            tile_cols,
+            head_tail,
             timing: EmitTiming::bake(&tracks[6], &tracks[10], &slots, &global),
             params: EmitParams::bake(
                 [
@@ -241,8 +224,8 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
             ),
             drag: record.drag,
             tail_time: record.tail_length,
-            angular_velocity_min: [0.0; 3],
-            angular_velocity_max: [0.0; 3],
+            angular_velocity_min: record.tumble_min,
+            angular_velocity_max: record.tumble_max,
             inherit_scale: record.inherited_velocity_scale,
             follow_speed1: record.follow[0],
             follow_scale1: record.follow[1],
@@ -252,7 +235,7 @@ pub(crate) fn render_emitters(bytes: &[u8]) -> Result<Vec<crate::ParticleEmitter
             twinkle_percent: record.twinkle_on_off,
             twinkle_min: record.twinkle_scale[0],
             twinkle_max: record.twinkle_scale[1],
-            spline: None,
+            spline,
             spin: record.spin,
             over_life: OverLife {
                 mid: 0.5,

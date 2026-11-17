@@ -66,6 +66,7 @@ pub use action_bar::{
 pub use addons::{
     pair_with_sent, AddonRecord, SecureAddon, STANDARD_MODULUS_CRC, STOCK_SECURE_ADDONS,
 };
+pub use crate::events::EntityKind;
 pub use area_trigger::area_trigger;
 pub use attack::{attack_swing, AttackSwingError, AttackerState};
 pub use auction::{
@@ -153,9 +154,9 @@ pub use instance::{
 pub use items::{
     auto_equip_item, auto_store_bag_item, destroy_item, item_name_query, item_query, open_item,
     set_ammo, split_item, swap_inv_item, swap_item, use_item, wrap_item, ItemDamage, ItemInfo,
-    ItemSpellEntry, ItemUseSpell, UseItemTarget, BAG_PLAYER_INVENTORY, ITEM_DYNFLAG_UNLOCKED,
-    ITEM_DYNFLAG_WRAPPED, ITEM_FLAG_LOOTABLE, ITEM_FLAG_PLAYERCAST, ITEM_FLAG_WRAPPER,
-    SLOT_BAG_FIRST, SLOT_PACK_FIRST,
+    ItemSpellEntry, ItemUseSpell, UseItemTarget, WrathRollItemInfo, BAG_PLAYER_INVENTORY,
+    ITEM_DYNFLAG_UNLOCKED, ITEM_DYNFLAG_WRAPPED, ITEM_FLAG_LOOTABLE, ITEM_FLAG_PLAYERCAST,
+    ITEM_FLAG_WRAPPER, SLOT_BAG_FIRST, SLOT_PACK_FIRST,
 };
 pub use loot::{
     autostore_loot_item, loot, loot_error, loot_master_give, loot_money, loot_release, loot_roll,
@@ -214,7 +215,7 @@ pub use quest::{
 };
 pub use reputation::{
     set_faction_at_war, set_faction_inactive, set_watched_faction, FACTION_LIST_LEN,
-    WATCHED_FACTION_NONE,
+    WATCHED_FACTION_NONE, WRATH_FACTION_LIST_LEN,
 };
 pub use roster::{
     CharCreateReq, CharEnumItem, Character, CHARACTER_FLAG_GHOST, CHARACTER_FLAG_HIDE_CLOAK,

@@ -113,7 +113,10 @@ impl TalentCatalog {
         let class_bit = 1u32 << (class - 1);
         self.tabs
             .iter()
-            .filter(|t| t.class_mask & class_bit != 0 && t.race_mask & race_bit != 0)
+            .filter(|t| {
+                t.class_mask & class_bit != 0
+                    && (t.race_mask == 0 || t.race_mask == 511 || t.race_mask & race_bit != 0)
+            })
             .collect()
     }
 
@@ -127,6 +130,28 @@ impl TalentCatalog {
         self.talents_in_tab(tab_id)
             .iter()
             .find(|t| t.id == talent_id)
+    }
+
+    /// Look up any talent tab by its `TalentTab.dbc` id.
+    pub fn tab_by_id(&self, tab_id: u32) -> Option<&TalentTabInfo> {
+        self.tabs.iter().find(|t| t.id == tab_id)
+    }
+
+    /// Look up any talent across all tabs by its `Talent.dbc` id.
+    pub fn talent_by_id(&self, talent_id: u32) -> Option<&Talent> {
+        self.by_tab
+            .values()
+            .flatten()
+            .find(|t| t.id == talent_id)
+    }
+
+    /// Hunter pet talent tabs (`TalentTab.dbc` rows with zero class/race masks, e.g. Tenacity 409,
+    /// Ferocity 410, Cunning 411).
+    pub fn pet_tabs(&self) -> Vec<&TalentTabInfo> {
+        self.tabs
+            .iter()
+            .filter(|t| t.class_mask == 0 && t.race_mask == 0)
+            .collect()
     }
 
     pub fn len(&self) -> usize {

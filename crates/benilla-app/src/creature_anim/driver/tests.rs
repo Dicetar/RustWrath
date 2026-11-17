@@ -148,6 +148,7 @@ fn app() -> App {
         .add_message::<crate::creature_anim::DefenseAnim>()
         .add_message::<crate::creature_anim::SwingSlowdown>()
         .add_message::<EmoteAnim>()
+        .add_message::<crate::creature_anim::ActionAnim>()
         .add_message::<super::super::BaseAnimRecompute>()
         .add_message::<WoundAnim>()
         .add_message::<SheathRequest>()

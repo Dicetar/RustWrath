@@ -289,6 +289,12 @@ pub(crate) fn unit_combat_stats(store: &ObjectStore) -> UnitCombatStats {
     let (ap_pos, ap_neg) = f.unit_attack_power_mods();
     let (rap_pos, rap_neg) = f.unit_ranged_attack_power_mods();
 
+    let spell_damage_done: [i32; 7] = std::array::from_fn(|s| {
+        let school = s as u8;
+        f.player_mod_damage_done_pos(school).unwrap_or(0)
+            + f.player_mod_damage_done_neg(school).unwrap_or(0)
+    });
+
     UnitCombatStats {
         stats,
         stat_pos,
@@ -307,6 +313,8 @@ pub(crate) fn unit_combat_stats(store: &ObjectStore) -> UnitCombatStats {
         ranged_bonus_pos: f.player_mod_damage_done_pos(0).unwrap_or(0),
         ranged_bonus_neg: f.player_mod_damage_done_neg(0).unwrap_or(0),
         ranged_percent: f.player_mod_damage_done_pct(0).unwrap_or(1.0),
+        spell_damage_done,
+        spell_healing_done: 0,
         // As the fields stand, 0 when unsent (`0x518ea0`).
         main_attack_time_ms: f.unit_base_attack_time(0).unwrap_or(0),
         offhand_attack_time_ms: f.unit_base_attack_time(1).unwrap_or(0),
@@ -335,7 +343,12 @@ pub(crate) fn unit_combat_stats(store: &ObjectStore) -> UnitCombatStats {
 }
 
 /// The player's snapshot: [`unit_combat_stats`] plus the equipment flags and the skill pairs.
-fn combat_stats(store: &ObjectStore, objects: &Objects, items: &Items) -> UnitCombatStats {
+fn combat_stats(
+    store: &ObjectStore,
+    objects: &Objects,
+    items: &Items,
+    raw: Option<&crate::wrath::WrathPlayerRaw>,
+) -> UnitCombatStats {
     // The off hand counts only as a weapon (a shield does not swing); both flags read false
     // until the template lands.
     let has_offhand = slot_entry(store, objects, SLOT_OFF_HAND)
@@ -378,6 +391,11 @@ fn combat_stats(store: &ObjectStore, objects: &Objects, items: &Items) -> UnitCo
         ranged_bonus_pos: f.player_mod_damage_done_pos(ranged_school).unwrap_or(0),
         ranged_bonus_neg: f.player_mod_damage_done_neg(ranged_school).unwrap_or(0),
         ranged_percent: f.player_mod_damage_done_pct(ranged_school).unwrap_or(1.0),
+        spell_healing_done: raw
+            .and_then(|r| {
+                r.0.get(benilla_protocol_wrath::fields::PLAYER_FIELD_MOD_HEALING_DONE_POS)
+            })
+            .map_or(0, |w| w as i32),
         ..unit_combat_stats(store)
     }
 }
@@ -692,6 +710,7 @@ pub(crate) fn feed_char(
     sub_classes: Option<Res<crate::ui_items::ItemSubClasses>>,
     // The ammo getters' record callback, fired with the field events after this push.
     mut field_notices: ResMut<crate::field_watch::NoticeLane>,
+    self_raw: Query<Ref<crate::wrath::WrathPlayerRaw>, With<SelfPlayer>>,
 ) {
     hosted_vm.run(|script| {
         let Some(script) = script else {
@@ -737,6 +756,8 @@ pub(crate) fn feed_char(
         // they can change only when it steps.
         let deadlines_moved = memo.enchant_deadlines.moved(inv.changes.countdown_steps());
         let self_changed = !inv.self_changed.is_empty();
+        let raw_ref = self_raw.iter().next();
+        let raw_changed = raw_ref.as_ref().is_some_and(|r| r.is_changed());
         // `is_added`, not `is_changed`: only the load-once icon column is read, and the model-cache
         // half churns every frame.
         let icons_added = icons.as_ref().is_some_and(|r| r.is_added());
@@ -752,6 +773,7 @@ pub(crate) fn feed_char(
                 ("names", names_moved),
                 ("deadlines", deadlines_moved),
                 ("self", self_changed),
+                ("raw", raw_changed),
                 ("icons", icons_added),
                 ("enchants", enchants_changed),
             ],
@@ -763,6 +785,7 @@ pub(crate) fn feed_char(
                 || names_moved
                 || deadlines_moved
                 || self_changed
+                || raw_changed
                 || icons_added
                 || enchants_changed,
         );
@@ -772,7 +795,7 @@ pub(crate) fn feed_char(
 
         // The paper doll's getters read this; the stat events that repaint it are field watches,
         // fired after this push (`crate::ui_unit::field_events`).
-        let stats = combat_stats(store, objects, &items);
+        let stats = combat_stats(store, objects, &items, raw_ref.as_deref());
         if memo.last_stats.as_ref() != Some(&stats) {
             gate.audit("feed_char", "the combat-stats snapshot");
             script.set_player_combat_stats(Some(stats.clone()));
@@ -1652,7 +1675,7 @@ mod tests {
                 shadow(20.0),
             ]),
         );
-        let s = combat_stats(&store, &objs.get(), &items);
+        let s = combat_stats(&store, &objs.get(), &items, None);
         assert_eq!(
             (s.ranged_bonus_pos, s.ranged_bonus_neg, s.ranged_percent),
             (20, -4, 1.15)
@@ -1660,7 +1683,7 @@ mod tests {
         assert_eq!(s.physical_bonus_pos, 3, "the melee bonus stays physical");
         // No line above 0: school 0.
         items.insert_template(WAND_ENTRY, wand(vec![shadow(0.0)]));
-        let s = combat_stats(&store, &objs.get(), &items);
+        let s = combat_stats(&store, &objs.get(), &items, None);
         assert_eq!(
             (s.ranged_bonus_pos, s.ranged_bonus_neg, s.ranged_percent),
             (3, 0, 1.0)

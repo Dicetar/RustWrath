@@ -1,5 +1,7 @@
-//! The `ObjectIcons.blp` dots of the classifier `0x4eaa90`: quest gold cell 3, tracking gold and
-//! red cells 0 and 1, party blue cell 4.
+//! The `ObjectIcons.blp` blips of the 12340 classifier (`CGMinimapFrame`'s object enumerator)
+//! on the 3.3.5 8×2 grid: quest cells 9 (yellow "!"), 10 (yellow "?") and 11 (blue "!"), the
+//! tracked cell 8 and the hostile-monster cell 5. The party dot keeps the 1.12 cell; 12340 draws
+//! party members from `PartyRaidBlips` instead, not built.
 
 use std::collections::HashMap;
 
@@ -9,6 +11,7 @@ use bevy::prelude::*;
 use benilla_assets::coords::bevy_to_wow;
 use benilla_formats::{LockCatalog, ShapeshiftForm, LOCK_KEY_SKILL};
 use benilla_protocol::EntityKind;
+use benilla_ui::script::minimap_tracking::{tracked_info, TrackingKind, TrackingType};
 
 use crate::creature_type::CreatureTypeSources;
 use crate::go_templates::GameObjectTemplates;
@@ -23,21 +26,81 @@ use super::{group_positions, BlipCtx, MinimapBlipHover, TrackedCandidates, BLIP_
 const QUEST_DOT_PX: f32 = 8.0;
 /// The party dot's quad: the same 8-px base at the cell table's 1.3× party scale.
 const PARTY_DOT_PX: f32 = 8.0 * 1.3;
-/// `ObjectIcons.blp` cell 4, the blue party dot (col 0, row 1 of the 4×4 grid).
+/// The 1.12 4×4 grid's blue party cell 4. On the 3.3.5 texture this is not a party dot: 12340
+/// draws party and raid members from `PartyRaidBlips.blp` in class colours, not built.
 const PARTY_DOT_CELL: [f32; 4] = [0.0, 0.25, 0.25, 0.5];
-/// `ObjectIcons.blp` cell 0, the gold dot of a GameObject passing resource tracking (`0x5ed2b0`).
-const TRACKED_GO_CELL: [f32; 4] = [0.0, 0.25, 0.0, 0.25];
-/// `ObjectIcons.blp` cell 1, the red dot of a unit passing creature tracking (`0x5ed210`).
-const TRACKED_UNIT_CELL: [f32; 4] = [0.25, 0.5, 0.0, 0.25];
+/// `MINIMAP_OBJECT_MONSTER_HOSTILE`, the red dot. Creature tracking draws every tracked unit
+/// with it: 12340 picks 5/6/7 (and 2/3/4 for players) by reaction, which the blip pass lacks.
+const CELL_MONSTER_HOSTILE: u32 = 5;
+/// The gold dot of a tracked object: a resource node, a tracked town service or mailbox.
+const CELL_TRACKED: u32 = 8;
+/// A quest available, the yellow "!".
+const CELL_QUEST_AVAILABLE: u32 = 9;
+/// A quest ready to turn in, the yellow "?".
+const CELL_QUEST_COMPLETE: u32 = 10;
+/// A repeatable quest available, the blue "!".
+const CELL_QUEST_REPEATABLE: u32 = 11;
+
+/// The texture rectangle of `ObjectIcons.blp` cell `n`: the 3.3.5 file is 256×64, eight 32-px
+/// cells a row, two rows.
+fn object_icon_cell(n: u32) -> [f32; 4] {
+    let u = (n & 7) as f32 * 0.125;
+    let v = (n >> 3) as f32 * 0.5;
+    [u, u + 0.125, v, v + 0.5]
+}
+
+/// The tracking-menu row the player chose (`minimapTrackedInfo`, read by
+/// [`TrackedInfo::from_cvar`]), as the blip classifier tests it.
+#[derive(Clone, Copy, Default)]
+pub(in crate::minimap) struct TrackedInfo(Option<&'static TrackingType>);
+
+impl TrackedInfo {
+    pub(in crate::minimap) fn from_cvar(value: Option<&str>) -> Self {
+        Self(value.and_then(tracked_info))
+    }
+
+    /// "Track Low Level Quests": the low-level available statuses 2 and 4 draw too.
+    fn trivial(self) -> bool {
+        self.0.is_some_and(|t| t.kind == TrackingKind::TrivialQuests)
+    }
+
+    /// A town-service row whose 3.3.5 NPC flag the unit carries.
+    fn unit(self, npc_flags: u32) -> bool {
+        self.0
+            .is_some_and(|t| t.kind == TrackingKind::NpcFlag && npc_flags & t.flags != 0)
+    }
+
+    /// The mailbox row: a GameObject of its type.
+    fn gameobject(self, type_id: u32) -> bool {
+        self.0
+            .is_some_and(|t| t.kind == TrackingKind::GameObjectType && type_id == t.flags)
+    }
+}
 /// `UNIT_DYNAMIC_FLAGS` bit 0x2, set per viewer on a Hunter's Mark victim for its caster; one of
 /// `0x5ed210`'s two always-show clauses (`+0x224 & 0x2`).
 const UNIT_DYNFLAG_TRACK_UNIT: u32 = 0x2;
-/// Only DIALOG_STATUS 7 draws a quest dot, the gold cell 3 (`cmp [obj+0xcb8],7` at `0x4eac31`).
-fn quest_dot_cell(status: u32) -> Option<[f32; 4]> {
-    (status == 7).then_some([0.75, 1.0, 0.0, 0.25])
+/// The quest cell of the server's raw 3.3.5 `QuestGiverStatus`, as 12340's classifier maps it:
+/// REWARD (10) the "?", AVAILABLE (8) the "!", AVAILABLE_REP (7) the blue "!". With trivial
+/// tracking on, LOW_LEVEL_AVAILABLE (2) and LOW_LEVEL_AVAILABLE_REP (4) join the two "!".
+/// INCOMPLETE (5) and the rest draw nothing.
+fn quest_dot_cell(status: u32, trivial: bool) -> Option<[f32; 4]> {
+    let cell = match status {
+        10 => CELL_QUEST_COMPLETE,
+        8 => CELL_QUEST_AVAILABLE,
+        2 if trivial => CELL_QUEST_AVAILABLE,
+        7 => CELL_QUEST_REPEATABLE,
+        4 if trivial => CELL_QUEST_REPEATABLE,
+        _ => return None,
+    };
+    Some(object_icon_cell(cell))
 }
 
-/// The three gates `0x4eaa90` applies to a unit or player ahead of the status-7 compare at
+/// The raw 3.3.5 NPC flags of a candidate, 0 before the Wrath feed delivered them.
+fn npc_flags(raw: Option<&crate::wrath::WrathNpcFlags>) -> u32 {
+    raw.map_or(0, |f| f.0)
+}
+
+/// The three gates `0x4eaa90` applies to a unit or player ahead of the quest-dot compare at
 /// `0x4eac31`, so they bar the quest dot and the tracking dot alike, never a GameObject or party
 /// dot. A unit with no descriptor yet fails, as a zeroed health field does in the reference.
 fn unit_dot_eligible(store: Option<&ObjectStore>, me: Option<u64>) -> bool {
@@ -61,11 +124,13 @@ fn unit_dot_eligible(store: Option<&ObjectStore>, me: Option<u64>) -> bool {
     !f.unit_is_untrackable()
 }
 
-/// Draw a gold dot per quest giver at status 7, culled at the view radius in 3-D distance with
-/// no rim arrow, in the map's own layer, under the arrow children.
+/// Draw a quest blip per quest giver whose status [`quest_dot_cell`] maps, culled at the view
+/// radius in 3-D distance with no rim arrow, in the map's own layer, under the arrow children.
+/// A unit the tracking menu tracks takes the tracked dot instead: 12340 tests tracking first.
 pub(in crate::minimap) fn emit_quest_dots(
     ctx: &BlipCtx,
     statuses: &HashMap<u64, u32>,
+    info: TrackedInfo,
     candidates: &TrackedCandidates,
     self_guid: Option<u64>,
     icons: &Handle<Image>,
@@ -74,12 +139,21 @@ pub(in crate::minimap) fn emit_quest_dots(
     quads: &mut UiQuads,
     hover: &mut MinimapBlipHover,
 ) {
-    for (guid, net, tf, store) in candidates.iter() {
+    for (guid, net, tf, store, raw_flags) in candidates.iter() {
         let npc = guid.0;
         if !matches!(net.kind, EntityKind::Unit | EntityKind::Player) {
-            continue; // the GameObject leg (`0x4eab43`) never reaches the status-7 compare
+            // 12340 gives quest-giver GameObjects these cells too; their hover would need the
+            // template name, not built.
+            continue;
         }
-        let Some(cell) = statuses.get(&npc).copied().and_then(quest_dot_cell) else {
+        if info.unit(npc_flags(raw_flags)) {
+            continue; // [`emit_tracking_dots`] drew the tracked dot
+        }
+        let Some(cell) = statuses
+            .get(&npc)
+            .copied()
+            .and_then(|s| quest_dot_cell(s, info.trivial()))
+        else {
             continue;
         };
         if !unit_dot_eligible(store, self_guid) {
@@ -161,12 +235,13 @@ fn tracked_creature(
             .is_some_and(|t| (1..=32).contains(&t) && tracking.creatures & (1u32 << (t - 1)) != 0)
 }
 
-/// Draw the tracking dots, gold cell 0 per GameObject then red cell 1 per unit not at quest
-/// status 7 (`0x4eac31` tests that first). Drawn before the quest and party dots, as the cell
-/// lists draw in order.
+/// Draw the tracking dots: the gold cell 8 per resource node or tracked mailbox, then per unit
+/// the tracking menu tracks (ahead of its quest status, as 12340 tests), else the red cell 5 per
+/// unit creature tracking finds that takes no quest blip. Drawn before the quest and party dots.
 pub(in crate::minimap) fn emit_tracking_dots(
     ctx: &BlipCtx,
     tracking: SelfTracking,
+    info: TrackedInfo,
     candidates: &TrackedCandidates,
     statuses: &HashMap<u64, u32>,
     self_guid: Option<u64>,
@@ -215,56 +290,66 @@ pub(in crate::minimap) fn emit_tracking_dots(
                 }
             }
         };
-    // Cell 0, GameObjects. No quest-status check: the GameObject leg (`0x4eab43`) goes straight
-    // to `0x5ed2b0` and never reaches the status-7 compare.
-    if tracking.resources != 0 {
-        if let Some(locks) = locks {
-            for (guid, net, tf, store) in candidates.iter() {
-                if net.kind != EntityKind::GameObject {
-                    continue;
-                }
-                let Some(t) = store.and_then(|s| templates.of(&s.0)) else {
-                    continue; // template not answered yet
-                };
-                if tracked_resource(tracking.resources, t.lock_id, locks) {
-                    dot(
-                        super::DotSource::GameObject(guid.0),
-                        tf,
-                        TRACKED_GO_CELL,
-                        DotName::Known(t.name.clone()),
-                    );
-                }
+    // Cell 8, GameObjects: the tracked mailbox, or a node resource tracking finds.
+    let resources = locks.filter(|_| tracking.resources != 0);
+    if resources.is_some() || info.0.is_some_and(|t| t.kind == TrackingKind::GameObjectType) {
+        for (guid, net, tf, store, _) in candidates.iter() {
+            if net.kind != EntityKind::GameObject {
+                continue;
+            }
+            let Some(t) = store.and_then(|s| templates.of(&s.0)) else {
+                continue; // template not answered yet
+            };
+            if info.gameobject(t.type_id)
+                || resources.is_some_and(|l| tracked_resource(tracking.resources, t.lock_id, l))
+            {
+                dot(
+                    super::DotSource::GameObject(guid.0),
+                    tf,
+                    object_icon_cell(CELL_TRACKED),
+                    DotName::Known(t.name.clone()),
+                );
             }
         }
     }
-    // Cell 1, units.
+    // Units: the tracked service (cell 8), else creature tracking (cell 5).
     let types = CreatureTypeSources {
         names: Some(names),
         forms,
         ..Default::default()
     };
-    for (guid, net, tf, store) in candidates.iter() {
+    for (guid, net, tf, store, raw_flags) in candidates.iter() {
         if !matches!(net.kind, EntityKind::Unit | EntityKind::Player) {
             continue;
         }
         if !unit_dot_eligible(store, self_guid) {
             continue;
         }
-        if statuses.get(&guid.0).copied() == Some(7) {
-            continue; // the ==7 branch already drew the quest dot
-        }
-        let (dyn_flags, creeping) = store
-            .map(|s| (s.0.unit_dynamic_flags(), s.0.unit_is_stealthed()))
-            .unwrap_or((0, false));
-        let creature_type = store.map(|s| types.of(s));
-        if tracked_creature(tracking, creature_type, dyn_flags, creeping) {
-            dot(
-                super::DotSource::Unit(guid.0),
-                tf,
-                TRACKED_UNIT_CELL,
-                DotName::Guid(guid.0),
-            );
-        }
+        let cell = if info.unit(npc_flags(raw_flags)) {
+            CELL_TRACKED
+        } else {
+            let quest = statuses
+                .get(&guid.0)
+                .copied()
+                .and_then(|s| quest_dot_cell(s, info.trivial()));
+            if quest.is_some() {
+                continue; // [`emit_quest_dots`] draws this unit
+            }
+            let (dyn_flags, creeping) = store
+                .map(|s| (s.0.unit_dynamic_flags(), s.0.unit_is_stealthed()))
+                .unwrap_or((0, false));
+            let creature_type = store.map(|s| types.of(s));
+            if !tracked_creature(tracking, creature_type, dyn_flags, creeping) {
+                continue;
+            }
+            CELL_MONSTER_HOSTILE
+        };
+        dot(
+            super::DotSource::Unit(guid.0),
+            tf,
+            object_icon_cell(cell),
+            DotName::Guid(guid.0),
+        );
     }
 }
 
@@ -484,12 +569,17 @@ mod tests {
         assert!(dots(&mut world, None).is_empty(), "no pet");
     }
 
-    /// Status 6 draws nothing on the 1.12 client despite vmangos's "red dot" comment (`0x4eac31`).
+    /// REWARD (10) is the "?" cell 10, AVAILABLE (8) the "!" cell 9 and AVAILABLE_REP (7) the
+    /// blue "!" cell 11 on the 8×2 grid; the low-level 2 and 4 only with trivial tracking.
     #[test]
-    fn quest_dot_is_status_seven_only_gold_cell_three() {
-        assert_eq!(quest_dot_cell(7), Some([0.75, 1.0, 0.0, 0.25]));
-        for s in [0, 1, 2, 3, 4, 5, 6, 8] {
-            assert_eq!(quest_dot_cell(s), None, "status {s} must not dot");
+    fn quest_dot_cells_follow_the_wrath_status_map() {
+        assert_eq!(quest_dot_cell(10, false), Some([0.25, 0.375, 0.5, 1.0]));
+        assert_eq!(quest_dot_cell(8, false), Some([0.125, 0.25, 0.5, 1.0]));
+        assert_eq!(quest_dot_cell(7, false), Some([0.375, 0.5, 0.5, 1.0]));
+        assert_eq!(quest_dot_cell(2, true), quest_dot_cell(8, false));
+        assert_eq!(quest_dot_cell(4, true), quest_dot_cell(7, false));
+        for s in [0, 1, 2, 3, 4, 5, 6, 9] {
+            assert_eq!(quest_dot_cell(s, false), None, "status {s} must not dot");
         }
     }
 

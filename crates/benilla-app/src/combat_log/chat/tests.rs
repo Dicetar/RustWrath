@@ -39,6 +39,7 @@ fn a_spell_with_no_record_writes_no_line() {
     let ranges = combat::CombatLogRanges::default();
     let ctx = super::ChatCtx {
         self_guid: &self_guid,
+        wrath: false,
         group: None,
         index: &index,
         factions: None,
@@ -319,6 +320,7 @@ mod emitters {
             );
             let ctx = ChatCtx {
                 self_guid: &self_guid,
+                wrath: false,
                 group: None,
                 index: &self.index,
                 factions: Some(&self.factions),

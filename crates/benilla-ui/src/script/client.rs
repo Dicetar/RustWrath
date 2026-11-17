@@ -45,6 +45,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|_, _: MultiValue| Ok(Value::Nil))?,
     )?;
 
+    // `GetText` is the engine function in 3.3.5a, not `FrameXML\LocaleProperties.lua`, so the
+    // Wrath chain has no Lua definition and the host must answer it; 1.12's Lua file, when it
+    // loads, overwrites this global.
+    install_get_text(lua)?;
+
     // `GetDebugStats()` (`0x488af0`, `xor eax,eax; ret`): zero values, which `StatsFrame.lua:20`
     // hands straight to `SetText`.
     g.set(
@@ -186,10 +191,14 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                     chunk.call::<()>(())
                 });
             if let Err(e) = ran {
-                let bare = super::stdlib::lua_message(&e);
+                let mut log = super::stdlib::lua_message(&e);
+                if let Some(traceback) = e.lua_traceback() {
+                    log.push_str("\nLua traceback: ");
+                    log.push_str(traceback);
+                }
                 lua.app_data_mut::<crate::script::Model>()
                     .expect("model")
-                    .record_error(bare, super::model::HandlerArg::Error(e));
+                    .record_error(log, super::model::HandlerArg::Error(e));
             }
             Ok(())
         })?,
@@ -237,6 +246,69 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     Ok(())
+}
+
+/// `GetText("token" [, gender] [, ordinal])` (`Script_GetText` `0x0081b720` over
+/// `FrameScript_GetText`): the string global named by `token`, tried most specific first
+/// (`token_Pn_FEMALE`, `token_Pn`, `token_FEMALE`, `token`). Only gender 3 (`GENDER_FEMALE`, what
+/// `UnitSex` and `GetSelectedSex` answer for female) adds `_FEMALE`; 0-2 add nothing. The ordinal
+/// (default -1) picks the plural suffix through the locale's rule ([`plural_index`]), so an
+/// omitted ordinal under English's `count != 1` still tries `_P1` first. A miss is `""`, never
+/// nil; a token that is neither string nor number is the usage error. Shared by the in-game VM
+/// and the Wrath glue VM.
+pub(super) fn install_get_text(lua: &Lua) -> mlua::Result<()> {
+    lua.globals().set(
+        "GetText",
+        lua.create_function(|lua, (token, gender, ordinal): (Value, Value, Value)| {
+            let Some(token) = lua.coerce_string(token)? else {
+                return Err(mlua::Error::runtime(
+                    r#"Usage: GetText("token" [,gender] [,ordinal])"#,
+                ));
+            };
+            // `lua_isnumber` then `lua_tointeger`: 5.1's x86 `fistp` rounds to nearest even.
+            let int = |v: Value| -> mlua::Result<Option<i64>> {
+                Ok(lua.coerce_number(v)?.map(|n| n.round_ties_even() as i64))
+            };
+            let female = if int(gender)? == Some(3) { "_FEMALE" } else { "" };
+            let ordinal = int(ordinal)?.unwrap_or(-1);
+            let locale = lua.app_data_ref::<Model>().expect("model").locale;
+            let plural = match plural_index(locale, ordinal) {
+                0 => String::new(),
+                n => format!("_P{n}"),
+            };
+            // The token's own bytes, not a UTF-8 decode: the native joins C strings, so a
+            // non-UTF-8 token still finds its global.
+            let token = token.as_bytes().to_vec();
+            let (plural, female) = (plural.as_bytes(), female.as_bytes());
+            let globals = lua.globals();
+            for name in [
+                [&token[..], plural, female].concat(),
+                [&token[..], plural].concat(),
+                [&token[..], female].concat(),
+                token.clone(),
+            ] {
+                if let Ok(Value::String(text)) = globals.get::<Value>(&name[..]) {
+                    return Ok(text);
+                }
+            }
+            lua.create_string("")
+        })?,
+    )
+}
+
+/// `FrameScript_GetPluralIndex` (`0x00817d10`) under the rule start-up seats from the locale index
+/// (`ClientInitializeGame`): koKR, frFR, zhCN and zhTW (1, 2, 4, 5) plural above one; ruRU (8) the
+/// three-form Slavic rule; every other locale English's `count != 1`. C's `%` truncates, as
+/// Rust's does.
+fn plural_index(locale: usize, count: i64) -> u32 {
+    match locale {
+        1 | 2 | 4 | 5 => u32::from(count > 1),
+        8 if (11..=14).contains(&(count % 100)) => 2,
+        8 if count % 10 == 1 => 0,
+        8 if (2..=4).contains(&(count % 10)) => 1,
+        8 => 2,
+        _ => u32::from(count != 1),
+    }
 }
 
 impl super::UiScript {
@@ -435,6 +507,49 @@ mod tests {
             s.set_locale(8);
             assert_eq!((s.locale(), locale(&s).as_str()), (0, "enUS"), "{kind}");
         }
+    }
+
+    /// `GetText("token" [, gender] [, ordinal])` (`Script_GetText` `0x0081b720`) answers the
+    /// global string named by the token, plural and gender suffixed names most specific first; a
+    /// miss is `""`, never nil.
+    #[test]
+    fn get_text_reads_gender_then_ordinal_as_the_native_does() {
+        let mut s = UiScript::new().unwrap();
+        s.run(
+            r#"
+            PVP_RANK_8_0 = "Knight-Captain"
+            TRACKER = "Tracking"
+            TRACKER_P1 = "Trackings"
+            FRIEND = "Friend"
+            FRIEND_FEMALE = "Friend (female)"
+            ONLY_BASE = "Only"
+            "#,
+        )
+        .unwrap();
+        let text = |s: &UiScript, call: &str| s.eval::<String>(&format!("return {call}")).unwrap();
+        assert_eq!(text(&s, r#"GetText("PVP_RANK_8_0")"#), "Knight-Captain");
+        // English's rule: `_P1` for any ordinal but 1, and the omitted ordinal is -1.
+        assert_eq!(text(&s, r#"GetText("TRACKER", nil, 2)"#), "Trackings");
+        assert_eq!(text(&s, r#"GetText("TRACKER", nil, 1)"#), "Tracking");
+        assert_eq!(text(&s, r#"GetText("TRACKER")"#), "Trackings");
+        // A `_P1` miss falls back to the base string, as the native's second lookup does.
+        assert_eq!(text(&s, r#"GetText("ONLY_BASE", nil, 5)"#), "Only");
+        // The second argument is the gender: only 3 is female, and 2 is never a count.
+        assert_eq!(text(&s, r#"GetText("FRIEND", 3)"#), "Friend (female)");
+        assert_eq!(text(&s, r#"GetText("FRIEND", 2)"#), "Friend");
+        assert_eq!(text(&s, r#"GetText("FRIEND", 1)"#), "Friend");
+        assert_eq!(text(&s, r#"GetText("TRACKER", 2, 1)"#), "Tracking");
+        // frFR's rule: no plural at or below one, so the omitted ordinal reads the base.
+        s.set_locale(2);
+        assert_eq!(text(&s, r#"GetText("TRACKER")"#), "Tracking");
+        // A miss answers the empty string, never nil: FrameXML checks it with `if not text`.
+        assert_eq!(text(&s, r#"GetText("NO_SUCH_STRING")"#), "");
+        assert!(s.eval::<String>("return GetText()").is_err());
+        let glue = UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap();
+        glue.run(r#"RACE_INFO_HUMAN = "Human lore"; RACE_INFO_HUMAN_FEMALE = "Human female lore""#)
+            .unwrap();
+        assert_eq!(text(&glue, r#"GetText("RACE_INFO_HUMAN", 3)"#), "Human female lore");
+        assert_eq!(text(&glue, r#"GetText("RACE_INFO_HUMAN", 2)"#), "Human lore");
     }
 
     /// Never nil: addons index with it at file scope, and a nil index errors far from the cause.

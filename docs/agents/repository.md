@@ -3,15 +3,24 @@
 The owner selected https://github.com/Dicetar/RustWrath as the canonical project repository
 on 2026-10-31. All agents, including Astra and PC/OC, use this repository for future work.
 
-- Existing checkout: `D:/Projects/project-b-client`. The directory name does not need to
-  change; existing launchers, asset profiles and local state keep working from this path.
+- Existing checkout: `D:/Projects/wow/client`. It moved there on 2026-11-17 from
+  `D:/Projects/project-b-client`, which remains as a junction to the same folder, so launchers,
+  asset profiles, local state and dated handoffs that name the old path keep working.
+- Workstation layout under `D:/Projects/wow`: `client` (this checkout), `worktrees` (task
+  worktrees, formerly `D:/Projects/rw-worktrees`), `worktrees-legacy` (older loose worktrees),
+  `server` (AzerothCore lab, game install and wm-project, formerly `D:/WOW`), `reference`
+  (preserved decompilation and Elden Ring references) and `backups`. `D:/WOW` is also a
+  junction; the server build tree was configured under that spelling. Remove a junction only
+  with `cmd /c rmdir`, never with a recursive delete.
 - `origin`: `https://github.com/Dicetar/RustWrath.git`, the owner's project.
 - `upstream`: `https://github.com/samwhosung/benilla.git`, the original donor. Do not push
   Project B changes there.
 - `wotlk`: the existing shared development branch. Track `origin/wotlk` after migration.
 - `main`: the intended published baseline. The migration preserved the destination's initial
-  README commit and existing donor/fork history. Publication uses focused branches
-  and pull requests to `main`; do not force-push shared branches.
+  README commit and existing donor/fork history. Publication uses focused task branches
+  that the integrator lands on `main`, by fast-forward or merge, or by pull request when the
+  owner asks for one ([sync](sync.md)); do not force-push shared branches.
+- The repository is public. Branches, task notes and issues are world-readable.
 
 Before committing, inspect HEAD, the index and dirty files. Stage explicit owned paths only.
 Do not stage another agent's unfinished changes or use `git add .`. Fetch before publishing;

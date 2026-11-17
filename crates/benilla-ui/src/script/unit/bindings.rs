@@ -863,8 +863,10 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // GetRestState() (`0x48d350`) → the Exhaustion.dbc row's ID, name and factor, indexed directly
-    // by `PLAYER_BYTES_2` byte 3 (`0xc0dd78`); nil, nil, nil when there is no such row.
+    // GetRestState() (`0x48d350`; 12340 `0x0051B8B0`, the same shape) → the Exhaustion.dbc row's
+    // ID, name and factor, indexed directly by `PLAYER_BYTES_2` byte 3 (`0xc0dd78`); nil, nil, nil
+    // when there is no such row. The Wrath world carries 3.3.5's `PLAYER_BYTES_2` (field 154) into
+    // the same slot, so both targets answer from the server's byte.
     g.set(
         "GetRestState",
         lua.create_function(|lua, ()| {

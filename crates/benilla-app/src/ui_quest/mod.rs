@@ -59,6 +59,7 @@ pub(crate) struct QuestGiver {
     pending_selection: Option<PendingQuestSelection>,
     delivery_error: Option<String>,
     pub(crate) completed_fanfare: bool,
+    pub(crate) firing_panel_event: bool,
     /// The panel's source: an NPC, a GameObject, a quest-starter item or a sharing player.
     pub(crate) npc: Option<u64>,
     pub(crate) view: Option<QuestView>,
@@ -81,7 +82,8 @@ pub(crate) struct QuestGiver {
     /// The reference's `0xbe0840`: the last escort confirm's quest, written by its packet
     /// (`0x5019c7`), never cleared, and sent by `ConfirmAcceptQuest` (`0x5021e0`).
     pub(crate) confirm: u32,
-    /// Per-guid dialog status from `SMSG_QUESTGIVER_STATUS`, the `!`/`?` marker's value.
+    /// Per-guid 3.3.5 `QuestGiverStatus` (0-10) from `SMSG_QUESTGIVER_STATUS`, the `!`/`?` marker's
+    /// value, unmapped as the reference stores it (`unit+0x90`, `SetQuestStatus`).
     statuses: HashMap<u64, u32>,
     /// Messages queued for [`feed_quest`], each a GlobalStrings key and its fills.
     messages: Vec<UiError>,
@@ -806,7 +808,33 @@ pub(crate) fn feed_quest(
             script.set_quest(fresh.clone());
             *last = fresh;
         }
+        giver.firing_panel_event = false;
         if let Some(panel) = shows {
+            if script.target() == benilla_ui::script::UiTarget::Wrath335 {
+                let keep = match panel {
+                    QuestPanel::Greeting => "QuestFrameGreetingPanel",
+                    QuestPanel::Detail => "QuestFrameDetailPanel",
+                    QuestPanel::Progress => "QuestFrameProgressPanel",
+                    QuestPanel::Reward => "QuestFrameRewardPanel",
+                };
+                for sub in [
+                    "QuestFrameGreetingPanel",
+                    "QuestFrameDetailPanel",
+                    "QuestFrameProgressPanel",
+                    "QuestFrameRewardPanel",
+                ] {
+                    if sub != keep {
+                        let _ = script.run(&format!("if {sub} then {sub}:Hide() end"));
+                    }
+                }
+                if matches!(
+                    panel,
+                    QuestPanel::Detail | QuestPanel::Progress | QuestPanel::Reward
+                ) && script.is_shown("QuestFrame")
+                {
+                    giver.firing_panel_event = true;
+                }
+            }
             fires.post(panel_event(panel), vec![]);
         }
         for _ in 0..item_updates {

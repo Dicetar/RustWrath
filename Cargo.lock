@@ -502,6 +502,7 @@ dependencies = [
  "assert_no_alloc",
  "avian3d",
  "benilla-assets",
+ "benilla-combat-core",
  "benilla-formats",
  "benilla-hotpatch-bevy",
  "benilla-protocol",

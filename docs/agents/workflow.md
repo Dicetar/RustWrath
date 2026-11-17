@@ -101,8 +101,10 @@ The [launcher guide](../launching.md) explains the player path.
 
 ## Git, storage and handoffs
 
-Follow [repository rules](repository.md). No pull/rebase/branch switch beneath dirty shared
-work, blanket staging, automatic stash/reset, or unassigned push. Launching requires no Git
+Follow [repository rules](repository.md) and the [sync loop](sync.md): a task branch in your own
+worktree, pushed with its task note at every stopping point. Pushing your own task branch needs
+no further assignment; `main` is pushed by the integrator. No pull/rebase/branch switch beneath
+dirty shared work, blanket staging, automatic stash/reset, or force-push. Launching requires no Git
 publication. A commit does not rebuild or hotpatch a running executable.
 
 Keep logs/state in designated local directories; keep assets and the reference outside the
@@ -110,7 +112,8 @@ repository. Follow [backup policy](backups.md): three completed source backups m
 no target/MPQ copies. Build caches can be much larger than backups; inspect size and live
 ownership before proposing cleanup. Do not bypass a denied deletion through another tool.
 
-Standing rules belong in AGENTS and these guides, current reservations in active-ownership,
-architectural decisions in [docs/architecture](../architecture/), and session outcomes in
-the owning .scratch/project-b/handoffs file. Name reference anchors, checks actually run,
+Standing rules belong in AGENTS and these guides, local build and client reservations in
+active-ownership, architectural decisions in [docs/architecture](../architecture/), and task
+status and outcomes in the task note under .scratch/project-b/handoffs, committed on the task's
+branch with the header [sync](sync.md) defines. Name reference anchors, checks actually run,
 remaining failures and the next concrete step. Keep historical evidence separate from current fact.

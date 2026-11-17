@@ -62,7 +62,9 @@ fn on_broadcast(In(ev): In<SessionEvent>, chat_log: Res<ChatLog>) {
             Broadcast::Server { message_type, text }
         }
         SessionEvent::ChatRestricted => Broadcast::ChatRestricted,
-        SessionEvent::TransferAborted { reason } => Broadcast::TransferAborted { reason },
+        SessionEvent::TransferAborted { reason, map_id, argument } => {
+            Broadcast::TransferAborted { reason, map_id, argument }
+        }
         _ => return,
     };
     broadcast(b, &chat_log);
@@ -300,11 +302,14 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(ChatLog::default());
         world
-            .run_system_once_with(on_broadcast, SessionEvent::TransferAborted { reason: 5 })
+            .run_system_once_with(
+                on_broadcast,
+                SessionEvent::TransferAborted { reason: 5, map_id: None, argument: None },
+            )
             .unwrap();
         assert_eq!(
             world.resource_mut::<ChatLog>().take_broadcasts(),
-            [Broadcast::TransferAborted { reason: 5 }]
+            [Broadcast::TransferAborted { reason: 5, map_id: None, argument: None }]
         );
     }
 

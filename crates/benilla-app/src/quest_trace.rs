@@ -841,6 +841,28 @@ pub(crate) enum HotpatchReason {
     Retention,
     Frame,
     Unknown,
+    /// Typed pose publication rejection details carried from `HotpatchEvent`.
+    TransientIoPending,
+    ManifestUnreadable,
+    ManifestMalformed,
+    InvalidBasename,
+    EmptyRevision,
+    ArtifactTooLarge,
+    DigestMismatch,
+    ImmutableFilename,
+    ArtifactRejected,
+    Quarantined,
+    ModuleLoadFailed,
+    MissingEntryPoint,
+    AbiMismatch,
+    MissingProcessor,
+    LoadFailed,
+    /// Typed pose evaluation details carried from `HotpatchEvent` candidate/frame failures.
+    EvaluationStatus(i32),
+    EvaluationInvalidOutput,
+    EvaluationTopologyChanged,
+    EvaluationFrameTooLarge,
+    EvaluationHostFrame,
 }
 
 #[cfg(feature = "hotpatch")]
@@ -859,7 +881,10 @@ pub(crate) enum PatchEvent {
         digest: Option<[u8; 20]>,
     },
     /// The failed active module had no retained predecessor; the baseline pose is active.
-    RestoreUnavailable { failed_attempt: Option<u64> },
+    RestoreUnavailable {
+        failed_attempt: Option<u64>,
+        reason: HotpatchReason,
+    },
     RetentionFailed { attempt: Option<u64>, reason: HotpatchReason },
 }
 
@@ -877,6 +902,7 @@ fn patch_event_attempts(event: PatchEvent) -> [Option<u64>; 2] {
         | PatchEvent::RetentionFailed { attempt, .. }
         | PatchEvent::RestoreUnavailable {
             failed_attempt: attempt,
+            ..
         } => [attempt, None],
         PatchEvent::RestoredPrevious {
             failed_attempt,
@@ -908,7 +934,7 @@ fn patch_event_is_terminal_for(event: PatchEvent, attempt: u64) -> bool {
         | PatchEvent::RetentionFailed {
             attempt: rejected, ..
         } => rejected == Some(attempt),
-        PatchEvent::RestoreUnavailable { failed_attempt } => failed_attempt == Some(attempt),
+        PatchEvent::RestoreUnavailable { failed_attempt, .. } => failed_attempt == Some(attempt),
         PatchEvent::RestoredPrevious {
             failed_attempt,
             restored_attempt,
@@ -983,8 +1009,11 @@ fn patch_event_summary(event: PatchEvent, attempt: u64) -> String {
                 )
             }
         }
-        PatchEvent::RestoreUnavailable { failed_attempt } => format!(
-            "attempt {attempt}: active frame failed; no previous module to restore (baseline pose; failed_attempt={})",
+        PatchEvent::RestoreUnavailable {
+            failed_attempt,
+            reason,
+        } => format!(
+            "attempt {attempt}: active frame failed; no previous module to restore (baseline pose; failed_attempt={}, reason={reason:?})",
             hotpatch_attempt_label(failed_attempt)
         ),
         PatchEvent::RetentionFailed { reason, .. } => {
@@ -2524,6 +2553,9 @@ struct CastAttribution {
     confidence: IncidentConfidence,
     /// Index into [`History::cast_candidates`] for the unique match.
     candidate: Option<usize>,
+    /// The local interaction id recovered from retained evidence rows when the candidate ring
+    /// no longer holds the write (the ring keeps only the most recent writes).
+    evidence_interaction: Option<u64>,
     /// First plausible candidate, used as the incident subject when the edge is ambiguous.
     first: Option<usize>,
     /// Non-zero local interaction ids that could explain the edge.
@@ -2535,6 +2567,7 @@ impl CastAttribution {
         Self {
             confidence,
             candidate: None,
+            evidence_interaction: None,
             first: None,
             considered: Vec::new(),
         }
@@ -3401,6 +3434,31 @@ impl History {
     /// failure. `include_consumed` is used by the inspector so a terminal edge that already
     /// consumed its candidate still names that local action.
     fn cast_attribution(&self, event: &Event, include_consumed: bool) -> CastAttribution {
+        let attribution = self.cast_attribution_from_candidates(event, include_consumed);
+        if attribution.candidate.is_some() || attribution.evidence_interaction.is_some() {
+            return attribution;
+        }
+        // No candidate ring entry decided it. The report may still hold the local rows (the
+        // ring is bounded by the most recent writes and is retired at a session end), so try
+        // the retained evidence before declaring the edge unmatched.
+        let evidence = self.cast_attribution_from_evidence(event, include_consumed);
+        if evidence.evidence_interaction.is_some() {
+            return evidence;
+        }
+        // Keep the candidate ring's considered/first set for ambiguity reporting; an evidence
+        // set that saw writes the ring lost is at least as informative when the ring had none.
+        if attribution.considered.is_empty() && !evidence.considered.is_empty() {
+            return evidence;
+        }
+        attribution
+    }
+
+    /// Attribute a native edge from the bounded candidate ring.
+    fn cast_attribution_from_candidates(
+        &self,
+        event: &Event,
+        include_consumed: bool,
+    ) -> CastAttribution {
         let Stage::Cast {
             spell_id: Some(spell),
             wire_cast_count: native_count,
@@ -3451,6 +3509,7 @@ impl History {
                 return CastAttribution {
                     confidence: IncidentConfidence::Exact,
                     candidate: Some(index),
+                    evidence_interaction: None,
                     first: Some(index),
                     considered: interactions(&exact),
                 };
@@ -3460,6 +3519,7 @@ impl History {
                 return CastAttribution {
                     confidence: IncidentConfidence::Ambiguous,
                     candidate: None,
+                    evidence_interaction: None,
                     first: Some(exact[0]),
                     considered: interactions(&exact),
                 };
@@ -3489,6 +3549,7 @@ impl History {
             return CastAttribution {
                 confidence: IncidentConfidence::Unmatched,
                 candidate: None,
+                evidence_interaction: None,
                 first: None,
                 considered: interactions(&within_window),
             };
@@ -3506,6 +3567,7 @@ impl History {
                     IncidentConfidence::Heuristic
                 },
                 candidate: Some(index),
+                evidence_interaction: None,
                 first: Some(index),
                 considered: interactions(&eligible),
             };
@@ -3513,8 +3575,218 @@ impl History {
         CastAttribution {
             confidence: IncidentConfidence::Ambiguous,
             candidate: None,
+            evidence_interaction: None,
             first: Some(eligible[0]),
             considered: interactions(&eligible),
+        }
+    }
+
+    /// Attribute a native edge from the retained evidence rows when the bounded candidate ring no
+    /// longer holds the written cast.
+    ///
+    /// The ring keeps only the most recent [`MAX_OPEN_INTERACTIONS`] writes, while the report and
+    /// its action summaries are built from the retained event ring. Once enough newer casts push
+    /// an older write out of the candidate ring, the local rows and the native edge are still
+    /// retained and still carry the join: the interaction id, the spell, the scope and the
+    /// admitted wire count. This walks those rows and applies the same exact/strong/heuristic
+    /// rules, so a join established when the edge arrived cannot silently degrade into "local
+    /// action not retained" at snapshot time.
+    fn cast_attribution_from_evidence(
+        &self,
+        event: &Event,
+        _include_consumed: bool,
+    ) -> CastAttribution {
+        let Stage::Cast {
+            spell_id: Some(spell),
+            wire_cast_count: native_count,
+            ..
+        } = event.stage
+        else {
+            return CastAttribution::none(IncidentConfidence::Unmatched);
+        };
+        let scope = event.subject.scope;
+        let window_ms = 30_000u64;
+        #[derive(Clone, Copy)]
+        struct LocalCast {
+            interaction: u64,
+            wire: Option<u32>,
+            written_elapsed_ms: u64,
+            written: bool,
+            refused: bool,
+        }
+        let mut locals: Vec<LocalCast> = Vec::new();
+        for row in self.entries.values() {
+            let interaction = row.subject.interaction;
+            if interaction == 0
+                || row.subject.scope != scope
+                || row.elapsed_ms > event.elapsed_ms
+            {
+                continue;
+            }
+            let index = locals.iter().position(|local| local.interaction == interaction);
+            match row.stage {
+                Stage::Cast {
+                    spell_id: Some(row_spell),
+                    wire_cast_count,
+                    edge,
+                    ..
+                } if row_spell == spell => {
+                    let local_index = match index {
+                        Some(index) => index,
+                        None => {
+                            locals.push(LocalCast {
+                                interaction,
+                                wire: None,
+                                written_elapsed_ms: row.elapsed_ms,
+                                written: false,
+                                refused: false,
+                            });
+                            locals.len() - 1
+                        }
+                    };
+                    let local = &mut locals[local_index];
+                    if let CastEdge::LocalRefusal { .. } = edge {
+                        local.refused = true;
+                    }
+                    // A later admission row fills the count a write raced ahead of; the earliest
+                    // count is the one the command encoded.
+                    if local.wire.is_none() {
+                        local.wire = wire_cast_count;
+                    }
+                }
+                Stage::Delivery(CommandDelivery::Written) => {
+                    if let Some(local) = index.map(|index| &mut locals[index]) {
+                        local.written = true;
+                        local.written_elapsed_ms = row.elapsed_ms;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Only a complete local write can explain a server edge; a refused request never left.
+        locals.retain(|local| local.written && !local.refused);
+        if locals.is_empty() {
+            return CastAttribution::none(IncidentConfidence::Unmatched);
+        }
+        let interactions = |locals: &[LocalCast]| -> Vec<u64> {
+            let mut ids: Vec<u64> = locals.iter().map(|local| local.interaction).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        };
+
+        // Exact match on the authoritative wire count; the wire count is monotonic in a session,
+        // so a late edge does not need the time window.
+        if let Some(wanted) = native_count {
+            let exact: Vec<LocalCast> = locals
+                .iter()
+                .copied()
+                .filter(|local| local.wire == Some(wanted))
+                .collect();
+            if exact.len() == 1 {
+                return CastAttribution {
+                    confidence: IncidentConfidence::Exact,
+                    candidate: None,
+                    evidence_interaction: Some(exact[0].interaction),
+                    first: None,
+                    considered: interactions(&exact),
+                };
+            }
+            if exact.len() > 1 {
+                return CastAttribution {
+                    confidence: IncidentConfidence::Ambiguous,
+                    candidate: None,
+                    evidence_interaction: None,
+                    first: None,
+                    considered: interactions(&exact),
+                };
+            }
+        }
+
+        // No exact count match. Spell/scope/time fallback only, as the candidate ring does.
+        let within_window: Vec<LocalCast> = locals
+            .iter()
+            .copied()
+            .filter(|local| {
+                event
+                    .elapsed_ms
+                    .saturating_sub(local.written_elapsed_ms)
+                    <= window_ms
+            })
+            .collect();
+        let mut eligible = within_window.clone();
+        if native_count.is_some() {
+            // A count present on both sides that differs is a conflict, not evidence.
+            eligible.retain(|local| local.wire.is_none());
+        }
+        if eligible.is_empty() {
+            return CastAttribution {
+                confidence: IncidentConfidence::Unmatched,
+                candidate: None,
+                evidence_interaction: None,
+                first: None,
+                considered: interactions(&within_window),
+            };
+        }
+        if eligible.len() == 1 {
+            let local = eligible[0];
+            return CastAttribution {
+                confidence: if local.wire.is_some() {
+                    IncidentConfidence::Strong
+                } else {
+                    IncidentConfidence::Heuristic
+                },
+                candidate: None,
+                evidence_interaction: Some(local.interaction),
+                first: None,
+                considered: interactions(&eligible),
+            };
+        }
+        CastAttribution {
+            confidence: IncidentConfidence::Ambiguous,
+            candidate: None,
+            evidence_interaction: None,
+            first: None,
+            considered: interactions(&eligible),
+        }
+    }
+
+    /// The local interaction an attribution names, whether it came from the candidate ring or
+    /// from retained evidence.
+    fn attributed_interaction(&self, attribution: &CastAttribution) -> Option<u64> {
+        attribution
+            .candidate
+            .map(|index| self.cast_candidates[index].subject.interaction)
+            .or(attribution.evidence_interaction)
+    }
+
+    /// The subject of one retained interaction, from the candidate ring or its retained rows.
+    fn interaction_subject(&self, interaction: u64) -> Option<Subject> {
+        self.cast_candidates
+            .iter()
+            .find(|candidate| candidate.subject.interaction == interaction)
+            .map(|candidate| candidate.subject)
+            .or_else(|| {
+                self.entries.values().find_map(|row| {
+                    (row.subject.interaction == interaction).then_some(row.subject)
+                })
+            })
+    }
+
+    /// Fill a candidate's admission data when the write raced ahead of its admitted row. The
+    /// transport records the write on its own thread, so an invocation can observe the write
+    /// before the tap's admitted row; the candidate is refreshed here rather than staying
+    /// statically count-less.
+    fn note_cast_admission(&mut self, interaction: u64, wire_cast_count: Option<u32>) {
+        let Some(candidate) = self
+            .cast_candidates
+            .iter_mut()
+            .find(|candidate| candidate.subject.interaction == interaction)
+        else {
+            return;
+        };
+        if candidate.wire_cast_count.is_none() {
+            candidate.wire_cast_count = wire_cast_count;
         }
     }
 
@@ -3537,6 +3809,10 @@ impl History {
             .candidate
             .or(attribution.first)
             .map(|index| self.cast_candidates[index].subject)
+            .or_else(|| {
+                self.attributed_interaction(&attribution)
+                    .and_then(|interaction| self.interaction_subject(interaction))
+            })
             .unwrap_or(event.subject);
         (attribution.confidence, subject)
     }
@@ -3713,8 +3989,10 @@ impl History {
                 // A native edge joins the local chain it can be attributed to. When no unique
                 // local write exists it keeps its own bounded chain, so the line can say the
                 // local action was not retained instead of printing interaction 0.
-                match self.cast_attribution(event, true).candidate {
-                    Some(index) => ChainKey::Local(self.cast_candidates[index].subject.interaction),
+                match self
+                    .attributed_interaction(&self.cast_attribution(event, true))
+                {
+                    Some(interaction) => ChainKey::Local(interaction),
                     None => ChainKey::Native {
                         scope: event.subject.scope,
                         spell: spell_id,
@@ -5149,10 +5427,8 @@ impl History {
         let mut ambiguous_edges = 0usize;
         for candidate in native {
             let attribution = self.cast_attribution(candidate, true);
-            match attribution.candidate {
-                Some(index)
-                    if self.cast_candidates[index].subject.interaction == interaction =>
-                {
+            match self.attributed_interaction(&attribution) {
+                Some(attributed) if attributed == interaction => {
                     matched.push((candidate, attribution.confidence));
                 }
                 // The edge belongs to a different local action (or none); never borrow it.
@@ -6399,9 +6675,10 @@ impl History {
                     PatchEvent::RestoredPrevious { failed_attempt, .. } => {
                         failed_attempt == Some(attempt)
                     }
-                    PatchEvent::RestoreUnavailable { failed_attempt } => {
-                        failed_attempt == Some(attempt)
-                    }
+                    PatchEvent::RestoreUnavailable {
+                        failed_attempt,
+                        ..
+                    } => failed_attempt == Some(attempt),
                     _ => false,
                 });
                 if has_restore_terminal {
@@ -7577,6 +7854,19 @@ pub(crate) fn drain_history(history: &mut History) {
                         };
                     }
                     history.note_written_cast(seq, &event);
+                }
+                Stage::Cast {
+                    wire_cast_count,
+                    edge: CastEdge::Requested | CastEdge::Admitted,
+                    ..
+                } => {
+                    // The write is recorded on the transport thread, so a write can reach the
+                    // recorder before this command's admitted row. The candidate is refreshed
+                    // from that row instead of keeping the count it lacked at write time.
+                    history.note_cast_admission(
+                        event.subject.interaction,
+                        wire_cast_count,
+                    );
                 }
                 Stage::GuardRefused
                 | Stage::NoWorld
@@ -8864,6 +9154,160 @@ mod tests {
                 "once slot removal, XP, money, and item push arrive, turn-in is verified: {turn_ins:?}"
             );
         }
+    }
+
+    /// AUTO-05: one cast is one chain. The candidate ring keeps only the most recent writes, while
+    /// the report is built from the retained evidence ring; once newer casts push an older write
+    /// out of the ring, the retained rows must still name the local action for its native edge.
+    /// Before the evidence fallback this degraded into a native-only "action unknown (local action
+    /// not retained)" chain at snapshot time even though the join had been exact when it arrived.
+    #[test]
+    fn a_native_cast_edge_keeps_its_local_chain_after_the_candidate_ring_evicts_it() {
+        const SPELL: u32 = 8422;
+        let (source, mut history) = new_pair();
+        let scope = Some((2, 2));
+        let cast = source.begin(scope, None, Operation::Observed);
+        let interaction = cast.interaction_id();
+        cast.record(Stage::Cast {
+            spell_id: Some(SPELL),
+            attempt: None,
+            wire_cast_count: None,
+            edge: CastEdge::Requested,
+        });
+        cast.record(Stage::Cast {
+            spell_id: Some(SPELL),
+            attempt: None,
+            wire_cast_count: Some(6),
+            edge: CastEdge::Admitted,
+        });
+        cast.record_delivery(CommandDelivery::Written);
+        // MAX_OPEN_INTERACTIONS newer writes evict the candidate; the rows stay retained. Drain as
+        // we go: the ingress ring is bounded at 256 events, and an undrained burst would drop the
+        // native edge the test is about.
+        for n in 0..70u32 {
+            if n % 10 == 9 {
+                drain_all(&mut history);
+            }
+            let ix = source.begin(scope, None, Operation::Observed);
+            ix.record(Stage::Cast {
+                spell_id: Some(1234),
+                attempt: None,
+                wire_cast_count: Some(100 + n),
+                edge: CastEdge::Requested,
+            });
+            ix.record(Stage::Cast {
+                spell_id: Some(1234),
+                attempt: None,
+                wire_cast_count: Some(100 + n),
+                edge: CastEdge::Admitted,
+            });
+            ix.record_delivery(CommandDelivery::Written);
+        }
+        source.observe(
+            scope,
+            None,
+            Stage::Cast {
+                spell_id: Some(SPELL),
+                attempt: Some(7),
+                wire_cast_count: Some(6),
+                edge: CastEdge::Launched,
+            },
+        );
+        drain_all(&mut history);
+
+        // The inspector returns the eight most recent chains, so 70 newer writes push this cast out
+        // of the printed list by design. The join itself is still required: attribution of the
+        // retained native edge must recover the local action from the rows.
+        let native = history
+            .entries
+            .values()
+            .find(|event| {
+                matches!(
+                    event.stage,
+                    Stage::Cast {
+                        edge: CastEdge::Launched,
+                        ..
+                    }
+                )
+            })
+            .expect("the native edge is retained");
+        let attribution = history.cast_attribution(native, true);
+        assert_eq!(
+            attribution.evidence_interaction,
+            Some(interaction),
+            "the retained rows name the local action"
+        );
+        assert_eq!(
+            attribution.confidence,
+            IncidentConfidence::Exact,
+            "the admitted wire count still joins the native edge"
+        );
+
+        // And the incident the edge retires carries that chain, not an unmatched one.
+        let chains = history.cast_correlations();
+        assert!(
+            chains
+                .iter()
+                .all(|line| !line.contains(&format!("action {interaction}")) || line.contains("Launched")),
+            "any printed chain for the action keeps its native edge: {chains:?}"
+        );
+    }
+
+    /// A write is recorded by the transport thread and can reach the recorder before the tap's
+    /// admitted row. The candidate is refreshed from that row, so a second, genuinely count-less
+    /// same-spell write does not turn the join ambiguous.
+    #[test]
+    fn a_write_that_arrives_before_its_admission_still_joins_exactly() {
+        const SPELL: u32 = 8492;
+        let (source, mut history) = new_pair();
+        let scope = Some((2, 2));
+        let cast = source.begin(scope, None, Operation::Observed);
+        let interaction = cast.interaction_id();
+        cast.record(Stage::Cast {
+            spell_id: Some(SPELL),
+            attempt: None,
+            wire_cast_count: None,
+            edge: CastEdge::Requested,
+        });
+        // The write is processed before the admitted row in the evidence stream.
+        cast.record_delivery(CommandDelivery::Written);
+        cast.record(Stage::Cast {
+            spell_id: Some(SPELL),
+            attempt: None,
+            wire_cast_count: Some(8),
+            edge: CastEdge::Admitted,
+        });
+        // A second same-spell write with no admitted count in the window.
+        let count_less = source.begin(scope, None, Operation::Observed);
+        count_less.record(Stage::Cast {
+            spell_id: Some(SPELL),
+            attempt: None,
+            wire_cast_count: None,
+            edge: CastEdge::Requested,
+        });
+        count_less.record_delivery(CommandDelivery::Written);
+        source.observe(
+            scope,
+            None,
+            Stage::Cast {
+                spell_id: Some(SPELL),
+                attempt: Some(9),
+                wire_cast_count: Some(8),
+                edge: CastEdge::Launched,
+            },
+        );
+        drain_all(&mut history);
+
+        let chains = history.cast_correlations();
+        let line = chains
+            .iter()
+            .find(|line| line.contains("spell=8492") && line.contains("Launched"))
+            .unwrap_or_else(|| panic!("the launched chain is retained: {chains:?}"));
+        assert!(
+            line.contains(&format!("action {interaction}")),
+            "the admitted count decides the join: {line}"
+        );
+        assert!(line.contains("confidence=exact"), "{line}");
     }
 }
 

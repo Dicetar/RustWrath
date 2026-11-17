@@ -2,13 +2,13 @@
 
 Updated: 2026-10-25. Status: **PRODUCER IMPLEMENTED AND LIVE-VERIFIED; BRIDGE INTEGRATED AND
 LIVE-EXERCISED (no receiver); RECEIVER AND WM CONTEXT NOT EXERCISED.** Consumer contract:
-`D:/Projects/project-b-opencode/docs/opencode/convergence-consumer.md` (schema
+`D:/Projects/wow/worktrees-legacy/project-b-opencode/docs/opencode/convergence-consumer.md` (schema
 `wm.native.observation.v2`).
 
 ## Source checkpoint (SHA-256, working tree at this writing — re-read before wiring)
 
 ```text
-D:/Projects/project-b-client, branch wotlk
+D:/Projects/wow/client, branch wotlk
 crates/benilla-protocol-wrath/src/session.rs        88fc1392d5c2989c6689685bd492ebf8cb6c8d15bb9f964dc31d457350a71f49
 crates/benilla-wm-driver/src/main.rs              cc9ce7a583640e57382aef43d55672acae489868cdbb33642420a4e17674e2b1
 (crates/benilla-protocol-wrath/src/session.rs stays as hashed above)

@@ -96,6 +96,12 @@ impl PetPersonalities {
 /// `PetLoyalty.dbc`: loyalty level to its localized name.
 pub struct PetLoyaltyNames(HashMap<u32, String>);
 
+impl Default for PetLoyaltyNames {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+
 impl PetLoyaltyNames {
     /// The name for a loyalty level. `None` is `GetPetLoyalty`'s nil, for level `0` and past the
     /// table (`0x4be700` bounds it against `[0xc0d9f8]`).
@@ -180,9 +186,9 @@ pub fn load_pet_personalities(chain: &mut Chain) -> Result<PetPersonalities> {
 
 /// Load `PetLoyalty.dbc` from the patch chain.
 pub fn load_pet_loyalty_names(chain: &mut Chain) -> Result<PetLoyaltyNames> {
-    let bytes = chain
-        .read_file(PET_LOYALTY)
-        .with_context(|| format!("reading {PET_LOYALTY}"))?;
+    let Ok(bytes) = chain.read_file(PET_LOYALTY) else {
+        return Ok(PetLoyaltyNames::default());
+    };
     let fields = if crate::dbc::field_count(&bytes) == Some(18) {
         18
     } else {

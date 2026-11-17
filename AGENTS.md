@@ -9,8 +9,10 @@ then Firna's Northshire quest/combat/loot route.
 ## Bootstrap
 
 1. Read [CONTEXT.md](CONTEXT.md) for scope and domain language.
-2. Read [the workflow](docs/agents/workflow.md) and [active ownership](docs/agents/active-ownership.md).
-3. Read the relevant ticket/handoff; inspect HEAD, index, dirty diffs and live processes.
+2. Read [the workflow](docs/agents/workflow.md), [how agents stay in step](docs/agents/sync.md)
+   and [active ownership](docs/agents/active-ownership.md).
+3. Fetch `origin` and run `scripts/agent-tasks.sh` to see what other agents have in flight.
+   Read the relevant ticket/handoff; inspect HEAD, index, dirty diffs and live processes.
 4. Consult [METHOD](docs/METHOD.md), [CONTRIBUTING](docs/CONTRIBUTING.md), and relevant
    parts of [MAP](docs/MAP.md). MAP is generated orientation, not runtime acceptance.
 5. For Wrath repairs, follow [the 12340 reference workflow](docs/agents/12340-reference.md).
@@ -24,9 +26,17 @@ do not authorize broad test runs, builds or live sessions.
 
 - Use one owner per ticket across whichever crates the fix needs. Permanent Astra/OC
   crate lockouts are retired. Agree disjoint edits or sequence a shared file explicitly.
+- Work on a task branch in your own worktree or clone, never in the integration checkout.
+  Commit and push that branch, with its task note, at every stopping point, finished or not;
+  work that is not on `origin` does not exist for the other agents. `origin` is public.
+  The full loop is in [sync](docs/agents/sync.md).
 - When collaboration is authorized, use AutoSwarm to assign, communicate and collect work.
   Inspect tracked calls and manually opened sessions before starting duplicate work.
   Handle routine coordination directly; do not make the owner relay messages.
+- The owner builds and launches the client by hand, after a batch of changes has landed. Do not
+  run Cargo or start the client unless the owner asks for it in that session. GitHub CI
+  compiles and tests every pushed branch; report its result as in
+  [reading CI](docs/agents/sync.md#reading-ci), or compilation and tests as not run.
 - One coordinator owns Cargo and client slots. Never start a competing build/client or
   terminate another session to acquire a slot. Revalidate stale notes and PIDs.
 - All Cargo build/check/test runs use sccache. The checkout's `.cargo/config.toml` sets
@@ -59,7 +69,7 @@ do not authorize broad test runs, builds or live sessions.
 
 ## Reference and documentation routing
 
-- Wrath reference: D:/Projects/wowdecomp-reference, pin
+- Wrath reference: D:/Projects/wow/reference/wowdecomp-reference, pin
   e67b6ffef23655dc7da061cb2d36b7963f6ef71a. Investigate behavior; do not copy implementation.
 - Donor research: samwhosung/benilla-re establishes 1.12 behavior, not Wrath layouts.
 - Read the installed project-b-12340-reference skill before target-specific repairs when
@@ -69,5 +79,5 @@ do not authorize broad test runs, builds or live sessions.
 - [Documentation map](docs/agents/domain.md), [issues](docs/agents/issue-tracker.md),
   [triage](docs/agents/triage-labels.md), [owner decisions](docs/baseline/owner-decisions.md).
 
-Keep durable rules here and in linked guides, current reservations in active-ownership,
-and results/evidence in the owning handoff. Avoid accumulating session history here.
+Keep durable rules here and in linked guides, local build and client reservations in
+active-ownership, and task status, results and evidence in the task note on the task's branch. Avoid accumulating session history here.

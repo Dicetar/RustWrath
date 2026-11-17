@@ -1,6 +1,6 @@
 //! The GameTooltip Lua methods over the parent module's line pool, plus the content builders'.
 
-use mlua::{Lua, Table, Value, Variadic};
+use mlua::{Lua, ObjectLike, Table, Value, Variadic};
 
 use crate::script::binding_abi::{self, optional_string, string_arg};
 use crate::script::object::frame_handle_of;
@@ -46,6 +46,8 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
                 {
                     "ANCHOR_LEFT" => TooltipAnchor::Left,
                     "ANCHOR_RIGHT" => TooltipAnchor::Right,
+                    "ANCHOR_BOTTOM" => TooltipAnchor::Bottom,
+                    "ANCHOR_TOP" => TooltipAnchor::Top,
                     "ANCHOR_BOTTOMLEFT" => TooltipAnchor::BottomLeft,
                     "ANCHOR_BOTTOMRIGHT" => TooltipAnchor::BottomRight,
                     "ANCHOR_TOPLEFT" => TooltipAnchor::TopLeft,
@@ -268,6 +270,34 @@ pub(in crate::script) fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
+    // SetTracking() (12340 `Script_TooltipSetTracking`), the 3.3.5 tracking button's hover: the
+    // active menu row's name, else the tracking spell's aura tooltip, else
+    // `MINIMAP_TRACKING_TOOLTIP_NONE`, as a title line.
+    m.set(
+        "SetTracking",
+        lua.create_function(|lua, (this, _rest): (Table, mlua::MultiValue)| {
+            let (info, spell) = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                (
+                    crate::script::minimap_tracking::active_info(&model),
+                    model.tracking.as_ref().is_some_and(|t| t.spell_id != 0),
+                )
+            };
+            if info.is_none() && spell {
+                return this.call_method::<()>("SetTrackingSpell", ());
+            }
+            let key = info.map_or("MINIMAP_TRACKING_TOOLTIP_NONE", |t| t.name);
+            let text = crate::script::glue_core::global_text(lua, key);
+            this.call_method::<()>("SetText", text)
+        })?,
+    )?;
+    m.set(
+        "SetLFGDungeonReward",
+        lua.create_function(
+            |_lua, (_this, _dungeon_id, _index): (Table, mlua::Value, mlua::Value)| Ok(()),
+        )?,
+    )?;
+
     // The content methods: items, spells and auras, talents, units.
     crate::script::tooltip_item::install_methods(lua, &m)?;
     crate::script::tooltip_spell::install_methods(lua, &m)?;

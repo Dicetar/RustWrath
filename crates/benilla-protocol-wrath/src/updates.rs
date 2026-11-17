@@ -130,17 +130,23 @@ pub struct MovementSnapshot {
     pub extra_flags: u16,
     pub time: u32,
     pub position: Option<PositionSnapshot>,
+    pub transport: Option<(u64, i8)>,
+    /// Vehicle.dbc row of this object, when the update carries the VEHICLE flag.
+    pub vehicle_id: Option<u32>,
     /// The nine living-block speeds in wire order; `None` for non-living objects.
     pub speeds: Option<[f32; 9]>,
     /// Active spline from a create/movement block when `SPLINE_ENABLED` is set.
     pub create_spline: Option<CreateSplineSnapshot>,
+    /// The unit's melee victim from the `HAS_TARGET` packed guid (AC sets the flag on a create
+    /// while the unit has a victim); `None` when the flag is clear or the guid is zero. The
+    /// 12340 client seeds its attack target from it at creation (`CCombat::SetClientInitData`).
+    pub attack_target: Option<u64>,
 }
 
 impl MovementSnapshot {
-    /// Whether two snapshots differ in anything the observation schema can see. The wire's
-    /// per-packet timestamp (`time`) is a clock, not state, and is deliberately excluded: a
-    /// periodic heartbeat with identical position, flags and speeds is not a source state
-    /// change and must not advance `state_revision`.
+    /// Compare pose and spline state. The reducer compares persistent transport and vehicle
+    /// state separately, since some movement packets do not deliver those fields. A timestamp
+    /// alone does not advance `state_revision`.
     pub fn observation_equivalent(&self, other: &Self) -> bool {
         self.move_flags == other.move_flags
             && self.extra_flags == other.extra_flags
@@ -160,8 +166,11 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         extra_flags: 0,
         time: 0,
         position: None,
+        transport: None,
+        vehicle_id: None,
         speeds: None,
         create_spline: None,
+        attack_target: None,
     };
     if flags & update_flags::LIVING != 0 {
         // `Unit::BuildMovementPacket`
@@ -171,15 +180,7 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         let (x, y, z, o) = (r.f32()?, r.f32()?, r.f32()?, r.f32()?);
         snap.position = Some(PositionSnapshot { x, y, z, o });
         if snap.move_flags & move_flags::ON_TRANSPORT != 0 {
-            r.packed_guid()?; // transport/vehicle base
-            for _ in 0..4 {
-                r.f32()?; // offsets x y z o
-            }
-            r.u32()?; // transport time
-            r.u8()?; // seat
-            if snap.extra_flags & MOVE2_INTERPOLATED != 0 {
-                r.u32()?; // time2
-            }
+            snap.transport = Some(read_transport(r, snap.extra_flags)?);
         }
         if snap.move_flags & move_flags::SWIMMING_OR_FLYING != 0 {
             r.f32()?; // pitch
@@ -263,13 +264,13 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         r.u32()?;
     }
     if flags & update_flags::HAS_TARGET != 0 {
-        r.packed_guid()?;
+        snap.attack_target = Some(r.packed_guid()?).filter(|&guid| guid != 0);
     }
     if flags & update_flags::TRANSPORT != 0 {
         r.u32()?; // path progress
     }
     if flags & update_flags::VEHICLE != 0 {
-        r.u32()?; // vehicle id
+        snap.vehicle_id = Some(r.u32()?);
         r.f32()?; // vehicle orientation
     }
     if flags & update_flags::ROTATION != 0 {
@@ -278,6 +279,18 @@ pub fn movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
     Ok(snap)
 }
 
+fn read_transport(r: &mut Reader, extra_flags: u16) -> Result<(u64, i8)> {
+    let guid = r.packed_guid()?;
+    for _ in 0..4 {
+        r.f32()?; // offsets x y z o
+    }
+    r.u32()?; // transport time
+    let seat = r.u8()? as i8;
+    if extra_flags & MOVE2_INTERPOLATED != 0 {
+        r.u32()?; // time2
+    }
+    Ok((guid, seat))
+}
 
 /// Parse a standalone movement payload — the `Unit::BuildMovementPacket` shape used by
 /// `MSG_MOVE_TELEPORT` (S→C near teleport, `Unit.cpp:16198`): packed GUID, then movement data
@@ -290,21 +303,16 @@ pub fn standalone_movement_block(r: &mut Reader) -> Result<MovementSnapshot> {
         extra_flags: r.u16()?,
         time: r.u32()?,
         position: None,
+        transport: None,
+        vehicle_id: None,
         speeds: None,
         create_spline: None,
+        attack_target: None,
     };
     let (x, y, z, o) = (r.f32()?, r.f32()?, r.f32()?, r.f32()?);
     snap.position = Some(PositionSnapshot { x, y, z, o });
     if snap.move_flags & move_flags::ON_TRANSPORT != 0 {
-        r.packed_guid()?;
-        for _ in 0..4 {
-            r.f32()?;
-        }
-        r.u32()?;
-        r.u8()?;
-        if snap.extra_flags & 0x1 != 0 {
-            r.u32()?;
-        }
+        snap.transport = Some(read_transport(r, snap.extra_flags)?);
     }
     if snap.move_flags & move_flags::SWIMMING_OR_FLYING != 0 {
         r.f32()?;

@@ -42,6 +42,10 @@ pub trait CallHost {
         None
     }
 
+    fn item_category_would_exceed(&mut self, _category: u32, _incoming: u32) -> Option<bool> {
+        None
+    }
+
     /// The cached item's target bag-family mask, if its template is available.
     fn item_family(&mut self, _id: u32) -> Option<u32> {
         None

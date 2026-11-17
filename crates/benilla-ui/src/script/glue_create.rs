@@ -441,7 +441,7 @@ impl GlueCreate {
     /// an index into the list), the five customizations, the class goes to 1 (`0x4709ed`, the id
     /// and not an index), the build, the selected index found by the character's race or -1
     /// (`0x470a08`-`0x470a2c`), and the name generator learns the character's race and sex.
-    fn reset(&mut self) {
+    fn reset(&mut self, wrath: bool) {
         if self.frame.is_none() {
             return;
         }
@@ -458,6 +458,14 @@ impl GlueCreate {
         self.randomize(&mut info);
         self.class = 1;
         self.build(info);
+        if wrath
+            && !self
+                .class_list
+                .iter()
+                .any(|&id| u32::from(id) == self.class && self.catalog.classes.contains_key(&id))
+        {
+            self.select_class(0);
+        }
         let obj = self.obj;
         self.selected = obj
             .and_then(|o| {
@@ -476,7 +484,12 @@ impl GlueCreate {
     /// keeps the character's sex with five fresh customizations, the class is the first of the
     /// list the last build made (`0x470df4`, ahead of the build that lists the new race's), the
     /// build, and the name generator learns the race and the character's sex.
-    fn select_race(&mut self, index: i32) {
+    ///
+    /// On Wrath 3.3.5a, `CharacterCreate.lua` does not call `SetSelectedClass(1)` after
+    /// `SetSelectedRace(id)` (unlike 1.12's `CharacterCreate.lua`), so `class_list` is rebuilt for
+    /// the new race first and `self.class` re-homed to the new race's first valid class whenever
+    /// the new race cannot roll the old class (e.g. Blood Elf has no Warrior).
+    fn select_race(&mut self, index: i32, wrath: bool) {
         let in_list = u32::try_from(index)
             .ok()
             .is_some_and(|i| (i as usize) < self.catalog.races.len());
@@ -490,8 +503,19 @@ impl GlueCreate {
             dials: [0; 5],
         };
         self.randomize(&mut info);
-        self.select_class(0);
-        self.build(info);
+        if wrath {
+            self.build(info);
+            if !self
+                .class_list
+                .iter()
+                .any(|&id| u32::from(id) == self.class && self.catalog.classes.contains_key(&id))
+            {
+                self.select_class(0);
+            }
+        } else {
+            self.select_class(0);
+            self.build(info);
+        }
         let (race, sex) = (self.race_at(self.selected), self.obj().sex);
         self.learn_names(race, sex);
     }
@@ -723,7 +747,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "ResetCharCustomize",
         lua.create_function(|lua, _: MultiValue| {
-            model(lua).glue.create.reset();
+            let mut m = model(lua);
+            let wrath = m.target == super::UiTarget::Wrath335;
+            m.glue.create.reset(wrath);
             Ok(())
         })?,
     )?;
@@ -829,7 +855,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let m = model(lua);
             let c = &m.glue.create;
             let row = c.catalog.race(c.race_at(c.selected));
-            text(lua, Some(row.map_or("NORMAL", |r| r.tokens[2].as_str())))
+            let token = row
+                .map(|r| r.tokens[2].as_str())
+                .filter(|t| !t.is_empty())
+                .unwrap_or("NORMAL");
+            text(lua, Some(token))
         })?,
     )?;
 
@@ -842,7 +872,10 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let c = &m.glue.create;
             let row = c.catalog.race(c.race_at(c.selected));
             let sex = c.obj().sex as usize;
-            let token = row.and_then(|r| r.tokens.get(sex)).map(String::as_str);
+            let token = row
+                .and_then(|r| r.tokens.get(sex))
+                .map(String::as_str)
+                .filter(|t| !t.is_empty());
             text(lua, Some(token.unwrap_or("NORMAL")))
         })?,
     )?;
@@ -897,7 +930,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "SetSelectedRace",
         lua.create_function(|lua, args: MultiValue| {
             let index = number_arg(lua, arg(&args, 0), "Usage: SetSelectedRace(index)")?;
-            model(lua).glue.create.select_race(index.wrapping_sub(1));
+            let mut m = model(lua);
+            let wrath = m.target == super::UiTarget::Wrath335;
+            m.glue.create.select_race(index.wrapping_sub(1), wrath);
             Ok(())
         })?,
     )?;
@@ -944,7 +979,8 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, _: MultiValue| {
             let mut m = model(lua);
             let selected = m.glue.create.selected;
-            m.glue.create.select_race(selected);
+            let wrath = m.target == super::UiTarget::Wrath335;
+            m.glue.create.select_race(selected, wrath);
             Ok(())
         })?,
     )?;

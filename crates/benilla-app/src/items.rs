@@ -13,7 +13,7 @@ use benilla_protocol::{ItemInfo, ObjectFields};
 use bevy::ecs::system::SystemParam;
 
 use crate::net::{ClientCommand, Guid, GuidIndex, NetCommands, ObjectStore, Objects};
-use crate::query_cache::{Ask, QueryCache};
+use crate::query_cache::{Ask, QueryCache, Released};
 
 /// An item or container entity's kind (`TYPEMASK_ITEM` / `TYPEMASK_CONTAINER`), with no model or
 /// pose. Unit readers filter it out (`Without<ItemObject>`): an item block's dwords overlap the
@@ -562,7 +562,15 @@ pub(crate) struct Items {
     /// The callbacks an answer ran that need the VM, `(entry, callback, found)` in the order
     /// they ran: the equip replays ([`crate::ui_bind_confirm::replay_equip_records`]).
     vm_callbacks: std::sync::Mutex<Vec<(u32, RecordCallback, bool)>>,
+    /// When each entry without a record was last asked: the clock of [`TEMPLATE_REASK_AFTER`].
+    asked: std::sync::Mutex<std::collections::HashMap<u32, Instant>>,
 }
+
+/// How long an item template ask may go unanswered, or a refusal stand, before a read that asks
+/// sends it again. Benilla's own: the reference never re-asks a pending key, but a reply lost on
+/// our side (a decode error, a retired scope, a full outbox) would otherwise leave every surface
+/// that shows the item nameless for the session. One ask per key per period bounds the traffic.
+pub(crate) const TEMPLATE_REASK_AFTER: Duration = Duration::from_secs(10);
 
 /// A callback an item record's lookup registered, which the record's answer runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -677,10 +685,41 @@ impl Items {
 
     /// The template for `entry` if known, read as `ask` says; an ask goes once while in flight
     /// (`guid` rides along, `0` for template-only). A refused entry is also `None`.
+    /// A read that asks first releases an ask of `entry` gone stale ([`TEMPLATE_REASK_AFTER`]).
     pub(crate) fn template(&self, entry: u32, guid: u64, ask: Ask<'_>) -> Option<&ItemInfo> {
+        if !matches!(ask, Ask::Read) {
+            self.release_stale(entry);
+        }
         self.templates.read(entry, ask, |commands| {
+            self.asked.lock_recover().insert(entry, Instant::now());
             Self::send_template(entry, guid, commands)
         })
+    }
+
+    /// Forget `entry`'s pending ask or refusal once [`TEMPLATE_REASK_AFTER`] has passed since it
+    /// was asked, so the read that follows sends it again.
+    fn release_stale(&self, entry: u32) {
+        if entry == 0 || self.templates.get(entry).is_some() {
+            return;
+        }
+        let due = self
+            .asked
+            .lock_recover()
+            .get(&entry)
+            .is_some_and(|at| at.elapsed() >= TEMPLATE_REASK_AFTER);
+        if !due {
+            return;
+        }
+        match self.templates.release(entry) {
+            Some(Released::Pending) => warn!(
+                "items: template for item {entry} unanswered after {}s; asking again",
+                TEMPLATE_REASK_AFTER.as_secs()
+            ),
+            Some(Released::Refused) => {
+                warn!("items: template for item {entry} was refused; asking again")
+            }
+            None => {}
+        }
     }
 
     fn send_template(entry: u32, guid: u64, commands: &NetCommands) {
@@ -716,12 +755,17 @@ impl Items {
     pub(crate) fn insert_template(&mut self, entry: u32, info: Option<ItemInfo>) {
         match info {
             Some(info) => {
+                self.asked
+                    .get_mut()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&entry);
                 self.fresh.push(entry);
                 self.templates.insert(entry, info);
             }
             // A refusal moves the generation too: "still asking" to "unknown" is a display
             // transition for the cast-fail redisplay.
             None => {
+                warn!("items: server refused the template for item {entry} (unknown item)");
                 if self.templates.refuse(entry) == crate::query_cache::Refused::Record {
                     self.fresh.retain(|&id| id != entry);
                     self.dropped.push(entry);
@@ -965,6 +1009,7 @@ pub(crate) fn test_template(name: &str) -> ItemInfo {
         area: 0,
         map: 0,
         bag_family: 0,
+        wrath_roll: None,
     }
 }
 

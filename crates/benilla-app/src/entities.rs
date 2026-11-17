@@ -66,8 +66,8 @@ pub(crate) use collision_height::CollisionHeight;
 
 /// Spell missiles: the projectile a cast with a `Spell.dbc` Speed above 0 flies at each target.
 mod missile;
-use missile::{attach_missile_models, move_missiles, spawn_missiles};
-pub(crate) use missile::{MissileMiss, MissileSound, PendingMissiles};
+use missile::{attach_missile_models, clear_missiles_at, move_missiles, spawn_missiles};
+pub(crate) use missile::{ClearMissilesAt, MissileMiss, MissileSound, PendingMissiles};
 
 /// A WMO-display GameObject's doodad props (a ship's sails), parented under it to ride a transport.
 mod wmo_props;
@@ -663,6 +663,7 @@ impl Plugin for EntitiesPlugin {
         .init_resource::<missile::PendingMissiles>()
         .add_message::<MissileSound>()
         .add_message::<MissileMiss>()
+        .add_message::<ClearMissilesAt>()
         .add_message::<dest_fx::GroundBurst>()
         // A display swap's rebuild edge, for the impact-kit replay the reference runs at the end
         // of `0x60abe0`.
@@ -706,7 +707,8 @@ impl Plugin for EntitiesPlugin {
                 (resolve_equipment, resolve_corpse_equipment),
                 // Spell effects and missiles create `SpellFx` entries too.
                 resolve_spell_fx,
-                move_missiles,
+                // The release's missile clear lands before the frame's flight.
+                (clear_missiles_at, move_missiles).chain(),
                 spawn_missiles,
                 // The dest-anchored lane's three independent producers also create entries.
                 (arm_ground_effects, spawn_ground_bursts, tick_shard_emitters),
@@ -839,6 +841,16 @@ fn setup_entities(
         return;
     };
     let mut chain = world_assets.chain.lock_recover();
+    if crate::wrath::selected_from_env() {
+        match benilla_formats::load_item_limit_quantities(&mut chain) {
+            Ok(limits) => commands.insert_resource(crate::ui_items::ItemLimitQuantities(limits)),
+            Err(error) => warn!("Wrath item limit quantities unavailable: {error:#}"),
+        }
+        match benilla_formats::VehicleSeats::load(&mut chain) {
+            Ok(seats) => commands.insert_resource(crate::wrath::WrathVehicleSeats(seats)),
+            Err(error) => warn!("Wrath vehicle seat permissions unavailable: {error:#}"),
+        }
+    }
     match load_creature_catalog(&mut chain) {
         Ok(catalog) => {
             info!(

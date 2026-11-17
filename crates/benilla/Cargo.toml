@@ -19,6 +19,8 @@ trace_chrome = ["benilla-app/trace_chrome"]
 bevy_dynamic_linking = ["benilla-app/bevy_dynamic_linking"]
 # Opt-in native pose modules and source shader watching; one bootstrap build is required.
 hotpatch = ["benilla-app/hotpatch"]
+# Whole-client live code under `dx serve --hot-patch` (`tools/launch-client.ps1 -LiveCode`).
+live_code = ["benilla-app/live_code"]
 
 [dependencies]
 # `default-features = false`, or `--no-default-features` here still builds benilla-app with `dev`.

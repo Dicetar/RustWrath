@@ -710,6 +710,26 @@ mod loader_tests {
         );
     }
 
+    /// Wrath's stock GlueXML spells its second character tooltip strata `TOOLTIP2`, but the
+    /// client exposes the single topmost `TOOLTIP` bucket. XML loading maps that spelling without
+    /// weakening the strict Lua SetFrameStrata contract.
+    #[test]
+    fn wrath_xml_tooltip2_uses_the_tooltip_stratum() {
+        let s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let doc = parse(
+            r#"<Ui>
+                <Frame name="Tooltip2" frameStrata="TOOLTIP2"/>
+            </Ui>"#,
+        );
+        let report = load(&s, &doc, &no_files);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+        assert!(!report.warnings.iter().any(|w| w.contains("TOOLTIP2")));
+        assert_eq!(
+            s.eval::<String>("return Tooltip2:GetFrameStrata()").unwrap(),
+            "TOOLTIP"
+        );
+    }
+
     /// `CSimpleFrame::LoadXML 0x769820`: a strata `0x6f17d0` does not know logs at severity 1
     /// (`0x7699a4`) and skips `SetFrameStrata 0x76a470`.
     #[test]
@@ -1816,6 +1836,93 @@ mod loader_tests {
             s.eval::<(String, f32)>("return ByInherits:GetFontString():GetFont()")
                 .unwrap(),
             ("Fonts\\MORPHEUS.TTF".to_string(), 14.0)
+        );
+    }
+
+    /// An unnamed `<ButtonText>` is still the button's implicit label. Stock Wrath's GameTimeFrame
+    /// calls `self:GetFontString()` from OnLoad, so dropping the unnamed child leaves a nil region.
+    #[test]
+    fn unnamed_button_text_is_available_during_onload() {
+        let s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+        let doc = parse(
+            r#"<Ui>
+                <Button name="Clock">
+                    <ButtonText/>
+                    <Scripts>
+                        <OnLoad>button_text_present = this:GetFontString() ~= nil; this:GetFontString():SetDrawLayer("BACKGROUND")</OnLoad>
+                    </Scripts>
+                </Button>
+            </Ui>"#,
+        );
+        let report = load(&s, &doc, &no_files);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+        assert!(s.eval::<bool>("return button_text_present").unwrap());
+        assert!(s
+            .eval::<bool>("return Clock:GetFontString() ~= nil")
+            .unwrap());
+    }
+
+    /// The same unnamed `<ButtonText/>` exists during OnLoad on the default 1.12 target, where the
+    /// loader's empty `SetText` creates it rather than the Wrath-only region build, and the
+    /// handler can address it.
+    #[test]
+    fn unnamed_button_text_is_available_during_onload_on_1_12() {
+        let s = UiScript::new().unwrap();
+        let doc = parse(
+            r#"<Ui>
+                <Button name="Clock">
+                    <ButtonText/>
+                    <Scripts>
+                        <OnLoad>button_text_present = this:GetFontString() ~= nil; this:GetFontString():SetDrawLayer("BACKGROUND")</OnLoad>
+                    </Scripts>
+                </Button>
+            </Ui>"#,
+        );
+        let report = load(&s, &doc, &no_files);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+        assert!(s.eval::<bool>("return button_text_present").unwrap());
+        assert!(s
+            .eval::<bool>("return Clock:GetFontString() ~= nil")
+            .unwrap());
+        assert_eq!(
+            s.eval::<String>("return Clock:GetFontString():GetDrawLayer()")
+                .unwrap(),
+            "BACKGROUND",
+            "the OnLoad handler addressed the live label"
+        );
+    }
+
+    /// An instance's label named as its template's keeps that name, as the state textures do: the
+    /// lookup is retaken after the displaced label dies (`SetName 0x76c650`), while `_G` keeps its
+    /// first holder (`0x701bd0` writes only into an empty one, `0x701c8a`).
+    #[test]
+    fn a_same_named_instance_button_text_keeps_its_name() {
+        let mut s = UiScript::new().unwrap();
+        s.set_screen_size(800.0, 600.0);
+        let doc = parse(
+            r#"<Ui>
+                <Button name="LabelTmpl" virtual="true">
+                    <ButtonText name="$parentText" text="Tmpl"/>
+                </Button>
+                <Button name="LabelInst" inherits="LabelTmpl">
+                    <ButtonText name="$parentText" text="Inst"/>
+                </Button>
+            </Ui>"#,
+        );
+        let report = load(&s, &doc, &no_files);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+        let (name, text, alive) = s
+            .eval::<(String, String, bool)>(
+                r#"local l = LabelInst:GetFontString()
+                return l:GetName(), l:GetText(),
+                    (pcall(LabelInstText.GetName, LabelInstText))"#,
+            )
+            .unwrap();
+        assert_eq!(name, "LabelInstText", "the instance's label keeps the name");
+        assert_eq!(text, "Inst", "the instance's label is the live one");
+        assert!(
+            !alive,
+            "_G holds the destroyed template label, not the replacement"
         );
     }
 

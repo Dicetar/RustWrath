@@ -26,10 +26,10 @@ use super::sheath::{
     advance_sheath_ceremony, model_refuses_toggle, setter_refuses, start_sheath_ceremony,
 };
 use super::{
-    find_resolved, move_flags, AnimData, AnimDriver, AutoRepeatArmed, BaseAnimRecompute, CastHold,
-    CommittedSheath, DefenseAnim, EmoteAnim, Engaged, MovementState, NockLatch, Overlay,
-    OverlayFade, SheathRequest, SheathSwapMessage, StateKitPins, SwingImpact, SwingMessage,
-    SwingSlowdown, Wielded, WoundAnim,
+    find_resolved, move_flags, ActionAnim, AnimData, AnimDriver, AutoRepeatArmed,
+    BaseAnimRecompute, CastHold, CommittedSheath, DefenseAnim, EmoteAnim, Engaged, MovementState,
+    NockLatch, Overlay, OverlayFade, SheathRequest, SheathSwapMessage, StateKitPins, SwingImpact,
+    SwingMessage, SwingSlowdown, Wielded, WoundAnim,
 };
 
 mod grip;
@@ -61,6 +61,8 @@ enum OneShotReq {
     Swing(u32),
     /// The id, and whether it came through the emote player's armed-id test.
     Emote(u16, bool),
+    /// A profile-compiled action's clip (`combat_playback.rs`); already an anim id.
+    Action(u16),
 }
 
 /// The live one-shot the combat fast path tests: the key bone's clip, else bone 0's (`0x5fe422`).
@@ -320,14 +322,25 @@ pub(super) fn drive_animations(
         Option<Res<crate::ui_session::InteractNpc>>,
         // `ChrClasses.dbc`, for the setter's class test on the ranged state.
         Option<Res<crate::chr_classes::ChrClassTable>>,
+        // A profile-compiled action's clip (`combat_playback.rs`), presentation only.
+        MessageReader<ActionAnim>,
     ),
     // The variation roll's LCG, the reference's single CRT `_rand` stream shared by every play.
     mut rng: ResMut<benilla_assets::AnimRng>,
     // The last anim trace line per traced unit; the trace writes only on change.
     mut anim_trace_last: Local<std::collections::HashMap<Entity, String>>,
 ) {
-    let (emote_sounds, loot_kneel, time, names, mut recomputes, riders, interact, class_table) =
-        aux;
+    let (
+        emote_sounds,
+        loot_kneel,
+        time,
+        names,
+        mut recomputes,
+        riders,
+        interact,
+        class_table,
+        mut action_anims,
+    ) = aux;
     let classes = class_table.as_deref().map(|t| &t.0);
     let dt = time.delta_secs();
     // This frame's one-shot plays per unit, replayed in the reference's call order (`PlaySeq`
@@ -378,6 +391,14 @@ pub(super) fn drive_animations(
             .entry(e.entity)
             .or_default()
             .push((OneShotReq::Emote(e.anim_id, e.via_player), e.seq));
+    }
+    // Profile-compiled actions (`combat_playback.rs`): presentation-only one-shots, already an
+    // anim id; they join the same ordering as every other play this frame.
+    for a in action_anims.read() {
+        pending
+            .entry(a.entity)
+            .or_default()
+            .push((OneShotReq::Action(a.anim_id), a.seq));
     }
     // A mounted rider's mount-set emotes go to the mount model (`0x5fe7c1`); the rider keeps the
     // request for its own CLASS_A and nowhere routes. The emote player's armed test (`0x5fcd56`)
@@ -851,6 +872,8 @@ pub(super) fn drive_animations(
                         // The armed-id test compares the record's own AnimID, before the play
                         // seam's unarmed remap.
                         OneShotReq::Emote(id, via_player) => (id, via_player.then_some(id)),
+                        // A compiled action's clip plays as requested; no armed test.
+                        OneShotReq::Action(id) => (id, None),
                     })
                     .collect()
             })

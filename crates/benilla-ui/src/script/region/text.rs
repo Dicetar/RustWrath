@@ -60,8 +60,13 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
                     crate::script::binding_abi::name_of(lua, &this)
                 )));
             }
-            // `text_arg`, since a Lua string is bytes and a slice of one need not be valid UTF-8.
-            let text = crate::script::binding_abi::text_arg(lua, text)?;
+            // `lua_tolstring` (`0x0048D780`; a NULL clears through `CSimpleRender.cpp:1283-1325`,
+            // `0x00483910`), not a checked string: once the font check above passes, a function,
+            // a table, a boolean or nil clears the text and raises nothing. Stock
+            // `ChatConfigFrame.lua:752` hands `value.text` here on the first creation pass, and
+            // `:258`/`:310` make that a function for the dynamic combat-log labels, resolved later
+            // at `:951-952`.
+            let text = crate::script::binding_abi::tolstring_arg(lua, text);
             store_text(lua, rh, text);
             Ok(())
         })?,
@@ -165,10 +170,16 @@ pub(super) fn install(lua: &Lua, m: &Table) -> mlua::Result<()> {
             ),
         ))
     }
-    m.set(
-        "GetStringHeight",
-        lua.create_function(|lua, this: Table| natural_h(lua, &this))?,
-    )?;
+    // 3.3.5a's FontString carries `GetStringHeight`; the 1.12 leaf does not (see `region.rs`'s
+    // target-gated copy). Do not seat it on the donor full table where no leaf can use it.
+    if lua.app_data_ref::<crate::script::Model>().expect("model").target
+        == crate::script::UiTarget::Wrath335
+    {
+        m.set(
+            "GetStringHeight",
+            lua.create_function(|lua, this: Table| natural_h(lua, &this))?,
+        )?;
+    }
 
     // SetJustifyH (XML `justifyH`): the parse, the raise on a miss and the cross-axis clear are
     // `crate::justify`'s, shared with the `<Font>` object.

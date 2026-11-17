@@ -15,10 +15,12 @@ use crate::cast_failure;
 
 pub mod economy;
 mod movement;
+mod mover_control;
 pub mod pet_talent;
 pub mod social;
 pub mod wrath_systems;
 pub use movement::{MonsterFacing, MonsterMove};
+pub use mover_control::{MoveMode, SpeedKind, SplineMode};
 
 /// The largest undecoded-byte count reported with a typed decode failure.
 ///
@@ -1385,6 +1387,10 @@ pub fn auction_place_bid(auctioneer: u64, auction_id: u32, price: u32) -> Vec<u8
 }
 
 /// Write a 3.3.5a (`MovementStructures.cpp`) client `MovementInfo` block into `out`.
+///
+/// The transport and falling bits follow `transport` and `jump`, whatever `flags` says: the
+/// server reads the tail each bit announces, so a bit without its tail shifts every later field.
+/// An ack built from a pose that carries no jump tail is the case that would otherwise do it.
 #[allow(clippy::too_many_arguments)]
 pub fn write_movement_info(
     out: &mut Vec<u8>,
@@ -1397,7 +1403,7 @@ pub fn write_movement_info(
     jump: Option<(f32, f32, f32, f32)>,
     transport: Option<(u64, [f32; 3], f32, u32)>,
 ) {
-    let mut wrath_flags = flags;
+    let mut wrath_flags = flags & !(0x0000_0200 | 0x0000_1000);
     if transport.is_some() {
         wrath_flags |= 0x0000_0200; // MOVEMENTFLAG_ONTRANSPORT
     }
@@ -1418,7 +1424,10 @@ pub fn write_movement_info(
         out.extend_from_slice(&t_pos[2].to_le_bytes());
         out.extend_from_slice(&t_o.to_le_bytes());
         out.extend_from_slice(&t_time.to_le_bytes());
-        out.push(0); // transport seat
+        // No seat: 12340 resets `m_transportSeat` to 0xFF (`CMovementStatus.cpp:50`) and only a
+        // vehicle boarding sets one (`UpdateTransportStatus`, `0x006EA1D0`); AzerothCore's
+        // default is the same -1 (`Object.h:303`). This client boards no vehicle.
+        out.push(0xFF);
     }
     if wrath_flags & (0x0020_0000 | 0x0200_0000) != 0 {
         out.extend_from_slice(&pitch.to_le_bytes());
@@ -1514,15 +1523,19 @@ pub fn knock_back_ack(
     p
 }
 
-/// `CMSG_MOVE_SPLINE_DONE` (`MovementHandler.cpp:644`): `MovementInfo, u32 spline_id`.
+/// `CMSG_MOVE_SPLINE_DONE` (`TaxiHandler.cpp:199`): `packed_guid, MovementInfo, u32 spline_id`.
+/// The guid leads, as for every movement message 12340 builds (`BuildMovementUpdate`,
+/// `0x71EF80`, called by `SendSplineDone`, `0x71F210`); AzerothCore reads it first and ignores an
+/// ack whose guid is not its mover.
 pub fn move_spline_done(
+    guid: u64,
     flags: u32,
     time_ms: u32,
     pos: [f32; 3],
     orientation: f32,
     spline_id: u32,
 ) -> Vec<u8> {
-    let mut p = Vec::with_capacity(36);
+    let mut p = pack_guid(guid);
     write_movement_info(&mut p, flags, time_ms, pos, orientation, 0.0, 0, None, None);
     p.extend_from_slice(&spline_id.to_le_bytes());
     p
@@ -1795,6 +1808,7 @@ pub struct ItemInfo {
     pub display_info_id: u32,
     pub quality: u32,
     pub flags: u32,
+    pub flags2: u32,
     pub buy_price: u32,
     pub sell_price: u32,
     pub inventory_type: u32,
@@ -1841,6 +1855,8 @@ pub struct ItemInfo {
     pub area: u32,
     pub map: u32,
     pub bag_family: u32,
+    pub required_disenchant_skill: Option<i32>,
+    pub item_limit_category: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1991,6 +2007,9 @@ pub struct ItemPush {
     pub suffix_factor: u32,
     pub random_property_id: i32,
     pub count: u32,
+    /// The pushed item's count held after the push (`GetItemCount`, `PlayerStorage.cpp:4855`), the
+    /// field 12340's `CheckForQuestItemLoot` reads for the quest progress line.
+    pub total_count: u32,
 }
 
 /// One `SpellCastTargets` as 12340 writes it (`SpellCastTargets::Write`, `Spell.cpp:180-215`).
@@ -2026,9 +2045,37 @@ pub struct InitialSpellCooldown {
     pub category_cd_ms: u32,
 }
 
+/// Build 12340 inspect reply, PaperDollInfoFrame.cpp::Packet_MSG_INSPECT_HONOR_STATS
+/// (0x005E7A50); also AzerothCore MiscHandler.cpp::HandleInspectHonorStatsOpcode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InspectHonor {
+    pub guid: u64,
+    pub highest_rank: u8,
+    pub today_hk: u16,
+    pub yesterday_hk: u16,
+    pub today_honor: u32,
+    pub yesterday_honor: u32,
+    pub lifetime_hk: u32,
+}
+
+fn read_inspect_honor(body: &[u8]) -> Result<InspectHonor> {
+    anyhow::ensure!(body.len() == 25, "inspect honor reply must contain 25 bytes");
+    let mut r = crate::updates::Reader::new(body);
+    Ok(InspectHonor {
+        guid: r.u64()?,
+        highest_rank: r.u8()?,
+        today_hk: r.u16()?,
+        yesterday_hk: r.u16()?,
+        today_honor: r.u32()?,
+        yesterday_honor: r.u32()?,
+        lifetime_hk: r.u32()?,
+    })
+}
+
 /// One typed reply this slice understands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerEvent {
+    InspectHonor(InspectHonor),
     MonsterMove(MonsterMove),
     AttackStart { attacker: u64, victim: u64 },
     AttackStop { attacker: u64, victim: u64 },
@@ -2104,7 +2151,9 @@ pub enum ServerEvent {
         cast_count: u8,
         raw_reason: u8,
     },
-    /// `SMSG_ATTACKERSTATEUPDATE` mapped onto the 1.12 swing shape.
+    /// `SMSG_ATTACKERSTATEUPDATE` mapped onto the 1.12 swing shape. `hit_info` and `school`
+    /// stay in 12340's own bit layout and mask form; the app seam translates both for the 1.12
+    /// consumers.
     AttackerState {
         attacker: u64,
         victim: u64,
@@ -2124,7 +2173,8 @@ pub enum ServerEvent {
     AiReaction { unit: u64, reaction: u32 },
     CancelAutoRepeat,
     PlaySpellVisual { unit: u64, kit_id: u32 },
-    /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word.
+    /// `SMSG_SPELLNONMELEEDAMAGELOG` without the 12340-only overkill word. `school` is 12340's
+    /// mask; the app seam turns it into the 1.12 index.
     SpellDamage {
         target: u64,
         attacker: u64,
@@ -2160,9 +2210,31 @@ pub enum ServerEvent {
         has_timer: bool,
     },
     SpiritHealerConfirm { npc: u64 },
+    /// `SMSG_DEATH_RELEASE_LOC`: the graveyard the release teleports to (`Player.cpp:4860-4872`),
+    /// and the `-1` map `ResurrectPlayer` clears it with (`Player.cpp:4380-4385`). `position` is
+    /// all zeroes on the clear.
+    DeathReleaseLoc {
+        map_id: i32,
+        position: [f32; 3],
+    },
+    /// `SMSG_PRE_RESURRECT`: the packed guid of the body turning ghost (`Player.cpp:4327-4331`).
+    PreResurrect { guid: u64 },
+    /// `SMSG_AREA_SPIRIT_HEALER_TIME`: the area healer's raw guid and the ms until its next wave
+    /// (`BattlegroundMgr.cpp:667-674`).
+    AreaSpiritHealerTime { healer: u64, ms: u32 },
+    /// `SMSG_AREA_TRIGGER_NO_CORPSE`: the instance entrance refused the ghost (`MapMgr.cpp:207`).
+    CorpseNotInInstance,
     LogoutResponse { reason: u32, instant: bool },
     LoggedOut,
     LogoutCancelled,
+    /// `SMSG_TRANSFER_ABORTED` (`Player.cpp:11685-11702`): the refused transfer's map and
+    /// reason byte; `argument` is the one extra byte only reasons 7 (expansion), 8 (difficulty)
+    /// and 9 (unique message) carry — the writer names those the only cases with an argument.
+    TransferAborted {
+        map_id: u32,
+        reason: u8,
+        argument: Option<u8>,
+    },
     ItemInfo { entry: u32, info: Option<ItemInfo> },
     PlayerName { guid: u64, name: String, race: u32, gender: u32, class: u32 },
     GameObjectInfo {
@@ -2198,7 +2270,9 @@ pub enum ServerEvent {
         quests: Vec<QuestListEntry>,
     },
     GossipComplete,
+    /// `status` is the raw 3.3.5 `QuestGiverStatus` (0-10), not the 1.12 `dialog_status`.
     QuestGiverStatus { npc: u64, status: u32 },
+    QuestGiverStatusMultiple(Vec<(u64, u32)>),
     QuestGreeting {
         npc: u64,
         greeting: String,
@@ -2561,10 +2635,47 @@ pub enum ServerEvent {
         zone_id: u32,
         states: Vec<(u32, u32)>,
     },
-    ForceRunSpeedChange {
+    /// `SMSG_FORCE_*_SPEED_CHANGE` (all nine kinds): one of our mover's speeds, owed an ack
+    /// with `counter` and the exact `speed`.
+    ForceSpeedChange {
+        kind: SpeedKind,
         guid: u64,
         counter: u32,
         speed: f32,
+    },
+    /// `SMSG_SPLINE_SET_*_SPEED`: any unit's speed, nothing to ack.
+    SpeedChanged {
+        kind: SpeedKind,
+        guid: u64,
+        speed: f32,
+    },
+    /// A mode ordered on our mover (`apply` grants, else revokes), owed an ack with `counter`.
+    MoveMode {
+        mode: MoveMode,
+        apply: bool,
+        guid: u64,
+        counter: u32,
+    },
+    /// `SMSG_SPLINE_MOVE_*`: any unit's mode change, nothing to ack.
+    SplineMoveMode {
+        mode: SplineMode,
+        apply: bool,
+        guid: u64,
+    },
+    /// `SMSG_MOVE_KNOCK_BACK`: a launch for our mover, in wire order; `z_speed_down` is the
+    /// server's `-speedZ`. Owed `CMSG_MOVE_KNOCK_BACK_ACK` with `counter` and this launch.
+    KnockBack {
+        guid: u64,
+        counter: u32,
+        cos_angle: f32,
+        sin_angle: f32,
+        xy_speed: f32,
+        z_speed_down: f32,
+    },
+    /// `SMSG_CLIENT_CONTROL_UPDATE`: whether the client may move `guid`.
+    ClientControl {
+        guid: u64,
+        allow_move: bool,
     },
 }
 
@@ -2621,6 +2732,9 @@ pub fn decode_server(opcode: u16, body: &[u8]) -> Result<Option<ServerEvent>> {
 pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
     use crate::opcode::*;
     Some(match opcode {
+        op if u32::from(op) == MSG_INSPECT_HONOR_STATS => {
+            read_inspect_honor(body).map(ServerEvent::InspectHonor)
+        }
         SMSG_MONSTER_MOVE => movement::read(body, false).map(ServerEvent::MonsterMove),
         SMSG_MONSTER_MOVE_TRANSPORT => movement::read(body, true).map(ServerEvent::MonsterMove),
         SMSG_ATTACKSTART => read_attack_start(body),
@@ -2642,6 +2756,10 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_CORPSE_RECLAIM_DELAY => read_corpse_reclaim_delay(body),
         SMSG_RESURRECT_REQUEST => read_resurrect_request(body),
         SMSG_SPIRIT_HEALER_CONFIRM => read_spirit_healer_confirm(body),
+        SMSG_DEATH_RELEASE_LOC => read_death_release_loc(body),
+        SMSG_PRE_RESURRECT => read_pre_resurrect(body),
+        SMSG_AREA_SPIRIT_HEALER_TIME => read_area_spirit_healer_time(body),
+        SMSG_AREA_TRIGGER_NO_CORPSE => Ok(ServerEvent::CorpseNotInInstance),
         SMSG_CAST_FAILED => read_cast_failed(body),
         SMSG_SPELL_START => read_spell_start(body),
         SMSG_SPELL_GO => read_spell_go(body),
@@ -2662,6 +2780,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_LOGOUT_RESPONSE => read_logout_response(body),
         SMSG_LOGOUT_COMPLETE => Ok(ServerEvent::LoggedOut),
         SMSG_LOGOUT_CANCEL_ACK => Ok(ServerEvent::LogoutCancelled),
+        SMSG_TRANSFER_ABORTED => read_transfer_aborted(body),
         SMSG_INITIAL_SPELLS => read_initial_spells(body),
         SMSG_ITEM_QUERY_SINGLE_RESPONSE => read_item_info(body),
         SMSG_NAME_QUERY_RESPONSE => read_name(body),
@@ -2676,6 +2795,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_GOSSIP_MESSAGE => read_gossip(body),
         SMSG_GOSSIP_COMPLETE => Ok(ServerEvent::GossipComplete),
         SMSG_QUESTGIVER_STATUS => read_questgiver_status(body),
+        SMSG_QUESTGIVER_STATUS_MULTIPLE => read_questgiver_status_multiple(body),
         SMSG_QUESTGIVER_QUEST_LIST => read_quest_greeting(body),
         SMSG_QUESTGIVER_QUEST_DETAILS => read_quest_details(body),
         SMSG_QUESTGIVER_REQUEST_ITEMS => read_quest_request(body),
@@ -2883,8 +3003,7 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_SET_FACTION_STANDING => read_set_faction_standing(body),
         SMSG_PET_CAST_FAILED => read_pet_cast_failed(body),
         SMSG_INIT_WORLD_STATES => read_init_world_states(body),
-        SMSG_FORCE_RUN_SPEED_CHANGE => read_force_run_speed_change(body),
-        _ => return None,
+        _ => return mover_control::parse(opcode, body),
     })
 }
 
@@ -3026,19 +3145,6 @@ fn read_init_world_states(b: &[u8]) -> Result<ServerEvent> {
         map_id,
         zone_id,
         states,
-    })
-}
-
-fn read_force_run_speed_change(b: &[u8]) -> Result<ServerEvent> {
-    let mut r = Reader::new(b);
-    let guid = r.packed_guid()?;
-    let counter = r.u32()?;
-    let _allow_air_control = r.u8()?;
-    let speed = r.f32()?;
-    Ok(ServerEvent::ForceRunSpeedChange {
-        guid,
-        counter,
-        speed,
     })
 }
 
@@ -3418,9 +3524,10 @@ const HITINFO_BLOCK: u32 = 0x0000_2000;
 const HITINFO_RAGE_GAIN: u32 = 0x0080_0000;
 
 /// `SMSG_ATTACKERSTATEUPDATE` (`Unit.cpp:6870-6960`): 12340 writes `Overkill` after the total,
-/// keeps absorb/resist in blocks gated by `HitInfo` rather than inside every sub-block, and sends
-/// `TargetState` as a byte. The `HITINFO_UNK1` debug tail is left unread; nothing re-parses the
-/// payload, and guessing its width would be fabrication.
+/// keeps absorb/resist in blocks gated by `HitInfo` rather than inside every sub-block, sends
+/// `TargetState` as a byte, and writes a spell-school *mask* per damage block where the 1.12 seam
+/// carries an index. The `HITINFO_UNK1` debug tail is left unread; nothing re-parses the payload,
+/// and guessing its width would be fabrication.
 fn read_attacker_state(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     let hit_info = r.u32()?;
@@ -3821,19 +3928,25 @@ fn read_gameobject(b: &[u8]) -> Result<ServerEvent> {
     let _icon = r.cstring()?;
     let _cast_bar = r.cstring()?;
     let _unk = r.cstring()?;
-    // 3.3.5 has a wider, differently indexed data block than the 24-dword 1.12 record. The
-    // columns cannot be copied by position: the 1.12 consumer resolves lock/page/meeting-stone
-    // fields by type, and wrong numbers would misroute interaction. Keep the name and display,
-    // but report the columns as absent so the 1.12 owners do not read a foreign layout.
-    for _ in 0..24 {
-        let _ = r.i32()?;
+    // The 3.3.5 data block is 24 dwords, and for every column the 1.12 consumer reads it
+    // has the 1.12 index: 12340 `CGameObjectDef::GetPropNum` (0x746190, tables at
+    // 0xADAD30..) puts lockId (prop 4) at DOOR/BUTTON data[1], CHEST/QUESTGIVER/TRAP/GOOBER/
+    // AREADAMAGE/CAMERA/FLAGSTAND/FLAGDROP data[0], FISHINGHOLE data[4]; pageId (prop 15)
+    // at TEXT data[0] and GOOBER data[7]; quest background (prop 17) at QUESTGIVER/TEXT
+    // data[2] and GOOBER data[9]; the meeting-stone, MO-transport, GENERIC and
+    // CAPTURE_POINT columns likewise. Wrath only appends props past the 1.12 ones. Dropping
+    // the block left every lockId 0, so locked chests and ore/herb nodes were "used"
+    // instead of opened by the lock's spell.
+    let mut data = [0i32; 24];
+    for slot in &mut data {
+        *slot = r.i32()?;
     }
     Ok(ServerEvent::GameObjectInfo {
         entry,
         type_id,
         display_id,
         name,
-        data: [0; 24],
+        data,
     })
 }
 
@@ -3901,7 +4014,7 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     let display_info_id = r.u32()?;
     let quality = r.u32()?;
     let flags = r.u32()?;
-    let _flags2 = r.u32()?;
+    let flags2 = r.u32()?;
     let buy_price = r.u32()?;
     let sell_price = r.u32()?;
     let inventory_type = r.u32()?;
@@ -4024,11 +4137,28 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
     let area = r.u32()?;
     let map = r.u32()?;
     let bag_family = r.u32()?;
+    // Totem category, three socket pairs, socket bonus and gem properties precede this field.
+    // Some captures contain only the prefix through bag family; keep absent fields unknown.
+    let required_disenchant_skill = if r.remaining() >= 10 * 4 {
+        for _ in 0..9 {
+            r.u32()?;
+        }
+        Some(r.i32()?)
+    } else {
+        None
+    };
+    let item_limit_category = if required_disenchant_skill.is_some() && r.remaining() >= 3 * 4 {
+        r.f32()?; // armor damage modifier
+        r.u32()?; // duration
+        Some(r.u32()?)
+    } else {
+        None
+    };
 
     Ok(ServerEvent::ItemInfo {
         entry,
         info: Some(ItemInfo {
-            class, subclass, name, display_info_id, quality, flags, buy_price, sell_price,
+            class, subclass, name, display_info_id, quality, flags, flags2, buy_price, sell_price,
             inventory_type, allowable_class, allowable_race, item_level, required_level,
             required_skill, required_skill_rank, required_spell, required_honor_rank,
             required_city_rank, required_rep_faction, required_rep_rank, max_count, stackable,
@@ -4036,6 +4166,7 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
             delay_ms, ammo_type, ranged_mod_range, spells, spell_charges_0, use_spell, bonding,
             description, page_text, language_id, page_material, start_quest, lock_id, material,
             sheath, random_property, block, item_set, max_durability, area, map, bag_family,
+            required_disenchant_skill, item_limit_category,
         }),
     })
 }
@@ -4043,6 +4174,23 @@ fn read_item_info(b: &[u8]) -> Result<ServerEvent> {
 fn read_logout_response(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     Ok(ServerEvent::LogoutResponse { reason: r.u32()?, instant: r.u8()? != 0 })
+}
+
+/// `SMSG_TRANSFER_ABORTED` (`Player.cpp:11685-11702`): u32 map + u8 reason, then the argument
+/// byte only for reasons 7/8/9. Any other reason value is the wire's own — the client's switch
+/// simply names no text for it (`0x403910`) — so the byte is not range-checked here.
+fn read_transfer_aborted(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let map_id = r.u32()?;
+    let reason = r.u8()?;
+    let argument = match reason {
+        7 | 8 | 9 => Some(r.u8()?),
+        _ => None,
+    };
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
+    Ok(ServerEvent::TransferAborted { map_id, reason, argument })
 }
 
 fn read_spell_failure(b: &[u8]) -> Result<ServerEvent> {
@@ -4147,6 +4295,38 @@ fn read_resurrect_request(b: &[u8]) -> Result<ServerEvent> {
 fn read_spirit_healer_confirm(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
     Ok(ServerEvent::SpiritHealerConfirm { npc: r.u64()? })
+}
+
+/// `SMSG_DEATH_RELEASE_LOC` (`Player.cpp:4864-4870`): the map as a signed dword `-1` on the
+/// clear, then the three floats. `ResurrectPlayer` (`Player.cpp:4380-4385`) sends map `-1` with a
+/// zero position, which `CGPlayer_C`'s handler reads as "clear" (`Player_C.cpp:9720-9736`).
+fn read_death_release_loc(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let map_id = r.u32()? as i32;
+    let x = r.f32()?;
+    let y = r.f32()?;
+    let z = r.f32()?;
+    Ok(ServerEvent::DeathReleaseLoc {
+        map_id,
+        position: [x, y, z],
+    })
+}
+
+/// `SMSG_PRE_RESURRECT` (`Player.cpp:4329-4331`): one packed guid, the body becoming a ghost.
+fn read_pre_resurrect(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::PreResurrect {
+        guid: r.packed_guid()?,
+    })
+}
+
+/// `SMSG_AREA_SPIRIT_HEALER_TIME` (`BattlegroundMgr.cpp:667-674`): raw healer guid, then the
+/// milliseconds until the next resurrection wave (`RESURRECTION_INTERVAL - last`).
+fn read_area_spirit_healer_time(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let healer = r.u64()?;
+    let ms = r.u32()?;
+    Ok(ServerEvent::AreaSpiritHealerTime { healer, ms })
 }
 
 /// `SMSG_COOLDOWN_EVENT` / `SMSG_CLEAR_COOLDOWN` (`Player.cpp:11052-11055`,
@@ -4310,27 +4490,38 @@ fn read_gossip(b: &[u8]) -> Result<ServerEvent> {
     Ok(ServerEvent::Gossip { npc, menu_id, text_id, options, quests })
 }
 
-/// 3.3.5 `QuestGiverStatus` (`QuestDef.h:110-126`) to 1.12 `dialog_status`
-/// (`quest/giver.rs:13-22`). The numeric values shifted: 3.3.5 puts INCOMPLETE at 5 and
-/// AVAILABLE at 8, while 1.12 puts them at 3 and 5. Unknown/scripted values have no marker.
-pub fn vanilla_quest_giver_status(wrath: u32) -> Option<u32> {
-    Some(match wrath {
-        0 => 0,             // NONE
-        1 => 1,             // UNAVAILABLE
-        2 | 4 | 7 | 8 => 5, // LOW_LEVEL_AVAILABLE, ..._AVAILABLE_REP, AVAILABLE_REP, AVAILABLE
-        3 | 6 => 4,         // LOW_LEVEL_REWARD_REP, REWARD_REP
-        5 => 3,             // INCOMPLETE
-        9 => 7,             // REWARD2 (no minimap dot)
-        10 => 6,            // REWARD (yellow minimap dot)
-        _ => return None,
-    })
-}
-
 fn read_questgiver_status(b: &[u8]) -> Result<ServerEvent> {
     let mut r = Reader::new(b);
-    let npc = r.u64()?;
-    let status = vanilla_quest_giver_status(r.u8()? as u32).unwrap_or(0);
+    let (npc, status) = read_questgiver_status_row(&mut r)?;
     Ok(ServerEvent::QuestGiverStatus { npc, status })
+}
+
+/// One `u64` GUID and the 3.3.5 `QuestGiverStatus` byte (AzerothCore `QuestDef.h`, 0-10),
+/// passed through unmapped. 12340 `OnQuestGiverStatus` (`0x006D11C0`) stores the raw byte
+/// (`SetQuestStatus`), and the marker table and minimap read it as such. Mapping it to the
+/// 1.12 `dialog_status` numbering made AVAILABLE (8) draw the grey `?` of 3.3.5's INCOMPLETE (5).
+fn read_questgiver_status_row(r: &mut Reader<'_>) -> Result<(u64, u32)> {
+    let npc = r.u64()?;
+    let status = u32::from(r.u8()?);
+    Ok((npc, status))
+}
+
+/// 12340 CGPlayer_C::OnQuestGiverStatusMultiple (0x006D1230).
+fn read_questgiver_status_multiple(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let count = r.u32()? as usize;
+    // A full GUID and one status byte per row; check the payload before allocating.
+    if count > r.remaining() / 9 {
+        return Err(DecodeError::truncated(r.remaining()).into());
+    }
+    let mut rows = Vec::with_capacity(count);
+    for _ in 0..count {
+        rows.push(read_questgiver_status_row(&mut r)?);
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::trailing(r.remaining()).into());
+    }
+    Ok(ServerEvent::QuestGiverStatusMultiple(rows))
 }
 
 fn read_quest_greeting(b: &[u8]) -> Result<ServerEvent> {
@@ -4761,6 +4952,7 @@ fn read_item_push(b: &[u8]) -> Result<ServerEvent> {
         suffix_factor: r.u32()?,
         random_property_id: r.i32()?,
         count: r.u32()?,
+        total_count: r.u32()?,
     }))
 }
 
@@ -4950,6 +5142,34 @@ pub fn parse_char_enum(payload: &[u8]) -> Result<Vec<CharEnumRecord>> {
 mod tests {
     use super::*;
 
+    /// `SMSG_LOG_XPGAIN`: victim, total, the kill/non-kill type, then the base XP and group rate
+    /// only for a kill, and 12340's trailing recruit-a-friend byte. The seam's rested bonus is the
+    /// difference between the total and the base.
+    #[test]
+    fn wrath_log_xp_gain_reads_the_kill_base_and_rested_bonus() {
+        let victim = 0xF130_0000_0000_0022u64;
+        let mut body = Vec::new();
+        body.extend_from_slice(&victim.to_le_bytes());
+        body.extend_from_slice(&60u32.to_le_bytes()); // total
+        body.push(0); // kill_xp
+        body.extend_from_slice(&40u32.to_le_bytes()); // base
+        body.extend_from_slice(&1.0f32.to_le_bytes()); // group rate
+        body.push(0); // RaF bonus
+        let event = parse(crate::opcode::SMSG_LOG_XPGAIN, &body)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ServerEvent::XpGain {
+                victim,
+                total_xp: 60,
+                kill_xp: true,
+                rested_bonus: 20,
+                group_rate: 1.0,
+            }
+        );
+    }
+
     #[test]
     fn wrath_party_kill_log_reads_the_killer_then_the_victim() {
         let killer = 0x0000_0000_0000_0011u64;
@@ -4961,6 +5181,19 @@ mod tests {
             .expect("the opcode is translated")
             .expect("the 16-byte body is valid");
         assert_eq!(event, ServerEvent::PartyKillLog { killer, victim });
+    }
+
+    /// The marker table indexes the raw 3.3.5 status; a 1.12 remap turned AVAILABLE (8) into 5,
+    /// the grey `?`, so no NPC showed a gold `!`.
+    #[test]
+    fn wrath_questgiver_status_keeps_the_3_3_5_value() {
+        let npc = 0xF130_0000_0000_0042u64;
+        let mut body = npc.to_le_bytes().to_vec();
+        body.push(8);
+        let event = parse(crate::opcode::SMSG_QUESTGIVER_STATUS, &body)
+            .expect("the opcode is translated")
+            .expect("the 9-byte body is valid");
+        assert_eq!(event, ServerEvent::QuestGiverStatus { npc, status: 8 });
     }
 
     #[test]
@@ -4981,6 +5214,123 @@ mod tests {
 
     fn le<const N: usize>(v: &[u8]) -> [u8; N] {
         v.try_into().unwrap()
+    }
+
+    /// `Player.cpp:4860-4872`: map, x, y, z. The `-1` map at resurrection (`Player.cpp:4380`)
+    /// keeps the same four dwords, so one shape covers the store and the clear.
+    #[test]
+    fn wrath_death_release_loc_reads_the_graveyard_and_the_clear() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&(-1i32).to_le_bytes());
+        for value in [0.0f32, 0.0, 0.0] {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        let event = parse(crate::opcode::SMSG_DEATH_RELEASE_LOC, &body)
+            .expect("the opcode is translated")
+            .expect("the 16-byte clear body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::DeathReleaseLoc {
+                map_id: -1,
+                position: [0.0, 0.0, 0.0],
+            }
+        );
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&0i32.to_le_bytes());
+        for value in [-8943.5f32, 132.25, 61.5] {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        let event = parse(crate::opcode::SMSG_DEATH_RELEASE_LOC, &body)
+            .expect("the opcode is translated")
+            .expect("the 16-byte graveyard body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::DeathReleaseLoc {
+                map_id: 0,
+                position: [-8943.5, 132.25, 61.5],
+            }
+        );
+    }
+
+    /// `Player.cpp:4327-4331` packs the guid it also writes beside `SMSG_FORCE_*_SPEED_CHANGE`.
+    #[test]
+    fn wrath_pre_resurrect_reads_the_packed_ghost_guid() {
+        let guid = 0x0000_0000_0000_0152u64;
+        let event = parse(crate::opcode::SMSG_PRE_RESURRECT, &[0x03, 0x52, 0x01])
+            .expect("the opcode is translated")
+            .expect("mask, low byte, second byte");
+        assert_eq!(event, ServerEvent::PreResurrect { guid });
+    }
+
+    /// `BattlegroundMgr.cpp:667-674`: raw guid then the milliseconds until the next wave.
+    #[test]
+    fn wrath_area_spirit_healer_time_reads_guid_and_wave() {
+        let healer = 0xF130_0000_0000_00ABu64;
+        let mut body = healer.to_le_bytes().to_vec();
+        body.extend_from_slice(&23_000u32.to_le_bytes());
+        let event = parse(crate::opcode::SMSG_AREA_SPIRIT_HEALER_TIME, &body)
+            .expect("the opcode is translated")
+            .expect("the 12-byte body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::AreaSpiritHealerTime {
+                healer,
+                ms: 23_000,
+            }
+        );
+    }
+
+    /// `MapMgr.cpp:207` sends the empty body the client shows as
+    /// `ERR_CORPSE_IS_NOT_IN_INSTANCE` (`GameUI.cpp:6821`).
+    #[test]
+    fn wrath_corpse_not_in_instance_is_an_empty_body() {
+        let event = parse(crate::opcode::SMSG_AREA_TRIGGER_NO_CORPSE, &[])
+            .expect("the opcode is translated")
+            .expect("an empty body is valid");
+        assert_eq!(event, ServerEvent::CorpseNotInInstance);
+    }
+
+    /// `Spell.cpp:5182-5202`: raw caster, a u32 name length, the name and its NUL, the sickness
+    /// byte and, only for `SPELL_ATTR3_NO_RES_TIMER`, a u32 override. A player's name is empty
+    /// and the packet carries no timer word, so the absence means the delay still holds.
+    #[test]
+    fn wrath_resurrect_request_reads_sickness_and_the_timer_override() {
+        let caster = 0xF130_0000_0000_00ABu64;
+        let mut body = caster.to_le_bytes().to_vec();
+        body.extend_from_slice(&5u32.to_le_bytes());
+        body.extend_from_slice(b"Icon\0");
+        body.push(1);
+        let event = parse(crate::opcode::SMSG_RESURRECT_REQUEST, &body)
+            .expect("the opcode is translated")
+            .expect("a named creature offer is valid");
+        assert_eq!(
+            event,
+            ServerEvent::ResurrectRequest {
+                caster,
+                name: "Icon".into(),
+                sickness: true,
+                has_timer: true,
+            }
+        );
+
+        let mut body = caster.to_le_bytes().to_vec();
+        body.extend_from_slice(&1u32.to_le_bytes());
+        body.push(0); // the empty name's NUL
+        body.push(0); // a player caster: no sickness
+        body.extend_from_slice(&0u32.to_le_bytes()); // the no-timer override
+        let event = parse(crate::opcode::SMSG_RESURRECT_REQUEST, &body)
+            .expect("the opcode is translated")
+            .expect("a player offer is valid");
+        assert_eq!(
+            event,
+            ServerEvent::ResurrectRequest {
+                caster,
+                name: String::new(),
+                sickness: false,
+                has_timer: false,
+            }
+        );
     }
 
     /// One whole record in the exact `Player::BuildEnumData` order
@@ -5104,6 +5454,160 @@ mod tests {
             parse(crate::opcode::SMSG_ATTACKSTOP, &b).unwrap().unwrap(),
             ServerEvent::AttackStop { attacker: 0x11, victim: 0x22 }
         );
+    }
+
+    /// 12340's swing: TotalDamage then Overkill, a school mask per damage block, and the
+    /// TargetState byte. The decoder keeps the mask and hit word as sent; the app seam normalises
+    /// them for the 1.12 consumers.
+    #[test]
+    fn attacker_state_reads_the_12340_overkill_and_conditional_blocks() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x202u32.to_le_bytes()); // normal hit | critical
+        b.extend_from_slice(&pack_guid(0x11));
+        b.extend_from_slice(&pack_guid(0x22));
+        b.extend_from_slice(&30u32.to_le_bytes()); // TotalDamage
+        b.extend_from_slice(&5u32.to_le_bytes()); // Overkill
+        b.push(1); // sub-damage count
+        b.extend_from_slice(&1u32.to_le_bytes()); // school mask (physical)
+        b.extend_from_slice(&30.0f32.to_le_bytes());
+        b.extend_from_slice(&30u32.to_le_bytes());
+        b.push(1); // TargetState: hit
+        b.extend_from_slice(&0u32.to_le_bytes()); // attackerState
+        b.extend_from_slice(&0u32.to_le_bytes()); // meleeSpellId
+        let event = parse(crate::opcode::SMSG_ATTACKERSTATEUPDATE, &b)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ServerEvent::AttackerState {
+                attacker: 0x11,
+                victim: 0x22,
+                hit_info: 0x202,
+                damage: 30,
+                victim_state: 1,
+                absorb: 0,
+                resist: 0,
+                blocked: 0,
+                melee_spell_id: 0,
+                school: 1,
+            }
+        );
+    }
+
+    /// A blocked swing sets 0x2000 and carries the trailing blocked word; without the bit the
+    /// decoder reads no word, so the following byte is not mistaken for one.
+    #[test]
+    fn attacker_state_reads_blocked_only_with_the_block_bit() {
+        let swing = |hit_info: u32, blocked: Option<u32>| {
+            let mut b = Vec::new();
+            b.extend_from_slice(&hit_info.to_le_bytes());
+            b.extend_from_slice(&pack_guid(0x11));
+            b.extend_from_slice(&pack_guid(0x22));
+            b.extend_from_slice(&0u32.to_le_bytes()); // TotalDamage
+            b.extend_from_slice(&0u32.to_le_bytes()); // Overkill
+            b.push(1);
+            b.extend_from_slice(&1u32.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.push(5); // TargetState: blocks
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            if let Some(blocked) = blocked {
+                b.extend_from_slice(&blocked.to_le_bytes());
+            }
+            parse(crate::opcode::SMSG_ATTACKERSTATEUPDATE, &b)
+                .unwrap()
+                .unwrap()
+        };
+        assert!(matches!(
+            swing(0x2002, Some(30)),
+            ServerEvent::AttackerState { blocked: 30, victim_state: 5, .. }
+        ));
+        assert!(matches!(
+            swing(0x2, None),
+            ServerEvent::AttackerState { blocked: 0, victim_state: 5, .. }
+        ));
+    }
+
+    /// Absorb and resist words follow all damage blocks, in that order; the seam keeps their
+    /// sums because the 1.12 line and portrait flash read one amount per kind.
+    #[test]
+    fn attacker_state_sums_the_conditional_absorb_and_resist_blocks() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x1E0u32.to_le_bytes()); // full+partial absorb, full+partial resist
+        b.extend_from_slice(&pack_guid(0x11));
+        b.extend_from_slice(&pack_guid(0x22));
+        b.extend_from_slice(&0u32.to_le_bytes()); // TotalDamage
+        b.extend_from_slice(&0u32.to_le_bytes()); // Overkill
+        b.push(2);
+        for school in [1u32, 4] {
+            b.extend_from_slice(&school.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for absorb in [7u32, 5] {
+            b.extend_from_slice(&absorb.to_le_bytes());
+        }
+        for resist in [3u32, 2] {
+            b.extend_from_slice(&resist.to_le_bytes());
+        }
+        b.push(1); // TargetState: hit
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        let event = parse(crate::opcode::SMSG_ATTACKERSTATEUPDATE, &b)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ServerEvent::AttackerState {
+                attacker: 0x11,
+                victim: 0x22,
+                hit_info: 0x1E0,
+                damage: 0,
+                victim_state: 1,
+                absorb: 12,
+                resist: 5,
+                blocked: 0,
+                melee_spell_id: 0,
+                school: 1,
+            }
+        );
+    }
+
+    /// The four empty swing refusals: 0x145/0x146 latch their own messages, while 0x148 and 0x149
+    /// both mean the server stopped the attack (12340's shared `SetCombatMode` arm).
+    #[test]
+    fn wrath_attack_swing_refusals_read_as_their_variants() {
+        for (opcode, expected) in [
+            (crate::opcode::SMSG_ATTACKSWING_NOTINRANGE, AttackSwingError::NotInRange),
+            (crate::opcode::SMSG_ATTACKSWING_BADFACING, AttackSwingError::BadFacing),
+            (
+                crate::opcode::SMSG_ATTACKSWING_DEADTARGET,
+                AttackSwingError::DeadOrUnattackable,
+            ),
+            (
+                crate::opcode::SMSG_ATTACKSWING_CANT_ATTACK,
+                AttackSwingError::DeadOrUnattackable,
+            ),
+        ] {
+            assert_eq!(
+                parse(opcode, &[]).unwrap().unwrap(),
+                ServerEvent::AttackSwingError(expected),
+                "opcode {opcode:#x}"
+            );
+        }
+    }
+
+    /// A mode ack carries no jump tail and no deck pose, so it may not announce one: a hover or
+    /// water-walk ack answered mid-air would otherwise shift the server's read of `apply`.
+    #[test]
+    fn an_ack_without_a_tail_does_not_announce_one() {
+        // 12340 FORWARD | ONTRANSPORT | FALLING.
+        let p = move_mode_ack(0x11, 7, true, 0x1 | 0x200 | 0x1000, 1000, [1.0, 2.0, 3.0], 0.5);
+        // Packed guid 2, counter 4, then the 30-byte `MovementInfo` with no tail, then `apply`.
+        assert_eq!(u32::from_le_bytes(le::<4>(&p[6..10])), 0x1);
+        assert_eq!(p.len(), 2 + 4 + 30 + 4);
+        assert_eq!(u32::from_le_bytes(le::<4>(&p[36..])), 1);
     }
 
     #[test]
@@ -5558,6 +6062,99 @@ mod tests {
         assert!(read_item_info(&truncated).is_err());
     }
 
+    /// One 12340 `MSG_INSPECT_HONOR_STATS` reply body: guid, rank, HKs, honors.
+    fn build_inspect_honor_body(
+        guid: u64,
+        highest_rank: u8,
+        today_hk: u16,
+        yesterday_hk: u16,
+        today_honor: u32,
+        yesterday_honor: u32,
+        lifetime_hk: u32,
+    ) -> Vec<u8> {
+        let mut b = Vec::with_capacity(25);
+        b.extend_from_slice(&guid.to_le_bytes());
+        b.push(highest_rank);
+        b.extend_from_slice(&today_hk.to_le_bytes());
+        b.extend_from_slice(&yesterday_hk.to_le_bytes());
+        b.extend_from_slice(&today_honor.to_le_bytes());
+        b.extend_from_slice(&yesterday_honor.to_le_bytes());
+        b.extend_from_slice(&lifetime_hk.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn inspect_honor_decodes_the_25_byte_12340_reply() {
+        let body = build_inspect_honor_body(
+            0x0700_0000_0001_2345,
+            14,
+            7,
+            3,
+            12_345,
+            678,
+            42_000,
+        );
+        assert_eq!(body.len(), 25);
+        match read_inspect_honor(&body).expect("25-byte reply must decode") {
+            InspectHonor {
+                guid,
+                highest_rank,
+                today_hk,
+                yesterday_hk,
+                today_honor,
+                yesterday_honor,
+                lifetime_hk,
+            } => {
+                assert_eq!(guid, 0x0700_0000_0001_2345);
+                assert_eq!(highest_rank, 14);
+                assert_eq!(today_hk, 7);
+                assert_eq!(yesterday_hk, 3);
+                assert_eq!(today_honor, 12_345);
+                assert_eq!(yesterday_honor, 678);
+                assert_eq!(lifetime_hk, 42_000);
+            }
+        }
+    }
+
+    #[test]
+    fn inspect_honor_zero_body_decodes_to_zeroed_fields() {
+        let body = build_inspect_honor_body(0, 0, 0, 0, 0, 0, 0);
+        let honor = read_inspect_honor(&body).expect("all-zero reply must decode");
+        assert_eq!(
+            honor,
+            InspectHonor {
+                guid: 0,
+                highest_rank: 0,
+                today_hk: 0,
+                yesterday_hk: 0,
+                today_honor: 0,
+                yesterday_honor: 0,
+                lifetime_hk: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_honor_rejects_short_and_oversized_bodies() {
+        // 24 bytes (one byte short): must refuse, not misread the tail fields.
+        let mut short = build_inspect_honor_body(1, 2, 3, 4, 5, 6, 7);
+        short.pop();
+        let err = read_inspect_honor(&short).expect_err("24-byte body must fail");
+        assert!(
+            err.to_string().contains("25 bytes"),
+            "unexpected error for short body: {err:#}"
+        );
+
+        // 26 bytes: an over-long reply is a layout violation, not a truncation to ignore.
+        let mut long = build_inspect_honor_body(1, 2, 3, 4, 5, 6, 7);
+        long.push(0);
+        let err = read_inspect_honor(&long).expect_err("26-byte body must fail");
+        assert!(
+            err.to_string().contains("25 bytes"),
+            "unexpected error for oversized body: {err:#}"
+        );
+    }
+
     #[test]
     fn learn_talent_and_pet_orders_match_12340_wire_layouts() {
         let talent = encode_learn_talent(161, 3);
@@ -5748,5 +6345,104 @@ mod tests {
         let pet_buy = petition_buy(0x1122, "Vanguard");
         assert_eq!(u64::from_le_bytes(le::<8>(&pet_buy[0..8])), 0x1122);
         assert_eq!(u32::from_le_bytes(le::<4>(&pet_buy[pet_buy.len() - 4..])), 9);
+    }
+
+    /// A packed guid for unit 7 followed by `tail`.
+    fn mover_body(tail: &[&[u8]]) -> Vec<u8> {
+        let mut b = vec![0x01, 0x07];
+        for part in tail {
+            b.extend_from_slice(part);
+        }
+        b
+    }
+
+    fn mover_event(opcode: u16, body: &[u8]) -> ServerEvent {
+        parse(opcode, body)
+            .expect("mover-control opcodes are decoded")
+            .expect("the AzerothCore body is valid")
+    }
+
+    #[test]
+    fn forced_speeds_carry_the_run_only_byte_and_all_nine_kinds() {
+        use crate::opcode::*;
+        // `Unit::SetSpeed`: the `u8 0` sits between counter and speed for MOVE_RUN alone.
+        let run = mover_body(&[&3u32.to_le_bytes(), &[0], &8.5f32.to_le_bytes()]);
+        assert_eq!(
+            mover_event(SMSG_FORCE_RUN_SPEED_CHANGE, &run),
+            ServerEvent::ForceSpeedChange { kind: SpeedKind::Run, guid: 7, counter: 3, speed: 8.5 }
+        );
+        let plain = mover_body(&[&4u32.to_le_bytes(), &2.5f32.to_le_bytes()]);
+        for (opcode, kind) in [
+            (SMSG_FORCE_WALK_SPEED_CHANGE, SpeedKind::Walk),
+            (SMSG_FORCE_SWIM_BACK_SPEED_CHANGE, SpeedKind::SwimBack),
+            (SMSG_FORCE_FLIGHT_SPEED_CHANGE, SpeedKind::Flight),
+            (SMSG_FORCE_PITCH_RATE_CHANGE, SpeedKind::PitchRate),
+        ] {
+            assert_eq!(
+                mover_event(opcode, &plain),
+                ServerEvent::ForceSpeedChange { kind, guid: 7, counter: 4, speed: 2.5 }
+            );
+        }
+        // The run byte is not optional, and other kinds carry none.
+        assert!(parse(SMSG_FORCE_WALK_SPEED_CHANGE, &run).unwrap().is_err());
+        let spline = mover_body(&[&1.25f32.to_le_bytes()]);
+        assert_eq!(
+            mover_event(SMSG_SPLINE_SET_RUN_BACK_SPEED, &spline),
+            ServerEvent::SpeedChanged { kind: SpeedKind::RunBack, guid: 7, speed: 1.25 }
+        );
+    }
+
+    #[test]
+    fn mover_orders_and_unit_modes_name_their_direction() {
+        use crate::opcode::*;
+        let order = mover_body(&[&9u32.to_le_bytes()]);
+        for (opcode, mode, apply) in [
+            (SMSG_FORCE_MOVE_ROOT, MoveMode::Root, true),
+            (SMSG_FORCE_MOVE_UNROOT, MoveMode::Root, false),
+            (SMSG_MOVE_SET_CAN_FLY, MoveMode::CanFly, true),
+            (SMSG_MOVE_GRAVITY_ENABLE, MoveMode::GravityDisabled, false),
+        ] {
+            assert_eq!(
+                mover_event(opcode, &order),
+                ServerEvent::MoveMode { mode, apply, guid: 7, counter: 9 }
+            );
+        }
+        let unit = mover_body(&[]);
+        for (opcode, mode, apply) in [
+            (SMSG_SPLINE_MOVE_ROOT, SplineMode::Root, true),
+            (SMSG_SPLINE_MOVE_SET_RUN_MODE, SplineMode::WalkMode, false),
+            (SMSG_SPLINE_MOVE_SET_FLYING, SplineMode::Flying, true),
+        ] {
+            assert_eq!(
+                mover_event(opcode, &unit),
+                ServerEvent::SplineMoveMode { mode, apply, guid: 7 }
+            );
+        }
+    }
+
+    #[test]
+    fn knockback_and_client_control_keep_azerothcore_field_order() {
+        use crate::opcode::*;
+        // `Unit::KnockbackFrom`: counter, vcos, vsin, speedXY, -speedZ.
+        let floats: Vec<u8> = [0.6f32, 0.8, 12.0, -7.5]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let body = mover_body(&[&11u32.to_le_bytes(), &floats]);
+        assert_eq!(
+            mover_event(SMSG_MOVE_KNOCK_BACK, &body),
+            ServerEvent::KnockBack {
+                guid: 7,
+                counter: 11,
+                cos_angle: 0.6,
+                sin_angle: 0.8,
+                xy_speed: 12.0,
+                z_speed_down: -7.5,
+            }
+        );
+        assert_eq!(
+            mover_event(SMSG_CLIENT_CONTROL_UPDATE, &mover_body(&[&[0]])),
+            ServerEvent::ClientControl { guid: 7, allow_move: false }
+        );
     }
 }

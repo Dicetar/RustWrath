@@ -112,6 +112,8 @@ pub struct ObjectEntry {
     /// field index); cleared on create. The basis for unknown-vs-zero semantics below.
     delivered: Vec<u64>,
     pub movement: Option<MovementSnapshot>,
+    transport: Option<(u64, i8)>,
+    vehicle_id: Option<u32>,
     /// The visible aura slots from `SMSG_AURA_UPDATE[_ALL]`, sorted by slot. 12340 sends auras
     /// as packets rather than descriptor fields.
     pub auras: Vec<AuraSlot>,
@@ -130,6 +132,27 @@ pub struct ObjectEntry {
 }
 
 impl ObjectEntry {
+    fn apply_movement(&mut self, snapshot: MovementSnapshot) -> bool {
+        let mut changed = self
+            .movement
+            .as_ref()
+            .is_none_or(|prev| !prev.observation_equivalent(&snapshot));
+        if snapshot.update_flags & crate::updates::update_flags::LIVING != 0 {
+            changed |= self.transport != snapshot.transport;
+            self.transport = snapshot.transport;
+        }
+        if let Some(id) = snapshot.vehicle_id {
+            changed |= self.set_vehicle_id(id);
+        }
+        self.movement = Some(snapshot);
+        changed
+    }
+
+    fn set_vehicle_id(&mut self, id: u32) -> bool {
+        let kit = (id != 0).then_some(id);
+        std::mem::replace(&mut self.vehicle_id, kit) != kit
+    }
+
     /// A u32 field by index.
     ///
     /// Semantics (established, matching the stock client): the real client zero-initializes
@@ -157,6 +180,14 @@ impl ObjectEntry {
     }
 }
 
+/// A passenger's replicated seat in a held vehicle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VehicleAttachment {
+    pub base_guid: u64,
+    pub vehicle_id: u32,
+    pub seat_index: u8,
+}
+
 /// The replicated world: GUID-keyed, iteration-ordered for deterministic snapshots.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorldState {
@@ -175,6 +206,25 @@ impl WorldState {
 
     pub fn get(&self, guid: u64) -> Option<&ObjectEntry> {
         self.objects.get(&guid)
+    }
+
+    /// A passenger's seat and kit. An ordinary map transport has no vehicle kit.
+    pub fn seated_vehicle(&self, passenger: u64) -> Option<VehicleAttachment> {
+        let (base, seat) = self.get(passenger)?.transport?;
+        if !(0..8).contains(&seat) || base == 0 || base == passenger {
+            return None;
+        }
+        Some(VehicleAttachment {
+            base_guid: base,
+            vehicle_id: self.get(base)?.vehicle_id?,
+            seat_index: seat as u8,
+        })
+    }
+
+    pub(crate) fn apply_vehicle_id(&mut self, guid: u64, id: u32) -> bool {
+        self.objects
+            .get_mut(&guid)
+            .is_some_and(|entry| entry.set_vehicle_id(id))
     }
 
     pub fn len(&self) -> usize {
@@ -278,12 +328,7 @@ impl WorldState {
                     // MOVEMENT: packed guid, one movement block.
                     let guid = r.packed_guid()?;
                     let snapshot = movement_block(&mut r)?;
-                    let relevant = match self.objects.get(&guid).and_then(|e| e.movement.as_ref()) {
-                        Some(prev) => !prev.observation_equivalent(&snapshot),
-                        None => true,
-                    };
-                    changed |= relevant;
-                    self.entry(guid, 0).movement = Some(snapshot);
+                    changed |= self.apply_movement(guid, snapshot);
                     events.push(ChangeEvent::Moved { guid });
                 }
                 0xAA => {
@@ -315,7 +360,9 @@ impl WorldState {
                     entry.auras.clear();
                     entry.auras_observed = false;
                     entry.aura_receipts.clear();
-                    entry.movement = Some(snapshot);
+                    entry.transport = None;
+                    entry.vehicle_id = None;
+                    entry.apply_movement(snapshot);
                     self.apply_values(guid, &mut r)?;
                     events.push(ChangeEvent::Created { guid });
                 }
@@ -344,6 +391,8 @@ impl WorldState {
             fields: Vec::new(),
             delivered: Vec::new(),
             movement: None,
+            transport: None,
+            vehicle_id: None,
             auras: Vec::new(),
             auras_observed: false,
             aura_receipts: BTreeMap::new(),
@@ -469,22 +518,19 @@ impl WorldState {
     /// Apply a standalone movement snapshot (e.g. `MSG_MOVE_TELEPORT`'s payload, which is
     /// not an update-block) to one GUID. Returns whether observation-relevant state changed.
     pub fn apply_movement(&mut self, guid: u64, snapshot: MovementSnapshot) -> bool {
-        let relevant = match self.objects.get(&guid).and_then(|e| e.movement.as_ref()) {
-            Some(prev) => !prev.observation_equivalent(&snapshot),
-            None => true,
-        };
-        self.entry(guid, 0).movement = Some(snapshot);
-        relevant
+        self.entry(guid, 0).apply_movement(snapshot)
     }
 
-    /// Update an existing tracked unit's authoritative position when `SMSG_MONSTER_MOVE` arrives
-    /// so subsequent values-only updates do not snap the unit back to its old create-block pose.
+    /// Update an existing unit's transport association and any world-space spline endpoint.
     pub fn apply_monster_move(&mut self, mv: &crate::gameplay::MonsterMove) -> bool {
         let Some(entry) = self.objects.get_mut(&mv.guid) else {
             return false;
         };
+        let transport_changed = entry.transport != mv.transport;
+        entry.transport = mv.transport;
         if mv.transport.is_some() {
-            return false;
+            // The transport variant's spline points are in the transport's local coordinates.
+            return transport_changed;
         }
         let target_xyz = if mv.stop {
             mv.start
@@ -511,7 +557,7 @@ impl WorldState {
                 let changed = movement.position != Some(next_pos) || movement.create_spline.is_some();
                 movement.position = Some(next_pos);
                 movement.create_spline = None;
-                changed
+                changed || transport_changed
             }
             None => {
                 entry.movement = Some(MovementSnapshot {
@@ -520,8 +566,11 @@ impl WorldState {
                     extra_flags: 0,
                     time: 0,
                     position: Some(next_pos),
+                    transport: None,
+                    vehicle_id: None,
                     speeds: None,
                     create_spline: None,
+                    attack_target: None,
                 });
                 true
             }

@@ -12,7 +12,9 @@
 //! 3. Movement server-blocked: rooted, stunned, confused, fleeing or on a taxi.
 //! 4. No server at all ([`offline_notice`]): a capture run spawns no IO thread, so nothing on the
 //!    packet path executes and a clean exit proves nothing about it. This fires at startup, since
-//!    the banner itself waits on [`EnteredWorldMessage`].
+//!    the banner itself waits on [`EnteredWorldMessage`]. A Wrath session owns the net loop instead
+//!    (its `WrathNetPlugin` runs the IO thread the stock `NetPlugin` parks without), so a Wrath run
+//!    is never warned here.
 //! 5. Two `Camera2d`s on one target with different MSAA ([`camera_2d_msaa_agrees`]), fatal the
 //!    frame it happens with an error that names no camera.
 //!
@@ -97,17 +99,30 @@ impl Plugin for PreflightPlugin {
     }
 }
 
-/// Warn once at startup that this run has no server; a `warn!` so a skim of the log sees it.
-fn offline_notice(net: Option<Res<crate::net::NetOffline>>) {
-    if net.is_none() {
-        return;
+/// The wire-path warning for a run with no IO thread: nothing drains it, so nothing on the wire
+/// path executes and a clean exit proves nothing. A Wrath session owns the net loop through its own
+/// IO thread, so its parked `NetOffline` is the Wrath design and not a capture gap.
+const NET_OFF_WARNING: &str = "preflight: NET OFF — no IO thread this run, so the drain gets no packets and NOTHING on the wire path executes (net::apply, the movement stream, every MSG_MOVE_*). Fine for a visual capture; NOT evidence for a change to any of it. docs/METHOD.md's gate is a clean run of the AFFECTED path — for wire work that means a live server run.";
+
+/// The wire-path finding for this session, as the warning line to emit or none. A Wrath session
+/// owns the net loop, so an offline state on a Wrath run is not a finding; a stock run with no IO
+/// thread is.
+fn net_offline_finding(wrath_owns_net: bool, offline: bool) -> Option<&'static str> {
+    if !offline || wrath_owns_net {
+        return None;
     }
-    warn!(
-        "preflight: NET OFF — no IO thread this run, so the drain gets no packets and NOTHING on \
-         the wire path executes (net::apply, the movement stream, every MSG_MOVE_*). Fine for a \
-         visual capture; NOT evidence for a change to any of it. docs/METHOD.md's gate is a clean run \
-         of the AFFECTED path — for wire work that means a live server run."
-    );
+    Some(NET_OFF_WARNING)
+}
+
+/// Warn once at startup that this run has no server; a `warn!` so a skim of the log sees it. A
+/// Wrath run owns the net loop and stays silent.
+fn offline_notice(
+    wrath: Option<Res<crate::wrath::WrathInput>>,
+    net: Option<Res<crate::net::NetOffline>>,
+) {
+    if let Some(line) = net_offline_finding(wrath.is_some(), net.is_some()) {
+        warn!("{line}");
+    }
 }
 
 /// Every `Camera2d` on one render target must carry the same `Msaa`: Bevy keys the 2D depth
@@ -420,6 +435,25 @@ mod tests {
         assert!(!hold_for_gm_off(true, true, ShieldReport::Disabled, 0.4));
         // and not a clear flag.
         assert!(!hold_for_gm_off(false, true, ShieldReport::Armed, 0.4));
+    }
+
+    /// A Wrath session owns the net loop, so its parked `NetOffline` is the design, not a capture
+    /// gap, and never alarms.
+    #[test]
+    fn a_wrath_session_never_alarms_the_wire_path_offline() {
+        assert!(net_offline_finding(true, true).is_none());
+    }
+
+    /// A stock capture run with no IO thread has nothing on the wire path to execute.
+    #[test]
+    fn a_stock_capture_run_without_an_io_thread_alarms_net_off() {
+        assert_eq!(net_offline_finding(false, true), Some(NET_OFF_WARNING));
+    }
+
+    /// A run that owns its net loop has no offline finding at all.
+    #[test]
+    fn a_run_with_an_io_thread_has_no_net_off_finding() {
+        assert!(net_offline_finding(false, false).is_none());
     }
 
     #[test]

@@ -356,8 +356,9 @@ fn get_script(lua: &Lua, this: &Table, name: &str) -> mlua::Result<Value> {
 }
 
 /// Apply the `inherits` argument: the font-object registry first (`0x773d39`), then the template
-/// registry (`0x773d47`); a name in neither raises (`0x87957c` / `0x879544`). A template that is
-/// not a font object only warns: the reference applies the template, which is not built here.
+/// registry (`0x773d47`); a name in neither raises (`0x87957c` / `0x879544`). A template is
+/// instantiated through the region's XML `LoadXML` on the region the constructor just made, never a
+/// second region; stock `ChatConfigFrame.xml`'s class-color legends rely on this.
 fn apply_region_inherits(lua: &Lua, wrapper: &Table, from: &str) -> mlua::Result<()> {
     use mlua::ObjectLike;
     // Through `SetFontObject`, the binding the XML `inherits=` path uses.
@@ -371,12 +372,14 @@ fn apply_region_inherits(lua: &Lua, wrapper: &Table, from: &str) -> mlua::Result
         .borrow()
         .contains(from);
     if is_template {
+        let report = crate::loader::apply_region_template(lua, wrapper, from);
         let mut model = lua.app_data_mut::<Model>().expect("model");
-        model.record_warning(format!(
-            "CreateTexture/CreateFontString: '{from}' is a registered TEMPLATE, not a font object; \
-             the region is created but the template's content is not applied (no corpus caller \
-             does this)"
-        ));
+        for (log, heard) in report.raised() {
+            model.record_script_error(log.to_string(), heard.to_string());
+        }
+        for w in report.warnings {
+            model.record_warning(w);
+        }
         return Ok(());
     }
     Err(mlua::Error::runtime(format!(

@@ -10,7 +10,7 @@ The workflow's bounded checks and human-driven combat restrictions govern this c
 
 For this repository's `wotlk` retarget, the target is 3.3.5a build 12340. Consult the preserved
 12340 decompilation before designing or repairing a target-specific mechanism:
-`D:/Projects/wowdecomp-reference`, pinned at `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`.
+`D:/Projects/wow/reference/wowdecomp-reference`, pinned at `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`.
 [Reference workflow](agents/12340-reference.md) defines how to locate functions, record evidence
 and resolve uncertain reconstruction. Use benilla-re for donor 1.12 behavior, not as proof of
 Wrath layouts or ABI. All evidence, install-read-only and verification rules below still apply.

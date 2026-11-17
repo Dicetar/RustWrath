@@ -214,12 +214,15 @@ pub(super) fn load_core_bindings(script: &UiScript) -> Vec<String> {
         );
         return Vec::new();
     };
-    match benilla_ui::bindings_xml::parse(&benilla_ui::source::decode(&bytes)) {
-        Ok(bindings) => {
-            script.register_bindings(&bindings);
+    match benilla_ui::bindings_xml::parse_file(&benilla_ui::source::decode(&bytes)) {
+        Ok(file) => {
+            script.register_bindings(&file.bindings);
+            // The same loader's `<ModifiedClick>` rows (`LoadModifiedClick`, 12340 `0x00562DD0`).
+            script.register_modified_clicks(&file.modified_clicks);
             info!(
-                "bindings: {} commands registered from {}",
-                bindings.len(),
+                "bindings: {} commands and {} modified clicks registered from {}",
+                file.bindings.len(),
+                file.modified_clicks.len(),
                 reference_ui::BINDINGS
             );
             Vec::new()
@@ -632,5 +635,76 @@ mod tests {
         load_stock_bindings(&mut s);
         assert_eq!(s.eval::<i64>("return GetNumBindings()").unwrap(), 223);
         assert!(!s.execute_binding("ITUNES_PLAYPAUSE", true).unwrap());
+    }
+
+    /// The installed Wrath core, file by file into a Wrath VM as `load_core` walks it, timed once
+    /// with a fixed-width measurer and once with the app's atlas measurer: a live run spent 153 s
+    /// between `ChatFrame.xml` and the end of `FloatingChatFrame.xml` that earlier builds spent
+    /// under a second in — the 2026-11-14 session in
+    /// `benilla-config/Logs/Launcher/20261114-132949-470/stderr.log`, lines 280 and 282.
+    ///
+    /// A probe for that one stall, not a gate: it loads the whole installed core and asserts on
+    /// wall-clock time, so it is out of the default run. Run it by hand with
+    /// `cargo test -p benilla-app each_wrath_core_file_loads_in_bounded_time -- --ignored --nocapture`;
+    /// `CORE_FILE_TIME` prints the chat file and every file that took 250 ms or more, and
+    /// `CORE_TOTAL_TIME` each walk.
+    #[test]
+    #[ignore = "probe: the 153 s FloatingChatFrame.xml stall from the 2026-11-14 launcher log, run by hand with --ignored --nocapture"]
+    fn each_wrath_core_file_loads_in_bounded_time() {
+        use benilla_ui::script::{TextMeasure, UiTarget};
+
+        use crate::ui_text::{AtlasMeasurer, UiFontAtlas};
+
+        benilla_formats::wow_data_or_skip!();
+        let bytes = reference_ui::read(reference_ui::TOC).expect("installed FrameXML.toc");
+        let text = benilla_ui::source::decode(&bytes);
+        assert_eq!(benilla_ui::toc::Toc::parse(&text).interface_version(), 30300);
+        let core = reference_ui::core_from(&text);
+        let chat_file = r"Interface\FrameXML\FloatingChatFrame.xml";
+        assert!(
+            core.toc
+                .files
+                .iter()
+                .any(|file| file.eq_ignore_ascii_case(chat_file)),
+            "Wrath FrameXML.toc must list {chat_file}"
+        );
+
+        let atlas = UiFontAtlas::for_test(1.0).expect("the installed client fonts open");
+        let measurers: [(&str, Box<dyn TextMeasure>); 2] = [
+            ("fixed", Box::new(crate::ui_script::FixedWidthFont(7.0))),
+            ("atlas", Box::new(AtlasMeasurer::new(atlas.engine(), 1.0))),
+        ];
+        let mut slow = Vec::new();
+        for (kind, measurer) in measurers {
+            let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+            s.set_screen_size(1024.0, 768.0);
+            s.set_text_measurer(measurer);
+            let mut cvars = crate::cvars::Cvars::default();
+            super::super::lifecycle::register_wrath_cvars(&mut cvars);
+            cvars.seed_vm(&mut s);
+            s.register_cvars(crate::cvars::registered_pairs());
+            let mut toc = benilla_ui::status::Status::default();
+            let all = std::time::Instant::now();
+            for file in core.toc.files.iter().filter(|f| !reference_ui::wrath_skipped(f)) {
+                let chat = file.eq_ignore_ascii_case(chat_file);
+                if chat {
+                    eprintln!("CORE_FILE_START {kind} {file}");
+                }
+                let start = std::time::Instant::now();
+                let failures = core.load_files_into(&s, std::slice::from_ref(file), &mut toc);
+                let took = start.elapsed();
+                if chat || took.as_millis() >= 250 {
+                    eprintln!("CORE_FILE_TIME {kind} {file}: {} ms", took.as_millis());
+                }
+                if chat && !failures.is_empty() {
+                    eprintln!("CORE_FILE_ERRORS {kind} {file}: {failures:?}");
+                }
+                if took.as_secs() >= 10 {
+                    slow.push(format!("{kind} {file}: {} ms", took.as_millis()));
+                }
+            }
+            eprintln!("CORE_TOTAL_TIME {kind} {} ms", all.elapsed().as_millis());
+        }
+        assert!(slow.is_empty(), "core files over 10 s: {slow:?}");
     }
 }

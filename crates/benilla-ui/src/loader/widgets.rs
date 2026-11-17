@@ -131,6 +131,22 @@ impl Loader<'_> {
                 if let Some(enabled) = level.attr_bool_opt("motionScriptsWhileDisabled") {
                     self.call(wrapper, "SetMotionScriptsWhileDisabled", enabled, dbg);
                 }
+                if let Some(clicks) = level.attr("registerForClicks") {
+                    let tokens: Vec<String> = clicks
+                        .split([',', ' ', '\t'])
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                    if !tokens.is_empty() {
+                        self.call(
+                            wrapper,
+                            "RegisterForClicks",
+                            mlua::Variadic::from_iter(tokens),
+                            dbg,
+                        );
+                    }
+                }
             }
         }
         // Each state-texture element is a new region from the `<Layers>` texture adder (`0x6f26f0`,
@@ -165,9 +181,8 @@ impl Loader<'_> {
             } else {
                 FontAttrs::Own
             };
-            // `SetText` creates the label even with no text, so its layout lands on a real region;
-            // `text=` is each level's, a global-string key (`0x703bf0`), an empty one skipped
-            // (`0x77101b`).
+            // The label's `text=` is each level's, a global-string key (`0x703bf0`), an empty one
+            // skipped (`0x77101b`).
             let label_levels = self.fontstring_levels(bt);
             let mut label = String::new();
             for level in &label_levels {
@@ -175,13 +190,15 @@ impl Loader<'_> {
                     label = self.resolve_text(raw, dbg);
                 }
             }
-            // A named label is created as a named region, not aliased after `SetText`, so its
-            // `GetName()` answers.
+            // A named label is created as a named region first, not aliased after `SetText`, so
+            // its `GetName()` answers. Wrath builds the unnamed `ButtonText` region too, as
+            // `LoadXML_String` does (`CSimpleButton.cpp:939`): there `SetText("")` would not create
+            // one (`CSimpleButton.cpp:650`), and stock OnLoad handlers call `GetFontString()` even
+            // when the node has no name or text. On 1.12 the unnamed label comes from the
+            // `SetText` below, which creates it even for an empty text, on the overlay layer.
             let bt_name = bt.name().map(|raw| framexml::resolve_name(raw, self_name));
-            if let Some(rname) = bt_name.clone() {
-                match wrapper
-                    .call_method::<Table>("CreateFontString", (rname, Option::<String>::None))
-                {
+            if bt_name.is_some() || self.model().target == crate::script::UiTarget::Wrath335 {
+                match wrapper.call_method::<Table>("CreateFontString", bt_name.as_deref()) {
                     Ok(fs) => self.call(wrapper, "SetFontString", fs, dbg),
                     Err(e) => self
                         .report
@@ -191,7 +208,10 @@ impl Loader<'_> {
             }
             self.call(wrapper, "SetText", label, dbg);
             if let Ok(region) = wrapper.call_method::<Table>("GetFontString", ()) {
-                let parent_key = label_levels.iter().filter_map(|node| node.attr("parentKey")).last();
+                let parent_key = label_levels
+                    .iter()
+                    .filter_map(|node| node.attr("parentKey"))
+                    .next_back();
                 self.publish_parent_key(parent_key, &region, dbg);
                 // Clear, lay out, then the implicit step, as both reference legs do (`0x6f27f5`,
                 // `0x778b96`); the button's own adopter anchor never fires on them (`0x778d5f`).
@@ -211,14 +231,11 @@ impl Loader<'_> {
                 if let Err(e) = crate::script::refresh_label_lua(self.lua, wrapper) {
                     self.report.fault(format!("{dbg}: label refresh: {e}"));
                 }
-                // Published both ways, like a named state texture.
+                // The name lookup is retaken after the displaced label died, as for a named state
+                // texture; `_G` keeps its first holder (`0x701c8a`), which `CreateFontString`
+                // already published.
                 if let Some(rname) = bt_name {
                     crate::script::region::publish_region_name(self.lua(), &rname, &region);
-                    if let Err(e) = self.lua().globals().set(rname.clone(), region) {
-                        self.report
-                            .warnings
-                            .push(format!("{dbg}: ButtonText global '{rname}': {e}"));
-                    }
                 }
             }
         }

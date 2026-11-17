@@ -9,9 +9,9 @@
 //! the client cannot store, values the record's own contract forbids, and trailing bytes instead
 //! of skipping or clamping them.
 //!
-//! Source anchors (pinned `D:/WOW/WM_BridgeLab/src/azerothcore` at
+//! Source anchors (pinned `D:/Projects/wow/server/WM_BridgeLab/src/azerothcore` at
 //! `5e741c37364f4ec5e3bc2860bcf21f13812fb66d` and
-//! `D:/Projects/wowdecomp-reference` at `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`):
+//! `D:/Projects/wow/reference/wowdecomp-reference` at `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`):
 //!
 //! * group list: `src/server/game/Groups/Group.cpp:1696-1745`,
 //!   `WoW/Source/Object/ObjectClient/Player_C.cpp:11572-11812`

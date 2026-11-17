@@ -829,6 +829,11 @@ pub(crate) struct FlyCam {
 }
 
 impl FlyCam {
+    /// The live camera yaw, which the movement hotpatch frame reports.
+    pub(crate) fn yaw(&self) -> f32 {
+        self.yaw
+    }
+
     /// Point the rig at an absolute world yaw and pitch, for `capture::probe_cam`.
     pub(crate) fn park(&mut self, yaw: f32, pitch: f32) {
         self.yaw = yaw;

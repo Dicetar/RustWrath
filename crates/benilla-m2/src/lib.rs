@@ -463,13 +463,8 @@ pub fn parse_m2(cursor: &mut Cursor<&[u8]>) -> Result<M2Format> {
             texture_transform_lookup,
             global_sequences,
             bones: bone_list,
-            // Wrath moved the camera arrays and changed their stride; actors do not read them.
-            cameras: if wrath { Vec::new() } else { parse_cameras(b) },
-            camera_lookup: if wrath {
-                Vec::new()
-            } else {
-                parse_camera_lookup(b)
-            },
+            cameras: parse_cameras(b),
+            camera_lookup: parse_camera_lookup(b),
             raw_data: M2RawData {
                 texture_lookup_table: tlt,
                 bounding_triangles: bt_bytes,

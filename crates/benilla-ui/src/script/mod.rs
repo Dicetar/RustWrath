@@ -45,6 +45,7 @@ mod chat_send;
 mod chat_types;
 mod chat_window;
 mod clip;
+mod combat_log;
 mod colorselect;
 mod console_exec;
 mod container;
@@ -163,6 +164,7 @@ mod measure;
 mod merchant;
 mod messageframe;
 mod minimap;
+pub mod minimap_tracking;
 mod movieframe;
 pub mod nameplate;
 pub use nameplate::{PlateBitWrites, PlateGeometry, PlateState, PLATE_BIT_ENEMY, PLATE_BIT_FRIEND};
@@ -348,7 +350,7 @@ pub use item_text::{ItemTextCall, ItemTextState};
 pub use layout_cache::{AnchorLayout, FrameLayout, LayoutPoint};
 pub use lock_check::{check_lock, LockCheck, LockOpener, LockOpeners, LockSlotView};
 pub use loot::{LootCall, LootRow, LootState, LOOT_PORTRAIT_UNIT};
-pub use loot_roll::{LootRollCall, LootRollEntry, LootRollsState};
+pub use loot_roll::{LootRollCall, LootRollEntry, LootRollsState, WrathLootRollTooltip};
 pub use macros::{
     macro_lines, MacroBinding, MacroDerives, MacroState, MacroView, CHARACTER_ID_BASE, MAX_MACROS,
     MAX_MACRO_BODY, MAX_MACRO_NAME,
@@ -371,7 +373,8 @@ pub use minimap::{
 pub(crate) use model::Model;
 pub use model::{
     FontProbe, MacroIconSource, TextureProbe, TextureSizeFn, TextureSizeProbe, WorldLocFn,
-    WorldLocProjector,
+    WorldLocProjector, WrathLfgProposalMemberState, WrathLfgProposalState,
+    WrathLfgQueueStatusState, WrathLfgState, WrathScopedCommand,
 };
 pub use party::{
     PartyMemberInfo, PartyRequest, PartyState, RaidMemberInfo, ReadyCheckState, SavedInstanceInfo,
@@ -407,6 +410,7 @@ pub use stable::{StableCall, StableIntent, StablePetSlot, StableState, NUM_STABL
 pub use summon::{SummonCall, SummonConfirmUiState};
 pub use talent::{
     TalentCall, TalentPrereqView, TalentReq, TalentTabView, TalentUiState, TalentView,
+    WrathTalentGroupView, WrathTalentUiState,
 };
 pub use taxi::{TaxiCall, TaxiNodeType, TaxiUiNode, TaxiUiState};
 pub use tooltip_aura::{AuraKey, AuraTooltipView};
@@ -865,9 +869,13 @@ fn install_in_game(lua: &Lua) -> mlua::Result<()> {
     worldstate::install(lua)?;
     net_stats::install(lua)?;
     if lua.app_data_ref::<Model>().expect("model").target == UiTarget::Wrath335 {
+        // `UnitCombatLog_C_Scripts.cpp`: the stock combat-log frame's filter and query surface.
+        combat_log::install(lua)?;
         wrath_spell::install(lua)?;
         wrath_unit::install(lua)?;
         wrath_aura::install(lua)?;
+        // The DEATH and RESURRECT dialogs' own 3.3.5 natives (StaticPopup.lua).
+        death::install_wrath(lua)?;
     }
     Ok(())
 }
@@ -1555,6 +1563,8 @@ impl UiScript {
         let held: Vec<crate::widget::FrameHandle> =
             model.mouse_down_on.values().copied().flatten().collect();
         model.mouse_down_on.clear();
+        // No release will be fed, so nothing counts as held for `IsMouseButtonDown` either.
+        model.buttons_held.clear();
         // Every held button gets the release edge never fed (`0x7793de`), else it stays pushed.
         for h in held {
             button::edge(&mut model, h, crate::widget::ButtonState::on_mouse_up);
@@ -1705,6 +1715,16 @@ impl UiScript {
     /// template.
     pub fn has_font_object(&self, name: &str) -> bool {
         self.model_ref().font_object(name).is_some()
+    }
+
+    /// Whether the named frame exists and is currently marked shown (`Frame:IsShown()`).
+    pub fn is_shown(&self, name: &str) -> bool {
+        let model = self.model_ref();
+        model
+            .arena
+            .lookup(name)
+            .and_then(|h| model.arena.frame(h))
+            .is_some_and(|f| f.shown)
     }
 
     /// The widget kind of a published name, in `CreateFrame`'s spelling (`SimpleHTML`): host-side,

@@ -123,6 +123,7 @@ fn run(app: &mut App, lua: &str) {
 /// The packets a chunk sent, the queries left out.
 fn sent(rx: &Receiver<ClientCommand>) -> Vec<String> {
     rx.try_iter()
+        .map(ClientCommand::into_inner)
         .map(|c| format!("{c:?}"))
         .filter(|c| !c.contains("Query"))
         .collect()

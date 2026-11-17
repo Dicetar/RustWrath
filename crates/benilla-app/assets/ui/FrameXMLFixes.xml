@@ -62,5 +62,24 @@
                 getglobal(this:GetName().."HotKey"):SetText("")
             end
         end
+        -- Deviation: CharacterFrame_ShowSubFrame (CharacterFrame.lua:23-31) hides every
+        -- CHARACTERFRAME_SUBFRAMES row through `_G[value]:Hide()`. A row this install does not
+        -- ship (`TokenFrame` is referenced by the stock list but absent from the patch chain
+        -- here) raises on nil and aborts the whole tab switch. Skip rows that do not exist; a
+        -- shipped row behaves exactly as stock.
+        if CharacterFrame_ShowSubFrame and CHARACTERFRAME_SUBFRAMES then
+            function CharacterFrame_ShowSubFrame(frameName)
+                for _, value in pairs(CHARACTERFRAME_SUBFRAMES) do
+                    local frame = _G[value]
+                    if frame then
+                        if value == frameName then
+                            frame:Show()
+                        else
+                            frame:Hide()
+                        end
+                    end
+                end
+            end
+        end
     ]]></Script>
 </Ui>

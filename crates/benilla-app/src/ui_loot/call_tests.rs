@@ -202,6 +202,7 @@ pub(super) fn seen(l: &mut Loot) -> String {
 /// The loot packets sent since the last read, in order.
 pub(super) fn sent(l: &Loot) -> Vec<ClientCommand> {
     l.rx.try_iter()
+        .map(ClientCommand::into_inner)
         .filter(|c| {
             matches!(
                 c,
@@ -884,6 +885,41 @@ fn a_replaced_sessions_close_keeps_the_next_copiers_end() {
     });
     feed(&mut l);
     assert_eq!(seen(&mut l), "LOOT_OPENED");
+}
+
+/// A row whose record lands after the response is named when `LOOT_OPENED` fires: the reference
+/// signals in the record's callback (`0x00589460`) and `GetLootSlotInfo` reads the item cache at
+/// the call (`0x00588570`), so the stock frame's first paint has the name, quality and link.
+#[test]
+fn a_row_answered_after_the_response_is_named_at_loot_opened() {
+    const UNCACHED: u32 = 40_000;
+    let mut l = client();
+    run(
+        &mut l,
+        r#"local f = CreateFrame("Frame")
+        f:RegisterEvent("LOOT_OPENED")
+        f:SetScript("OnEvent", function()
+            local _, name = GetLootSlotInfo(1)
+            OPENED_NAME, OPENED_LINK = name, GetLootSlotLink(1)
+        end)"#,
+    );
+    open(&mut l, CORPSE, 1, 0, vec![row(0, UNCACHED)]);
+    assert_eq!(seen(&mut l), "", "the copier waits on the row's record");
+    let world = l.app.world_mut();
+    world
+        .resource_mut::<Items>()
+        .insert_template(UNCACHED, Some(crate::items::test_template("Ruined Pelt")));
+    world.resource_scope(|world, mut loot: Mut<LootState>| {
+        loot.row_answered(world.resource::<Items>())
+    });
+    feed(&mut l);
+    assert_eq!(seen(&mut l), "LOOT_OPENED");
+    let (name, link): (String, Option<String>) = eval(&mut l, "return OPENED_NAME, OPENED_LINK");
+    assert_eq!(name, "Ruined Pelt");
+    assert!(
+        link.as_deref().is_some_and(|link| link.contains("[Ruined Pelt]")),
+        "{link:?}"
+    );
 }
 
 /// An inventory failure ends by signalling `LOOT_OPENED` again while a window is open

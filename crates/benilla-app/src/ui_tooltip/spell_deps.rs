@@ -263,10 +263,11 @@ impl Changes {
     }
 
     /// The modifier tables' change. A new class family changes which spells the tables reach at
-    /// all, so it is everything.
+    /// all, so it is everything; a high-word cell change is similarly whole-tooltip until a
+    /// per-bit high read is tracked.
     pub(super) fn with_mods(mut self, diff: ModsDiff) -> Self {
         self.mod_bits = diff.bits;
-        self.everything |= diff.class_family;
+        self.everything |= diff.class_family || diff.high_bits != 0;
         self
     }
 

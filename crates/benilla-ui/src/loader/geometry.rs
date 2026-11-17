@@ -67,12 +67,28 @@ impl Loader<'_> {
         if el.attr_bool("hidden") {
             self.call(wrapper, "Hide", (), dbg);
         }
-        // An unknown `frameStrata=` is logged (`0x7699a4`) and skipped, not raised as the Lua
-        // binding would (`0x774360`): `SetFrameStrata` runs only on a hit (`0x769971`), so the
-        // frame keeps the strata it had.
+        if el.attr_bool("protected") {
+            if let Ok(h) = crate::script::object::frame_handle_of(self.lua(), wrapper) {
+                if let Some(frame) = self.model().arena.frame_mut(h) {
+                    frame.protected_explicit = true;
+                }
+            }
+        }
+        // Wrath's stock GlueXML uses `TOOLTIP2` for a second tooltip-sized overlay, while the
+        // client strata table exposes only the `TOOLTIP` bucket. Keep the Lua setter strict, but
+        // preserve the stock XML's intended topmost ordering at this compatibility boundary.
         if let Some(strata) = el.attr("frameStrata") {
+            let resolved = if self.model().target == crate::script::UiTarget::Wrath335
+                && strata.eq_ignore_ascii_case("TOOLTIP2")
+            {
+                Some("TOOLTIP")
+            } else {
+                None
+            };
             if crate::script::object::strata_from_str(strata).is_some() {
                 self.call(wrapper, "SetFrameStrata", strata.to_string(), dbg);
+            } else if let Some(strata) = resolved {
+                self.call(wrapper, "SetFrameStrata", strata, dbg);
             } else {
                 self.report
                     .warnings

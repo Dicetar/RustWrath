@@ -360,7 +360,19 @@ pub(super) fn cursor_position(model: &super::Model) -> (f64, f64) {
     model.layout_space().cursor(x, y)
 }
 
-/// Install `GetCursorPosition()` and `GetMouseFocus()`. The cursor ([`cursor_position`]) has no
+/// The WoW name of mouse button `n` (1 left, 2 right, 3 middle, 4 and 5 the side buttons).
+fn mouse_button_name(n: i64) -> Option<&'static str> {
+    match n {
+        1 => Some("LeftButton"),
+        2 => Some("RightButton"),
+        3 => Some("MiddleButton"),
+        4 => Some("Button4"),
+        5 => Some("Button5"),
+        _ => None,
+    }
+}
+
+/// Install `GetCursorPosition()`, `IsMouseButtonDown()` and `GetMouseFocus()`. The cursor ([`cursor_position`]) has no
 /// scale divided out: a caller divides by its frame's `GetEffectiveScale()`, which carries the UI
 /// scale inside `UIParent`.
 pub(super) fn install(lua: &mlua::Lua) -> mlua::Result<()> {
@@ -369,6 +381,26 @@ pub(super) fn install(lua: &mlua::Lua) -> mlua::Result<()> {
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<super::Model>().expect("model app_data");
             Ok(cursor_position(&model))
+        })?,
+    )?;
+
+    // `IsMouseButtonDown([button])`: 1 while that button is held, else nil. The button is its WoW
+    // name (`"LeftButton"`, `"RightButton"`, `"MiddleButton"`, `"Button4"`, `"Button5"`) or its
+    // number 1-5; no argument asks whether any button is held. The 3.3.5 chat tab's `OnUpdate`
+    // polls it to end an undock/move drag (`FCFTab_OnUpdate`); missing, that script errored
+    // every frame before its stop and the chat window stayed on the cursor.
+    lua.globals().set(
+        "IsMouseButtonDown",
+        lua.create_function(|lua, button: Value| {
+            let model = lua.app_data_ref::<super::Model>().expect("model app_data");
+            let name = match &button {
+                Value::Nil => return Ok((!model.buttons_held.is_empty()).then_some(1)),
+                Value::String(s) => s.to_str()?.to_string(),
+                Value::Integer(n) => mouse_button_name(*n).unwrap_or_default().to_string(),
+                Value::Number(n) => mouse_button_name(*n as i64).unwrap_or_default().to_string(),
+                _ => String::new(),
+            };
+            Ok(model.buttons_held.contains(&name).then_some(1))
         })?,
     )?;
 
@@ -703,6 +735,15 @@ impl UiScript {
             edge: if down { UiEdge::Press } else { UiEdge::Release },
             ..UiHitFacts::default()
         };
+        // The held set `IsMouseButtonDown` reads, before any early return: every edge is fed here.
+        {
+            let mut model = self.model_mut();
+            if down {
+                model.buttons_held.insert(button.to_string());
+            } else {
+                model.buttons_held.remove(button);
+            }
+        }
         // ── The layout drag, ahead of everything ─────────────────────────────────────────────────
         //
         // With `SetLayoutMode` on, a press with Control (`0x41f8f0(1)`) or Alt (`0x41f8f0(2)`) held
@@ -1075,9 +1116,12 @@ impl UiScript {
         // started, still does.
         if down {
             if let Some(id) = press_id {
-                if let Err(e) =
+                // The press's button is `IsModifiedClick`'s click button while the script runs
+                // (`CSimpleFrame::OnLayerMouseDown`, 12340 `0x0048FC30`; the release `0x0048FCE0`).
+                let fired = super::keybind::clicks::with_click_button(&self.lua, button, || {
                     event::fire_widget_handler(&self.lua, id, "OnMouseDown", vec![btn.clone()])
-                {
+                });
+                if let Err(e) = fired {
                     self.push_error(e);
                 }
             }
@@ -1091,9 +1135,10 @@ impl UiScript {
                 }
             }
         } else if let Some(id) = captured_id {
-            if let Err(e) =
+            let fired = super::keybind::clicks::with_click_button(&self.lua, button, || {
                 event::fire_widget_handler(&self.lua, id, "OnMouseUp", vec![btn.clone()])
-            {
+            });
+            if let Err(e) = fired {
                 self.push_error(e);
             }
         }

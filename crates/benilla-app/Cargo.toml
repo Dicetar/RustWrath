@@ -20,6 +20,10 @@ trace_chrome = ["bevy/trace_chrome"]
 # only through `cargo run`, which puts the toolchain's libstd on the loader path.
 bevy_dynamic_linking = ["bevy/dynamic_linking"]
 hotpatch = ["dev", "dep:benilla-hotpatch-bevy", "bevy/embedded_watcher"]
+# Whole-client live code (`live_code`, ADR-0002): run under `dx serve --hot-patch`, which patches
+# every edited workspace crate into the running process. Patches apply only with debug assertions,
+# so on the `dev` profile, never `play` or `ship`. Not with `bevy_dynamic_linking`.
+live_code = ["dev", "bevy/hotpatching"]
 
 [dependencies]
 anyhow.workspace = true
@@ -52,6 +56,7 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # Thread-to-ECS channels: crossbeam's `Receiver` is `Sync`, so it is a resource without a mutex.
 crossbeam-channel = "0.5"
 benilla-assets = { path = "../benilla-assets", default-features = false }
+benilla-combat-core = { path = "../benilla-combat-core" }
 benilla-formats = { path = "../benilla-formats", default-features = false }
 benilla-protocol = { path = "../benilla-protocol" }
 benilla-protocol-wrath = { path = "../benilla-protocol-wrath" }

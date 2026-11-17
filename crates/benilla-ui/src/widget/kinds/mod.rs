@@ -287,6 +287,10 @@ pub enum TooltipAnchor {
     Left,
     /// `ANCHOR_RIGHT`: the plate's left edge on the owner's right.
     Right,
+    /// `ANCHOR_BOTTOM`: the plate's top edge on the owner's bottom.
+    Bottom,
+    /// `ANCHOR_TOP`: the plate's bottom edge on the owner's top.
+    Top,
     BottomLeft,
     BottomRight,
     TopLeft,
@@ -309,6 +313,8 @@ impl TooltipAnchor {
         match self {
             TooltipAnchor::Left => "ANCHOR_LEFT",
             TooltipAnchor::Right => "ANCHOR_RIGHT",
+            TooltipAnchor::Bottom => "ANCHOR_BOTTOM",
+            TooltipAnchor::Top => "ANCHOR_TOP",
             TooltipAnchor::BottomLeft => "ANCHOR_BOTTOMLEFT",
             TooltipAnchor::BottomRight => "ANCHOR_BOTTOMRIGHT",
             TooltipAnchor::TopLeft => "ANCHOR_TOPLEFT",

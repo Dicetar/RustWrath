@@ -690,13 +690,14 @@ fn date_and_time_read_the_local_zone() {
             (1_338_508_800_i64 - 3 * 3600).to_string()
         );
     }
-    // Five hours west, an hour less in summer: 1_000_000_000 is 2001-09-08 21:46:40 EDT.
-    let zone = if cfg!(windows) {
-        "EST5EDT"
-    } else {
-        "EST5EDT,M3.2.0,M11.1.0"
-    };
-    let _zone = crate::civil::ZoneGuard::set(zone);
+    // Five hours west, an hour less in summer. The UCRT applies the OS's current daylight rule to
+    // a bare `EST5EDT` zone string, so a 2001 instant cannot be placed by that year's rule (Unix
+    // parses the explicit dates); the Windows arm checks the wiring by round trip.
+    #[cfg(unix)]
+    let _zone = crate::civil::ZoneGuard::set("EST5EDT,M3.2.0,M11.1.0");
+    #[cfg(windows)]
+    let _zone = crate::civil::ZoneGuard::set("EST5EDT");
+    #[cfg(unix)]
     for (src, want) in [
         (
             r#"return date("%Y-%m-%d %H:%M:%S", 1000000000)"#,
@@ -721,6 +722,23 @@ fn date_and_time_read_the_local_zone() {
     ] {
         assert_eq!(eval(src), want, "{src}");
     }
+    #[cfg(windows)]
+    {
+        let round: bool = s
+            .eval("local t = date('*t', 1000000000) return time(t) == 1000000000")
+            .unwrap();
+        assert!(
+            round,
+            "a local date table converts back under the runtime's daylight rule"
+        );
+        let isdst: bool = s.eval("return date('*t', 1000000000).isdst").unwrap();
+        let name: String = s.eval("return date('%Z', 1000000000)").unwrap();
+        assert_eq!(
+            name,
+            if isdst { "EDT" } else { "EST" },
+            "the zone name follows the runtime's isdst"
+        );
+    }
 }
 
 // ── RunScript ──
@@ -735,7 +753,8 @@ fn a_runscript_chunk_is_named_by_its_own_source() {
     let errs = s.take_errors();
     assert!(
         errs.iter()
-            .any(|e| e.starts_with("[string \"error('boom')\"]:1: boom")),
+            .any(|e| e.starts_with("[string \"error('boom')\"]:1: boom")
+                && e.contains("\nLua traceback: [string]:1")),
         "the chunk names itself by its source: {errs:?}"
     );
 }
@@ -891,3 +910,6 @@ fn a_frame_no_instruction_names_takes_a_globals_name() {
         "no global holds it: {named}"
     );
 }
+
+
+

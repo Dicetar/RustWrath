@@ -7,7 +7,7 @@
 //! next turn ([`super::run_then`]): the listeners read the state as the signal left it.
 
 use benilla_protocol::messages::{loot_type, slot_type};
-use benilla_ui::script::{CallTail, LootCall, ScriptValue, UiScript};
+use benilla_ui::script::{CallTail, LootCall, ScriptValue, UiScript, UiTarget};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
@@ -17,6 +17,7 @@ use super::{
 };
 use crate::items::Items;
 use crate::net::{ClientCommand, NetCommands};
+use crate::query_cache::Ask;
 use crate::ui_action::{UiError, UiErrorKeys};
 use crate::ui_party::GroupState;
 
@@ -263,6 +264,7 @@ impl LootSteps<'_, '_> {
             return;
         }
         let action = self.loot.window.action_at(row);
+        let wrath = script.target() == UiTarget::Wrath335;
         match action {
             Some(LootAction::Money) => {
                 let trace = self.begin_loot(source, None, None, Some(row));
@@ -317,10 +319,18 @@ impl LootSteps<'_, '_> {
                 script.fire_event("OPEN_MASTER_LOOT_LIST", vec![]);
             }
             Some(LootAction::Item {
+                slot_type: slot_type::LOCKED,
+                ..
+            }) if wrath => {
+                let trace = self.begin_loot(source, None, None, Some(row));
+                record(&trace, Stage::GuardRefused);
+                self.errors.push(UiError::key("ERR_LOOT_CANT_LOOT_THAT"));
+            }
+            Some(LootAction::Item {
                 wire_slot,
                 display_id,
                 item_id,
-                ..
+                slot_type,
             }) => {
                 let trace = self.begin_loot(
                     source,
@@ -330,7 +340,11 @@ impl LootSteps<'_, '_> {
                 );
                 // Bind on pickup and uncommon or better (`0x4c28f2`, `0x4c28fb`): the confirm,
                 // whose listeners run before the stash takes the row (`0x4c290f`, `0x4c2917`).
-                if bind_confirm_required(&self.items, item_id) {
+                if wrath && self.items.template(item_id, 0, Ask::Read).is_none() {
+                    record(&trace, Stage::GuardRefused);
+                    return;
+                }
+                if bind_confirm_required(&self.items, item_id, slot_type, wrath) {
                     record(&trace, Stage::GuardRefused);
                     script.fire_event("LOOT_BIND_CONFIRM", vec![ScriptValue::Int(i64::from(row))]);
                     self.loot.then.push(Then::StoreBind { row });
@@ -567,17 +581,21 @@ impl LootSteps<'_, '_> {
     /// first of which signals `LOOT_BIND_CONFIRM` (`0x4c21d4`), the sweep going on after its
     /// listeners ([`Then::SweepRest`]), and the later ones stay (`0x4c21c2`); then its end.
     fn sweep_rows(&mut self, script: &mut UiScript, from: u32, confirmed: bool, flag: bool) {
+        let wrath = script.target() == UiTarget::Wrath335;
         for row in from..=self.loot.window.row_count() {
             let Some(LootAction::Item {
                 wire_slot,
                 display_id,
                 item_id,
-                slot_type: slot_type::ALLOW_LOOT,
+                slot_type,
             }) = self.loot.window.action_at(row)
             else {
                 continue;
             };
-            if bind_confirm_required(&self.items, item_id) {
+            if slot_type != slot_type::ALLOW_LOOT && !(wrath && slot_type == slot_type::OWNER) {
+                continue;
+            }
+            if bind_confirm_required(&self.items, item_id, slot_type, wrath) {
                 if confirmed {
                     continue;
                 }
@@ -638,8 +656,17 @@ impl LootSteps<'_, '_> {
 /// as `"%d %s"` with its `GOLD`, `SILVER` or `COPPER` global, gold first, joined by the
 /// reference's own tests: `", "` after the gold when silver or copper is paid (`0x4c20e4`-
 /// `0x4c20f0`), and before the copper when gold or silver is (`0x4c20bc`-`0x4c20c9`), so a zero
-/// middle coin leaves `", , "`.
+/// middle coin leaves `", , "`. 3.3.5 writes the coins with `GetCurrencyText` (`0x007E7D80`)
+/// and `", "` over the `*_AMOUNT` templates.
 fn money_line(script: &UiScript, copper: u32) -> String {
+    if script.target() == UiTarget::Wrath335 {
+        let coins =
+            benilla_ui::strings::currency_text(copper, ", ", &|key| script.global_text(key));
+        return benilla_ui::strings::fill(
+            &script.global_text("YOU_LOOT_MONEY"),
+            &[benilla_ui::strings::Arg::S(&coins)],
+        );
+    }
     // `SplitCopper 0x6c6260`.
     let (g, s, c) = (copper / 10_000, copper / 100 % 100, copper % 100);
     let coin = |n: u32, key: &str| match n {

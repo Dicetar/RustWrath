@@ -102,8 +102,10 @@ const WRATH_INGAME_EVENTS: &[&str] = &[
     "CANCEL_SUMMON",
     "CHANNEL_INVITE_REQUEST",
     "CHANNEL_PASSWORD_REQUEST",
-    // WMBridge consumes PARTY_KILL through the unfiltered combat-log event
+    // Blizzard_CombatLog.lua registers COMBAT_LOG_EVENT alongside COMBAT_LOG_EVENT_UNFILTERED,
+    // and WMBridge consumes PARTY_KILL through the unfiltered combat-log event
     // (`UnitCombatLog_C.cpp:866-887`); the host emits it from the decoded kill packet.
+    "COMBAT_LOG_EVENT",
     "COMBAT_LOG_EVENT_UNFILTERED",
     "CONFIRM_DISENCHANT_ROLL",
     "DISABLE_TAXI_BENCHMARK",

@@ -17,13 +17,12 @@ pub(super) fn register(app: &mut App) {
 
 fn on_weather(In(ev): In<SessionEvent>, mut out: MessageWriter<WeatherMessage>) {
     if let SessionEvent::Weather {
-        weather_type,
+        weather_id,
         grade,
-        sound_id,
         instant,
     } = ev
     {
-        weather(weather_type, grade, sound_id, instant, &mut out);
+        weather(weather_id, grade, instant, &mut out);
     }
 }
 
@@ -37,18 +36,18 @@ fn on_world_states(In(ev): In<SessionEvent>, mut states: ResMut<WorldStates>) {
     }
 }
 
-/// `SMSG_WEATHER`: the zone's weather change, `instant` on zone entry, a ramp otherwise.
+/// `SMSG_WEATHER`: the zone's weather change, `instant` on zone entry, a ramp otherwise. The wire
+/// carries a `Weather.dbc` id whose row names the effect type and the ambience kit, never a sound
+/// id; that field is a 1.12 layout.
 fn weather(
-    weather_type: u32,
+    weather_id: u32,
     grade: f32,
-    sound_id: u32,
     instant: bool,
     out: &mut MessageWriter<WeatherMessage>,
 ) {
     out.write(WeatherMessage {
-        weather_type,
+        weather_id,
         grade,
-        sound_id,
         instant,
     });
 }

@@ -4,6 +4,10 @@ Use one accountable owner per ticket, across whichever crates are needed. Perman
 Astra/OC crate partitions are retired. Standing coordination and execution rules are in
 [workflow.md](workflow.md); this file records assignments and resource reservations.
 
+Since 2026-11-15 the status of a task lives in the task note on its branch, and
+`scripts/agent-tasks.sh` lists every branch in flight ([sync](sync.md)). This file keeps what
+cannot travel through the repository: the Cargo and client slots on the workstation.
+
 ## Current assignments to revalidate
 
 Snapshot reconciled on 2026-11-02 from existing reservations and recorded outcomes.
@@ -33,13 +37,48 @@ Before reserving a slot, inspect processes and coordinate with the task owner. R
 
 | Resource | Owner | Task / command and evidence log | State |
 |---|---|---|---|
-| Cargo | Astra | `cargo build -p benilla --features hotpatch`; `.scratch/project-b/build-2026-11-02-astra-pose.log` | Passed; slot released |
-| Client | Astra / owner | Run `20261102-222346-059`, PID43304, SHA256 `1D853A073F916C1CBD952FA21E36ACB6BA960C29486B919CD2F6A7A13B3B43BC` | Owner entered Northshire as Firna; visible world/combat observed, do not interrupt or compete |
+| Cargo | overseer | Release verification 2026-11-11: `cargo check -p benilla-hotpatch -p benilla-hotpatch-bevy` passed; 15 focused `benilla-hotpatch` tests passed after one test assertion correction. The 2026-11-11 `benilla-app --features hotpatch` blockage (21 errors in `ui_quest::is_shown` and the wrath PvP/LFG surface) was repaired by `c5d57f18` (check log `check-2026-11-12-merge-inspect-honor-4.log`). After `680c6eac` a new `PetLoyaltyNames::default()` E0599 broke the `benilla-formats`→`benilla-app` chain; fixed in the 2026-11-13 fix round (handoff `2026-11-13-fix-round.md`). Logs: `.scratch/project-b/release-verify-2026-11-11.log`, `.scratch/project-b/release-tests-2026-11-11.log`, `.scratch/project-b/check-2026-11-12-merge-inspect-honor-4.log` | Slot released; app chain compiles |
+| Client | Astra / owner | Run `20261102-222346-059`, PID43304, SHA256 `1D853A073F916C1CBD952FA21E36ACB6BA960C29486B919CD2F6A7A13B3B43BC` | Historical (2026-11-02). No client process as of 2026-11-13; revalidate before reuse |
+
+Release verification 2026-11-11: the hotpatch crates compile and the 15 focused hotpatch tests
+pass (one state-file test assertion corrected). The 2026-11-11 `benilla-app --features hotpatch`
+blockage (21 pre-existing errors in `ui_quest::is_shown` and the wrath PvP/LFG protocol surface)
+was repaired by `c5d57f18` (`check-2026-11-12-merge-inspect-honor-4.log` ends `Finished`).
+`680c6eac` then introduced a new compile break (`PetLoyaltyNames::default()` with no `Default`
+impl), fixed in the 2026-11-13 fix round. No client/server/visual run has been made since
+`680c6eac`; runtime readiness is still not established.
 
 Update the reservation when acquired and release it on completion. Do not overwrite a
 newer reservation or kill another owner's process to acquire the slot.
 
 ## Current evidence and continuation
+
+- 2026-11-15 Souls kit and Elden Ring converter (Claude, branch `feat/souls-er-kit`, worktree
+  `D:/Projects/wow/worktrees/feat-souls-er-kit`): `benilla-combat-core` gains per-input action
+  timing (`InputWindows`), the `Kit` record and text format, `import_kit`, and the `import_kit`
+  binary. Cargo slot used for one focused run of 19 combat-core cases (all passed) plus the
+  binary build, and released; log `.scratch/project-b/test-2026-11-15-claude-souls-er-kit.log`.
+  The converter read the owner's local generated tables into the worktree's ignored `out/kits/`
+  (not committed). Landed on `main` as `5f770c6b` the same day; no app build, no client run;
+  nothing in the app loads a kit yet.
+  Handoff `.scratch/project-b/handoffs/2026-11-15-souls-er-kit.md`.
+
+- 2026-11-14 enemy nameplates (Claude, branch `fix/wrath-nameplate-cvars`, `a676dd6e`): the two
+  12340 plate CVars now drive `VPlateMode`. Cargo slot used for one focused run of 13 cases
+  (9 passed; 4 failed without reaching the change: one legacy-settings case that cannot pass
+  while the names are registered, three that load the installed 3.3.5a interface into a 1.12 VM)
+  and released; log `.scratch/project-b/test-2026-11-14-claude-nameplate-cvars.log`. Not merged,
+  not in `target/debug/benilla.exe`, no client run; pressing V in game is the open check.
+
+- 2026-11-13 fix round (DeepSeek V4.1 Flash coordinator + AutoSwarm Anvil/Forge): preflight wire-off
+  notice made Wrath-aware with 3 regression tests; spell-modifier accumulation widened to the full
+  96-bit table with 3 tests (full high-word completion scoped — `SpellDisplay` carrier, see
+  [fix-round handoff](../../.scratch/project-b/handoffs/2026-11-13-fix-round.md)); `PetLoyaltyNames`
+  `Default` build unblocker; `read_inspect_honor` decoder tests (crate suite 121/0); packet doc
+  correction. Handoffs: `2026-11-13-anvil-preflight.md`, `2026-11-13-forge-spell-mods.md`.
+  Open from the dig: global `GetText`/`LocaleProperties.lua` (same blocker as the honor-frame app
+  tests), `VoiceChatSpeakerTemplate` (x220), `MoneyFrame.lua:274 money` (x63),
+  `ChannelFrame.lua:716 texture` (x8).
 
 - Step 2 completed & pushed to `main` and `wotlk` at `1cc5e4fe` (merging `f222a1f8` and `b60362fb`):
   Lossless 12340 keyring cast-gate readers (`reagent_totem_refusal_in_player`), pet spell/GUID

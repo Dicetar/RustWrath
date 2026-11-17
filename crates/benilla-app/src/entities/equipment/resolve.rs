@@ -288,6 +288,17 @@ pub(in crate::entities) fn resolve_equipment(
         // choice shows here; a hidden piece is display id 0, so its model and `0x4799a0` masks go.
         let (hide_helm, hide_cloak) = (s.player_hides_helm(), s.player_hides_cloak());
         let prev = looked_up.copied().unwrap_or_default();
+        let visible_or_inv_entry = |slot: u8| -> Option<u32> {
+            s.player_visible_item_entry(slot)
+                .filter(|&e| e != 0)
+                .or_else(|| {
+                    s.player_inv_slot(slot)
+                        .filter(|&g| g != 0)
+                        .and_then(|g| objects.object(g))
+                        .and_then(|o| o.object_entry())
+                        .filter(|&e| e != 0)
+                })
+        };
         let mut reads = SlotReads {
             templates: &templates,
             net: &net,
@@ -297,9 +308,9 @@ pub(in crate::entities) fn resolve_equipment(
             now: LookedUp {
                 visible: std::array::from_fn(|i| {
                     let slot = i as u8;
-                    match s.player_visible_item_entry(slot) {
-                        Some(e) if e != 0 => prev.visible[i],
-                        _ => 0,
+                    match visible_or_inv_entry(slot) {
+                        Some(_) => prev.visible[i],
+                        None => 0,
                     }
                 }),
                 ..prev
@@ -311,7 +322,7 @@ pub(in crate::entities) fn resolve_equipment(
                 ..default()
             };
             for (slot, idx) in COMPOSITE_SLOTS {
-                let Some(entry) = s.player_visible_item_entry(slot).filter(|e| *e != 0) else {
+                let Some(entry) = visible_or_inv_entry(slot) else {
                     continue;
                 };
                 match reads.worn(slot, entry) {
@@ -321,13 +332,13 @@ pub(in crate::entities) fn resolve_equipment(
             }
             // The cloak (slot 14) and helm (slot 0). A hidden piece is still looked up and zeroed
             // after, so `settled` keeps its meaning and showing it again needs no round trip.
-            if let Some(entry) = s.player_visible_item_entry(14).filter(|e| *e != 0) {
+            if let Some(entry) = visible_or_inv_entry(14) {
                 match reads.worn(14, entry) {
                     Some(display) => eq.cloak = display,
                     None => eq.settled = false,
                 }
             }
-            if let Some(entry) = s.player_visible_item_entry(0).filter(|e| *e != 0) {
+            if let Some(entry) = visible_or_inv_entry(0) {
                 match reads.worn(0, entry) {
                     Some(display) => eq.helm = display,
                     None => eq.settled = false,
@@ -400,9 +411,7 @@ pub(in crate::entities) fn resolve_equipment(
                         (d, inv as u32, sheath, class, subclass, material)
                     })
                 }
-                EntityKind::Player => s
-                    .player_visible_item_entry(PLAYER_HELD_SLOTS[slot])
-                    .filter(|e| *e != 0)
+                EntityKind::Player => visible_or_inv_entry(PLAYER_HELD_SLOTS[slot])
                     .and_then(|entry| reads.visible(PLAYER_HELD_SLOTS[slot], entry))
                     .filter(|t| t.display_info_id != 0)
                     .map(|t| {
@@ -613,8 +622,7 @@ pub(in crate::entities) fn resolve_equipment(
                 let race = s.unit_race().unwrap_or(1);
                 let sex = s.unit_gender().unwrap_or(0).min(1);
                 let mut resolve = |slot: u8| {
-                    s.player_visible_item_entry(slot)
-                        .filter(|e| *e != 0)
+                    visible_or_inv_entry(slot)
                         .and_then(|entry| reads.visible(slot, entry))
                         .map(|t| t.display_info_id)
                         .filter(|d| *d != 0)
@@ -916,6 +924,35 @@ mod tests {
         assert_eq!(placement(0, 21, 3, 0), Some(attach_id::HIP_MAIN));
         assert_eq!(placement(1, 14, 4, 0), Some(attach_id::SHIELD_BACK));
         assert_eq!(placement(0, 21, 3, 1), Some(attach_id::HAND_RIGHT));
+    }
+
+    /// The 3.3.5 attach table, pinned per weapon class: `GEOCOMPONENTLINKS` `Types.h` and
+    /// `CCharacterComponent::GetSheatheLink` `0x4E7940` / `AddHandItem` `0x4EACD0`. Drawn: mainhand
+    /// 1, offhand 2, a shield 0, a bow 2 and every other ranged weapon 1. Stowed by `Item.dbc`
+    /// `SheatheType` 1 mainhand 26/27, 2 back 30/31, 3 hip 32/33, 4 shield 28; a stowed ranged
+    /// weapon is removed, never placed.
+    #[test]
+    fn the_wrath_attach_table_covers_every_weapon_class() {
+        use attach_id::*;
+        // Drawn (weapon mode 1 for melee, 2 for ranged).
+        assert_eq!(placement(0, 17, 2, 1), Some(HAND_RIGHT), "2H sword drawn");
+        assert_eq!(placement(0, 21, 3, 1), Some(HAND_RIGHT), "one-hander mainhand");
+        assert_eq!(placement(1, 22, 3, 1), Some(HAND_LEFT), "one-hander offhand");
+        assert_eq!(placement(1, 14, 4, 1), Some(SHIELD), "shield drawn");
+        assert_eq!(placement(2, 15, 1, 2), Some(HAND_LEFT), "bow drawn, left hand");
+        assert_eq!(placement(2, 26, 1, 2), Some(HAND_RIGHT), "gun drawn, right hand");
+        assert_eq!(placement(2, 25, 1, 2), Some(HAND_RIGHT), "thrown drawn, right hand");
+        // Stowed: SheatheType → (mainhand link, offhand link).
+        for (sheath, main, off) in [(1u8, 26u16, 27u16), (2, 30, 31), (3, 32, 33)] {
+            assert_eq!(placement(0, 17, sheath, 0), Some(main), "sheath {sheath} main");
+            assert_eq!(placement(1, 22, sheath, 0), Some(off), "sheath {sheath} off");
+        }
+        assert_eq!(placement(1, 14, 4, 0), Some(SHIELD_BACK), "stowed shield");
+        // A ranged weapon has no stowed model: `AddHandItem`'s hand-2 arm removes it.
+        for state in [0u8, 1] {
+            assert_eq!(placement(2, 15, 1, state), None, "bow stowed in state {state}");
+            assert_eq!(placement(2, 26, 1, state), None, "gun stowed in state {state}");
+        }
     }
 
     #[test]

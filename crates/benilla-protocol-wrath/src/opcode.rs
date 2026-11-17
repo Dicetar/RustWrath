@@ -11,7 +11,10 @@ pub const SMSG_CHAR_CREATE: u16 = 0x03A;
 pub const SMSG_CHAR_DELETE: u16 = 0x03C;
 pub const SMSG_CHAR_ENUM: u16 = 0x03B;
 pub const CMSG_PLAYER_LOGIN: u32 = 0x03D;
+pub const SMSG_CHARACTER_LOGIN_FAILED: u16 = 0x041;
 pub const SMSG_LOGIN_SETTIMESPEED: u16 = 0x042;
+pub const CMSG_CHAR_RENAME: u32 = 0x2C7;
+pub const SMSG_CHAR_RENAME: u16 = 0x2C8;
 /// The empty handler: the stock client never sends it (Astra F04; MiscHandler.cpp:485).
 pub const CMSG_PLAYER_LOGOUT: u32 = 0x04A;
 /// The real logout request -> HandleLogoutRequestOpcode (MiscHandler.cpp:425).
@@ -34,6 +37,9 @@ pub const SMSG_TRANSFER_PENDING: u16 = 0x03F;
 /// Far-teleport sequence, step 2 (`Player.cpp:1613`): u32 mapid + f32 x/y/z/o destination.
 /// Receiving this begins the new world scope; the old world's replicated state is discarded.
 pub const SMSG_NEW_WORLD: u16 = 0x03E;
+/// The announced transfer is off (`Player.cpp:11685-11702`, `SendTransferAborted`): u32 mapid +
+/// u8 reason, then one u8 argument only for reasons 7/8/9 (expansion, difficulty, unique message).
+pub const SMSG_TRANSFER_ABORTED: u16 = 0x040;
 /// Near teleport, server to client (`Unit.cpp:16198`): packed GUID + standalone movement
 /// payload (no update-flags prefix). Same world scope.
 pub const MSG_MOVE_TELEPORT: u16 = 0x0C5;
@@ -60,6 +66,7 @@ pub const MSG_MOVE_STOP_STRAFE: u32 = 0x0BA;
 pub const MSG_MOVE_JUMP: u32 = 0x0BB;
 pub const SMSG_MONSTER_MOVE: u16 = 0x0DD;
 pub const SMSG_MONSTER_MOVE_TRANSPORT: u16 = 0x2AE;
+pub const SMSG_PLAYER_VEHICLE_DATA: u16 = 0x4A7;
 pub const MSG_MOVE_START_TURN_LEFT: u32 = 0x0BC;
 pub const MSG_MOVE_START_TURN_RIGHT: u32 = 0x0BD;
 pub const MSG_MOVE_STOP_TURN: u32 = 0x0BE;
@@ -129,6 +136,17 @@ pub const CMSG_RECLAIM_CORPSE: u32 = 0x1D2;
 pub const MSG_CORPSE_QUERY: u16 = 0x216;
 /// The spirit healer's confirm guid (`NPCHandler.cpp:233-253`, `spell_generic.cpp:2735`).
 pub const SMSG_SPIRIT_HEALER_CONFIRM: u16 = 0x222;
+/// `(i32 map, f32 x, f32 y, f32 z)` (`Player.cpp:4860-4872`): the graveyard the release
+/// teleports to, shown as the minimap spirit healer; `Player::ResurrectPlayer` clears it with
+/// map `-1` and a zero position (`Player.cpp:4380-4385`).
+pub const SMSG_DEATH_RELEASE_LOC: u16 = 0x378;
+/// Packed guid of the body turning ghost (`Player.cpp:4327-4331`).
+pub const SMSG_PRE_RESURRECT: u16 = 0x494;
+/// Empty body: the instance entrance refused a ghost whose corpse lies elsewhere
+/// (`MapMgr.cpp:207`; the client shows `ERR_CORPSE_IS_NOT_IN_INSTANCE`, `GameUI.cpp:6821`).
+pub const SMSG_AREA_TRIGGER_NO_CORPSE: u16 = 0x506;
+/// `(u64 healer, u32 ms)` (`Battlefield.cpp:617-625`, `BattlegroundMgr.cpp:667-674`).
+pub const SMSG_AREA_SPIRIT_HEALER_TIME: u16 = 0x2E4;
 /// The healer's raw guid (`NPCHandler.cpp:233-252`).
 pub const CMSG_SPIRIT_HEALER_ACTIVATE: u32 = 0x21C;
 /// Empty body (`SpellHandler.cpp:705-719`).
@@ -162,6 +180,7 @@ pub const SMSG_GOSSIP_COMPLETE: u16 = 0x17E;
 pub const CMSG_NPC_TEXT_QUERY: u32 = 0x17F;
 pub const SMSG_NPC_TEXT_UPDATE: u16 = 0x180;
 pub const SMSG_QUESTGIVER_STATUS: u16 = 0x183;
+pub const SMSG_QUESTGIVER_STATUS_MULTIPLE: u16 = 0x418;
 pub const CMSG_QUESTGIVER_HELLO: u32 = 0x184;
 pub const SMSG_QUESTGIVER_QUEST_LIST: u16 = 0x185;
 pub const CMSG_QUESTGIVER_QUERY_QUEST: u32 = 0x186;
@@ -399,9 +418,10 @@ pub const CMSG_AUTH_SESSION: u32 = 0x1ED;
 pub const SMSG_AUTH_RESPONSE: u16 = 0x1EE;
 pub const SMSG_LOGIN_VERIFY_WORLD: u16 = 0x236;
 pub const SMSG_ADDON_INFO: u16 = 0x2EF;
-/// An AzerothCore-lineage unofficial opcode this server sends during the login burst
-/// (`Opcodes.h:1340`): the uncompressed form of SMSG_COMPRESSED_MOVES carrying compound
-/// movement-force states. Not in any stock codec; decoded or tolerated locally.
+/// The uncompressed form of `SMSG_COMPRESSED_MOVES`: length-prefixed sub-messages, each one
+/// processed as if it had arrived alone (12340 `Packet_SMSG_MULTIPLE_MOVES` `0x00716AF0`).
+/// AzerothCore sends it once after the add to map with the mover's root, feather fall, water
+/// walk and hover orders (`Player.cpp:11602`); [`crate::world::unpack_moves`] splits it.
 pub const SMSG_MULTIPLE_MOVES: u16 = 0x51E;
 
 /// Talents (`TalentHandler.cpp:27`): `[u32 talent_id, u32 requested_rank]`.
@@ -573,6 +593,8 @@ pub const CMSG_GMTICKET_DELETETICKET: u32 = 0x217;
 pub const CMSG_GMTICKET_SYSTEMSTATUS: u32 = 0x21A;
 pub const CMSG_BATTLEFIELD_STATUS: u32 = 0x2D3;
 pub const CMSG_BATTLEMASTER_HELLO: u32 = 0x2D7;
+pub const CMSG_BATTLEFIELD_LIST: u32 = 0x2D8;
+pub const CMSG_LEAVE_BATTLEFIELD: u32 = 0x2E1;
 pub const CMSG_AREA_SPIRIT_HEALER_QUERY: u32 = 0x2E2;
 pub const CMSG_AREA_SPIRIT_HEALER_QUEUE: u32 = 0x2E3;
 pub const MSG_BATTLEGROUND_PLAYER_POSITIONS: u32 = 0x2E9;
@@ -672,3 +694,27 @@ pub const SMSG_CONVERT_RUNE: u16 = 0x486;
 pub const SMSG_RESYNC_RUNES: u16 = 0x487;
 pub const SMSG_ADD_RUNE_POWER: u16 = 0x488;
 pub const CMSG_CALENDAR_EVENT_SIGNUP: u32 = 0x4BA;
+
+// The rest of the mover-control family 12340 registers (`Unit_C.cpp` `0x00732450`
+// `Packet_MoveMode`, `0x00741C30` `Packet_SplineMoveEffect`, `0x00741BC0`
+// `Packet_SplineSpeedChange`), values from the local `Opcodes.h`.
+pub const SMSG_COMPRESSED_MOVES: u16 = 0x2FB;
+pub const SMSG_SPLINE_MOVE_ROOT: u16 = 0x31A;
+pub const SMSG_MOVE_SET_CAN_FLY: u16 = 0x343;
+pub const SMSG_MOVE_UNSET_CAN_FLY: u16 = 0x344;
+pub const CMSG_MOVE_SET_CAN_FLY_ACK: u16 = 0x345;
+pub const SMSG_FORCE_FLIGHT_SPEED_CHANGE: u16 = 0x381;
+pub const CMSG_FORCE_FLIGHT_SPEED_CHANGE_ACK: u16 = 0x382;
+pub const SMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE: u16 = 0x383;
+pub const CMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE_ACK: u16 = 0x384;
+pub const SMSG_SPLINE_SET_FLIGHT_SPEED: u16 = 0x385;
+pub const SMSG_SPLINE_SET_FLIGHT_BACK_SPEED: u16 = 0x386;
+pub const SMSG_SPLINE_MOVE_SET_FLYING: u16 = 0x422;
+pub const SMSG_SPLINE_MOVE_UNSET_FLYING: u16 = 0x423;
+pub const SMSG_FORCE_PITCH_RATE_CHANGE: u16 = 0x45C;
+pub const CMSG_FORCE_PITCH_RATE_CHANGE_ACK: u16 = 0x45D;
+pub const SMSG_SPLINE_SET_PITCH_RATE: u16 = 0x45E;
+pub const SMSG_MOVE_GRAVITY_DISABLE: u16 = 0x4CE;
+pub const SMSG_MOVE_GRAVITY_ENABLE: u16 = 0x4D0;
+pub const SMSG_SPLINE_MOVE_GRAVITY_DISABLE: u16 = 0x4D3;
+pub const SMSG_SPLINE_MOVE_GRAVITY_ENABLE: u16 = 0x4D4;

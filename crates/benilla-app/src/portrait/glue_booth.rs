@@ -606,6 +606,17 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
             lobes.push((benilla_assets::coords::wow_to_bevy(l.bone_z), color));
         }
     }
+    let has_active_diffuse = lobes
+        .iter()
+        .chain(&points)
+        .any(|(_, c)| c.iter().sum::<f32>() > 0.01);
+    if ambient.iter().sum::<f32>() < 0.05 && !has_active_diffuse {
+        ambient = [0.45, 0.45, 0.5];
+        lobes.push((
+            Vec3::new(0.4, 0.7, 0.5).normalize(),
+            [0.75, 0.75, 0.75],
+        ));
+    }
     SceneRig {
         ambient,
         lobes,
@@ -615,18 +626,32 @@ pub(crate) fn scene_rig(lights: &[benilla_assets::ModelLight]) -> SceneRig {
 
 fn pane_scene_rig(preview: &GluePreview, model: &M2Model, ghost: bool) -> SceneRig {
     let lights = &preview.effects.lights[0][usize::from(ghost)];
-    if lights.is_empty() {
-        return if ghost { ghost_rig() } else { scene_rig(&model.lights) };
-    }
-    let mut rig = SceneRig::default();
-    for light in lights {
-        for (sum, value) in rig.ambient.iter_mut().zip(light.ambient) { *sum += value; }
-        let vector = benilla_assets::coords::wow_to_bevy(light.vector);
-        if light.omni {
-            rig.points.push((vector, light.diffuse));
-        } else {
-            rig.lobes.push((-vector, light.diffuse));
+    let mut rig = if lights.is_empty() {
+        if ghost { ghost_rig() } else { scene_rig(&model.lights) }
+    } else {
+        let mut rig = SceneRig::default();
+        for light in lights {
+            for (sum, value) in rig.ambient.iter_mut().zip(light.ambient) { *sum += value; }
+            let vector = benilla_assets::coords::wow_to_bevy(light.vector);
+            if light.omni {
+                rig.points.push((vector, light.diffuse));
+            } else {
+                rig.lobes.push((-vector, light.diffuse));
+            }
         }
+        rig
+    };
+    let has_active_diffuse = rig
+        .lobes
+        .iter()
+        .chain(&rig.points)
+        .any(|(_, c)| c.iter().sum::<f32>() > 0.01);
+    if rig.ambient.iter().sum::<f32>() < 0.05 && !has_active_diffuse {
+        rig.ambient = [0.45, 0.45, 0.5];
+        rig.lobes.push((
+            Vec3::new(0.4, 0.7, 0.5).normalize(),
+            [0.75, 0.75, 0.75],
+        ));
     }
     rig
 }
@@ -2865,6 +2890,41 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn unlit_and_zero_intensity_scenes_receive_fallback_lighting() {
+        let empty = scene_rig(&[]);
+        assert_eq!(empty.ambient, [0.45, 0.45, 0.5]);
+        assert_eq!(empty.lobes.len(), 1);
+
+        let zero_only = scene_rig(&[light(
+            0,
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            [1.0; 3],
+            0.0,
+            [1.0; 3],
+            0.0,
+        )]);
+        assert_eq!(zero_only.ambient, [0.45, 0.45, 0.5]);
+        assert_eq!(zero_only.lobes.len(), 2);
+    }
+
+    #[test]
+    fn point_lit_scene_does_not_receive_fallback_directional() {
+        let point_only = scene_rig(&[light(
+            1,
+            [1.0, 2.0, 3.0],
+            [0.0, 0.0, 1.0],
+            [0.8, 0.7, 0.6],
+            1.0,
+            [1.0; 3],
+            0.0,
+        )]);
+        assert_eq!(point_only.ambient, [0.0; 3]);
+        assert!(point_only.lobes.is_empty());
+        assert_eq!(point_only.points.len(), 1);
     }
 
     /// The reference loads the background and the character in one call (`SelectCharacter`).

@@ -504,7 +504,11 @@ fn on_transfer(In(ev): In<SessionEvent>, mut e: Edges, trace: Option<Res<crate::
                 }
             }
         }
-        SessionEvent::TransferAborted { reason } => transfer_aborted(reason, &mut e.transfer),
+        SessionEvent::TransferAborted { reason, map_id, .. } => {
+            if map_id.is_none_or(|map_id| e.transfer.0.is_none_or(|info| info.map_id == map_id)) {
+                transfer_aborted(reason, &mut e.transfer);
+            }
+        }
         _ => {}
     }
 }
@@ -1152,14 +1156,14 @@ fn reputation_at_war(list_id: u32, wire: u8, reputations: &mut Reputations) {
     );
 }
 
-/// A wire `repListId` as a store index, or `None` (logged) past the `FACTION_LIST_LEN` array
-/// (vmangos `MAX_FACTION_COUNT` 64); unchecked, `0xFFFF_FFFF` would resize the store to 34 GB.
+/// A wire `repListId` as a store index, or `None` (logged) past the `WRATH_FACTION_LIST_LEN`
+/// array (64 on 1.12, 128 on Wrath); unchecked, `0xFFFF_FFFF` would resize the store to 34 GB.
 fn reputation_slot(list_id: u32, opcode: &str) -> Option<usize> {
     let i = usize::try_from(list_id).ok()?;
-    if i >= benilla_protocol::messages::FACTION_LIST_LEN {
+    if i >= benilla_protocol::messages::WRATH_FACTION_LIST_LEN {
         warn!(
             "net: {opcode} names reputation slot {list_id}, past the {}-entry faction list — dropped",
-            benilla_protocol::messages::FACTION_LIST_LEN
+            benilla_protocol::messages::WRATH_FACTION_LIST_LEN
         );
         return None;
     }

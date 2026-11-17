@@ -44,8 +44,11 @@ pub struct SpellDisplay {
     /// is nonzero and equals the local player's class family (`[0xcecaac]`, `0x6e6b46`).
     pub spell_family: u32,
     /// `SpellFamilyFlags` (columns 161-162, low dword first): the modifier rows that apply, one
-    /// summed cell per set bit over all 64; Cleanse 4987 sets bits 12 and 33.
+    /// summed cell per set bit over bits 0-63; Cleanse 4987 sets bits 12 and 33.
     pub spell_family_flags: u64,
+    /// `SpellFamilyFlags`'s third dword (column 163): bits 64-95 of the 96-bit Wrath mask. 0 on
+    /// the donor layouts and on a Wrath row whose high word is unset.
+    pub spell_family_flags_high: u32,
     /// `PreventionType` (column 165): 1 silence, 2 pacify, 0 neither; the crowd control that
     /// refuses the spell locally (`0x6094f0`, from `TryCast` `0x6e4b60`). A stun refuses all.
     pub prevention_type: u32,
@@ -239,6 +242,7 @@ impl Default for SpellDisplay {
             attributes_ex4: 0,
             spell_family: 0,
             spell_family_flags: 0,
+            spell_family_flags_high: 0,
             prevention_type: 0,
             passive: false,
             cast_ui: 0,
@@ -476,7 +480,7 @@ impl SpellDisplay {
     /// The spellbook's add gate (`AddSpell` `0x5e9c20`, `0x4b25b0`): a spell stays out for
     /// `Attributes` `0x80` or `0x20`, or a nonzero `castUI`; passive alone does not hide it.
     pub fn in_spellbook(&self) -> bool {
-        self.attributes & (ATTR_DO_NOT_DISPLAY | SPELL_ATTR_IS_TRADESKILL) == 0 && self.cast_ui == 0
+        self.in_spell_list() && self.cast_ui == 0
     }
 
     /// The pet book's add gate (`0x4b2f90`) tests only `Attributes & 0x80`, as the sign of its

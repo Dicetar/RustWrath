@@ -35,7 +35,7 @@ fn make_glue_vm() -> mlua::Result<UiScript> {
 }
 
 /// Settings read by Wrath FrameXML during startup, with the defaults used by the stock UI fixture.
-const WRATH_UI_CVARS: &[(&str, &str)] = &[
+pub(super) const WRATH_UI_CVARS: &[(&str, &str)] = &[
     // 12340 GameUI_CVar.cpp:647: stock spellbook rank-display preference.
     ("ShowAllSpellRanks", "1"),
     ("Sound_OutputDriverIndex", "0"),
@@ -47,6 +47,9 @@ const WRATH_UI_CVARS: &[(&str, &str)] = &[
     ("Sound_VoiceChatOutputDriverIndex", "0"),
     ("VoiceChatMode", "0"),
     ("rotateMinimap", "0"),
+    // 12340 GameUI_CVar.cpp:659: the tracking-menu row active last session, written by
+    // `SetTracking` ([`benilla_ui::script::minimap_tracking`]).
+    ("minimapTrackedInfo", ""),
     ("chatStyle", "im"),
     ("playerStatusText", "0"),
     // Provisional defaults for optional displays; the selected FrameXML reads all four.

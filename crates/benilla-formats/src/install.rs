@@ -119,6 +119,46 @@ macro_rules! wow_data_or_skip {
     };
 }
 
+/// The 1.12 donor install, or skip: a test that runs stock 1.12 FrameXML must not parse a
+/// 3.3.5a chain (its Lua uses 5.1-only syntax the donor'd VM rejects). `donor_data_or_skip!()`
+/// in a `-> ()` test, `donor_data_or_skip!(None)` in a helper returning `Option`.
+#[macro_export]
+macro_rules! donor_data_or_skip {
+    () => {
+        $crate::donor_data_or_skip!(())
+    };
+    ($ret:expr) => {
+        match $crate::wow_data() {
+            Some(data) if $crate::is_donor_install(&data) => data,
+            Some(data) => {
+                $crate::skipped(
+                    "no 1.12 donor install (the chain is not interface 11200)",
+                    &[data],
+                );
+                return $ret;
+            }
+            None => {
+                $crate::skipped("no WoW install found", &$crate::candidates());
+                return $ret;
+            }
+        }
+    };
+}
+
+/// Whether `data`'s chain carries the 1.12 donor interface (`FrameXML.toc` interface 11200).
+pub fn is_donor_install(data: &Path) -> bool {
+    let Ok(mut chain) = crate::open_chain(data) else {
+        return false;
+    };
+    match chain.read_file(r"Interface\FrameXML\FrameXML.toc") {
+        Ok(toc) => {
+            let text = String::from_utf8_lossy(&toc);
+            text.contains("## Interface: 11200")
+        }
+        Err(_) => false,
+    }
+}
+
 /// A data-gated test's skip, printed; a panic under `BENILLA_REQUIRE_DATA=1`, which the gate sets
 /// where the data is, since libtest hides a passing test's stderr and a lost install reads green.
 #[doc(hidden)]

@@ -52,14 +52,12 @@ pub fn decode(packet: ServerPacket) -> Vec<SessionEvent> {
             vec![SessionEvent::PlayObjectSound { sound_id, guid }]
         }
         ServerPacket::Weather {
-            weather_type,
+            weather_id,
             grade,
-            sound_id,
             instant,
         } => vec![SessionEvent::Weather {
-            weather_type,
+            weather_id,
             grade,
-            sound_id,
             instant,
         }],
         ServerPacket::TextEmote {
@@ -751,7 +749,7 @@ pub fn decode(packet: ServerPacket) -> Vec<SessionEvent> {
             from_map: transport.map(|(_, from_map)| from_map),
         }],
         ServerPacket::TransferAborted { reason } => {
-            vec![SessionEvent::TransferAborted { reason }]
+            vec![SessionEvent::TransferAborted { reason, map_id: None, argument: None }]
         }
         ServerPacket::TimeSpeed { time, speed } => vec![SessionEvent::TimeSpeed { time, speed }],
         ServerPacket::GameSpeedSet { speed } => vec![SessionEvent::GameSpeedSet { speed }],

@@ -52,3 +52,48 @@ asset/model hotpatching.
    to cling to 1.12 donor behavior or maintain strict 1.12 version-boundary gates; retain 1.12
    donor code only where it is genuinely useful and fitting.
 
+2026-11-13 owner-confirmed decisions (Souls combat direction session):
+1. **Global toggle**: Souls combat applies as a global mode switch — when enabled it converts
+   combat across the world; stock combat returns when it is off. This amends the RFC's
+   player-facing per-encounter admission: the server still acknowledges the mode before any
+   rule applies, but the choice is world-wide, not per-encounter. See
+   `docs/architecture/souls-combat-action-profiles.md`.
+2. **New stamina bar**: a separate Souls-style stamina resource powers dodge, guard and melee
+   swings; spells keep their normal power type and costs.
+3. **Auto-attack disabled in Souls mode**: every swing is a deliberate input; the server gates
+   auto-attack while the mode is active.
+4. **Native telegraphs first**: enemies read through their own attack clips; added visual
+   tells (VFX or authored telegraph animations) only where a clip proves unreadable.
+5. **First playable milestone**: the 1v1 melee loop — dodge versus one telegraphed enemy, then
+   a light-attack punish — before player moveset breadth or the spell hybrid.
+6. **Keyboard and mouse first**: rebindable experimental binds (light, heavy, dodge, guard,
+   lock-on); gamepad support later.
+
+2026-11-14 owner-confirmed decisions (Souls combat **client-authority** redesign):
+Recorded in full, with source anchors and the open build-order item, in
+[the direction handoff](../../.scratch/project-b/handoffs/2026-11-14-souls-client-authority-direction.md)
+and [the design record](../architecture/souls-combat-client-authority.md). Summary:
+1. **Client decides, thin server module**: the client runs the full Elden Ring player moveset,
+   decides its own hits (weapon collider), dodge/guard/parry outcomes and keeps stamina
+   client-only; a new opcode pair reports swing start/hit and strike verdicts; the server
+   applies stock damage so log, threat, loot and XP stay stock. The server is private/trusted.
+2. **Player kit is Elden Ring data**: clips and timings extracted locally from the owner's
+   install, retargeted onto the WoW rig (this supersedes the compile-from-stock-clips
+   direction for the player kit). Generated data is never committed or shared.
+3. **Enemy melee becomes a server-side cast-time strike** while the mode is on (windup 40% of
+   attack time, 0.6–1.5 s clamp, facing lock, 120° cone at melee reach, nameplate timer);
+   playerbots stay stock. One coordinated server rebuild/restart.
+4. **Sequencing**: one owner-driven stock Northshire run first (login, world entry, movement,
+   one fight, one spell cast), fixing nameplates; retirement of the superseded foundation and
+   the build order after that run remain open (decision 19, recommendation: client slice first).
+5. Cleave, blob, weight and damage tables as recorded in the direction handoff (§3 items 6–10).
+
+
+2026-11-14 owner decision (**VoiceChat.xml stays skipped on Wrath**): the owner chose to keep
+`WRATH_SKIPPED_FILES = ["VoiceChat.xml"]` (`04563c9e`) rather than load it with voice reported
+disabled. Known consequence, accepted: the file defines `VoiceChatSpeakerTemplate` and
+`VoiceChatButtonTemplate`, which four stock frames inherit (`ChannelFrame.xml:39`, `:152`,
+`:1023`; `PlayerFrame.xml:262` `PlayerSpeakerFrame`). Those buttons build without their
+`On`/`Flash` textures, so the undefined-template warnings and the `ChannelFrame.lua:716`
+nil-texture errors in `ChannelFrame_Desaturate` are expected under the skip. Do not suppress
+them or stub the textures; reopening the decision is the owner's call.

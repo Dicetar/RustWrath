@@ -1,7 +1,7 @@
 //! The session-state producer: owns the replicated [`WorldState`] for one live client session
 //! and exports typed self-state snapshots for OpenCode's `benilla_wm_native` v2 bridge
 //! (`wm.native.observation.v2`, contract:
-//! `D:/Projects/project-b-opencode/docs/opencode/convergence-consumer.md`).
+//! `D:/Projects/wow/worktrees-legacy/project-b-opencode/docs/opencode/convergence-consumer.md`).
 //!
 //! Time semantics (the core of the v2 contract):
 //! - The driver stamps every reduced packet with its arrival wall-clock
@@ -180,6 +180,8 @@ pub enum LifeEvent {
 pub struct SessionState {
     epoch: u64,
     phase: Phase,
+    /// The announced destination and phase to restore if the server refuses it.
+    pending_transfer: Option<(u32, Phase)>,
     /// World scope identity (Astra R2): increments at session start and at every
     /// `SMSG_NEW_WORLD`, including same-map instance transfers. Map ID alone cannot scope a
     /// world — two dungeons can share a map id, and the far-teleport path reuses it.
@@ -223,6 +225,7 @@ impl SessionState {
         Self {
             epoch: 0,
             phase: Phase::CharacterSelection,
+            pending_transfer: None,
             world_generation: 0,
             player_guid: None,
             world: WorldState::new(),
@@ -253,6 +256,7 @@ impl SessionState {
         assert!(player_guid != 0, "player guid must be non-zero");
         self.epoch += 1;
         self.phase = Phase::CharacterSelection;
+        self.pending_transfer = None;
         self.world_generation += 1;
         self.player_guid = Some(player_guid);
         self.world = WorldState::new();
@@ -308,6 +312,7 @@ impl SessionState {
     /// the next `start_session` opens the new epoch.
     pub fn finish_session(&mut self) {
         self.phase = Phase::CharacterSelection;
+        self.pending_transfer = None;
         self.player_guid = None;
         self.last_server_packet_at = None;
         self.world = WorldState::new();
@@ -364,8 +369,8 @@ impl SessionState {
             }
             opcode::SMSG_TRANSFER_PENDING => {
                 // `Player.cpp:1593`: u32 mapid, optionally u32 transport entry + u32 map.
-                // Diagnostics only: the authoritative destination arrives with NEW_WORLD.
-                // The player is still in the old world, so traffic keeps reducing.
+                // The player is still in the old world. The announcement identifies a
+                // possible refusal, and NEW_WORLD is what actually adopts the destination.
                 let map = u32::from_le_bytes(
                     payload
                         .get(0..4)
@@ -373,10 +378,19 @@ impl SessionState {
                         .try_into()
                         .unwrap(),
                 );
-                if self.phase == Phase::InWorld || self.phase == Phase::EnteringWorld {
-                    self.phase = Phase::TransferPending;
+                match self.phase {
+                    Phase::InWorld | Phase::EnteringWorld => {
+                        self.pending_transfer = Some((map, self.phase));
+                        self.phase = Phase::TransferPending;
+                        changed = true;
+                    }
+                    Phase::TransferPending => {
+                        if let Some((destination, _)) = &mut self.pending_transfer {
+                            *destination = map;
+                        }
+                    }
+                    _ => {}
                 }
-                let _ = map;
             }
             opcode::SMSG_NEW_WORLD => {
                 // `Player.cpp:1613`: u32 mapid + f32 x/y/z/o destination. This begins the
@@ -402,6 +416,7 @@ impl SessionState {
                 self.map_id = Some(map_id);
                 self.verify_position = Some((position, observed_at_unix_ms));
                 self.position_observed_at = Some(observed_at_unix_ms);
+                self.pending_transfer = None;
                 if self.phase == Phase::TransferPending || self.phase == Phase::InWorld {
                     self.phase = Phase::Loading;
                 }
@@ -410,6 +425,22 @@ impl SessionState {
                     map_id,
                 });
                 changed = true;
+            }
+            opcode::SMSG_TRANSFER_ABORTED => {
+                // A refusal can also arrive before an announcement or after NEW_WORLD.
+                // Only the outstanding destination can restore the phase it interrupted.
+                // Malformed refusals go through the gameplay decoder's rejection path.
+                if let Some((destination, previous)) = self.pending_transfer {
+                    if let Ok(Some(crate::gameplay::ServerEvent::TransferAborted { map_id, .. })) =
+                        crate::gameplay::decode_server(op, payload)
+                    {
+                        if destination == map_id {
+                            self.pending_transfer = None;
+                            self.phase = previous;
+                            changed = true;
+                        }
+                    }
+                }
             }
             opcode::MSG_MOVE_TELEPORT_ACK => {
                 // The controlled player's near-teleport correction (`Player.cpp:1375`):
@@ -441,17 +472,26 @@ impl SessionState {
                 changed |= self.world.apply_movement(guid, snapshot);
                 events.push(ChangeEvent::Moved { guid });
             }
-            opcode::SMSG_MONSTER_MOVE => {
+            opcode::SMSG_MONSTER_MOVE | opcode::SMSG_MONSTER_MOVE_TRANSPORT => {
                 if self.phase != Phase::Loading {
                     if let Ok(Some(crate::gameplay::ServerEvent::MonsterMove(mv))) =
                         crate::gameplay::decode_server(op, payload)
                     {
                         if self.world.apply_monster_move(&mv) {
                             changed = true;
-                            events.push(ChangeEvent::Moved { guid: mv.guid });
+                            if mv.transport.is_none() {
+                                events.push(ChangeEvent::Moved { guid: mv.guid });
+                            }
                         }
                     }
                 }
+            }
+            opcode::SMSG_PLAYER_VEHICLE_DATA => {
+                // 12340 handler 0x00716DB0: packed unit GUID, then the vehicle row (0 removes it).
+                let mut r = Reader::new(payload);
+                let guid = r.packed_guid().context("vehicle unit guid")?;
+                let id = r.u32().context("vehicle id")?;
+                changed |= self.world.apply_vehicle_id(guid, id);
             }
             opcode::SMSG_DESTROY_OBJECT => {
                 // `Object.cpp:278-286`: full u64 GUID, u8 on-death flag.
@@ -500,7 +540,12 @@ impl SessionState {
                         changed = true;
                     }
                 }
-                if self.phase == Phase::EnteringWorld {
+                if self.phase == Phase::EnteringWorld
+                    || self
+                        .pending_transfer
+                        .is_some_and(|(_, previous)| previous == Phase::EnteringWorld)
+                {
+                    self.pending_transfer = None;
                     self.phase = Phase::InWorld;
                 }
                 self.map_id = Some(map_id);

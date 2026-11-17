@@ -4,8 +4,10 @@
 //! but not for the lifecycle: they load outside `AddOn_Load`
 //! ([`super::manifest::load_ingame_ui`]), get no `ADDON_LOADED` and have no registry row.
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 
@@ -144,6 +146,14 @@ impl Addon {
         for file in files {
             // Resolved once into the source's path space, for `read` and the loader alike.
             let path = benilla_ui::loader::join_ref(&self.prefix(), file);
+            // The November Wrath startup stall was observed during this stock document.
+            let trace_chat_load = self.name == super::reference_ui::NAME
+                && script.target() == benilla_ui::script::UiTarget::Wrath335
+                && path.eq_ignore_ascii_case("Interface/FrameXML/FloatingChatFrame.xml");
+            if trace_chat_load {
+                info!("wrath chat load: {path} starting");
+            }
+            let read_start = trace_chat_load.then(Instant::now);
             let Some(bytes) = self.read(&path) else {
                 toc.report(status::FAILURE, status::missing(&path, is_lua(file)));
                 let e = format!("{}/{file}: not found", self.name);
@@ -160,6 +170,7 @@ impl Addon {
                 failures.push(e);
                 continue;
             };
+            let parse_start = read_start.map(|_| Instant::now());
             if is_lua(file) {
                 // What `<Script file=>` gets: one chunk in the one global state, in manifest
                 // order, as `AddOn_Load 0x51f240` hands every listed file to `0x6edb90`.
@@ -189,7 +200,42 @@ impl Addon {
             };
             // The loader resolves relative references against the document's own directory, and
             // names the file a raise came from.
-            let mut report = benilla_ui::loader::load_in(script, &doc, &path, &provider);
+            let (mut report, timings) = if let (Some(read_start), Some(parse_start)) =
+                (read_start, parse_start)
+            {
+                let dependency_read = Cell::new(Duration::ZERO);
+                let timed_provider = |req: &str| {
+                    let started = Instant::now();
+                    let bytes = provider(req);
+                    dependency_read.set(dependency_read.get() + started.elapsed());
+                    bytes
+                };
+                let log_item = |document: &str, phase: &str, item: &str, elapsed: Duration| {
+                    if elapsed >= Duration::from_millis(100) {
+                        let ms = elapsed.as_millis();
+                        info!("wrath chat load: {document} {phase} {item} elapsed_ms={ms}");
+                    }
+                };
+                let build_start = Instant::now();
+                let report = benilla_ui::loader::load_in_timed(
+                    script,
+                    &doc,
+                    &path,
+                    &timed_provider,
+                    &log_item,
+                );
+                let build_end = Instant::now();
+                let timings = (
+                    parse_start.duration_since(read_start),
+                    build_start.duration_since(parse_start),
+                    build_end.duration_since(build_start),
+                    dependency_read.get(),
+                    build_end,
+                );
+                (report, Some(timings))
+            } else {
+                (benilla_ui::loader::load_in(script, &doc, &path, &provider), None)
+            };
             std::mem::take(&mut report.status).close_into(
                 toc,
                 script.framexml_debug(),
@@ -223,6 +269,16 @@ impl Addon {
                 // a burst's first, as in the reference.
                 script.report_script_error(&format!("{}/{file}: {e}", self.name), heard);
                 failures.push(format!("{}/{file}: {e}", self.name));
+            }
+            if let Some((read, parse, build, dependency_read, build_end)) = timings {
+                info!(
+                    "wrath chat load: {path} read_ms={} parse_ms={} build_ms={} dependency_read_ms={} report_ms={}",
+                    read.as_millis(),
+                    parse.as_millis(),
+                    build.as_millis(),
+                    dependency_read.as_millis(),
+                    build_end.elapsed().as_millis(),
+                );
             }
             info!(
                 "ui_script: {}/{file} loaded ({} frames materialized)",
@@ -305,7 +361,7 @@ pub(crate) fn roots() -> Vec<PathBuf> {
                 }
             }
         }
-        let win_default = PathBuf::from(r"D:\WOW\world of warcraft 3.3.5a hd\Interface\AddOns");
+        let win_default = PathBuf::from(r"D:\Projects\wow\server\world of warcraft 3.3.5a hd\Interface\AddOns");
         if win_default.is_dir() && !out.contains(&win_default) {
             out.push(win_default);
         }
@@ -377,13 +433,27 @@ fn chain_addons() -> Vec<Addon> {
 fn discover() -> Vec<Addon> {
     // The archive pass, in `BLIZZARD_ADDONS` order: the shipped `patch.MPQ` listfile's too.
     let mut found = chain_addons();
-    // The loose pass, minus the names the archive registered.
-    let seen: HashSet<String> = found.iter().map(|a| a.name.to_ascii_lowercase()).collect();
-    found.extend(
-        discover_folder()
-            .into_iter()
-            .filter(|a| !seen.contains(&a.name.to_ascii_lowercase())),
-    );
+    // Loose player folders: a loose non-Blizzard folder overrides an unsigned non-Blizzard archive
+    // copy of the same name (such as `WMBridge` in `Interface/AddOns/WMBridge` over `patch-z.mpq`),
+    // while Blizzard's archive addons retain their registration slot and order.
+    let mut seen: HashSet<String> = found.iter().map(|a| a.name.to_ascii_lowercase()).collect();
+    for addon in discover_folder() {
+        let key = addon.name.to_ascii_lowercase();
+        if !seen.contains(&key) {
+            seen.insert(key);
+            found.push(addon);
+        } else if let Some(existing) = found.iter_mut().find(|a| {
+            a.name.eq_ignore_ascii_case(&addon.name)
+                && matches!(a.source, Source::ChainAddon)
+                && !a.toc.secure()
+                && !a
+                    .name
+                    .get(..9)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("Blizzard_"))
+        }) {
+            *existing = addon;
+        }
+    }
     found
 }
 
@@ -504,14 +574,27 @@ fn discover_in(root: &Path) -> Vec<Addon> {
 }
 
 /// `<dir>/<name>.toc`, matched case-insensitively as on the reference's Windows filesystem
-/// (`MyAddon/myaddon.toc` is an addon there). Decoded, not read as UTF-8: one cp1252 byte in a
-/// `## Notes:` line must not make the addon vanish.
+/// (`MyAddon/myaddon.toc` is an addon there). In Wrath mode, multi-TOC folders shipping
+/// `<Name>-335.toc` or `<Name>-WotLK.toc` without a bare `<Name>.toc` fall back to that manifest.
+/// Decoded, not read as UTF-8: one cp1252 byte in a `## Notes:` line must not make the addon vanish.
 fn manifest_in(dir: &Path, name: &str) -> Option<String> {
-    let want = format!("{name}.toc");
-    let entry = std::fs::read_dir(dir).ok()?.flatten().find(|e| {
-        e.file_name()
-            .to_str()
-            .is_some_and(|f| f.eq_ignore_ascii_case(&want))
+    let entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+    let candidates = if crate::wrath::selected_from_env() {
+        vec![
+            format!("{name}.toc"),
+            format!("{name}-335.toc"),
+            format!("{name}-WotLK.toc"),
+            format!("{name}_Wrath.toc"),
+        ]
+    } else {
+        vec![format!("{name}.toc")]
+    };
+    let entry = candidates.iter().find_map(|want| {
+        entries.iter().find(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|f| f.eq_ignore_ascii_case(want))
+        })
     })?;
     let bytes = std::fs::read(entry.path()).ok()?;
     Some(benilla_ui::source::decode(&bytes).into_owned())
@@ -551,12 +634,30 @@ pub(crate) fn addon_replies(
 /// production does. `chain` is whether the addon comes off the player's patch chain.
 pub(crate) fn info_from_toc(name: &str, toc: &Toc, chain: bool) -> benilla_ui::script::AddOnInfo {
     // The metadata lines of the client's locale (`[0xc0e080]`) count; another locale's drop.
-    let locale = super::client_locale().index();
+    let wrath = crate::wrath::selected_from_env();
+    let locale = if wrath {
+        super::client_locale().wrath_index()
+    } else {
+        super::client_locale().index()
+    };
+    let (title, notes, directives) = if wrath {
+        (
+            toc.wrath_metadata_value(name, "Title", locale),
+            toc.wrath_metadata_value(name, "Notes", locale),
+            toc.wrath_metadata(name, locale),
+        )
+    } else {
+        (
+            toc.metadata_value(name, "Title", locale),
+            toc.metadata_value(name, "Notes", locale),
+            toc.metadata(name, locale),
+        )
+    };
     benilla_ui::script::AddOnInfo {
         name: name.to_owned(),
         // From the metadata map, whose `Title` the reader seeds with the folder (`0x51cb3d`).
-        title: toc.metadata_value(name, "Title", locale),
-        notes: toc.metadata_value(name, "Notes", locale),
+        title,
+        notes,
         // The `.toc` has no URL: `0x51e180` answers `[rec+0x30]`, which only the server's
         // `SMSG_ADDON_INFO` writes (`0x51db6a`).
         url: None,
@@ -577,7 +678,7 @@ pub(crate) fn info_from_toc(name: &str, toc: &Toc, chain: bool) -> benilla_ui::s
             .collect(),
         load_with: toc.load_with().into_iter().map(str::to_owned).collect(),
         dependents: Vec::new(), // filled by `register_addons`
-        directives: toc.metadata(name, locale),
+        directives,
         files: toc.files.clone(),
         saved_variables: toc
             .saved_variables()
@@ -786,6 +887,64 @@ const SAVED_HEADER: &str = "\
 -- Written at logout/exit from the live globals; executed as a Lua chunk at addon load.
 ";
 
+/// Import existing SavedVariables files from the game install's WTF folder if missing in benilla-config.
+fn seed_saved_variables_from_wtf(addons: &[Addon]) {
+    let Some(saved_dir) = crate::local_state::addon_saved_account_dir() else {
+        return;
+    };
+    let Some(data_dir) = benilla_formats::wow_data() else {
+        return;
+    };
+    let Some(install_dir) = data_dir.parent() else {
+        return;
+    };
+    let wtf = install_dir.join("WTF");
+    if !wtf.is_dir() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&saved_dir);
+    for addon in addons {
+        let dest = saved_dir.join(format!("{}.lua", addon.name));
+        if dest.exists() {
+            continue;
+        }
+        let root_sv = wtf.join("SavedVariables").join(format!("{}.lua", addon.name));
+        if root_sv.is_file() {
+            if let Ok(bytes) = std::fs::read(&root_sv) {
+                let _ = std::fs::write(&dest, bytes);
+                info!(
+                    "ui_script: imported saved variables for {} from {}",
+                    addon.name,
+                    root_sv.display()
+                );
+                continue;
+            }
+        }
+        let account_dir = wtf.join("Account");
+        if let Ok(entries) = std::fs::read_dir(&account_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    let acc_sv = entry
+                        .path()
+                        .join("SavedVariables")
+                        .join(format!("{}.lua", addon.name));
+                    if acc_sv.is_file() {
+                        if let Ok(bytes) = std::fs::read(&acc_sv) {
+                            let _ = std::fs::write(&dest, bytes);
+                            info!(
+                                "ui_script: imported saved variables for {} from {}",
+                                addon.name,
+                                acc_sv.display()
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Load every discovered third-party addon at world entry (`UI_Init 0x48fbf0` → `0x51f600`),
 /// returning every load error tagged by addon. `&mut` because each `ADDON_LOADED` fires
 /// ([`UiScript::fire_event`]) before the next addon's files run, as in the reference.
@@ -821,6 +980,7 @@ pub(super) fn load_third_party(
     let mut roots_iter = all_roots.into_iter();
     let primary_root = roots_iter.next();
     let extra_roots: Vec<PathBuf> = roots_iter.collect();
+    seed_saved_variables_from_wtf(&addons);
     script.register_addons(
         infos,
         primary_root,
@@ -937,8 +1097,11 @@ impl benilla_ui::script::AddonLoad for Walk<'_> {
         // the addon's own sandboxed reader; absent is normal.
         let bindings_xml = benilla_ui::loader::join_ref(&addon.prefix(), "Bindings.xml");
         if let Some(bytes) = addon.read(&bindings_xml) {
-            match benilla_ui::bindings_xml::parse(&benilla_ui::source::decode(&bytes)) {
-                Ok(bindings) => script.register_addon_bindings(&addon.name, &bindings),
+            match benilla_ui::bindings_xml::parse_file(&benilla_ui::source::decode(&bytes)) {
+                Ok(file) => {
+                    script.register_addon_bindings(&addon.name, &file.bindings);
+                    script.register_modified_clicks(&file.modified_clicks);
+                }
                 Err(e) => {
                     let e = format!("{}/Bindings.xml: {e}", addon.name);
                     error!("ui_script: {e}");

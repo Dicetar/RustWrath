@@ -236,6 +236,9 @@ pub struct UnitState {
     /// `UNIT_FIELD_SUMMONEDBY` (fields 12-13), 0 for none: `UnitDefense` and `UnitAttackBothHands`
     /// answer a unit the active player summoned (`0x519272`, `0x518881`).
     pub summoned_by: u64,
+    /// `UNIT_FIELD_MAXHEALTHMODIFIER` (3.3.5 field 145): max health scale factor, `None` until
+    /// streamed (3.3.5 default 1.0).
+    pub max_health_modifier: Option<f32>,
 }
 
 /// The name of a unit whose name is not yet known, as the reference's `UnitName` (`0x517220`) and
@@ -500,6 +503,15 @@ impl super::UiScript {
     /// `0xc0dd78` the combat log's XP line reads (`0x637b2a`) holds it.
     pub fn exhaustion_row(&self, state: u8) -> Option<(String, f64)> {
         self.model_ref().exhaustion.get(&state).cloned()
+    }
+
+    /// Push `gtCombatRatings.dbc`'s scalers in row order (`rating_idx * 100 + (level - 1)`); an
+    /// empty push leaves the existing table untouched.
+    pub fn set_combat_rating_scalers(&mut self, scalers: Vec<f32>) {
+        if scalers.is_empty() {
+            return;
+        }
+        self.model_mut().combat_rating_scalers = scalers;
     }
 
     /// Push the combo points (`PLAYER_FIELD_BYTES` byte 1) and their target

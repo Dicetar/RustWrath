@@ -1343,7 +1343,14 @@ fn fire_step(vm: &mut LootVm, reads: &LootReads, step: Step) {
             }
         }
         Step::CopierEnd(w) => {
-            if vm.turn(|script, _| script.is_some()) {
+            let held = vm.turn(|script, _| {
+                let Some(script) = script else {
+                    return false;
+                };
+                refresh_shown_records(script, reads);
+                true
+            });
+            if held {
                 let replaced = vm.own().0.loot.replaced();
                 end_session_open(vm, w, replaced);
             }
@@ -1351,6 +1358,7 @@ fn fire_step(vm: &mut LootVm, reads: &LootReads, step: Step) {
         Step::FailureTail { window_open } => vm.turn(|script, (steps, _)| {
             let open = window_open && steps.objects.player().is_some();
             if let (Some(script), true) = (script, open && steps.byte.0) {
+                refresh_shown_records(script, reads);
                 script.fire_event("LOOT_OPENED", vec![]);
             }
         }),
@@ -1370,6 +1378,57 @@ fn fire_step(vm: &mut LootVm, reads: &LootReads, step: Step) {
             let still = emit_pushes(vm, vec![r], &reads.pushes());
             vm.own().0.loot.waiting.extend(still);
         }
+    }
+}
+
+/// Fill the shown rows whose record landed after the window was shown, without a signal. The
+/// reference's `GetLootSlotInfo` reads the item cache at the call (`0x00588570`) and its
+/// `LOOT_OPENED` fires in the record callback once the last record is held (`0x00589460`), so the
+/// handlers of a copier's end read every answered row. The VM's rows are copied when the window is
+/// shown (`Step::Opened`), while a row's record may still be on the wire, and the feed that would
+/// refresh them waits behind the queued end.
+fn refresh_shown_records(script: &mut UiScript, reads: &LootReads) {
+    let Some(mut shown) = script.shown_loot() else {
+        return;
+    };
+    let target = script.target();
+    let mut filled = false;
+    for row in shown
+        .rows
+        .iter_mut()
+        .flatten()
+        .filter(|row| !row.is_coin && row.item_id != 0 && row.name.is_none())
+    {
+        let Some(t) = reads.items.template(row.item_id, 0, Ask::Read) else {
+            continue;
+        };
+        let name = reads.rolls().name(&t.name, row.random_property_id);
+        row.link = Some(if target == benilla_ui::script::UiTarget::Wrath335 {
+            crate::ui_items::item_link_full_in_target(
+                target,
+                row.item_id,
+                0,
+                row.random_property_id,
+                row.suffix_factor,
+                &name,
+                t.quality,
+            )
+        } else {
+            crate::ui_items::item_link_full(
+                row.item_id,
+                0,
+                row.random_property_id,
+                0,
+                &name,
+                t.quality,
+            )
+        });
+        row.quality = Some(t.quality);
+        row.name = Some(name);
+        filled = true;
+    }
+    if filled {
+        script.set_loot(Some(shown));
     }
 }
 
@@ -1399,7 +1458,10 @@ fn feed_loot(mut vm: VmWith<(LootSteps<'static, 'static>, ())>, reads: LootReads
             return;
         }
         script.set_loot_type(loot.window.loot_type);
-        let snap = reads.view(&loot.window, Ask::Read, script.target());
+        // Deviation: the reference's `GetLootSlotInfo` only reads (`0x00588570`); a row shown
+        // without its record asks here, so one whose answer went nowhere is asked again on the
+        // item cache's clock ([`crate::items::TEMPLATE_REASK_AFTER`]) and repaints when it lands.
+        let snap = reads.view(&loot.window, Ask::New(&reads.commands), script.target());
         show(script, snap);
     });
 }
@@ -1658,10 +1720,19 @@ pub(crate) fn seat_loot_steps(world: &mut World) {
 
 /// Whether a take must raise `LOOT_BIND_CONFIRM` first (`0x4c28f2`/`0x4c28fb`): bind on pickup
 /// and uncommon or better. An unresolved template answers false, as the reference's cache peek.
-fn bind_confirm_required(items: &Items, item_id: u32) -> bool {
+fn bind_confirm_required(items: &Items, item_id: u32, slot_type: u8, wrath: bool) -> bool {
+    // 12340 LootSlot/DoAutoLoot allow owner rows and multi-drop items without a bind prompt.
+    const MULTI_DROP: u32 = 0x800;
+    if wrath && slot_type == benilla_protocol::messages::slot_type::OWNER {
+        return false;
+    }
     items
         .template(item_id, 0, Ask::Read)
-        .is_some_and(|t| t.bonding == BIND_WHEN_PICKED_UP && t.quality >= BIND_CONFIRM_MIN_QUALITY)
+        .is_some_and(|t| {
+            t.bonding == BIND_WHEN_PICKED_UP
+                && t.quality >= BIND_CONFIRM_MIN_QUALITY
+                && (!wrath || t.flags & MULTI_DROP == 0)
+        })
 }
 
 /// `CloseInteraction 0x48f200` past its early returns, the one close every loot close shares: the

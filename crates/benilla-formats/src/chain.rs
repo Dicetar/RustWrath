@@ -146,8 +146,11 @@ impl Chain {
                     );
                 }
 
-                // 3. Discover locale directory and mount locale archives
-                let mut detected_locale: Option<(String, PathBuf)> = None;
+                // 3. Discover locale directory and mount locale archives. The install carries
+                // every locale folder; the client's own setting wins (`WTF\Config.wtf`'s
+                // `SET locale`, or `$WOW_LOCALE`), then enUS, so the choice never depends on
+                // directory iteration order.
+                let mut locale_dirs: Vec<(String, PathBuf)> = Vec::new();
                 for entry in &entries {
                     if entry.path().is_dir() {
                         let sub_name = entry.file_name().to_string_lossy().to_string();
@@ -157,12 +160,27 @@ impl Chain {
                                 sn.starts_with("locale-") && sn.ends_with(".mpq")
                             });
                             if has_loc {
-                                detected_locale = Some((sub_name, entry.path()));
-                                break;
+                                locale_dirs.push((sub_name, entry.path()));
                             }
                         }
                     }
                 }
+                locale_dirs.sort_by_key(|(name, _)| name.to_ascii_lowercase());
+                let configured = configured_locale(&path);
+                let chosen = configured
+                    .as_deref()
+                    .and_then(|want| {
+                        locale_dirs
+                            .iter()
+                            .find(|(n, _)| n.eq_ignore_ascii_case(want))
+                    })
+                    .or_else(|| {
+                        locale_dirs
+                            .iter()
+                            .find(|(n, _)| n.eq_ignore_ascii_case("enUS"))
+                    })
+                    .or_else(|| locale_dirs.first());
+                let detected_locale = chosen.map(|(n, d)| (n.clone(), d.clone()));
 
                 if let Some((loc_name, loc_dir)) = detected_locale {
                     if loc_name.len() >= 4 {
@@ -445,6 +463,42 @@ fn pass_line(line: &[u8], prefix: &str, out: &mut Vec<String>) {
     if !line.is_empty() && !md5 && under {
         out.push(String::from_utf8_lossy(line).into_owned());
     }
+}
+
+/// The locale the client itself runs in: `$WOW_LOCALE`, else the install's
+/// `WTF\Config.wtf` `SET locale "xxYY"`, else none (the opener then prefers enUS).
+fn configured_locale(data: &Path) -> Option<String> {
+    if let Some(v) = std::env::var_os("WOW_LOCALE") {
+        let v = v.to_string_lossy().trim().to_string();
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    let install = data.parent()?;
+    let text = std::fs::read_to_string(install.join("WTF").join("Config.wtf")).ok()?;
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(kind) = parts.next() else {
+            continue;
+        };
+        if !kind.eq_ignore_ascii_case("set") {
+            continue;
+        }
+        let Some(key) = parts.next() else {
+            continue;
+        };
+        if !key.eq_ignore_ascii_case("locale") {
+            continue;
+        }
+        let Some(value) = parts.next() else {
+            continue;
+        };
+        let value = value.trim_matches('"');
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]

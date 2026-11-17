@@ -137,7 +137,12 @@ impl Loader<'_> {
     /// Fire a captured `OnLoad` under the event path's convention, `this` set and restored
     /// (`0x704d50`); an error is recorded, never propagated.
     pub(super) fn fire_onload(&mut self, wrapper: &Table, func: &Function, dbg: &str) {
-        if let Err(e) = self.invoke_handler(wrapper, func) {
+        let start = self.timing.map(|_| std::time::Instant::now());
+        let result = self.invoke_handler(wrapper, func);
+        if let (Some(start), Some(timing)) = (start, self.timing) {
+            timing(&self.path, "OnLoad", dbg, start.elapsed());
+        }
+        if let Err(e) = result {
             self.report.raise(format!("{dbg}: OnLoad: {e}"), &e);
         }
     }
@@ -239,6 +244,7 @@ fn handler_parameters(name: &str) -> &'static str {
         "OnValueChanged" => "self, value, ...",
         "OnTextChanged" => "self, userInput, ...",
         "OnCursorChanged" => "self, x, y, width, height, ...",
+        "OnTooltipAddMoney" => "self, cost, maxcost, ...",
         "OnInputLanguageChanged" => "self, language, ...",
         "OnHorizontalScroll" | "OnVerticalScroll" => "self, offset, ...",
         "OnScrollRangeChanged" => "self, xrange, yrange, ...",

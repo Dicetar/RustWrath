@@ -2033,3 +2033,199 @@ fn every_rel_reader_keeps_its_layout_length() {
     );
     assert!(s.errors().is_empty(), "{:?}", s.errors());
 }
+
+fn wrath_ui() -> UiScript {
+    let mut s = UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
+    s.set_screen_size(800.0, 600.0);
+    s
+}
+
+/// `0x773d39`/`0x773d47`: a FontString constructor's `inherits=` is a font object first, else a
+/// registered template. Stock `ChatConfigFrame.xml`'s `ClassColorLegendFontStringTemplate` is the
+/// second shape: it carries `inherits="GameFontNormal"`, `justifyH` and a `<Size>`. This template
+/// also adds `text=` and exercises `SetFormattedText`, so the string the constructor made ends with
+/// a font, justification, size and the formatted text.
+#[test]
+fn a_create_font_string_inherits_a_virtual_fontstring_template() {
+    let s = wrath_ui();
+    let report = load_str(
+        &s,
+        &format!(
+            r#"<Ui>{TEST_FONT}
+            <FontString name="LegendTemplate" inherits="LevelTestFont" justifyH="LEFT"
+                        text="Legend" virtual="true">
+                <Size><AbsDimension x="120" y="16"/></Size>
+            </FontString>
+            <Frame name="LegendHost"/>
+            <Script>
+                Legend = LegendHost:CreateFontString(nil, "ARTWORK", "LegendTemplate")
+                Legend:SetFormattedText("%s %d", "Legend", 1)
+            </Script>
+        </Ui>"#
+        ),
+    );
+    let (linked, justify, w, h, text) = s
+        .eval::<(bool, String, f32, f32, Option<String>)>(
+            "local w, h = Legend:GetWidth(), Legend:GetHeight() \
+             return Legend:GetFontObject() == LevelTestFont, Legend:GetJustifyH(), w, h, \
+             Legend:GetText()",
+        )
+        .unwrap();
+    assert!(linked, "the template's font object applied");
+    assert_eq!(justify, "LEFT");
+    assert!((w - 120.0).abs() < 1e-2, "{w}");
+    assert!((h - 16.0).abs() < 1e-2, "{h}");
+    assert_eq!(text.as_deref(), Some("Legend 1"));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(s.errors().is_empty(), "{:?}", s.errors());
+}
+
+/// The template registry is walked through `inherits=` like a frame template: a region template
+/// that inherits another region template applies the whole chain, ancestors first.
+#[test]
+fn a_create_font_string_template_chain_applies() {
+    let s = ui();
+    let report = load_str(
+        &s,
+        &format!(
+            r#"<Ui>{TEST_FONT}
+            <FontString name="ChainLegendBase" inherits="LevelTestFont" justifyH="RIGHT"
+                        text="BASE" virtual="true"/>
+            <FontString name="ChainLegendDerived" inherits="ChainLegendBase" justifyV="TOP"
+                        virtual="true">
+                <Size><AbsDimension x="80" y="12"/></Size>
+            </FontString>
+            <Frame name="ChainLegendHost"/>
+            <Script>
+                ChainLegend =
+                    ChainLegendHost:CreateFontString(nil, "ARTWORK", "ChainLegendDerived")
+            </Script>
+        </Ui>"#
+        ),
+    );
+    let (linked, jh, jv, w, h, text) = s
+        .eval::<(bool, String, String, f32, f32, Option<String>)>(
+            "local w, h = ChainLegend:GetWidth(), ChainLegend:GetHeight() \
+             return ChainLegend:GetFontObject() == LevelTestFont, ChainLegend:GetJustifyH(), \
+             ChainLegend:GetJustifyV(), w, h, ChainLegend:GetText()",
+        )
+        .unwrap();
+    assert!(linked, "the base template's font applied");
+    assert_eq!(jh, "RIGHT", "the base template's justify");
+    assert_eq!(jv, "TOP", "the derived template's justify");
+    assert!((w - 80.0).abs() < 1e-2, "{w}");
+    assert!((h - 12.0).abs() < 1e-2, "{h}");
+    assert_eq!(text.as_deref(), Some("BASE"), "the base template's text");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(s.errors().is_empty(), "{:?}", s.errors());
+}
+
+/// `0x773c30`: a name in neither the font table nor the template registry raises; the region was
+/// already made, but the constructor still reports the miss.
+#[test]
+fn a_create_font_string_with_an_unknown_inherits_still_raises() {
+    let s = ui();
+    let err = s
+        .run(
+            r#"f = CreateFrame("Frame", "UnknownLegendHost")
+               f:CreateFontString(nil, "ARTWORK", "NoSuchRegionTemplate")"#,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(r#"Couldn't find inherited node "NoSuchRegionTemplate""#),
+        "{err}"
+    );
+}
+
+/// `0x773a20`, `0x76fe20`: a texture constructor's `inherits=` takes the same template registry,
+/// so a virtual `<Texture>`'s region-shaped content (its `<Size>`, with no file) applies.
+#[test]
+fn a_create_texture_inherits_a_virtual_texture_templates_size() {
+    let s = ui();
+    let report = load_str(
+        &s,
+        r#"<Ui>
+            <Texture name="PlateRegionTemplate" virtual="true">
+                <Size><AbsDimension x="64" y="32"/></Size>
+            </Texture>
+            <Frame name="PlateRegionHost"/>
+            <Script>
+                PlateRegion =
+                    PlateRegionHost:CreateTexture(nil, "ARTWORK", "PlateRegionTemplate")
+            </Script>
+        </Ui>"#,
+    );
+    let (w, h) = s
+        .eval::<(f32, f32)>("return PlateRegion:GetWidth(), PlateRegion:GetHeight()")
+        .unwrap();
+    assert!((w - 64.0).abs() < 1e-2, "{w}");
+    assert!((h - 32.0).abs() < 1e-2, "{h}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(s.errors().is_empty(), "{:?}", s.errors());
+}
+
+/// The constructor's post-load step (3.3.5a `PostLoadXML` `0x4836D0` FontString / `0x4830E0`
+/// Texture; donor implicit-anchor sites `0x771480` / `0x7701c0`): a template region with no points
+/// gets the implicit creation anchor, authored points suppress it, and a deferred anchor whose
+/// target is missing is drained and logged rather than silently dropped.
+#[test]
+fn a_template_region_runs_the_post_load_anchor_step() {
+    let s = ui();
+    let report = load_str(
+        &s,
+        &format!(
+            r#"<Ui>{TEST_FONT}
+            <Texture name="ImplicitTextureTemplate" virtual="true">
+                <Size><AbsDimension x="10" y="10"/></Size>
+            </Texture>
+            <Texture name="AuthoredTextureTemplate" virtual="true">
+                <Anchors><Anchor point="TOPLEFT"/></Anchors>
+            </Texture>
+            <Texture name="GhostTextureTemplate" virtual="true">
+                <Anchors><Anchor point="TOPLEFT" relativeTo="GhostRegionMissing"/></Anchors>
+            </Texture>
+            <FontString name="ImplicitTextTemplate" inherits="LevelTestFont" justifyH="LEFT"
+                        virtual="true"/>
+            <Frame name="PostLoadHost"/>
+            <Script>
+                PostImplicitTexture =
+                    PostLoadHost:CreateTexture(nil, "ARTWORK", "ImplicitTextureTemplate")
+                PostAuthoredTexture =
+                    PostLoadHost:CreateTexture(nil, "ARTWORK", "AuthoredTextureTemplate")
+                PostGhostTexture =
+                    PostLoadHost:CreateTexture(nil, "ARTWORK", "GhostTextureTemplate")
+                PostImplicitText =
+                    PostLoadHost:CreateFontString(nil, "ARTWORK", "ImplicitTextTemplate")
+            </Script>
+        </Ui>"#
+        ),
+    );
+    let points = |name: &str| {
+        s.eval::<i64>(&format!("return {name}:GetNumPoints()"))
+            .unwrap()
+    };
+    assert_eq!(points("PostImplicitTexture"), 2, "implicit all-points");
+    assert_eq!(
+        points("PostAuthoredTexture"),
+        1,
+        "an authored point suppresses it"
+    );
+    assert_eq!(
+        points("PostGhostTexture"),
+        2,
+        "the lost authored point is skipped, so the implicit all-points fills it"
+    );
+    assert_eq!(points("PostImplicitText"), 1, "implicit justify point");
+    // The template apply runs through its own inner `LoadReport`; its warnings land on the model,
+    // not the outer `load` report the XML document returned.
+    assert!(
+        s.warnings()
+            .iter()
+            .any(|w| w.contains("Couldn't find relative frame: GhostRegionMissing")),
+        "{:?}",
+        s.warnings()
+    );
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(s.errors().is_empty(), "{:?}", s.errors());
+}

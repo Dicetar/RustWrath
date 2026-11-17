@@ -9,6 +9,7 @@
 //! live only across its own subtree build, and everything durable lives Lua-side.
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use mlua::{Function, ObjectLike, Table, Value};
 
@@ -17,6 +18,7 @@ use crate::justify;
 use crate::layout::Len;
 use crate::script::{Outline, UiScript};
 use crate::status;
+use crate::widget::RegionKind;
 
 mod animations;
 mod backdrop;
@@ -103,6 +105,20 @@ pub fn load_in(
     load_into(script.lua(), doc, path, files)
 }
 
+/// Reports the document path, phase, item label and elapsed wall time.
+pub type LoadTiming<'a> = dyn Fn(&str, &str, &str, Duration) + 'a;
+
+/// Load a document while measuring top-level items and their OnLoad handlers.
+pub fn load_in_timed(
+    script: &UiScript,
+    doc: &ParsedDocument,
+    path: &str,
+    files: &dyn Fn(&str) -> Option<Vec<u8>>,
+    timing: &LoadTiming<'_>,
+) -> LoadReport {
+    load_document(script.lua(), doc, path, files, "", Some(timing))
+}
+
 /// [`load_in`] on the VM directly, for a Lua binding (`LoadAddOn`), which holds only `&Lua`.
 pub fn load_into(
     lua: &mlua::Lua,
@@ -122,6 +138,17 @@ pub fn load_into_under(
     files: &dyn Fn(&str) -> Option<Vec<u8>>,
     status_root: &str,
 ) -> LoadReport {
+    load_document(lua, doc, path, files, status_root, None)
+}
+
+fn load_document(
+    lua: &mlua::Lua,
+    doc: &ParsedDocument,
+    path: &str,
+    files: &dyn Fn(&str) -> Option<Vec<u8>>,
+    status_root: &str,
+    timing: Option<&LoadTiming<'_>>,
+) -> LoadReport {
     let mut loader = Loader {
         lua,
         files,
@@ -130,6 +157,7 @@ pub fn load_into_under(
         report: LoadReport::default(),
         warned: HashSet::new(),
         deferred_anchors: Vec::new(),
+        timing,
     };
     loader.report.warnings.extend(doc.warnings.iter().cloned());
     loader.load_doc(doc);
@@ -158,6 +186,7 @@ pub fn apply_template(lua: &mlua::Lua, wrapper: &Table, kind: &str, template: &s
         report: LoadReport::default(),
         warned: HashSet::new(),
         deferred_anchors: Vec::new(),
+        timing: None,
     };
 
     let (own_name, parent_name) = loader.frame_names(wrapper);
@@ -179,12 +208,16 @@ pub fn apply_template(lua: &mlua::Lua, wrapper: &Table, kind: &str, template: &s
             };
             any_resolved = true;
             let tag = &el.tag;
+            let base_compatible = tag.eq_ignore_ascii_case("Frame")
+                || (tag.eq_ignore_ascii_case("Button")
+                    && (kind.eq_ignore_ascii_case("CheckButton")
+                        || kind.eq_ignore_ascii_case("LootButton")));
             if tag.eq_ignore_ascii_case("Texture") || tag.eq_ignore_ascii_case("FontString") {
                 notes.push(format!(
                     "{dbg}: '{name}' is a <{tag}> REGION template, not a frame template; its \
                      frame-shaped content still applies, its region-only content cannot"
                 ));
-            } else if !tag.eq_ignore_ascii_case(kind) {
+            } else if !tag.eq_ignore_ascii_case(kind) && !base_compatible {
                 notes.push(format!(
                     "{dbg}: '{name}' is a <{tag}>, but a {kind} was created; the frame keeps the \
                      kind CreateFrame was given, so the <{tag}>-only parts of the template do not \
@@ -212,6 +245,120 @@ pub fn apply_template(lua: &mlua::Lua, wrapper: &Table, kind: &str, template: &s
 
     loader.decorate(&expanded, &levels, wrapper, &self_name, &parent_name, &dbg);
 
+    loader.report
+}
+
+/// Apply a template to an existing region, the region constructors' `inherits=` argument
+/// (`CreateFontString` donor `0x773c30` / 3.3.5a `0x004A2240`; `CreateTexture` donor `0x773a20` /
+/// 3.3.5a `0x004A2010`). The reference asks the font table first (`0x773d39` for a FontString),
+/// then the one template registry (`0x773d47`) and runs the region's XML `LoadXML` on the acquired
+/// node; `apply_region_inherits` in the binding keeps that order. The region itself is already
+/// built, so this only reads the template's region-shaped content: geometry, text, font attributes,
+/// children. A `<Frame>` template's `<Frames>`, `<Layers>` and `<Scripts>` are not instantiated,
+/// matching the region readers (donor `0x770f40` FontString, `0x76fe20` Texture; 3.3.5a
+/// `0x004873E0` / `0x00485F40`); a region template has no scripts in the levels read here.
+/// The region is never renamed or re-created, and `$parent` in a template name resolves against its
+/// nearest named ancestor, as in [`apply_template`].
+///
+/// After the levels this runs the constructor's post-load step (`PostLoadXML`, 3.3.5a `0x4836D0`
+/// FontString / `0x4830E0` Texture, called from `0x004A2240` / `0x004A2010`; donor implicit-anchor
+/// sites `0x771480` / `0x7701c0`): deferred template anchors are resolved now (there is no enclosing
+/// subtree to wait for), then a region still without points gets the implicit creation anchor.
+/// `parentKey` is not read here (only `build_region` publishes it for XML-declared regions), and a
+/// template level's `<Animations>` are not loaded on either path (pre-existing level gap).
+pub fn apply_region_template(lua: &mlua::Lua, wrapper: &Table, template: &str) -> LoadReport {
+    let template = template.trim();
+    if template.is_empty() {
+        return LoadReport::default();
+    }
+    // A region template never reads a file: `<Include>` and `<Script file=>` are top-level only.
+    let no_files = |_: &str| -> Option<Vec<u8>> { None };
+    let mut loader = Loader {
+        lua,
+        files: &no_files,
+        path: String::new(),
+        status_root: "",
+        report: LoadReport::default(),
+        warned: HashSet::new(),
+        deferred_anchors: Vec::new(),
+        timing: None,
+    };
+
+    // The binding already made the region; apply what the template adds to that same object.
+    let kind = crate::script::region::region_handle_of(lua, wrapper)
+        .ok()
+        .and_then(|rh| {
+            lua.app_data_ref::<crate::script::Model>()
+                .expect("model app_data")
+                .arena
+                .region(rh)
+                .map(|r| r.kind)
+        });
+    let Some(kind) = kind else {
+        let mut report = LoadReport::default();
+        report.fault(format!(
+            "CreateRegion(inherits=\"{template}\"): the wrapper names no live region"
+        ));
+        return report;
+    };
+
+    let method = match kind {
+        RegionKind::FontString => "CreateFontString",
+        RegionKind::Texture => "CreateTexture",
+        RegionKind::Title => "CreateTitleRegion",
+    };
+    let (own_name, parent_name) = loader.frame_names(wrapper);
+    let dbg = format!(
+        "{method}(\"{}\", inherits=\"{template}\")",
+        own_name.as_deref().unwrap_or("<unnamed>")
+    );
+
+    let first = loader.report.warnings.len();
+    match kind {
+        RegionKind::FontString => {
+            let node = framexml::inherits_node("FontString", template);
+            let levels = loader.fontstring_levels(&node);
+            for level in &levels {
+                loader.load_fontstring_level(
+                    level,
+                    wrapper,
+                    &parent_name,
+                    regions::FontAttrs::Own,
+                    true,
+                    &dbg,
+                );
+            }
+        }
+        RegionKind::Texture => {
+            let node = framexml::inherits_node("Texture", template);
+            let levels = loader.levels(&node);
+            for level in &levels {
+                loader.load_texture_level(level, wrapper, &parent_name, &dbg);
+            }
+        }
+        // No region constructor takes `inherits=` for a title region; there is no reader to run.
+        RegionKind::Title => {
+            loader.report.warnings.push(format!(
+                "{dbg}: a Title region reads no XML template content"
+            ));
+            return loader.report;
+        }
+    }
+    // `PostLoadXML` (`0x4836D0` / `0x4830E0`): a region template's anchors have no enclosing frame
+    // subtree to wait for, so resolve them now; a miss is logged rather than silently dropped.
+    // Authored points therefore stand before the implicit creation anchor, which only fills a
+    // region that still has none (`0x771480` FontString, `0x7701c0` Texture).
+    loader.drain_deferred_anchors(0);
+    if let Err(e) = crate::script::implicit_creation_anchor_lua(lua, wrapper) {
+        loader.report.fault(format!("{dbg}: implicit anchor: {e}"));
+    }
+    // `apply_template` prefixes the expansion's own warnings with the call that caused them. The
+    // level readers already stamp some lines (a failed `SetFontObject`), so keep those as they are.
+    for w in &mut loader.report.warnings[first..] {
+        if !w.starts_with(&dbg) {
+            *w = format!("{dbg}: {w}");
+        }
+    }
     loader.report
 }
 
@@ -312,6 +459,7 @@ struct Loader<'a> {
     /// target built later waits here (`ClassTrainerFrameTemplates.xml:67` hangs the label off the
     /// highlight). Each `decorate` drains its own.
     pub(super) deferred_anchors: Vec<DeferredAnchor>,
+    timing: Option<&'a LoadTiming<'a>>,
 }
 
 /// The nodes an element's `LoadXML` reads, in the order it reads them: the reference merges no
@@ -452,6 +600,7 @@ impl Loader<'_> {
     /// Walk one document's top-level items in order (`0x6ede10`).
     pub(super) fn load_doc(&mut self, doc: &ParsedDocument) {
         for item in &doc.items {
+            let start = self.timing.map(|_| Instant::now());
             match item {
                 TopLevel::Include(path) => self.do_include(path),
                 // Deviation: a `<Script file=>` value with a separator joins the including
@@ -497,6 +646,17 @@ impl Loader<'_> {
                 TopLevel::Instance(el) => {
                     self.materialize(el, None, framexml::DEFAULT_PARENT_NAME);
                 }
+            }
+            if let (Some(start), Some(timing)) = (start, self.timing) {
+                let (phase, label) = match item {
+                    TopLevel::Include(path) => ("include", path.as_str()),
+                    TopLevel::Script(ScriptRef::File(path)) => ("script", path.as_str()),
+                    TopLevel::Script(ScriptRef::Inline { .. }) => ("script", "<inline>"),
+                    TopLevel::Font(el) => ("font", el.name().unwrap_or(&el.tag)),
+                    TopLevel::Template(el) => ("template", el.name().unwrap_or(&el.tag)),
+                    TopLevel::Instance(el) => ("frame", el.name().unwrap_or(&el.tag)),
+                };
+                timing(&self.path, phase, label, start.elapsed());
             }
         }
     }

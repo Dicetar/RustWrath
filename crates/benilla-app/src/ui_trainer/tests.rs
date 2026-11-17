@@ -1639,7 +1639,7 @@ mod re_derive {
         let mut list = vec![service(RANK1_WRAPPER), service(OPENER)];
         let mut p = player();
         p.known.insert(RANK1);
-        super::super::reeval::re_derive_all(&mut list, 0, &catalog(), &skill_lines(), &p);
+        super::super::reeval::re_derive_all(&mut list, 0, &catalog(), &skill_lines(), &p, false);
         assert_eq!(list[0].state, trainer_spell_state::GRAY);
         assert_eq!(list[1].state, trainer_spell_state::GREEN);
     }
