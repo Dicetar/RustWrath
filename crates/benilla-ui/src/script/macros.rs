@@ -15,6 +15,8 @@
 mod bind;
 #[cfg(test)]
 mod lua_tests;
+#[cfg(test)]
+mod wrath_tests;
 
 pub use bind::macro_lines;
 
@@ -389,6 +391,25 @@ impl super::UiScript {
     }
 }
 
+/// 12340's GetMacroFromLua (0x00566DF0) accepts an index or a name; donor APIs require a number.
+fn macro_index_arg(lua: &Lua, value: Value, usage: &str) -> mlua::Result<usize> {
+    let model = lua.app_data_ref::<Model>().expect("model app_data");
+    if model.target == super::UiTarget::Wrath335 {
+        if let Some(n) = binding_abi::is_number(lua, value.clone()) {
+            return Ok(binding_abi::ftol(n) as u32 as usize);
+        }
+        return Ok(match value {
+            Value::String(name) => {
+                let name = name.to_str()?;
+                model.macros.index_by_name(&name)
+            }
+            _ => 0,
+        });
+    }
+    drop(model);
+    binding_abi::index_arg(lua, value, usage)
+}
+
 /// `CreateMacro`'s worker (`0x4f1010`): the new macro's 1-based index in the rebuilt table
 /// (`0x4f16ba`), or the full-scope error (`0x84cbdc`). The verb has refused an empty name already.
 fn create_macro(
@@ -478,7 +499,8 @@ fn edit_macro(
         } else {
             &model.spell_list
         };
-        let binding = bind::derive_with_slots(aliases, &view.body, player_slots, &model.pet_book, was);
+        let binding =
+            bind::derive_with_slots(aliases, &view.body, player_slots, &model.pet_book, was);
         model.macro_bindings.insert(id, binding);
         model.macros_dirty = true;
         model.macros_generation += 1;
@@ -591,26 +613,34 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetMacroInfo",
         lua.create_function(|lua, index: Value| {
             // `is-number` else `Usage: GetMacroInfo(index)` (`0x84cc0c`, `0x4f177b`).
-            let index = binding_abi::index_arg(lua, index, "Usage: GetMacroInfo(index)")?;
+            let index = macro_index_arg(lua, index, "Usage: GetMacroInfo(index)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let wrath = model.target == super::UiTarget::Wrath335;
             let Some(m) = model.macros.get(index) else {
-                // `0x4f1829`: four nils.
-                return Ok(super::binding_abi::tuple(&[None; 4]));
+                // 12340 0x00566EB0 returns no values on a miss; donor returns four nils.
+                return Ok(if wrath {
+                    MultiValue::new()
+                } else {
+                    super::binding_abi::tuple(&[None; 4])
+                });
             };
             let texture = match &m.texture {
                 Some(t) => Value::String(lua.create_string(t)?),
                 None => Value::Nil,
             };
-            Ok(MultiValue::from_vec(vec![
+            let mut values = vec![
                 Value::String(lua.create_string(&m.name)?),
                 texture,
                 Value::String(lua.create_string(&m.body)?),
-                if m.local_only {
+            ];
+            if !wrath {
+                values.push(if m.local_only {
                     Value::Integer(1)
                 } else {
                     Value::Nil
-                },
-            ]))
+                });
+            }
+            Ok(MultiValue::from_vec(values))
         })?,
     )?;
 
@@ -666,15 +696,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "CreateMacro",
         lua.create_function(|lua, args: MultiValue| {
             let a: Vec<Value> = args.into_iter().collect();
-            let usage = || {
-                mlua::Error::RuntimeError(
-                    "Usage: CreateMacro(name, iconIndex, body, local, perCharacter)".into(),
-                )
+            let wrath = lua.app_data_ref::<Model>().expect("model app_data").target
+                == super::UiTarget::Wrath335;
+            let usage_text = if wrath {
+                "Usage: CreateMacro(name, iconIndex, body, perCharacter)"
+            } else {
+                "Usage: CreateMacro(name, iconIndex, body, local, perCharacter)"
             };
+            let usage = || mlua::Error::RuntimeError(usage_text.into());
             let name = super::binding_abi::string_arg(
                 lua,
                 a.first().cloned().unwrap_or(Value::Nil),
-                "Usage: CreateMacro(name, iconIndex, body, local, perCharacter)",
+                usage_text,
             )?;
             let icon = lua
                 .coerce_number(a.get(1).cloned().unwrap_or(Value::Nil))?
@@ -689,7 +722,12 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 .get(2)
                 .and_then(|v| super::binding_abi::optional_string(lua, v))
                 .unwrap_or_default();
-            let flags = (flag(a.get(3)), flag(a.get(4)));
+            // 12340 Script_CreateMacro (0x00568160): scope is argument four, not five.
+            let flags = if wrath {
+                (false, flag(a.get(3)))
+            } else {
+                (flag(a.get(3)), flag(a.get(4)))
+            };
             let aliases = bind::cast_aliases(lua);
             super::tick::verb(lua, |model| {
                 // `0x4f1632`, `0x4f163c`.
@@ -709,7 +747,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "EditMacro",
         lua.create_function(|lua, args: MultiValue| {
             let a: Vec<Value> = args.into_iter().collect();
-            let index = binding_abi::index_arg(
+            let index = macro_index_arg(
                 lua,
                 a.first().cloned().unwrap_or(Value::Nil),
                 "Usage: EditMacro(index, name, icon, body, local)",
@@ -730,7 +768,9 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             }
             let name = a.get(1).and_then(|v| binding_abi::optional_string(lua, v));
             let body = a.get(3).and_then(|v| binding_abi::optional_string(lua, v));
-            let local_only = flag(a.get(4));
+            let local_only = lua.app_data_ref::<Model>().expect("model app_data").target
+                != super::UiTarget::Wrath335
+                && flag(a.get(4));
             let aliases = bind::cast_aliases(lua);
             let at = super::tick::verb(lua, |model| {
                 // `0x4f1966`-`0x4f1983`: a miss leaves the pointer null, and the macro its old
@@ -746,7 +786,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "DeleteMacro",
         lua.create_function(|lua, index: Value| {
             // `is-number` else `Usage: DeleteMacro(index)` (`0x84cc28`, `0x4f1861`).
-            let index = binding_abi::index_arg(lua, index, "Usage: DeleteMacro(index)")?;
+            let index = macro_index_arg(lua, index, "Usage: DeleteMacro(index)")?;
             super::tick::verb(lua, |model| delete_macro(model, index));
             Ok(())
         })?,
@@ -756,7 +796,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "PickupMacro",
         lua.create_function(|lua, index: Value| {
             // `is-number` else `Usage: PickupMacro(index)` (`0x84cc98`, `0x4f1af1`).
-            let index = binding_abi::index_arg(lua, index, "Usage: PickupMacro(index)")?;
+            let index = macro_index_arg(lua, index, "Usage: PickupMacro(index)")?;
             pickup_macro(lua, index);
             Ok(())
         })?,

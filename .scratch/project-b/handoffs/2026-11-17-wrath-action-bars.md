@@ -4,7 +4,7 @@ Status: in progress
 Owner: Pi / OpenAI
 Branch: fix/wrath-action-bars
 Issue: none
-Next: Trace stock callers and reference contracts through action identity/state, persistence, macros, form/vehicle paging and spec replacement; repair real-owner gaps.
+Next: Finish macro capacity/index and security ownership, then implement temporary/vehicle/form paging and complete the installed-stock-caller audit; do not land this checkpoint as completed B5.
 
 Started from origin/main `7ef93503` after B4 landed at `b13c163d`; A2 also landed at `58e98b0d`.
 Worktree: `D:\Projects\wow\worktrees\fix-wrath-action-bars`. Shared dirty checkout
@@ -16,7 +16,65 @@ B4 owns spell; consume its outcomes without rewriting it. No combat_log/combat_t
 Data behaviors must remain editable by the live hotpatch/Lua translation route.
 
 Compilation: not run. Tests: not run (focused-case ceiling 20). Client: not run.
-AutoSwarm availability inspection timed out; no child assignment was issued.
+AutoSwarm availability inspection timed out twice; no child assignment was issued.
+
+## Pushed source checkpoint
+
+Repaired the macro ABI in `crates/benilla-ui/src/script/macros.rs`, preserving donor behavior
+for donor VMs. Wrath CreateMacro now takes perCharacter in argument four (and never creates
+local-only records); GetMacroInfo returns three values, or zero on a miss. Wrath GetMacroInfo,
+EditMacro, PickupMacro and DeleteMacro resolve the same index-or-name identity, with numeric
+strings treated as indices. EditMacro ignores the obsolete donor local flag.
+This is a shared binding repair, not a FrameXML workaround or a success stub.
+
+Investigated the pinned reference's `WoW/Source/Ui/UIMacros_Scripts.cpp`:
+GetMacroFromLua `0x00566DF0`, GetMacroInfo `0x00566EB0`, EditMacro `0x00566FA0`,
+PickupMacro `0x005674F0`, CreateMacro `0x00568160`. No implementation was copied.
+Added three focused regression cases in `macros/wrath_tests.rs` (not run): fourth-argument
+scope; lookup/return arity; edit/pickup/delete identity. Existing donor tests remain intact.
+Direct rustfmt and `git diff --check` ran; these are source formatting checks, not compilation.
+No changes to spell, combat_log or combat_text. No new data tables or fixed mappings added.
+
+## Owner/query trace (source only; not yet complete 12340 acceptance)
+
+| Stock API / operation | Existing real owner / consumer | Remaining review |
+| --- | --- | --- |
+| IsUsableAction | ui_action/state.rs usable cache -> ActionState usable/power pair | audit Wrath fields and installed callers |
+| IsActionInRange / ActionHasRange | state.rs -> spell range check -> ActionState tri-state | installed range tint, unit argument behavior |
+| GetActionCooldown | state.rs -> spell Cooldowns -> UI clock-based triple | consume B4 as-is; verify stock swipe |
+| GetActionCount | feed.rs + recount.rs -> inventory-backed ActionSlot count | macro item bindings / spell charges |
+| IsCurrentAction / IsAutoRepeatAction | action.rs ActionState checks live CastView | full B4/A2 producer trace and stock consumers |
+| GetBonusBarOffset | feed.rs bonus_bar_offset -> form DBC bonus_bar | incomplete: temporary/vehicle and preset-form bar |
+| Spellbook drag / relog | cursor/bar.rs PlaceAction -> ActionBarSteps::set -> Wrath SetActionButton encoder -> AC | verify selected stock drag caller and persistence |
+| Spec replacement | Wrath parser (144 words) -> translate_gameplay -> spell/net.rs action_buttons -> ActionSlots dirty | keep B4 file untouched; state-1 replaces, state-2 pending preserves live bar |
+| Macro /cast | ui_macro record/body -> run_macro EXECUTE_CHAT_LINE -> stock chat handler -> cast host | stock Wrath runner/security and conditional parsing audit still open |
+
+AC research: `Azerothcore_WoTLK_Rebuild/source/azerothcore/src/server/game/Handlers/MiscHandler.cpp`
+HandleSetActionButtonOpcode reads button u8 + packed u32 and validates macro/spell/item kinds.
+`Entities/Player/Player.cpp` SendActionButtons sends state plus 144 words except state 2;
+IsActionButtonDataValid validates the slot, kind and learned spell. Relog/spec source path exists;
+no server, database or live receiver was exercised.
+
+## Known gaps — not ready to merge
+
+1. MacroState and file parser still use donor 18-per-scope limits/indexing. The reference uses
+   72 sorted entries; reconcile with selected stock FrameXML constants before changing capacities.
+   Do not hardcode a new capacity table in Rust: use a live-editable policy owner.
+2. Wrath mutation security (combat/protected context), RunMacro/RunMacroText and macro-frame
+   remaining APIs need review; the ABI patch alone does not establish a working macro frame.
+3. `HasVehicleActionBar` is absent; `IsPossessBarVisible` is constant false. Existing replicated
+   vehicle GUID/seat permissions do not themselves produce the temporary action spell table.
+   Bind visibility, slot contents, events and execution to the real temporary-bar owner together.
+4. Reference `ActionBarFrame.cpp` UpdateBonusBar `0x005A83C0` selects offset 5 for temporary
+   flags or form preset spells; feed.rs only reads the form bonus_bar column. GetActionBarPage
+   `0x005A7FD0` also forces page 1 while temporary flags are active. This is not yet implemented.
+5. ChangeActionBarPage currently accepts arbitrary pages; reference `0x005A7F60` validates 1..6.
+   Ordinary page changes exist, but temporary override/restoration remains unimplemented.
+6. Installed stock FrameXML call-site enumeration, positive/empty owner audit and hotpatch policy
+   integration are unfinished. No extracted FrameXML/GlueXML was written or committed.
+
+Do not mark ready solely because these three macro ABI tests exist. The entire B5 source review
+and missing owners above must be completed first, with at most 20 focused cases total.
 
 ## Owner check list — after the next batch build
 
