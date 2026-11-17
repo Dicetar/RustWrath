@@ -4,8 +4,8 @@
 use benilla_protocol::{EntityKind, MoveMode, ObjectFields, SessionEvent, SessionEventKind};
 use bevy::prelude::*;
 
-use super::{CorpsePoint, DeathNet, ResurrectOffer};
-use crate::net::{MoveModeMessage, NetHandlerApp, SelfGuid};
+use super::{CorpsePoint, DeathNet, ReleaseLocation, ResurrectOffer};
+use crate::net::{MoveModeMessage, NetHandlerApp, ObjectStore, SelfGuid, SelfPlayer};
 
 /// Register the death handlers and the session-end listener.
 pub(super) fn register(app: &mut App) {
@@ -15,6 +15,9 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::ResurrectRequest, on_resurrect_request)
         .net_handler(K::SpiritHealerConfirm, on_spirit_healer_confirm)
         .net_handler(K::DurabilityDamageDeath, on_durability_damage_death)
+        .net_handler(K::DeathReleaseLoc, on_death_release_loc)
+        .net_handler(K::PreResurrect, on_pre_resurrect)
+        .net_handler(K::CorpseNotInInstance, on_corpse_not_in_instance)
         .net_handler(K::MoveMode, on_move_mode)
         .net_handler(K::Disconnected, on_session_end);
 }
@@ -62,6 +65,41 @@ fn on_spirit_healer_confirm(In(ev): In<SessionEvent>, mut death_net: ResMut<Deat
 fn on_durability_damage_death(In(ev): In<SessionEvent>, log: Res<crate::ui_chat::ChatLog>) {
     if let SessionEvent::DurabilityDamageDeath = ev {
         durability_damage_death(&log);
+    }
+}
+
+fn on_death_release_loc(
+    In(ev): In<SessionEvent>,
+    mut death_net: ResMut<DeathNet>,
+    me: Query<&ObjectStore, With<SelfPlayer>>,
+) {
+    if let SessionEvent::DeathReleaseLoc { map_id, position } = ev {
+        let ghost = me
+            .iter()
+            .next()
+            .is_some_and(|store| store.0.player_is_ghost());
+        death_release_loc(map_id, position, ghost, &mut death_net);
+    }
+}
+
+/// `SMSG_PRE_RESURRECT`: the body turning ghost drops every projectile still homing on it
+/// (`Player_C.cpp:22246-22252` → `CMissile::ClearInFlightMissilesWithTarget`).
+fn on_pre_resurrect(
+    In(ev): In<SessionEvent>,
+    mut clear: MessageWriter<crate::entities::ClearMissilesAt>,
+) {
+    if let SessionEvent::PreResurrect { guid } = ev {
+        clear.write(crate::entities::ClearMissilesAt { target: guid });
+    }
+}
+
+/// `SMSG_AREA_TRIGGER_NO_CORPSE`, the instance entrance's refusal of a ghost whose corpse lies
+/// elsewhere: `CGGameUI::DisplayError(ERR_CORPSE_IS_NOT_IN_INSTANCE)` (`GameUI.cpp:6821-6824`).
+fn on_corpse_not_in_instance(In(ev): In<SessionEvent>, errors: Res<crate::ui_action::UiErrorKeys>) {
+    if let SessionEvent::CorpseNotInInstance = ev {
+        errors.push(crate::ui_action::UiError::key(
+            "ERR_CORPSE_IS_NOT_IN_INSTANCE",
+        ));
     }
 }
 
@@ -168,6 +206,16 @@ fn corpse_reclaim_delay(delay_ms: u32, now_secs: f64, death_net: &mut DeathNet) 
     death_net.reclaim_generation = death_net.reclaim_generation.wrapping_add(1);
 }
 
+/// `SMSG_DEATH_RELEASE_LOC` (`Player.cpp:4860-4872`): where the release teleported the ghost,
+/// the minimap spirit healer's position and `GetDeathReleasePosition`'s source. 12340's handler
+/// (`Player_C.cpp:9720-9736`) keeps it only while the active player is **not** a ghost: the
+/// ghost leg, and a missing player, replace it with `SetDeathReleaseLocation(-1, zero)`
+/// (`GameUI.cpp:3451-3459`). `map_id` itself is signed because a stored leg may carry `-1`
+/// (`ResurrectPlayer`, `Player.cpp:4380-4385`), which projects off every map.
+fn death_release_loc(map_id: i32, position: [f32; 3], ghost: bool, death_net: &mut DeathNet) {
+    death_net.release_location = (!ghost).then_some(ReleaseLocation { map_id, position });
+}
+
 /// `SMSG_RESURRECT_REQUEST`, the RESURRECT popup's data.
 fn resurrect_request(
     caster: u64,
@@ -237,4 +285,121 @@ fn move_mode(
         mode,
         apply,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `SMSG_DEATH_RELEASE_LOC` stores the graveyard the release named and `ResurrectPlayer`'s
+    /// `-1` clears it, so a resurrection leaves no world-map or minimap release marker behind
+    /// (`Player_C.cpp:9720-9736`, `Player.cpp:4380-4385`).
+    /// `SMSG_CORPSE_RECLAIM_DELAY` anchors the wait on the clock the feed reads and bumps the
+    /// generation that re-fires the corpse-range events (`0x4962d0`), so RECOVER_CORPSE re-shows
+    /// with the new delay.
+    #[test]
+    fn the_reclaim_delay_anchors_and_re_announces() {
+        let mut death = DeathNet::default();
+        corpse_reclaim_delay(30_000, 100.0, &mut death);
+        assert_eq!(death.reclaim_at, Some(130.0));
+        assert_eq!(death.reclaim_generation, 1);
+        corpse_reclaim_delay(60_000, 130.0, &mut death);
+        assert_eq!(death.reclaim_at, Some(190.0));
+        assert_eq!(death.reclaim_generation, 2);
+    }
+
+    /// `SMSG_RESURRECT_REQUEST` holds the offer the popup answers and announces it once per
+    /// message; the answer takes it, and the next packet starts a fresh announcement.
+    #[test]
+    fn a_resurrect_offer_is_held_and_announced_per_message() {
+        let mut death = DeathNet::default();
+        resurrect_request_for_tests(0x9, &mut death);
+        assert_eq!(death.resurrect.as_ref().map(|o| o.caster), Some(0x9));
+        assert_eq!(death.resurrect_generation, 1);
+        assert!(death.resurrect.take().is_some(), "the answer takes the offer");
+        resurrect_request_for_tests(0xA, &mut death);
+        assert_eq!(death.resurrect_generation, 2);
+        assert_eq!(death.resurrect.as_ref().map(|o| o.caster), Some(0xA));
+    }
+
+    /// The reclaim guid is the reference's one-writer latch: our streamed body arms it, another
+    /// player's never replaces it, and the bone-pile flag (bit 0) never arms it (`0x4920d0`).
+    /// A destroyed corpse drops the guid so a later reclaim cannot send a dead one.
+    #[test]
+    fn the_corpse_latch_arms_for_our_body_and_never_its_bones() {
+        use benilla_protocol::messages::ObjectType;
+
+        const ME: u64 = 0x11;
+        const BODY: u64 = 0xC0_0000_0000_0001;
+        const BONES: u64 = 0xC0_0000_0000_0002;
+        let me = SelfGuid(Some(ME));
+        let corpse_fields = |owner: u64, flags: Option<u32>| {
+            let mut pairs = vec![(6u16, owner as u32), (7, 0)];
+            if let Some(flags) = flags {
+                pairs.push((35, flags));
+            }
+            ObjectFields::from_pairs(&pairs).into_created(ObjectType::Corpse)
+        };
+
+        let mut death = DeathNet::default();
+        note_corpse(BODY, EntityKind::Corpse, &corpse_fields(ME, None), &me, &mut death);
+        assert_eq!(death.corpse_guid, Some(BODY), "our body arms the reclaim");
+
+        // Another player's body must not steal the latch.
+        note_corpse(
+            0xC0_0000_0000_0003,
+            EntityKind::Corpse,
+            &corpse_fields(0x22, None),
+            &me,
+            &mut death,
+        );
+        assert_eq!(death.corpse_guid, Some(BODY));
+
+        // A bone pile keeps the owner but flag bit 0 says bones: it never arms.
+        note_corpse(
+            BONES,
+            EntityKind::Corpse,
+            &corpse_fields(ME, Some(1)),
+            &me,
+            &mut death,
+        );
+        assert_eq!(death.corpse_guid, Some(BODY), "bones never arm");
+
+        // An in-place flip to bones under the live guid drops the latch.
+        recheck_corpse(BODY, &corpse_fields(ME, Some(1)), &me, &mut death);
+        assert_eq!(death.corpse_guid, None, "the bone flip drops it");
+
+        note_corpse(
+            BODY,
+            EntityKind::Corpse,
+            &corpse_fields(ME, None),
+            &me,
+            &mut death,
+        );
+        forget_corpse(BODY, &mut death);
+        assert_eq!(death.corpse_guid, None, "the destroyed corpse drops it");
+    }
+
+    /// 12340's handler (`Player_C.cpp:9720-9736`) stores the graveyard only while the active
+    /// player is not a ghost: the ghost leg (and a missing player) replaces it with
+    /// `SetDeathReleaseLocation(-1, zero)` (`GameUI.cpp:3451-3459`). AzerothCore sends the packet
+    /// right after the ghost aura (`Player.cpp:4860-4872`) and sends `-1` while the flag is still
+    /// set (`Player.cpp:4380-4392`), so both arrive on the clear leg — the same answer, and no
+    /// stale marker after a resurrection.
+    #[test]
+    fn a_release_location_is_kept_only_while_not_a_ghost() {
+        let mut death = DeathNet::default();
+        death_release_loc(0, [-8943.5, 132.25, 61.5], false, &mut death);
+        assert_eq!(
+            death.release_location,
+            Some(ReleaseLocation {
+                map_id: 0,
+                position: [-8943.5, 132.25, 61.5],
+            })
+        );
+        death_release_loc(0, [-8943.5, 132.25, 61.5], true, &mut death);
+        assert_eq!(death.release_location, None, "a ghost keeps no location");
+        death_release_loc(-1, [0.0, 0.0, 0.0], true, &mut death);
+        assert_eq!(death.release_location, None, "the resurrection clears too");
+    }
 }

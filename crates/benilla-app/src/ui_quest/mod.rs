@@ -82,7 +82,8 @@ pub(crate) struct QuestGiver {
     /// The reference's `0xbe0840`: the last escort confirm's quest, written by its packet
     /// (`0x5019c7`), never cleared, and sent by `ConfirmAcceptQuest` (`0x5021e0`).
     pub(crate) confirm: u32,
-    /// Per-guid dialog status from `SMSG_QUESTGIVER_STATUS`, the `!`/`?` marker's value.
+    /// Per-guid 3.3.5 `QuestGiverStatus` (0-10) from `SMSG_QUESTGIVER_STATUS`, the `!`/`?` marker's
+    /// value, unmapped as the reference stores it (`unit+0x90`, `SetQuestStatus`).
     statuses: HashMap<u64, u32>,
     /// Messages queued for [`feed_quest`], each a GlobalStrings key and its fills.
     messages: Vec<UiError>,

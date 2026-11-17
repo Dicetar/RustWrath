@@ -155,7 +155,13 @@ fn resolve(
         )),
         QuestLine::Money(copper) => Resolved::Show(UiError::s(
             "ERR_QUEST_REWARD_MONEY_S",
-            coin_text(copper, &|k| get(k).unwrap_or_default()),
+            if target == benilla_ui::script::UiTarget::Wrath335 {
+                // 12340 `GetCurrencyText` with `", "` over the `*_AMOUNT` templates
+                // (`0x007E7D80`); the 3.3.5 strings have no bare coin words.
+                benilla_ui::strings::currency_text(copper, ", ", &|k| get(k).unwrap_or_default())
+            } else {
+                coin_text(copper, &|k| get(k).unwrap_or_default())
+            },
         )),
         // The name is `0x5d8b00`'s with no random property, the link `0x52adb0`'s.
         QuestLine::Item(entry) => match items.template(entry, 0, ask) {

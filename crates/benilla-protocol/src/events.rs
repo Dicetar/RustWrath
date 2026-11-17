@@ -559,11 +559,11 @@ pub enum SessionEvent {
     PlayMusic { music_id: u32 },
     /// A server-pushed 3D sound kit at object `guid` (`SMSG_PLAY_OBJECT_SOUND`).
     PlayObjectSound { sound_id: u32, guid: u64 },
-    /// The zone's weather (`SMSG_WEATHER`); `sound_id` is a SoundEntries loop, 8533..8558, 0 clear.
+    /// The zone's weather (`SMSG_WEATHER`): a `Weather.dbc` row id, its grade and the abrupt flag.
+    /// The row names the effect type and the ambience kit; the wire carries no sound id in 3.3.5.
     Weather {
-        weather_type: u32,
+        weather_id: u32,
         grade: f32,
-        sound_id: u32,
         instant: bool,
     },
     /// A chat emote (`SMSG_TEXT_EMOTE`, `EmotesText.dbc`); empty `target_name` means untargeted.
@@ -856,7 +856,9 @@ pub enum SessionEvent {
         options: Vec<GossipOption>,
         quests: Vec<(u32, u32, u32, String)>,
     },
-    /// An NPC's `!`/`?` marker (`SMSG_QUESTGIVER_STATUS`), a [`crate::messages::dialog_status`].
+    /// An NPC's `!`/`?` marker (`SMSG_QUESTGIVER_STATUS`): the raw 3.3.5 `QuestGiverStatus` (0-10)
+    /// on the Wrath path, which the app's markers and minimap read; a
+    /// [`crate::messages::dialog_status`] on the donor 1.12 path.
     QuestGiverStatus { npc: u64, status: u32 },
     /// The greeting panel: an NPC's offered/active quest rows (`SMSG_QUESTGIVER_QUEST_LIST`).
     QuestGreeting(QuestGiverList),
@@ -880,6 +882,16 @@ pub enum SessionEvent {
     },
     /// An item-collection objective toast (`SMSG_QUESTUPDATE_ADD_ITEM`).
     QuestObjectiveItem { item_id: u32, count: u32 },
+    /// 12340's item-collection toast source: `SMSG_ITEM_PUSH_RESULT`'s trailing count, read by
+    /// `CheckForQuestItemLoot` (`0x6d7de0`). AzerothCore sends `SMSG_QUESTUPDATE_ADD_ITEM` empty,
+    /// so a Wrath session reports item progress only through this. `total_count` is the item's
+    /// count held after the push.
+    QuestItemLooted {
+        player_guid: u64,
+        item_id: u32,
+        count: u32,
+        total_count: u32,
+    },
     /// All objectives done (`SMSG_QUESTUPDATE_COMPLETE`), a line only; the slot state is durable.
     QuestObjectivesComplete { quest_id: u32 },
     /// The quest failed (`SMSG_QUESTUPDATE_FAILED`, or `_FAILEDTIMER` when `timed`).
@@ -1045,6 +1057,16 @@ pub enum SessionEvent {
     /// The spirit healer's `CONFIRM_XP_LOSS` popup (`SMSG_SPIRIT_HEALER_CONFIRM`); accepting sends
     /// `CMSG_SPIRIT_HEALER_ACTIVATE` with `npc`.
     SpiritHealerConfirm { npc: u64 },
+    /// The graveyard a release teleports to (`SMSG_DEATH_RELEASE_LOC`, 12340 only): drawn as the
+    /// minimap spirit healer and read by `GetDeathReleasePosition`. A `map_id` of `-1` clears it,
+    /// which `Player::ResurrectPlayer` sends at every resurrection.
+    DeathReleaseLoc { map_id: i32, position: [f32; 3] },
+    /// The body became a ghost (`SMSG_PRE_RESURRECT`, 12340 only): every missile still homing on
+    /// `guid` is dropped.
+    PreResurrect { guid: u64 },
+    /// A ghost's instance entrance refused entry because its corpse lies elsewhere
+    /// (`SMSG_AREA_TRIGGER_NO_CORPSE`, 12340 only): `ERR_CORPSE_IS_NOT_IN_INSTANCE`.
+    CorpseNotInInstance,
     /// Our root, water-walk, feather-fall or hover changed. Ack with `counter` and our
     /// `MovementInfo`, or the server never applies it and observers never see it.
     MoveMode {

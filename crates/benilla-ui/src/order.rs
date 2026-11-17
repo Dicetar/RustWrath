@@ -529,9 +529,9 @@ fn emit_frame(
 ///
 /// Deviation: a child that left the scroll draw is drawn once, by the flat pass, where the client's
 /// callback, which reads only the child's visibility, draws it a second time, clipped, at the
-/// ScrollFrame's place. A `SetParent` of the child, of the ScrollFrame or of any ancestor of the
-/// child to an unflagged parent clears `0x2000` on the whole moved subtree (`0x76abcb` →
-/// `0x76a400`), so each of those reaches it.
+/// ScrollFrame's place. Only a `SetParent` of the child itself to an unflagged parent reaches it
+/// (`0x76abcb` → `0x76a400`): that walk clears `0x2000` on the moved subtree but stops at a
+/// descendant marked `0x4000`, so moving the ScrollFrame or an ancestor keeps the child scrolled.
 fn scroll_child(arena: &WidgetArena, sf: FrameHandle) -> Option<FrameHandle> {
     let KindState::Scroll(s) = &arena.frame(sf)?.kind_state else {
         return None;
@@ -1107,6 +1107,30 @@ mod tests {
         }
         assert_eq!(nested(&a, born), vec![false]);
         assert_eq!(nested(&a, other), vec![true]);
+    }
+
+    /// Re-parenting the ScrollFrame itself (stock `QuestLogFrame.lua` moves
+    /// `QuestLogDetailScrollFrame` to `QuestLogFrame`) leaves its child scrolled and clipped: the
+    /// flag walk stops at the `0x4000` child (`0x76a400`), so the child stays out of the flat pass.
+    #[test]
+    fn re_parenting_a_scroll_frame_keeps_its_child_clipped() {
+        let mut a = WidgetArena::new();
+        let sf = a.create(FrameKind::ScrollFrame, None, None);
+        let child = a.create(FrameKind::Frame, None, Some(sf));
+        a.set_scroll_child(sf, Some(child));
+        let reward = a.create(FrameKind::Frame, None, Some(child));
+        let new_parent = a.create(FrameKind::Frame, None, None);
+        a.set_parent(sf, Some(new_parent));
+        assert!(!a.frame(sf).unwrap().scroll_member);
+        for f in [child, reward] {
+            assert!(a.frame(f).unwrap().scroll_member, "{f:?} is still scrolled");
+        }
+        let scopes: Vec<_> = traversal(&a)
+            .iter()
+            .filter(|e| e.target == ZTarget::Frame(reward))
+            .map(|e| e.scope)
+            .collect();
+        assert_eq!(scopes, vec![Some(sf)], "drawn once, clipped by the ScrollFrame");
     }
 
     /// A Show or Hide inside a scroll subtree moves no other entry's key: a hidden frame keeps its

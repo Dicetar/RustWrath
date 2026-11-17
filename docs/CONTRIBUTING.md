@@ -66,7 +66,7 @@ pins the benilla revision it builds on. What a crate cannot reach stays a fork's
 
 **Project B / 12340:** before investigating a Wrath client behavior, read
 [the 12340 reference workflow](agents/12340-reference.md). A preserved local decompilation is
-available at `D:/Projects/wowdecomp-reference`; cite its pinned commit, symbol/file and original
+available at `D:/Projects/wow/reference/wowdecomp-reference`; cite its pinned commit, symbol/file and original
 address where present. It complements the actual 12340 executable and selected-profile data.
 The donor's benilla-re instructions below apply to 1.12 behavior. Reconstructed source is
 evidence to check, not automatically correct or licensed for incorporation into this project.

@@ -13,9 +13,9 @@
 //!   icon 7, flags 2, rank −1, `0x6dacd0`), which alone skips the 694.444-yd cut (`0x6d9cc2`).
 //!
 //! Dots come from the ObjectIcons classifier `0x4eaa90`. A unit or player must first be alive, not
-//! our own charm or summon, and trackable ([`dots`]'s `unit_dot_eligible`). Then quest status 7
-//! draws the gold cell 3 (status 6 draws nothing; green cell 2 is never used in 1.12), and every
-//! other object falls through to tracking: a GameObject passing `0x5ed2b0` draws gold cell 0, a
+//! our own charm or summon, and trackable ([`dots`]'s `unit_dot_eligible`). Then the 3.3.5 quest
+//! status REWARD (10) draws the gold cell 3 (REWARD2 draws nothing; green cell 2 is never used),
+//! and every other object falls through to tracking: a GameObject passing `0x5ed2b0` draws gold cell 0, a
 //! unit passing `0x5ed210` red cell 1, against the `PLAYER_TRACK_CREATURES`/`RESOURCES` masks.
 //! Party members and our pet, our charm else our summon (`0x6dad10` slot 4), are blue cell 4 within
 //! 0.8 of the radius. Object dots cull at the view radius in 3-D distance; all draw last.
@@ -36,7 +36,9 @@
 
 mod dots;
 
-pub(super) use dots::{emit_party_dots, emit_quest_dots, emit_tracking_dots, SelfTracking};
+pub(super) use dots::{
+    emit_party_dots, emit_quest_dots, emit_tracking_dots, SelfTracking, TrackedInfo,
+};
 
 use bevy::math::Rect;
 use bevy::prelude::*;
@@ -145,6 +147,8 @@ pub(super) type BlipInputs<'w, 's> = (
     Option<Res<'w, crate::go_templates::Locks>>,
     Res<'w, crate::poi_marker::PoiMarker>,
     Option<Res<'w, crate::area_poi::AreaPoiRes>>,
+    // `minimapTrackedInfo`, the tracking menu's town-service row.
+    Option<Res<'w, crate::cvars::Cvars>>,
 );
 
 /// Every streamed object the classifier considers; our own avatar is the arrow, never a dot.
@@ -156,6 +160,7 @@ pub(super) type TrackedCandidates<'w, 's> = Query<
         &'static NetEntity,
         &'static GlobalTransform,
         Option<&'static ObjectStore>,
+        Option<&'static crate::wrath::WrathNpcFlags>,
     ),
     Without<Embodied>,
 >;

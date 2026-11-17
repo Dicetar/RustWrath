@@ -1589,6 +1589,8 @@ fn fire_one(
                     language: language_name(language).to_string(),
                     channel: channel_base,
                     flag: flag_of_tag(msg.chat_tag).to_string(),
+                    line_id: super::event::next_line_id(),
+                    sender_guid: msg.sender_guid,
                     ..Default::default()
                 };
                 if let Some(record) = record {

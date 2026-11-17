@@ -268,9 +268,9 @@ pub(crate) fn set_lock_bit(model: &mut Model, guid: u64, locked: bool) -> bool {
     }
 }
 
-/// The ten `arg1..arg10` of a `CHAT_MSG_SYSTEM` line with no sender: the text, five empty
-/// strings, two zeros, an empty string and a zero, the shape the app's chat feed gives its own
-/// system lines.
+/// The twelve `arg1..arg12` of a `CHAT_MSG_SYSTEM` line with no sender: the text, five empty
+/// strings, two zeros, an empty string, a zero, line id 0 and no GUID, the shape the app's chat
+/// feed gives its own system lines.
 pub fn system_chat_args(text: String) -> Vec<ScriptValue> {
     let empty = || ScriptValue::Str(String::new());
     vec![
@@ -284,6 +284,8 @@ pub fn system_chat_args(text: String) -> Vec<ScriptValue> {
         ScriptValue::Int(0),
         empty(),
         ScriptValue::Int(0),
+        ScriptValue::Int(0),
+        empty(),
     ]
 }
 

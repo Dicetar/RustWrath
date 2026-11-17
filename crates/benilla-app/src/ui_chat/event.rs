@@ -305,6 +305,8 @@ impl ChatEventKind {
 /// | 8 | `channel_number` | the local slot, `ChatTypeInfo["CHANNEL"..arg8]` |
 /// | 9 | `channel_base` | the channel name without its number |
 /// | 10 | none | the split index, 0 from vmangos (`Chat/Channel.cpp:823-827`) |
+/// | 11 | `line_id` | 3.3.5's line id, the `player:Name:lineID` link's tail (`ChatFrame.lua:2612`) |
+/// | 12 | `sender_guid` | 3.3.5's sender GUID as `0x%016X`, "" with none (`ChatFrame.lua:2456`) |
 ///
 /// arg4, arg7, arg8 and arg9 are one record ([`super::edit::ChannelState::stamp_channel`]). arg1
 /// is the garbled text: the reference fills one buffer (`SStrCopy` at `0x49a9f0`, the garble
@@ -327,6 +329,18 @@ pub(crate) struct ChatEvent {
     /// [`super::feed::deliver`] changes it: the reference's notice arms read `slot+0x9c` for the
     /// token (`0x49c0c2`) before they write it (`0x49bb20`).
     pub slot_state: Option<super::edit::SlotState>,
+    /// arg11. The 3.3.5 frame concatenates it into every speaker link, so it is never nil;
+    /// lines without a speaker keep 0.
+    pub line_id: u32,
+    /// arg12, the speaker's GUID; 0 sends "".
+    pub sender_guid: u64,
+}
+
+/// The next speaker line's arg11, counting from 1 for the session as the 3.3.5 client does.
+pub(crate) fn next_line_id() -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl ChatEvent {
@@ -344,7 +358,7 @@ impl ChatEvent {
         self.notice.parse().ok()
     }
 
-    /// This event's `arg1..arg10` in the reference's order and types; ten values, never nil.
+    /// This event's `arg1..arg12` in the 3.3.5 order and types; twelve values, never nil.
     pub(crate) fn script_args(&self) -> Vec<ScriptValue> {
         // arg1 is the token for a channel notice, else the body.
         let arg1 = match (self.kind, self.notice_byte()) {
@@ -367,6 +381,12 @@ impl ChatEvent {
             ScriptValue::Str(self.channel_base.clone()),
             // arg10: always 0, see the struct doc.
             ScriptValue::Int(0),
+            ScriptValue::Int(i64::from(self.line_id)),
+            ScriptValue::Str(if self.sender_guid == 0 {
+                String::new()
+            } else {
+                format!("0x{:016X}", self.sender_guid)
+            }),
         ]
     }
 }

@@ -217,6 +217,8 @@ mod sound_provider;
 pub use sound_provider::{load_sound_provider_catalog, SoundProvider, SoundProviderCatalog};
 mod sound_water;
 pub use sound_water::{load_water_sound_catalog, WaterSoundCatalog};
+mod weather;
+pub use weather::{load_weather_catalog, WeatherCatalog, WeatherEntry};
 mod vocal_ui_sounds;
 pub use vocal_ui_sounds::{
     load_vocal_ui_sounds, VocalUiSound, VocalUiSoundCatalog, VOCAL_UI_LINES,
@@ -231,6 +233,8 @@ mod weapon_swing;
 pub use weapon_swing::{load_weapon_swing_catalog, WeaponSwingCatalog};
 mod material;
 pub use material::{load_material_catalog, MaterialCatalog};
+mod item_records;
+pub use item_records::{load_item_record_catalog, ItemRecord, ItemRecordCatalog};
 mod wmo_area;
 pub use wmo_area::{load_wmo_area_catalog, WmoArea, WmoAreaCatalog};
 mod spells;

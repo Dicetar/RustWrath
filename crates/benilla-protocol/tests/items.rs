@@ -285,6 +285,7 @@ fn item_query_response_full_weapon_golden() {
             assert_eq!(
                 info,
                 Some(Box::new(ItemInfo {
+                    wrath_roll: None,
                     class: 2,
                     subclass: 7,
                     name: "Verified Blade of Testing".into(),
@@ -459,6 +460,7 @@ fn item_query_response_consumable_all_zero_slots_are_empty_not_garbage() {
             assert_eq!(
                 info,
                 Some(Box::new(ItemInfo {
+                    wrath_roll: None,
                     class: 0,
                     subclass: 0,
                     name: "Minor Healing Potion".into(),

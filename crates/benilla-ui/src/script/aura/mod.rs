@@ -237,8 +237,24 @@ impl super::UiScript {
     }
 
     /// Push or clear the player's active [`TrackingState`].
+    ///
+    /// On 3.3.5 a change of tracking spell is `CGMinimapFrame::SetTrackingSpell`: a new spell
+    /// clears the menu row (`LoadTrackingInfo(0)`), and either way `MINIMAP_UPDATE_TRACKING`
+    /// tells the tracking button to re-read its texture.
     pub fn set_tracking(&mut self, tracking: Option<TrackingState>) {
-        self.model_mut().tracking = tracking;
+        let mut model = self.model_mut();
+        let before = model.tracking.as_ref().map(|t| (t.spell_id, t.icon.clone()));
+        let after = tracking.as_ref().map(|t| (t.spell_id, t.icon.clone()));
+        let spell_on = tracking.is_some();
+        model.tracking = tracking;
+        if !model.is_wrath() || before == after {
+            return;
+        }
+        if spell_on && crate::script::minimap_tracking::active_info(&model).is_some() {
+            crate::script::minimap_tracking::load_tracking_info(&mut model, None);
+        } else {
+            model.raise("MINIMAP_UPDATE_TRACKING", Vec::new());
+        }
     }
 
     /// The spell ids of the buffs (`helpful`) or debuffs of the unit `token` names, in the order
@@ -323,6 +339,11 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetTrackingTexture",
         lua.create_function(|lua, ()| {
             let model = lua.app_data_ref::<Model>().expect("model app_data");
+            // 3.3.5's always-shown `MiniMapTracking` button reads the menu row, the spell icon or
+            // `Tracking\None` (12340 `Script_GetTrackingTexture`).
+            if model.is_wrath() {
+                return Ok(Some(crate::script::minimap_tracking::tracking_texture(&model)));
+            }
             Ok(model.tracking.as_ref().and_then(|t| t.icon.clone()))
         })?,
     )?;

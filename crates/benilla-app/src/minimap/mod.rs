@@ -377,6 +377,7 @@ fn emit_minimap(
         locks,
         poi_marker,
         pois,
+        cvars,
     ) = blip_inputs;
     // Hover resets every frame; the blip pass re-establishes it while the map draws.
     *blip_hover = blips::MinimapBlipHover::None;
@@ -616,6 +617,11 @@ fn emit_minimap(
             stealthed: s.0.player_track_stealthed(),
         })
         .unwrap_or_default();
+    let tracked_info = blips::TrackedInfo::from_cvar(
+        cvars.as_deref().and_then(|c| {
+            c.get(benilla_ui::script::minimap_tracking::TRACKED_INFO_CVAR)
+        }),
+    );
     let blip_ctx = (blip_px_per_yd > 0.0).then(|| {
         static BLIP_PROBE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *BLIP_PROBE.get_or_init(|| std::env::var_os("WOW_MM_BLIP_PROBE").is_some()) {
@@ -663,13 +669,14 @@ fn emit_minimap(
         );
     }
 
-    // The object dots, last of the minimap's own draw (`0x4ed7b7`): tracking dots (cells 0/1),
-    // then quest (3) and party (4) dots.
+    // The object blips, last of the minimap's own draw: tracking dots (cells 8 and 5), then the
+    // quest blips (9, 10, 11) and the party dots.
     if let Some(ctx) = &blip_ctx {
         if let Some(icons) = assets.tex(MinimapArtSlot::Blips) {
             blips::emit_tracking_dots(
                 ctx,
                 tracking,
+                tracked_info,
                 &tracked,
                 quest.statuses(),
                 self_guid,
@@ -686,6 +693,7 @@ fn emit_minimap(
             blips::emit_quest_dots(
                 ctx,
                 quest.statuses(),
+                tracked_info,
                 &tracked,
                 self_guid,
                 icons,
@@ -695,7 +703,7 @@ fn emit_minimap(
                 &mut quads,
                 &mut hover,
             );
-            // The in-range party dots (blue cell 4, 1.3×), last.
+            // The in-range party dots (the 1.12 blue cell, 1.3×), last.
             let pet = me.and_then(|(s, _)| s.0.unit_pet_guid());
             blips::emit_party_dots(ctx, &group, &guids, &unit_pos, pet, icons, &mut quads);
         }

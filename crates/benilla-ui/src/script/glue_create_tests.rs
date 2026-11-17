@@ -767,3 +767,46 @@ fn create_character_with_no_character_sends_nothing() {
     assert!(s.take_glue_calls().is_empty());
     assert!(fired(&s).is_empty());
 }
+
+/// On Wrath 3.3.5a, `ResetCharCustomize` and `SetSelectedRace` keep a valid `(race, class)` pair
+/// even when the new race has no Warrior (`1`, e.g. Blood Elf) or lacks the previous race's class.
+#[test]
+fn wrath_reset_and_set_selected_race_rehome_invalid_class() {
+    let mut s = UiScript::glue_with_target(crate::script::UiTarget::Wrath335).unwrap();
+    let mut c = catalog();
+    c.races.push(race(
+        10,
+        "Blood Elf",
+        "BloodElf",
+        "Horde",
+        ["NORMAL", "PIERCINGS", "NORMAL"],
+    ));
+    c.class_lists.insert(10, vec![2, 3, 4]);
+    c.counts.insert((10, 0), counts([9, 9, 7, 8, 1]));
+    c.models.insert((10, 0));
+    s.set_glue_create_catalog(Rc::new(c));
+    s.run("CreateFrame('ModelFFX', 'Create') SetCharCustomizeFrame('Create')")
+        .unwrap();
+
+    // Resetting directly onto Blood Elf (index 3 in the 4-race list) re-homes class from 1
+    // (Warrior, invalid for Blood Elf) to 2 (Paladin, its first valid class).
+    s.script_glue_create_draws(&[word(0, 2), word(3, 4), 0, 0, 0, 0, 0]);
+    s.run("ResetCharCustomize()").unwrap();
+    assert_eq!(look(&s).race, 10);
+    assert_eq!(look(&s).class, 2);
+
+    // Switching from Blood Elf Paladin (class 2) to Orc (race 2, classes [1, 3, 4]) re-homes
+    // class to Orc's first valid class (1 = Warrior).
+    s.script_glue_create_draws(&[0, 0, 0, 0, 0]);
+    s.run("SetSelectedRace(3)").unwrap();
+    assert_eq!(look(&s).race, 2);
+    assert_eq!(look(&s).class, 1);
+
+    // Switching from Orc Warrior (class 1) back to Blood Elf (index 4, classes [2, 3, 4])
+    // re-homes class to Blood Elf's first valid class (2 = Paladin).
+    s.script_glue_create_draws(&[0, 0, 0, 0, 0]);
+    s.run("SetSelectedRace(4)").unwrap();
+    assert_eq!(look(&s).race, 10);
+    assert_eq!(look(&s).class, 2);
+}
+

@@ -164,6 +164,7 @@ mod measure;
 mod merchant;
 mod messageframe;
 mod minimap;
+pub mod minimap_tracking;
 mod movieframe;
 pub mod nameplate;
 pub use nameplate::{PlateBitWrites, PlateGeometry, PlateState, PLATE_BIT_ENEMY, PLATE_BIT_FRIEND};
@@ -873,6 +874,8 @@ fn install_in_game(lua: &Lua) -> mlua::Result<()> {
         wrath_spell::install(lua)?;
         wrath_unit::install(lua)?;
         wrath_aura::install(lua)?;
+        // The DEATH and RESURRECT dialogs' own 3.3.5 natives (StaticPopup.lua).
+        death::install_wrath(lua)?;
     }
     Ok(())
 }
@@ -1560,6 +1563,8 @@ impl UiScript {
         let held: Vec<crate::widget::FrameHandle> =
             model.mouse_down_on.values().copied().flatten().collect();
         model.mouse_down_on.clear();
+        // No release will be fed, so nothing counts as held for `IsMouseButtonDown` either.
+        model.buttons_held.clear();
         // Every held button gets the release edge never fed (`0x7793de`), else it stays pushed.
         for h in held {
             button::edge(&mut model, h, crate::widget::ButtonState::on_mouse_up);

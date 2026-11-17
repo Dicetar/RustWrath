@@ -34,8 +34,9 @@ do not authorize broad test runs, builds or live sessions.
   Inspect tracked calls and manually opened sessions before starting duplicate work.
   Handle routine coordination directly; do not make the owner relay messages.
 - The owner builds and launches the client by hand, after a batch of changes has landed. Do not
-  run Cargo or start the client unless the owner asks for it in that session; report
-  compilation and tests as not run.
+  run Cargo or start the client unless the owner asks for it in that session. GitHub CI
+  compiles and tests every pushed branch; report its result as in
+  [reading CI](docs/agents/sync.md#reading-ci), or compilation and tests as not run.
 - One coordinator owns Cargo and client slots. Never start a competing build/client or
   terminate another session to acquire a slot. Revalidate stale notes and PIDs.
 - All Cargo build/check/test runs use sccache. The checkout's `.cargo/config.toml` sets
@@ -68,7 +69,7 @@ do not authorize broad test runs, builds or live sessions.
 
 ## Reference and documentation routing
 
-- Wrath reference: D:/Projects/wowdecomp-reference, pin
+- Wrath reference: D:/Projects/wow/reference/wowdecomp-reference, pin
   e67b6ffef23655dc7da061cb2d36b7963f6ef71a. Investigate behavior; do not copy implementation.
 - Donor research: samwhosung/benilla-re establishes 1.12 behavior, not Wrath layouts.
 - Read the installed project-b-12340-reference skill before target-specific repairs when

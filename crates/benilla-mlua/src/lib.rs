@@ -1068,7 +1068,7 @@ impl Lua {
     }
 
     /// Convert a caught error without changing its Lua value. A callback panic resumes here.
-    fn error_from(&self, e: benilla_lua::Value, traceback: String) -> Error {
+    fn error_from(&self, e: benilla_lua::Value, traceback: std::string::String) -> Error {
         if let Some(payload) = take_panic(self.vm(), e) {
             std::panic::resume_unwind(payload);
         }

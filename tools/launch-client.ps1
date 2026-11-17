@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$DataPath = 'D:\WOW\world of warcraft 3.3.5a hd\data',
+    [string]$DataPath = 'D:\Projects\wow\server\world of warcraft 3.3.5a hd\data',
     [string]$AuthServer = '127.0.0.1:3724',
     [string]$WorldServer = '127.0.0.1:8095',
     [bool]$WithAddons = $true,
@@ -13,7 +13,7 @@ param(
     [switch]$SkipHealthCheck,
     [scriptblock]$HealthPredicate = $null,
     [switch]$WithMulticlass,
-    [string]$MulticlassGluePath = 'D:\WOW\wm-project\client_extensions\multiclass\multiclass_glue.lua',
+    [string]$MulticlassGluePath = 'D:\Projects\wow\server\wm-project\client_extensions\multiclass\multiclass_glue.lua',
     [bool]$WithMovementHotpatch = $true
 )
 $ErrorActionPreference = 'Stop'
@@ -86,6 +86,30 @@ if ($BuildLatest -and !$isRelease -and !$releaseRequested) {
         throw 'Close the running client or wait for the active build before rebuilding.'
     }
     Write-Host 'Building the current RustWrath source before launch...'
+    # A launcher started from Explorer or an old shell can inherit a PATH without the user's Rust
+    # entries. Re-read the registry PATH a new terminal would get, then try rustup's default home.
+    $cargo = Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (!$cargo) {
+        $current = $env:Path -split ';'
+        $fresh = foreach ($scope in 'Machine', 'User') {
+            $value = [Environment]::GetEnvironmentVariable('Path', $scope)
+            if ($value) { [Environment]::ExpandEnvironmentVariables($value) -split ';' }
+        }
+        $missing = @($fresh | Where-Object { $_ -and $current -notcontains $_ })
+        if ($missing.Count) { $env:Path = (@($current) + $missing) -join ';' }
+        $cargo = Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+    if (!$cargo) {
+        $cargoExe = Join-Path $cargoHome 'bin\cargo.exe'
+        if (Test-Path -LiteralPath $cargoExe -PathType Leaf) {
+            $env:Path = (Join-Path $cargoHome 'bin') + ';' + $env:Path
+            $cargo = Get-Command $cargoExe -ErrorAction SilentlyContinue
+        }
+    }
+    if (!$cargo) {
+        throw "cargo was not found in PATH, in the registry PATH, or at $cargoHome\bin\cargo.exe.`nInstall Rust with rustup (https://rustup.rs), then run this launcher again."
+    }
     $cache = Get-Command sccache -ErrorAction SilentlyContinue
     if (!$cache) {
         $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin\sccache.exe'
@@ -101,7 +125,7 @@ if ($BuildLatest -and !$isRelease -and !$releaseRequested) {
     try {
         $env:RUSTC_WRAPPER = $cache.Source
         $env:CARGO_INCREMENTAL = '0'
-        & cargo build --manifest-path (Join-Path $repo 'Cargo.toml') --target-dir (Join-Path $repo 'target') -p benilla --features hotpatch
+        & $cargo.Source build --manifest-path (Join-Path $repo 'Cargo.toml') --target-dir (Join-Path $repo 'target') -p benilla --features hotpatch
         if ($LASTEXITCODE -ne 0) {
             throw 'RustWrath build failed. See the build output above.'
         }
