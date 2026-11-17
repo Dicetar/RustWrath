@@ -1,7 +1,7 @@
 //! The stock death popups (`StaticPopup.lua`): release, self-resurrect, resurrect offers, the
 //! spirit healer's confirm and the corpse run, driven as the app's death feed drives them.
 
-use benilla_ui::script::{DeathAction, DeathUiState, ScriptValue, UiScript};
+use benilla_ui::script::{DeathAction, DeathUiState, ScriptValue, UiScript, UiTarget};
 
 use super::test_ui::load_ui as load_xml;
 
@@ -458,6 +458,90 @@ fn corpse_map_position_binding() {
         .eval::<(f64, f64)>("return GetCorpseMapPosition()")
         .unwrap();
     assert!((x - 0.25).abs() < 1e-6 && (y - 0.75).abs() < 1e-6);
+    assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
+}
+
+/// The 3.3.5 DEATH and RESURRECT dialogs call four natives the 1.12 interpreter never had:
+/// `CannotBeResurrected` (`0x802270`, after Release and a self-res), `IsFalling` (`0x612430`)
+/// and `IsOutOfBounds` (`0x6123c0`, the mid-fall button gate) and `UnitIsControlling`
+/// (`0x613c90`, the decline's DEATH re-raise). Each answers 1 or nil off the pushed snapshot.
+#[test]
+fn the_death_popup_natives_read_the_pushed_state() {
+    let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+    s.keep_calls();
+    assert_eq!(
+        s.eval::<Option<f64>>("return CannotBeResurrected()").unwrap(),
+        None
+    );
+    assert_eq!(s.eval::<Option<f64>>("return IsFalling()").unwrap(), None);
+    assert_eq!(
+        s.eval::<Option<f64>>("return IsOutOfBounds()").unwrap(),
+        None
+    );
+    // The stock caller passes "player"; any other token answers nil like an unknown unit.
+    assert_eq!(
+        s.eval::<Option<f64>>("return UnitIsControlling('player')")
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        s.eval::<Option<f64>>("return UnitIsControlling('target')")
+            .unwrap(),
+        None
+    );
+
+    s.set_death(DeathUiState {
+        cannot_be_resurrected: true,
+        falling: true,
+        out_of_bounds: true,
+        controlling: true,
+        ..Default::default()
+    });
+    assert_eq!(
+        s.eval::<Option<f64>>("return CannotBeResurrected()").unwrap(),
+        Some(1.0)
+    );
+    assert_eq!(
+        s.eval::<Option<f64>>("return IsFalling()").unwrap(),
+        Some(1.0)
+    );
+    assert_eq!(
+        s.eval::<Option<f64>>("return IsOutOfBounds()").unwrap(),
+        Some(1.0)
+    );
+    assert_eq!(
+        s.eval::<Option<f64>>("return UnitIsControlling('player')")
+            .unwrap(),
+        Some(1.0)
+    );
+    assert_eq!(
+        s.eval::<Option<f64>>("return UnitIsControlling('target')")
+            .unwrap(),
+        None
+    );
+    assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
+}
+
+/// `GetDeathReleasePosition()` (`0x5459c0`): the release location's map UV, (0, 0) which
+/// `WorldMapFrame.lua:909-913` hides — before a release, and after the resurrection's clear.
+#[test]
+fn death_release_position_binding() {
+    let mut s = UiScript::with_target(UiTarget::Wrath335).unwrap();
+    s.keep_calls();
+    let (x, y) = s
+        .eval::<(f64, f64)>("return GetDeathReleasePosition()")
+        .unwrap();
+    assert_eq!((x, y), (0.0, 0.0), "no release ⇒ the (0,0) hide sentinel");
+    s.set_death_release_uv(Some((0.25, 0.75)));
+    let (x, y) = s
+        .eval::<(f64, f64)>("return GetDeathReleasePosition()")
+        .unwrap();
+    assert!((x - 0.25).abs() < 1e-6 && (y - 0.75).abs() < 1e-6);
+    s.set_death_release_uv(None);
+    let (x, y) = s
+        .eval::<(f64, f64)>("return GetDeathReleasePosition()")
+        .unwrap();
+    assert_eq!((x, y), (0.0, 0.0), "the resurrection's clear hides it again");
     assert!(s.errors().is_empty(), "script errors: {:?}", s.errors());
 }
 

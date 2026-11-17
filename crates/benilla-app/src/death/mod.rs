@@ -30,6 +30,16 @@ pub(crate) struct CorpsePoint {
     pub(crate) corpse_map: u32,
 }
 
+/// The graveyard `SMSG_DEATH_RELEASE_LOC` named: the minimap spirit healer's position and the
+/// world map's death-release marker (`GetDeathReleasePosition`, `0x5459c0`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ReleaseLocation {
+    /// The graveyard's map, or the dungeon entrance's for an instanced corpse.
+    pub(crate) map_id: i32,
+    /// The release position, in raw WoW coordinates.
+    pub(crate) position: [f32; 3],
+}
+
 /// A pending resurrection offer (`SMSG_RESURRECT_REQUEST`), the RESURRECT popup's data.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResurrectOffer {
@@ -72,6 +82,9 @@ pub(crate) struct DeathNet {
     pub(crate) reclaim_generation: u32,
     /// The last `MSG_CORPSE_QUERY` answer; a not-found drops it.
     pub(crate) corpse: Option<CorpsePoint>,
+    /// The graveyard the release teleported to (`SMSG_DEATH_RELEASE_LOC`); `None` before a
+    /// release and after `ResurrectPlayer`'s `-1` clear, which keeps no stale marker.
+    pub(crate) release_location: Option<ReleaseLocation>,
     /// A pending resurrection offer; cleared when answered or when the popup times out.
     pub(crate) resurrect: Option<ResurrectOffer>,
     /// Bumped per `SMSG_RESURRECT_REQUEST`: the offer announces per message (`0x5e7bc0` through
@@ -169,6 +182,8 @@ struct DeathView<'w, 's> {
     objects: Objects<'w, 's>,
     transforms: Query<'w, 's, &'static Transform>,
     status: Res<'w, crate::net::NetStatus>,
+    /// The local mover, whose streamed movement flags answer `IsFalling`. Absent in a harness.
+    player: Option<Res<'w, crate::player::Player>>,
     spells: Option<Res<'w, Spells>>,
     items: Res<'w, crate::items::Items>,
     /// The typed 3.3.5 inventory owner; donor sessions leave it empty and fall back.
@@ -234,6 +249,18 @@ impl DeathView<'_, '_> {
             resurrect_has_timer: death_net.resurrect.as_ref().is_some_and(|o| o.has_timer),
             spirit_healer_in_range,
             sickness_duration: sickness,
+            // CannotBeResurrected reads the aura effect mask, not an aura id: an aura spell's
+            // EffectApplyAuraName 314 (SPELL_AURA_PREVENT_RESURRECTION, SpellAuraDefines.h:377).
+            cannot_be_resurrected: cannot_be_resurrected(&store.0, self.spells.as_deref()),
+            // IsFalling (0x612430): falling and not rooted, off the mover's streamed flags. The
+            // donor bit meanings are the ones this client streams (move_flags::FALLING,
+            // move_flags::ROOT); 12340 tests 0x1000 and 0x800 for the same two states.
+            falling: self.player.as_ref().is_some_and(|p| {
+                p.move_flags() & crate::creature_anim::move_flags::FALLING != 0
+                    && p.move_flags() & crate::creature_anim::move_flags::ROOT == 0
+            }),
+            out_of_bounds: store.0.player_flags() & PLAYER_FLAGS_IS_OUT_OF_BOUNDS != 0,
+            controlling: store.0.unit_charm().is_some() || store.0.unit_summon().is_some(),
             // `HasSoulstone()`; the dead gate is first, so the inventory walk runs only while dead.
             self_res_label: resolve_self_res(
                 &store.0,
@@ -434,6 +461,30 @@ pub(crate) fn signal_death_state(world: &mut World) {
 
 /// `SPELL_EFFECT_SELF_RESURRECT`, the `Spell.dbc` effect the item leg scans for (`0x5ed650`).
 const SPELL_EFFECT_SELF_RESURRECT: u32 = 94;
+
+/// `SPELL_AURA_PREVENT_RESURRECTION` (`SpellAuraDefines.h:377`): the one aura effect
+/// `CannotBeResurrected` (`0x802270`) tests in the active player's aura effect mask
+/// (`m_auraEffectMask[314 / 8] & (1 << (314 % 8))`).
+const SPELL_AURA_PREVENT_RESURRECTION: u32 = 314;
+
+/// `PLAYER_FLAGS_IS_OUT_OF_BOUNDS` (`Player.h:473`), which is all `IsOutOfBounds` (`0x6123c0`)
+/// asks; 12340's handler also clears it at `RepopAtGraveyard` (`Player.cpp:4880`).
+const PLAYER_FLAGS_IS_OUT_OF_BOUNDS: u32 = 0x4000;
+
+/// `CannotBeResurrected` (`0x802270`): an aura of ours whose `Spell.dbc` row applies effect 314.
+/// The reference keeps the effect mask rather than the spell ids, so an aura whose row the
+/// catalogue has not loaded answers no.
+fn cannot_be_resurrected(store: &benilla_protocol::ObjectFields, spells: Option<&Spells>) -> bool {
+    let Some(spells) = spells else {
+        return false;
+    };
+    store.unit_aura_ids().any(|id| {
+        spells
+            .catalog
+            .get(id)
+            .is_some_and(|d| d.effect_apply_aura.contains(&SPELL_AURA_PREVENT_RESURRECTION))
+    })
+}
 
 /// What `UseSoulstone()` (`0x48ad70`) would spend now; resolved app-side, where the spell catalog
 /// and item cache live.
@@ -842,6 +893,39 @@ fn offer_announcement(
 mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+    use std::collections::HashMap;
+
+    /// `CannotBeResurrected` (`0x802270`) tests the aura effect mask, not an aura id: a spell whose
+    /// `EffectApplyAuraName` slot 0 is 314 sets it, and the same spell's id alone does not.
+    /// The player's slot 0 carries the spell; a second body of the test proves a plain aura id
+    /// without the effect answers no.
+    #[test]
+    fn cannot_be_resurrected_reads_the_effect_not_the_spell_id() {
+        use benilla_formats::{SpellCatalog, SpellDisplay};
+        use benilla_protocol::field::FIELD_UNIT_AURA;
+        use benilla_protocol::messages::ObjectType;
+
+        const PREVENT: u32 = 8326;
+        let mut spells = Spells::empty_for_tests();
+        spells.catalog = SpellCatalog::from_displays(HashMap::from([(
+            PREVENT,
+            SpellDisplay {
+                id: PREVENT,
+                effect_apply_aura: [SPELL_AURA_PREVENT_RESURRECTION, 0, 0],
+                ..Default::default()
+            },
+        )]));
+        let carrier = benilla_protocol::ObjectFields::from_pairs(&[(FIELD_UNIT_AURA, PREVENT)])
+            .into_created(ObjectType::Player);
+        assert!(cannot_be_resurrected(&carrier, Some(&spells)));
+
+        // The same slot holding a spell the catalogue has no dangerous effect for.
+        let other = benilla_protocol::ObjectFields::from_pairs(&[(FIELD_UNIT_AURA, 78)])
+            .into_created(ObjectType::Player);
+        assert!(!cannot_be_resurrected(&other, Some(&spells)));
+        // No catalogue yet: the reference's mask is empty, so no answer.
+        assert!(!cannot_be_resurrected(&carrier, None));
+    }
 
     fn offer(caster: u64, name: &str) -> ResurrectOffer {
         ResurrectOffer {

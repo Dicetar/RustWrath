@@ -31,6 +31,20 @@ pub struct DeathUiState {
     /// `PLAYER_SELF_RES_SPELL`'s `Spell.dbc` name (3026 and 20758-20761 "Use Soulstone", 21169
     /// "Reincarnation", 23700 "Twisting Nether"), else a carried self-resurrect item's name.
     pub self_res_label: Option<String>,
+    /// `CannotBeResurrected()` (`0x802270`): the active player carries an aura with
+    /// `SPELL_AURA_PREVENT_RESURRECTION` (314), which the DEATH dialog checks after Release and
+    /// after a self-resurrect (`StaticPopup.lua:1148`, `:1165`).
+    pub cannot_be_resurrected: bool,
+    /// `IsFalling()` (`0x612430`): airborne and not rooted. The DEATH dialog's `OnUpdate`
+    /// disables both buttons mid-fall (`StaticPopup.lua:1171`).
+    pub falling: bool,
+    /// `IsOutOfBounds()` (`0x6123c0`): `PLAYER_FLAGS` bit `0x4000`; while set the mid-fall
+    /// button disable is skipped (`StaticPopup.lua:1171`).
+    pub out_of_bounds: bool,
+    /// `UnitIsControlling("player")` (`0x613c90`): the player charms or summons a unit, a
+    /// vehicle seat included. The RESURRECT dialog only skips re-raising DEATH on a decline while
+    /// this is nil (`StaticPopup.lua:1205`, `:1231`, `:1255`).
+    pub controlling: bool,
 }
 
 /// The death verbs the host applies inside their calls ([`super::ScriptCall::Death`]).
@@ -170,6 +184,54 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Some(s) => Value::String(lua.create_string(s)?),
                 None => Value::Nil,
             })
+        })?,
+    )?;
+
+    Ok(())
+}
+
+/// The 3.3.5-only death natives the stock StaticPopup calls and the 1.12 interpreter never had.
+/// Installed only for `UiTarget::Wrath335`, so the 1.12 surface (and its golden) gains nothing.
+pub(super) fn install_wrath(lua: &Lua) -> mlua::Result<()> {
+    let g = lua.globals();
+
+    // `CannotBeResurrected()` (`0x802270`): the aura effect mask's 314 bit, 1 or nil. The DEATH
+    // dialog asks it after Release and after a self-resurrect, and keeps its dialog when it is
+    // true (`StaticPopup.lua:1148`, `:1165`).
+    g.set(
+        "CannotBeResurrected",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(flag(model.death.cannot_be_resurrected))
+        })?,
+    )?;
+    // `IsFalling()` (`0x612430`) and `IsOutOfBounds()` (`0x6123c0`): the DEATH dialog's
+    // mid-fall button gate (`StaticPopup.lua:1171`); both answer 1 or nil.
+    g.set(
+        "IsFalling",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(flag(model.death.falling))
+        })?,
+    )?;
+    g.set(
+        "IsOutOfBounds",
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            Ok(flag(model.death.out_of_bounds))
+        })?,
+    )?;
+    // `UnitIsControlling(unit)` (`0x613c90`): the unit's charm or summon guid is non-zero. The
+    // stock caller is the RESURRECT dialog with "player" (`StaticPopup.lua:1205`); any other
+    // token answers nil, like an unknown unit.
+    g.set(
+        "UnitIsControlling",
+        lua.create_function(|lua, unit: Option<String>| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let player = unit
+                .as_deref()
+                .is_some_and(|token| token.eq_ignore_ascii_case("player"));
+            Ok(flag(player && model.death.controlling))
         })?,
     )?;
 

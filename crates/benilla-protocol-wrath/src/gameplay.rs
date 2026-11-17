@@ -2207,6 +2207,20 @@ pub enum ServerEvent {
         has_timer: bool,
     },
     SpiritHealerConfirm { npc: u64 },
+    /// `SMSG_DEATH_RELEASE_LOC`: the graveyard the release teleports to (`Player.cpp:4860-4872`),
+    /// and the `-1` map `ResurrectPlayer` clears it with (`Player.cpp:4380-4385`). `position` is
+    /// all zeroes on the clear.
+    DeathReleaseLoc {
+        map_id: i32,
+        position: [f32; 3],
+    },
+    /// `SMSG_PRE_RESURRECT`: the packed guid of the body turning ghost (`Player.cpp:4327-4331`).
+    PreResurrect { guid: u64 },
+    /// `SMSG_AREA_SPIRIT_HEALER_TIME`: the area healer's raw guid and the ms until its next wave
+    /// (`BattlegroundMgr.cpp:667-674`).
+    AreaSpiritHealerTime { healer: u64, ms: u32 },
+    /// `SMSG_AREA_TRIGGER_NO_CORPSE`: the instance entrance refused the ghost (`MapMgr.cpp:207`).
+    CorpseNotInInstance,
     LogoutResponse { reason: u32, instant: bool },
     LoggedOut,
     LogoutCancelled,
@@ -2739,6 +2753,10 @@ pub fn parse(opcode: u16, body: &[u8]) -> Option<Result<ServerEvent>> {
         SMSG_CORPSE_RECLAIM_DELAY => read_corpse_reclaim_delay(body),
         SMSG_RESURRECT_REQUEST => read_resurrect_request(body),
         SMSG_SPIRIT_HEALER_CONFIRM => read_spirit_healer_confirm(body),
+        SMSG_DEATH_RELEASE_LOC => read_death_release_loc(body),
+        SMSG_PRE_RESURRECT => read_pre_resurrect(body),
+        SMSG_AREA_SPIRIT_HEALER_TIME => read_area_spirit_healer_time(body),
+        SMSG_AREA_TRIGGER_NO_CORPSE => Ok(ServerEvent::CorpseNotInInstance),
         SMSG_CAST_FAILED => read_cast_failed(body),
         SMSG_SPELL_START => read_spell_start(body),
         SMSG_SPELL_GO => read_spell_go(body),
@@ -4269,6 +4287,38 @@ fn read_spirit_healer_confirm(b: &[u8]) -> Result<ServerEvent> {
     Ok(ServerEvent::SpiritHealerConfirm { npc: r.u64()? })
 }
 
+/// `SMSG_DEATH_RELEASE_LOC` (`Player.cpp:4864-4870`): the map as a signed dword `-1` on the
+/// clear, then the three floats. `ResurrectPlayer` (`Player.cpp:4380-4385`) sends map `-1` with a
+/// zero position, which `CGPlayer_C`'s handler reads as "clear" (`Player_C.cpp:9720-9736`).
+fn read_death_release_loc(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let map_id = r.u32()? as i32;
+    let x = r.f32()?;
+    let y = r.f32()?;
+    let z = r.f32()?;
+    Ok(ServerEvent::DeathReleaseLoc {
+        map_id,
+        position: [x, y, z],
+    })
+}
+
+/// `SMSG_PRE_RESURRECT` (`Player.cpp:4329-4331`): one packed guid, the body becoming a ghost.
+fn read_pre_resurrect(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    Ok(ServerEvent::PreResurrect {
+        guid: r.packed_guid()?,
+    })
+}
+
+/// `SMSG_AREA_SPIRIT_HEALER_TIME` (`BattlegroundMgr.cpp:667-674`): raw healer guid, then the
+/// milliseconds until the next resurrection wave (`RESURRECTION_INTERVAL - last`).
+fn read_area_spirit_healer_time(b: &[u8]) -> Result<ServerEvent> {
+    let mut r = Reader::new(b);
+    let healer = r.u64()?;
+    let ms = r.u32()?;
+    Ok(ServerEvent::AreaSpiritHealerTime { healer, ms })
+}
+
 /// `SMSG_COOLDOWN_EVENT` / `SMSG_CLEAR_COOLDOWN` (`Player.cpp:11052-11055`,
 /// `Player.cpp:14778-14781`): the spell id first, then the raw caster guid.
 fn read_cooldown_event(b: &[u8]) -> Result<(u32, u64)> {
@@ -5126,6 +5176,123 @@ mod tests {
 
     fn le<const N: usize>(v: &[u8]) -> [u8; N] {
         v.try_into().unwrap()
+    }
+
+    /// `Player.cpp:4860-4872`: map, x, y, z. The `-1` map at resurrection (`Player.cpp:4380`)
+    /// keeps the same four dwords, so one shape covers the store and the clear.
+    #[test]
+    fn wrath_death_release_loc_reads_the_graveyard_and_the_clear() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&(-1i32).to_le_bytes());
+        for value in [0.0f32, 0.0, 0.0] {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        let event = parse(crate::opcode::SMSG_DEATH_RELEASE_LOC, &body)
+            .expect("the opcode is translated")
+            .expect("the 16-byte clear body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::DeathReleaseLoc {
+                map_id: -1,
+                position: [0.0, 0.0, 0.0],
+            }
+        );
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&0i32.to_le_bytes());
+        for value in [-8943.5f32, 132.25, 61.5] {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        let event = parse(crate::opcode::SMSG_DEATH_RELEASE_LOC, &body)
+            .expect("the opcode is translated")
+            .expect("the 16-byte graveyard body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::DeathReleaseLoc {
+                map_id: 0,
+                position: [-8943.5, 132.25, 61.5],
+            }
+        );
+    }
+
+    /// `Player.cpp:4327-4331` packs the guid it also writes beside `SMSG_FORCE_*_SPEED_CHANGE`.
+    #[test]
+    fn wrath_pre_resurrect_reads_the_packed_ghost_guid() {
+        let guid = 0x0000_0000_0000_0152u64;
+        let event = parse(crate::opcode::SMSG_PRE_RESURRECT, &[0x03, 0x52, 0x01])
+            .expect("the opcode is translated")
+            .expect("mask, low byte, second byte");
+        assert_eq!(event, ServerEvent::PreResurrect { guid });
+    }
+
+    /// `BattlegroundMgr.cpp:667-674`: raw guid then the milliseconds until the next wave.
+    #[test]
+    fn wrath_area_spirit_healer_time_reads_guid_and_wave() {
+        let healer = 0xF130_0000_0000_00ABu64;
+        let mut body = healer.to_le_bytes().to_vec();
+        body.extend_from_slice(&23_000u32.to_le_bytes());
+        let event = parse(crate::opcode::SMSG_AREA_SPIRIT_HEALER_TIME, &body)
+            .expect("the opcode is translated")
+            .expect("the 12-byte body is valid");
+        assert_eq!(
+            event,
+            ServerEvent::AreaSpiritHealerTime {
+                healer,
+                ms: 23_000,
+            }
+        );
+    }
+
+    /// `MapMgr.cpp:207` sends the empty body the client shows as
+    /// `ERR_CORPSE_IS_NOT_IN_INSTANCE` (`GameUI.cpp:6821`).
+    #[test]
+    fn wrath_corpse_not_in_instance_is_an_empty_body() {
+        let event = parse(crate::opcode::SMSG_AREA_TRIGGER_NO_CORPSE, &[])
+            .expect("the opcode is translated")
+            .expect("an empty body is valid");
+        assert_eq!(event, ServerEvent::CorpseNotInInstance);
+    }
+
+    /// `Spell.cpp:5182-5202`: raw caster, a u32 name length, the name and its NUL, the sickness
+    /// byte and, only for `SPELL_ATTR3_NO_RES_TIMER`, a u32 override. A player's name is empty
+    /// and the packet carries no timer word, so the absence means the delay still holds.
+    #[test]
+    fn wrath_resurrect_request_reads_sickness_and_the_timer_override() {
+        let caster = 0xF130_0000_0000_00ABu64;
+        let mut body = caster.to_le_bytes().to_vec();
+        body.extend_from_slice(&5u32.to_le_bytes());
+        body.extend_from_slice(b"Icon\0");
+        body.push(1);
+        let event = parse(crate::opcode::SMSG_RESURRECT_REQUEST, &body)
+            .expect("the opcode is translated")
+            .expect("a named creature offer is valid");
+        assert_eq!(
+            event,
+            ServerEvent::ResurrectRequest {
+                caster,
+                name: "Icon".into(),
+                sickness: true,
+                has_timer: true,
+            }
+        );
+
+        let mut body = caster.to_le_bytes().to_vec();
+        body.extend_from_slice(&1u32.to_le_bytes());
+        body.push(0); // the empty name's NUL
+        body.push(0); // a player caster: no sickness
+        body.extend_from_slice(&0u32.to_le_bytes()); // the no-timer override
+        let event = parse(crate::opcode::SMSG_RESURRECT_REQUEST, &body)
+            .expect("the opcode is translated")
+            .expect("a player offer is valid");
+        assert_eq!(
+            event,
+            ServerEvent::ResurrectRequest {
+                caster,
+                name: String::new(),
+                sickness: false,
+                has_timer: false,
+            }
+        );
     }
 
     /// One whole record in the exact `Player::BuildEnumData` order

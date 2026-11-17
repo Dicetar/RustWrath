@@ -992,6 +992,14 @@ pub struct WrathEntity {
     pub summoned_by: Option<u64>,
     /// `UNIT_FIELD_CREATEDBY`: the creator of a totem or created object; for a hunter pet, its owner.
     pub created_by: Option<u64>,
+    /// `UNIT_FIELD_CHARM`: the unit this one controls, a pet or the vehicle seat it rides. The
+    /// donor slots 6/7 the 1.12 owners read; 12340 keeps the same two indices.
+    pub charm: Option<u64>,
+    /// `UNIT_FIELD_SUMMON`: the guardian this one controls, at donor slots 8/9 on both layouts.
+    pub summon: Option<u64>,
+    /// A corpse's own block (`CORPSE_END` 36): 12340's corpse layout is the 1.12 one shifted by
+    /// two after `PARTY`, so the projection cannot copy it by index.
+    pub corpse_fields: Option<crate::wrath_inventory::WrathFieldWindow>,
     /// Wrath `PLAYER_BYTES`: skin, face, hair style, hair colour.
     pub player_bytes: Option<u32>,
     /// Wrath `PLAYER_BYTES_2`: facial hair, bank slots, rest state, arena faction.
@@ -3789,6 +3797,16 @@ fn translate_gameplay(
         WrathGameplayEvent::SpiritHealerConfirm { npc } => {
             vec![SessionEvent::SpiritHealerConfirm { npc }]
         }
+        WrathGameplayEvent::DeathReleaseLoc { map_id, position } => {
+            vec![SessionEvent::DeathReleaseLoc { map_id, position }]
+        }
+        WrathGameplayEvent::PreResurrect { guid } => {
+            vec![SessionEvent::PreResurrect { guid }]
+        }
+        WrathGameplayEvent::AreaSpiritHealerTime { healer, ms } => {
+            vec![SessionEvent::AreaSpiritHealerTime { healer, ms }]
+        }
+        WrathGameplayEvent::CorpseNotInInstance => vec![SessionEvent::CorpseNotInInstance],
         WrathGameplayEvent::LogoutResponse { reason, instant } => {
             vec![SessionEvent::LogoutResponse { reason, instant }]
         }
@@ -9215,6 +9233,23 @@ fn push_player_unit_fields(
     }
 }
 
+/// Translate one 3.3.5 corpse block into the 1.12 corpse layout. Owner and party (6..=9) keep
+/// their indices; display, the nineteen item slots, both appearance bytes, guild, flags and the
+/// dynamic flags start two dwords earlier (`CORPSE_FIELD_DISPLAY_ID` 10 against the 1.12 slot
+/// 12; `Player.cpp:4809-4822`), so everything from 10 on shifts by two. Only delivered dwords
+/// are copied: an absent field leaves the create-shaped donor descriptor at 0.
+fn push_corpse_fields(
+    raw: &crate::wrath_inventory::WrathFieldWindow,
+    pairs: &mut Vec<(u16, u32)>,
+) {
+    for index in 6..benilla_protocol_wrath::fields::CORPSE_END {
+        if let Some(value) = raw.get(index) {
+            let dst = if index < 10 { index } else { index + 2 };
+            pairs.push((dst, value));
+        }
+    }
+}
+
 /// Copy the player inventory bands the 1.12 item owners walk. The 3.3.5 arrays are wider in the
 /// bank (28 -> 24 slots), bank bags (7 -> 6) and otherwise use a different base; every array here
 /// is copied explicitly, with the extra 3.3.5 tail dropped rather than folded into a neighbour.
@@ -9642,6 +9677,10 @@ fn wrath_apply_world(world: &mut World) {
         if let Some(entity) = index.0.remove(guid) {
             world.despawn(entity);
         }
+        // A corpse-to-bones swap destroys the object; the latch must not ride a later reclaim.
+        if let Some(mut death) = world.get_resource_mut::<crate::death::DeathNet>() {
+            crate::death::net::forget_corpse(*guid, &mut death);
+        }
     }
 
     let mut item_creates: Vec<u64> = Vec::new();
@@ -9826,6 +9865,21 @@ fn wrath_apply_world(world: &mut World) {
             pairs.push((14, created_by as u32));
             pairs.push((15, (created_by >> 32) as u32));
         }
+        // `UNIT_FIELD_CHARM`/`UNIT_FIELD_SUMMON` share the 1.12 indices (6/7, 8/9): a controlled
+        // pet or vehicle seat on us is what `UnitIsControlling` and the attack-charm refusal read.
+        if let Some(charm) = remote.charm {
+            pairs.push((6, charm as u32));
+            pairs.push((7, (charm >> 32) as u32));
+        }
+        if let Some(summon) = remote.summon {
+            pairs.push((8, summon as u32));
+            pairs.push((9, (summon >> 32) as u32));
+        }
+        if kind == EntityKind::Corpse {
+            if let Some(raw) = remote.corpse_fields.as_ref() {
+                push_corpse_fields(raw, &mut pairs);
+            }
+        }
         let mut wrath_slots: Option<WrathQuestSlots> = None;
         if kind == EntityKind::Player {
             if let Some(bytes) = remote.player_bytes {
@@ -9943,6 +9997,24 @@ fn wrath_apply_world(world: &mut World) {
             script.translate(remote, &mut pairs);
         }
         let fields = ObjectFields::from_pairs(&pairs).into_created(object_type);
+        // A 12340 corpse keeps its body display in its own block (`CORPSE_FIELD_DISPLAY_ID`,
+        // `Player.cpp:4820`), not in `UNIT_FIELD_DISPLAYID`: the display build would otherwise
+        // draw nothing for our own corpse. A bone pile keeps the id and builds its skeleton from
+        // the appearance bytes instead (`crate::entities::corpse`).
+        let display_id = if kind == EntityKind::Corpse {
+            fields.corpse_display_id()
+        } else {
+            remote.display_id
+        };
+        // The corpse-guid latch `RetrieveCorpse` sends has one writer in the reference
+        // (`0x4920d0`, gated on `CORPSE_FIELD_OWNER == me` and a clear `CORPSE_FIELD_FLAGS`
+        // bit 0); the 12340 digest path feeds it here, where the translated block exists.
+        if kind == EntityKind::Corpse {
+            let me = crate::net::SelfGuid(Some(player_guid));
+            if let Some(mut death) = world.get_resource_mut::<crate::death::DeathNet>() {
+                crate::death::net::note_corpse(*guid, kind, &fields, &me, &mut death);
+            }
+        }
         let transform = remote.position.map(|p| Transform {
             translation: wow_to_bevy([p.x, p.y, p.z]),
             rotation: Quat::from_rotation_y(p.o),
@@ -10064,7 +10136,7 @@ fn wrath_apply_world(world: &mut World) {
                 world.entity_mut(entity).insert((
                     NetEntity {
                         kind,
-                        display_id: remote.display_id,
+                        display_id,
                         scale: remote.scale.unwrap_or(1.0),
                     },
                     ObjectStore(fields),
@@ -10325,7 +10397,7 @@ fn wrath_apply_world(world: &mut World) {
                     Guid(*guid),
                     NetEntity {
                         kind,
-                        display_id: remote.display_id,
+                        display_id,
                         scale: remote.scale.unwrap_or(1.0),
                     },
                     ObjectStore(fields),
@@ -12920,6 +12992,16 @@ fn build_digest(session: &SessionState) -> WorldDigest {
                 charmed_by: unit_guid(fields::UNIT_FIELD_CHARMEDBY),
                 summoned_by: unit_guid(fields::UNIT_FIELD_SUMMONEDBY),
                 created_by: unit_guid(fields::UNIT_FIELD_CREATEDBY),
+                charm: unit_guid(fields::UNIT_FIELD_CHARM),
+                summon: unit_guid(fields::UNIT_FIELD_SUMMON),
+                corpse_fields: (entry.type_id == benilla_protocol_wrath::updates::type_id::CORPSE)
+                    .then(|| {
+                        crate::wrath_inventory::WrathFieldWindow::from_fields(
+                            fields::CORPSE_END,
+                            |index| entry.field(index),
+                            |index| entry.field_delivered(index),
+                        )
+                    }),
                 player_bytes: unit(fields::PLAYER_BYTES),
                 player_bytes_2: unit(fields::PLAYER_BYTES_2),
                 position: entry.movement.as_ref().and_then(|m| m.position),
@@ -13313,6 +13395,48 @@ mod tests {
         assert!(!item_pairs.iter().any(|&(index, _)| index >= 48));
     }
 
+    /// A 3.3.5 corpse block shifts by two after PARTY: `CORPSE_FIELD_DISPLAY_ID` 10 lands on the
+    /// 1.12 display slot 12, item 0 at 11 on 13, the appearance at 30/31 on 32/33 and the dynamic
+    /// flags at 34 on 36. Owner and party keep their indices. The display drives the corpse's
+    /// body model; `CORPSE_FIELD_FLAGS` drives the bone-pile fork.
+    #[test]
+    fn a_corpse_block_shifts_by_two_after_party() {
+        let window = item_window(
+            &[
+                (fields::CORPSE_FIELD_OWNER, 0x11),
+                (fields::CORPSE_FIELD_DISPLAY_ID, 49),
+                (fields::CORPSE_FIELD_ITEM, 902 | (5 << 24)),
+                (fields::CORPSE_FIELD_BYTES_1, 0x0600_0000),
+                (fields::CORPSE_FIELD_FLAGS, 0x08),
+                (fields::CORPSE_FIELD_DYNAMIC_FLAGS, 1),
+            ],
+            fields::CORPSE_END,
+        );
+        let mut pairs = Vec::new();
+        push_corpse_fields(&window, &mut pairs);
+        assert_eq!(
+            pairs,
+            vec![
+                (6, 0x11),
+                (12, 49),
+                (13, 902 | (5 << 24)),
+                (32, 0x0600_0000),
+                (35, 0x08),
+                (36, 1),
+            ]
+        );
+        // The shifted block is what the corpse renderer and the reclaim latch read: display 12
+        // is the body model, owner 6 arms note_corpse, and flags 0x08 is not the bone bit.
+        let corpse = ObjectFields::from_pairs(&pairs).into_created(ObjectType::Corpse);
+        assert_eq!(corpse.corpse_owner(), Some(0x11));
+        assert_eq!(
+            corpse.corpse_display_id(),
+            Some(49),
+            "the 1.12 display slot 12 is read, not 12340's 10"
+        );
+        assert!(!corpse.corpse_is_bones());
+    }
+
     /// The typed row rides the existing container entity: same guid keeps the same entity and
     /// only a changed row is written, while a generation change replaces the entity and its row.
     #[test]
@@ -13652,6 +13776,9 @@ mod command_tap_tests {
                 charmed_by: None,
                 summoned_by: None,
                 created_by: None,
+                charm: None,
+                summon: None,
+                corpse_fields: None,
                 player_bytes: None,
                 player_bytes_2: None,
                 position: None,

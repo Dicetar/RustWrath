@@ -268,6 +268,10 @@ pub struct WorldMapState {
     pub player_facing: f32,
     /// `GetCorpseMapPosition()` on the displayed map; `None` is no corpse or off the map.
     pub corpse_uv: Option<(f32, f32)>,
+    /// `GetDeathReleasePosition()` on the displayed map; `None` before a release and after the
+    /// resurrection's clear. The stock map hides it while a ghost anyway
+    /// (`WorldMapFrame.lua:909-913`).
+    pub death_release_uv: Option<(f32, f32)>,
     /// `PLAYER_EXPLORED_ZONES_1`, 64 words, bit n being `AreaTable.dbc` exploreFlag n.
     pub explored: Vec<u32>,
     /// What the landmark list is built from, pushed by the host when it changes.
@@ -566,6 +570,12 @@ impl super::UiScript {
         model.worldmap.raid_uv = raid_uv;
     }
 
+    /// Push the release location's map UV, the world map's death-release marker
+    /// (`GetDeathReleasePosition`, `0x5459c0`).
+    pub fn set_death_release_uv(&mut self, uv: Option<(f32, f32)>) {
+        self.model_mut().worldmap.death_release_uv = uv;
+    }
+
     /// The selection's three cells, which the app reads each frame to project the feed: continent,
     /// zone, and the direct-area id that overrides them when `Some`. The pair alone reads an
     /// instance map as the world sheet.
@@ -778,9 +788,15 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
         "GetWintergraspWaitTime",
         lua.create_function(|_, ()| Ok(Value::Nil))?,
     )?;
+    // GetDeathReleasePosition() (0x5459c0): the release location through the same projection as
+    // GetCorpseMapPosition, (0, 0) which WorldMapFrame.lua:909 hides while there is none.
     g.set(
         "GetDeathReleasePosition",
-        lua.create_function(|_, ()| Ok((0.0f64, 0.0f64)))?,
+        lua.create_function(|lua, ()| {
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let (x, y) = model.worldmap.death_release_uv.unwrap_or((0.0, 0.0));
+            Ok((f64::from(x), f64::from(y)))
+        })?,
     )?;
     // `WorldMapFrame_OnLoad` calls this before its first `WorldMapFrame_Update`; 1.12 has no
     // map pings. A no-op lets OnLoad reach the update that paints the map and seats the frame.

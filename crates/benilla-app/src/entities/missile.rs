@@ -780,6 +780,35 @@ pub(super) fn attach_missile_models(
     }
 }
 
+/// `CMissile::ClearInFlightMissilesWithTarget`, whose only caller is the release's
+/// `SMSG_PRE_RESURRECT` (`Player_C.cpp:22246-22252`): the body turning ghost has every
+/// projectile homing on it dropped, so none lands on the ghost.
+#[derive(Message, Clone, Copy)]
+pub(crate) struct ClearMissilesAt {
+    pub target: u64,
+}
+
+pub(crate) fn clear_missiles_at(
+    mut cleared: MessageReader<ClearMissilesAt>,
+    guids: Query<&crate::net::Guid>,
+    missiles: Query<(Entity, &Missile)>,
+    mut sounds: MessageWriter<MissileSound>,
+    mut commands: Commands,
+) {
+    for msg in cleared.read() {
+        for (entity, missile) in &missiles {
+            // A ground-bound projectile has no target to clear.
+            let Aim::Unit { target, .. } = missile.aim else {
+                continue;
+            };
+            if guids.get(target).is_ok_and(|guid| guid.0 == msg.target) {
+                sounds.write(MissileSound::Stop { entity });
+                commands.entity(entity).despawn();
+            }
+        }
+    }
+}
+
 /// The reference's arrive-on-time step `0x61e2a0`: each frame covers `dt / remaining time` of the
 /// gap to the live aim; at the deadline the missile snaps there, hands off and despawns.
 pub(super) fn move_missiles(
