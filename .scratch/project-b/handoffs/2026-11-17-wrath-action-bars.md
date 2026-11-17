@@ -1,10 +1,10 @@
 # B5 — Wrath action bars, spellbook and macros
 
 Status: in progress
-Owner: Pi / OpenAI
+Owner: OpenCode / DeepSeek V4.1 Flash (took over from Pi / OpenAI)
 Branch: fix/wrath-action-bars
 Issue: none
-Next: Finish macro capacity/index and security ownership, then implement temporary/vehicle/form paging and complete the installed-stock-caller audit; do not land this checkpoint as completed B5.
+Next: finish the temporary/vehicle bar and the Lua RunMacro/secure-button owner, then complete the installed-stock-caller audit; do not land this checkpoint as completed B5.
 
 Started from origin/main `7ef93503` after B4 landed at `b13c163d`; A2 also landed at `58e98b0d`.
 Worktree: `D:\Projects\wow\worktrees\fix-wrath-action-bars`. Shared dirty checkout
@@ -87,16 +87,61 @@ kept as main has it. Compilation: not run. Tests: not run. Client: not run.
 confirmation and the owner gaps below remain open. This is a pushed WIP checkpoint,
 not the requested completed B5 delivery.
 
+## Macro capacity checkpoint — takeover (2026-11-17)
+
+Owner changed to OpenCode / DeepSeek V4.1 Flash; the branch was clean and in sync with
+`origin/fix/wrath-action-bars`. The stock MacroUI showed the concrete defect: 3.3.5's
+`MAX_ACCOUNT_MACROS = 36` and `MAX_CHARACTER_MACROS = 18` read account 1..=36 and character
+37..=54, while the donor table stopped at 18 account entries and put character at 19..=36, so the
+character tab was empty and the 19th..36th account entries read character macros.
+
+- `MacroLimits` now carries the per-scope caps and the Lua index stride: donor 18/18 over 18,
+  12340 36/18 over 36 (the reference's `m_sortedMacros[72]`, `UIMacros.cpp:35`, and
+  `s_maxMacros[2] = {36,18}`, `:62`).
+- `MacroState` stores the limits; `from_scopes_with_limits` parses 12340 account files with 36
+  and character with 18; `id_at`, `index_of_id` and `create_macro` use the scoped caps and the
+  36/18 stride. Donor behavior is unchanged through `from_scopes`.
+- The stock FrameXML globals are the live policy: `UiScript::macro_limits` reads
+  `MAX_ACCOUNT_MACROS`/`MAX_CHARACTER_MACROS` (target defaults when absent), `set_macros`
+  adopts them, and every macro verb refreshes them, so a live edit changes the visible table and
+  the refusal cap without a Rust table.
+- `ui_macro/store::parse_with_cap` keeps 36 account records on Wrath while `parse` still stops
+  at the donor's 18; the loader sizes both files from the same policy.
+- The secure `[vehicleui]` state now reads the real 3.3.5 `UnitHasVehicleUI("player")` instead
+  of the absent `HasVehicleActionBar` global (there is no such 12340 global; the stock UI uses
+  `UnitHasVehicleUI`).
+
+Audit of the other requested areas, no code change needed:
+
+- Cooldowns: `GetActionCooldown` in `script/action.rs` consumes B4's `Cooldowns` triple in the
+  stock `ActionButton.lua:347` shape; `IsUsableAction`, `IsActionInRange`, `ActionHasRange`
+  and `GetActionCount` have their owners in `ui_action/state.rs` and `range_tests`.
+- Spellbook: `PickupSpell`/`PlaceAction` and the Wrath `(id, bookType)` spell references are
+  already implemented in `script/spellbook.rs`/`cursor/bar.rs`; no open caller was found in the
+  stock 3.3.5 SpellBookFrame.
+- Macro mutation security: 12340's `CreateMacro`/`EditMacro`/`DeleteMacro` gate on
+  `CanPerformAction(12)` and `PickupMacro` on 14; those tags are past the 0x494a50 table and
+  pass every context (`protected.rs`'s `ARMS.get(...).unwrap_or(Arm::Pass)`). The action bar's
+  macro press reaches the app's real `run_macro` through `UseAction`; the donor Lua
+  `RunMacro`/`RunMacroText` globals are still absent for secure/addon buttons, named below.
+- Five focused source cases added (four in `macros/wrath_tests.rs`, one in
+  `ui_macro/store.rs`); total B5 additions now 11. Direct rustfmt ran on the touched files;
+  `git diff --check` passed. Compilation, tests and CI are not run.
+
 ## Known gaps — not ready to merge
 
-1. MacroState and file parser still use donor 18-per-scope limits/indexing. The reference uses
-   72 sorted entries; reconcile with selected stock FrameXML constants before changing capacities.
-   Do not hardcode a new capacity table in Rust: use a live-editable policy owner.
-2. Wrath mutation security (combat/protected context), RunMacro/RunMacroText and macro-frame
-   remaining APIs need review; the ABI patch alone does not establish a working macro frame.
-3. `HasVehicleActionBar` is absent; `IsPossessBarVisible` is constant false. Existing replicated
-   vehicle GUID/seat permissions do not themselves produce the temporary action spell table.
-   Bind visibility, slot contents, events and execution to the real temporary-bar owner together.
+1. ~~MacroState and file parser still use donor 18-per-scope limits/indexing.~~ **Closed** by the
+   `MacroLimits` checkpoint above: 12340's 36+18 caps and 36-entry stride, with the stock globals
+   as the live policy. The donor's 18+18 path is unchanged.
+2. Wrath mutation security **reviewed**: `CreateMacro`/`EditMacro`/`DeleteMacro` use
+   `CanPerformAction(12)` and `PickupMacro` uses 14, tags past the 0x494a50 table that pass every
+   context; no extra gate is missing. The action bar's macro press reaches the app's real
+   `run_macro` through `UseAction`. The Lua `RunMacro`/`RunMacroText` globals (stock
+   `SecureTemplates.lua:373/378`) and the remaining macro-frame query setters are still absent;
+   they are an addon/secure-button surface, not the default bar path.
+3. The secure `[vehicleui]` key now reads the real `UnitHasVehicleUI("player")`; there is no
+   12340 `HasVehicleActionBar` global. `IsPossessBarVisible` is still constant false and the
+   vehicle temporary action spell table, visibility, slot contents and execution are unbuilt.
 4. Reference `ActionBarFrame.cpp` UpdateBonusBar `0x005A83C0` selects offset 5 for temporary
    flags or form preset spells; feed.rs only reads the form bonus_bar column. GetActionBarPage
    `0x005A7FD0` also forces page 1 while temporary flags are active. This is not yet implemented.
@@ -105,8 +150,9 @@ not the requested completed B5 delivery.
 6. Installed stock FrameXML call-site enumeration, positive/empty owner audit and hotpatch policy
    integration are unfinished. No extracted FrameXML/GlueXML was written or committed.
 
-Do not mark ready solely because these three macro ABI tests exist. The entire B5 source review
-and missing owners above must be completed first, with at most 20 focused cases total.
+Do not mark ready from the macro tests alone. The temporary/vehicle bar, the secure Lua
+`RunMacro` surface and the installed-stock-caller audit remain open; the total focused-case
+budget is 20 (11 used).
 
 ## Owner check list — after the next batch build
 
@@ -114,4 +160,6 @@ and missing owners above must be completed first, with at most 20 focused cases 
 2. relog;
 3. check the cooldown swipe and the out-of-range tint;
 4. make and run a /cast macro;
-5. switch spec, if available.
+5. open the macro frame: the account tab lists 36 slots, the character tab starts at 37, the 37th
+   account macro is refused;
+6. switch spec, if available.

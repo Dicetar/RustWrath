@@ -4,13 +4,19 @@
 //! what lists the icon chooser ([`UiScript::set_macro_icon_source`]), run on first use.
 //!
 //! A macro is a record with an id, kept in one list in the order it was made or loaded
-//! (`0xbdcc44`). Lua addresses it by position in a table of 36 ids (`0xbdcc60`): positions 1..=18
-//! the account macros and 19..=36 the character macros, each scope sorted by name
+//! (`0xbdcc44`). Lua addresses it by position in the target's sorted table: the donor's 36 ids
+//! (`0xbdcc60`, 18 account then 18 character) or 12340's 72 (`m_sortedMacros[72]`, 36 account
+//! then 36 character, with the character scope capped at 18). Each scope is sorted by name
 //! ([`crate::crt`]) and rebuilt after every create, edit and delete (`0x4f0d30`), so the first
-//! character macro is index 19 however few account macros there are. An action slot holds the id
-//! (`macroId | 0x40000000`, `0x4e62e0`), never the position. A macro's bound spell
+//! character macro sits at the stride however few account macros there are. An action slot holds
+//! the id (`macroId | 0x40000000`, `0x4e62e0`), never the position. A macro's bound spell
 //! (`0x4e5a50`'s macro arm returns `[rec+0x564]`) is derived here from the pushed books
 //! ([`bind`]): inside a create or an edit, and when the app's pass asks.
+//!
+//! The capacities are the stock FrameXML policy, read from `MAX_ACCOUNT_MACROS` and
+//! `MAX_CHARACTER_MACROS` when present: the donor's 18+18 and 12340's 36+18. The Lua index
+//! stride stays the reference table's 18/36; a live edit below the stride only leaves the
+//! character tab where the stock UI's own `macroBase` puts it.
 
 mod bind;
 #[cfg(test)]
@@ -26,8 +32,53 @@ use super::binding_abi;
 use super::cursor::{set_cursor, CursorMacro, CursorPayload};
 use super::Model;
 
-/// Macros per scope (`0x4f1010` refuses the 19th, `cmp edx,0x12`), and so the character tab's base.
+/// The donor's macros per scope (`0x4f1010` refuses the 19th, `cmp edx,0x12`), and so the
+/// donor character tab's base.
 pub const MAX_MACROS: usize = 18;
+
+/// The per-scope capacities and the Lua index stride. The reference keeps a 36-entry sorted table
+/// per scope (`UIMacros.cpp:35`), so 12340's 36 account + 18 character macros occupy indices
+/// 1..=36 and 37..=54 of a 72-slot table; the donor's 18+18 occupy 1..=18 and 19..=36. The two
+/// caps are what the stock FrameXML globals `MAX_ACCOUNT_MACROS`/`MAX_CHARACTER_MACROS` name
+/// (3.3.5: 36/18). The stride is the reference table's, not the live caps'.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MacroLimits {
+    pub account: usize,
+    pub character: usize,
+    pub stride: usize,
+}
+
+impl MacroLimits {
+    /// The 1.12 donor table: 18 + 18 over 36 indices.
+    pub const DONOR: Self = Self {
+        account: MAX_MACROS,
+        character: MAX_MACROS,
+        stride: MAX_MACROS,
+    };
+    /// 12340's table: 36 account + 18 character over 72 indices.
+    pub const WRATH: Self = Self {
+        account: 36,
+        character: 18,
+        stride: 36,
+    };
+
+    /// The target's stock defaults, before the stock Lua constants are read.
+    pub fn for_target(target: super::UiTarget) -> Self {
+        match target {
+            super::UiTarget::Wrath335 => Self::WRATH,
+            _ => Self::DONOR,
+        }
+    }
+
+    /// One scope's cap.
+    pub const fn cap(self, per_character: bool) -> usize {
+        if per_character {
+            self.character
+        } else {
+            self.account
+        }
+    }
+}
 
 /// The bytes a name keeps: `SStrCopy` into the record's 0x40-byte name (`0x4f11fc`, `0x4f12e1`)
 /// leaves one for the terminator. The stock edit box stops at 16 characters on its own
@@ -112,6 +163,8 @@ pub struct MacroState {
     list: Vec<Record>,
     /// The last id each scope handed out (`0xbdcbec`), the largest seen when macros load.
     last_id: [u32; 2],
+    /// The target's capacities and Lua index stride.
+    limits: MacroLimits,
 }
 
 impl Default for MacroState {
@@ -119,7 +172,22 @@ impl Default for MacroState {
         Self {
             list: Vec::new(),
             last_id: SCOPE_BASE,
+            limits: MacroLimits::DONOR,
         }
+    }
+}
+
+impl MacroState {
+    /// The live caps and stride this table is indexed by.
+    pub fn limits(&self) -> MacroLimits {
+        self.limits
+    }
+
+    /// Adopt the stock policy; the app calls this after reading the live Lua constants. The
+    /// records already held are not dropped: a lowered cap only hides entries past it and refuses
+    /// new ones, as the reference's scoped count does.
+    pub fn set_limits(&mut self, limits: MacroLimits) {
+        self.limits = limits;
     }
 }
 
@@ -158,11 +226,24 @@ impl MacroState {
     /// empty name (`0x4f07c8`); the local flag is cleared (`0x4f095c`). A view with no id, the seed
     /// form, takes the scope's next. The name and body keep their verbs' caps.
     pub fn from_scopes(account: Vec<MacroView>, character: Vec<MacroView>) -> Self {
-        let mut state = Self::default();
+        Self::from_scopes_with_limits(MacroLimits::DONOR, account, character)
+    }
+
+    /// The file reader with the target's stock policy: 12340 keeps up to 36 account macros where
+    /// the donor stops at 18.
+    pub fn from_scopes_with_limits(
+        limits: MacroLimits,
+        account: Vec<MacroView>,
+        character: Vec<MacroView>,
+    ) -> Self {
+        let mut state = Self {
+            limits,
+            ..Self::default()
+        };
         for (per_character, views) in [(false, account), (true, character)] {
             let scope = usize::from(per_character);
             for mut view in views {
-                if state.count(per_character) >= MAX_MACROS {
+                if state.count(per_character) >= limits.cap(per_character) {
                     break;
                 }
                 let seed = view.id == 0;
@@ -239,13 +320,15 @@ impl MacroState {
     /// (the unsigned compare `0x4f0eb0` makes) or 0 itself.
     fn id_at(&self, index: usize) -> u32 {
         let pos = (index as u32).wrapping_sub(1) as usize;
-        if pos >= MAX_MACROS * 2 {
+        if pos >= self.limits.stride * 2 {
             return 0;
         }
-        self.table(pos >= MAX_MACROS)
-            .get(pos % MAX_MACROS)
-            .copied()
-            .unwrap_or(0)
+        let per_character = pos >= self.limits.stride;
+        let local = pos % self.limits.stride;
+        if local >= self.limits.cap(per_character) {
+            return 0;
+        }
+        self.table(per_character).get(local).copied().unwrap_or(0)
     }
 
     /// The macro at a 1-based Lua index (`0x4f0e40`).
@@ -259,10 +342,10 @@ impl MacroState {
     pub fn index_of_id(&self, id: u32) -> Option<usize> {
         let (account, character) = (self.table(false), self.table(true));
         if id == 0 {
-            return if account.len() < MAX_MACROS {
+            return if account.len() < self.limits.account {
                 Some(account.len() + 1)
-            } else if character.len() < MAX_MACROS {
-                Some(MAX_MACROS + character.len() + 1)
+            } else if character.len() < self.limits.character {
+                Some(self.limits.stride + character.len() + 1)
             } else {
                 None
             };
@@ -275,7 +358,7 @@ impl MacroState {
                 character
                     .iter()
                     .position(|&i| i == id)
-                    .map(|p| MAX_MACROS + p + 1)
+                    .map(|p| self.limits.stride + p + 1)
             })
     }
 
@@ -293,9 +376,20 @@ impl MacroState {
 }
 
 impl super::UiScript {
+    /// The stock policy this VM indexes macros by: the target's defaults, overridden by the live
+    /// `MAX_ACCOUNT_MACROS`/`MAX_CHARACTER_MACROS` FrameXML constants when present.
+    pub fn macro_limits(&self) -> MacroLimits {
+        let target = {
+            let model = self.model_ref();
+            model.target
+        };
+        policy_limits(self.lua(), MacroLimits::for_target(target))
+    }
+
     /// Seed the whole table from the app's load. It does not mark the table dirty, or the load
     /// would trigger a save.
-    pub fn set_macros(&mut self, state: MacroState) {
+    pub fn set_macros(&mut self, mut state: MacroState) {
+        state.set_limits(self.macro_limits());
         let mut model = self.model_mut();
         model.macros = state;
         model.macros_dirty = false;
@@ -391,6 +485,38 @@ impl super::UiScript {
     }
 }
 
+/// The stock FrameXML caps, read live: the constants are the policy owner; the reference table's
+/// stride is not one of them.
+fn policy_limits(lua: &Lua, defaults: MacroLimits) -> MacroLimits {
+    let mut limits = defaults;
+    if let Ok(n) = lua.globals().get::<i64>("MAX_ACCOUNT_MACROS") {
+        if n > 0 {
+            limits.account = (n as usize).min(limits.stride);
+        }
+    }
+    if let Ok(n) = lua.globals().get::<i64>("MAX_CHARACTER_MACROS") {
+        if n > 0 {
+            limits.character = (n as usize).min(limits.stride);
+        }
+    }
+    limits
+}
+
+/// Take the live Lua caps into the table before a verb reads or writes it.
+fn refresh_macro_limits(lua: &Lua) {
+    let (target, current) = {
+        let model = lua.app_data_ref::<Model>().expect("model app_data");
+        (model.target, model.macros.limits())
+    };
+    let limits = policy_limits(lua, MacroLimits::for_target(target));
+    if limits != current {
+        lua.app_data_mut::<Model>()
+            .expect("model app_data")
+            .macros
+            .set_limits(limits);
+    }
+}
+
 /// 12340's GetMacroFromLua (0x00566DF0) accepts an index or a name; donor APIs require a number.
 fn macro_index_arg(lua: &Lua, value: Value, usage: &str) -> mlua::Result<usize> {
     let model = lua.app_data_ref::<Model>().expect("model app_data");
@@ -421,9 +547,10 @@ fn create_macro(
     aliases: &[String],
 ) -> mlua::Result<usize> {
     let state = &mut model.macros;
-    if state.count(per_character) >= MAX_MACROS {
+    let cap = state.limits().cap(per_character);
+    if state.count(per_character) >= cap {
         return Err(mlua::Error::RuntimeError(format!(
-            "CreateMacro() failed, already have {MAX_MACROS} macros"
+            "CreateMacro() failed, already have {cap} macros"
         )));
     }
     let scope = usize::from(per_character);
@@ -601,6 +728,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetNumMacros",
         lua.create_function(|lua, ()| {
+            refresh_macro_limits(lua);
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok((
                 model.macros.count(false) as i64,
@@ -612,6 +740,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetMacroInfo",
         lua.create_function(|lua, index: Value| {
+            refresh_macro_limits(lua);
             // `is-number` else `Usage: GetMacroInfo(index)` (`0x84cc0c`, `0x4f177b`).
             let index = macro_index_arg(lua, index, "Usage: GetMacroInfo(index)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
@@ -649,6 +778,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "GetMacroIndexByName",
         lua.create_function(|lua, name: Value| {
+            refresh_macro_limits(lua);
             let name = binding_abi::string_arg(lua, name, "Usage: GetMacroIndexByName(name)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
             Ok(model.macros.index_by_name(&name) as i64)
@@ -695,6 +825,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "CreateMacro",
         lua.create_function(|lua, args: MultiValue| {
+            refresh_macro_limits(lua);
             let a: Vec<Value> = args.into_iter().collect();
             let wrath = lua.app_data_ref::<Model>().expect("model app_data").target
                 == super::UiTarget::Wrath335;
@@ -746,6 +877,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "EditMacro",
         lua.create_function(|lua, args: MultiValue| {
+            refresh_macro_limits(lua);
             let a: Vec<Value> = args.into_iter().collect();
             let index = macro_index_arg(
                 lua,
@@ -785,6 +917,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "DeleteMacro",
         lua.create_function(|lua, index: Value| {
+            refresh_macro_limits(lua);
             // `is-number` else `Usage: DeleteMacro(index)` (`0x84cc28`, `0x4f1861`).
             let index = macro_index_arg(lua, index, "Usage: DeleteMacro(index)")?;
             super::tick::verb(lua, |model| delete_macro(model, index));
@@ -795,6 +928,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
     g.set(
         "PickupMacro",
         lua.create_function(|lua, index: Value| {
+            refresh_macro_limits(lua);
             // `is-number` else `Usage: PickupMacro(index)` (`0x84cc98`, `0x4f1af1`).
             let index = macro_index_arg(lua, index, "Usage: PickupMacro(index)")?;
             pickup_macro(lua, index);
