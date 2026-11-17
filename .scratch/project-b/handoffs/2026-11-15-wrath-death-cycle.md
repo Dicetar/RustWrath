@@ -17,9 +17,9 @@ at `D:\Projects\wow\reference\wowdecomp-reference` (pin `e67b6ffe`), both read-o
 3.3.5 FrameXML read from `F:\AI\tmp\opencode\335ui`. Nothing was copied; the AC/decomp
 references are named where the behavior they describe is implemented.
 
-Verification level: **source only**. No Cargo, no client, no `cargo fmt` (per brief), no server
-run. Every changed file parses (`rustfmt --check`, no `error` lines). Tests are written but not
-run; compile and test status are **not run**.
+Verification level: **source only**. No Cargo, no client, no `cargo fmt` or `rustfmt --check`
+in the review session, no server run. The source and the focused tests are hand-reviewed; tests
+are written but not run, and compile and test status are **not run**.
 
 ## 1. What already existed (audited, unchanged)
 
@@ -204,7 +204,7 @@ does not carry) and the corpse-guid latch `note_corpse` (owner == me) never arme
   `CMSG_SPIRIT_HEALER_ACTIVATE` (raw guid), `CMSG_SELF_RES` (empty),
   `CMSG_AREA_SPIRIT_HEALER_QUERY/QUEUE` (raw guid, `MiscHandler.cpp:1636-1680`). All match.
 
-## 4. Tests added (source only, not run) — 16 focused cases
+## 4. Tests added (source only, not run) — 14 focused cases
 
 - `benilla-protocol-wrath/src/gameplay.rs:5184` `wrath_death_release_loc_reads_the_graveyard_and_the_clear`
 - `gameplay.rs:5220` `wrath_pre_resurrect_reads_the_packed_ghost_guid`
