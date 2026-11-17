@@ -1584,6 +1584,13 @@ pub(crate) enum ClientCommand {
         talent_id: u32,
         rank: u32,
     },
+    /// `CMSG_LEARN_PREVIEW_TALENTS` (or `_PET` with the pet guid): `u32 count` then
+    /// `(u32 talent_id, u32 rank)` pairs; the pet form prefixes the guid.
+    LearnPreviewTalents {
+        pet: bool,
+        pet_guid: u64,
+        entries: Vec<(u32, u32)>,
+    },
     /// `CMSG_UNLEARN_SKILL`. No ack: the line leaves only by the `PLAYER_SKILL_INFO` update.
     UnlearnSkill {
         skill_id: u32,

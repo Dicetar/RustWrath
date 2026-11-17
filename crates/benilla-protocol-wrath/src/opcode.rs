@@ -426,6 +426,8 @@ pub const SMSG_MULTIPLE_MOVES: u16 = 0x51E;
 
 /// Talents (`TalentHandler.cpp:27`): `[u32 talent_id, u32 requested_rank]`.
 pub const CMSG_LEARN_TALENT: u32 = 0x251;
+pub const CMSG_LEARN_PREVIEW_TALENTS: u32 = 0x4C1;
+pub const CMSG_LEARN_PREVIEW_TALENTS_PET: u32 = 0x4C2;
 
 /// Pet orders, spellbook and stable verbs (`PetHandler.cpp`, `NPCHandler.cpp`).
 pub const CMSG_PET_SET_ACTION: u32 = 0x174;

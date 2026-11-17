@@ -888,6 +888,22 @@ pub fn encode_learn_talent(talent_id: u32, rank: u32) -> Vec<u8> {
     p
 }
 
+/// `CMSG_LEARN_PREVIEW_TALENTS` / `_PET` (`SkillHandler.cpp:34`, `PetHandler.cpp:1119`):
+/// `u32 count`, then `(u32 talentId, u32 rank)` pairs; the pet packet puts the raw u64 pet guid
+/// first.
+pub fn encode_learn_preview_talents(pet_guid: Option<u64>, entries: &[(u32, u32)]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(12 + entries.len() * 8);
+    if let Some(guid) = pet_guid {
+        p.extend_from_slice(&guid.to_le_bytes());
+    }
+    p.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for &(talent_id, rank) in entries {
+        p.extend_from_slice(&talent_id.to_le_bytes());
+        p.extend_from_slice(&rank.to_le_bytes());
+    }
+    p
+}
+
 /// `CMSG_PET_ACTION` (`PetHandler.cpp:95`): `u64 pet_guid, u32 data, u64 target_guid`.
 pub fn encode_pet_action(pet_guid: u64, packed: u32, target_guid: u64) -> Vec<u8> {
     let mut p = Vec::with_capacity(20);
@@ -6161,6 +6177,23 @@ mod tests {
         assert_eq!(talent.len(), 8);
         assert_eq!(u32::from_le_bytes(le::<4>(&talent[0..4])), 161);
         assert_eq!(u32::from_le_bytes(le::<4>(&talent[4..8])), 3);
+
+        let preview = encode_learn_preview_talents(None, &[(161, 2), (162, 1)]);
+        assert_eq!(preview.len(), 20);
+        assert_eq!(u32::from_le_bytes(le::<4>(&preview[0..4])), 2);
+        assert_eq!(u32::from_le_bytes(le::<4>(&preview[4..8])), 161);
+        assert_eq!(u32::from_le_bytes(le::<4>(&preview[8..12])), 2);
+        assert_eq!(u32::from_le_bytes(le::<4>(&preview[12..16])), 162);
+        assert_eq!(u32::from_le_bytes(le::<4>(&preview[16..20])), 1);
+
+        let pet_preview = encode_learn_preview_talents(Some(0xF140_0000_0000_0010), &[(161, 2)]);
+        assert_eq!(pet_preview.len(), 20);
+        assert_eq!(
+            u64::from_le_bytes(le::<8>(&pet_preview[0..8])),
+            0xF140_0000_0000_0010
+        );
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_preview[8..12])), 1);
+        assert_eq!(u32::from_le_bytes(le::<4>(&pet_preview[12..16])), 161);
 
         let pet_act = encode_pet_action(0xF140_0000_0000_0010, 0x0700_0002, 0x0000_0000_0000_0099);
         assert_eq!(pet_act.len(), 20);

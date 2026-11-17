@@ -6658,6 +6658,21 @@ fn wrath_tap_commands(
                 benilla_protocol_wrath::opcode::CMSG_LEARN_TALENT,
                 gameplay::encode_learn_talent(talent_id, rank),
             )),
+            ClientCommand::LearnPreviewTalents {
+                pet,
+                pet_guid,
+                entries,
+            } => Some((
+                if pet {
+                    benilla_protocol_wrath::opcode::CMSG_LEARN_PREVIEW_TALENTS_PET
+                } else {
+                    benilla_protocol_wrath::opcode::CMSG_LEARN_PREVIEW_TALENTS
+                },
+                gameplay::encode_learn_preview_talents(
+                    if pet { Some(pet_guid) } else { None },
+                    &entries,
+                ),
+            )),
             ClientCommand::PetAction {
                 pet_guid,
                 packed,

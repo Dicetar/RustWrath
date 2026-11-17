@@ -18,11 +18,13 @@
 //! rank. The spell builder writes the same lines around the full body (`0x52f735`); its next-rank
 //! pass, a second full body, never runs, as no 1.12 exceptional talent has a second rank.
 
+use std::collections::HashMap;
+
 use mlua::{Lua, MultiValue, Table, Value};
 
 use super::binding_abi::{self, flag};
 use super::tooltip_spell::{spell_view_of, TalentLines};
-use super::Model;
+use super::{Model, ScriptValue};
 
 /// One talent page, a `TalentTab.dbc` row: `GetTalentTabInfo`'s source.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -137,6 +139,10 @@ pub struct WrathTalentUiState {
     pub pet_talents: Vec<(u32, u8)>,
     pub pet_tabs: Vec<TalentTabView>,
     pub pet_talent_views: Vec<Vec<TalentView>>,
+    /// The stock `previewTalents` deltas, keyed by `(pet, group 0-based, tab 1-based,
+    /// index 1-based)`; each value is the preview rank above the known rank. Cleared on a new
+    /// server snapshot because a learn has landed.
+    pub preview_ranks: HashMap<(bool, u32, u32, u32), u32>,
 }
 
 impl super::UiScript {
@@ -145,15 +151,17 @@ impl super::UiScript {
         self.model_mut().talents = state;
     }
 
-    /// Push the 3.3.5a dual-spec talent groups, pet unspent points, and glyph socket IDs.
-    pub fn set_wrath_talents(&mut self, state: WrathTalentUiState) {
+    /// Push the 3.3.5a dual-spec talent groups, pet unspent points, and glyph socket IDs. A
+    /// server snapshot clears the client-only preview: the ranks it carries are the new truth.
+    pub fn set_wrath_talents(&mut self, mut state: WrathTalentUiState) {
+        state.preview_ranks.clear();
         self.model_mut().wrath_talents = state;
     }
 
     /// The talent verbs a harness's VM kept ([`Self::keep_calls`]), in call order.
     pub fn take_talent_calls(&mut self) -> Vec<TalentCall> {
         self.take_calls_where(|call| match call {
-            super::ScriptCall::Talent(call) => Some(*call),
+            super::ScriptCall::Talent(call) => Some(call.clone()),
             _ => None,
         })
     }
@@ -169,12 +177,15 @@ impl super::UiScript {
 }
 
 /// A talent verb the host applies inside its call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TalentCall {
     /// `LearnTalent(tab, index)` (`0x4f36a0`) on a talent below its maximum (`0x4f378f`):
     /// `CMSG_LEARN_TALENT` (`0x251`) with the talent id and its rank count, the 0-based next rank
     /// (`0x4f37c7`, `0x4f37d1`).
     Learn { talent_id: u32, rank: u32 },
+    /// `LearnPreviewTalents(pet)` (`0x5c6a10`): `CMSG_LEARN_PREVIEW_TALENTS`'s counted
+    /// `(talentId, previewRank)` pairs, or the pet packet with the pet guid.
+    LearnPreview { pet: bool, entries: Vec<(u32, u32)> },
     /// `ConfirmTalentWipe()` (`0x48dc40`): the respec dialog `0x5df980` with a zero guid, which
     /// answers the trainer it latched.
     ConfirmWipe,
@@ -227,6 +238,86 @@ fn talent_at(model: &Model, tab: usize, index: usize) -> Option<&TalentView> {
         .talents
         .get(tab.checked_sub(1)?)
         .and_then(|t| t.get(index.checked_sub(1)?))
+}
+
+fn preview_key(is_pet: bool, group_idx: usize, tab: usize, index: usize) -> (bool, u32, u32, u32) {
+    (is_pet, group_idx as u32, tab as u32, index as u32)
+}
+
+fn preview_delta(model: &Model, is_pet: bool, group_idx: usize, tab: usize, index: usize) -> u32 {
+    model
+        .wrath_talents
+        .preview_ranks
+        .get(&preview_key(is_pet, group_idx, tab, index))
+        .copied()
+        .unwrap_or(0)
+}
+
+fn preview_rank_of(
+    model: &Model,
+    t: &TalentView,
+    is_pet: bool,
+    group_idx: usize,
+    tab: usize,
+    index: usize,
+) -> u32 {
+    (t.rank + preview_delta(model, is_pet, group_idx, tab, index)).min(t.max_rank)
+}
+
+/// The tab's talents in the requested scope, for the preview-prerequisite lookup.
+fn talent_list_at(
+    model: &Model,
+    is_pet: bool,
+    group_idx: usize,
+    tab: usize,
+) -> Option<&[TalentView]> {
+    if is_pet {
+        return model
+            .wrath_talents
+            .pet_talent_views
+            .get(tab.checked_sub(1)?)
+            .map(Vec::as_slice);
+    }
+    model
+        .wrath_talents
+        .groups
+        .get(group_idx)?
+        .talents
+        .get(tab.checked_sub(1)?)
+        .map(Vec::as_slice)
+}
+
+fn preview_points(model: &Model, is_pet: bool, group_idx: usize, tab: Option<usize>) -> u32 {
+    model
+        .wrath_talents
+        .preview_ranks
+        .iter()
+        .filter(|((pet, group, t, _), _)| {
+            *pet == is_pet && *group == group_idx as u32 && tab.is_none_or(|tab| *t == tab as u32)
+        })
+        .map(|(_, &delta)| delta)
+        .sum()
+}
+
+/// `GetTalentPrereqs`' 4th value: the prerequisite's preview rank meets its required rank. The
+/// built `TalentPrereqView` carries tier/column and the current verdict but not the required rank,
+/// so any preview rank above the known one passes; a learned prerequisite always passes.
+fn prereq_preview_met(
+    model: &Model,
+    p: &TalentPrereqView,
+    is_pet: bool,
+    group_idx: usize,
+    tab: usize,
+) -> bool {
+    if p.learnable {
+        return true;
+    }
+    let Some(list) = talent_list_at(model, is_pet, group_idx, tab) else {
+        return false;
+    };
+    list.iter()
+        .position(|v| v.tier == p.tier && v.column == p.column)
+        .is_some_and(|at| preview_delta(model, is_pet, group_idx, tab, at + 1) > 0)
 }
 
 /// Register the talent globals.
@@ -288,14 +379,17 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                         Value::Nil,
                         Value::Integer(spent),
                         Value::String(lua.create_string("HunterPetFerocity")?),
-                        Value::Integer(0),
+                        Value::Integer(i64::from(preview_points(&model, true, 0, Some(1)))),
                     ]));
                 }
             }
+            let mut preview = 0u32;
             let tabs = if is_pet {
+                preview = preview_points(&model, true, 0, Some(i));
                 &model.wrath_talents.pet_tabs
             } else if wrath {
                 let group_idx = wrath_group_index(&model, args.get(3));
+                preview = preview_points(&model, false, group_idx, Some(i));
                 model
                     .wrath_talents
                     .groups
@@ -320,7 +414,7 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Value::String(lua.create_string(&tab.background)?),
             ];
             if wrath {
-                out.push(Value::Integer(0));
+                out.push(Value::Integer(i64::from(preview)));
             }
             Ok(MultiValue::from_vec(out))
         })?,
@@ -408,6 +502,19 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 Some(tex) => Value::String(lua.create_string(tex)?),
                 None => Value::Nil,
             };
+            let group_idx = wrath_group_index(&model, args.get(4));
+            let preview_rank = if wrath {
+                preview_rank_of(
+                    &model,
+                    t,
+                    is_pet,
+                    if is_pet { 0 } else { group_idx },
+                    tab,
+                    i,
+                )
+            } else {
+                t.rank
+            };
             let mut out = vec![
                 Value::String(lua.create_string(&t.name)?),
                 texture,
@@ -419,14 +526,18 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
                 flag(t.meets_prereq),
             ];
             if wrath {
-                out.push(Value::Integer(i64::from(t.rank)));
+                out.push(Value::Integer(i64::from(preview_rank)));
+                // The engine's preview availability repeats the required-spell test, so the 10th
+                // value is the 8th's (`0x5c7800`); the talent prerequisites' preview verdict is
+                // the 4th `GetTalentPrereqs` value instead.
                 out.push(flag(t.meets_prereq));
             }
             Ok(MultiValue::from_vec(out))
         })?,
     )?;
 
-    // Flat (tier, column, isLearnable) triplets, as `Blizzard_TalentUI.lua:385` walks them.
+    // Flat (tier, column, isLearnable) triplets, as `Blizzard_TalentUI.lua:385` walks them; the
+    // Wrath tuple is four values per prerequisite with the preview verdict last (`0x5c7ed0`).
     g.set(
         "GetTalentPrereqs",
         lua.create_function(|lua, args: MultiValue| {
@@ -439,14 +550,24 @@ pub(super) fn install(lua: &Lua) -> mlua::Result<()> {
             let i =
                 binding_abi::index_arg(lua, i, "Usage: GetTalentPrereqs(tabIndex, talentIndex)")?;
             let model = lua.app_data_ref::<Model>().expect("model app_data");
-            let is_pet =
-                model.target == super::UiTarget::Wrath335 && is_truthy_arg(args.get(3));
+            let wrath = model.target == super::UiTarget::Wrath335;
+            let is_pet = wrath && is_truthy_arg(args.get(3));
+            let group_idx = wrath_group_index(&model, args.get(4));
             let mut out = Vec::new();
             if let Some(t) = talent_at_scope(&model, tab, i, is_pet, args.get(4)) {
                 for p in &t.prereqs {
                     out.push(Value::Integer(i64::from(p.tier)));
                     out.push(Value::Integer(i64::from(p.column)));
                     out.push(flag(p.learnable));
+                    if wrath {
+                        out.push(flag(prereq_preview_met(
+                            &model,
+                            p,
+                            is_pet,
+                            if is_pet { 0 } else { group_idx },
+                            tab,
+                        )));
+                    }
                 }
             }
             Ok(MultiValue::from_vec(out))
@@ -586,23 +707,222 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
     )?;
     g.set(
         "GetGroupPreviewTalentPointsSpent",
-        lua.create_function(|_, _: MultiValue| Ok(0i64))?,
+        lua.create_function(|lua, args: MultiValue| {
+            let is_pet = is_truthy_arg(args.front());
+            let model = lua.app_data_ref::<Model>().expect("model app_data");
+            let group_idx = wrath_group_index(&model, args.get(1));
+            Ok(i64::from(preview_points(
+                &model,
+                is_pet,
+                if is_pet { 0 } else { group_idx },
+                None,
+            )))
+        })?,
     )?;
     g.set(
         "AddPreviewTalentPoints",
-        lua.create_function(|_, _: MultiValue| Ok(()))?,
+        lua.create_function(|lua, args: MultiValue| {
+            let tab = binding_abi::index_arg(
+                lua,
+                args.front().cloned().unwrap_or(Value::Nil),
+                "Usage: AddPreviewTalentPoints(tabIndex, talentIndex, points[, isPet[, groupIndex]])",
+            )?;
+            let index = binding_abi::index_arg(
+                lua,
+                args.get(1).cloned().unwrap_or(Value::Nil),
+                "Usage: AddPreviewTalentPoints(tabIndex, talentIndex, points[, isPet[, groupIndex]])",
+            )?;
+            let points = binding_abi::number_arg(
+                lua,
+                args.get(2).cloned().unwrap_or(Value::Nil),
+                "Usage: AddPreviewTalentPoints(tabIndex, talentIndex, points[, isPet[, groupIndex]])",
+            )?;
+            let is_pet = is_truthy_arg(args.get(3));
+            let group_idx = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                wrath_group_index(&model, args.get(4))
+            };
+            let scope = if is_pet { 0 } else { group_idx };
+            let (changed, delta_points) = {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                let Some((rank, max_rank)) = talent_at_scope(
+                    &model,
+                    tab,
+                    index,
+                    is_pet,
+                    args.get(4),
+                )
+                .map(|t| (t.rank, t.max_rank))
+                else {
+                    return Ok(());
+                };
+                let before_points = preview_points(&model, is_pet, scope, None);
+                let delta = preview_delta(&model, is_pet, scope, tab, index);
+                let before = i64::from(rank + delta);
+                let after = (before + i64::from(points)).clamp(
+                    i64::from(rank),
+                    i64::from(max_rank),
+                ) as u32;
+                let new_delta = after - rank;
+                let key = preview_key(is_pet, scope, tab, index);
+                if new_delta == 0 {
+                    model.wrath_talents.preview_ranks.remove(&key);
+                } else {
+                    model.wrath_talents.preview_ranks.insert(key, new_delta);
+                }
+                let after_points = preview_points(&model, is_pet, scope, None);
+                (
+                    new_delta != delta,
+                    i64::from(after_points) - i64::from(before_points),
+                )
+            };
+            if changed {
+                super::tick::fire_event_into(
+                    lua,
+                    if is_pet {
+                        "PREVIEW_PET_TALENT_POINTS_CHANGED"
+                    } else {
+                        "PREVIEW_TALENT_POINTS_CHANGED"
+                    },
+                    vec![
+                        ScriptValue::Int(index as i64),
+                        ScriptValue::Int(tab as i64),
+                        ScriptValue::Int(if is_pet { 0 } else { group_idx as i64 + 1 }),
+                        ScriptValue::Int(delta_points),
+                    ],
+                );
+            }
+            Ok(())
+        })?,
     )?;
     g.set(
         "ResetPreviewTalentPoints",
-        lua.create_function(|_, _: MultiValue| Ok(()))?,
+        lua.create_function(|lua, args: MultiValue| {
+            let tab = binding_abi::index_arg(
+                lua,
+                args.front().cloned().unwrap_or(Value::Nil),
+                "Usage: ResetPreviewTalentPoints(tabIndex[, isPet[, groupIndex]])",
+            )?;
+            let is_pet = is_truthy_arg(args.get(1));
+            let group_idx = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                wrath_group_index(&model, args.get(2))
+            };
+            let scope = if is_pet { 0 } else { group_idx };
+            let (changed, delta_points) = {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                let before = preview_points(&model, is_pet, scope, Some(tab));
+                model
+                    .wrath_talents
+                    .preview_ranks
+                    .retain(|(pet, group, t, _), _| {
+                        !(*pet == is_pet && *group == scope as u32 && *t == tab as u32)
+                    });
+                let after = preview_points(&model, is_pet, scope, Some(tab));
+                (after != before, i64::from(after) - i64::from(before))
+            };
+            if changed {
+                super::tick::fire_event_into(
+                    lua,
+                    if is_pet {
+                        "PREVIEW_PET_TALENT_POINTS_CHANGED"
+                    } else {
+                        "PREVIEW_TALENT_POINTS_CHANGED"
+                    },
+                    vec![
+                        ScriptValue::Int(0),
+                        ScriptValue::Int(tab as i64),
+                        ScriptValue::Int(if is_pet { 0 } else { group_idx as i64 + 1 }),
+                        ScriptValue::Int(delta_points),
+                    ],
+                );
+            }
+            Ok(())
+        })?,
     )?;
     g.set(
         "ResetGroupPreviewTalentPoints",
-        lua.create_function(|_, _: MultiValue| Ok(()))?,
+        lua.create_function(|lua, args: MultiValue| {
+            let is_pet = is_truthy_arg(args.front());
+            let group_idx = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                wrath_group_index(&model, args.get(1))
+            };
+            let scope = if is_pet { 0 } else { group_idx };
+            let (changed, delta_points) = {
+                let mut model = lua.app_data_mut::<Model>().expect("model app_data");
+                let before = preview_points(&model, is_pet, scope, None);
+                model
+                    .wrath_talents
+                    .preview_ranks
+                    .retain(|(pet, group, _, _), _| !(*pet == is_pet && *group == scope as u32));
+                let after = preview_points(&model, is_pet, scope, None);
+                (after != before, i64::from(after) - i64::from(before))
+            };
+            if changed {
+                super::tick::fire_event_into(
+                    lua,
+                    if is_pet {
+                        "PREVIEW_PET_TALENT_POINTS_CHANGED"
+                    } else {
+                        "PREVIEW_TALENT_POINTS_CHANGED"
+                    },
+                    vec![
+                        ScriptValue::Int(0),
+                        ScriptValue::Int(0),
+                        ScriptValue::Int(if is_pet { 0 } else { group_idx as i64 + 1 }),
+                        ScriptValue::Int(delta_points),
+                    ],
+                );
+            }
+            Ok(())
+        })?,
     )?;
     g.set(
         "LearnPreviewTalents",
-        lua.create_function(|_, _: MultiValue| Ok(()))?,
+        lua.create_function(|lua, args: MultiValue| {
+            let is_pet = is_truthy_arg(args.front());
+            let entries = {
+                let model = lua.app_data_ref::<Model>().expect("model app_data");
+                let group_idx = if is_pet {
+                    0
+                } else {
+                    wrath_group_index(&model, None)
+                };
+                let mut entries = Vec::new();
+                for (&(pet, group, tab, index), &delta) in &model.wrath_talents.preview_ranks {
+                    if pet != is_pet || group != group_idx as u32 || delta == 0 {
+                        continue;
+                    }
+                    let Some(t) = talent_list_at(&model, is_pet, group_idx, tab as usize)
+                        .and_then(|list| list.get((index as usize).checked_sub(1)?))
+                    else {
+                        continue;
+                    };
+                    let preview = (t.rank + delta).min(t.max_rank);
+                    if preview > t.rank {
+                        entries.push((tab, index, t.talent_id, preview));
+                    }
+                }
+                // The reference walks tabs and their tiers in order (`0x5c6a10`), so the packet
+                // holds a stable order instead of this map's.
+                entries.sort_unstable_by_key(|&(tab, index, _, _)| (tab, index));
+                entries
+                    .into_iter()
+                    .map(|(_, _, talent_id, rank)| (talent_id, rank))
+                    .collect::<Vec<_>>()
+            };
+            if entries.is_empty() {
+                return Ok(());
+            }
+            super::calls::submit(
+                lua,
+                super::ScriptCall::Talent(TalentCall::LearnPreview {
+                    pet: is_pet,
+                    entries,
+                }),
+            )
+        })?,
     )?;
     g.set(
         "GetTalentLink",
@@ -620,7 +940,25 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
             let Some(t) = talent_at_scope(&model, tab, i, is_pet, args.get(4)) else {
                 return Ok(Value::Nil);
             };
-            let rank = i64::from(t.rank).saturating_sub(1);
+            // The 6th argument picks the preview rank for the link (`0x5c7ce0`), as the stock
+            // modifier-click does when `previewTalents` is on.
+            let rank = if is_truthy_arg(args.get(5)) {
+                preview_rank_of(
+                    &model,
+                    t,
+                    is_pet,
+                    if is_pet {
+                        0
+                    } else {
+                        wrath_group_index(&model, args.get(4))
+                    },
+                    tab,
+                    i,
+                )
+            } else {
+                t.rank
+            };
+            let rank = i64::from(rank).saturating_sub(1);
             let link = format!("|cff4e96f7|Htalent:{}:{rank}|h[{}]|h|r", t.talent_id, t.name);
             Ok(Value::String(lua.create_string(&link)?))
         })?,

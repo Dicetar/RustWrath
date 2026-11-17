@@ -381,6 +381,7 @@ pub(crate) fn build_wrath_talent_groups(
         pet_talents,
         pet_tabs,
         pet_talent_views,
+        preview_ranks: Default::default(),
     }
 }
 
@@ -665,6 +666,30 @@ impl TalentSteps<'_, '_> {
                     .net
                     .0
                     .send(ClientCommand::LearnTalent { talent_id, rank });
+            }
+            // The preview batch: one counted packet, the pet form prefixed with the pet guid.
+            TalentCall::LearnPreview { pet, entries } => {
+                let pet_guid = if pet {
+                    self.self_q
+                        .single()
+                        .ok()
+                        .and_then(|store| store.0.unit_pet_guid())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                if pet && pet_guid == 0 {
+                    return;
+                }
+                debug!(
+                    "ui_talent: learn {} previewed talent(s), pet {pet}",
+                    entries.len()
+                );
+                let _ = self.net.0.send(ClientCommand::LearnPreviewTalents {
+                    pet,
+                    pet_guid,
+                    entries,
+                });
             }
             // `0x48dc40` finds the active player first (`0x48dc78`).
             TalentCall::ConfirmWipe => {
