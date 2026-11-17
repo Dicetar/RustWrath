@@ -49,11 +49,57 @@ index ce60a5a..acf66ad 100644
                              code
                          }
                          Architecture::X86_32(_) => {
+diff --git a/src/serve/mod.rs b/src/serve/mod.rs
+index b1c5613..9ef0e22 100644
+--- a/src/serve/mod.rs
++++ b/src/serve/mod.rs
+@@ -173,6 +173,19 @@ pub(crate) async fn serve_all(args: ServeArgs, tracer: &TraceController) -> Resu
+                         if exit_on_error {
+                             return Err(err);
+                         }
++
++                        // RustWrath patch: also replay file changes queued during a build that
++                        // failed. The queued files are often the fix for the failure (the other
++                        // half of an edit that spans crates); upstream only replays them after a
++                        // successful build, so they were silently dropped.
++                        let pending = builder.take_pending_file_changes();
++                        if !pending.is_empty() {
++                            tracing::debug!(
++                                "Processing {} pending file changes after failed build",
++                                pending.len()
++                            );
++                            builder.handle_file_change(&pending, &mut devserver).await;
++                        }
+                     }
+                     BuilderUpdate::BuildReady { bundle } => {
+                         match bundle.mode {
 diff --git a/src/serve/runner.rs b/src/serve/runner.rs
-index 82ca1b3..a65b950 100644
+index 82ca1b3..d8cef51 100644
 --- a/src/serve/runner.rs
 +++ b/src/serve/runner.rs
-@@ -1110,32 +1110,48 @@ impl AppServer {
+@@ -304,6 +304,21 @@ impl AppServer {
+                     changes.push(event);
+                 }
+ 
++                // RustWrath patch: let a burst of writes settle before patching. A git checkout or
++                // cherry-pick writes its files one after another; without this the patch starts on
++                // the first file alone, the rest are queued, and a change split across crates (a
++                // new constant in one crate used by another) fails to compile. Wait until the
++                // watcher has been quiet for a moment, but never longer than a couple of seconds.
++                let settle_started = std::time::Instant::now();
++                while settle_started.elapsed() < Duration::from_secs(2) {
++                    match tokio::time::timeout(Duration::from_millis(300), self.watcher_rx.next())
++                        .await
++                    {
++                        Ok(Some(event)) => changes.push(event),
++                        _ => break,
++                    }
++                }
++
+                 // Filter the changes
+                 let mut files: Vec<PathBuf> = vec![];
+ 
+@@ -1110,32 +1125,48 @@ impl AppServer {
      /// - the Cargo.toml file - this is so we can hotreload the project if the user changes dependencies
      /// - the Dioxus.toml file - this is so we can hotreload the project if the user changes the Dioxus config
      fn local_dependencies(&self, crate_package: NodeId) -> Vec<PathBuf> {

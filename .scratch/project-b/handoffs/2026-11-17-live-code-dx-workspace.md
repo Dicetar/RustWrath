@@ -1,12 +1,13 @@
 # Live code: patch every workspace crate the client links
 
-Status: landed on `main`; the dx patch is not compiled, not run
+Status: landed on `main`; the patched dx built and ran, the batch fix is not compiled
 Owner: Claude Code (Opus 5.5)
-Branch: fix/live-code-dx-workspace (landed `fa707857`), then fix/live-code-dx-chkstk
+Branch: fix/live-code-dx-workspace (landed `fa707857`), fix/live-code-dx-chkstk (landed
+`84ef7600`), then live-dx3
 Issue: none. Owner session 2026-11-17: the trainer/game-object fix did not patch into the
 running client, and the first patch that did land crashed it.
-Next: the owner stops dx, runs `tools/install-live-dx.ps1` and relaunches `-LiveCode`. Then
-the trainer/game-object fix is applied in the live worktree as the acceptance patch.
+Next: the owner reruns `tools/install-live-dx.ps1` and relaunches `-LiveCode`. Then the
+trainer/game-object fix is applied in the live worktree as the acceptance patch.
 
 Date 2026-11-17. Worktree `D:/Projects/wow/worktrees/live-dx`, cut from `origin/main` `7114694f`.
 
@@ -44,6 +45,36 @@ the fix is in PR #5967, which was open when checked. The second commit adds that
 dx patch (`jmp [rip+0]` plus the 64-bit address, the stub dx already uses on other x86_64
 targets). The stub is 14 bytes instead of 12; its size is taken from the byte length.
 
+## The patched dx still built benilla-app alone
+
+The owner installed the patched dx (marker matched) and relaunched. Applying `eb410dd7` at
+22:36 failed again at 22:37:05 with the same `unresolved import benilla_formats::LOCK_KEY_SPELL`.
+The captured arguments for `benilla_formats` existed. Its rlib was still the 22:31 fat build's,
+so it was never replayed.
+
+dx 0.7.10 has no debounce. `serve/runner.rs` `wait` hands the first watcher event to
+`handle_file_change`, which starts a patch at once. The cherry-pick writes files one at a time:
+`crates/benilla-app/src/target/lock.rs` came first, and the formats and protocol files arrived
+during that build. Changes that arrive during a build are queued. `serve/mod.rs` processes the
+queue only after `BuildReady`, never after `BuildFailed`. So the app-only patch failed, and the
+formats half of the change was dropped. The stock-dx attempt failed the same way, on top of the
+watch scope.
+
+The third commit adds two hunks to the dx patch:
+
+- After the first event, `wait` keeps collecting events until the watcher has been quiet for
+  300 ms, with a 2 s cap.
+- The `BuildFailed` arm processes the queued changes like `BuildReady` does. A failed patch
+  followed by its missing half then patches again. `modified_crates` is cumulative, so the
+  retry replays both crates, in dependency order.
+
+`launch-client.ps1` now passes `--log-to-file <run>\dx.log`. dx traces its own modules for
+`serve`, so the log shows each patch's `changed_crates` and `modified_crates`.
+
+Also read, not a cause here: krates 0.17.5 `direct_dependents` shadows `nid` in its loop, so it
+misses a dependent reached only through a chain of feature nodes. `benilla-app` has a plain
+edge to `benilla-formats`, so the ordering edge exists.
+
 ## What changed
 
 - `tools/live-code/dx-0.7.10-workspace-crates.patch` (the Windows stub fix is above):
@@ -64,7 +95,7 @@ targets). The stub is 14 bytes instead of 12; its size is taken from the byte le
 
 ## Unverified
 
-- The patched dx has not been compiled. krates 0.17.5 API use was read from source.
-- No patch has yet landed in a running client.
+- The settle and failed-build hunks have not been compiled. The rest of the patch built and ran.
+- No cross-crate patch has yet landed in a running client.
 - `benilla-app`'s hotpatched build pulls in optional dependencies (`bevy/hotpatching`). If the
   krates graph from `cargo metadata` lacks an edge the build uses, that crate stays unwatched.

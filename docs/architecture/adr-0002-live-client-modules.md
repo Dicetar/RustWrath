@@ -1188,7 +1188,7 @@ captured no rustc arguments for those, so the replay failed (`Missing rustc args
 An edit in `benilla-app` that used a new item from `benilla-formats` failed to build, because
 only `benilla-app` was replayed.
 
-`tools/live-code/dx-0.7.10-workspace-crates.patch` changes three things:
+`tools/live-code/dx-0.7.10-workspace-crates.patch` changes five things:
 
 - The watch list follows dependencies transitively (`local_dependencies` in `serve/runner.rs`),
   so every workspace crate the client links is watched.
@@ -1201,6 +1201,16 @@ only `benilla-app` was replayed.
   overflows the stack on entry. Our crates build at opt-level 1, which gives many such frames.
   In the owner's session, the first patch that landed crashed the client this way ("thread
   'main' has overflowed its stack", exit `0xc000041d`).
+- The watcher waits until writes stop (300 ms of quiet, at most 2 s) before it patches (`wait`
+  in `serve/runner.rs`). Stock dx patches on the first file event. A cherry-pick or checkout
+  writes its files one at a time, so the patch built `benilla-app` alone, the
+  `benilla-formats` half of the same change sat in the queue, and the build failed on a
+  constant that did not exist yet.
+- Changes queued during a failed build are replayed (`serve/mod.rs`). Stock dx replays them
+  only after a successful build, so the files that would have fixed the failure were dropped.
+
+The launcher passes `--log-to-file`, so the run folder's `dx.log` records which files and crates
+each patch saw.
 
 `tools/install-live-dx.ps1` builds that dx from the hash-pinned crates.io archive. It also
 leaves a marker beside `dx.exe`, and the launcher warns when the marker is missing. A new
