@@ -138,8 +138,9 @@ could stay stale. `UNIT_FLAGS` had the same missing event, although the player's
 
 ## Overseer source review (2026-11-17)
 
-Read the branch's changed files against AC and the 12340 pin. `origin/main` was merged first
-(merge commit `2ec920e4`, no conflicts); the branch is source-only.
+Read the branch's changed files against AC and the 12340 pin. `origin/main` was merged before the
+review (`2ec920e4`) and again after it (`ed14dd6c`, today's `b13c163d`), without conflicts; the
+branch is source-only.
 
 Paths used: worktree `D:\Projects\wow\worktrees\a2-melee-loop`; AC
 `D:\Projects\wow\server\Azerothcore_WoTLK_Rebuild\source\azerothcore`; 12340 reference
@@ -190,6 +191,8 @@ Not checked: no Cargo build, no test execution, no `cargo fmt`, no client launch
 interaction in this session. The dynamic-flags/`UNIT_FLAGS` event edges are source-reviewed
 only. The owner's live Northshire run is the first receiver/gameplay evidence.
 
+Status: ready to merge
+
 ## Owner check list
 
 1. Target a Northshire wolf and auto-attack it to death.
@@ -197,8 +200,6 @@ only. The owner's live Northshire run is the first receiver/gameplay evidence.
 3. Check the XP gain line and the XP bar.
 4. Check combat ends (leaves combat, no stale target).
 5. Check the bandits keep their combat stance between swings.
-
-Status: ready to merge
 
 
 ## Verification state (2026-11-16, before the merge)
