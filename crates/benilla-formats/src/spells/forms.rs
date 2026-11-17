@@ -16,6 +16,10 @@ const SHAPESHIFT_FORM: &str = "DBFilesClient\\SpellShapeshiftForm.dbc";
 pub struct ShapeshiftForm {
     /// `BonusActionBar` (column 1): the page the action bar flips to, 0 for none.
     pub bonus_bar: u32,
+    /// A form whose `stanceSpell` columns (27..=34) carry any id: the action bar takes the
+    /// temporary offset 5, not `BonusActionBar` (`FormHasActionBar 0x005A7C50`,
+    /// `UpdateBonusBar 0x005A83C0`). The 1.12 layout has no such columns and leaves this false.
+    pub has_action_bar: bool,
     /// The name (the block at column 2, read at the locale), the tooltip's `SPELL_REQUIRED_FORM` "Requires %s"
     /// (`0x52f10a`-`0x52f2ae`).
     pub name: String,
@@ -89,6 +93,8 @@ pub fn load_shapeshift_forms(chain: &mut Chain) -> Result<HashMap<u32, Shapeshif
                 id,
                 ShapeshiftForm {
                     bonus_bar: u32_at(r, 1).unwrap_or(0),
+                    has_action_bar: columns == 35
+                        && (27usize..=34).any(|i| u32_at(r, i).unwrap_or(0) != 0),
                     name: loc_str(&set, r, 2, locale).unwrap_or_default(),
                     flags: u32_at(r, flags_column).unwrap_or(0),
                     creature_type: i32_at(r, creature_type_column).unwrap_or(0),

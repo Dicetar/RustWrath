@@ -30,15 +30,22 @@ use super::{
 pub(crate) const MISSING_ITEM_ICON: &str = "Interface\\Icons\\INV_Misc_QuestionMark";
 
 /// `0x4e4fc0`'s offset: the second field of the `SpellShapeshiftForm` row of the player's form
-/// byte, 0 with no player or row (`0x4e4fc5`, `0x4e500f`). It is set, and `UPDATE_BONUS_ACTIONBAR`
-/// signalled, at each world entry (`0x490979` → `0x4e4f90`) and each form change (`0x5de01b`),
-/// nowhere else.
+/// byte, 0 with no player or row (`0x4e4fc5`, `0x4e500f`). A form with its own preset action bar
+/// takes the temporary offset 5 instead of that column (`FormHasActionBar 0x5a7c50` →
+/// `UpdateBonusBar 0x5a83c0`). It is set, and `UPDATE_BONUS_ACTIONBAR` signalled, at each world
+/// entry (`0x490979` → `0x4e4f90`) and each form change (`0x5de01b`), nowhere else.
 pub(crate) fn bonus_bar_offset(store: Option<&ObjectStore>, spells: Option<&Spells>) -> u8 {
     let form = store.map(|s| s.0.unit_shapeshift_form()).unwrap_or(0);
     spells
         .and_then(|s| s.forms.get(&u32::from(form)))
-        .map(|f| f.bonus_bar)
-        .unwrap_or(0) as u8
+        .map(|f| {
+            if f.has_action_bar {
+                5
+            } else {
+                f.bonus_bar as u8
+            }
+        })
+        .unwrap_or(0)
 }
 
 /// The feed's memory of what it last pushed, for per-slot change events.
@@ -421,4 +428,45 @@ pub(crate) fn spell_action_icon(
                 .and_then(|_| d.active_icon.clone())
         })
         .or_else(|| d.icon.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use benilla_protocol::ObjectFields;
+
+    fn store(form: u8) -> ObjectStore {
+        ObjectStore(
+            ObjectFields::from_pairs(&[(138, u32::from(form) << 16)])
+                .into_created(benilla_protocol::messages::ObjectType::Player),
+        )
+    }
+
+    /// `FormHasActionBar` (`0x005A7C50`) makes `UpdateBonusBar` (`0x005A83C0`) take the temporary
+    /// offset 5 instead of the row's `BonusActionBar` column; a form with no preset spells keeps
+    /// the column, and no form is 0.
+    #[test]
+    fn a_form_with_a_preset_action_bar_takes_the_temporary_offset() {
+        let mut spells = Spells::empty_for_tests();
+        spells.forms.insert(
+            1,
+            benilla_formats::ShapeshiftForm {
+                bonus_bar: 3,
+                has_action_bar: true,
+                ..Default::default()
+            },
+        );
+        spells.forms.insert(
+            2,
+            benilla_formats::ShapeshiftForm {
+                bonus_bar: 3,
+                has_action_bar: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(bonus_bar_offset(Some(&store(1)), Some(&spells)), 5);
+        assert_eq!(bonus_bar_offset(Some(&store(2)), Some(&spells)), 3);
+        assert_eq!(bonus_bar_offset(Some(&store(0)), Some(&spells)), 0);
+        assert_eq!(bonus_bar_offset(None, Some(&spells)), 0);
+    }
 }

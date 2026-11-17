@@ -110,6 +110,10 @@ character tab was empty and the 19th..36th account entries read character macros
 - The secure `[vehicleui]` state now reads the real 3.3.5 `UnitHasVehicleUI("player")` instead
   of the absent `HasVehicleActionBar` global (there is no such 12340 global; the stock UI uses
   `UnitHasVehicleUI`).
+- `ShapeshiftForm` now carries `has_action_bar` from the 35-column `stanceSpell` block
+  (columns 27..=34), and `ui_action::bonus_bar_offset` returns 5 for such a preset form instead
+  of its `BonusActionBar` column, matching `FormHasActionBar 0x5a7c50` →
+  `UpdateBonusBar 0x5a83c0`. The temporary-page flag (vehicle/possess) is still unbuilt.
 
 Audit of the other requested areas, no code change needed:
 
@@ -124,9 +128,9 @@ Audit of the other requested areas, no code change needed:
   pass every context (`protected.rs`'s `ARMS.get(...).unwrap_or(Arm::Pass)`). The action bar's
   macro press reaches the app's real `run_macro` through `UseAction`; the donor Lua
   `RunMacro`/`RunMacroText` globals are still absent for secure/addon buttons, named below.
-- Five focused source cases added (four in `macros/wrath_tests.rs`, one in
-  `ui_macro/store.rs`); total B5 additions now 11. Direct rustfmt ran on the touched files;
-  `git diff --check` passed. Compilation, tests and CI are not run.
+- Six focused source cases added (four in `macros/wrath_tests.rs`, one in
+  `ui_macro/store.rs`, one in `ui_action/feed.rs`); total B5 additions now 12. Direct rustfmt
+  ran on the touched files; `git diff --check` passed. Compilation, tests and CI are not run.
 
 ## Known gaps — not ready to merge
 
@@ -142,9 +146,10 @@ Audit of the other requested areas, no code change needed:
 3. The secure `[vehicleui]` key now reads the real `UnitHasVehicleUI("player")`; there is no
    12340 `HasVehicleActionBar` global. `IsPossessBarVisible` is still constant false and the
    vehicle temporary action spell table, visibility, slot contents and execution are unbuilt.
-4. Reference `ActionBarFrame.cpp` UpdateBonusBar `0x005A83C0` selects offset 5 for temporary
-   flags or form preset spells; feed.rs only reads the form bonus_bar column. GetActionBarPage
-   `0x005A7FD0` also forces page 1 while temporary flags are active. This is not yet implemented.
+4. Preset forms **closed**: `FormHasActionBar` (`0x005A7C50`) now selects offset 5 through
+   `ShapeshiftForm::has_action_bar`. The temporary flag branch of `UpdateBonusBar`
+   (`m_tempPageActiveFlags`, vehicle/possess) and `GetActionBarPage`'s forced page 1 while that
+   flag is active remain unbuilt.
 5. Ordinary page validation/native state is repaired as above. Temporary override/restoration
    and the Wrath protected-action gate remain unimplemented.
 6. Installed stock FrameXML call-site enumeration, positive/empty owner audit and hotpatch policy
@@ -152,7 +157,7 @@ Audit of the other requested areas, no code change needed:
 
 Do not mark ready from the macro tests alone. The temporary/vehicle bar, the secure Lua
 `RunMacro` surface and the installed-stock-caller audit remain open; the total focused-case
-budget is 20 (11 used).
+budget is 20 (12 used).
 
 ## Owner check list — after the next batch build
 
