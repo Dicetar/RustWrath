@@ -1,6 +1,7 @@
 //! The melee blood spurt (`0x624530` → `0x625010`): a self-terminating particle model on the
 //! victim, front or back by where the attacker stands, large on a crushing blow, colored by the
-//! victim's blood type.
+//! victim's blood type. The HD pack's spurt adds resting splat shards that its teardown frees
+//! with the instance ([`benilla_world::particles::ParticleEmitter::drain_on_owner_loss`]).
 
 use bevy::prelude::*;
 

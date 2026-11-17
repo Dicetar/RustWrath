@@ -401,6 +401,9 @@ pub(crate) struct Model {
     pub(crate) layout_scope: super::layout::LayoutScope,
     /// The epoch the last converged resolve closed on; `None` sends the next one past tier 1.
     pub(crate) layout_epoch_resolved: Option<u64>,
+    /// Tier 1 was closed by a cycle bail, not a convergence: its rects are no fixpoint and no
+    /// fingerprint vouches for them, so verify has nothing to re-check until the next write.
+    pub(crate) layout_bailed: bool,
     /// Resolves the gate let through, counted at its decision, so verify mode reads the same.
     pub(crate) layout_solves: u64,
     /// Resolves that got past tier 1, including those that then skipped: the whole-roster walk's
@@ -502,6 +505,10 @@ pub(crate) struct Model {
     /// the release; `None` once that frame left the mouse index (hide or mouse disable emptied
     /// the capture), so the release has no target but the button still counts as held.
     pub(crate) mouse_down_on: HashMap<String, Option<FrameHandle>>,
+    /// Every mouse button physically held, by WoW name, whatever its press hit (world, nothing,
+    /// a hidden frame): the state `IsMouseButtonDown` reads. Unlike [`Self::mouse_down_on`],
+    /// which keeps only presses the UI took a target for.
+    pub(crate) buttons_held: HashSet<String>,
     /// The client's one mouse-capture slot (`root+0x80`), read by the mouse-down raise. Set at
     /// `0x7663e6` to the capture, else the hovered frame, so a chorded press keeps the capture;
     /// cleared at `0x7664bb` once no button is down. A title-region press captures nothing.
@@ -571,6 +578,9 @@ pub(crate) struct Model {
     pub(crate) unit_guids: super::UnitGuids,
     /// The player's active tracking aura, behind `GetTrackingTexture`.
     pub(crate) tracking: Option<super::aura::TrackingState>,
+    /// The spellbook's tracking spells in book order, heading the 3.3.5 tracking menu
+    /// ([`super::minimap_tracking`]).
+    pub(crate) tracking_spells: Vec<u32>,
     /// What waits for the host, in the order made: the calls that touch the selection, the cast
     /// or the targeting cursor made while it was out, and the handlers an engine step fired then
     /// ([`super::host::holding`]), for it to run as soon as it is back.
@@ -1655,6 +1665,7 @@ impl Model {
             layout_scope: super::layout::LayoutScope::default(),
             layout_last_scope: (0, 0),
             layout_epoch_resolved: None,
+            layout_bailed: false,
             layout_solves: 0,
             layout_gate_walks: 0,
             layout_rounds: 0,
@@ -1692,6 +1703,7 @@ impl Model {
             world_mouseover: None,
             minimap_blip: None,
             mouse_down_on: HashMap::new(),
+            buttons_held: HashSet::new(),
             mouse_capture: None,
             last_click: HashMap::new(),
             last_ui_hit: None,
@@ -1729,6 +1741,7 @@ impl Model {
             unit_auras: HashMap::new(),
             unit_guids: Default::default(),
             tracking: None,
+            tracking_spells: Vec::new(),
             script_calls: Vec::new(),
             parked: HashMap::new(),
             next_parked: 0,

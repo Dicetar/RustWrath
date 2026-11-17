@@ -656,8 +656,17 @@ impl LootSteps<'_, '_> {
 /// as `"%d %s"` with its `GOLD`, `SILVER` or `COPPER` global, gold first, joined by the
 /// reference's own tests: `", "` after the gold when silver or copper is paid (`0x4c20e4`-
 /// `0x4c20f0`), and before the copper when gold or silver is (`0x4c20bc`-`0x4c20c9`), so a zero
-/// middle coin leaves `", , "`.
+/// middle coin leaves `", , "`. 3.3.5 writes the coins with `GetCurrencyText` (`0x007E7D80`)
+/// and `", "` over the `*_AMOUNT` templates.
 fn money_line(script: &UiScript, copper: u32) -> String {
+    if script.target() == UiTarget::Wrath335 {
+        let coins =
+            benilla_ui::strings::currency_text(copper, ", ", &|key| script.global_text(key));
+        return benilla_ui::strings::fill(
+            &script.global_text("YOU_LOOT_MONEY"),
+            &[benilla_ui::strings::Arg::S(&coins)],
+        );
+    }
     // `SplitCopper 0x6c6260`.
     let (g, s, c) = (copper / 10_000, copper / 100 % 100, copper % 100);
     let coin = |n: u32, key: &str| match n {

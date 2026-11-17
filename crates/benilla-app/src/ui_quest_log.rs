@@ -50,9 +50,10 @@ pub(crate) struct QuestLog {
     folds: benilla_ui::script::QuestLogCarry,
     /// The quest-update toasts the handlers resolved, shown by the next feed.
     toasts: Vec<Toast>,
-    /// `(quest id, item id, count)` pairs of an added item whose quest record was not cached, held
-    /// until it lands (`0x5dd180`).
-    deferred_item_adds: Vec<(u32, u32, u32)>,
+    /// `(quest id, item id, count, held before)` of an added item whose quest record was not
+    /// cached, held until it lands (`0x5dd180`). The held count is the packet's when it carried one
+    /// (12340's `QuestItemLoot::m_totalCount`), else read from the bags at the record's arrival.
+    deferred_item_adds: Vec<(u32, u32, u32, Option<u32>)>,
     /// The creature entries the engine's leaderboard asked for and the cache has not answered.
     creature_waits: HashSet<u32>,
     /// The `SMSG_SET_FACTION_STANDING` packets that moved a rank since the feed last ran.
@@ -274,7 +275,7 @@ mod net {
     use super::{item_added_to_quest, kill_line, ItemAdd, QuestLog, Toast, ToastLine};
     use crate::items::Items;
     use crate::names::NameCache;
-    use crate::net::{NetCommands, NetHandlerApp, ObjectStore, Objects, SelfPlayer};
+    use crate::net::{NetCommands, NetHandlerApp, ObjectStore, Objects, SelfGuid, SelfPlayer};
     use crate::query_cache::Ask;
     use crate::ui_items::{count_of_in_player, InventoryScope};
 
@@ -284,6 +285,7 @@ mod net {
         app.net_handler(K::QuestTemplate, on_template)
             .net_handler(K::QuestTemplate, on_template_deferred_item_adds)
             .net_handler(K::QuestObjectiveItem, on_item_added)
+            .net_handler(K::QuestItemLooted, on_item_looted)
             .net_handler(K::QuestObjectiveKill, on_kill)
             .net_handler(K::QuestObjectivesComplete, on_complete)
             .net_handler(K::Disconnected, on_session_end);
@@ -340,6 +342,45 @@ mod net {
         let SessionEvent::QuestObjectiveItem { item_id, count } = ev else {
             return;
         };
+        item_add_walk(item_id, count, None, &book, &mut quest_log, script.as_deref());
+    }
+
+    /// 12340's `SMSG_ITEM_PUSH_RESULT` arm (`Player_C.cpp`, case `0x166`): after the push's own
+    /// line, `CheckForQuestItemLoot` (`0x6d7de0`) for a push to the active player only, the same
+    /// walk with the count held before the push taken from the packet (`totalCount - count`).
+    fn on_item_looted(
+        In(ev): In<SessionEvent>,
+        self_guid: Res<SelfGuid>,
+        book: ItemBook,
+        mut quest_log: ResMut<QuestLog>,
+        script: Option<NonSend<UiScript>>,
+    ) {
+        let SessionEvent::QuestItemLooted {
+            player_guid,
+            item_id,
+            count,
+            total_count,
+        } = ev
+        else {
+            return;
+        };
+        if self_guid.0 != Some(player_guid) {
+            return;
+        }
+        let held_before = Some(total_count.saturating_sub(count));
+        item_add_walk(item_id, count, held_before, &book, &mut quest_log, script.as_deref());
+    }
+
+    /// The walk both arms share; `held_before` is the packet's count held before the add, or
+    /// `None` to read the bags now.
+    fn item_add_walk(
+        item_id: u32,
+        count: u32,
+        held_before: Option<u32>,
+        book: &ItemBook,
+        quest_log: &mut QuestLog,
+        script: Option<&UiScript>,
+    ) {
         let Some(store) = book.store() else {
             return;
         };
@@ -348,7 +389,7 @@ mod net {
                 .player_quest_log(slot)
                 .map(|s| s.quest_id)
                 .filter(|&id| (id as i32) > 0)
-                .filter(|&id| !script.as_ref().is_some_and(|s| s.quest_log_latched(id)))
+                .filter(|&id| !script.is_some_and(|s| s.quest_log_latched(id)))
             else {
                 continue;
             };
@@ -357,7 +398,7 @@ mod net {
                 if !quest_log.template_answered_unknown(quest_id) {
                     quest_log
                         .deferred_item_adds
-                        .push((quest_id, item_id, count));
+                        .push((quest_id, item_id, count, held_before));
                 }
                 continue;
             };
@@ -365,7 +406,7 @@ mod net {
                 template,
                 item_id,
                 count,
-                || book.held(item_id),
+                || held_before.unwrap_or_else(|| book.held(item_id)),
                 || book.name(item_id),
             ) {
                 ItemAdd::NotNeeded => {}
@@ -407,14 +448,14 @@ mod net {
         let refused = t.title.is_empty();
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut quest_log.deferred_item_adds)
             .into_iter()
-            .partition(|&(quest_id, _, _)| quest_id == t.quest_id);
+            .partition(|&(quest_id, _, _, _)| quest_id == t.quest_id);
         quest_log.deferred_item_adds = rest;
-        for (_, item_id, count) in mine.into_iter().filter(|_| !refused) {
+        for (_, item_id, count, held_before) in mine.into_iter().filter(|_| !refused) {
             if let ItemAdd::Toast(toast) = item_added_to_quest(
                 &t,
                 item_id,
                 count,
-                || book.held(item_id),
+                || held_before.unwrap_or_else(|| book.held(item_id)),
                 || book.name(item_id),
             ) {
                 quest_log.toasts.push(toast);
@@ -2159,6 +2200,34 @@ mod tests {
             ]
         );
         assert_eq!(rig.frame(), Vec::<String>::new());
+    }
+
+    /// AzerothCore's `SMSG_QUESTUPDATE_ADD_ITEM` is empty, so 12340 toasts a loot from
+    /// `SMSG_ITEM_PUSH_RESULT`'s trailing count (`CheckForQuestItemLoot`, `0x6d7de0`): the line
+    /// shows the packet's total even before the bags hold the item, and only for our own push.
+    #[test]
+    fn a_looted_quest_item_toasts_from_the_push_total() {
+        let mut rig = Rig::new(vec![pelt_quest()], &[7]);
+        rig.cache_pelt();
+        rig.app
+            .world_mut()
+            .insert_resource(crate::net::SelfGuid(Some(0x2A)));
+        rig.frame();
+        rig.enter_world();
+        rig.frame();
+        let looted = |player_guid| SessionEvent::QuestItemLooted {
+            player_guid,
+            item_id: WOLF_PELT,
+            count: 1,
+            total_count: 5,
+        };
+        rig.packet(looted(0x99));
+        assert_eq!(rig.frame(), Vec::<String>::new(), "another member's push");
+        rig.packet(looted(0x2A));
+        assert_eq!(
+            rig.frame(),
+            ["UI_INFO_MESSAGE:Wolf Pelt: 5/5", "QUEST_WATCH_UPDATE:2"]
+        );
     }
 
     /// An added item for a quest whose record is not cached waits for it (`0x5dd180`), a

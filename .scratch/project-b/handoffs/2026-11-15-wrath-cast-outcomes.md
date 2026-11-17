@@ -82,6 +82,36 @@ ingress ring before draining, so the native edge was dropped before the assertio
 - The end-to-end presence of the aura/absorb/proc reasons beyond the single-word arms was not
   re-verified against a live server.
 
+## Integration 2026-11-17 (Claude Code, integrator)
+
+Merged `origin/main` `40453c88` into the branch. One conflict, in `crates/benilla-app/src/wrath.rs`:
+`main` had fixed the same double line in `d2b7eb25` by never turning our own `SMSG_SPELL_FAILURE`
+into a failed `CastResult`. This branch still did so for a non-zero reason on a new native terminal.
+
+Resolution: `wrath.rs` is `main`'s file plus one test. The 12340 reference decides it:
+`Packet_SMSG_SPELL_FAILURE` (0x809C70, `Spell_C.cpp:1602`) plays the fizzle, marks the cast
+interrupted and ends it, and prints no line. So:
+
+- The `translate_gameplay_with_native` wrapper and the `native_edge` flag are gone; the call site
+  in `run_session_with_cancel` is `main`'s again.
+- `an_interrupt_with_zero_reason_does_not_fail_the_same_cast_twice` became
+  `an_interrupt_does_not_fail_the_same_cast_twice` (reason 40 only ends the observed cast).
+  `main`'s `a_wrath_self_spell_failure_reports_no_second_line` covers reason 0.
+- Kept unchanged: the native model's same-attempt dedup and zero-reason skip (`wrath_native.rs`),
+  the silent auto-repeat stop (`spell/net.rs`, `spell/report.rs`), and the trace attribution
+  (`quest_trace.rs`). `main` did not touch those files after this branch's base.
+
+What changes for the player, against the AUTO-03 section above: a channel interrupted by someone
+else, or a spell cancelled after launch, reaches us as `SendInterrupted(40)` alone
+(`Spell.cpp:3676/3690`). It now ends the cast with no red "Interrupted" line, as on 12340. An
+interrupt while the cast bar is filling still shows the line once, from `SMSG_CAST_FAILED`. The
+auto-repeat stop still works through that same packet.
+
+Named, not applied: 0x809C70 also stops the local auto-repeat for reasons 52–54 (need ammo, ammo
+pouch, exotic ammo). AzerothCore only sends 0 or 40 through this message.
+
+The merge was not compiled and not run; the checks in the table above are from before it.
+
 ## Owner check list
 
 1. Cast a damage spell on a mob: one cast bar, one result, damage and power shown.

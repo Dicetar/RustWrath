@@ -1,6 +1,6 @@
 # WM encounter drafts and receipts
 
-Source-only implementation in `wm_draft.rs`; not executed or compiler-accepted. It reuses `wm.world.bundle.v1` and native `creature_spawn` / `creature_despawn` contracts inspected in `D:/WOW/wm-project/src/wm/world/bundle.py`, `world/tools.py`, `sources/native_bridge/payload_contract.py`, the action catalog, and `native_modules/mod-wm-bridge/src/wm_bridge_creature_actions.cpp`. No WM file is changed and no second publisher/runner is introduced.
+Source-only implementation in `wm_draft.rs`; not executed or compiler-accepted. It reuses `wm.world.bundle.v1` and native `creature_spawn` / `creature_despawn` contracts inspected in `D:/Projects/wow/server/wm-project/src/wm/world/bundle.py`, `world/tools.py`, `sources/native_bridge/payload_contract.py`, the action catalog, and `native_modules/mod-wm-bridge/src/wm_bridge_creature_actions.cpp`. No WM file is changed and no second publisher/runner is introduced.
 
 `WmDraft::build` verifies the full candidate and rederived encounter plan. Options require explicit bounded namespace/run key, duration 1000–600000 ms and actor budget 1–512. A larger plan is refused completely, not truncated or silently split across runs. The draft has a `bundle` member in the existing owner's format; the outer `project-b.procgen.wm-draft.v1` package retains scope, plan identity, cleanup requirements and preflight policy. It is deliberately not itself a runnable bundle document.
 
