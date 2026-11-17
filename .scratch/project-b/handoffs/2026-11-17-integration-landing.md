@@ -133,12 +133,48 @@ outside this brief.
 
 ## 5. Not done, on purpose
 
-- No remote branch or worktree was deleted. `sync.md` gives that cleanup to the integrator,
-  but it waits on the owner's word. The scratch worktrees `land-main`, `land-a1` and `land-a2`
-  are still there. `trial-all` is pruned; its folder is empty and the app holds it.
+- First landing: no remote branch or worktree was deleted. The second landing (section 6)
+  deleted its own three. `land-a1`, `land-a2` and `trial-all` are no longer registered
+  worktrees; `land-main` is the integrator's landing worktree.
 - The shared checkout `D:\Projects\wow\client` was not pulled or switched, as the brief says.
 
+## 6. Second landing (owner: "Integrator lands both")
+
+| branch | task note | main merge commit |
+|---|---|---|
+| `fix/update-sync-ceiling` | (commit message) | `78166894` (fast-forward, earlier) |
+| `fix/wrath-trainer-gameobject-use` | `2026-11-17-wrath-trainer-gameobject-use.md` | `eb410dd7` |
+| `feat/live-code-hotpatch` | `2026-11-17-live-code-hotpatch.md` | `55d6d8a0` |
+
+Both branches were cut from `78166894` and touch no common file. I read the trainer/GO diff
+against its note: the 3.3.5 game-object data block is kept, Wrath spell-keyed locks (`LockType`
+3) open, 12340's trainer refresh pass replaces 1.12's on the Wrath target, and the catalog's
+learn-spell hop skips pet-aimed slots. Every name the diff calls is defined in the diff.
+
+Main CI for `55d6d8a0`, run 44165337405: `gates` fails at fmt as before, and `live-code-check`
+succeeds (the live-code build compiles on `main`). Windows test job: pending when this was
+written. Each branch alone was compiles; 0 new failures (44138182667, 44150560624).
+
+The three remote branches and their worktrees (`fix-wrath-trainer-go-use`,
+`live-code-hotpatch`, `fix-update-sync-ceiling`) are deleted; each was clean and contained in
+`main`. The shared checkout `D:\Projects\wow\client` was not touched.
+
 ## Owner run list (next batch build)
+
+Trainer and game objects (`fix/wrath-trainer-gameobject-use`):
+
+A. A class trainer lists the abilities you can train; known ones are grey.
+B. A profession trainer: learn an available recipe or rank.
+C. Open a locked chest.
+D. Mine a copper vein (and pick a herb).
+
+Live code (`-LiveCode`, ADR-0002 "Live code"):
+
+E. Install `dx` 0.7.10 (`$env:RUSTC_WRAPPER=''; cargo install dioxus-cli --version 0.7.10
+   --locked`), run `.\tools\launch-client.ps1 -LiveCode`, and commit the `Cargo.lock` change
+   the first build makes.
+F. In game, edit and save a system's body (a log line will do): the dx window builds a patch,
+   the client logs `live code: patch 1 landed`, and the change shows without a restart.
 
 Build (from the docs move):
 
