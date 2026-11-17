@@ -1132,7 +1132,7 @@ proposed above so `H03` is not blocked):
 | Texture/material/tuning | Dependency-aware content revision | Next stage; not delivered by the DLL loader |
 | M2/SKIN/animation import | Reimport affected model family and rebind visuals | Next stage; current live caches do not implement this |
 | Terrain/WMO/ADT/collision | Staged affected-cell rebuild at a safe boundary | Planned; must coordinate render and collision revisions |
-| Any function body in a workspace crate the client links (systems, decoders, encoders, formats, rules) | Live code: patched `dx` patch on save | First build and launch ran; stock dx failed a patch below `benilla-app`; the dx patch is not compiled or run; acceptance pending |
+| Any function body in a workspace crate the client links (systems, decoders, encoders, formats, rules) | Live code: patched `dx` patch on save | First build and launch ran. With stock dx, a patch below `benilla-app` failed to build, and the first patch that landed crashed the client (`__chkstk` stub). The dx patch is not compiled or run; acceptance pending |
 | Struct/enum layout, static or thread-local initializer, new/reordered system or plugin, new dependency | Restart (live code reports the patch but cannot apply it safely) | By design |
 | New host interface, Bevy/wgpu upgrade, core component/schema changes | Declared maintenance rebuild/restart | Outside ABI 1 |
 
@@ -1188,12 +1188,19 @@ captured no rustc arguments for those, so the replay failed (`Missing rustc args
 An edit in `benilla-app` that used a new item from `benilla-formats` failed to build, because
 only `benilla-app` was replayed.
 
-`tools/live-code/dx-0.7.10-workspace-crates.patch` changes two things:
+`tools/live-code/dx-0.7.10-workspace-crates.patch` changes three things:
 
 - The watch list follows dependencies transitively (`local_dependencies` in `serve/runner.rs`),
   so every workspace crate the client links is watched.
 - The replay skips crates the fat build never compiled (`compile_workspace_hotpatch` in
   `build/link.rs`).
+- On Windows x64, the stubs a patch uses to reach the original binary's symbols jump with
+  `jmp [rip+0]` instead of loading the address into RAX (`create_undefined_symbol_stub` in
+  `build/patch.rs`; upstream DioxusLabs/dioxus#5966, fix #5967). `__chkstk` takes the stack
+  frame's size in RAX, so with stock dx any patched function whose frame is over a page
+  overflows the stack on entry. Our crates build at opt-level 1, which gives many such frames.
+  In the owner's session, the first patch that landed crashed the client this way ("thread
+  'main' has overflowed its stack", exit `0xc000041d`).
 
 `tools/install-live-dx.ps1` builds that dx from the hash-pinned crates.io archive. It also
 leaves a marker beside `dx.exe`, and the launcher warns when the marker is missing. A new

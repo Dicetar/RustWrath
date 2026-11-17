@@ -2,9 +2,9 @@
 
 Status: landed on `main`; the dx patch is not compiled, not run
 Owner: Claude Code (Opus 5.5)
-Branch: fix/live-code-dx-workspace
+Branch: fix/live-code-dx-workspace (landed `fa707857`), then fix/live-code-dx-chkstk
 Issue: none. Owner session 2026-11-17: the trainer/game-object fix did not patch into the
-running client.
+running client, and the first patch that did land crashed it.
 Next: the owner stops dx, runs `tools/install-live-dx.ps1` and relaunches `-LiveCode`. Then
 the trainer/game-object fix is applied in the live worktree as the acceptance patch.
 
@@ -29,9 +29,24 @@ Applying `eb410dd7` (the trainer/game-object fix) in that worktree failed the pa
   `compile_workspace_hotpatch` has no fat-build rustc arguments for them and fails with
   `Missing rustc args for replay`. Fixing the watch scope alone would hit this.
 
+## The crash after the first landed patch
+
+Removing the fix files again in the live worktree (22:16, still stock dx) produced a patch
+that compiled. The client logged "live code: patch 1 landed", re-derived the spell catalog,
+and about a second later printed "thread 'main' has overflowed its stack". It exited with
+`0xc000041d`.
+
+dx 0.7.10 `build/patch.rs` `create_undefined_symbol_stub` builds Windows x64 stubs as
+`movabs rax, addr; jmp rax`. A patched function reaches `__chkstk` in the original exe
+through such a stub, and `__chkstk` reads the frame size from RAX. Any patched function
+with a frame over 4 KiB therefore overflows on entry. This is upstream DioxusLabs/dioxus#5966;
+the fix is in PR #5967, which was open when checked. The second commit adds that fix to the
+dx patch (`jmp [rip+0]` plus the 64-bit address, the stub dx already uses on other x86_64
+targets). The stub is 14 bytes instead of 12; its size is taken from the byte length.
+
 ## What changed
 
-- `tools/live-code/dx-0.7.10-workspace-crates.patch` changes two things:
+- `tools/live-code/dx-0.7.10-workspace-crates.patch` (the Windows stub fix is above):
   - The watch list is a breadth-first walk over the dependency graph. It skips registry crates
     (manifests under `.cargo`).
   - The replay keeps only crates the fat build captured arguments for.
