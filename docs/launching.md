@@ -12,7 +12,7 @@ must already be running. The launcher refuses to compete with an existing client
 From PowerShell, the same entry point is:
 
 ```powershell
-& 'D:\Projects\project-b-client\Launch RustWrath.cmd'
+& 'D:\Projects\wow\client\Launch RustWrath.cmd'
 ```
 
 No commit, push or pull is required to test the existing local executable. The launcher
@@ -22,7 +22,7 @@ in game. Do not pull or switch branches underneath uncommitted shared work.
 Build after source changes, with the shared Cargo slot free and no client running:
 
 ```powershell
-cd D:\Projects\project-b-client
+cd D:\Projects\wow\client
 cargo build -p benilla --features hotpatch
 ```
 
@@ -56,7 +56,7 @@ executable automatically. Git publication alone does not activate code in a runn
 Launch from PowerShell with another data root or auth server:
 
 ```powershell
-.\tools\launch-client.ps1 -DataPath 'D:\WOW\world of warcraft 3.3.5a hd\data' -AuthServer '127.0.0.1:3724'
+.\tools\launch-client.ps1 -DataPath 'D:\Projects\wow\server\world of warcraft 3.3.5a hd\data' -AuthServer '127.0.0.1:3724'
 ```
 
 This workstation's default uses the existing linked shadow data root when available, to

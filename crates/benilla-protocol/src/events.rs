@@ -856,7 +856,9 @@ pub enum SessionEvent {
         options: Vec<GossipOption>,
         quests: Vec<(u32, u32, u32, String)>,
     },
-    /// An NPC's `!`/`?` marker (`SMSG_QUESTGIVER_STATUS`), a [`crate::messages::dialog_status`].
+    /// An NPC's `!`/`?` marker (`SMSG_QUESTGIVER_STATUS`): the raw 3.3.5 `QuestGiverStatus` (0-10)
+    /// on the Wrath path, which the app's markers and minimap read; a
+    /// [`crate::messages::dialog_status`] on the donor 1.12 path.
     QuestGiverStatus { npc: u64, status: u32 },
     /// The greeting panel: an NPC's offered/active quest rows (`SMSG_QUESTGIVER_QUEST_LIST`).
     QuestGreeting(QuestGiverList),
@@ -880,6 +882,16 @@ pub enum SessionEvent {
     },
     /// An item-collection objective toast (`SMSG_QUESTUPDATE_ADD_ITEM`).
     QuestObjectiveItem { item_id: u32, count: u32 },
+    /// 12340's item-collection toast source: `SMSG_ITEM_PUSH_RESULT`'s trailing count, read by
+    /// `CheckForQuestItemLoot` (`0x6d7de0`). AzerothCore sends `SMSG_QUESTUPDATE_ADD_ITEM` empty,
+    /// so a Wrath session reports item progress only through this. `total_count` is the item's
+    /// count held after the push.
+    QuestItemLooted {
+        player_guid: u64,
+        item_id: u32,
+        count: u32,
+        total_count: u32,
+    },
     /// All objectives done (`SMSG_QUESTUPDATE_COMPLETE`), a line only; the slot state is durable.
     QuestObjectivesComplete { quest_id: u32 },
     /// The quest failed (`SMSG_QUESTUPDATE_FAILED`, or `_FAILEDTIMER` when `timed`).

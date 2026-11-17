@@ -13,7 +13,7 @@ Successful builds and focused tests do not establish complete gameplay or addon 
 In the local checkout, double-click **Launch RustWrath.cmd**, or run in PowerShell:
 
 ```powershell
-& 'D:\Projects\project-b-client\Launch RustWrath.cmd'
+& 'D:\Projects\wow\client\Launch RustWrath.cmd'
 ```
 
 The executable must already be built and the local auth/world servers running. Enter

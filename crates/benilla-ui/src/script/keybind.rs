@@ -716,7 +716,7 @@ mod tests {
     const DEFAULTS: &str = "bind W MOVEFORWARD\r\nbind UP MOVEFORWARD\r\nbind SPACE JUMP\r\n\
                             bind NUMPAD0 JUMP\r\nbind MOUSEWHEELUP CAMERAZOOMIN\r\n";
 
-fn wrath_script() -> UiScript {
+pub(super) fn wrath_script() -> UiScript {
     let mut s =
         UiScript::with_target(crate::script::UiTarget::Wrath335).unwrap();
     s.set_default_bindings(parse_bindings_wtf(DEFAULTS));
@@ -1261,6 +1261,7 @@ fn script() -> UiScript {
 
 #[cfg(test)]
 mod addon_persistence_tests {
+    use super::tests::wrath_script;
     use crate::bindings_xml::Binding;
     use crate::script::UiScript;
 

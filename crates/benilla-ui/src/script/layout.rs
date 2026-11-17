@@ -45,6 +45,29 @@ fn node_anchors(
         .unwrap_or_default()
 }
 
+/// Rounds in a row the same set of rects may move before the solver calls it a cycle. A settling
+/// graph's changes move along its anchors and die out within a few rounds under the keep test
+/// ([`layout::keeps_rect`]); only a dependency cycle drifts the same members round after round.
+const CYCLE_REPEAT: usize = 64;
+
+/// Node `id`'s name for a diagnostic: its frame's or region's, else its id.
+fn node_label(
+    arena: &crate::widget::WidgetArena,
+    id_to_frame: &IdMap<FrameHandle>,
+    id_to_region: &IdMap<RegionHandle>,
+    id: u32,
+) -> String {
+    let name = if let Some(&h) = id_to_frame.get(&id) {
+        arena.frame(h).and_then(|f| f.name.clone())
+    } else {
+        id_to_region
+            .get(&id)
+            .and_then(|&rh| arena.region(rh))
+            .and_then(|r| r.name.clone())
+    };
+    name.unwrap_or_else(|| format!("#{id}"))
+}
+
 /// A frame's alpha and `effective_scale`, worn by the quads it emits itself.
 #[derive(Clone, Copy)]
 pub(super) struct FramePaint {
@@ -997,12 +1020,14 @@ impl UiScript {
         }
         // ── Tier 1: the mutation epoch ────────────────────────────────────────────────────────
         // No layout touch since the last converged resolve: nothing the fingerprint reads moved,
-        // so skip everything. Under verify, fall through so tier 2 checks the claim.
+        // so skip everything. Under verify, fall through so tier 2 checks the claim, unless a
+        // cycle bail closed it: those rects are no fixpoint for a re-run to reproduce.
         let verify = layout_verify_enabled();
         let tier1_clean = model.layout_epoch_resolved == Some(model.layout_epoch);
-        if tier1_clean && !verify {
+        if tier1_clean && (!verify || model.layout_bailed) {
             return;
         }
+        model.layout_bailed = false;
         let epoch_at_entry = model.layout_epoch;
         // Every call past tier 1 counts, verify's re-walks included: the walk is the cost.
         model.layout_gate_walks = model.layout_gate_walks.wrapping_add(1);
@@ -1055,6 +1080,7 @@ impl UiScript {
             layout_scope: scope,
             layout_fingerprint,
             layout_epoch_resolved,
+            layout_bailed,
             layout_touched,
             layout_verify_recheck,
             layout_solves,
@@ -1235,8 +1261,8 @@ impl UiScript {
         }
         // Under verify a skippable resolve runs anyway, against the rects it must reproduce.
         let verify_against = gate_skips.then(|| (resolved.clone(), region_resolved.clone()));
-        // Cleared until the fixpoint converges: a cycle-bailed pass leaves its rects mid-flight
-        // for the next frame to carry further, so it must re-enter both tiers dirty.
+        // Cleared until the fixpoint converges: a cycle-bailed pass re-closes only tier 1, so the
+        // next write re-enters tier 2 dirty and re-derives the graph.
         *layout_fingerprint = None;
         *layout_epoch_resolved = None;
         // Counted on the gate's decision, so verify's forced runs leave it alone.
@@ -1400,8 +1426,15 @@ impl UiScript {
                 !scope.has(id, MARK_PULLED) && node_deferred(arena, id_to_frame, id_to_region, id);
             (deferred, hold_get(layout_hold, id) & HOLD_HELD != 0)
         };
+        // The nodes whose rect moved this round and the last, and for how many rounds in a row
+        // the same set moved: a dependency cycle drifts the same members every round, where a
+        // settling graph's changes move along it and die out.
+        let mut round_moved: Vec<u32> = Vec::new();
+        let mut last_moved: Vec<u32> = Vec::new();
+        let mut moved_repeats = 0usize;
         for round in 0..round_cap {
             *layout_rounds += 1;
+            round_moved.clear();
             let t_round = prof.then(std::time::Instant::now);
             let mut changed = false;
 
@@ -1466,11 +1499,13 @@ impl UiScript {
                     Some(r) => {
                         if resolved.get(&h) != Some(&r) {
                             resolved.insert(h, r);
+                            round_moved.push(id);
                             changed = true;
                         }
                     }
                     None => {
                         if resolved.remove(&h).is_some() {
+                            round_moved.push(id);
                             changed = true;
                         }
                     }
@@ -1513,11 +1548,13 @@ impl UiScript {
                             solver.set_external(region_id, kept);
                             if region_resolved.get(&rh) != Some(&kept) {
                                 region_resolved.insert(rh, kept);
+                                round_moved.push(region_id);
                                 changed = true;
                             }
                         }
                         None => {
                             if region_resolved.remove(&rh).is_some() {
+                                round_moved.push(region_id);
                                 changed = true;
                             }
                         }
@@ -1576,6 +1613,7 @@ impl UiScript {
                     // FontString's draw lose the rect; a Texture keeps the quad its last good
                     // resolve wrote (`0x770670`), as its emit checks only its texture (`0x7706e0`).
                     if let Some(last) = region_resolved.remove(&rh) {
+                        round_moved.push(region_id);
                         changed = true;
                         if !is_fontstring {
                             region_kept.insert(rh, last);
@@ -1593,6 +1631,7 @@ impl UiScript {
                 solver.set_external(region_id, rect);
                 if region_resolved.get(&rh) != Some(&rect) {
                     region_resolved.insert(rh, rect);
+                    round_moved.push(region_id);
                     changed = true;
                 }
                 region_kept.remove(&rh);
@@ -1711,20 +1750,46 @@ impl UiScript {
                 );
                 return;
             }
-            if round + 1 == round_cap {
+            round_moved.sort_unstable();
+            round_moved.dedup();
+            if !round_moved.is_empty() && round_moved == last_moved {
+                moved_repeats += 1;
+            } else {
+                moved_repeats = 0;
+            }
+            std::mem::swap(&mut round_moved, &mut last_moved);
+            // The same rects moving for `CYCLE_REPEAT` rounds running is a cycle: each mover's
+            // cause is another mover, so no further round settles it. 12340's `SetPoint` refuses
+            // no cycle, so an addon can build one; its rects stand at this pass.
+            let cycling = moved_repeats >= CYCLE_REPEAT;
+            if cycling || round + 1 == round_cap {
                 // `Model::record_warning` inlined, as the model is destructured. Verify's re-run
                 // truncates `warnings` but not the log, so a verify build may count a row twice.
+                let shown: Vec<String> = last_moved
+                    .iter()
+                    .take(6)
+                    .map(|&n| node_label(arena, id_to_frame, id_to_region, n))
+                    .collect();
                 let msg = format!(
-                    "layout: anchor graph did not converge in {round_cap} rounds — \
-                     an anchor cycle? (rects left at their last pass)"
+                    "layout: anchor graph did not converge after {} rounds — an anchor cycle? \
+                     ({} rects still moving: {}{}; left at their last pass)",
+                    round + 1,
+                    last_moved.len(),
+                    shown.join(", "),
+                    if last_moved.len() > shown.len() { ", …" } else { "" }
                 );
                 diagnostics.record(super::diagnostics::DiagnosticKind::Warning, &msg);
                 warnings.push(msg);
+                break;
             }
         }
         // The cycle bail: its rects are this frame's, so their size changes still fire, and the
-        // scope forgets a graph that never settled.
+        // scope forgets a graph that never settled. Tier 1 closes on it, so the rects stand until
+        // the next write, rather than every read and frame re-running the cycle; tier 2 and the
+        // ledger stay cleared, so that write re-derives the graph in full.
         scope.invalidate();
+        *layout_epoch_resolved = Some(epoch_at_entry);
+        *layout_bailed = true;
         *layout_chain = chain;
         queue_size_changes(
             &watched,

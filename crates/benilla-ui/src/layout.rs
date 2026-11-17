@@ -79,12 +79,29 @@ impl Point {
 pub type Handle = u32;
 
 /// A resolved rect, `[bottom, left, top, right]`, y-up.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct Rect {
     pub bottom: f32,
     pub left: f32,
     pub top: f32,
     pub right: f32,
+}
+
+/// Rects compare by value, a NaN edge equal to a NaN edge. Script can feed NaN into a frame's
+/// inputs (a `SetWidth(0/0)`, an offset from a zero divide), which 12340 stores and resolves
+/// like any float; its resolver runs each frame once per invalidation, so a NaN edge costs it
+/// nothing. Our resolve iterates to a fixpoint and stops when no rect changed: with IEEE `==`,
+/// a NaN edge "changed" every round, so one NaN rect ran the round cap (thousands of rounds of
+/// the whole UI), bailed as a cycle, threw the graph away and did it all again on the next
+/// geometry read, which hung world entry inside `FloatingChatFrame.xml`.
+impl PartialEq for Rect {
+    fn eq(&self, other: &Rect) -> bool {
+        let same = |a: f32, b: f32| a == b || (a.is_nan() && b.is_nan());
+        same(self.bottom, other.bottom)
+            && same(self.left, other.left)
+            && same(self.top, other.top)
+            && same(self.right, other.right)
+    }
 }
 
 impl Rect {

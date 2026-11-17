@@ -6,7 +6,7 @@ vanilla layout. This is a source-investigation workflow, not a second implementa
 
 ## Identity and preservation
 
-- Local checkout: `D:/Projects/wowdecomp-reference`.
+- Local checkout: `D:/Projects/wow/reference/wowdecomp-reference`.
 - Remote: https://github.com/Terrorblade/wowdecomp
 - Pinned revision: `e67b6ffef23655dc7da061cb2d36b7963f6ef71a`.
 - Full history available from that remote was fetched: 544 commits at preservation time, all
@@ -19,9 +19,9 @@ vanilla layout. This is a source-investigation workflow, not a second implementa
 Useful read-only preflight:
 
 ```powershell
-git -C D:/Projects/wowdecomp-reference rev-parse HEAD
-git -C D:/Projects/wowdecomp-reference status --short
-git -C D:/Projects/wowdecomp-reference rev-parse --is-shallow-repository
+git -C D:/Projects/wow/reference/wowdecomp-reference rev-parse HEAD
+git -C D:/Projects/wow/reference/wowdecomp-reference status --short
+git -C D:/Projects/wow/reference/wowdecomp-reference rev-parse --is-shallow-repository
 ```
 
 ## Route the question to its authority
