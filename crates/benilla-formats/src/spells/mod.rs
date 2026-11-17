@@ -560,7 +560,14 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
             family_flags_high.insert(id, high);
         }
         // The learn-spell hop: the first LEARN_SPELL effect's trigger is the taught ability.
+        // 12340 skips a slot aimed at the pet (`ImplicitTargetA == 5`), so a pet-teaching slot
+        // never stands in for the player's ability (`GetSkillLineFromService` 0x594AE0,
+        // `CGClassTrainer::RefreshList` 0x596B00).
+        let wrath = matches!(layout, layout::SpellLayout::Wrath);
         for i in 0..3 {
+            if wrath && u32_at(r, COL_IMPLICIT_TARGET_A1 + i) == Some(5) {
+                continue;
+            }
             if u32_at(r, COL_EFFECT_1 + i) == Some(SPELL_EFFECT_LEARN_SPELL) {
                 if let Some(taught) = u32_at(r, COL_EFFECT_TRIGGER_1 + i).filter(|&t| t != 0) {
                     learned_spell.entry(id).or_insert(taught);

@@ -691,3 +691,36 @@ fn each_answer_reaches_its_own_stores_file_through_the_live_handlers() {
     assert!(held_next_session::<PageTexts>(PAGE), "page text");
     assert!(held_next_session::<MailOpen>(ITEM_TEXT), "item text");
 }
+
+/// A live-code patch decodes every held record again from its kept bytes (`redecode`): a record
+/// the old decoder filed wrong is filed by the decoder now running, with no query, and a record
+/// the store dropped stays dropped.
+#[test]
+fn a_live_code_patch_files_held_records_again_from_their_bytes() {
+    let _home = Home::new("redecode");
+    let mut session = Session::<GameObjectTemplates>::start("R");
+    session.answer(game_object_answer());
+    // What a decoder before the patch filed.
+    session
+        .store()
+        .insert(GAME_OBJECT, 3, "Stale".into(), &[0; 24]);
+    session
+        .app
+        .world_mut()
+        .run_system_once(redecode::<GameObjectTemplates>)
+        .expect("the re-decode runs");
+    assert_eq!(
+        session.store().resolve_name(GAME_OBJECT, Ask::Read),
+        Some("Copper Vein")
+    );
+
+    let mut names = Session::<NameCache>::start("R");
+    names.answer(creature_answer(CREATURE));
+    names.answer(Body::default().u32(CREATURE | 0x8000_0000).0);
+    names
+        .app
+        .world_mut()
+        .run_system_once(redecode::<NameCache>)
+        .expect("the re-decode runs");
+    assert!(names.store().creature_record(CREATURE).is_none());
+}

@@ -99,3 +99,31 @@ launching if it is needed. The client launcher does not start the server.
 Confirm the client process stays alive and report the PID and launcher log
 directory. A listening port or a live process does not establish successful
 login or gameplay. Leave login and gameplay to the owner.
+
+## Live code (patch the running client)
+
+`-LiveCode` builds and starts the developer client under `dx serve --hot-patch`, so saved source
+edits in any workspace crate patch into the running process without a restart
+([ADR-0002, "Live code"](../architecture/adr-0002-live-client-modules.md#live-code)). It is
+for the owner's own session; an agent does not start it.
+
+Once per `subsecond` version, install the matching `dx` CLI. The launcher reads the version from
+`Cargo.lock` and prints this command with it when `dx` is missing or differs:
+
+```powershell
+$env:RUSTC_WRAPPER=''; cargo install dioxus-cli --version <version> --locked
+```
+
+Then launch from the checkout whose source you will edit:
+
+```powershell
+Set-Location 'D:\Projects\wow\client'
+.\tools\launch-client.ps1 -LiveCode
+```
+
+The `dx` window stays open: it shows each patch build and its errors. The client log reports
+`live code: patch N landed` and then the template stores it re-decoded. Patches apply only on
+the `dev` profile, so `-LiveCode` refuses a release and skips `-BuildLatest` (dx builds).
+Layout changes, new
+systems or plugins, new dependencies and static initializers still need a restart. The first
+`-LiveCode` build adds `subsecond` to `Cargo.lock`; commit that lock change on a task branch.

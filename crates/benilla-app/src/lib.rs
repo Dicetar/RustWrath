@@ -56,6 +56,8 @@ mod debug_panel;
 mod dev;
 #[cfg(feature = "hotpatch")]
 mod hotpatch;
+/// Whole-client native patches into the running process; inert without `live_code`.
+mod live_code;
 
 #[cfg(feature = "dev")]
 mod devtools;

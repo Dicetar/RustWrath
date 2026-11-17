@@ -221,9 +221,14 @@ pub(super) fn service_group(
     get: &dyn Fn(&str) -> Option<String>,
 ) -> (u32, String) {
     if trainer_type == TRAINER_TYPE_TRADESKILL {
-        let step = spells
-            .get(wire_spell)
-            .is_some_and(|d| d.effects.contains(&SPELL_EFFECT_SKILL_STEP));
+        let record = spells.get(wire_spell);
+        // 12340 `CGClassTrainer::AddServices` (0x596450) tests `Attributes & 0x40` before the
+        // step scan: a passive service keys 3, `TRADESKILL_SERVICE_PASSIVE`
+        // (`s_tradeSkillServiceHeaders`, ClassTrainerFrame.cpp:25).
+        if record.is_some_and(|d| d.attributes & 0x40 != 0) {
+            return (3, get("TRADESKILL_SERVICE_PASSIVE").unwrap_or_default());
+        }
+        let step = record.is_some_and(|d| d.effects.contains(&SPELL_EFFECT_SKILL_STEP));
         return if step {
             (1, get("TRADESKILL_SERVICE_STEP").unwrap_or_default())
         } else {

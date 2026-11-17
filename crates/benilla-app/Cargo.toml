@@ -20,6 +20,10 @@ trace_chrome = ["bevy/trace_chrome"]
 # only through `cargo run`, which puts the toolchain's libstd on the loader path.
 bevy_dynamic_linking = ["bevy/dynamic_linking"]
 hotpatch = ["dev", "dep:benilla-hotpatch-bevy", "bevy/embedded_watcher"]
+# Whole-client live code (`live_code`, ADR-0002): run under `dx serve --hot-patch`, which patches
+# every edited workspace crate into the running process. Patches apply only with debug assertions,
+# so on the `dev` profile, never `play` or `ship`. Not with `bevy_dynamic_linking`.
+live_code = ["dev", "bevy/hotpatching"]
 
 [dependencies]
 anyhow.workspace = true

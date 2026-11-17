@@ -8,7 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use benilla_formats::{LearnEffect, SkillLineCatalog, SpellCatalog};
+use benilla_formats::{
+    LearnEffect, SkillLineCatalog, SpellCatalog, SPELL_EFFECT_LEARN_SPELL, SPELL_EFFECT_SKILL_STEP,
+};
 use benilla_protocol::messages::trainer_spell_state::{GRAY, GREEN, RED};
 use benilla_protocol::messages::TrainerSpell;
 
@@ -165,15 +167,88 @@ pub(super) fn re_derive(
     state
 }
 
+/// One row of 12340 `CGClassTrainer::RefreshList` (0x596B00, ClassTrainerFrame.cpp:390-596). A
+/// 3.3.5 trainer lists the ability itself on most rows, not a `LEARN_SPELL` wrapper, so the
+/// 1.12 pass above would leave a known ability available after the first trigger. Here a
+/// non-learn slot stands for the wire spell itself and ends the scan; a `LEARN_SPELL` slot aimed
+/// at the pet (`ImplicitTargetA == 5`) does too. A `SKILL_STEP` slot counts as known once the
+/// player's step reaches its points. All known: used. Otherwise a short skill, any missing
+/// required ability, or a level above 1 the player lacks: unavailable. 12340 has no hidden
+/// state 3 and no pet-book arm.
+pub(super) fn re_derive_wrath(
+    wire: &TrainerSpell,
+    spells: &SpellCatalog,
+    skill_lines: &SkillLineCatalog,
+    player: &PlayerView,
+) -> u8 {
+    let Some(spell) = spells.get(wire.spell) else {
+        return wire.state;
+    };
+    let (mut total, mut known, mut teaches) = (0u32, 0u32, false);
+    for (e, &effect) in spell.effects.iter().enumerate() {
+        if effect == 0 {
+            continue;
+        }
+        if effect == SPELL_EFFECT_SKILL_STEP {
+            total += 1;
+            let skill = spell.effect_misc_value[e].max(0) as u32;
+            let step = spell.effect_base_points[e] + spell.effect_die_sides[e];
+            if player.skill(skill).is_some_and(|s| s.step as i32 >= step) {
+                known += 1;
+            }
+            continue;
+        }
+        let id = if effect == SPELL_EFFECT_LEARN_SPELL && spell.effect_implicit_target_a[e] != 5 {
+            teaches = true;
+            spell.effect_trigger_spell[e]
+        } else if teaches {
+            continue;
+        } else {
+            spell.id
+        };
+        total += 1;
+        if known_or_higher(id, &player.known, skill_lines) {
+            known += 1;
+        }
+        if id == spell.id {
+            break;
+        }
+    }
+    if total > 0 && known == total {
+        return GRAY;
+    }
+    if wire.req_skill != 0 {
+        if let Some(slot) = player.skill(wire.req_skill) {
+            if slot.value_plus_perm < wire.req_skill_value as i32 {
+                return RED;
+            }
+        }
+    }
+    let missing = wire
+        .req_spells
+        .iter()
+        .any(|&id| id != 0 && !known_or_higher(id, &player.known, skill_lines));
+    if missing || (wire.req_level > 1 && player.level < u32::from(wire.req_level)) {
+        return RED;
+    }
+    GREEN
+}
+
 /// Every row in place; the reference's group recount (`0x4d8260`-`0x4d83c9`) is the engine's.
+/// `wrath` selects 12340's pass ([`re_derive_wrath`]) over 1.12's.
 pub(super) fn re_derive_all(
     services: &mut [TrainerSpell],
     trainer_type: u32,
     spells: &SpellCatalog,
     skill_lines: &SkillLineCatalog,
     player: &PlayerView,
+    wrath: bool,
 ) {
     for wire in services.iter_mut() {
-        wire.state = re_derive(wire, trainer_type, spells, skill_lines, player);
+        wire.state = if wrath {
+            re_derive_wrath(wire, spells, skill_lines, player)
+        } else {
+            re_derive(wire, trainer_type, spells, skill_lines, player)
+        };
     }
 }
