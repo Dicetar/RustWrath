@@ -3863,6 +3863,11 @@ fn translate_gameplay(
         // 3807-3808, `cancel` 3669/3678). Turning the self copy into a second failed
         // `CastResult` put a second red line under every server refusal. Reason 0 (SUCCESS)
         // has no 1.12 key, so that line read "Internal error".
+        // A non-zero reason is no different: `Spell::cancel` sends `SendInterrupted(40)` after
+        // `SendCastResult(40)` while preparing, and alone for a delayed spell or a channel
+        // interrupted by someone else, where 12340 shows the interrupted cast bar and no line.
+        // Not applied: 0x809C70 also stops the local auto-repeat for reasons 52-54 (the
+        // need-ammo family), which AzerothCore never sends through this message.
         WrathGameplayEvent::SpellFailure { caster, spell_id, .. } => {
             vec![SessionEvent::SpellFailedOther { caster, spell_id }]
         }
@@ -13334,6 +13339,28 @@ mod tests {
             matches!(
                 events.as_slice(),
                 [SessionEvent::SpellFailedOther { caster: 0x1522, spell_id: 772 }]
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// One cast terminates once. `Spell::cancel` sends `SendCastResult(40)` and then
+    /// `SendInterrupted(40)` for the same attempt. Our own `SMSG_SPELL_FAILURE` with 12340
+    /// SPELL_FAILED_INTERRUPTED (40) only ends the observed cast, like reason 0; the failure
+    /// line comes from `SMSG_CAST_FAILED` alone.
+    #[test]
+    fn an_interrupt_does_not_fail_the_same_cast_twice() {
+        let failure = WrathGameplayEvent::SpellFailure {
+            caster: 0x1522,
+            spell_id: 133,
+            cast_count: 4,
+            raw_reason: 40,
+        };
+        let events = translate_gameplay(failure, 0x1522, Instant::now());
+        assert!(
+            matches!(
+                events.as_slice(),
+                [SessionEvent::SpellFailedOther { caster: 0x1522, spell_id: 133 }]
             ),
             "{events:?}"
         );
