@@ -1,14 +1,15 @@
 # Live code: patch every workspace crate the client links
 
-Status: landed on `main`; the batch fix compiled and worked, the replay-order fix is not
-compiled
+Status: landed on `main`; the replay order now compiles and works. A patch that replays a crate
+with `thread_local!` crashes the client (Windows TLS, below), so that is still open
 Owner: Claude Code (Opus 5.5)
 Branch: fix/live-code-dx-workspace (landed `fa707857`), fix/live-code-dx-chkstk (landed
 `84ef7600`), then live-dx3, live-dx4, live-dx5
 Issue: none. Owner session 2026-11-17: the trainer/game-object fix did not patch into the
 running client, and the first patch that did land crashed it.
-Next: the owner reruns `tools/install-live-dx.ps1` and relaunches `-LiveCode`. Then the
-trainer/game-object fix is applied in the live worktree as the acceptance patch.
+Next: make thread-locals in patched code use the exe's TLS on Windows (dx stub and replayed
+objects), or keep unchanged crates out of the replay. Until then a live patch is safe only
+when no replayed code touches a `thread_local!`.
 
 Date 2026-11-17. Worktree `D:/Projects/wow/worktrees/live-dx`, cut from `origin/main` `7114694f`.
 
@@ -95,6 +96,37 @@ The fifth commit changes two things in the dx patch:
   `--extern` arguments, which are what the fat build actually linked. Ties keep the earlier
   order.
 
+## Thread-locals in the patch DLL crash the client
+
+The relaunch at 23:15 used the patched dx with the replay-order fix (marker `44C145B4…`). The fix
+was applied at 23:19:23. dx replayed nine crates in dependency order: formats, assets, lua,
+mlua, protocol_wrath, ui, world, hotpatch_bevy, app. The replay took 288 s, and the client
+logged "live code: patch 1 landed" at 23:24:27. Eleven seconds later it died: WER reports
+`c0000005` in `libbenilla-patch-1794954251251.dll` at RVA `0x2163e50`, then exit `0xc000041d`.
+
+`dumpbin /disasm` on the patch DLL puts that RVA at the first instruction of
+`benilla_mlua::RUNNING`'s thread-local accessor, `mov eax, dword ptr [_tls_index]`. Three
+things break here:
+
+- The patch objects leave `_tls_index` undefined. `create_undefined_symbol_stub` defines it as
+  an absolute symbol at the exe's runtime address. The access is a 32-bit RIP-relative load,
+  and the exe is mapped far more than 2 GB from the DLL, so the displacement wraps (the
+  disassembly shows the target as `0x17B35A2B8`) and the load faults.
+- Even with a valid index, the SECREL offsets (`[block+0xE8]`) come from the patch DLL's own
+  `.tls` layout. They would read the wrong variables in the exe's TLS block.
+- The patch DLL has no TLS directory, so the loader never allocates its `.tls` section.
+
+dx 0.7.10's TLS stub path is for ELF and Mach-O. Upstream added a `tls_fixups` jump-table field
+for "future runtime TLS sharing" (DioxusLabs/dioxus#5291), but Windows TLS sharing is not
+implemented.
+
+`benilla_mlua` was in the patch only because the cascade replays every dependent of
+`benilla_formats`; its source did not change. `benilla-app` also has `thread_local!` (sound
+mixer, lanes, quest trace, loot UI), so a patch can reach this crash through the app too.
+
+The trainer/game-object fix stays applied in the live worktree. A full rebuild (`r` in dx, or a
+relaunch) includes it without a live patch.
+
 ## What changed
 
 - `tools/live-code/dx-0.7.10-workspace-crates.patch` (the Windows stub fix is above):
@@ -118,6 +150,6 @@ The fifth commit changes two things in the dx patch:
 
 ## Unverified
 
-- The replay-order hunks (`request.rs` walk, `link.rs` `--extern` sort) have not been compiled.
-  The rest of the patch built and ran.
-- No cross-crate patch has yet landed in a running client.
+- A cross-crate patch landed (23:24:27) but crashed 11 s later on Windows TLS. No patch has
+  yet run to completion.
+- The trainer, chest and ore-vein behaviour of `eb410dd7` has not been checked in game.
