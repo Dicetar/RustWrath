@@ -322,6 +322,64 @@ mod tests {
         assert_eq!(death.resurrect.as_ref().map(|o| o.caster), Some(0xA));
     }
 
+    /// The reclaim guid is the reference's one-writer latch: our streamed body arms it, another
+    /// player's never replaces it, and the bone-pile flag (bit 0) never arms it (`0x4920d0`).
+    /// A destroyed corpse drops the guid so a later reclaim cannot send a dead one.
+    #[test]
+    fn the_corpse_latch_arms_for_our_body_and_never_its_bones() {
+        use benilla_protocol::messages::ObjectType;
+
+        const ME: u64 = 0x11;
+        const BODY: u64 = 0xC0_0000_0000_0001;
+        const BONES: u64 = 0xC0_0000_0000_0002;
+        let me = SelfGuid(Some(ME));
+        let corpse_fields = |owner: u64, flags: Option<u32>| {
+            let mut pairs = vec![(6u16, owner as u32), (7, 0)];
+            if let Some(flags) = flags {
+                pairs.push((35, flags));
+            }
+            ObjectFields::from_pairs(&pairs).into_created(ObjectType::Corpse)
+        };
+
+        let mut death = DeathNet::default();
+        note_corpse(BODY, EntityKind::Corpse, &corpse_fields(ME, None), &me, &mut death);
+        assert_eq!(death.corpse_guid, Some(BODY), "our body arms the reclaim");
+
+        // Another player's body must not steal the latch.
+        note_corpse(
+            0xC0_0000_0000_0003,
+            EntityKind::Corpse,
+            &corpse_fields(0x22, None),
+            &me,
+            &mut death,
+        );
+        assert_eq!(death.corpse_guid, Some(BODY));
+
+        // A bone pile keeps the owner but flag bit 0 says bones: it never arms.
+        note_corpse(
+            BONES,
+            EntityKind::Corpse,
+            &corpse_fields(ME, Some(1)),
+            &me,
+            &mut death,
+        );
+        assert_eq!(death.corpse_guid, Some(BODY), "bones never arm");
+
+        // An in-place flip to bones under the live guid drops the latch.
+        recheck_corpse(BODY, &corpse_fields(ME, Some(1)), &me, &mut death);
+        assert_eq!(death.corpse_guid, None, "the bone flip drops it");
+
+        note_corpse(
+            BODY,
+            EntityKind::Corpse,
+            &corpse_fields(ME, None),
+            &me,
+            &mut death,
+        );
+        forget_corpse(BODY, &mut death);
+        assert_eq!(death.corpse_guid, None, "the destroyed corpse drops it");
+    }
+
     /// 12340's handler (`Player_C.cpp:9720-9736`) stores the graveyard only while the active
     /// player is not a ghost: the ghost leg (and a missing player) replaces it with
     /// `SetDeathReleaseLocation(-1, zero)` (`GameUI.cpp:3451-3459`). AzerothCore sends the packet

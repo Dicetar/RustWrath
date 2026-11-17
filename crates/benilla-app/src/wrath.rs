@@ -13425,6 +13425,16 @@ mod tests {
                 (36, 1),
             ]
         );
+        // The shifted block is what the corpse renderer and the reclaim latch read: display 12
+        // is the body model, owner 6 arms note_corpse, and flags 0x08 is not the bone bit.
+        let corpse = ObjectFields::from_pairs(&pairs).into_created(ObjectType::Corpse);
+        assert_eq!(corpse.corpse_owner(), Some(0x11));
+        assert_eq!(
+            corpse.corpse_display_id(),
+            Some(49),
+            "the 1.12 display slot 12 is read, not 12340's 10"
+        );
+        assert!(!corpse.corpse_is_bones());
     }
 
     /// The typed row rides the existing container entity: same guid keeps the same entity and

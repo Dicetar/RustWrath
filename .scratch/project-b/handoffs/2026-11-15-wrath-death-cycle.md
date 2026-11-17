@@ -1,14 +1,21 @@
 # A1 — Wrath death, release, resurrection
 
-Branch `fix/wrath-death-cycle`, worktree `D:\Projects\rw-worktrees\a1-death-cycle`, based on
-`origin/main` 804264e0. Uncommitted by instruction: the overseer compiles, runs the tests and
-commits; this note is the review surface.
+Status: ready to merge
+Owner: OpenCode / DeepSeek V4.1 Flash
+Branch: fix/wrath-death-cycle
+Issue: none
+Next: owner launch checks only; the overseer review, the origin/main merges and the focused tests are in source, and no Cargo, test or client run was made
+
+Branch `fix/wrath-death-cycle`, worktree `D:\Projects\wow\worktrees\a1-death-cycle`.
+The death-cycle source was committed as `7161fa81` and the branch now merges `origin/main`
+twice (`97d337af` for the base and `38dd8a61` for the 2026-11-17 main); this note is the
+review surface, not an uncommitted tree.
 
 Reference: AzerothCore 3.3.5 source at
-`D:/WOW/Azerothcore_WoTLK_Rebuild/source/azerothcore` and the 12340 decomp at
-`D:/Projects/wowdecomp-reference` (pin e67b6ffe), both read-only. Stock 3.3.5 FrameXML read from
-`F:/AI/tmp/opencode/335ui`. Nothing was copied; the AC/decomp references are named where the
-behavior they describe is implemented.
+`D:\Projects\wow\server\Azerothcore_WoTLK_Rebuild\source\azerothcore` and the 12340 decomp
+at `D:\Projects\wow\reference\wowdecomp-reference` (pin `e67b6ffe`), both read-only. Stock
+3.3.5 FrameXML read from `F:\AI\tmp\opencode\335ui`. Nothing was copied; the AC/decomp
+references are named where the behavior they describe is implemented.
 
 Verification level: **source only**. No Cargo, no client, no `cargo fmt` (per brief), no server
 run. Every changed file parses (`rustfmt --check`, no `error` lines). Tests are written but not
@@ -137,6 +144,11 @@ never produced the event, so `GetAreaSpiritHealerTime` stayed 0 and
 
 - `opcode.rs:149`, `gameplay.rs:2221/2758/4315`, `wrath.rs:3796-3798` — decoded and
   translated. No app change was needed: the existing handler consumes it.
+- The unghost edge also drops the cached guide and cancels an armed wave:
+  `UpdateGhostStatus`'s `SetAreaSpiritHealer(0)` (`Player_C.cpp:13143`) goes through
+  `0x4921c0`, which fires `AREA_SPIRIT_HEALER_OUT_OF_RANGE` and closes the area dialog. The
+  per-frame scan's non-ghost gate already clears the cache (main `a1355ea0`); the focused
+  `an_armed_area_wave_is_cancelled_when_the_ghost_state_clears` covers the cancel leg too.
 
 ### 2e. `SMSG_AREA_TRIGGER_NO_CORPSE` (0x506) was not decoded
 
@@ -157,14 +169,20 @@ and items from 13. `wrath_apply_world` copied no corpse field, so a fresh corpse
 `display_id` (`NetEntity.display_id` came from `UNIT_FIELD_DISPLAYID`, which a 3.3.5 corpse
 does not carry) and the corpse-guid latch `note_corpse` (owner == me) never armed.
 
-- `wrath.rs:9231` — `push_corpse_fields`: 6..=9 identity, 10..=35 shifted by two, delivered
-  dwords only.
-- `wrath.rs:9860-9864` — the corpse branch in the projection;
-  `wrath.rs:9974-9980` — `NetEntity.display_id` for a corpse comes from
-  `corpse_display_id()`; `wrath.rs:9981-9990` — feeds `note_corpse` so
+- `wrath.rs` `push_corpse_fields`: 6..=9 identity, 10..=35 shifted by two, delivered
+  dwords only. AC's `UpdateFields.h` has display 10, item 11, bytes 30/31, flags 33 and dynamic
+  34; the 1.12 owners read 12, 13, 32/33, 35 and 36.
+- `wrath.rs` corpse branch in the projection: `NetEntity.display_id` for a corpse comes from
+  `corpse_display_id()`; `note_corpse` is fed from the translated block so
   `CMSG_RECLAIM_CORPSE` carries the real guid (AC ignores the guid and resolves the corpse
   through the player, `MiscHandler.cpp:642-651`, but the latch also drives the bones drop);
-  `wrath.rs:9660-9666` — `forget_corpse` on destroy (a bone swap destroys the object).
+  `forget_corpse` runs on destroy (a bone swap destroys the object).
+- Overseer check (2026-11-17): the shift matches AC's `UpdateFields.h` and the 1.12
+  `corpse_display_id()` (12, items 13). The extended
+  `a_corpse_block_shifts_by_two_after_party` reads the shifted block back as a corpse (owner 6,
+  display 12, flags 35), and the new `the_corpse_latch_arms_for_our_body_and_never_its_bones`
+  proves the latch arms for our body, refuses another player's body and the bone pile, drops on an
+  in-place bone flip, and forgets a destroyed corpse.
 
 ## 3. Server messages decoded but not applied, and messages that are not sent
 
@@ -186,20 +204,27 @@ does not carry) and the corpse-guid latch `note_corpse` (owner == me) never arme
   `CMSG_SPIRIT_HEALER_ACTIVATE` (raw guid), `CMSG_SELF_RES` (empty),
   `CMSG_AREA_SPIRIT_HEALER_QUERY/QUEUE` (raw guid, `MiscHandler.cpp:1636-1680`). All match.
 
-## 4. Tests added (source only, not run) — 12 focused cases
+## 4. Tests added (source only, not run) — 16 focused cases
 
 - `benilla-protocol-wrath/src/gameplay.rs:5184` `wrath_death_release_loc_reads_the_graveyard_and_the_clear`
 - `gameplay.rs:5220` `wrath_pre_resurrect_reads_the_packed_ghost_guid`
 - `gameplay.rs:5230` `wrath_area_spirit_healer_time_reads_guid_and_wave`
 - `gameplay.rs:5249` `wrath_corpse_not_in_instance_is_an_empty_body`
 - `gameplay.rs:5260` `wrath_resurrect_request_reads_sickness_and_the_timer_override`
-- `crates/benilla-app/src/wrath.rs:13273` `a_corpse_block_shifts_by_two_after_party`
+- `crates/benilla-app/src/wrath.rs:13403` `a_corpse_block_shifts_by_two_after_party` (now also
+  reads the shifted block back as a corpse: owner, display 12, flags 35)
 - `crates/benilla-app/src/death/net.rs:301` `the_reclaim_delay_anchors_and_re_announces`
 - `death/net.rs:314` `a_resurrect_offer_is_held_and_announced_per_message`
-- `death/net.rs:332` `a_release_location_is_kept_only_while_not_a_ghost`
+- `death/net.rs:329` `the_corpse_latch_arms_for_our_body_and_never_its_bones` (new)
+- `death/net.rs:390` `a_release_location_is_kept_only_while_not_a_ghost`
 - `crates/benilla-app/src/death/mod.rs:903` `cannot_be_resurrected_reads_the_effect_not_the_spell_id`
+- `crates/benilla-app/src/ui_dialog_verbs.rs:1408`
+  `an_armed_area_wave_is_cancelled_when_the_ghost_state_clears` (new)
 - `crates/benilla-app/src/ui_script/death_tests.rs:469` `the_death_popup_natives_read_the_pushed_state`
 - `death_tests.rs:528` `death_release_position_binding`
+
+The pre-existing `losing_the_ghost_state_drops_the_guide` (main `a1355ea0`) covers the cache
+clear; the new case covers the armed-wave cancel that closes the dialog.
 
 ## 5. Unproven / risks (named, not hidden)
 
@@ -207,16 +232,15 @@ does not carry) and the corpse-guid latch `note_corpse` (owner == me) never arme
    additions: `ClearMissilesAt`'s `MessageReader` system and its `.chain()` placement
    (`entities.rs:710`), and the `Option<Res<Player>>` added to `DeathView` (a `SystemParam`
    shared by `feed_death`/`signal_death`).
-2. **Base commit is broken outside this diff.** 804264e0 carries the literal-newline coin strings
-   in `crates/benilla-ui/src/script/loot.rs` (introduced by 1eef78f6), fixed on origin/main by
-   9c6f839a (`fix(build): restore the escaped newlines...`). My branch cannot build `benilla-ui`
-   until origin/main is merged; `origin/main` is 9 commits ahead and also carries
-   e8551634 (tooltip `ObjectLike` import).
-3. **Merge overlap.** origin/main also edits `crates/benilla-app/src/wrath.rs` in the same files
-   (WrathEntity 1001, translate_gameplay 3789, wrath_apply_world 10040/10305/10339, build_digest
-   12872, the `command_tap_tests` literal) and `benilla-ui/src/script/mod.rs:1561`. My hunks are
-   additive and in neighbouring regions; resolve by keeping both sides. Nothing else I touched
-   changed upstream.
+2. **Base commit was broken outside this diff; the merge fixes it.** 804264e0 carried the
+   literal-newline coin strings in `crates/benilla-ui/src/script/loot.rs`, fixed on
+   origin/main by 9c6f839a. The branch now merges `origin/main` (40453c88 and the later
+   b13c163d), so `benilla-ui` is no longer blocked by that base.
+3. **Merge overlap, resolved.** origin/main rewrote the same `WrathEntity` construction in
+   `crates/benilla-app/src/wrath.rs`: it replaced the broad `observed(...)`/`entry.self_guid`
+   reads with `unit(...)`/`unit_guid(...)` so a non-unit type never reads unit indices. The
+   resolution keeps that guard and the A1 additions (`charm`/`summon` via `unit_guid`,
+   `corpse_fields` on a corpse). The `benilla-ui/src/script/mod.rs` hunk also merged cleanly.
 4. **Spirit-healer minimap POI** from `SMSG_DEATH_RELEASE_LOC` is not drawn (section 3).
 5. **`CheckSpiritHealerDist` range**: the app still compares against the 1.12 constant 30.864
    yd²; 12340 uses `combat reach + 4` (`Player_C.cpp:1495-1512`). Wrath does not project
@@ -225,48 +249,48 @@ does not carry) and the corpse-guid latch `note_corpse` (owner == me) never arme
    projected.
 6. **Camera**: 12340 has no camera reset on resurrection (`UpdateGhostStatus` never touches the
    camera; the view state on the cycle is `CGWorldFrame::UpdateScreenEffect`, which this client
-   mirrors in `drive_death_look`). What is unproven is our own camera across the release teleport
-   (A3's controller): watch it on the owner check.
-7. **Area spirit healer cache** (`ui_dialog_verbs::AreaSpiritHealer`, battleground only) is not
-   cleared on the unghost edge; the reference clears it in `UpdateGhostStatus`. It is re-scanned
-   on the next healer packet, so no dialog is left up; named, not changed (outside the personal
-   spirit-healer path).
+   mirrors in `drive_death_look`). Our own camera across the release teleport is **left to A3's
+   controller work**, not changed here; watch it on the owner check.
+7. **Area spirit healer cache** (`ui_dialog_verbs::AreaSpiritHealer`, battleground only):
+   **closed**. Main's per-frame scan drops the guide when the body is no longer a ghost
+   (`a1355ea0`), and the armed wave's `set_healer(None)` cancels the aura, firing
+   `AREA_SPIRIT_HEALER_OUT_OF_RANGE`, which closes the area dialog; the new
+   `an_armed_area_wave_is_cancelled_when_the_ghost_state_clears` covers the second leg.
 8. **New natives are Wrath-only**; a 1.12 session still lacks them (correct: 1.12 has no
    `CannotBeResurrected`/`IsFalling`/`IsOutOfBounds`/`UnitIsControlling`/
    `GetDeathReleasePosition`).
 
-## 6. Owner check list
+## 6. Overseer review (2026-11-17)
 
-Prerequisite: the overseer merges `origin/main` into this branch and the batch build lands.
+- `origin/main` was merged into the branch twice: the base merge `97d337af` and the review
+  merge `38dd8a61` (today's main). The one conflict, in `WrathEntity`'s construction in
+  `wrath.rs`, was resolved by keeping main's `unit(...)`/`unit_guid(...)` type guards and A1's
+  `charm`/`summon` (through `unit_guid`) and `corpse_fields` additions.
+- The uncommitted-by-instruction work the note describes was already committed as `7161fa81`;
+  the worktree was clean before the merge, so there was nothing left to stage. No unrelated
+  path was staged.
+- **Corpse display 10 vs 12**: AC's `UpdateFields.h` display is 10, the 1.12 owners read 12.
+  `push_corpse_fields` shifts 10..=35 by +2 and `ObjectFields::corpse_display_id()` reads 12;
+  the extended `a_corpse_block_shifts_by_two_after_party` reads the shifted block back as a
+  corpse and gets display 49, owner 0x11 and non-bones flags.
+- **Corpse-guid latch that never armed**: the digest path feeds `note_corpse` only after the
+  translated block exists, on the owner's own body and not the bone pile; `forget_corpse` drops
+  it on destroy. The new `the_corpse_latch_arms_for_our_body_and_never_its_bones` proves the
+  arm, the other-player refusal, the bone refusal, the in-place bone flip and the destroy.
+- **Healer dialog clear on unghost**: main's per-frame ghost gate clears the cached guide
+  (`a1355ea0`); an armed wave's `set_healer(None)` also cancels the aura, which fires
+  `AREA_SPIRIT_HEALER_OUT_OF_RANGE` and closes the area dialog. The new
+  `an_armed_area_wave_is_cancelled_when_the_ghost_state_clears` covers that leg. The personal
+  `XP_LOSS` popup is stock UI and is not hidden by 12340's `UpdateGhostStatus` either.
+- **Camera**: the reset across the release teleport is left to A3's controller work; nothing here
+  touches the camera. 12340 has no camera reset on resurrection, as risk 6 above says.
+- No Cargo build, no test execution, no client launch and no server interaction were made in this
+  review. Compile and tests are **not run**; the owner's batch build is the first execution.
 
-1. **Die → release → run back → reclaim.** In Northshire, let a kobold kill you. The DEATH popup
-   appears with the 5-minute countdown; no Lua error frame (the five natives above answer). Click
-   *Release Spirit*. You are a ghost at the graveyard, the death screen pass is on, and the world
-   map (M) shows a corpse marker at the death spot. Run back within 40 yd: *Recover Corpse* shows;
-   the corpse body (not an invisible space) is at the death spot and the minimap corpse arrow
-   points at it. Click Accept: you are alive at the corpse, at half health/mana, no ghost pass, the
-   corpse marker gone, the death-release marker hidden (it is hidden while a ghost and clears at
-   the resurrection).
-2. **Die again → spirit healer.** Die, release, then right-click the spirit healer at the
-   graveyard. The XP-loss dialog appears (not a Lua error), names the sickness duration and warns
-   about durability. Accept: alive, 25% durability lost, the "Your equipped items suffer a 10%
-   durability loss" line appears in chat, Resurrection Sickness on the buff bar, and the dialog's
-   timer matches `GetResSicknessDuration`.
-3. **Die near a second character → their resurrection → accept.** With a second character (or an
-   NPC res) offering a resurrection while you are dead-but-not-released: the RESURRECT popup names
-   the caster (a player's name resolves; not blank), Accept raises you, Decline re-raises DEATH and
-   sends the decline. No stale resurrection popup after the answer, no ghost pass, full health/power
-   from the server's fields, camera where you left it.
-4. **Extra, same run:** die while falling (jump off the Northshire cliff) — the DEATH buttons stay
-   usable (the `IsFalling` gate) and no Lua error repeats; open the world map while dead and while
-   a ghost: no Lua error from `GetDeathReleasePosition`, and the release marker stays hidden
-   (the reference's handler clears it while the ghost flag is set). If a battleground is
-   available, check the spirit healer's wave countdown.
+Status: ready to merge
 
-Status: in progress
+## Owner check list
 
-
-## Verification state (2026-11-16)
-
-Not compiled and not run. Cargo runs were stopped at the owner's instruction; the owner's batch
-build is the first execution of this source. Source-only at this commit.
+1. Die to a mob, then release, run back and reclaim.
+2. Die again and use the spirit healer.
+3. Die near a second character, then accept their resurrection.
