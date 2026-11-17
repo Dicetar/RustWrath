@@ -759,10 +759,8 @@ fn install_wrath(lua: &Lua, g: &Table) -> mlua::Result<()> {
                 let before_points = preview_points(&model, is_pet, scope, None);
                 let delta = preview_delta(&model, is_pet, scope, tab, index);
                 let before = i64::from(rank + delta);
-                let after = (before + i64::from(points)).clamp(
-                    i64::from(rank),
-                    i64::from(max_rank),
-                ) as u32;
+                let high = i64::from(max_rank.max(rank));
+                let after = (before + i64::from(points)).clamp(i64::from(rank), high) as u32;
                 let new_delta = after - rank;
                 let key = preview_key(is_pet, scope, tab, index);
                 if new_delta == 0 {
