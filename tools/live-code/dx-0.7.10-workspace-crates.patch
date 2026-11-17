@@ -1,0 +1,100 @@
+diff --git a/src/build/link.rs b/src/build/link.rs
+index e3edd5c..8ca4684 100644
+--- a/src/build/link.rs
++++ b/src/build/link.rs
+@@ -146,7 +146,20 @@ impl BuildRequest {
+         // Replay the rustcs for all modified workspace crates. This is not the final tip binary.
+         // Note that the final tip might include itself as a lib (lib.rs + main.rs) which gets covered here.
+         ctx.profile_phase("Workspace hotpatch replay");
+-        let replayed_crates = self.workspace_hotpatch_replay_order(modified_crates)?;
++        let mut replayed_crates = self.workspace_hotpatch_replay_order(modified_crates)?;
++        // RustWrath patch: the dependents cascade walks the whole workspace graph, so it also
++        // reaches members the fat build never compiled (a sibling binary that uses the edited
++        // crate). They are not linked into the running app and have no captured rustc args, so
++        // they are skipped instead of failing the patch.
++        replayed_crates.retain(|crate_name| {
++            let in_build = self
++                .workspace_hotpatch_replay_args(workspace_rustc_args, crate_name)
++                .is_some();
++            if !in_build {
++                tracing::debug!("not replaying '{crate_name}': not part of the fat build");
++            }
++            in_build
++        });
+         tracing::debug!("replaying crates: {replayed_crates:?}");
+         for crate_name in &replayed_crates {
+             let rustc_args = self
+diff --git a/src/serve/runner.rs b/src/serve/runner.rs
+index 82ca1b3..a65b950 100644
+--- a/src/serve/runner.rs
++++ b/src/serve/runner.rs
+@@ -1110,32 +1110,48 @@ impl AppServer {
+     /// - the Cargo.toml file - this is so we can hotreload the project if the user changes dependencies
+     /// - the Dioxus.toml file - this is so we can hotreload the project if the user changes the Dioxus config
+     fn local_dependencies(&self, crate_package: NodeId) -> Vec<PathBuf> {
++        // RustWrath patch: walk local dependencies transitively, not only the tip's direct ones.
++        // Hot-patching replays any modified workspace crate, but a crate the watcher never sees
++        // is never modified: an edit two crates below the tip was silently left out of the patch.
++        let krates = &self.workspace.krates;
+         let mut paths = vec![];
++        let mut seen: HashSet<NodeId> = HashSet::new();
++        let mut queue = VecDeque::from([crate_package]);
++
++        while let Some(node) = queue.pop_front() {
++            for (dependency, _edge) in krates.get_deps(node) {
++                let (krate, dep_node) = match dependency {
++                    krates::Node::Krate { id, krate, .. } => (krate, krates.nid_for_kid(id)),
++                    krates::Node::Feature { krate_index, .. } => {
++                        (&krates[krate_index.index()], Some(*krate_index))
++                    }
++                };
+ 
+-        for (dependency, _edge) in self.workspace.krates.get_deps(crate_package) {
+-            let krate = match dependency {
+-                krates::Node::Krate { krate, .. } => krate,
+-                krates::Node::Feature { krate_index, .. } => {
+-                    &self.workspace.krates[krate_index.index()]
++                if krate
++                    .manifest_path
++                    .components()
++                    .any(|c| c.as_str() == ".cargo")
++                {
++                    continue;
+                 }
+-            };
+ 
+-            if krate
+-                .manifest_path
+-                .components()
+-                .any(|c| c.as_str() == ".cargo")
+-            {
+-                continue;
+-            }
++                let Some(dep_node) = dep_node else {
++                    continue;
++                };
++                if !seen.insert(dep_node) {
++                    continue;
++                }
++                queue.push_back(dep_node);
+ 
+-            paths.push(
+-                krate
+-                    .manifest_path
+-                    .parent()
+-                    .unwrap()
+-                    .to_path_buf()
+-                    .into_std_path_buf(),
+-            );
++                paths.push(
++                    krate
++                        .manifest_path
++                        .parent()
++                        .unwrap()
++                        .to_path_buf()
++                        .into_std_path_buf(),
++                );
++            }
+         }
+ 
+         paths

@@ -102,17 +102,20 @@ login or gameplay. Leave login and gameplay to the owner.
 
 ## Live code (patch the running client)
 
-`-LiveCode` builds and starts the developer client under `dx serve --hot-patch`, so saved source
-edits in any workspace crate patch into the running process without a restart
-([ADR-0002, "Live code"](../architecture/adr-0002-live-client-modules.md#live-code)). It is
-for the owner's own session; an agent does not start it.
+`-LiveCode` builds and starts the developer client under `dx serve --hot-patch`. Saved source
+edits in any workspace crate the client links then patch into the running process without a
+restart ([ADR-0002, "Live code"](../architecture/adr-0002-live-client-modules.md#live-code)).
+It is for the owner's own session; an agent does not start it.
 
-Once per `subsecond` version, install the matching `dx` CLI. The launcher reads the version from
-`Cargo.lock` and prints this command with it when `dx` is missing or differs:
+Once, with dx stopped, install the patched `dx` 0.7.10. Stock dx patches only `benilla` and
+`benilla-app`; the launcher warns when the patched one is missing:
 
 ```powershell
-$env:RUSTC_WRAPPER=''; cargo install dioxus-cli --version <version> --locked
+.\tools\install-live-dx.ps1
 ```
+
+The launcher reads the `subsecond` version from `Cargo.lock` and refuses a `dx` that differs.
+For a version other than 0.7.10 there is no patch yet; it prints the stock install command.
 
 Then launch from the checkout whose source you will edit:
 

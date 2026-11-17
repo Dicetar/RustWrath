@@ -1132,7 +1132,7 @@ proposed above so `H03` is not blocked):
 | Texture/material/tuning | Dependency-aware content revision | Next stage; not delivered by the DLL loader |
 | M2/SKIN/animation import | Reimport affected model family and rebind visuals | Next stage; current live caches do not implement this |
 | Terrain/WMO/ADT/collision | Staged affected-cell rebuild at a safe boundary | Planned; must coordinate render and collision revisions |
-| Any function body in a workspace crate (systems, decoders, encoders, formats, rules) | Live code: `dx` patch on save | Implemented, not compiled or run; acceptance pending |
+| Any function body in a workspace crate the client links (systems, decoders, encoders, formats, rules) | Live code: patched `dx` patch on save | First build and launch ran; stock dx failed a patch below `benilla-app`; the dx patch is not compiled or run; acceptance pending |
 | Struct/enum layout, static or thread-local initializer, new/reordered system or plugin, new dependency | Restart (live code reports the patch but cannot apply it safely) | By design |
 | New host interface, Bevy/wgpu upgrade, core component/schema changes | Declared maintenance rebuild/restart | Outside ABI 1 |
 
@@ -1179,8 +1179,29 @@ initializer, a new or reordered system, set, observer or plugin (the schedule is
 new dependency, and a Bevy upgrade. dx reports a failed patch build in its window; the running
 client keeps the last code that loaded.
 
-**Owner setup.** Install the `dx` CLI whose version matches the `subsecond` crate in
-`Cargo.lock` (the launcher checks, and prints the install command). The first `-LiveCode` build
+**Which crates patch: the dx patch.** Stock dx 0.7.10 covers only `benilla` and `benilla-app`.
+The owner's first live session (2026-11-17) showed why. dx watches the tip crate's direct
+dependencies only, so an edit in `benilla-formats` or `benilla-net` was never seen. And a patch
+build replays every workspace crate that depends on an edited one, including the workspace
+binaries the client does not link (`benilla-worldview`, `benilla-wm-driver`). The fat build
+captured no rustc arguments for those, so the replay failed (`Missing rustc args for replay`).
+An edit in `benilla-app` that used a new item from `benilla-formats` failed to build, because
+only `benilla-app` was replayed.
+
+`tools/live-code/dx-0.7.10-workspace-crates.patch` changes two things:
+
+- The watch list follows dependencies transitively (`local_dependencies` in `serve/runner.rs`),
+  so every workspace crate the client links is watched.
+- The replay skips crates the fat build never compiled (`compile_workspace_hotpatch` in
+  `build/link.rs`).
+
+`tools/install-live-dx.ps1` builds that dx from the hash-pinned crates.io archive. It also
+leaves a marker beside `dx.exe`, and the launcher warns when the marker is missing. A new
+subsecond version needs the patch re-cut against that dx release.
+
+**Owner setup.** Install the patched `dx` with `tools/install-live-dx.ps1`. Its version must
+match the `subsecond` crate in `Cargo.lock`; the launcher checks this and prints the install
+command. The first `-LiveCode` build
 adds `subsecond` and `dioxus-devtools` to `Cargo.lock`; commit that lock change. Whether dx's
 build cooperates with the sccache wrapper the repo config requires is unverified; a wrapper
 failure is a build failure to report, not a reason to drop sccache.
