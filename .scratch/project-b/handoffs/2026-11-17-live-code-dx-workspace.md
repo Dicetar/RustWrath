@@ -85,7 +85,10 @@ edge to `benilla-formats`, so the ordering edge exists.
 - `tools/install-live-dx.ps1`:
   - takes the `.crate` from Cargo's cache, or from crates.io, and checks its SHA-256;
   - unpacks it under `%LOCALAPPDATA%\RustWrath\dx-src` and applies the patch;
-  - runs `cargo install --path … --locked --force` with the wrapper bypassed;
+  - runs `cargo install --path … --locked --force` with the wrapper bypassed, into
+    `dx-src\target-0.7.10` beside the source tree, so a reinstall rebuilds dx and not its
+    ~800 dependencies (the first install built inside the tree it then deletes; the script
+    moves that output over once);
   - writes `dx.rustwrath-patch` (the patch hash) beside `dx.exe`.
 - `tools/launch-client.ps1 -LiveCode`:
   - points a missing or mismatched dx at the install script (stock install for other versions);
