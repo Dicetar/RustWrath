@@ -51,6 +51,7 @@ fn one_tab_state() -> TalentUiState {
                     prereqs: vec![TalentPrereqView {
                         tier: 1,
                         column: 1,
+                        required_rank: 5,
                         learnable: false,
                     }],
                     display_spell: 11119,
@@ -115,6 +116,7 @@ fn talent_flags_are_one_or_nil() {
     state.talents[0][1].prereqs.push(TalentPrereqView {
         tier: 1,
         column: 2,
+        required_rank: 1,
         learnable: true,
     });
     s.set_talents(state);
@@ -198,6 +200,7 @@ fn wrath_preview_points_feed_the_tuples_and_the_learn_batch() {
                 prereqs: vec![TalentPrereqView {
                     tier: 1,
                     column: 1,
+                    required_rank: 2,
                     learnable: false,
                 }],
                 ..Default::default()

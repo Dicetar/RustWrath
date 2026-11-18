@@ -925,11 +925,13 @@ fn seed_boolean_probe_state(s: &mut benilla_ui::script::UiScript) {
                     TalentPrereqView {
                         tier: 1,
                         column: 1,
+                        required_rank: 1,
                         learnable: true,
                     },
                     TalentPrereqView {
                         tier: 1,
                         column: 2,
+                        required_rank: 1,
                         learnable: false,
                     },
                 ],

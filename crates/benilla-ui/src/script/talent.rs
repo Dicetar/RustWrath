@@ -43,6 +43,8 @@ pub struct TalentTabView {
 pub struct TalentPrereqView {
     pub tier: u32,
     pub column: u32,
+    /// The rank the prerequisite must reach (`Talent.dbc`'s prerequisite rank + 1).
+    pub required_rank: u32,
     /// The prerequisite is learned to its required rank.
     pub learnable: bool,
 }
@@ -299,9 +301,9 @@ fn preview_points(model: &Model, is_pet: bool, group_idx: usize, tab: Option<usi
         .sum()
 }
 
-/// `GetTalentPrereqs`' 4th value: the prerequisite's preview rank meets its required rank. The
-/// built `TalentPrereqView` carries tier/column and the current verdict but not the required rank,
-/// so any preview rank above the known one passes; a learned prerequisite always passes.
+/// `GetTalentPrereqs`' 4th value: the prerequisite's preview rank meets `required_rank`
+/// (`TalentInfo_Scripts.cpp:441`). A learned prerequisite is already there; otherwise the
+/// prerequisite's own view supplies the known rank and this scope's preview delta.
 fn prereq_preview_met(
     model: &Model,
     p: &TalentPrereqView,
@@ -315,9 +317,16 @@ fn prereq_preview_met(
     let Some(list) = talent_list_at(model, is_pet, group_idx, tab) else {
         return false;
     };
-    list.iter()
-        .position(|v| v.tier == p.tier && v.column == p.column)
-        .is_some_and(|at| preview_delta(model, is_pet, group_idx, tab, at + 1) > 0)
+    let Some((at, view)) = list
+        .iter()
+        .enumerate()
+        .find(|(_, v)| v.tier == p.tier && v.column == p.column)
+    else {
+        return false;
+    };
+    let preview =
+        (view.rank + preview_delta(model, is_pet, group_idx, tab, at + 1)).min(view.max_rank);
+    preview >= p.required_rank
 }
 
 /// Register the talent globals.

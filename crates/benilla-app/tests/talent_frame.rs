@@ -77,6 +77,7 @@ fn fixture(points_spent: u32) -> TalentUiState {
         prereqs: vec![TalentPrereqView {
             tier: 1,
             column: 3,
+            required_rank: 1,
             learnable: true,
         }],
         display_spell: 301,
