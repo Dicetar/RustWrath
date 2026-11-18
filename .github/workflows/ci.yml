@@ -1,11 +1,14 @@
-# The gates of scripts/gates.sh that need neither a WoW install nor a display, on Linux, and the
-# workspace tests on Windows, for development pushes, pull requests or a dispatch: a red one is seen
-# before anyone builds it. The data-gated tests, the engine boot checks and a live run happen on
-# the maintainer's machine before it lands.
+# The gates of scripts/gates.sh that need neither a WoW install nor a display, on Linux, and a
+# Windows compile, for development pushes, pull requests or a dispatch: a red one is seen before
+# anyone builds it. The data-gated tests, the engine boot checks and a live run happen on the
+# maintainer's machine before it lands.
 #
-# Agents do not run Cargo locally, so every pushed branch runs here: this is where their focused
-# tests are first compiled and run. Pushes that only touch notes and docs are skipped. How to read
-# a run is in docs/agents/sync.md ("Reading CI").
+# Every push compiles the whole workspace with its test targets (clippy on Linux, a check on
+# Windows), and runs only the tests of the crates it changed (scripts/ci-changed-packages.py), by
+# the owner's choice: the whole suite on every push cost ~20 minutes. A dispatch with `all` runs
+# every test. Agents do not run Cargo locally, so this is where their focused tests are first
+# compiled and run. Pushes that only touch notes and docs are skipped. How to read a run is in
+# docs/agents/sync.md ("Reading CI").
 name: CI
 
 on:
@@ -17,6 +20,11 @@ on:
       - '**/*.md'
   pull_request:
   workflow_dispatch:
+    inputs:
+      all:
+        description: Test the whole workspace, not only the crates the commit changed
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -60,12 +68,22 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The crates this push changed, whose tests run (scripts/ci-changed-packages.py): a dependent
+      # crate's tests and a root-only change run none. A dispatch with `all` tests the workspace.
+      - name: changed
+        id: changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ALL: ${{ inputs.all }}
+        run: python scripts/ci-changed-packages.py
       - name: test-build
-        run: cargo test --workspace --no-run
+        if: steps.changed.outputs.args != ''
+        run: cargo test ${{ steps.changed.outputs.args }} --no-run
       # The owner's budget for running the tests: three minutes.
       - name: test
+        if: steps.changed.outputs.args != ''
         timeout-minutes: 3
-        run: cargo test --workspace
+        run: cargo test ${{ steps.changed.outputs.args }}
       - name: doc-links
         run: scripts/doc-links.py
       - name: message-catalog
@@ -84,6 +102,9 @@ jobs:
       - name: player-clippy
         run: cargo clippy -p benilla -p benilla-app --no-default-features -- -D warnings
       - name: player-tests
+        if: >-
+          contains(steps.changed.outputs.packages, ' benilla-app ')
+          || contains(steps.changed.outputs.packages, ' benilla-formats ')
         run: cargo test -p benilla-formats -p benilla-app --no-default-features --lib
       # The live-code build (`launch-client.ps1 -LiveCode`), checked only: `bevy/hotpatching` changes
       # bevy_ecs and bevy_app, so this rebuilds the Bevy stack once more. It runs after an earlier
@@ -121,10 +142,23 @@ jobs:
           cache-on-failure: true
       - name: sccache
         uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      # Every push: every crate and test target compiles (no codegen, no link), so a compile error
+      # anywhere shows here, in a dependent of the changed crate too.
+      - name: check
+        run: cargo check --workspace --all-targets
+      # The crates this push changed, whose tests run (scripts/ci-changed-packages.py): a dependent
+      # crate's tests and a root-only change run none. A dispatch with `all` tests the workspace.
+      - name: changed
+        id: changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ALL: ${{ inputs.all }}
+        run: python scripts/ci-changed-packages.py
       # `--timings`: where the build's time goes, per crate and per test binary, kept as the
       # `windows-build-timings` artifact (target/cargo-timings/cargo-timing.html).
       - name: test-build
-        run: cargo test --workspace --no-run --timings
+        if: steps.changed.outputs.args != ''
+        run: cargo test ${{ steps.changed.outputs.args }} --no-run --timings
       - name: timings
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -138,5 +172,6 @@ jobs:
       # `Running` line before it; the single-threaded rerun that used to follow every failure is
       # gone (main always has failures, so it ran every time).
       - name: test
+        if: steps.changed.outputs.args != ''
         timeout-minutes: 3
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test ${{ steps.changed.outputs.args }} --no-fail-fast

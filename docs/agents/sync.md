@@ -66,15 +66,21 @@ first place an agent's tests are compiled and run, and it uses no local Cargo sl
 
 - After pushing code, read the run: `gh run list --branch <branch> -L 1`, then
   `gh run view <id> --log-failed`. A cloud agent without `gh` reads the branch's Actions page.
-- `main` is not green yet: on 2026-11-15 about 95 workspace tests and `fmt` failed. Compare your run's
-  failing test names with the latest `main` run. A failure that `main` does not have is yours.
-  So is any compile error.
+- `main` is not green yet: on 2026-11-18 `fmt` passed, `clippy` failed on old lint debt, and 53
+  workspace tests failed on Windows (40 in `benilla-app`). Compare your run's failing test names
+  with the latest `main` run that tested the same crates. A failure that `main` does not have is
+  yours. So is any compile error.
 - Write the result in the note's verification line: `CI <run id>: compiles; tests N new
   failures` or `CI: not run yet`. Do not write "tests pass" from CI while `main`'s baseline is
   red; say "no new failures".
 - A branch whose code does not compile in CI is not `ready to merge`.
-- A run costs about 20 minutes on Windows, and every ref a commit is pushed to starts its own run.
-  When landing, push `HEAD:main` alone, not the task branch in the same push.
+- Every push compiles the whole workspace and its test targets, but runs only the tests of the
+  crates it changed (a path under `crates/<dir>/`); a dependent crate's tests do not run, and a
+  root-only change (`Cargo.toml`, `Cargo.lock`, `third_party/`) runs none. The run's `changed`
+  step names the tested crates. For the whole suite, dispatch the workflow with `all`:
+  `gh workflow run CI --ref <branch> -f all=true`.
+- Every ref a commit is pushed to starts its own run. When landing, push `HEAD:main` alone, not
+  the task branch in the same push.
 - Where the Windows build's time goes: the run's `windows-build-timings` artifact (Cargo's
   `--timings` report). `gh run download <id> -n windows-build-timings`.
 
