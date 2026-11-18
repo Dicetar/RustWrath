@@ -3574,6 +3574,46 @@ fn vanilla_school(mask: u32) -> u32 {
     }
 }
 
+/// [`translate_gameplay`] through the live-code boundary, so a patched translation runs from the
+/// next reply on. The boundary may run its closure again after a patch unwinds it, so each run
+/// translates its own copy of the event.
+#[cfg(feature = "live_code")]
+fn translate_live(
+    event: WrathGameplayEvent,
+    self_guid: u64,
+    received_at: Instant,
+) -> Vec<SessionEvent> {
+    crate::live_code::call(|| translate_gameplay(event.clone(), self_guid, received_at))
+}
+
+/// Without `live_code`, [`translate_gameplay`] itself, with no copy.
+#[cfg(not(feature = "live_code"))]
+fn translate_live(
+    event: WrathGameplayEvent,
+    self_guid: u64,
+    received_at: Instant,
+) -> Vec<SessionEvent> {
+    translate_gameplay(event, self_guid, received_at)
+}
+
+/// A saved store's answer body decoded the way the session thread decodes it live: the 3.3.5
+/// gameplay decoder and [`translate_gameplay`], or the shared 1.12 decoder for an opcode the
+/// 3.3.5 one leaves to it ([`is_shared_12340_server_opcode`]). [`crate::wdb`] files the result when
+/// it loads a store's file and when a live-code patch re-derives the store. A template answers no
+/// one player, so the translation's own guid is 0.
+pub(crate) fn decode_saved_answer(opcode: u16, body: &[u8]) -> Vec<SessionEvent> {
+    match gameplay::parse(opcode, body) {
+        Some(Ok(event)) => translate_gameplay(event, 0, Instant::now()),
+        Some(Err(_)) => Vec::new(),
+        None if is_shared_12340_server_opcode(opcode) => {
+            benilla_protocol::messages::parse_server(opcode, body)
+                .map(benilla_protocol::decode)
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    }
+}
+
 /// Map a typed 3.3.5 reply onto the established 1.12 event seam. Fields with no 1.12 equivalent
 /// are left empty; nothing is invented from local state. `self_guid` gates the edges the 1.12
 /// seam only ever has for the player (channel timers), because 12340 broadcasts them for every
@@ -12456,7 +12496,10 @@ pub fn run_session_with_cancel(
                         trace.observe(scope, None, crate::quest_trace::Stage::PacketReceived { opcode: p.opcode });
                     }
                 }
-                let reduced = session.reduce(p.opcode, &p.payload, now_ms());
+                // The reducer, the decoder and the translation each run through a live-code
+                // boundary ([`crate::live_code::call`]), as the 1.12 stream's read does: this loop
+                // was entered before any patch, so a direct call would keep the old decoders.
+                let reduced = crate::live_code::call(|| session.reduce(p.opcode, &p.payload, now_ms()));
                 if eligible && (traced || reduced.is_err()) {
                     if let Some(trace) = &feed.trace {
                         let stage = if reduced.is_ok() {
@@ -12474,7 +12517,17 @@ pub fn run_session_with_cancel(
                     }
                 }
                 reduced?;
-                if let Some(parsed) = gameplay::parse(p.opcode, &p.payload) {
+                // A saved store's answer hands its bytes on ahead of its record, as the 1.12
+                // stream does (`crate::net::io::inbound`), so the store can save them and decode
+                // them again after a decoder patch (`crate::wdb`). Gated like the record itself.
+                if session.player_guid().is_some() && crate::wdb::is_saved_answer(p.opcode) {
+                    push_session_event(
+                        &events_out,
+                        &session,
+                        SessionEvent::SavedAnswer { opcode: p.opcode, body: p.payload.to_vec() },
+                    );
+                }
+                if let Some(parsed) = crate::live_code::call(|| gameplay::parse(p.opcode, &p.payload)) {
                     if traced {
                         if let Some(trace) = &feed.trace {
                             let stage = match &parsed {
@@ -12500,7 +12553,7 @@ pub fn run_session_with_cancel(
                                 world_generation: session.world_generation(),
                             });
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     event,
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12522,7 +12575,7 @@ pub fn run_session_with_cancel(
                                 world_generation: session.world_generation(),
                             });
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     event,
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12542,7 +12595,7 @@ pub fn run_session_with_cancel(
                                 world_generation: session.world_generation(),
                             });
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     event,
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12558,7 +12611,7 @@ pub fn run_session_with_cancel(
                                 world_generation: session.world_generation(),
                             });
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     WrathGameplayEvent::RuneState(state),
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12575,7 +12628,7 @@ pub fn run_session_with_cancel(
                                 world_generation: session.world_generation(),
                             });
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     WrathGameplayEvent::RuneConvert(conversion),
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12591,7 +12644,7 @@ pub fn run_session_with_cancel(
                                 world_generation: session.world_generation(),
                             });
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     WrathGameplayEvent::RunePower(power),
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12608,7 +12661,7 @@ pub fn run_session_with_cancel(
                                 world_generation: session.world_generation(),
                             });
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     WrathGameplayEvent::PartyKillLog { killer, victim },
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12624,7 +12677,7 @@ pub fn run_session_with_cancel(
                                 world_generation: session.world_generation(),
                             });
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     WrathGameplayEvent::CalendarSendCalendar(calendar),
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12643,7 +12696,7 @@ pub fn run_session_with_cancel(
                                 world_generation: session.world_generation(),
                             });
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     WrathGameplayEvent::CalendarCommandResult(result),
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12713,7 +12766,7 @@ pub fn run_session_with_cancel(
                                 },
                             );
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     event,
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12781,7 +12834,7 @@ pub fn run_session_with_cancel(
                                 }
                             }
                             if session.player_guid().is_some() {
-                                for event in translate_gameplay(
+                                for event in translate_live(
                                     event,
                                     session.player_guid().unwrap_or(0),
                                     received_at,
@@ -12808,10 +12861,13 @@ pub fn run_session_with_cancel(
                         }
                     }
                 } else if session.player_guid().is_some() && is_shared_12340_server_opcode(p.opcode) {
-                    if let Ok(pkt) = benilla_protocol::messages::parse_server(p.opcode, &p.payload) {
-                        for event in benilla_protocol::decode(pkt) {
-                            push_session_event(&events_out, &session, event);
-                        }
+                    let decoded = crate::live_code::call(|| {
+                        benilla_protocol::messages::parse_server(p.opcode, &p.payload)
+                            .map(benilla_protocol::decode)
+                            .unwrap_or_default()
+                    });
+                    for event in decoded {
+                        push_session_event(&events_out, &session, event);
                     }
                 }
                 if p.opcode == benilla_protocol_wrath::opcode::SMSG_MULTICLASS_REPLY {
