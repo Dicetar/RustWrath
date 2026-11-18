@@ -116,6 +116,17 @@ choices made are below. Status table: [the roadmap](../../../docs/architecture/s
 - An existing `souls.toml` with the old `[binds]` keeps its values: delete the `[binds]` section
   to take the new layout.
 
+## Seventh slice: the lock is the WoW target (same day)
+
+- `souls/targets.rs` `lock_follows_target` (switch `lock_targets`, chained after `toggle_lock`):
+  a new lock selects its unit through `SelectCommit::select_unit`, the one `SetSelection` path,
+  so the target frame, `CMSG_SET_SELECTION` and `/target`-reading macros follow it. A target
+  change the lock did not make (Tab, a click with the cursor up, a macro) moves the lock to the
+  new target when it is attackable within 30 yd, else releases it (a cleared target too).
+  Releasing or breaking the lock leaves the WoW target alone. A new lock and a new target in the
+  same frame: the lock wins.
+- `SelectCommit::selection()` reads the selection for a writer outside `target/`.
+
 ## Choices made without the owner
 
 - Default binds (first slice, replaced by the sixth): light `F9`, heavy `F8`, dodge `V`, guard
@@ -126,7 +137,8 @@ choices made are below. Status table: [the roadmap](../../../docs/architecture/s
 - Sprint after 0.35 s held, 8 kit points/s drain; guarded hit 25 kit points; guard break 1 s;
   guard counter window 1 s. All authored, all in `input.rs` constants.
 - Lock-on: selection within 30 yd, else the nearest attackable within 20 yd and 70° of the facing;
-  breaks past 40 yd.
+  breaks past 40 yd. With `lock_targets`, a target change onto something not attackable (a
+  vendor, a friend, nothing) releases the lock rather than keeping it on the old unit.
 - Hits: reach from the blade's farthest end plus the radius plus half the target's combat reach;
   arc from the widest blade bearing clamped to 30–100°; ±3 yd height.
 - Root motion chases the kit's motion at stock run/strafe speed (no speed control without the
@@ -140,7 +152,8 @@ Build and launch as usual, enter the world, press `F10`: a gold chip and a stami
 and the cursor hides. Move the mouse to orbit, W/A/S/D to run relative to the camera. Then left
 click (light), Shift+left (tap and hold: heavy), right click (guard), `Space` (tap and hold
 while moving), `Q` on a mob, `X` then left click (crouch attack), `E` at a chest or corpse.
-Tap `LeftCtrl` for the cursor and the action bars, tap again to orbit.
+Tap `LeftCtrl` for the cursor and the action bars, tap again to orbit. With a lock held the
+target frame shows the locked mob; `Tab` moves the lock to the next one.
 Press `F10` again: the HUD goes and stock combat is back. To turn a feature off, write
 `souls.toml` and press `F10` twice:
 
@@ -151,8 +164,10 @@ Set-Content D:\Projects\wow\client\benilla-config\combat\souls.toml "[features]`
 ## Not done, not proven
 
 - Not compiled, not run. New unit cases: `souls/config.rs` (1), `souls/input.rs` (1),
-  `souls/drive.rs` (2), `souls/targets.rs` (3), `souls/controls.rs` (1), `souls.rs` (1). CI
+  `souls/drive.rs` (2), `souls/targets.rs` (4), `souls/controls.rs` (1), `souls.rs` (1). CI
   result: see the branch's run.
+- The lock/target sync is not seen in game: a `select_unit` refused by the selection's front
+  returns (charmed, a cursor spell) leaves the lock on a unit the target frame does not show.
 - The ER layout is not seen in game: the orbit hand-off with a scripted `MouselookStart`, the
   `TOGGLERUN` walk on Alt and the interact pick's reach are untested; the cursor key is
   `LeftCtrl`, so stock Ctrl-chord bindings still work (a Ctrl chord cancels the tap).

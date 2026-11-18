@@ -704,6 +704,11 @@ pub(crate) struct SelectCommit<'w, 's> {
 }
 
 impl SelectCommit<'_, '_> {
+    /// The selection as it stands, for a writer outside this module that reads before it selects.
+    pub(crate) fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
     /// Run `f`, keeping what its selections owe after their signals in place of sending it, for a
     /// caller that runs the signals' listeners first and then pays it ([`Self::pay_send`],
     /// [`Self::pay`]).

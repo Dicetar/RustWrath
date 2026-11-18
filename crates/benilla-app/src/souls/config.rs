@@ -6,6 +6,8 @@
 //! root_motion = true  # actions move the body by the kit's root motion
 //! turn_lock = true    # the kit's no-turn windows hold the facing
 //! lock_on = true      # the lock-on key holds the facing on a target; A/D circle it
+//! lock_targets = true # the lock is the WoW target (target frame, Tab); a Tab or click onto
+//!                     # another attackable unit moves the lock to it
 //! heavy = true        # the heavy key runs the heavy chain
 //! charge = true       # holding heavy charges; releasing in the window swings uncharged
 //! sprint = true       # holding dodge while moving sprints (and drains stamina)
@@ -77,6 +79,7 @@ pub(crate) struct SoulsFeatures {
     pub(crate) root_motion: bool,
     pub(crate) turn_lock: bool,
     pub(crate) lock_on: bool,
+    pub(crate) lock_targets: bool,
     pub(crate) heavy: bool,
     pub(crate) charge: bool,
     pub(crate) sprint: bool,
@@ -108,6 +111,7 @@ impl Default for SoulsFeatures {
             root_motion: true,
             turn_lock: true,
             lock_on: true,
+            lock_targets: true,
             heavy: true,
             charge: true,
             sprint: true,

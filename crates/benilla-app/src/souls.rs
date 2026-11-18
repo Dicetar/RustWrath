@@ -90,6 +90,7 @@ impl Plugin for SoulsPlugin {
                 (
                     input::souls_input,
                     targets::toggle_lock,
+                    targets::lock_follows_target,
                     targets::resolve_hits,
                     server::drive_link,
                     targets::hold_clip,

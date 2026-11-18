@@ -3,6 +3,8 @@
 //! - **Lock-on.** The lock key toggles a lock: the selected unit when it is attackable, alive and
 //!   within [`LOCK_ACQUIRE_YARDS`], else the nearest such unit in front of the camera-facing body.
 //!   The lock breaks past [`LOCK_BREAK_YARDS`], on death, or when the unit leaves the world.
+//!   With `lock_targets` the lock is the WoW target ([`lock_follows_target`]): a new lock
+//!   selects its unit, and a Tab or click onto another attackable unit moves the lock to it.
 //! - **Hits.** Inside each kit hit window (frames the frame clock skipped are caught up), the
 //!   kit's blade gives the reach (the farthest blade end from the body, plus the capsule radius)
 //!   and the arc (the widest blade bearing, clamped). An attackable, living unit within the reach
@@ -33,7 +35,7 @@ use crate::combat_profiles::CombatProfiles;
 use crate::net::{Guid, NetCommands, ObjectStore, SelfPlayer};
 use crate::player::camera::FlyCam;
 use crate::player::Player;
-use crate::target::{RelationWorld, Selection};
+use crate::target::{RelationWorld, SelectCommit, Selection};
 use crate::ui_script::UiKeyboardCapture;
 
 /// A lock takes a unit this close.
@@ -162,6 +164,93 @@ pub(super) fn toggle_lock(
         Some(entity) => info!("souls: locked on {entity:?}"),
         None => info!("souls: nothing to lock on"),
     }
+}
+
+/// What [`lock_follows_target`] does this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockSync {
+    /// Nothing changed, or the lock and the target already agree.
+    Keep,
+    /// The lock changed to a unit that is not the target: select it.
+    Select,
+    /// The target changed (Tab, a click, a macro) while a lock is held: the lock follows it.
+    Follow,
+}
+
+/// What was seen last frame, so a change can be told from a standing state.
+#[derive(Default)]
+pub(super) struct LockTargetMemo {
+    lock: Option<Entity>,
+    selected: Option<u64>,
+}
+
+/// The step for this frame: a new lock wins over a new target in the same frame.
+fn lock_sync(
+    memo: &LockTargetMemo,
+    lock: Option<Entity>,
+    lock_guid: Option<u64>,
+    selected: Option<u64>,
+) -> LockSync {
+    if lock != memo.lock {
+        return if lock.is_some() && lock_guid.is_some() && lock_guid != selected {
+            LockSync::Select
+        } else {
+            LockSync::Keep
+        };
+    }
+    if lock.is_some() && selected != memo.selected && selected != lock_guid {
+        return LockSync::Follow;
+    }
+    LockSync::Keep
+}
+
+/// The lock is the WoW target (`lock_targets`): a new lock selects its unit through the one
+/// `SetSelection` path, so the target frame, the server's selection and `/target`-reading macros
+/// follow it. A target change the lock did not make (Tab, a click, a macro) moves the lock to the
+/// new target when it is attackable and within [`LOCK_ACQUIRE_YARDS`], else releases it.
+/// Releasing or breaking the lock leaves the WoW target alone.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn lock_follows_target(
+    view: Res<CombatModeView>,
+    config: Res<SoulsConfig>,
+    player: Res<Player>,
+    relations: RelationWorld,
+    units: Query<(&Guid, &ObjectStore, &GlobalTransform), Without<SelfPlayer>>,
+    mut select: SelectCommit,
+    mut souls: ResMut<SoulsState>,
+    mut memo: Local<LockTargetMemo>,
+) {
+    let features = &config.features;
+    if !souls_on(&view) || !features.lock_on || !features.lock_targets {
+        *memo = LockTargetMemo::default();
+        return;
+    }
+    let lock_guid = souls.lock.and_then(|entity| units.get(entity).ok()).map(|(guid, ..)| guid.0);
+    let selected = select.selection().guid;
+    match lock_sync(&memo, souls.lock, lock_guid, selected) {
+        LockSync::Keep => {}
+        LockSync::Select => {
+            if let Some(guid) = lock_guid {
+                select.select_unit(guid);
+            }
+        }
+        LockSync::Follow => {
+            let follow = select.selection().target.filter(|&entity| {
+                units.get(entity).is_ok_and(|(guid, store, at)| {
+                    let to = at.translation() - player.pos;
+                    attackable(&relations, guid.0, store)
+                        && Vec2::new(to.x, to.z).length() <= LOCK_ACQUIRE_YARDS
+                })
+            });
+            souls.lock = follow;
+            match follow {
+                Some(entity) => info!("souls: lock-on follows the target to {entity:?}"),
+                None => info!("souls: lock-on released, the target is not attackable"),
+            }
+        }
+    }
+    memo.lock = souls.lock;
+    memo.selected = select.selection().guid;
 }
 
 /// A hit's reach (yards, from the body) and half-arc (radians) from its blade samples.
@@ -336,6 +425,28 @@ mod tests {
             radius: Milli(100),
             blade,
         }
+    }
+
+    #[test]
+    fn lock_and_target_follow_each_other() {
+        let (a, b) = (Entity::from_raw_u32(1).unwrap(), Entity::from_raw_u32(2).unwrap());
+        let step = |memo: (Option<Entity>, Option<u64>), lock, lock_guid, selected| {
+            let memo = LockTargetMemo { lock: memo.0, selected: memo.1 };
+            lock_sync(&memo, lock, lock_guid, selected)
+        };
+        // A new lock on a unit that is not the target selects it; on the target, nothing to do.
+        assert_eq!(step((None, None), Some(a), Some(10), None), LockSync::Select);
+        assert_eq!(step((None, Some(10)), Some(a), Some(10), Some(10)), LockSync::Keep);
+        // A Tab while locked moves the lock; the same target standing does nothing.
+        assert_eq!(step((Some(a), Some(10)), Some(a), Some(10), Some(20)), LockSync::Follow);
+        assert_eq!(step((Some(a), Some(10)), Some(a), Some(10), Some(10)), LockSync::Keep);
+        // A cleared target while locked releases (the system finds no unit to follow).
+        assert_eq!(step((Some(a), Some(10)), Some(a), Some(10), None), LockSync::Follow);
+        // A released lock leaves the target alone; no lock, a target change does nothing.
+        assert_eq!(step((Some(a), Some(10)), None, None, Some(10)), LockSync::Keep);
+        assert_eq!(step((None, Some(10)), None, None, Some(20)), LockSync::Keep);
+        // A new lock and a new target in one frame: the lock wins.
+        assert_eq!(step((Some(a), Some(10)), Some(b), Some(30), Some(20)), LockSync::Select);
     }
 
     /// The blade's farthest end plus the capsule radius is the reach; its widest bearing, clamped,

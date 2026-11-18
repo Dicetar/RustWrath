@@ -20,6 +20,7 @@ combat feature, where it lives, and what still needs the server.
 root_motion = true
 turn_lock = true
 lock_on = true
+lock_targets = true  # the lock is the WoW target; Tab or a click onto a foe moves the lock
 heavy = true
 charge = true
 sprint = true
@@ -101,6 +102,7 @@ cursor_keys = ["Escape", "B", "C", "P", "M", "L", "N", "O", "I", "K", "U", "H", 
 | Movement cancel of recovery | done | `souls/drive.rs` | `root_motion` |
 | Turn lock in no-turn windows | done | `souls/drive.rs` | `turn_lock` |
 | Lock-on (toggle, auto-pick, break at range/death), A/D circle | done | `souls/targets.rs`, `souls/drive.rs` | `lock_on` |
+| Lock-on is the WoW target: a lock selects its unit (target frame, server selection); Tab or a click onto an attackable unit moves the lock, onto anything else releases it | done | `souls/targets.rs` (`lock_follows_target`), `target/by_name.rs` | `lock_targets` |
 | I-frames: an incoming hit in a dodge's i-frames does not stagger | done; with the server script a strike in them is a dodge (no damage) | `combat_playback.rs` | `iframes` |
 | Stagger: an incoming hit interrupts until the attack's first hit | done (kit slice) | `combat_playback.rs` | — |
 | Guard: hold to block, stamina per guarded hit, guard break at zero | done; with the server script a guarded strike deals 30 % | `souls/input.rs` | `guard` |
