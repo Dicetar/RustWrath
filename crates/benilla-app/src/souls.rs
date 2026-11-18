@@ -127,6 +127,12 @@ pub(crate) struct SoulsState {
 }
 
 impl SoulsState {
+    /// The body is crouched: the animation driver poses it as the stealth crouch (StealthStand
+    /// and StealthWalk). False whenever the mode or the `crouch` switch is off.
+    pub(crate) fn crouched(&self) -> bool {
+        self.crouched
+    }
+
     /// Whether this state is the reset one; the off path writes only when it is not.
     fn is_reset(&self) -> bool {
         self.dodge_down_at.is_none()

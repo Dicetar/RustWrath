@@ -61,6 +61,18 @@ choices made are below. Status table: [the roadmap](../../../docs/architecture/s
   damage report's swing); the verdict must arrive within 500 ms of the deadline or the server
   judges by itself; pacified creatures also lose their physical spells while managed.
 
+## Fourth slice: stance break, crouch pose (same day)
+
+- Server: each managed creature has a stance (30 + 2 a level, doubled for an elite; ESTIMATE).
+  A player hit costs 10 × motion value × cleave share (riposte ×3); 8 s without one refills it.
+  At zero the strike in flight resolves `broken`, casts are interrupted, the creature takes the
+  stun stance for 3 s and a ×3 riposte opens; every Souls player nearby gets `BROKEN`.
+- Fixed: the strike swing emote was 35 (`ATTACK_UNARMED`); the one-hand attack is 36.
+- Crouch: `SoulsState::crouched` poses our own body as the stealth crouch in the anim driver;
+  `CROUCH 1|0` makes the server slow the run ×0.5 and set the CREEP stand flag for other players.
+- Found, not fixed: `unit_is_stealthed` reads byte 3 of `UNIT_FIELD_BYTES_1`; AzerothCore's CREEP
+  flag is byte 2 (roadmap, Still open).
+
 ## Choices made without the owner
 
 - Default binds: light `F9`, heavy `F8`, dodge `V`, guard `F7`, lock-on middle mouse.

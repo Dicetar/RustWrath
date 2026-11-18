@@ -17,6 +17,7 @@ Client -> server
   HELLO                       -> HELLO <version>
   MODE <1|0>                  -> MODE <1|0>   (also the client's keepalive)
   SPRINT <1|0>                   raise / restore the run speed
+  CROUCH <1|0>                   lower / restore the run speed; the crouch pose for others
   HIT <mv%> <guid,guid,...>      one hit window's struck units, nearest first; damage with cleave
   SWING <action>                 relayed to Souls players nearby as SWING <guid> <action>
   VERDICT <id> <hit|guard|parry|dodge|miss>   the client's judgement of strike <id>
@@ -25,6 +26,7 @@ Server -> client
   STRIKE <id> <creature guid> <windup ms> <reach yd> <1 if you judge it|0>
   RESOLVE <id> <outcome>
   PARRIED <creature guid> <riposte ms>
+  BROKEN <creature guid> <riposte ms>   its stance broke (to every Souls player nearby)
   SWING <player guid> <action>
 
 ESTIMATE values are marked; tune them in play.
@@ -45,7 +47,10 @@ local UNIT_FIELD_BASEATTACKTIME = 6 + 0x38
 local UNIT_FIELD_COMBATREACH = 6 + 0x3C
 local UNIT_FIELD_MINDAMAGE = 6 + 0x40
 local UNIT_FIELD_MAXDAMAGE = 6 + 0x41
+local UNIT_FIELD_BYTES_1 = 6 + 0x44
 local UNIT_FLAG_PACIFIED = 0x00020000
+local BYTES_1_VIS_FLAG = 2          -- UNIT_BYTES_1_OFFSET_VIS_FLAG
+local STAND_FLAG_CREEP = 0x02       -- UNIT_STAND_FLAGS_CREEP (the stealth crouch pose)
 
 local MOVE_RUN = 1
 local BASE_RUN_SPEED = 7.0
@@ -55,10 +60,14 @@ local ITEM_CLASS_WEAPON = 2
 local ITEM_CLASS_ARMOR = 4
 local ARMOR_SUBCLASS_SHIELD = 6
 local EMOTE_ONESHOT_WOUND = 33
-local EMOTE_ONESHOT_ATTACK1H = 35
+local EMOTE_ONESHOT_WOUND_CRITICAL = 34
+local EMOTE_ONESHOT_ATTACK1H = 36
+local EMOTE_STATE_NONE = 0
+local EMOTE_STATE_STUN = 64
 
 local TICK_MS = 100
 local SPRINT_RATE = 1.4             -- ESTIMATE: ER's sprint over its run
+local CROUCH_RATE = 0.5             -- ESTIMATE: ER's crouch walk over its run
 local WINDUP_SHARE = 0.4            -- decision 16: 40 % of the attack time...
 local WINDUP_MIN_MS = 600           -- ...clamped 0.6-1.5 s
 local WINDUP_MAX_MS = 1500
@@ -69,7 +78,15 @@ local GUARD_TAKEN_NO_SHIELD = 0.4   -- ESTIMATE: a weapon guard lets 40 % throug
 local PARRY_STAGGER_MS = 2500       -- ESTIMATE: a parried creature's next strike waits this long
 local RIPOSTE_MS = 3000             -- ESTIMATE: a hit this soon after a parry is a riposte...
 local RIPOSTE_MULTIPLIER = 3.0      -- ...for this many times the damage
-local HIT_REACH_YARDS = 12          -- a reported unit farther than this is refused
+-- Stance (ER's enemy poise): each hit costs the creature stance; at zero it breaks, staggering it
+-- and opening a critical (riposte) window. It refills a while after the last hit.
+local STANCE_BASE = 30              -- ESTIMATE: a creature's stance is this...
+local STANCE_PER_LEVEL = 2          -- ...plus this a level...
+local STANCE_ELITE_MULTIPLIER = 2   -- ...times this for an elite
+local STANCE_PER_MOTION = 10        -- ESTIMATE: stance damage of a hit at 100 % motion value
+local STANCE_REFILL_MS = 8000       -- ESTIMATE: stance refills this long after the last hit
+local STANCE_BREAK_MS = 3000        -- ESTIMATE: a broken stance staggers and opens a riposte this long
+local HIT_REACH_YARDS = 12         -- a reported unit farther than this is refused
 local HITS_PER_SECOND = 12          -- a client sending more is throttled
 local MAX_TARGETS_REPORTED = 8
 local SWING_RELAY_YARDS = 60
@@ -207,11 +224,46 @@ local function restore_speed(player, state)
     end
 end
 
+-- The run speed for the client's stance: sprinting raises it, crouching lowers it.
+local function apply_speed(player, state)
+    local factor = (state.sprint and SPRINT_RATE) or (state.crouch and CROUCH_RATE) or 1
+    if factor == 1 then
+        restore_speed(player, state)
+        return
+    end
+    if not state.sprint_rate then
+        state.sprint_rate = player:GetSpeed(MOVE_RUN) / BASE_RUN_SPEED
+    end
+    player:SetSpeed(MOVE_RUN, state.sprint_rate * factor, true)
+end
+
+-- The crouch pose for everyone else: the stealth CREEP stand flag, only if we set it (a real
+-- stealth aura owns it otherwise).
+local function set_creep(player, state, on)
+    local flags = player:GetByteValue(UNIT_FIELD_BYTES_1, BYTES_1_VIS_FLAG) or 0
+    local has = flags % (2 * STAND_FLAG_CREEP) >= STAND_FLAG_CREEP
+    if on and not has then
+        player:SetByteValue(UNIT_FIELD_BYTES_1, BYTES_1_VIS_FLAG, flags + STAND_FLAG_CREEP)
+        state.creep_set = true
+    elseif not on and has and state.creep_set then
+        player:SetByteValue(UNIT_FIELD_BYTES_1, BYTES_1_VIS_FLAG, flags - STAND_FLAG_CREEP)
+    end
+    if not on then
+        state.creep_set = nil
+    end
+end
+
+local function restore_stance(player, state)
+    state.sprint, state.crouch = nil, nil
+    restore_speed(player, state)
+    set_creep(player, state, false)
+end
+
 local function leave(player, k)
     local state = souls[k]
     if state then
         if player then
-            restore_speed(player, state)
+            restore_stance(player, state)
         end
         souls[k] = nil
     end
@@ -225,7 +277,10 @@ local function release(creature, ck)
         return
     end
     creature:RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PACIFIED)
-    if m.strike then
+    if m.broken_until then
+        creature:EmoteState(EMOTE_STATE_NONE)
+    end
+    if m.strike or m.broken_until then
         local victim = creature:GetVictim()
         if victim then
             creature:MoveChase(victim)
@@ -237,6 +292,9 @@ local function managed_creature(m)
     local map = GetMapById(m.map, m.instance)
     return map and map:GetWorldObject(m.guid)
 end
+
+-- Defined below, beside the strike code; the hit report calls it.
+local break_stance
 
 -- The player's own hit report.
 local function on_hit(player, state, fields)
@@ -284,6 +342,17 @@ local function on_hit(player, state, fields)
             m.parried_until = nil
         end
         player:DealDamage(unit, math.max(1, math.floor(damage + 0.5)), true, 0)
+        if m and not m.broken_until and unit:IsAlive() then
+            local cost = STANCE_PER_MOTION * mv * share[i] * (riposte and RIPOSTE_MULTIPLIER or 1)
+            if m.stance_refill_at and now >= m.stance_refill_at then
+                m.stance = m.stance_max
+            end
+            m.stance = m.stance - cost
+            m.stance_refill_at = now + STANCE_REFILL_MS
+            if m.stance <= 0 then
+                break_stance(unit, key(unit:GetGUID()), m, now)
+            end
+        end
     end
 end
 
@@ -343,14 +412,12 @@ local function on_addon(event, sender, msg_type, prefix, msg, target)
             send(sender, "MODE\t0")
         end
     elseif state and verb == "SPRINT" then
-        if fields[2] == "1" then
-            if not state.sprint_rate then
-                state.sprint_rate = sender:GetSpeed(MOVE_RUN) / BASE_RUN_SPEED
-                sender:SetSpeed(MOVE_RUN, state.sprint_rate * SPRINT_RATE, true)
-            end
-        else
-            restore_speed(sender, state)
-        end
+        state.sprint = fields[2] == "1" or nil
+        apply_speed(sender, state)
+    elseif state and verb == "CROUCH" then
+        state.crouch = fields[2] == "1" or nil
+        apply_speed(sender, state)
+        set_creep(sender, state, state.crouch == true)
     elseif state and verb == "HIT" then
         on_hit(sender, state, fields)
     elseif state and verb == "SWING" then
@@ -467,17 +534,55 @@ local function resolve_strike(creature, ck, m, now)
     end
 end
 
+-- A broken stance: the strike in progress is cancelled, casts are interrupted, and the creature
+-- stands stunned with its riposte window open until it recovers.
+break_stance = function(creature, ck, m, now)
+    if m.strike then
+        for _, watcher in ipairs(strike_watchers(creature, m.strike)) do
+            send(watcher, "RESOLVE\t" .. m.strike.id .. "\tbroken")
+        end
+        m.strike = nil
+    end
+    m.broken_until = now + STANCE_BREAK_MS
+    m.parried_until = now + STANCE_BREAK_MS
+    m.next_at = now + STANCE_BREAK_MS + 400
+    m.stance = m.stance_max
+    m.stance_refill_at = nil
+    creature:InterruptSpell(1)  -- CURRENT_GENERIC_SPELL
+    creature:InterruptSpell(2)  -- CURRENT_CHANNELED_SPELL
+    creature:MoveIdle()
+    creature:EmoteState(EMOTE_STATE_STUN)
+    for _, watcher in ipairs(strike_watchers(creature, nil)) do
+        send(watcher, string.format("BROKEN\t%s\t%d", ck, STANCE_BREAK_MS))
+    end
+end
+
+local function end_break(creature, m)
+    m.broken_until = nil
+    creature:EmoteState(EMOTE_STATE_NONE)
+    local victim = creature:GetVictim()
+    if victim then
+        creature:MoveChase(victim)
+    end
+end
+
 local function adopt(creature, now)
     local ck = key(creature:GetGUID())
     if managed[ck] then
         return
     end
     creature:SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PACIFIED)
+    local stance = STANCE_BASE + STANCE_PER_LEVEL * creature:GetLevel()
+    if creature:IsElite() then
+        stance = stance * STANCE_ELITE_MULTIPLIER
+    end
     managed[ck] = {
         guid = creature:GetGUID(),
         map = creature:GetMapId(),
         instance = creature:GetInstanceId(),
         next_at = now + 300,
+        stance = stance,
+        stance_max = stance,
     }
 end
 
@@ -507,6 +612,10 @@ local function tick()
             local victim = creature:IsAlive() and creature:IsInCombat() and creature:GetVictim()
             if not victim or not wanted(creature, victim) then
                 release(creature, ck)
+            elseif m.broken_until then
+                if now >= m.broken_until then
+                    end_break(creature, m)
+                end
             elseif m.strike then
                 local strike = m.strike
                 if not strike.emoted and now >= strike.emote_at then
@@ -533,7 +642,7 @@ local function on_close()
     for k, state in pairs(souls) do
         local player = GetPlayerByGUID(state.guid)
         if player then
-            restore_speed(player, state)
+            restore_stance(player, state)
         end
     end
     managed, souls = {}, {}

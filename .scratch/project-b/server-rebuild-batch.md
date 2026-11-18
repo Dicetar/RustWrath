@@ -53,7 +53,10 @@ rebuild, no restart.
   - blocks the player's `CMSG_ATTACKSWING` (their swings are the kit's);
   - deals the client's reported hits as stock physical damage (weapon roll × motion value,
     cleave falloff and blob share per owner decisions 6-10, riposte ×3 after a parry);
-  - raises the run speed ×1.4 while the client sprints, restored on stop/F10 off/logout/reload;
+  - raises the run speed ×1.4 while the client sprints and lowers it ×0.5 while it crouches (with
+    the stealth CREEP stand flag as the pose), restored on stop/F10 off/logout/reload;
+  - counts each managed creature's stance down with the player's hits; at zero the creature is
+    stunned 3 s (`EMOTE_STATE_STUN`, strike and casts cancelled) and a ×3 riposte opens;
   - takes over creatures fighting a Souls player: sets `UNIT_FLAG_PACIFIED` so stock melee stops,
     and drives telegraphed strikes (windup 40 % of the attack time, 0.6-1.5 s, creature stops and
     faces the victim), resolved by the client's verdict or the server's own reach/cone check.

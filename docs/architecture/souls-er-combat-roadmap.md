@@ -75,12 +75,13 @@ parry = "F12"
 | Damage: weapon roll × motion value, cleave falloff, blob share | done by the server script; without it a landed hit starts stock melee | `souls/targets.rs`, `souls/server.rs`, `integrations/ale/rustwrath_souls.lua` | `server` (`engage_on_hit` without it) |
 | Stock auto-attack off while the mode is on | done by the server script (blocks `CMSG_ATTACKSWING`) | `rustwrath_souls.lua` | `server` |
 | Enemy telegraphs: creatures stop melee and wind up strikes (40 % of attack time, 0.6–1.5 s), a windup bar over them, the client judges reach/cone/i-frames/parry/guard | done (server script + client) | `souls/server.rs`, `souls/hud.rs`, `rustwrath_souls.lua` | `enemy_strikes`, `server` |
+| Enemy stance break: hits cost the creature stance (30 + 2/level, ×2 elite; 10 per 100 % motion value), at zero it is stunned 3 s, its strike and casts cancelled, and a ×3 riposte opens | done (server script; the client shows the gold riposte marker) | `rustwrath_souls.lua`, `souls/server.rs` | `server` |
 | Other Souls players' swings shown (generic attack/parry/dodge anims) | done | `souls/server.rs` | `server` |
 | Stamina bar, mode chip (teal while the server answers), lock-on marker (gold while a riposte is open) | done | `souls/hud.rs` | `hud` |
 | Turn-rate caps (`turn` windows, degrees a second) | done | `souls/drive.rs`, `player/controller.rs` | `turn_rate` |
 | Poise: each hit taken costs poise and does not interrupt; at zero it breaks and staggers; refills 30 s after the last hit | done (prediction only, authored numbers) | `souls/input.rs`, `combat_playback.rs` | `poise` |
 | Hyperarmor: inside a heavy's windup and swing a hit costs half the poise | done (prediction only) | `souls/input.rs` | `poise` |
-| Crouch (toggle) and the crouch attack (light from a crouch) | done; no crouch pose or speed (clip and server) | `souls/input.rs` | `crouch` |
+| Crouch (toggle) and the crouch attack (light from a crouch) | done; the stealth crouch pose (StealthStand/StealthWalk) on our body, ×0.5 run speed and the pose for others from the server script | `souls/input.rs` | `crouch` |
 | Jump attacks (light/heavy in the air) | done; needs `JumpLight`/`JumpHeavy` rows, which the owner's kit lacks | `souls/input.rs` | `jump_attacks` |
 | Left-hand chain | done; needs `LeftLight1…` or `PairedLight1…` rows (the importer's opt-in) | `souls/input.rs` | `left_hand` |
 | Parry: the `Parry` row's `iframes` window deflects a hit | done; needs a `Parry` row; with the server script a parried strike opens a ×3 riposte on that creature for 1.5 s | `souls/input.rs` | `parry` |
@@ -91,14 +92,16 @@ parry = "F12"
 `integrations/ale/rustwrath_souls.lua`, copied into the server's `run\lua_scripts` (ALE reloads it
 by itself; deleting it turns it off). The client talks to it over addon self-whispers with the
 prefix `RWSOULS` (`souls/server.rs`): `HELLO`, `MODE 1|0` every 10 s while F10 is on, `SPRINT`,
-`HIT <mv%> <guids>`, `SWING <action>`, `VERDICT <id> <outcome>`; the server answers `STRIKE`,
-`RESOLVE`, `PARRIED`, `SWING`. F10 off sends `MODE 0` and the server hands every creature back to
+`CROUCH`, `HIT <mv%> <guids>`, `SWING <action>`, `VERDICT <id> <outcome>`; the server answers
+`STRIKE`, `RESOLVE`, `PARRIED`, `BROKEN`, `SWING`. F10 off sends `MODE 0` and the server hands every creature back to
 stock AI. Without the script the client stays on the stock-melee fallback (`engage_on_hit`).
 Install and side effects: `.scratch/project-b/server-rebuild-batch.md` item 2.
 
 ## Still open
 
-- Clip retarget (ER motion on the WoW rig), and a crouch pose (step F).
+- Clip retarget (ER motion on the WoW rig) (step F).
 - Kit rows for jumps, the left hand and the parry (`kit_import` options), then tuning.
-- Poise damage on enemies (enemy stagger from the player's hits), and creature-specific strike
-  animations (the server plays the generic attack emote).
+- Creature-specific strike animations (the server plays the generic one-hand attack emote).
+- The client reads the stealth CREEP flag from `UNIT_FIELD_BYTES_1` byte 3 (`unit_is_stealthed`),
+  where AzerothCore keeps it in byte 2 (byte 3 is the anim tier, `0x02` = hover): other players'
+  crouch and real stealth poses may not show, and a hovering unit may show crouched.

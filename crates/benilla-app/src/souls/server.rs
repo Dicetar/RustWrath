@@ -12,7 +12,8 @@
 //!   `HIT <motion value %> <guid,...>` (nearest first) instead of starting stock melee; the server
 //!   applies the cleave and the damage. The action's start goes out as `SWING <action>`, which the
 //!   server relays to other Souls players, who play it on our body.
-//! - **Sprint.** `SPRINT 1|0` follows the sprint; the server raises the run speed.
+//! - **Sprint and crouch.** `SPRINT 1|0` and `CROUCH 1|0` follow them; the server raises or
+//!   lowers the run speed, and shows the crouch to other players as the stealth pose.
 //! - **Enemy strikes.** `STRIKE` telegraphs a creature's blow: a bar over it fills for the windup.
 //!   A strike on us is judged at the end of the windup, from the creature's rendered facing (which
 //!   the server locked) and our own state: out of reach or the cone a miss, inside a parry window
@@ -20,6 +21,8 @@
 //!   verdict goes back as `VERDICT`; the server applies the damage, which the playback's hit path
 //!   then charges to the guard, poise or the running action. A parried creature opens a riposte
 //!   window ([`SoulsLink::riposte`]): the next hit on it deals the riposte damage.
+//! - **Stance.** The server counts each creature's stance down with our hits; at zero it sends
+//!   `BROKEN`: the creature staggers (its stun stance) and the same riposte window opens.
 //!
 //! Everything resets the frame the mode or the switch is off.
 
@@ -110,6 +113,11 @@ enum Inbound {
         creature: u64,
         riposte_ms: u32,
     },
+    /// A creature's stance broke (ER's stance break): it staggers and the riposte window opens.
+    Broken {
+        creature: u64,
+        riposte_ms: u32,
+    },
     Swing {
         player: u64,
         action: String,
@@ -135,6 +143,10 @@ fn parse(body: &str) -> Option<Inbound> {
             outcome: next()?.to_owned(),
         },
         "PARRIED" => Inbound::Parried {
+            creature: next()?.parse().ok()?,
+            riposte_ms: next()?.parse().ok()?,
+        },
+        "BROKEN" => Inbound::Broken {
             creature: next()?.parse().ok()?,
             riposte_ms: next()?.parse().ok()?,
         },
@@ -180,6 +192,8 @@ pub(crate) struct SoulsLink {
     announced_at: Option<f32>,
     /// The sprint state the server was last told.
     sprint_sent: bool,
+    /// The crouch state the server was last told.
+    crouch_sent: bool,
     /// The action run last reported as `SWING`.
     swing_sent: Option<Instance>,
     /// Messages waiting to go out this frame.
@@ -216,6 +230,7 @@ impl SoulsLink {
         !self.up
             && self.announced_at.is_none()
             && !self.sprint_sent
+            && !self.crouch_sent
             && self.swing_sent.is_none()
             && self.outbox.is_empty()
             && self.strikes.is_empty()
@@ -427,6 +442,13 @@ pub(super) fn drive_link(
                 info!("souls: parried {creature:#x}; riposte open {riposte_ms} ms");
                 link.riposte = Some((creature, t + riposte_ms as f32 / 1000.0));
             }
+            Inbound::Broken {
+                creature,
+                riposte_ms,
+            } => {
+                info!("souls: stance of {creature:#x} broken; riposte open {riposte_ms} ms");
+                link.riposte = Some((creature, t + riposte_ms as f32 / 1000.0));
+            }
             Inbound::Swing { player: guid, action } => {
                 let Some((entity, ..)) = bodies.iter().find(|(_, g, ..)| g.0 == guid) else {
                     continue;
@@ -513,6 +535,12 @@ pub(super) fn drive_link(
         link.outbox.push(format!("SPRINT\t{}", u8::from(sprint)));
         link.sprint_sent = sprint;
     }
+    // The crouch: slower, and the crouch pose for other players.
+    let crouch = souls.crouched && config.features.crouch;
+    if crouch != link.crouch_sent {
+        link.outbox.push(format!("CROUCH\t{}", u8::from(crouch)));
+        link.crouch_sent = crouch;
+    }
 
     for text in std::mem::take(&mut link.outbox) {
         send(text);
@@ -554,6 +582,13 @@ mod tests {
         assert_eq!(
             parse("PARRIED\t42\t3000"),
             Some(Inbound::Parried {
+                creature: 42,
+                riposte_ms: 3000
+            })
+        );
+        assert_eq!(
+            parse("BROKEN\t42\t3000"),
+            Some(Inbound::Broken {
                 creature: 42,
                 riposte_ms: 3000
             })
