@@ -26,13 +26,18 @@
 //!   first advance is anchored at the current tick, and advances past the engine's span bound are
 //!   walked in bounded chunks rather than dropped.
 //!
-//! A profile rebuild (rig load, weapon swap) carries the predicted bar across via
-//! `ActionEngine::set_stamina`, which resumes regeneration after the install delay; a respawn
-//! refills the bar immediately.
+//! A profile rebuild (rig load, weapon swap, a new kit) carries the predicted bar across via
+//! `ActionEngine::set_stamina` when the stamina config is unchanged, which resumes regeneration
+//! after the install delay; a new config and a respawn start with a full bar.
+//!
+//! **The Souls kit.** With `benilla-config/combat/player.kit` present ([`crate::combat_kit`]),
+//! the table is the kit's Elden Ring moveset at its own timings: `V` rolls in the held direction
+//! or backsteps, `F9` runs the light chain. The clips are stand-ins from the WoW rig until the
+//! retarget. Without a kit the stock dodge and main-hand swing play as before.
 //!
 //! Provisional binds (until the RFC's rebindable experimental controls land): `F10` toggles the
-//! client's *requested* mode, `V` requests a dodge, `F9` requests a light attack (`F9` is unbound
-//! in the stock bindings). All three run
+//! client's *requested* mode (and re-reads the kit on the way in), `V` requests a dodge, `F9`
+//! requests a light attack (`F9` is unbound in the stock bindings). All three run
 //! through the same gate the binding dispatch uses ([`UiKeyboardCapture`]: a focused EditBox eats
 //! every key and a shown keyboard frame eats the key it consumed), so typing in chat never stages
 //! an action. All are inert with no local player (glue screens); actions only play once
@@ -49,11 +54,15 @@ use benilla_combat_core::{
 };
 use benilla_world::schedule::WorldStage;
 
+use crate::combat_kit::{
+    clip_bindings, compile_kit, engine_stamina, load_player_kit, resolve_press, PlayerKit, Press,
+};
 use crate::combat_mode::{CombatMode, CombatModeView};
 use crate::combat_profiles::{
-    player_dodge_spec, player_melee_action, CombatProfiles, HOST_DODGE, PLAYER_MELEE_MAIN,
+    player_dodge_spec, player_melee_action, rig_dodge_clip, rig_swing_clip, CombatProfiles,
+    HOST_DODGE, PLAYER_MELEE_MAIN,
 };
-use crate::creature_anim::{ActionAnim, AnimData, PlaySeq, SwingMessage, Wielded};
+use crate::creature_anim::{ActionAnim, AnimData, MovementState, PlaySeq, SwingMessage, Wielded};
 use crate::net::SelfPlayer;
 use crate::ui_script::{UiInput, UiKeyboardCapture};
 use crate::wrath::WrathWorldView;
@@ -149,6 +158,8 @@ impl Plugin for CombatPlaybackPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CombatProfiles>()
             .init_resource::<CombatPlaybackState>()
+            .init_resource::<PlayerKit>()
+            .add_systems(Startup, load_player_kit)
             .add_systems(
                 Update,
                 (
@@ -165,17 +176,22 @@ impl Plugin for CombatPlaybackPlugin {
     }
 }
 
-/// Compile the local player's profile table when the rig or the main-hand weapon changes, then
-/// rebuild the prediction engine over it. The table carries the dodge and the main-hand melee
-/// action; both compile from the rig's own clips (see `combat_profiles.rs`) and refuse rather
-/// than invent a profile when a clip is missing.
+/// Compile the local player's profile table when the rig, the main-hand weapon or the kit file
+/// changes, then rebuild the prediction engine over it.
 ///
-/// A compile failure is a real defect (a bad clip, a policy the compiler rejects), so it is
-/// reported once per rebuild with the action it names, never swallowed and never repeated per
+/// With a Souls kit ([`crate::combat_kit`]) the table is the kit's, each action bound to the
+/// rig's stand-in clip, with the kit's stamina. Without one, or when the kit does not compile,
+/// the table carries the stock dodge and main-hand melee action, both compiled from the rig's own
+/// clips (see `combat_profiles.rs`), which refuse rather than invent a profile when a clip is
+/// missing.
+///
+/// A compile failure is a real defect (a bad clip, a kit or policy the compiler rejects), so it
+/// is reported once per rebuild with the action it names, never swallowed and never repeated per
 /// frame. A missing clip is not a failure: it is the compiler's documented `None` gap.
 fn fill_local_profiles(
     me: Query<(Entity, &ModelAnimations, &Wielded), With<SelfPlayer>>,
     anim_data: Option<Res<AnimData>>,
+    kit: Res<PlayerKit>,
     mut profiles: ResMut<CombatProfiles>,
     mut state: ResMut<CombatPlaybackState>,
 ) {
@@ -186,49 +202,49 @@ fn fill_local_profiles(
         return;
     };
     let main = wielded.armed_main();
-    if profiles.built_for == Some((entity, main)) && profiles.table.is_some() {
+    let key = (entity, main, kit.generation);
+    if profiles.built_for == Some(key) && profiles.table.is_some() {
         return;
     }
     let Some(rate) = TickRate::new(PROFILE_TICK_RATE_HZ) else {
         return;
     };
-    let policy = ProfilePolicy::default();
-    let mut table = ActionTable::new(PROFILE_REVISION, rate);
-    let mut bindings = HashMap::new();
     let mut problems: Vec<String> = Vec::new();
-    match player_dodge_spec(anims, &anim_data.0, &policy, rate, PROFILE_REVISION) {
-        Ok(Some((dodge, anim_id))) => match table.insert(dodge_action(HOST_DODGE, &dodge)) {
-            Ok(()) => {
-                bindings.insert(HOST_DODGE, anim_id);
+    let compiled = match kit.kit.as_ref() {
+        Some(player_kit) => match compile_kit(player_kit, PROFILE_REVISION, rate) {
+            Ok(table) => {
+                let dodge_clip = rig_dodge_clip(anims, &anim_data.0).map(|clip| clip.anim_id);
+                let swing_clip =
+                    rig_swing_clip(main, anims, &anim_data.0).map(|clip| clip.anim_id);
+                Some((
+                    table,
+                    clip_bindings(player_kit, dodge_clip, swing_clip),
+                    engine_stamina(player_kit, rate, PREDICTED_STAMINA),
+                ))
             }
-            Err(error) => problems.push(format!("dodge {}: {error}", HOST_DODGE.0)),
-        },
-        // No Dodge clip on this rig: the compiler's named gap, not a failure.
-        Ok(None) => {}
-        Err(error) => problems.push(format!("dodge {}: {error}", HOST_DODGE.0)),
-    }
-    match player_melee_action(PLAYER_MELEE_MAIN, main, anims, &anim_data.0, &policy, rate) {
-        Ok(Some((spec, anim_id))) => match table.insert(spec) {
-            Ok(()) => {
-                bindings.insert(PLAYER_MELEE_MAIN, anim_id);
+            Err(error) => {
+                problems.push(format!("kit `{}`: {error}; the stock profiles stand in", player_kit.label));
+                None
             }
-            Err(error) => problems.push(format!("melee {}: {error}", PLAYER_MELEE_MAIN.0)),
         },
-        // The rig resolved no swing clip, or no main hand: the compiler's named gap.
-        Ok(None) => {}
-        Err(error) => problems.push(format!("melee {}: {error}", PLAYER_MELEE_MAIN.0)),
-    }
+        None => None,
+    };
+    let from_kit = compiled.is_some();
+    let (table, bindings, stamina) = compiled.unwrap_or_else(|| {
+        let (table, bindings) = stock_table(anims, &anim_data.0, main, rate, &mut problems);
+        (table, bindings, PREDICTED_STAMINA)
+    });
     // A rebuild anchors the engine at the playback clock, so the first span stays inside the
     // engine's bounded-advance contract (a fresh engine at tick zero could never reach an
-    // app-lifetime clock). The bar carries across the rebuild and resumes regeneration after the
-    // install delay; a respawn refills it.
-    let carried_stamina = state.engine.as_ref().map(ActionEngine::stamina);
-    match ActionEngine::new_at(
-        table.clone(),
-        PREDICTED_STAMINA,
-        BUFFER_TTL_TICKS,
-        state.ticks_at(),
-    ) {
+    // app-lifetime clock). The bar carries across a rebuild under the same stamina config and
+    // resumes regeneration after the install delay; a new config (a kit loaded or dropped) and a
+    // respawn start full.
+    let carried_stamina = state
+        .engine
+        .as_ref()
+        .filter(|_| profiles.stamina == Some(stamina))
+        .map(ActionEngine::stamina);
+    match ActionEngine::new_at(table.clone(), stamina, BUFFER_TTL_TICKS, state.ticks_at()) {
         Ok(mut engine) => {
             if let Some(carried) = carried_stamina {
                 engine.set_stamina(carried, state.ticks_at());
@@ -249,7 +265,46 @@ fn fill_local_profiles(
     }
     profiles.table = Some(table);
     profiles.anims = bindings;
-    profiles.built_for = Some((entity, main));
+    profiles.built_for = Some(key);
+    profiles.from_kit = from_kit;
+    profiles.stamina = Some(stamina);
+}
+
+/// The stock table: the rig's own Dodge clip as [`HOST_DODGE`] and its main-hand swing as
+/// [`PLAYER_MELEE_MAIN`], each bound to its clip. Compile failures go to `problems`.
+fn stock_table(
+    anims: &ModelAnimations,
+    anim_data: &benilla_formats::AnimDataCatalog,
+    main: Option<(u8, u8)>,
+    rate: TickRate,
+    problems: &mut Vec<String>,
+) -> (ActionTable, HashMap<ActionId, u16>) {
+    let policy = ProfilePolicy::default();
+    let mut table = ActionTable::new(PROFILE_REVISION, rate);
+    let mut bindings = HashMap::new();
+    match player_dodge_spec(anims, anim_data, &policy, rate, PROFILE_REVISION) {
+        Ok(Some((dodge, anim_id))) => match table.insert(dodge_action(HOST_DODGE, &dodge)) {
+            Ok(()) => {
+                bindings.insert(HOST_DODGE, anim_id);
+            }
+            Err(error) => problems.push(format!("dodge {}: {error}", HOST_DODGE.0)),
+        },
+        // No Dodge clip on this rig: the compiler's named gap, not a failure.
+        Ok(None) => {}
+        Err(error) => problems.push(format!("dodge {}: {error}", HOST_DODGE.0)),
+    }
+    match player_melee_action(PLAYER_MELEE_MAIN, main, anims, anim_data, &policy, rate) {
+        Ok(Some((spec, anim_id))) => match table.insert(spec) {
+            Ok(()) => {
+                bindings.insert(PLAYER_MELEE_MAIN, anim_id);
+            }
+            Err(error) => problems.push(format!("melee {}: {error}", PLAYER_MELEE_MAIN.0)),
+        },
+        // The rig resolved no swing clip, or no main hand: the compiler's named gap.
+        Ok(None) => {}
+        Err(error) => problems.push(format!("melee {}: {error}", PLAYER_MELEE_MAIN.0)),
+    }
+    (table, bindings)
 }
 
 /// The local player's own observation says they are dead. The same signal `combat_mode.rs`
@@ -373,7 +428,8 @@ fn advance_playback(
         state.engine = None;
         state.last_refusal = None;
         if let Some(table) = profiles.table.clone() {
-            match ActionEngine::new_at(table, PREDICTED_STAMINA, BUFFER_TTL_TICKS, now) {
+            let stamina = profiles.stamina.unwrap_or(PREDICTED_STAMINA);
+            match ActionEngine::new_at(table, stamina, BUFFER_TTL_TICKS, now) {
                 Ok(engine) => state.engine = Some(engine),
                 Err(error) => {
                     bevy::log::warn!("souls playback: revive rebuild failed: {error}");
@@ -422,8 +478,9 @@ fn advance_playback(
 fn toggle_and_stage_action(
     keys: Res<ButtonInput<KeyCode>>,
     capture: Res<UiKeyboardCapture>,
-    me: Query<Entity, With<SelfPlayer>>,
+    me: Query<(Entity, Option<&MovementState>), With<SelfPlayer>>,
     mut view: ResMut<CombatModeView>,
+    mut kit: ResMut<PlayerKit>,
     profiles: Res<CombatProfiles>,
     mut state: ResMut<CombatPlaybackState>,
     mut play_seq: ResMut<PlaySeq>,
@@ -431,7 +488,7 @@ fn toggle_and_stage_action(
 ) {
     let super_down = keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
     let eaten = |key: KeyCode| super_down || capture.typing || capture.consumed.contains(&key);
-    let Ok(entity) = me.single() else {
+    let Ok((entity, movement)) = me.single() else {
         return;
     };
     if keys.just_pressed(KeyCode::F10) && !eaten(KeyCode::F10) {
@@ -441,25 +498,47 @@ fn toggle_and_stage_action(
             }
             _ => {
                 view.request_experimental();
+                // Entering Experimental re-reads the kit file, so an imported kit takes effect
+                // without a restart; the next frame's profile build compiles it.
+                kit.reload();
             }
         }
     }
     if view.requested != Some(CombatMode::Experimental) {
         return;
     }
-    let action = if keys.just_pressed(KeyCode::KeyV) && !eaten(KeyCode::KeyV) {
-        Some(HOST_DODGE)
+    let press = if keys.just_pressed(KeyCode::KeyV) && !eaten(KeyCode::KeyV) {
+        Some(Press::Dodge)
     } else if keys.just_pressed(KeyCode::F9) && !eaten(KeyCode::F9) {
-        Some(PLAYER_MELEE_MAIN)
+        Some(Press::Light)
     } else {
         None
     };
-    let Some(action) = action else {
+    let Some(press) = press else {
         return;
     };
     let now = state.ticks_at();
     let Some(engine) = state.engine.as_mut() else {
         return;
+    };
+    // The kit names the action only once the table was compiled from this very kit; until then
+    // (the frame after a reload) the press is the stock one.
+    let kit_table = profiles.from_kit
+        && profiles
+            .built_for
+            .is_some_and(|(_, _, generation)| generation == kit.generation);
+    let action = match (kit.kit.as_ref(), kit_table) {
+        (Some(player_kit), true) => {
+            let flags = movement.map_or(0, |movement| movement.flags);
+            let Some(action) = resolve_press(player_kit, engine.active(), press, flags) else {
+                return;
+            };
+            action
+        }
+        _ => match press {
+            Press::Dodge => HOST_DODGE,
+            Press::Light => PLAYER_MELEE_MAIN,
+        },
     };
     // Keep the span bounded before submit's own advance (normally a no-op: the frame already
     // advanced this tick).
@@ -537,8 +616,7 @@ mod tests {
         };
         let profiles = CombatProfiles {
             table: Some(table),
-            anims: HashMap::new(),
-            built_for: None,
+            ..Default::default()
         };
 
         let now = state.ticks_at();

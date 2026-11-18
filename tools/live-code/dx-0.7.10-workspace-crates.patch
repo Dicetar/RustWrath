@@ -1,0 +1,504 @@
+diff --git a/src/build/link.rs b/src/build/link.rs
+index e3edd5c..fea6427 100644
+--- a/src/build/link.rs
++++ b/src/build/link.rs
+@@ -146,7 +146,22 @@ impl BuildRequest {
+         // Replay the rustcs for all modified workspace crates. This is not the final tip binary.
+         // Note that the final tip might include itself as a lib (lib.rs + main.rs) which gets covered here.
+         ctx.profile_phase("Workspace hotpatch replay");
+-        let replayed_crates = self.workspace_hotpatch_replay_order(modified_crates)?;
++        let mut replayed_crates = self.workspace_hotpatch_replay_order(modified_crates)?;
++        // RustWrath patch: the dependents cascade walks the whole workspace graph, so it also
++        // reaches members the fat build never compiled (a sibling binary that uses the edited
++        // crate). They are not linked into the running app and have no captured rustc args, so
++        // they are skipped instead of failing the patch.
++        replayed_crates.retain(|crate_name| {
++            let in_build = self
++                .workspace_hotpatch_replay_args(workspace_rustc_args, crate_name)
++                .is_some();
++            if !in_build {
++                tracing::debug!("not replaying '{crate_name}': not part of the fat build");
++            }
++            in_build
++        });
++        let replayed_crates =
++            self.workspace_hotpatch_order_by_externs(workspace_rustc_args, replayed_crates)?;
+         tracing::debug!("replaying crates: {replayed_crates:?}");
+         for crate_name in &replayed_crates {
+             let rustc_args = self
+@@ -259,6 +274,23 @@ impl BuildRequest {
+                 .iter()
+                 .map(Into::into),
+         );
++
++        // RustWrath patch: a Windows patch DLL gets its own TLS directory (from the CRT's
++        // `tlssup.obj`) and a fixed base just past the exe, so the 32-bit RIP-relative references
++        // to exe data that the stub resolves to absolute addresses still reach. See
++        // `windows_patch_image_base`.
++        let windows_patch_base = match (self.linker_flavor(), self.triple.operating_system) {
++            (LinkerFlavor::Msvc, OperatingSystem::Windows) => {
++                let base =
++                    crate::build::windows_patch_image_base(cache, &self.triple, *aslr_reference)?;
++                tracing::debug!("patch image base: {base:#x}");
++                out_args.push(format!("/BASE:{base:#x}").into());
++                out_args.push("/DYNAMICBASE:NO".into());
++                out_args.push("/INCLUDE:_tls_used".into());
++                Some(base)
++            }
++            _ => None,
++        };
+         out_args.extend(out_arg.iter().map(Into::into));
+ 
+         if cfg!(windows) {
+@@ -304,6 +336,14 @@ impl BuildRequest {
+             }
+         }
+ 
++        // RustWrath patch: fail a patch that ends out of the exe's reach, and put the next one
++        // past this one.
++        if let Some(base) = windows_patch_base {
++            if res.status.success() && out_exe.exists() {
++                crate::build::windows_patch_linked(&out_exe, base)?;
++            }
++        }
++
+         // For some really weird reason that I think is because of dlopen caching, future loads of the
+         // jump library will fail if we don't remove the original fat file. I think this could be
+         // because of library versioning and namespaces, but really unsure.
+@@ -602,6 +642,73 @@ impl BuildRequest {
+         })
+     }
+ 
++    /// RustWrath patch: order the replay by what each crate's captured rustc command actually
++    /// links (`--extern name=path`). This is the ground truth of the fat build, so it backs up the
++    /// cargo-metadata walk in `workspace_hotpatch_replay_order`, which once put benilla_app before
++    /// the optional dependency its `hotpatch` feature enables. Ties keep the incoming order.
++    fn workspace_hotpatch_order_by_externs(
++        &self,
++        workspace_rustc_args: &WorkspaceRustcArgs,
++        crates: Vec<String>,
++    ) -> Result<Vec<String>> {
++        let externs_of = |crate_name: &str| -> HashSet<String> {
++            let mut externs = HashSet::new();
++            let Some(args) = self.workspace_hotpatch_replay_args(workspace_rustc_args, crate_name)
++            else {
++                return externs;
++            };
++            let mut after_extern_flag = false;
++            for arg in &args.args {
++                let spec = if after_extern_flag {
++                    Some(arg.as_str())
++                } else {
++                    arg.strip_prefix("--extern=")
++                };
++                after_extern_flag = arg == "--extern";
++                if let Some(spec) = spec {
++                    // `[opts:]name[=path]`
++                    let name = spec.split('=').next().unwrap_or(spec);
++                    let name = name.rsplit(':').next().unwrap_or(name);
++                    externs.insert(name.replace('-', "_"));
++                }
++            }
++            externs
++        };
++
++        let position: HashMap<&String, usize> =
++            crates.iter().enumerate().map(|(i, name)| (name, i)).collect();
++        let mut indegree = vec![0usize; crates.len()];
++        let mut dependents: Vec<Vec<usize>> = vec![vec![]; crates.len()];
++        for (i, crate_name) in crates.iter().enumerate() {
++            for dep in externs_of(crate_name) {
++                if let Some(&j) = position.get(&dep) {
++                    if j != i {
++                        indegree[i] += 1;
++                        dependents[j].push(i);
++                    }
++                }
++            }
++        }
++
++        let mut ready: BTreeSet<usize> = (0..crates.len()).filter(|&i| indegree[i] == 0).collect();
++        let mut ordered = Vec::with_capacity(crates.len());
++        while let Some(i) = ready.pop_first() {
++            ordered.push(crates[i].clone());
++            for &d in &dependents[i] {
++                indegree[d] -= 1;
++                if indegree[d] == 0 {
++                    ready.insert(d);
++                }
++            }
++        }
++
++        ensure!(
++            ordered.len() == crates.len(),
++            "Cycle in captured --extern arguments — cannot determine replay order"
++        );
++        Ok(ordered)
++    }
++
+     /// Topological sort of modified workspace crates for rustc replay.
+     ///
+     /// The caller (builder) already guarantees that every crate in `modified_crates`
+diff --git a/src/build/patch.rs b/src/build/patch.rs
+index ce60a5a..9650085 100644
+--- a/src/build/patch.rs
++++ b/src/build/patch.rs
+@@ -942,6 +942,18 @@ pub fn create_undefined_symbol_stub(
+     // for each symbol we either write the address directly (as a symbol) or create a PLT/GOT entry
+     let text_section = obj.section_id(StandardSection::Text);
+     for name in undefined_symbols {
++        // RustWrath patch: a Windows patch DLL keeps its own thread-locals. Patched code reaches a
++        // thread-local through `_tls_index` and a SECREL offset into the DLL's own `.tls` layout.
++        // Resolving `_tls_index` to the exe's copy (an absolute data symbol, below) paired the exe's
++        // TLS slot with the DLL's offsets, and its 32-bit RIP-relative load did not reach the exe.
++        // Leaving the CRT's TLS symbols to `tlssup.obj` in `msvcrt.lib` gives the DLL its own TLS
++        // directory and slot, like the ELF and Mach-O path below gives each patch its own copy.
++        if matches!(triple.operating_system, OperatingSystem::Windows)
++            && WINDOWS_CRT_TLS_SYMBOLS.contains(&name.as_str())
++        {
++            continue;
++        }
++
+         let Some(sym) = cache
+             .symbol_table
+             .get(name.as_str().trim_start_matches("__imp_"))
+@@ -1014,14 +1026,13 @@ pub fn create_undefined_symbol_stub(
+                     // The windows ABI and calling convention is different than the SystemV ABI.
+                     OperatingSystem::Windows => match triple.architecture {
+                         Architecture::X86_64 => {
+-                            // Windows x64 has specific requirements for alignment and position-independent code
+-                            let mut code = vec![
+-                                0x48, 0xB8, // movabs RAX, imm64 (move 64-bit immediate to RAX)
+-                            ];
+-                            // Append the absolute 64-bit address
++                            // RustWrath patch (DioxusLabs/dioxus#5966, fix from #5967): jump
++                            // without touching a register, `jmp [rip+0]` then the 64-bit absolute
++                            // address. A stub through RAX breaks `__chkstk`, which takes the stack
++                            // frame's size in RAX: every patched function with a frame over a page
++                            // overflowed the stack on entry.
++                            let mut code = vec![0xFF, 0x25, 0x00, 0x00, 0x00, 0x00]; // jmp [rip+0]
+                             code.extend_from_slice(&abs_addr.to_le_bytes());
+-                            // jmp RAX (jump to the address in RAX)
+-                            code.extend_from_slice(&[0xFF, 0xE0]);
+                             code
+                         }
+                         Architecture::X86_32(_) => {
+@@ -1259,6 +1270,142 @@ pub fn create_undefined_symbol_stub(
+     Ok(obj.write()?)
+ }
+ 
++/// RustWrath patch: the symbols `tlssup.obj` (in `msvcrt.lib`) defines for a module's own TLS
++/// directory. The patch link must take them from the CRT, not from the exe.
++const WINDOWS_CRT_TLS_SYMBOLS: &[&str] = &[
++    "_tls_index",
++    "_tls_used",
++    "_tls_start",
++    "_tls_end",
++    "__xl_a",
++    "__xl_z",
++];
++
++/// RustWrath patch: alignment of a Windows patch DLL's preferred base.
++const WINDOWS_PATCH_ALIGN: u64 = 0x1_0000;
++
++/// RustWrath patch: space left between the exe image and the first patch DLL.
++const WINDOWS_PATCH_GAP: u64 = 0x100_0000;
++
++/// RustWrath patch: how far an x64 RIP-relative displacement reaches.
++const WINDOWS_REL32_REACH: u64 = 0x8000_0000;
++
++/// RustWrath patch: where the next Windows patch DLL goes, for the exe that is running.
++struct WindowsPatchPlacement {
++    exe_base: u64,
++    exe_modified: Option<std::time::SystemTime>,
++    next_base: u64,
++}
++
++static WINDOWS_PATCH_PLACEMENT: std::sync::Mutex<Option<WindowsPatchPlacement>> =
++    std::sync::Mutex::new(None);
++
++/// RustWrath patch: the preferred base for the next Windows patch DLL.
++///
++/// The stub defines every exe data symbol the patch uses as an absolute address. x64 code reaches
++/// data through 32-bit RIP-relative displacements, which link.exe computes against the DLL's
++/// preferred base and the loader never relocates. With ASLR the DLL lands somewhere else, and with
++/// the default base (0x180000000) the exe (at 0x7FF6... or above) is out of reach either way.
++///
++/// So each patch is linked with `/DYNAMICBASE:NO` at a base just past the exe image, after the
++/// patches already loaded (subsecond keeps them). A rebuilt exe, or the same exe at another base,
++/// starts over from its own image end.
++pub fn windows_patch_image_base(
++    cache: &HotpatchModuleCache,
++    triple: &Triple,
++    aslr_reference: u64,
++) -> Result<u64> {
++    let main_rva = cache
++        .symbol_table
++        .get(main_sentinel(triple))
++        .context("failed to find 'main' symbol in the exe")?
++        .address;
++    let exe_base = aslr_reference.checked_sub(main_rva).ok_or_else(|| {
++        PatchError::InvalidModule(format!(
++            "ASLR reference {aslr_reference:x} is below main's RVA {main_rva:x}"
++        ))
++    })?;
++    let exe_modified = std::fs::metadata(&cache.path)
++        .and_then(|meta| meta.modified())
++        .ok();
++
++    let mut placement = WINDOWS_PATCH_PLACEMENT
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner());
++    let current = placement
++        .as_ref()
++        .is_some_and(|p| p.exe_base == exe_base && p.exe_modified == exe_modified);
++    if !current {
++        let exe_end = exe_base + pe_size_of_image(&cache.path)?;
++        *placement = Some(WindowsPatchPlacement {
++            exe_base,
++            exe_modified,
++            next_base: align_up(exe_end + WINDOWS_PATCH_GAP, WINDOWS_PATCH_ALIGN),
++        });
++    }
++
++    let next_base = placement.as_ref().map(|p| p.next_base).unwrap_or_default();
++    if next_base - exe_base >= WINDOWS_REL32_REACH {
++        return Err(PatchError::InvalidModule(
++            "no address within 2 GiB of the exe is left for another patch; restart the app with a full rebuild".to_string(),
++        ));
++    }
++
++    Ok(next_base)
++}
++
++/// RustWrath patch: check a linked Windows patch DLL against the exe's RIP-relative reach and
++/// move the next patch's base past it.
++pub fn windows_patch_linked(patch: &Path, base: u64) -> Result<()> {
++    let end = base + pe_size_of_image(patch)?;
++    let mut placement = WINDOWS_PATCH_PLACEMENT
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner());
++    let Some(placement) = placement.as_mut() else {
++        return Ok(());
++    };
++
++    if end - placement.exe_base > WINDOWS_REL32_REACH {
++        return Err(PatchError::InvalidModule(format!(
++            "patch image ends at {end:x}, more than 2 GiB past the exe at {:x}; restart the app with a full rebuild",
++            placement.exe_base
++        )));
++    }
++
++    placement.next_base = placement
++        .next_base
++        .max(align_up(end, WINDOWS_PATCH_ALIGN));
++    Ok(())
++}
++
++/// RustWrath patch: `SizeOfImage` from a PE32+ file's optional header.
++fn pe_size_of_image(path: &Path) -> Result<u64> {
++    let mut header = Vec::with_capacity(4096);
++    std::fs::File::open(path)?
++        .take(4096)
++        .read_to_end(&mut header)?;
++
++    let bad = || PatchError::InvalidModule(format!("{} is not a PE32+ image", path.display()));
++    let bytes = |at: usize, len: usize| header.get(at..at + len).ok_or_else(bad);
++
++    let pe = u32::from_le_bytes(bytes(0x3C, 4)?.try_into().unwrap()) as usize;
++    if bytes(pe, 4)? != b"PE\0\0" {
++        return Err(bad());
++    }
++
++    // The optional header follows the 4-byte signature and the 20-byte file header.
++    let optional = pe + 24;
++    if u16::from_le_bytes(bytes(optional, 2)?.try_into().unwrap()) != 0x20B {
++        return Err(bad());
++    }
++
++    Ok(u32::from_le_bytes(bytes(optional + 56, 4)?.try_into().unwrap()) as u64)
++}
++
++fn align_up(value: u64, align: u64) -> u64 {
++    value.div_ceil(align) * align
++}
++
+ fn collect_stub_symbols_from_path(
+     path: &Path,
+     undefined_symbols: &mut HashSet<String>,
+diff --git a/src/build/request.rs b/src/build/request.rs
+index 2a41545..3a867a2 100644
+--- a/src/build/request.rs
++++ b/src/build/request.rs
+@@ -2887,18 +2887,40 @@ impl BuildRequest {
+             })
+             .collect();
+ 
+-        krates
+-            .direct_dependents(target_nid)
+-            .into_iter()
+-            .filter_map(|dep| {
+-                let name = dep.krate.name.replace('-', "_");
+-                if workspace_names.contains(&name) {
+-                    Some(name)
+-                } else {
+-                    None
++        // RustWrath patch: krates' `direct_dependents` skips a dependent that reaches this crate
++        // through one of its own features (`hotpatch = ["dep:benilla-hotpatch-bevy"]` makes the
++        // edge `benilla-app/hotpatch` -> `benilla-hotpatch-bevy`). Without that edge the replay
++        // compiled benilla_app before benilla_hotpatch_bevy and failed. Walk the incoming edges
++        // here instead: a crate node, or a feature node of another crate, is a dependent; a
++        // feature node of this crate is followed further.
++        use krates::petgraph::{visit::EdgeRef, Direction};
++        let graph = krates.graph();
++        let mut dependents: Vec<String> = vec![];
++        let mut stack = vec![target_nid];
++        let mut visited = HashSet::new();
++        while let Some(nid) = stack.pop() {
++            for edge in graph.edges_directed(nid, Direction::Incoming) {
++                let source = edge.source();
++                if source == target_nid || !visited.insert(source) {
++                    continue;
+                 }
+-            })
+-            .collect()
++                let krate = match &graph[source] {
++                    krates::Node::Krate { krate, .. } => krate,
++                    krates::Node::Feature { krate_index, .. } => {
++                        if *krate_index == target_nid {
++                            stack.push(source);
++                            continue;
++                        }
++                        &krates[*krate_index]
++                    }
++                };
++                let name = krate.name.replace('-', "_");
++                if workspace_names.contains(&name) && !dependents.contains(&name) {
++                    dependents.push(name);
++                }
++            }
++        }
++        dependents
+     }
+ 
+     /// Get the folder where Apple Widget Extensions (.appex bundles) are installed.
+diff --git a/src/serve/mod.rs b/src/serve/mod.rs
+index b1c5613..9ef0e22 100644
+--- a/src/serve/mod.rs
++++ b/src/serve/mod.rs
+@@ -173,6 +173,19 @@ pub(crate) async fn serve_all(args: ServeArgs, tracer: &TraceController) -> Resu
+                         if exit_on_error {
+                             return Err(err);
+                         }
++
++                        // RustWrath patch: also replay file changes queued during a build that
++                        // failed. The queued files are often the fix for the failure (the other
++                        // half of an edit that spans crates); upstream only replays them after a
++                        // successful build, so they were silently dropped.
++                        let pending = builder.take_pending_file_changes();
++                        if !pending.is_empty() {
++                            tracing::debug!(
++                                "Processing {} pending file changes after failed build",
++                                pending.len()
++                            );
++                            builder.handle_file_change(&pending, &mut devserver).await;
++                        }
+                     }
+                     BuilderUpdate::BuildReady { bundle } => {
+                         match bundle.mode {
+diff --git a/src/serve/runner.rs b/src/serve/runner.rs
+index 82ca1b3..d8cef51 100644
+--- a/src/serve/runner.rs
++++ b/src/serve/runner.rs
+@@ -304,6 +304,21 @@ impl AppServer {
+                     changes.push(event);
+                 }
+ 
++                // RustWrath patch: let a burst of writes settle before patching. A git checkout or
++                // cherry-pick writes its files one after another; without this the patch starts on
++                // the first file alone, the rest are queued, and a change split across crates (a
++                // new constant in one crate used by another) fails to compile. Wait until the
++                // watcher has been quiet for a moment, but never longer than a couple of seconds.
++                let settle_started = std::time::Instant::now();
++                while settle_started.elapsed() < Duration::from_secs(2) {
++                    match tokio::time::timeout(Duration::from_millis(300), self.watcher_rx.next())
++                        .await
++                    {
++                        Ok(Some(event)) => changes.push(event),
++                        _ => break,
++                    }
++                }
++
+                 // Filter the changes
+                 let mut files: Vec<PathBuf> = vec![];
+ 
+@@ -1110,32 +1125,48 @@ impl AppServer {
+     /// - the Cargo.toml file - this is so we can hotreload the project if the user changes dependencies
+     /// - the Dioxus.toml file - this is so we can hotreload the project if the user changes the Dioxus config
+     fn local_dependencies(&self, crate_package: NodeId) -> Vec<PathBuf> {
++        // RustWrath patch: walk local dependencies transitively, not only the tip's direct ones.
++        // Hot-patching replays any modified workspace crate, but a crate the watcher never sees
++        // is never modified: an edit two crates below the tip was silently left out of the patch.
++        let krates = &self.workspace.krates;
+         let mut paths = vec![];
++        let mut seen: HashSet<NodeId> = HashSet::new();
++        let mut queue = VecDeque::from([crate_package]);
++
++        while let Some(node) = queue.pop_front() {
++            for (dependency, _edge) in krates.get_deps(node) {
++                let (krate, dep_node) = match dependency {
++                    krates::Node::Krate { id, krate, .. } => (krate, krates.nid_for_kid(id)),
++                    krates::Node::Feature { krate_index, .. } => {
++                        (&krates[krate_index.index()], Some(*krate_index))
++                    }
++                };
+ 
+-        for (dependency, _edge) in self.workspace.krates.get_deps(crate_package) {
+-            let krate = match dependency {
+-                krates::Node::Krate { krate, .. } => krate,
+-                krates::Node::Feature { krate_index, .. } => {
+-                    &self.workspace.krates[krate_index.index()]
++                if krate
++                    .manifest_path
++                    .components()
++                    .any(|c| c.as_str() == ".cargo")
++                {
++                    continue;
+                 }
+-            };
+ 
+-            if krate
+-                .manifest_path
+-                .components()
+-                .any(|c| c.as_str() == ".cargo")
+-            {
+-                continue;
+-            }
++                let Some(dep_node) = dep_node else {
++                    continue;
++                };
++                if !seen.insert(dep_node) {
++                    continue;
++                }
++                queue.push_back(dep_node);
+ 
+-            paths.push(
+-                krate
+-                    .manifest_path
+-                    .parent()
+-                    .unwrap()
+-                    .to_path_buf()
+-                    .into_std_path_buf(),
+-            );
++                paths.push(
++                    krate
++                        .manifest_path
++                        .parent()
++                        .unwrap()
++                        .to_path_buf()
++                        .into_std_path_buf(),
++                );
++            }
+         }
+ 
+         paths
