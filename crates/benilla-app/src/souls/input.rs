@@ -445,20 +445,44 @@ pub(super) fn souls_input(
         info!("souls: {}", if souls.crouched { "crouched" } else { "stood" });
     }
 
-    // The presses. In the air (with jump attacks on) light and heavy are the kit's jump attacks,
-    // or nothing: ER has no ground swing mid-jump.
+    // The jump attack: a light, heavy or (paired) left press in the air is held until the body
+    // comes down, then the kit's landing swing plays; ER has no ground swing mid-jump. The air
+    // half of the swing is the WoW jump clip until the retarget.
+    let airborne = player.airborne();
+    let landed = souls.was_airborne && !airborne;
+    souls.was_airborne = airborne;
+    let jumping = features.jump_attacks && airborne;
+    if !features.jump_attacks || (!airborne && !landed) {
+        souls.air_attack = None;
+    }
+    let landing = if landed { souls.air_attack.take() } else { None };
+
+    // The presses.
     let active = playback.engine.as_ref().and_then(|engine| engine.active());
     let counter = t < souls.counter_until;
-    let jumping = features.jump_attacks && player.airborne();
     let mut heavy_pressed = None;
-    let request = if dodge_press {
+    let request = if let Some(row) = landing {
+        kit_now.and_then(|kit| kit_row(kit, row))
+    } else if jumping {
+        if souls.air_attack.is_none() {
+            souls.air_attack = if input.just_pressed(binds.light) {
+                Some("JumpLightLand")
+            } else if features.heavy && input.just_pressed(binds.heavy) {
+                Some("JumpHeavyLand")
+            } else if features.left_hand && input.just_pressed(binds.left) {
+                Some("PairedJumpLand")
+            } else {
+                None
+            };
+        }
+        None
+    } else if dodge_press {
         match kit_now {
             Some(kit) => resolve_press(kit, active, Press::Dodge, flags),
             None => Some(stock_press(Press::Dodge)),
         }
     } else if input.just_pressed(binds.light) {
         match kit_now {
-            Some(kit) if jumping => kit_row(kit, "JumpLight"),
             Some(kit) if souls.crouched => {
                 kit_row(kit, "CrouchAttack").or_else(|| light_action(kit, active, false, &features))
             }
@@ -466,13 +490,8 @@ pub(super) fn souls_input(
             None => Some(stock_press(Press::Light)),
         }
     } else if features.heavy && input.just_pressed(binds.heavy) {
-        let id = kit_now.and_then(|kit| {
-            if jumping {
-                kit_row(kit, "JumpHeavy")
-            } else {
-                heavy_action(kit, active, souls.sprinting, counter, &features)
-            }
-        });
+        let id =
+            kit_now.and_then(|kit| heavy_action(kit, active, souls.sprinting, counter, &features));
         heavy_pressed = id;
         id
     } else if features.left_hand && input.just_pressed(binds.left) {

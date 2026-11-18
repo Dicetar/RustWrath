@@ -15,13 +15,20 @@
 //! - `Backstep` and the four `Roll(<load>, <direction>)` actions, as dodges. Their stamina cost
 //!   is not in the action record; it comes from `ROLL_COST` / `BACKSTEP_COST`.
 //! - Every ground attack of the chosen weapon and grip, as light or heavy attacks.
+//! - The landing halves of the jump attacks (`JumpLightLand`, `JumpHeavyLand`; `PairedJumpLand`
+//!   with the off hand). The landing carries the hit; the client plays it when a press made in
+//!   the air comes down.
+//! - `Parry`, authored here: the donor data has no parry (in ER it is a shield skill). A dodge-
+//!   kind action whose `iframes` row is the parry window; every number is an estimate, to tune
+//!   in play.
 //! - The chain rules of the donor's player code, as data: a light swing continues into the next
 //!   one and wraps to the first after the last; running, rolling, backstep and crouch attacks
 //!   continue into the second swing; a roll continues into the roll attack and a backstep into
 //!   the backstep attack; the first heavy continues into the second charged heavy.
 //!
-//! What does not, each reported by name in [`ImportReport::skipped`]: landing halves of jump
-//! attacks (the kit has no jump), off-hand and paired attacks unless asked for, and any record
+//! What does not, each reported by name in [`ImportReport::skipped`]: the short landings (they
+//! follow an air swing that already finished, which the client does not model), off-hand and
+//! paired attacks unless asked for, and any record
 //! the engine cannot run — an attack without a hit, a dodge without i-frames, an action that
 //! costs nothing. Movement stops, landings, jumps, crouch rolls and hit reactions in `fn base`
 //! are not kit actions and are only counted.
@@ -178,8 +185,8 @@ pub fn import_kit(
     for (arm, line) in arms {
         let Arm::Taken(pattern, def) = arm else { continue };
         let Some((_, _, kind_name)) = attack_kind(&pattern) else { continue };
-        if kind_name.contains("Jump") {
-            report.skipped.push((kind_name.to_string(), "needs the jump, which a kit does not have"));
+        if kind_name.contains("Jump") && kind_name.ends_with("Short") {
+            report.skipped.push((kind_name.to_string(), "a short landing, after a finished air swing"));
             continue;
         }
         if !options.off_hand && (kind_name.starts_with("Left") || kind_name.starts_with("Paired")) {
@@ -199,6 +206,7 @@ pub fn import_kit(
         });
     }
     report.empty_windows_dropped = parser.empty_windows;
+    drafts.push(parry(backstep_cost));
 
     // Leave out what the engine cannot run, then number what is left.
     drafts.retain(|draft| {
@@ -300,6 +308,40 @@ fn continuations(name: &str, id_of: &dyn Fn(&str) -> Option<ActionId>) -> (Optio
         _ => None,
     };
     (next_light, next_heavy)
+}
+
+/// The authored parry (ESTIMATE, in 30 fps frames): a 40-frame action whose window is frames 6
+/// to 14, that the dodge can cancel from 24 and anything from 30; it costs a backstep.
+fn parry(cost: Milli) -> Draft {
+    let frame = Milli::whole;
+    Draft {
+        name: "Parry".to_string(),
+        kind: ActionKind::Dodge,
+        cost: Some(cost),
+        def: ActionDef {
+            source: "authored_parry".to_string(),
+            total: frame(40),
+            input_from: Some(frame(24)),
+            input_dodge_from: Some(frame(24)),
+            cancel: KitCancels {
+                light: Some(frame(30)),
+                heavy: Some(frame(30)),
+                dodge: Some(frame(24)),
+                jump: Some(frame(30)),
+                guard: Some(frame(24)),
+                movement: Some(frame(30)),
+                left: Some(frame(30)),
+            },
+            iframes: Some((frame(6), frame(14))),
+            jump_frames: false,
+            stamina: Milli::ZERO,
+            hits: Vec::new(),
+            charge: None,
+            no_turn: vec![(Milli::ZERO, frame(30))],
+            turn: Vec::new(),
+            motion: Vec::new(),
+        },
+    }
 }
 
 struct Draft {
@@ -996,6 +1038,7 @@ mod tests {
             ("1, false, Heavy1", attack("Heavy1", "12.0", "None")),
             ("1, false, Heavy2Charge", attack("Heavy2Charge", "14.0", "Some((0.0, 0.0))")),
             ("1, false, JumpLightLand", attack("JumpLightLand", "7.0", "None")),
+            ("1, false, JumpLightLandShort", attack("JumpLightLandShort", "7.0", "None")),
             ("1, false, LeftLight1", attack("LeftLight1", "7.0", "None")),
             ("1, false, Feint", attack("Feint", "0.0", "None")),
             ("1, true, Light1", attack("Light1", "9.0", "None")),
@@ -1039,20 +1082,22 @@ mod tests {
                 "BackstepAttack",
                 "Heavy1Charge",
                 "Heavy1",
-                "Heavy2Charge"
+                "Heavy2Charge",
+                "JumpLightLand",
+                "Parry"
             ]
         );
         assert_eq!(kit.actions[0].id, ActionId(100));
-        assert_eq!(kit.actions[11].id, ActionId(111));
+        assert_eq!(kit.actions[13].id, ActionId(113));
         assert_eq!(
             report,
             ImportReport {
                 weapon_index: 1,
                 weapon_name: "Test Blade".to_string(),
-                dodges: 5,
-                attacks: 7,
+                dodges: 6,
+                attacks: 8,
                 skipped: vec![
-                    ("JumpLightLand".to_string(), "needs the jump, which a kit does not have"),
+                    ("JumpLightLandShort".to_string(), "a short landing, after a finished air swing"),
                     ("LeftLight1".to_string(), "off-hand and paired attacks were not asked for"),
                     ("Feint".to_string(), "costs no stamina"),
                 ],
@@ -1060,7 +1105,7 @@ mod tests {
                 other_base_records: 1,
                 // Per attack: the i-frames and one turn lock; per dodge: one turn lock; and the
                 // second heavy's charge.
-                empty_windows_dropped: 8 * 2 + 5 + 1,
+                empty_windows_dropped: 9 * 2 + 5 + 1,
             }
         );
 
@@ -1098,7 +1143,7 @@ mod tests {
         let table = kit
             .to_table(ActionRevision(1), TickRate::new(100).expect("100 Hz"))
             .expect("table");
-        assert_eq!(table.len(), 12);
+        assert_eq!(table.len(), 14);
     }
 
     #[test]
@@ -1129,7 +1174,7 @@ mod tests {
         };
         let (kit, report) = import_kit(&sample(), Some(CONSTANTS), &two_handed).expect("import");
         assert_eq!(kit.label, "Test Blade, two-handed, light load");
-        assert_eq!((report.dodges, report.attacks), (5, 1));
+        assert_eq!((report.dodges, report.attacks), (6, 1));
         assert_eq!(kit.actions[5].hits[0].stamina, Milli::whole(9));
         assert_eq!(kit.actions[5].next_light, None, "a chain of one does not continue into itself");
         assert_eq!(kit.actions[0].id, ActionId(7));

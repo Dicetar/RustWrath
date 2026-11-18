@@ -17,8 +17,8 @@
 //! - [`input`]: dodge on release (hold to sprint), light, heavy (charge on hold, release early for
 //!   the uncharged swing), running attacks, guard and the guard counter, poise and hyperarmor,
 //!   crouch (`F6`) and the crouch attack, jump attacks, the left-hand chain (`F11`) and the parry
-//!   (`F12`). The last three need rows the kit names (`JumpLight`/`JumpHeavy`, `LeftLight1…` or
-//!   `PairedLight1…`, `Parry`); without them the press does nothing.
+//!   (`F12`). The last three need rows the kit names (`JumpLightLand`/`JumpHeavyLand`, played on
+//!   landing; `LeftLight1…` or `PairedLight1…`; `Parry`); without them the press does nothing.
 //! - [`drive`]: the kit's root motion, no-turn windows and turn-rate caps, and the lock-on
 //!   facing, written to
 //!   [`crate::player::SoulsDrive`] for the controller.
@@ -112,6 +112,10 @@ pub(crate) struct SoulsState {
     poise_reset_at: f32,
     /// Crouched: a light press is the crouch attack.
     crouched: bool,
+    /// The body was in the air last frame.
+    was_airborne: bool,
+    /// A press made in the air: the kit row of the landing swing it plays on touching down.
+    air_attack: Option<&'static str>,
 }
 
 impl SoulsState {
@@ -127,6 +131,8 @@ impl SoulsState {
             && self.engaged.is_none()
             && self.poise.is_none()
             && !self.crouched
+            && !self.was_airborne
+            && self.air_attack.is_none()
     }
 }
 

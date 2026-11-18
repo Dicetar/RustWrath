@@ -190,9 +190,12 @@ pub(crate) fn engine_stamina(kit: &Kit, rate: TickRate, fallback: StaminaConfig)
     }
 }
 
-/// Each kit action bound to the rig clip that stands in for it until the retarget: dodges to the
-/// rig's Dodge clip, attacks to its main-hand swing. An action whose stand-in the rig lacks plays
-/// no clip; the engine still runs it.
+/// `Parry1H`, the stand-in for the kit's authored `Parry` (every humanoid rig has it).
+const ANIM_PARRY_1H: u16 = 21;
+
+/// Each kit action bound to the rig clip that stands in for it until the retarget: the parry to
+/// `Parry1H`, dodges to the rig's Dodge clip, attacks to its main-hand swing. An action whose
+/// stand-in the rig lacks plays no clip; the engine still runs it.
 pub(crate) fn clip_bindings(
     kit: &Kit,
     dodge_clip: Option<u16>,
@@ -202,6 +205,7 @@ pub(crate) fn clip_bindings(
         .iter()
         .filter_map(|action| {
             let clip = match action.kind {
+                ActionKind::Dodge if action.name == "Parry" => Some(ANIM_PARRY_1H),
                 ActionKind::Dodge => dodge_clip,
                 _ => swing_clip,
             };
